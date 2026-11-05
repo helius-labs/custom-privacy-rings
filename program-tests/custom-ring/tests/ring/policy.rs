@@ -103,7 +103,7 @@ fn an_outflow_limit_ring_bounds_each_transfer() -> Result<()> {
         payer: env.payer.pubkey(),
         authority: cosign_admin.pubkey(),
         signer: cosigner.pubkey(),
-        scope: CoSignScope::WITHDRAWALS,
+        scope: CoSignScope::APPROVE_OUTFLOW,
     }
     .instruction()?])?;
     let proven = prove(prepare(utxos[1].clone(), OVER_THRESHOLD)?)?;

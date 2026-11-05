@@ -697,14 +697,18 @@ impl Landed<'_> {
         let units = confirmed["meta"]["computeUnitsConsumed"]
             .as_u64()
             .context("the transaction's compute units")?;
-        let heap = match confirmed["meta"]["returnData"]["data"][0].is_string() {
-            true => {
-                let peak = decode(&confirmed["meta"]["returnData"]["data"][0])?;
-                Some(u64::from_le_bytes(peak.try_into().map_err(|_| {
+        // Surfpool reports empty return data when no program sets one.
+        let returned = match confirmed["meta"]["returnData"]["data"][0].is_string() {
+            true => decode(&confirmed["meta"]["returnData"]["data"][0])?,
+            false => Vec::new(),
+        };
+        let heap = match returned.is_empty() {
+            true => None,
+            false => {
+                Some(u64::from_le_bytes(returned.try_into().map_err(|_| {
                     anyhow!("{label} returned no eight byte heap peak")
                 })?))
             }
-            false => None,
         };
         ensure!(bytes <= MAX_TRANSACTION_SIZE, "{label} has {bytes} bytes");
         ensure!(

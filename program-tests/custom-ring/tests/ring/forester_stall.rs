@@ -1,3 +1,5 @@
+use spr_interface::shape::Shape;
+
 use super::*;
 
 /// Surfpool's account write, the queue boundary reads as a full nullifier batch no forester drains.
@@ -75,22 +77,22 @@ fn a_stalled_forester_stops_a_dummy_input_transfer_and_no_deposit() -> Result<()
     notes().deposit()?;
     assert_eq!(nullifier_queue_index(&env)?, queue_index);
 
-    // One real input leaves the shape's second slot a dummy, SPP then flips its public flag.
+    // One real input in a two-input shape leaves the second slot a dummy, SPP then flips its public flag.
     let mut prepared =
         ConfidentialTransaction::new_with_ring(vec![input], sender.pubkey(), ring_program)?
             .with_output_tree_id(env.tree_id(env.tree)?)?;
     prepared.transfer_sol(&env.recipient.keypair.shielded_address()?, 1)?;
-    let refused = OwnerTransfer {
+    let transfer = CustomRingTransfer::new(CustomRingTransferInput {
         ring,
         sender,
-        prepared,
-        interface_transfer_accounts: Vec::new(),
-        auditor_tag: auditor_view_tag(&auditor.pubkey()),
-        cosigner: None,
-    }
-    .send(&env)
-    .err()
-    .context("a dummy input settled on a full nullifier batch")?;
+        nullifier_key: Some(&sender.nullifier_key),
+        transaction: prepared,
+    })
+    .with_shape(Shape::IN2_OUT2)?;
+    let proven = env.run(transfer.prove(env.client.ring_client()))?;
+    let refused = land(&env, proven.instruction()?, sender, &[])
+        .err()
+        .context("a dummy input settled on a full nullifier batch")?;
     let code = format!(
         "{:#x}",
         ShieldedPoolError::TransactProofVerificationFailed as u32

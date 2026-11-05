@@ -8,7 +8,7 @@ use custom_ring_interface::{
     key_catalog::{
         ApplyMode, FrameKey, RingCircuit, RingKey, TransferShape, RING_KEYS, TRANSFER_SHAPES,
     },
-    ParsedTransact, TRANSFER_OUTPUT_CAPACITIES,
+    ParsedTransact, SINGLE_ASSET_PAYOUT_OUTPUTS, TRANSFER_OUTPUT_CAPACITIES,
 };
 use custom_ring_test_validator::{
     policy::{EnrollOwners, RingNotes},
@@ -900,7 +900,11 @@ impl ShapeRing<'_> {
 
     /// Each delivered capacity holds the in-proof owner's spent note once.
     fn in_proof_owners(&self, coverage: &mut Coverage) -> Result<()> {
-        for outputs in TRANSFER_OUTPUT_CAPACITIES {
+        // Only the payout key holds this width and it refuses an in-proof owner.
+        for outputs in TRANSFER_OUTPUT_CAPACITIES
+            .into_iter()
+            .filter(|outputs| *outputs != SINGLE_ASSET_PAYOUT_OUTPUTS)
+        {
             restart_prover()?;
             let transfer = ShapeTransfer {
                 shape: Shape::new(1, outputs),

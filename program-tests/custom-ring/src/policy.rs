@@ -450,20 +450,26 @@ impl EnrollOwners<'_> {
         let env = self.env;
         let payer = env.payer.pubkey();
         for owner in self.owners {
+            let list_salt = owner.list_salt(&self.ring.program_id())?;
             // A present row takes a rotation with no proof, `Enroll::prove` reads it.
-            let instruction = env
-                .run(
+            let instruction = wait_for("the ring indexer to serve the enrollment", || {
+                let proven = env.run(
                     Enroll {
                         ring: self.ring,
                         payer,
                         owner: owner.pubkey(),
                         nullifier_key: &owner.nullifier_key,
                         viewing_pubkey: owner.viewing_pubkey(),
-                        list_salt: owner.list_salt(&self.ring.program_id())?,
+                        list_salt,
                     }
                     .prove(env.client.ring_client()),
-                )?
-                .instruction();
+                );
+                match proven {
+                    Ok(proven) => Ok(Probe::Ready(proven.instruction())),
+                    Err(error) if error.is_projection_lag() => Ok(Probe::Retry(error.into())),
+                    Err(error) => Err(error.into()),
+                }
+            })?;
             SendAs {
                 rpc: env.client.rpc(),
                 payer: &env.payer,
@@ -524,28 +530,36 @@ impl StorageRecords<'_> {
             registry: registry.into(),
             writes,
         };
-        let response = wait_for("the storage apply proof inputs", || {
-            match env
+        // The indexer can serve inputs at a root the chain has already moved past.
+        let (response, inputs, state) = wait_for("the storage apply proof inputs", || {
+            let response = match env
                 .client
                 .indexer()
                 .get_storage_apply_proof_inputs(request.clone())
             {
-                Ok(response) => Ok(Probe::Ready(response)),
+                Ok(response) => response,
                 Err(error) => {
                     let error = RingError::from(error);
-                    if error.is_projection_lag() {
-                        Ok(Probe::Retry(error.into()))
-                    } else {
-                        Err(error.into())
-                    }
+                    return match error.is_projection_lag() {
+                        true => Ok(Probe::Retry(error.into())),
+                        false => Err(error.into()),
+                    };
                 }
-            }
+            };
+            let inputs = storage_apply_proof_inputs(&response)?;
+            let account =
+                spr_test_utils::test_validator_asserts::fetch_account(env.client.rpc(), &registry)?;
+            let state = StorageRegistry::decode(&account.owner, &account.data)
+                .ok_or_else(|| anyhow::anyhow!("the ring's records are not a storage registry"))?;
+            Ok(
+                match inputs.old_root == state.newest().hash
+                    && inputs.old_next_index == u64::from(state.next_index())
+                {
+                    true => Probe::Ready((response, inputs, state)),
+                    false => Probe::NotYet,
+                },
+            )
         })?;
-        let inputs = storage_apply_proof_inputs(&response)?;
-        let account =
-            spr_test_utils::test_validator_asserts::fetch_account(env.client.rpc(), &registry)?;
-        let state = StorageRegistry::decode(&account.owner, &account.data)
-            .ok_or_else(|| anyhow::anyhow!("the ring's records are not a storage registry"))?;
         let apply = env.run(
             StorageApplyProof {
                 inputs: &inputs,
