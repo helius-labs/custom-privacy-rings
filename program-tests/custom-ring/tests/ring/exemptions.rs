@@ -325,7 +325,7 @@ impl<'a> ExemptRing<'a> {
             CustomRingError::ProofVerificationFailed,
             &nullifier,
         )?;
-        // The proof stays bound to the served root it opened, the lower threshold rules the later spends.
+        // A lower threshold is restrictive, its write retires the root the proof opened at once.
         let next = self.set_threshold(THRESHOLD - 1)?;
         assert_ne!(next, revision, "a record write moves the revision");
         self.refused(
@@ -334,8 +334,21 @@ impl<'a> ExemptRing<'a> {
             CustomRingError::ProofVerificationFailed,
             &nullifier,
         )?;
+        self.refused(
+            proven.instruction()?,
+            &[],
+            CustomRingError::RootNotServed,
+            &nullifier,
+        )?;
+        let proven = self.prove_exempt(&note, THRESHOLD - 1)?;
+        let instruction = proven.instruction()?;
+        assert_eq!(
+            frame(&instruction, RingRail::Confidential)?.own_revision,
+            Some(next),
+            "a new proof opens the newest root"
+        );
         let withdrawal = Withdrawal {
-            amount: THRESHOLD,
+            amount: THRESHOLD - 1,
             deposit: None,
             cosigner: false,
         };
