@@ -8,7 +8,9 @@ use std::{
 };
 
 use custom_ring_interface::{
-    check_member, mint_policy_write,
+    check_member,
+    key_catalog::{RecordPools, RING_KEYS},
+    mint_policy_write,
     storage::{chain_start, Revision, StorageRegistry},
     tracking::TrackingRegistry,
     CustomRingError, RecordWrite, RecordWriteData, WriteRecordsIxData, APPLY_BATCH, QUAD_ARITY,
@@ -271,10 +273,9 @@ pub(crate) async fn storage_record_pool(
     request: GetStorageRecordPoolRequest,
 ) -> Result<GetStorageRecordPoolResponse, RingApiError> {
     check_members(&request.members)?;
-    let members = request.members.len() as u64;
-    if request.openings < members || request.openings > MAX_RING_MEMBER_PAGE_LIMIT {
-        return Err(validation("invalid record pool openings"));
-    }
+    check_openings(&request.members, request.openings, |pools| {
+        pools.own.max(pools.curator)
+    })?;
     let canopy = Canopy::covering(request.openings as usize).map_err(validation)?;
     let read = Snapshot::<StorageState>::registry(db, &request.registry)
         .await?
@@ -340,6 +341,24 @@ pub(crate) async fn storage_apply_proof_inputs(
 fn check_page_limit(limit: u64) -> Result<(), RingApiError> {
     if limit == 0 || limit > MAX_RING_MEMBER_PAGE_LIMIT {
         return Err(validation("invalid page limit"));
+    }
+    Ok(())
+}
+
+/// A key reads one pool at its catalog width, past every member and never past the widest key.
+fn check_openings(
+    members: &[Hash],
+    openings: u64,
+    width: impl Fn(RecordPools) -> usize,
+) -> Result<(), RingApiError> {
+    let widest = RING_KEYS
+        .iter()
+        .filter_map(|key| key.circuit.record_pools())
+        .map(width)
+        .max()
+        .unwrap_or(0);
+    if openings < members.len() as u64 || openings > widest as u64 {
+        return Err(validation("invalid record pool openings"));
     }
     Ok(())
 }

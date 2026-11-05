@@ -159,7 +159,7 @@ pub struct GetStorageRecordPoolRequest {
     pub registry: SerializablePubkey,
     pub members: Vec<Hash>,
     pub expected_root: Hash,
-    /// At least `members.len()` and at most [`MAX_RING_MEMBER_PAGE_LIMIT`].
+    /// At least `members.len()` and at most the widest pool a catalog transfer key reads.
     pub openings: u64,
 }
 

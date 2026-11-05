@@ -9,7 +9,6 @@ use sea_orm::{ConnectionTrait, DatabaseConnection};
 use solana_address::Address;
 use spr_indexer_api::{Base64String, Hash};
 use zolana_ring_indexer::{
-    rpc::MAX_RING_MEMBER_PAGE_LIMIT,
     tracking::{
         GetPendingEnrollmentsRequest, GetPendingEnrollmentsResponse,
         GetTrackingApplyProofInputsRequest, GetTrackingApplyProofInputsResponse,
@@ -22,8 +21,8 @@ use zolana_ring_indexer::{
 };
 
 use super::{
-    check_members, check_page_limit, internal, path_view, storage_root_view, validation,
-    ChainSource, LeafPage, OpenedLeaf, Served, Snapshot,
+    check_members, check_openings, check_page_limit, internal, path_view, storage_root_view,
+    validation, ChainSource, LeafPage, OpenedLeaf, Served, Snapshot,
 };
 use crate::{
     error::RingApiError,
@@ -110,10 +109,7 @@ pub(crate) async fn tracking_record_pool(
     request: GetTrackingRecordPoolRequest,
 ) -> Result<GetTrackingRecordPoolResponse, RingApiError> {
     check_members(&request.members)?;
-    let members = request.members.len() as u64;
-    if request.openings < members || request.openings > MAX_RING_MEMBER_PAGE_LIMIT {
-        return Err(validation("invalid record pool openings"));
-    }
+    check_openings(&request.members, request.openings, |pools| pools.tracking)?;
     let canopy = Canopy::covering_tracking(request.openings as usize).map_err(validation)?;
     let read = TrackingSnapshot::registry(db, &request.registry)
         .await?
