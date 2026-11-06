@@ -44,8 +44,8 @@
 //  3. Every input note belongs to the bound ring, or to the default ring on an entry key. Its owner
 //     is in the published signer run, the hidden owner or the in-proof sender, the delegate rail excepted.
 //  4. A hidden owner owns the first note, stays out of the run and differs from every co-signer.
-//  5. A ring note's nonzero key is its owner's row key under the tracking root, a zero key on an
-//     output leaves its owner absent.
+//  5. A spent ring note's nonzero key is its owner's row key under the tracking root, a zero key on an
+//     output requires its owner absent there.
 //  6. The policy's rules, limits and approval bits hold under the bound roots, off the delegate rail.
 //  7. SPP alone authorizes address creation, no ring slot opens an address.
 //
