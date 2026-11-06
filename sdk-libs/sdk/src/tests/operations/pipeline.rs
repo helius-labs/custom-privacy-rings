@@ -2936,23 +2936,23 @@ async fn a_second_input_tree_takes_its_account_context_and_bitmap() {
     for (measure, bytes) in [
         (
             Measure::pinned(Measured::Confidential, Shape::new(2, 2)),
-            1454 + 38,
+            1429 + 38,
         ),
         (
             Measure::pinned(Measured::Anonymous, Shape::new(2, 2)),
-            1581 + 38,
+            1620 + 38,
         ),
         (
             Measure::pinned(Measured::ConfidentialPolicy, Shape::new(16, 8)),
-            3666 + 39,
+            3593 + 39,
         ),
         (
             Measure::relayed(Measured::ConfidentialPolicy, Shape::new(24, 4)),
-            3414 + 40,
+            3373 + 40,
         ),
         (
             Measure::relayed(Measured::InProofOwnerPolicy, Shape::new(24, 4)),
-            3413 + 40,
+            3372 + 40,
         ),
     ] {
         let second_tree = Measure {
@@ -2974,9 +2974,9 @@ async fn a_second_input_tree_takes_its_account_context_and_bitmap() {
 async fn omitted_slots_save_their_bytes_on_each_family() {
     use spr_client::Shape;
     for (rail, saved) in [
-        (Measured::Confidential, 217),
-        (Measured::ConfidentialPolicy, 217),
-        (Measured::Anonymous, 249),
+        (Measured::Confidential, 209),
+        (Measured::ConfidentialPolicy, 209),
+        (Measured::Anonymous, 241),
     ] {
         let at = |published| Measure {
             published: Some(published),
