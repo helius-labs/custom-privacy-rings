@@ -1,6 +1,6 @@
 use custom_ring_interface::{
-    blinding::ring_blinding_seed, AuditEvidence, AuditRecord, AuditStreamLayout, AuditorMessage,
-    DataTail, EntryRecord, ParsedTransact, RecordKind,
+    blinding::ring_blinding_seed, ring_body_output, stream::DeliveredSlot, AuditEvidence,
+    AuditStreamLayout, AuditorMessage, EntryRecord, OutputRecord, ParsedTransact, RecordKind,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -13,6 +13,8 @@ use spr_transaction::{
     utxo::{derive_output_blinding_seed, derive_transact_output_blinding, DUMMY_DOMAIN},
     OutputContext, OutputSlot, ShieldedTransaction,
 };
+
+use zolana_ring_transaction::{open_recipient_body, OpenedRecipientBody};
 
 use crate::{
     disclosure::{canonical, AuditEnvelope},
@@ -102,7 +104,13 @@ impl<'a> TransactionAudit<'a> {
         let first_nullifier = *tx.nullifiers.first().ok_or(AuditError::MissingNullifier)?;
         let data = auditor_message(tx, &auditor.pubkey())?;
         check_published(layout, tx)?;
-        let message = AuditorMessage::parse(data, layout)
+        // A slot without a ring body is an exit, its record sits in the auditor message.
+        let exits = tx
+            .output_slots
+            .iter()
+            .filter(|slot| ring_body_output(&slot.payload).is_none())
+            .count();
+        let message = AuditorMessage::parse(data, layout, exits)
             .ok_or(AuditError::AuditorMessageLength(data.len()))?;
         let opened = AuditEnvelope {
             eph_u: X25519Pubkey::from_bytes(*message.eph_pk)?.u(),
@@ -115,31 +123,50 @@ impl<'a> TransactionAudit<'a> {
         if tx_key.pubkey() != tx_viewing_pk {
             return Err(AuditError::TxViewingKeyMismatch);
         }
+        let keys = opened.recipient_keys(message.recipient_keys)?;
         let transfer = Transfer::new(ring, first_nullifier, tx_key, &salt)?;
         let mut audited = AuditedTransaction {
             tx_signature: tx.tx_signature,
             slot: tx.slot,
             tx_viewing_pk,
-            real_inputs: opened.inputs.note_count(),
+            real_inputs: opened.real_inputs,
             outputs: Vec::new(),
             payload_errors: Vec::new(),
             nullifiers: tx.nullifiers.clone(),
             entries: entry_inputs(&opened.evidence)?,
         };
-        for (index, output) in (0u32..).zip(&tx.output_slots) {
+        let mut exit = 0;
+        for ((index, output), recipient) in (0u32..).zip(&tx.output_slots).zip(&keys) {
             let slot = Slot { index, output };
-            let position = index as usize;
-            let truncated = || AuditError::AuditorMessageLength(data.len());
-            let record =
-                opened.record(position, message.record(position).ok_or_else(truncated)?)?;
-            let tail = match layout.has_data {
-                true => opened.tail(position, message.tail(position).ok_or_else(truncated)?)?,
-                false => DataTail::default(),
+            // 1. The proof encrypts each record to the slot's sealed key under the transaction's secret.
+            let secret = DeliveredSlot {
+                agreement: &tx_key.ecdh(recipient)?,
+                tx_viewing_pk: tx_viewing_pk.as_bytes(),
+                recipient_viewing_pk: recipient.as_bytes(),
+                salt: &salt,
+                output_index: index,
+                first_nullifier: &first_nullifier,
+            }
+            .secret()?;
+            // 2. A body leads with its record, an exit's record is the next in the message.
+            let ciphertext = match ring_body_output(&output.payload) {
+                Some((body, _)) => body,
+                None => {
+                    let record = message
+                        .exit_record(exit)
+                        .ok_or(AuditError::AuditorMessageLength(data.len()))?;
+                    exit += 1;
+                    &record[..]
+                }
             };
+            let opened = open_recipient_body(ciphertext, &secret);
             audited.place(
                 index,
                 output.output_context.clone(),
-                transfer.slot(slot, record, tail)?,
+                match opened {
+                    Ok(body) => transfer.slot(slot, body)?,
+                    Err(_) => Err(OutputPayloadErrorKind::Disclosure),
+                },
             );
         }
         Ok(audited)
@@ -215,27 +242,33 @@ impl Transfer {
         })
     }
 
-    fn slot(
-        &self,
-        slot: Slot<'_>,
-        record: AuditRecord,
-        tail: DataTail,
-    ) -> Result<SlotOpening, AuditError> {
+    /// The proof holds the record, the payload's data hashes are the sender's word and a wrong one
+    /// fails the commitment.
+    fn slot(&self, slot: Slot<'_>, body: OpenedRecipientBody) -> Result<SlotOpening, AuditError> {
+        let OpenedRecipientBody { record, payload } = body;
         let ring = match record.kind {
             RecordKind::Dummy => return self.verify_dummy(slot),
             RecordKind::Ring => Some(self.ring),
             RecordKind::Exit => None,
         };
-        let AuditRecord {
+        let OutputRecord {
             owner_key,
             mint,
             amount,
             nullifier_pk,
+            blinding,
             ..
         } = record;
+        let payload = payload.unwrap_or_default();
+        let data_hash = payload
+            .data
+            .first_chunk::<32>()
+            .copied()
+            .unwrap_or_default();
+        let ring_data_hash = payload.ring_data_hash.unwrap_or_default();
         if canonical(nullifier_pk).is_err()
-            || canonical(tail.data_hash).is_err()
-            || canonical(tail.ring_data_hash).is_err()
+            || canonical(data_hash).is_err()
+            || canonical(ring_data_hash).is_err()
         {
             return Ok(Err(OutputPayloadErrorKind::Disclosure));
         }
@@ -245,9 +278,9 @@ impl Transfer {
             asset: hash_bytes(&mint)?,
             mint: Some(Address::new_from_array(mint)),
             amount,
-            blinding: self.blinding(slot)?,
-            data_hash: tail.data_hash,
-            ring_data_hash: tail.ring_data_hash,
+            blinding,
+            data_hash,
+            ring_data_hash,
         };
         let commitment = utxo.commitment(slot.tree_id(), ring)?;
         Ok(slot.rebuilt(
@@ -286,7 +319,7 @@ impl Transfer {
 /// The default-ring notes in note order, each bit names one of the `R` notes.
 fn entry_inputs(evidence: &AuditEvidence) -> Result<Vec<AuditedEntryInput>, AuditError> {
     let AuditEvidence::Entry {
-        default_input_bits,
+        default_note_bits: default_input_bits,
         inputs,
     } = evidence
     else {

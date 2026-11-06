@@ -4,8 +4,6 @@
 pub mod anonymous;
 #[path = "state/anonymous_wallet.rs"]
 mod anonymous_wallet;
-#[path = "operations/compact_assets.rs"]
-pub mod compact_assets;
 #[path = "operations/confidential.rs"]
 mod confidential;
 #[path = "crypto/decrypt/mod.rs"]
@@ -76,8 +74,8 @@ pub use crate::{
     decrypt::{FramedRow, TransactionAudit},
     disclosure::{AuditEnvelope, AuditStreamSeal, OpenedAudit, SealedAuditStream},
     encryption::{
-        auditor_view_tag, open_merge_record, MergeRecordSeal, NullifierKeyEnvelope,
-        SealedMergeOpening, SealedNullifierKey,
+        auditor_view_tag, open_merge_record, open_owned_merge_record, MergeRecordSeal,
+        NullifierKeyEnvelope, SealedMergeCiphertexts, SealedMergeOpening, SealedNullifierKey,
     },
     error::{AnonymousError, AuditError, AuditFailureKind, RowDisposition},
     exposed_notes::{
