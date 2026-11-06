@@ -450,10 +450,7 @@ fn compute_vectors() -> StatementVectors {
         ..anonymous_policy_transfer
     };
     let entry = TransferStatement {
-        head: values.head(
-            AuditLayout { entry: true },
-            stream(entry_key, 3, &four),
-        ),
+        head: values.head(AuditLayout { entry: true }, stream(entry_key, 3, &four)),
         roots: &tracking_roots,
         signers: SignerSet::default(),
         ..anonymous_policy_transfer
