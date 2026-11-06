@@ -87,12 +87,10 @@ func ListKey(api frontend.API, owner, listSalt frontend.Variable) frontend.Varia
 	return gadget.PoseidonHash(api, []frontend.Variable{ListKeyDomain, owner, listSalt})
 }
 
-// AnonymousParties is mirrored by ANONYMOUS_PARTIES.
-const AnonymousParties = 7
+// AnonymousParties is one cell per co-signer, mirrored by ANONYMOUS_PARTIES.
+const AnonymousParties = 5
 
-// AssertAnonymousParties separates the hidden owner from the public identities
-// reconstructed by the verifier. Zero denotes an absent optional party. An equal party
-// would name the owner the rail hides, SPP asserts the same against its signers.
+// AssertAnonymousParties holds the hidden owner apart from every nonzero co-signer cell, an equal cell would approve its own outflow.
 func AssertAnonymousParties(api frontend.API, owner frontend.Variable, parties []frontend.Variable) {
 	for _, party := range parties {
 		abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: party, V: api.IsZero(api.Sub(owner, party))})

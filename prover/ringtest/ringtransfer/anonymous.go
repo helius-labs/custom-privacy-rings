@@ -22,7 +22,7 @@ type Anonymous struct {
 	World
 	Shape transfer.Shape
 	Rail  AnonymousRail
-	// Parties are the frame's public identities, the payer and a co-signer by default.
+	// Parties are the co-signer cells, two co-signers by default.
 	Parties []*big.Int
 }
 
