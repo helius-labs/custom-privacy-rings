@@ -30,8 +30,9 @@
 //  2. Each live slot's record and tail hold the opening its published commitment hashes, and a
 //     published slot's blinding derives from the sealed key. The auditor rebuilds every commitment
 //     from the stream and the frame.
-//  3. R counts spent notes and A selects address positions among the published inputs. Entry evidence
-//     opens each default ring note at its absolute input position, with zero openings elsewhere.
+//  3. R counts spent notes and A selects address positions among the published inputs. An entry record
+//     names each default ring note's owner, nullifier key, amount, mint and spent commitment at its absolute
+//     input position, with zero records elsewhere.
 //  4. A slot's kind derives from the domain and ring id its hash commits, no prover bit passes a note
 //     as a dummy.
 //  5. Every transmitted ciphertext byte is bound, the envelope through its counted digest and each
@@ -183,7 +184,7 @@ type Stream struct {
 // SealStream mirrors AuditEnvelope::encode and the record layout in program-libs/interface/src/proof/audit_stream.rs.
 func (w AuditWires) SealStream(api frontend.API, rc frontend.Rangechecker, e Envelope, shape StreamShape, opened Opened, spent SpentInputs) Stream {
 	ranges := shape.Ranges()
-	// 1. The envelope binds tx_viewing_sk, the note count and absolute address positions before any entry openings.
+	// 1. The envelope binds tx_viewing_sk, the note count and absolute address positions before any entry records.
 	evidence := spent.evidence(api, rc, ranges)
 	head := slices.Concat(evidence.head, opened.commonMint)
 	plaintext := slices.Concat(w.TxViewingSk[:], head, slices.Concat(evidence.entries...))
