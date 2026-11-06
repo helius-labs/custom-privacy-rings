@@ -1277,13 +1277,13 @@ describe("ring read request", () => {
     expect(params["wallet"]).toBe(addressOf(0x50));
     const [sent, received] = page.items;
     if (sent?.view.role !== "sender") throw new Error("a sender view");
-    expect(sent.view.spent.length + sent.view.defaultInputs.length).toBeGreaterThan(0);
-    expect(sent.view.outputs.map((output) => output.slotIndex)).toEqual([0, 1, 2]);
-    expect(received?.view).toEqual({
-      role: "recipient",
-      outputs: [sent.view.outputs[0]],
-      withdrawals: [],
-    });
+    // The wallet spent one of three notes, a part owner keeps only the outputs it owns.
+    expect(sent.view.spent).toHaveLength(1);
+    expect(sent.view.defaultInputs).toEqual([]);
+    expect(sent.view.outputs).toEqual([]);
+    if (received?.view.role !== "recipient") throw new Error("a recipient view");
+    expect(received.view.outputs.map((output) => output.slotIndex)).toEqual([0]);
+    expect(received.view.withdrawals).toEqual([]);
   });
 
   it("reads the default-ring notes of the anonymous page in note order with its real count", async () => {

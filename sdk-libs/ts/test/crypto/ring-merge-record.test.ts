@@ -34,25 +34,17 @@ import { RingError } from "../../src/protocol/error.js";
 const hex = (value: string): Uint8Array => hexToBytes(value.replace(/^0x/, ""));
 const unhex = (bytes: Uint8Array): string => bytesToHex(bytes);
 
-/** The fields the regenerated vector adds, read loosely until the coordinator regenerates it. */
-type MergeCase = (typeof vector.cases)[number] & {
-  readonly envelope?: string;
-  readonly request: (typeof vector.cases)[number]["request"] & { readonly recipientKey?: string };
-};
-
 describe("the merge record vector", () => {
   const auditor = (): X25519Keypair => X25519Keypair.fromBytes(hex(vector.auditor_sk) as Bytes32);
 
-  for (const testCase of vector.cases as readonly MergeCase[]) {
+  for (const testCase of vector.cases) {
     const request = testCase.request;
 
     it(`${testCase.name} seals the record and envelope under its ephemeral and opens for the auditor`, async () => {
       await initializePoseidon();
       const merge = decodeMergeRecord(hex(testCase.record));
       expect(unhex(encodeMergeRecord(merge))).toBe(testCase.record.replace(/^0x/, ""));
-      const recipient = X25519PublicKey.fromBytes(
-        Uint8Array.of(4, ...hex(request.recipientKey ?? "")),
-      );
+      const recipient = X25519PublicKey.fromBytes(Uint8Array.of(4, ...hex(request.recipientKey)));
       const { sealed } = sealMergeRecordWith({
         merge,
         recipient,
@@ -61,7 +53,10 @@ describe("the merge record vector", () => {
         ephemeral: X25519Keypair.fromBytes(hex(request.ephSk) as Bytes32),
       });
       expect(unhex(sealed.record)).toBe(testCase.ciphertext.replace(/^0x/, ""));
-      expect(unhex(sealed.envelope)).toBe((testCase.envelope ?? "").replace(/^0x/, ""));
+      expect(unhex(sealed.envelope)).toBe(testCase.envelope_ciphertext.replace(/^0x/, ""));
+      expect(hex(testCase.envelope)).toEqual(
+        Uint8Array.of(...hex(request.ephSk), ...hex(request.recipientKey)),
+      );
       expect(unhex(sealed.ephemeralPublicKey)).toBe(vector.eph_pk.replace(/^0x/, ""));
       expect(openMergeRecord(auditor(), sealed, hex(request.firstNullifier) as Bytes32)).toEqual(
         merge,
@@ -77,7 +72,7 @@ describe("the merge record vector", () => {
         ringId: hex(request.ringProgramId) as Bytes32,
         auditorPubkey: hex(vector.auditor_pk) as Bytes33,
         ephemeralPublicKey: hex(vector.eph_pk) as Bytes33,
-        envelope: hex(testCase.envelope ?? ""),
+        envelope: hex(testCase.envelope_ciphertext),
         record: hex(testCase.ciphertext),
         payer: hex(request.payer) as Bytes32,
         publishedOwner: zeroMode

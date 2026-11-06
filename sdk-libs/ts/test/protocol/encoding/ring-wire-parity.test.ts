@@ -157,7 +157,7 @@ describe("transfer_statement.json", () => {
         txViewingU: field(vector.tx_viewing_u),
         auditorPubkey: hexToBytes(vector.auditor_pubkey) as Bytes33,
         envelope: hexToBytes(vector.envelope),
-        recipientKeys: hexToBytes((vector as unknown as { keys?: string }).keys ?? ""),
+        recipientKeys: hexToBytes(vector.recipient_keys),
         salt: hexToBytes(vector.salt) as Bytes16,
         layout: { entry: (vector.layout & 2) !== 0 },
       },
