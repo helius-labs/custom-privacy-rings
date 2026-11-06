@@ -688,32 +688,19 @@ struct SplExit {
 }
 
 impl AnonymousExits<'_> {
-    /// Refused unless every exit pays one destination.
+    /// Exits may pay several destinations, each read apart. A missing token account takes the
+    /// named owner.
     pub(super) async fn owners<R: AsyncRpc + ?Sized>(
         self,
         client: &R,
     ) -> Result<ExitOwners, RingError> {
-        let sol_owner = self.transfers.iter().find_map(|transfer| match transfer {
-            SettlementTransfer::Sol {
-                user_sol_account, ..
-            } if !transfer.is_deposit() => Some(*user_sol_account),
-            _ => None,
-        });
-        let token_owner = self.token_owner(client).await?;
-        if sol_owner
-            .zip(token_owner)
-            .is_some_and(|(sol, token)| sol != token)
-        {
-            return Err(CustomRingError::AnonymousExitDestinationsDiffer.into());
-        }
-        Ok(ExitOwners { token_owner })
+        self.check_exits(client).await?;
+        Ok(ExitOwners {
+            token_owner: self.named_owner,
+        })
     }
 
-    /// The SPL withdrawal's token owner, `None` without one.
-    async fn token_owner<R: AsyncRpc + ?Sized>(
-        self,
-        client: &R,
-    ) -> Result<Option<Address>, RingError> {
+    async fn check_exits<R: AsyncRpc + ?Sized>(&self, client: &R) -> Result<(), RingError> {
         let withdrawals = self
             .transfers
             .iter()
@@ -725,7 +712,6 @@ impl AnonymousExits<'_> {
         {
             return Err(RingError::AnonymousExitTokenOwnerWithoutSplExit);
         }
-        let mut token_owner: Option<Address> = None;
         for transfer in withdrawals {
             match *transfer {
                 SettlementTransfer::Sol {
@@ -753,16 +739,10 @@ impl AnonymousExits<'_> {
                             owner,
                         });
                     }
-                    if token_owner
-                        .replace(owner)
-                        .is_some_and(|previous| previous != owner)
-                    {
-                        return Err(CustomRingError::AnonymousExitDestinationsDiffer.into());
-                    }
                 }
             }
         }
-        Ok(token_owner)
+        Ok(())
     }
 
     async fn check_sol_exit<R: AsyncRpc + ?Sized>(

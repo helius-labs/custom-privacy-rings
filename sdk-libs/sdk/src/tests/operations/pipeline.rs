@@ -220,6 +220,48 @@ async fn an_anonymous_spl_exit_names_neither_the_hidden_owner_nor_a_second_key()
     ));
 }
 
+/// Exits pay several destinations, the hidden owner at any of them is refused unless waived.
+#[tokio::test]
+async fn anonymous_exits_pay_several_destinations_and_each_answers_to_the_safeguard() {
+    let sender = &crate::tests::support::keypair(1);
+    let hidden = Address::new_from_array(sender.signing_pubkey().as_ed25519().unwrap());
+    let mint = Address::new_from_array([0x31; 32]);
+    let stranger = Address::new_from_array([0x32; 32]);
+    let wallet = Address::new_from_array([0x34; 32]);
+    let token_program = Address::new_from_array(SPL_TOKEN_PROGRAM_ID);
+    let destination = pda::associated_token_address_with_program(&stranger, &mint, &token_program);
+    let exits = |sol: Address| {
+        let mut transaction = ring_transaction(vec![
+            ring_utxo(sender, Mint::new(mint, 2), 10, 0),
+            ring_utxo(sender, Mint::SOL, 10, 1),
+        ]);
+        transaction.withdraw(mint, 4, destination).unwrap();
+        transaction.withdraw_sol(4, sol).unwrap();
+        owner_transfer(sender, transaction)
+            .with_interface_transfer_accounts(vec![
+                TransactInterfaceTransferAccounts::SplWithdrawal(TransactSplWithdrawalAccounts {
+                    mint,
+                    spl_interface: pda::spl_interface(&mint),
+                    user_token_account: destination,
+                    token_program,
+                }),
+                TransactInterfaceTransferAccounts::Sol(TransactSolTransferAccounts {
+                    recipient: sol,
+                }),
+            ])
+            .with_anonymous_signer(&sender.signing_key)
+    };
+    let chain =
+        Chain::ring(anonymous()).with(destination, token_account(token_state(mint, stranger)));
+    stage_anonymous(&exits(wallet), &chain).await.unwrap();
+    assert!(matches!(
+        stage_anonymous(&exits(hidden), &chain).await,
+        Err(RingError::AnonymousExitLinksOwner(exit)) if exit == hidden
+    ));
+    let accepted = exits(hidden).with_owner_exposure(OwnerExposure::Accepted);
+    stage_anonymous(&accepted, &chain).await.unwrap();
+}
+
 /// SPP binds a SOL exit's recipient alone, a program owner, data or the hidden owner there is
 /// refused before proving.
 #[tokio::test]
