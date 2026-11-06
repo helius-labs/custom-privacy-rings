@@ -603,12 +603,7 @@ async function readTracking(
   const position = new Map(members.map((member, index) => [bytesKey(member), index]));
   const rowOf = (member: Bytes32): TrackingRecord | undefined =>
     pool.rows[position.get(bytesKey(member)) ?? -1];
-  checkInputKeys({
-    inputs: publishedNotes(proofInputs),
-    rail: input.rail,
-    publicOwners: input.publicOwners,
-    rowOf,
-  });
+  checkInputKeys({ inputs: publishedNotes(proofInputs), rowOf });
   const spenders = publishedNotes(proofInputs).map((note) => note.utxo.owner);
   const viewingKeys = await readPayeeViewingKeys(
     {
@@ -654,31 +649,22 @@ async function readTracking(
   };
 }
 
-/** A zero key waives only the key equality, a delegate moves it with no row and a hidden owner refuses it. */
+/**
+ * A zero key waives the key equality and needs no row. A hidden owner's zero-key spend is a wallet
+ * safeguard its exposure waiver reads, the proof admits it.
+ */
 export function checkInputKeys(
   input: Readonly<{
     inputs: readonly ProofInputUtxo[];
-    rail: RingRail;
-    publicOwners: boolean;
     rowOf: (member: Bytes32) => TrackingRecord | undefined;
   }>,
 ): void {
-  const { inputs, rail, rowOf } = input;
-  const hidden =
-    rail === "anonymous" && !input.publicOwners
-      ? inputs[0]?.utxo.owner.ownerProofInputHash()
-      : undefined;
+  const { inputs, rowOf } = input;
   for (const spent of inputs) {
     if (spent.isDummy()) continue;
     const owner = spent.utxo.owner.ownerProofInputHash();
     if (spent.utxo.ringProgramId === undefined) continue;
-    if (equalBytes(spent.nullifierPublicKey, ZERO_NULLIFIER_PK)) {
-      if (hidden !== undefined && equalBytes(owner, hidden))
-        throw new RingError("RING_ZERO_KEY_INPUT_UNNAMED", {
-          details: { owner: bytesKey(owner) },
-        });
-      continue;
-    }
+    if (equalBytes(spent.nullifierPublicKey, ZERO_NULLIFIER_PK)) continue;
     const row = rowOf(owner);
     if (row === undefined)
       throw new RingError("RING_ADDRESS_NOT_ENROLLED", { details: { member: bytesKey(owner) } });

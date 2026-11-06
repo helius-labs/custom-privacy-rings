@@ -38,9 +38,11 @@ import {
   SPL_TOKEN_2022_PROGRAM_ID,
   SPL_TOKEN_PROGRAM_ID,
   TransactWithdrawal,
+  type Bytes31,
   type Bytes32,
 } from "@heliuslabs/spr/interface";
 import {
+  NullifierKey,
   randomBlinding,
   ShieldedAddress,
   ShieldedKeypair,
@@ -1343,6 +1345,44 @@ describe("anonymous ring exits and entries", () => {
 });
 
 describe("anonymous ring signer", () => {
+  it("refuses a hidden zero-key spend by default and proves it once the caller accepts", async () => {
+    const sender = anonymousSender();
+    const ring = await anonymousRing();
+    const zeroKey = NullifierKey.fromSecret(new Uint8Array(31) as Bytes31);
+    const exposed = () =>
+      rail({
+        fixture: ring,
+        sender,
+        transfer: ringSpendTransfer({
+          owner: sender.keypair.shieldedAddress(),
+          inputs: [
+            ProofInputUtxo.fromNullifierKey(
+              new Utxo({
+                owner: sender.keypair.signingPublicKey(),
+                asset: SOL_MINT,
+                amount: 10_000n,
+                blinding: randomBlinding(),
+                ringProgramId: ring.ringProgramId,
+              }),
+              zeroKey,
+              {},
+              TREE_ID,
+            ),
+          ],
+          feePayer: ring.authority,
+        }),
+      });
+    // Anyone holding the note's opening reads its spend as the hidden owner's.
+    await expect(exposed().prove(ring.client)).rejects.toThrow(
+      ringError("RING_ZERO_KEY_INPUT_UNNAMED"),
+    );
+    noProofs(ring);
+    const accepted = await exposed().withOwnerExposure("accepted").prove(ring.client);
+    const { data } = await expanded(ring, accepted, "anonymous");
+    expect(data.nullifiers).toHaveLength(1);
+    expect(anonymousTransfer(ring).request.inputs[0]?.nullifierPk).toEqual(zeroKey.publicKey());
+  });
+
   it("admits a hidden payer the caller accepts and never a hidden co-signer", async () => {
     const sender = anonymousSender();
     const hidden = sender.keypair.shieldedAddress().solanaAddress();

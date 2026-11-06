@@ -1863,7 +1863,10 @@ export class RingRpc {
           // The ring's UTXO or a default-ring one the ring spent, any other opening is not this hash's.
           if (
             !equalBytes(utxoHash, hashes[index] ?? new Uint8Array()) ||
-            ![ringId, ZERO_32].some((ring) => equalBytes(knownUtxoHash(utxo, ring), utxoHash))
+            ![ringId, ZERO_32].some((ring) => {
+              const rebuilt = knownUtxoHash(utxo, ring);
+              return rebuilt !== undefined && equalBytes(rebuilt, utxoHash);
+            })
           )
             throw invalid(`${path}.utxo`);
           return Object.freeze({

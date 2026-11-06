@@ -64,6 +64,13 @@ import {
   type SignedRingRead,
 } from "../../../src/rpc/ring-rpc.js";
 
+/** The commitment of a test opening, every fixture carries its data hashes. */
+function rebuiltHash(utxo: Parameters<typeof knownUtxoHash>[0], ringId: Bytes32): Bytes32 {
+  const hash = knownUtxoHash(utxo, ringId);
+  if (hash === undefined) throw new Error("no data hashes");
+  return hash;
+}
+
 function hex(value: string): Uint8Array {
   return Uint8Array.from(Buffer.from(value, "hex"));
 }
@@ -1003,8 +1010,8 @@ describe("audited UTXO read", () => {
       asset: getAddressDecoder().decode(utxo.asset),
       amount: Number(utxo.amount),
       blinding: getAddressDecoder().decode(utxo.blinding),
-      dataHash: getAddressDecoder().decode(utxo.dataHash),
-      ringDataHash: getAddressDecoder().decode(utxo.ringDataHash),
+      dataHash: getAddressDecoder().decode(utxo.dataHash ?? ZERO_32),
+      ringDataHash: getAddressDecoder().decode(utxo.ringDataHash ?? ZERO_32),
       treeId: utxo.treeId,
       ...(utxo.mint === undefined ? {} : { mint: utxo.mint }),
     };
@@ -1042,9 +1049,9 @@ describe("audited UTXO read", () => {
   it("signs the hashes it sends and opens an answer that rebuilds its hash under the ring or the default ring", async () => {
     await initializePoseidon();
     const ringId = ringIdField(addressOf(7));
-    const keyedHash = knownUtxoHash(keyed, ringId);
-    const depositHash = knownUtxoHash(deposited, ringId);
-    const defaultHash = knownUtxoHash(keyed, ZERO_32);
+    const keyedHash = rebuiltHash(keyed, ringId);
+    const depositHash = rebuiltHash(deposited, ringId);
+    const defaultHash = rebuiltHash(keyed, ZERO_32);
     const requested = [keyedHash, depositHash, defaultHash, filled(2, 32) as Bytes32];
     const { page, bodies, signer } = await readUtxos(requested, [
       view(keyedHash, wireUtxo(keyed)),
@@ -1097,7 +1104,7 @@ describe("audited UTXO read", () => {
     ["a mint its asset field does not derive", (utxo) => (utxo["mint"] = addressOf(9))],
   ])("refuses an opening with %s", async (_name, edit) => {
     await initializePoseidon();
-    const utxoHash = knownUtxoHash(keyed, ringIdField(addressOf(7)));
+    const utxoHash = rebuiltHash(keyed, ringIdField(addressOf(7)));
     const utxo = wireUtxo(keyed);
     edit(utxo);
     await expect(readUtxos([utxoHash], [view(utxoHash, utxo)])).rejects.toMatchObject({
@@ -1108,7 +1115,7 @@ describe("audited UTXO read", () => {
   it("keeps the mint an opening's asset field derives from", async () => {
     await initializePoseidon();
     const minted: KnownUtxo = { ...keyed, asset: assetField(addressOf(9)), mint: addressOf(9) };
-    const utxoHash = knownUtxoHash(minted, ringIdField(addressOf(7)));
+    const utxoHash = rebuiltHash(minted, ringIdField(addressOf(7)));
     const { page } = await readUtxos([utxoHash], [view(utxoHash, wireUtxo(minted))]);
     expect(page.utxos[0]?.utxo).toEqual(minted);
   });
@@ -1116,8 +1123,8 @@ describe("audited UTXO read", () => {
   it("refuses an answer at another position than its hash", async () => {
     await initializePoseidon();
     const ringId = ringIdField(addressOf(7));
-    const first = knownUtxoHash(keyed, ringId);
-    const second = knownUtxoHash(deposited, ringId);
+    const first = rebuiltHash(keyed, ringId);
+    const second = rebuiltHash(deposited, ringId);
     const answers = [view(first, wireUtxo(keyed)), view(second, wireUtxo(deposited))];
     for (const utxos of [[answers[0]], [null, answers[0]], [answers[1], answers[0]]])
       await expect(readUtxos([first, second], utxos)).rejects.toMatchObject({ code: "RING_RPC" });

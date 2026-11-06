@@ -186,7 +186,7 @@ export function openRingMerge(
       openedUtxo(utxo, outputTreeId(slot.outputContext)),
       ringIdField(ring),
     );
-    if (!equalBytes(rebuilt, slot.outputContext.hash))
+    if (rebuilt === undefined || !equalBytes(rebuilt, slot.outputContext.hash))
       throw new RingError("RING_AUDIT_OUTPUT_MISMATCH", { details: { reason: "merge record" } });
     return Object.freeze({
       slot: transaction.slot,
