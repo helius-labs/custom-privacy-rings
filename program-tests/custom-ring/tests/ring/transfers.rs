@@ -1222,12 +1222,12 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
     Ok(())
 }
 
-/// Below the field modulus, the auditor refuses a noncanonical tail.
+/// Below the field modulus.
 const DATA_HASH: [u8; 32] = [7; 32];
 
 /// SPP takes a data hash only under its owner's signature.
 #[test]
-fn the_auditor_rebuilds_a_data_bearing_output_from_its_tail() -> Result<()> {
+fn the_auditor_rebuilds_a_data_bearing_output_from_its_slot() -> Result<()> {
     let env = setup()?;
     let ring_program = custom_ring_program_id()?;
     let ring = CustomRing::new(ring_program);
@@ -1283,7 +1283,7 @@ fn the_auditor_rebuilds_a_data_bearing_output_from_its_tail() -> Result<()> {
     let instruction = proven.instruction()?;
     ensure!(
         frame(&instruction, RingRail::Confidential)?.has_data,
-        "the frame carries no tails"
+        "the frame carries no slot data"
     );
     let signature = land(&env, instruction, sender, &[])?;
 
