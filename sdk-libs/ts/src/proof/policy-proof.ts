@@ -52,7 +52,7 @@ import {
   type PublicGross,
 } from "../protocol/membership/owner-debits.js";
 import { listTagOf } from "../crypto/keys/list-salt.js";
-import { privateListKey } from "../protocol/membership/private-list.js";
+import { privateListKey, publicListKey } from "../protocol/membership/private-list.js";
 import {
   evaluateInputAssets,
   evaluatePayments,
@@ -276,12 +276,13 @@ function policySubjects(
   };
 }
 
-/** The members each pool opens, Go `resolveSubjects`. */
+/** The members each pool opens, an owner's public lists at its zero salt key, Go `resolveSubjects`. */
 function poolMembers(
   subjects: PolicySubjects,
   saltedKeys: readonly Bytes32[],
 ): Readonly<{ own: readonly Bytes32[]; curator: readonly Bytes32[] }> {
-  const { view, ownerMembers, assetMembers, publicAssets, pinned } = subjects;
+  const { view, assetMembers, publicAssets, pinned } = subjects;
+  const ownerMembers = subjects.ownerMembers.map(publicListKey);
   return {
     own: firstSeen([
       ...ownerMembers,
@@ -429,28 +430,41 @@ export async function readPolicy(
     own: subject(ownReads, member),
     curator: curatorReads === undefined ? 0 : subject(curatorReads, member),
   });
+  // An owner's public lists sit at its zero salt key, an asset's at its asset field.
+  const publicKeys = new Map<string, Bytes32>();
+  const publicKey = (owner: Bytes32 | undefined): Bytes32 | undefined => {
+    if (owner === undefined) return undefined;
+    const known = publicKeys.get(bytesKey(owner));
+    if (known !== undefined) return known;
+    const key = publicListKey(owner);
+    publicKeys.set(bytesKey(owner), key);
+    return key;
+  };
   const ownerEntry = (member: Bytes32 | undefined): PolicyOwnerEntry => {
     if (member === undefined || !screening) return ABSENT_OWNER;
     const key = keyOf.get(bytesKey(member));
     return {
-      ...entry(member),
+      ...entry(publicKey(member)),
       tracking: trackingEntry(member),
       listSalt: saltOf.get(bytesKey(member)) ?? ZERO_32,
       ownSalted: subject(ownReads, key),
       curatorSalted: curatorReads === undefined ? 0 : subject(curatorReads, key),
     };
   };
-  const recordLists = (member: Bytes32 | undefined): RecordLists => {
-    const on = (reads: SubjectReads | undefined, read: Bytes32 | undefined): bigint =>
-      read === undefined ? 0n : (reads?.get(bytesKey(read))?.read.record()?.lists ?? 0n);
+  const on = (reads: SubjectReads | undefined, read: Bytes32 | undefined): bigint =>
+    read === undefined ? 0n : (reads?.get(bytesKey(read))?.read.record()?.lists ?? 0n);
+  const ownerLists = (member: Bytes32 | undefined): RecordLists => {
     const key = member === undefined ? undefined : keyOf.get(bytesKey(member));
     const foreign = BigInt(view?.foreign ?? 0);
+    const shown = publicKey(member);
     return Object.freeze({
-      own: on(ownReads, member),
-      curator: on(curatorReads, member),
+      own: on(ownReads, shown),
+      curator: on(curatorReads, shown),
       salted: (on(ownReads, key) & ~foreign) | (on(curatorReads, key) & foreign),
     });
   };
+  const assetLists = (asset: Bytes32 | undefined): RecordLists =>
+    Object.freeze({ own: on(ownReads, asset), curator: on(curatorReads, asset), salted: 0n });
   const policyOf = (asset: Bytes32): MintPolicy =>
     ownReads.get(bytesKey(asset))?.read.record()?.mintPolicy ?? EMPTY_MINT_POLICY;
   const padding = <T>(zero: T): readonly T[] =>
@@ -468,28 +482,28 @@ export async function readPolicy(
         owner: owners[slot] ?? ZERO_32,
         asset: memberOfAsset(output.asset),
         amount: output.amount,
-        ownerLists: recordLists(owners[slot]),
-        assetLists: recordLists(assets[slot]),
+        ownerLists: ownerLists(owners[slot]),
+        assetLists: assetLists(assets[slot]),
         mintPolicy: policyOf(memberOfAsset(output.asset)),
       })),
       ...withdrawals.map((leg) => ({
         ...leg,
         ring: false,
-        ownerLists: recordLists(leg.owner),
-        assetLists: recordLists(leg.asset),
+        ownerLists: ownerLists(leg.owner),
+        assetLists: assetLists(leg.asset),
         mintPolicy: policyOf(leg.asset),
       })),
     ];
     // A co-owner who receives nothing is screened, every row passes the sender rules. Payments
     // read once with or without a row, a dummy sender would hold a deposit to sender rules.
     const refusal =
-      evaluateSenders(pinned.table, sources, liveRows.map(recordLists)) ??
+      evaluateSenders(pinned.table, sources, liveRows.map(ownerLists)) ??
       evaluatePayments(pinned.table, sources, { ringInputs, outputs: payments }) ??
       evaluateInputAssets(
         pinned.table,
         sources,
         inputAssets.flatMap((asset, input) =>
-          asset === undefined ? [] : [{ input, lists: recordLists(asset) }],
+          asset === undefined ? [] : [{ input, lists: assetLists(asset) }],
         ),
       );
     if (refusal !== undefined)
@@ -743,6 +757,10 @@ export async function readPayeeViewingKeys(
   );
 }
 
+/**
+ * Mirrors `AssertOutputOwners`, a nonzero key pays any owner, registered or not, and only a matching
+ * registration spends it. The zero key proves its owner absent, a literal zero key commits to no key.
+ */
 function checkOutputKey(
   input: Readonly<{
     member: Bytes32;
@@ -751,15 +769,12 @@ function checkOutputKey(
   }>,
 ): void {
   const { member, nullifierPk, row } = input;
-  if (equalBytes(nullifierPk, ZERO_NULLIFIER_PK)) {
-    if (row !== undefined) throw new RingError("RING_RECIPIENT_ENROLLED");
-    return;
-  }
-  if (row === undefined) throw new RingError("RING_RECIPIENT_NOT_ENROLLED");
-  if (!equalBytes(row.nullifierPk, nullifierPk))
-    throw new RingError("RING_ADDRESS_MISMATCH", {
-      details: { field: "nullifierPk", member: bytesKey(member) },
+  if (isZero(nullifierPk))
+    throw new RingError("RING_RECIPIENT_LITERAL_ZERO_KEY", {
+      details: { member: bytesKey(member) },
     });
+  if (equalBytes(nullifierPk, ZERO_NULLIFIER_PK) && row !== undefined)
+    throw new RingError("RING_RECIPIENT_ENROLLED");
 }
 
 function staleViewingKey(member: Bytes32): RingError {

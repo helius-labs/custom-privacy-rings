@@ -23,6 +23,9 @@ Breaking
 - `syncWallet` no longer opens ring deposits and `recoverRingMemberNotes` returns a `RingRecoveryStep` → sync ring wallets with `syncRingWallet`, drop `depositPayloadDecoder` from the `syncWallet` config, and pass the `progress` of a `paused` step back until a step is `complete`.
 - `prepareRingTransferRelay`, `prepareRingExitRelay`, `prepareRingEntryRelay`, `prepareRingWithdrawalRelay` and the rails' `prepareRelay` return an `UnsignedRelay` whose `chargedOutflows()` lists each owner's charged outflow per asset, and `RingTransactionSubmission.send` raises `RING_SUBMISSION_UNPROVED` until `prove()` returned those charges → read the charges, call `relay.sign()` before `send`, and call `submission.prove()` before the first `send`.
 - `RingRpc` posts each JSON-RPC method beneath its base URL, takes `RingRpcOptions.apiKey` or the URL's `api-key` and leaves the key out of `RingRpc.url`, and every signed read takes a `RingReadTarget` → forward method paths unchanged, supply the key in one place, and pin the Ring RPC service key in each `RingReadTarget`.
+- `AuditRecord`, `OpeningRecord`, `DataTail`, `RecipientBody`, the compact payout records, `InputMap`, `AnonymousSync.withCompactAssetClient`, `CompactAssetResolver` and the sixteen-output payout key are gone, each output slot carries an `OutputRecord` sealed to its recipient's viewing key, and `AuditedRingTransaction.entries` lists default-ring inputs in note order → open a slot with `openOutputSlot`, read the slot keys with `openRingDisclosure`, and split a payment to sixteen recipients over two transfers.
+- `RelayTransferTerms.slots` holds one opening per published slot and a public owner refuses terms that leave one out with `UnopenedOutput`, `DecryptedRingTransaction.inputs` becomes `defaultInputs`, the sender view of `RingWalletActivity` lists `spent` and `defaultInputs`, and `RingSpendCoverage.unresolvedReal` becomes `unclassified` with no `address` or `external` totals → hand every signer all slot openings and read the renamed fields.
+- An owner's list records sit under `publicListKey(owner)`, which `publicMember`, `ownerRecordKey` and `readerKeyRecordKey` derive, and `privateListKey` refuses a zero salt → rewrite each owner's records under its public key.
 
 Added
 
@@ -33,6 +36,11 @@ Added
 - `RingRpc.getWalletStatus`, `getWalletActivity` and `getSpendCoverage` read a wallet's notes, its history and a ring's unresolved spends, `ringFullScan` reads a whole ring with no tag read, and `RingRpc.setMergeSettings` with `RingMergeSettingsRequest` sets the note count Ring RPC merges a mint toward.
 - `AnonymousWallet.exposedNotes` holds zero-key notes apart from the balance, no automatic selection spends one, a shortfall they could cover raises `RING_UNFUNDED_PAST_EXPOSURE`, and `CustomRingTransfer.spendPublic(wallet)` spends the ones the caller names.
 - `rotateViewingKey` moves a wallet's `LocalRingKeys` and `ViewingHistory` to a new viewing key, `updateViewingKey` builds the proofless `Enroll` that writes it into the owner's tracking authorization, and `confirmViewingKey` raises `RING_VIEWING_KEY_NOT_PUBLISHED` until the authorization of an applied enrollment holds it.
+
+Changed
+
+- `AnonymousTransfer` refuses a hidden owner as payer, funder or exit destination and its zero-key spends unless `withOwnerExposure("accepted")` admits them, refuses a hidden co-signer with `RING_CO_SIGNER_INVALID` in every case, and lets exits pay several destinations.
+- A ring transfer pays an output key its owner never registered, refuses a literal zero key with `RING_RECIPIENT_LITERAL_ZERO_KEY`, and `delegateNoteKey` opens each delegate note under the key it commits.
 
 Fixed
 
