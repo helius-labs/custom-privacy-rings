@@ -23,7 +23,7 @@ use crate::{prover::fe, RingError, REDACTED};
 mod tests;
 
 /// One transaction slot as SPP hashes it, its owner split into the identity and the nullifier key.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Opening {
     #[serde(with = "fe")]
@@ -113,7 +113,15 @@ impl Opening {
         domain[30..].copy_from_slice(&spr_interface::DUMMY_DOMAIN.to_be_bytes());
         Self {
             domain,
-            ..Self::default()
+            tree_id: [0; 32],
+            owner_pk_hash: [0; 32],
+            nullifier_pk: [0; 32],
+            asset: [0; 32],
+            amount: [0; 32],
+            blinding: [0; 32],
+            data_hash: [0; 32],
+            ring_data_hash: [0; 32],
+            ring_program_id: [0; 32],
         }
     }
 
@@ -149,7 +157,7 @@ pub(crate) struct AuditParams {
     pub layout: u8,
 }
 
-#[derive(Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OutputOpening {
     pub output: Opening,

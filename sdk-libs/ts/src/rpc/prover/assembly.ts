@@ -58,9 +58,6 @@ export function ringOutputOpening(output: ProofOutputUtxo, outputTreeId: TreeId)
 /** A slot past the published count, the circuit admits a dummy domain alone. */
 export const RING_SLOT_PADDING: RingSlotOpening = zeroOpening(DUMMY_DOMAIN);
 
-/** Rust `Opening::default`, the slot past a key's used capacity. */
-export const EMPTY_RING_OPENING: RingSlotOpening = zeroOpening(0);
-
 function zeroOpening(domain: number): RingSlotOpening {
   return Object.freeze({
     domain: openingField(BigInt(domain)),

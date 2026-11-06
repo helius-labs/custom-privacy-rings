@@ -209,8 +209,9 @@ impl AuditSection<'_> {
                 let Some(output) = published.get(slot) else {
                     return Ok(OutputOpening {
                         output: Opening::padding(),
+                        owner_key: [0; 32],
+                        mint_chunks: [[0; 32]; 2],
                         recipient_key: key.u(),
-                        ..OutputOpening::default()
                     });
                 };
                 let record = RingOutputRail::output_record(output)?;
