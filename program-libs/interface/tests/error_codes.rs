@@ -78,7 +78,6 @@ pinned_codes! {
     AnonymousExitTokenAccountInvalid = 8250,
     OutputBodyLength = 8253,
     OutputCountOutOfRange = 8257,
-    BodilessExit = 8258,
     TooManyApplicationMessages = 8269,
     ReplyLength = 8259,
     RecordsRegistryOtherRing = 8266,
@@ -102,7 +101,6 @@ pinned_codes! {
     InvalidTrackingRegistry = 8502,
     TrackingRootBelowFloor = 8503,
     SaltedSourceOtherTracking = 8504,
-    InvalidSignerDataCounts = 8527,
     TooManyAnonymousParties = 8528,
 }
 
