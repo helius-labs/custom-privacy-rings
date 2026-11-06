@@ -173,9 +173,8 @@ pub enum EntrySpend {
 
 /// What a public party or a zero-key spend may reveal about the hidden owner.
 ///
-/// The proof refuses only a hidden owner in the published owner run. A payer, funder, extra signer or
-/// exit destination equal to it settles and names it. A zero-key note opens to anyone holding its
-/// opening, so its spend names the spender.
+/// The proof refuses the hidden owner only in the published owner run. A payer, funder, extra
+/// signer, exit destination or zero-key spend of the owner settles and names it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OwnerExposure {
     #[default]
@@ -184,7 +183,6 @@ pub enum OwnerExposure {
 }
 
 impl OwnerExposure {
-    /// Accepted exposure checks nothing.
     fn guard(self, owner: HiddenOwner) -> Option<HiddenOwner> {
         match self {
             Self::Refused => Some(owner),
@@ -584,8 +582,8 @@ pub(super) fn anonymous_plan(payments: &[AnonymousPayment]) -> AnonymousPlan {
     })
 }
 
-/// The hidden owner's note is the first note, ring input 0, an address ahead of it spends nothing.
-/// A frame of only public owners takes the confidential family.
+/// The hidden owner's note is ring input 0, a frame of only public owners takes the confidential
+/// family.
 pub(super) fn check_anonymous_inputs(
     inputs: &SppProofInputs,
     sender: &ShieldedAddress,
@@ -690,8 +688,7 @@ struct SplExit {
 }
 
 impl AnonymousExits<'_> {
-    /// Exits may pay several destinations, each read apart. A missing token account takes the
-    /// named owner.
+    /// Each exit destination reads apart, a missing token account takes the named owner.
     pub(super) async fn owners<R: AsyncRpc + ?Sized>(
         self,
         client: &R,

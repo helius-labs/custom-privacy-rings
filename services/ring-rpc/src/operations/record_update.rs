@@ -521,7 +521,6 @@ fn lists_within(mask: u64, lists: ListSet) -> bool {
     mask & !lists.record_bits() == 0
 }
 
-/// A wallet's public record and the identity its grants key on.
 struct WalletKeys {
     identity: Member,
     record: Member,

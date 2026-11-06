@@ -6,7 +6,6 @@ use spr_transaction::utxo::SppProofInputUtxo;
 
 use crate::RingRailError;
 
-/// What one SPP input slot spends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputClass {
     Note,

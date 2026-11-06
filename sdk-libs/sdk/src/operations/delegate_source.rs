@@ -215,8 +215,8 @@ impl AllowedNullifiers {
         }
     }
 
-    /// The proof names `spent` notes and no note position. An admitted nullifier is a real note's
-    /// and appears at most once, so the published ones it holds must count every spent note.
+    /// The proof names `spent` notes and no position, the distinct admitted nullifiers must count
+    /// them all.
     pub fn check_spends<'n>(
         &self,
         spent: u8,

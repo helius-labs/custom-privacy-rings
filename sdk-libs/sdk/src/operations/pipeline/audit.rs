@@ -195,8 +195,8 @@ impl AuditSection<'_> {
         })
     }
 
-    /// The key's `N` slots, each with the key its record seals to. A dummy and a slot past the SPP
-    /// shape name no owner, a slot past the published ones seals to the auditor.
+    /// The key's `N` slots, a dummy and a slot past the published ones name no owner, the second
+    /// seals to the auditor.
     pub fn output_openings(&self, capacity: usize) -> Result<Vec<OutputOpening>, RingError> {
         let tree = self.inputs.output_tree_id;
         let keys = self
@@ -226,8 +226,8 @@ impl AuditSection<'_> {
             .collect()
     }
 
-    /// The spent notes' openings in note order, dummies past them to the key's input class. An
-    /// address reaches the proof through `address_chain` alone.
+    /// Spent notes in note order then dummies, an address reaches the proof through `address_chain`
+    /// alone.
     pub fn input_openings(&self, class: usize) -> Result<Vec<Opening>, RingError> {
         let mut openings = spent_notes(self.inputs)
             .map(Opening::input)

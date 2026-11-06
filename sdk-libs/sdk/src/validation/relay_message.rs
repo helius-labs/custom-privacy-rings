@@ -575,7 +575,7 @@ impl ExpectedDelegate {
             .check_spends(opened.real_inputs, data.nullifiers)
             .map_err(|_| MessageMismatch::SpendsUnrequestedNote)?;
         // 3. Each live record pays one requested payment or returns change to a requested source,
-        // sealed to that owner's viewing key so the owner can open it.
+        // sealed to that owner's viewing key.
         let records = open_records(parsed, &self.tx_viewing_key, &opened)?;
         let mut unpaid = self.payments.clone();
         for (output, (record, key)) in data.outputs.iter().zip(records) {
@@ -761,7 +761,7 @@ impl ExpectedPublicOwner {
 
     /// SPP reads one signature as approval of every data-bearing output its signer owns, and each
     /// published owner tag of a ring output is zero, so no frame field names those outputs. The
-    /// signer reads every published output before it signs, no data output stays out of its view.
+    /// signer reads every published output before it signs.
     fn check_moved(
         &self,
         data: &RingTransactData<'_>,

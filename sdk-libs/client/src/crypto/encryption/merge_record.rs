@@ -100,7 +100,6 @@ pub fn open_owned_merge_record(
     open_record(&secret, sealed.record)
 }
 
-/// The two ciphertexts a merge publishes in its ring instruction.
 #[derive(Clone, Copy)]
 pub struct SealedMergeCiphertexts<'a> {
     pub eph_pk: &'a X25519Pubkey,

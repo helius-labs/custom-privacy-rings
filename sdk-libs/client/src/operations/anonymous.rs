@@ -636,9 +636,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
         Ok(())
     }
 
-    /// The bundle names the wallet's own key at each change slot, whose body opens under the wallet's
-    /// viewing key as a recipient's opens under its own. Change publishes a zero tag, so no tag probe
-    /// finds it.
+    /// Change publishes a zero tag, its body opens under the viewing key the bundle names.
     fn open_bundle(
         &mut self,
         index: usize,

@@ -242,8 +242,7 @@ impl Transfer {
         })
     }
 
-    /// The proof holds the record, the payload's data hashes are the sender's word and a wrong one
-    /// fails the commitment.
+    /// The proof holds the record, a wrong payload data hash fails the commitment.
     fn slot(&self, slot: Slot<'_>, body: OpenedRecipientBody) -> Result<SlotOpening, AuditError> {
         let OpenedRecipientBody { record, payload } = body;
         let ring = match record.kind {

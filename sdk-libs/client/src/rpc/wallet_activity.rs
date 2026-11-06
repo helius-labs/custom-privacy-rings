@@ -61,9 +61,8 @@ impl WalletActivity {
             .with_wallet(wallet)
     }
 
-    /// `owns` answers for a nullifier the service resolved to the wallet's note. A wallet whose notes
-    /// make up all `R` spent notes keeps every output as its own payment, one unresolved note keeps
-    /// it to its own outputs.
+    /// A wallet owning all `R` spent notes keeps every output as its own payment, else only its own
+    /// outputs.
     pub fn of(
         wallet: Address,
         transaction: DecryptedTransaction,

@@ -49,7 +49,7 @@ pub(crate) struct PlannedTransfer {
 
 impl PlannedTransfer {
     /// The key `read` selects, carrying the seal made under `self` or refusing until resealed.
-    /// Mirrors `TransferShape::seals_like`, an approval opening also binds `N`.
+    /// Mirrors `TransferShape::seals_like`, an approval opening binds `N`.
     pub fn rekeyed(self, read: Self) -> Result<Self, RingError> {
         let opens_alike = self.stream.first_key_counter() == read.stream.first_key_counter()
             && (!self.spans_capacity || self.stream.capacity == read.stream.capacity);

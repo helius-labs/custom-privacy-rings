@@ -32,7 +32,6 @@ pub struct PublishedSlot<'a> {
 }
 
 impl<'a> PublishedSlot<'a> {
-    /// The frame's slot.
     pub fn wire(&self) -> RingOutput<'_> {
         RingOutput {
             hash: self.hash,

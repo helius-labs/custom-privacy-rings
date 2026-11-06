@@ -27,8 +27,8 @@ pub struct AuditedTransaction {
     /// Published order, a slot that did not open sits in `payload_errors` instead.
     pub outputs: Vec<AuditedOutput>,
     pub payload_errors: Vec<OutputPayloadError>,
-    /// `R`, the notes the proof spent. Their nullifiers sit among `nullifiers` at positions no
-    /// stream names, the auditor's own index places them.
+    /// `R`, the notes the proof spent, their nullifiers sit among `nullifiers` at unnamed
+    /// positions.
     pub real_inputs: u8,
     /// SPP's published nullifiers, notes, addresses and padding alike.
     pub nullifiers: Vec<[u8; 32]>,

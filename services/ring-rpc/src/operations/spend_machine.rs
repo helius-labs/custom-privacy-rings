@@ -17,8 +17,8 @@ pub(crate) enum SpendState {
     Resolved {
         note: [u8; 32],
     },
-    /// No opened note owns it yet. An unopened note, an address, a default-ring note or a
-    /// transfer's padding.
+    /// No opened note owns it yet, an unopened note, address, default-ring note or transfer
+    /// padding.
     Unclassified,
 }
 

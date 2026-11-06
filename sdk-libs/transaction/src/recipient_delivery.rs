@@ -228,8 +228,8 @@ pub struct OutputBlindings {
 }
 
 impl AnonymousOutput<'_> {
-    /// `None` unless the record names the reader as a ring output's owner and rebuilds the commitment.
-    /// The record's key may be any, a note under a key the owner never registered stays unspendable.
+    /// `None` unless the record names the reader as a ring output's owner and rebuilds the
+    /// commitment, its key unchecked.
     pub fn open_body(
         &self,
         body: &OpenedRecipientBody,

@@ -35,8 +35,8 @@ pub struct GetSpendCoverageResponse {
     pub history_through: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub totals: Option<SpendCoverageTotals>,
-    /// Transfer nullifiers no opened note owns. A spent note the index never resolved sits among
-    /// them with addresses, default-ring notes and padding, the proof names no note position.
+    /// Transfer nullifiers no opened note owns, unresolved notes among addresses, default-ring
+    /// notes and padding.
     pub unclassified: Vec<SpendCoverageRow>,
     /// Frames whose stream is unreadable, the only rows that hold `history_through` back.
     pub unreadable: Vec<SpendCoverageFrame>,

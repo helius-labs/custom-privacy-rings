@@ -159,7 +159,6 @@ impl RingOutputRail {
         &self.delivery
     }
 
-    /// The body key of the slot at `slot_index` sealed to `recipient`.
     pub fn slot_secret(
         &self,
         recipient: &X25519Pubkey,
@@ -177,8 +176,8 @@ impl RingOutputRail {
         .secret()?)
     }
 
-    /// `V_i` of every slot of a key's `capacity`, the proof encrypts each record to it and the
-    /// auditor stream seals the published ones. A slot past the published outputs takes the auditor's.
+    /// `V_i` of every slot of a key's `capacity`, a slot past the published outputs takes the
+    /// auditor's.
     pub fn recipient_keys(
         &self,
         outputs: &[SppProofOutputUtxo],
@@ -579,8 +578,8 @@ fn check_carried(outputs: &[SppProofOutputUtxo]) -> Result<(), RingRailError> {
     }
 }
 
-/// `None` while no published output carries data, the frame then sends every body at its record
-/// alone. Otherwise every recipient payload takes the widest one's length.
+/// `None` while no published output carries data, else every recipient payload takes the widest
+/// one's length.
 pub fn payload_width(outputs: &[SppProofOutputUtxo]) -> Option<usize> {
     let carries = |output: &SppProofOutputUtxo| {
         !output.is_dummy()

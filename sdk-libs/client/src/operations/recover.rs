@@ -84,8 +84,8 @@ pub struct RecoveredNotes {
     pub unopened: Vec<[u8; 32]>,
     /// Verified merge mints the asset registry lacks, their notes stay unresolved.
     pub unknown_mints: BTreeSet<Address>,
-    /// First unmatched nullifiers of frames that spent an unopened note, limited by
-    /// `RECOVERY_INPUT_SAMPLE_LIMIT`. An address or padding slot of such a frame reads here too.
+    /// Up to `RECOVERY_INPUT_SAMPLE_LIMIT` unmatched nullifiers of frames that spent an unopened
+    /// note, addresses and padding among them.
     pub unseen_inputs: Vec<[u8; 32]>,
     /// Spent notes no batch opened, each frame's `R` less its matched nullifiers.
     pub unseen_input_count: u64,

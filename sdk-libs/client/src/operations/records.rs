@@ -17,8 +17,8 @@ use zolana_ring_policy::{ListId, Member, MemberError};
 
 use crate::AuditError;
 
-/// The key of an owner's public lists, `Poseidon(CRPL, owner identity, 0)`, the one record every
-/// writer and reader of the owner's lists names.
+/// `Poseidon(CRPL, owner identity, 0)`, the one record every writer and reader of the owner's lists
+/// names.
 pub fn owner_record_key(owner: &[u8; 32]) -> Result<Member, MemberError> {
     Member::public(&Member::owner_tag(owner)?)
 }

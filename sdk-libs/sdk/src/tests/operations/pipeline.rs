@@ -3129,8 +3129,8 @@ async fn an_anonymous_deposit_leg_takes_a_separate_funder_but_never_the_hidden_o
     ));
 }
 
-/// The proof no longer names the hidden owner's parties, the SDK refuses each by default and the
-/// caller's waiver admits it. A hidden co-signer approves its own outflow and stays refused.
+/// The waiver admits each unproven hidden owner party the default refuses, a hidden co-signer stays
+/// refused.
 #[tokio::test]
 async fn an_accepted_exposure_admits_each_party_the_default_refuses_but_no_hidden_co_signer() {
     use crate::tests::support::keypair;

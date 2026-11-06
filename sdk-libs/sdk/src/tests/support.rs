@@ -100,7 +100,6 @@ pub(crate) fn owner_identity(owner: &ShieldedKeypair) -> Member {
     Member::from_bytes(identity).unwrap()
 }
 
-/// The key of the owner's public record.
 pub(crate) fn owner_record(owner: &ShieldedKeypair) -> Member {
     Member::public(&owner_identity(owner)).unwrap()
 }

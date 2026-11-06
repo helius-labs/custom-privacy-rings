@@ -34,10 +34,9 @@ pub struct GetDelegateNotesRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GetDelegateNotesResponse {
-    /// The registered key's secret, right aligned. Absent while the owner holds no registration or its seal is unread.
+    /// Right aligned, absent while the owner holds no registration or its seal is unread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullifier_secret: Option<Hash>,
-    /// Any output key pays the owner, a note under a key it never registered opens to no secret here.
     pub status: GetWalletStatusResponse,
 }
 
