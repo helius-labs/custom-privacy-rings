@@ -757,7 +757,11 @@ fn signed_wallet_update() -> SubmitRecordUpdateRequest {
         entries: vec![
             RecordUpdateEntry::Write(zolana_ring_indexer::rpc::RingListWriteView {
                 mint_policy: None,
-                member: identity.clone(),
+                member: Hash(
+                    *crate::records::owner_record_key(wallet.pubkey().as_array())
+                        .expect("wallet")
+                        .as_bytes(),
+                ),
                 mask: bit,
                 value: bit,
             }),
