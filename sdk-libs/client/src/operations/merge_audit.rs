@@ -371,7 +371,7 @@ fn remember_merge(
 
 #[cfg(test)]
 mod tests {
-    use custom_ring_interface::AuditRecord;
+    use custom_ring_interface::OutputRecord;
     use spr_client::rpc::PaginationToken;
     use spr_event::{encode_merge_output_data, MergeOutputDataRef};
     use spr_interface::ZERO_NULLIFIER_PUBKEY;
@@ -414,7 +414,7 @@ mod tests {
         }
     }
 
-    fn merged_note(nullifier_pk: [u8; 32], seed: [u8; 32]) -> (OpeningRecord, [u8; 32]) {
+    fn merged_note(nullifier_pk: [u8; 32], seed: [u8; 32]) -> (MergeRecord, [u8; 32]) {
         let blinding = MergeSeed::from_bytes(seed)
             .unwrap()
             .output_blinding(&FIRST)
@@ -432,24 +432,32 @@ mod tests {
         }
         .commitment(Some(RING))
         .unwrap();
-        let record = OpeningRecord {
-            record: AuditRecord {
+        let record = MergeRecord {
+            record: OutputRecord {
                 kind: RecordKind::Ring,
                 amount: 12,
                 owner_key: OWNER,
                 mint: MINT,
                 nullifier_pk,
+                blinding,
             },
-            secret: seed,
+            seed,
         };
         (record, commitment)
     }
 
-    fn sealed(auditor: &X25519Keypair, record: OpeningRecord) -> RingOrigin {
-        let opening = MergeRecordSeal { record }.seal(&auditor.pubkey()).unwrap();
+    fn sealed(auditor: &X25519Keypair, record: MergeRecord) -> RingOrigin {
+        let opening = MergeRecordSeal {
+            record,
+            recipient: X25519Keypair::new().pubkey(),
+            first_nullifier: FIRST,
+        }
+        .seal(&auditor.pubkey())
+        .unwrap();
         origin_with(ConfirmedMergeDisclosure {
             eph_pk: *opening.eph_pk.as_bytes(),
-            ciphertext: opening.ciphertext,
+            envelope: opening.envelope,
+            record: opening.record,
         })
     }
 
@@ -523,15 +531,15 @@ mod tests {
         let (record, commitment) = merged_note([0x07; 32], [0x13; 32].map(|byte: u8| byte & 0x1f));
         let row = merge_row(commitment, vec![FIRST; 8]);
         let opens =
-            |spoiled: OpeningRecord| confirmed_merge(&row, 0, &sealed(&auditor, spoiled), &auditor);
+            |spoiled: MergeRecord| confirmed_merge(&row, 0, &sealed(&auditor, spoiled), &auditor);
         assert!(opens(record).is_ok());
-        type Spoil = fn(&mut OpeningRecord);
+        type Spoil = fn(&mut MergeRecord);
         let spoils: [Spoil; 5] = [
             |opened| opened.record.amount += 1,
             |opened| opened.record.owner_key[0] ^= 1,
             |opened| opened.record.mint[0] ^= 1,
             |opened| opened.record.nullifier_pk[31] ^= 1,
-            |opened| opened.secret[31] ^= 1,
+            |opened| opened.seed[31] ^= 1,
         ];
         for spoil in spoils {
             let mut spoiled = record;
@@ -545,7 +553,7 @@ mod tests {
         exit.record.kind = RecordKind::Exit;
         assert!(matches!(opens(exit), Err(AuditError::DisclosureField)));
         let mut unseeded = record;
-        unseeded.secret = [0; 32];
+        unseeded.seed = [0; 32];
         assert!(matches!(opens(unseeded), Err(AuditError::DisclosureField)));
     }
 

@@ -607,107 +607,6 @@ async fn an_unread_entry_takes_its_capacity_from_its_outputs() {
     }
 }
 
-/// Counts follow the run and only a nonzero `data_hash` of a live slot, a ring data hash stays outside.
-#[test]
-fn signer_data_counts_read_the_signer_run_in_order() {
-    use super::super::signer_data_counts;
-
-    let (alice, bob) = (keypair(1), keypair(2));
-    let address = |owner: &ShieldedKeypair| owner.shielded_address().unwrap();
-    let slot = |owner: &ShieldedKeypair, data_hash, ring_data_hash| SppProofOutputUtxo {
-        owner_address: Some(address(owner)),
-        asset: Mint::SOL,
-        amount: 1,
-        ring_program_id: Some(ring().program_id()),
-        data_hash,
-        ring_data_hash,
-        ..Default::default()
-    };
-    let run = [
-        address(&alice).solana_address().unwrap(),
-        address(&bob).solana_address().unwrap(),
-    ];
-    let outputs = [
-        slot(&bob, Some([1; 32]), None),
-        slot(&alice, Some([2; 32]), None),
-        slot(&bob, Some([3; 32]), None),
-        slot(&alice, None, Some([4; 32])),
-        slot(&bob, Some([0; 32]), None),
-    ];
-    let counts = signer_data_counts(&run, &outputs).unwrap().unwrap();
-    assert_eq!(
-        (counts.count(0), counts.count(1), counts.count(2)),
-        (1, 2, 0)
-    );
-
-    let unsigned = signer_data_counts(&[], &outputs).unwrap();
-    assert_eq!(unsigned, None);
-    let ordinary = [slot(&alice, None, Some([4; 32]))];
-    assert_eq!(signer_data_counts(&run, &ordinary).unwrap(), None);
-}
-
-/// The prover reads the packed value the frame carries, a frame with no count sends none.
-#[tokio::test]
-async fn a_signer_owned_data_slot_reaches_the_frame_and_the_request() {
-    let sender = keypair(1);
-    let recipient = keypair(2);
-    let client = Chain::ring(RingSettings {
-        has_policy: true,
-        ..RingSettings::new(RingMode::Confidential)
-    })
-    .with_registry(
-        Registry::new(&[(&sender, 1), (&recipient, 1)]),
-        &pipeline_rules(),
-    )
-    .client();
-    let assembled = |owner: &ShieldedKeypair, data_hash| {
-        let (client, sender, owner) = (&client, &sender, owner.shielded_address().unwrap());
-        async move {
-            let mut transaction = ConfidentialTransaction::new_with_ring(
-                vec![ring_utxo(sender, Mint::SOL, 10, 0)],
-                FULL_LOAD_PAYER,
-                ring().program_id(),
-            )
-            .unwrap();
-            transaction
-                .add_output_utxo(SppProofOutputUtxo {
-                    owner_address: Some(owner),
-                    asset: Mint::SOL,
-                    amount: 10,
-                    ring_program_id: Some(ring().program_id()),
-                    data_hash,
-                    ..Default::default()
-                })
-                .unwrap();
-            CustomRingTransfer::new(CustomRingTransferInput {
-                ring: ring(),
-                sender,
-                nullifier_key: Some(&sender.nullifier_key),
-                transaction,
-            })
-            .assemble(client)
-            .await
-            .unwrap()
-        }
-    };
-    let body = |assembled: &Assembled| {
-        let request = assembled.request().unwrap();
-        serde_json::to_value(
-            crate::prover::RequestBody::new(request.circuit, &request.body).unwrap(),
-        )
-        .unwrap()
-    };
-
-    let counted = assembled(&sender, Some([5; 32])).await;
-    let counts = counted.frame.parts.extensions.signer_data_counts.unwrap();
-    assert_eq!(counts.count(0), 1);
-    assert_eq!(body(&counted)["signerDataCounts"], counts.packed());
-
-    let plain = assembled(&recipient, None).await;
-    assert_eq!(plain.frame.parts.extensions.signer_data_counts, None);
-    assert!(body(&plain).get("signerDataCounts").is_none());
-}
-
 /// The Go golden test solves the relayed tail.
 #[tokio::test]
 async fn a_relayed_spend_proves_on_the_key_its_owner_sealed() {
@@ -787,6 +686,36 @@ async fn a_relayed_spend_proves_on_the_key_its_owner_sealed() {
         std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
     }
     assert!(path.exists());
+}
+
+/// Each published slot's record, opened under the transaction key and the key it seals to.
+fn opened_records(
+    data: &custom_ring_interface::RingTransactData<'_>,
+    opened: &zolana_ring_client::OpenedAudit,
+) -> Vec<custom_ring_interface::OutputRecord> {
+    let tx_key = &opened.tx_viewing_key;
+    let keys = opened.recipient_keys(data.recipient_keys).unwrap();
+    let first_nullifier = data.first_nullifier().unwrap();
+    data.outputs
+        .iter()
+        .zip(keys)
+        .zip(0u32..)
+        .map(|((output, key), slot)| {
+            let secret = custom_ring_interface::stream::DeliveredSlot {
+                agreement: &tx_key.ecdh(&key).unwrap(),
+                tx_viewing_pk: tx_key.pubkey().as_bytes(),
+                recipient_viewing_pk: key.as_bytes(),
+                salt: data.salt,
+                output_index: slot,
+                first_nullifier,
+            }
+            .secret()
+            .unwrap();
+            zolana_ring_transaction::open_recipient_body(output.record, &secret)
+                .unwrap()
+                .record
+        })
+        .collect()
 }
 
 mod delegate_message {
@@ -901,9 +830,6 @@ mod delegate_message {
             .owner_proof_input_hash()
             .unwrap()
     }
-
-    const ZERO_TAIL: [u8; custom_ring_interface::DATA_TAIL_LEN] =
-        [0; custom_ring_interface::DATA_TAIL_LEN];
 
     fn rewritten(
         honest: &Instruction,
@@ -1367,10 +1293,9 @@ mod delegate_message {
             parsed.audit_stream(),
         )
         .unwrap();
-        data.outputs
-            .iter()
-            .enumerate()
-            .map(|(slot, output)| opened.record(slot, output.record).unwrap().owner_key)
+        opened_records(data, &opened)
+            .into_iter()
+            .map(|record| record.owner_key)
             .collect()
     }
 
@@ -1478,20 +1403,18 @@ mod delegate_message {
                 .await;
             assert_eq!(verdict_of(leg), Err(MessageMismatch::Data), "{mode:?}");
 
-            let tails = rewritten(&honest, expected.rail, |data| {
+            let payloads = rewritten(&honest, expected.rail, |data| {
                 data.has_data = true;
                 for output in &mut data.outputs {
-                    output.tail = Some(&ZERO_TAIL);
-                    if matches!(output.body, custom_ring_interface::SlotBody::Recipient(_)) {
-                        output.body = custom_ring_interface::SlotBody::Recipient(
-                            &[0; custom_ring_interface::RECIPIENT_BODY_LEN
-                                + custom_ring_interface::RECIPIENT_BODY_LENGTH_LEN],
-                        );
+                    if let custom_ring_interface::SlotBody::Recipient(body) = output.body {
+                        let padded = [body, &[0; 3][..]].concat();
+                        output.body =
+                            custom_ring_interface::SlotBody::Recipient(Box::leak(padded.into()));
                     }
                 }
             });
-            assert_eq!(slot_owners(&tails, expected.rail, &expected)[..2], order);
-            assert_eq!(verdict_of(tails), Err(MessageMismatch::Data), "{mode:?}");
+            assert_eq!(slot_owners(&payloads, expected.rail, &expected)[..2], order);
+            assert_eq!(verdict_of(payloads), Err(MessageMismatch::Data), "{mode:?}");
 
             let mut unclamped = asked.clone();
             unclamped.tx_viewing_key =
@@ -1555,12 +1478,7 @@ mod delegate_message {
                 }
                 .open(&crate::tests::support::auditor(), parsed.audit_stream())
                 .unwrap();
-                let records: Vec<_> = data
-                    .outputs
-                    .iter()
-                    .enumerate()
-                    .map(|(slot, output)| opened.record(slot, output.record).unwrap())
-                    .collect();
+                let records = super::opened_records(data, &opened);
                 let spent = u64::try_from(sources.len()).unwrap() * 10;
                 let total: u64 = records.iter().map(|record| record.amount).sum();
                 assert_eq!(total, spent, "{mode:?} {}", sources.len());
@@ -1624,11 +1542,8 @@ mod delegate_message {
             }
             .open(&crate::tests::support::auditor(), parsed.audit_stream())
             .unwrap();
-            let moved: Vec<([u8; 32], [u8; 32], u64)> = data
-                .outputs
-                .iter()
-                .enumerate()
-                .map(|(slot, output)| opened.record(slot, output.record).unwrap())
+            let moved: Vec<([u8; 32], [u8; 32], u64)> = super::opened_records(data, &opened)
+                .into_iter()
                 .filter(|record| record.kind == custom_ring_interface::RecordKind::Ring)
                 .map(|record| (record.owner_key, record.mint, record.amount))
                 .filter(|(_, _, amount)| *amount > 0)
@@ -1753,8 +1668,7 @@ mod delegate_message {
         let parsed = RingTransactData::parse(data, RingRail::Delegate).unwrap();
         let spent = crate::relay_message::open_stream(&parsed, tx_viewing_key, auditor)
             .unwrap()
-            .inputs
-            .note_count();
+            .real_inputs;
         parsed.data().nullifiers[..usize::from(spent)].to_vec()
     }
 
@@ -3915,11 +3829,6 @@ mod request_fixtures {
         let external = &inputs.external_data;
         let layout = custom_ring_interface::BundleLayout {
             outputs: external.outputs.len(),
-            change: external
-                .outputs
-                .iter()
-                .filter(|output| output.data.is_none())
-                .count(),
         };
         let tx_viewing_pk = X25519Pubkey::from_bytes(external.tx_viewing_pk).unwrap();
         let secret = DeliveredSlot {
@@ -4024,14 +3933,8 @@ mod request_fixtures {
                 ]
             );
             let bundle = sender_bundle(assembled, &sender);
-            assert_eq!(
-                bundle.change,
-                [custom_ring_interface::ChangeCell {
-                    mint: Mint::SOL.asset.to_bytes(),
-                    amount: 15
-                }]
-            );
-            assert_eq!(bundle.recipient_keys[0], payee.viewing_pubkey().u());
+            assert_eq!(bundle.recipient_keys[0], sender.viewing_pubkey().u());
+            assert_eq!(bundle.recipient_keys[1], payee.viewing_pubkey().u());
         };
         let direct = build().assemble(&client).await.unwrap();
         let (_, circuit) = pinned("anonymous-entry", &direct);
