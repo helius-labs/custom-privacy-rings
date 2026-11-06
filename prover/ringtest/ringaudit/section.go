@@ -136,7 +136,8 @@ func (a Audit) Plaintexts(t testing.TB) Plaintexts {
 	envelope := append(slices.Clone(a.Keys.txViewingSk[:]), byte(a.RealInputs()))
 	if a.Shape.Entry {
 		envelope = binary.BigEndian.AppendUint64(envelope, a.defaultBits())
-		for _, input := range a.Inputs {
+		// The frame transmits one record per published input, the sealed padding past n reads zero.
+		for _, input := range a.Inputs[:a.InputCount] {
 			envelope = append(envelope, input.entry(t)...)
 		}
 	}
