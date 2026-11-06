@@ -238,14 +238,14 @@ Ring RPC keeps one key file per role. The auditor key opens ring activity. The s
 
 ## 1. Enrollment and list approval
 
-Every owner that receives or spends a ring note under a nonzero nullifier key enrolls on the ring's tracking registry, on every ring kind. A note under the zero nullifier key needs no row for its key. A wallet has one nullifier secret, so enrollment discloses it to each ring's auditor it enrolls with. An owner's nullifier key, list tag and ciphertext are final on one registry after the first enrollment.
+Every owner that spends a ring note under a nonzero nullifier key enrolls on the ring's tracking registry, on every ring kind. A sender may pay an owner under any nonzero key, and the note spends only once that key is the owner's enrolled one. A note under the zero nullifier key needs no row for its key. A wallet has one nullifier secret, so enrollment discloses it to each ring's auditor it enrolls with. An owner's nullifier key, list tag and ciphertext are final on one registry after the first enrollment.
 
 1. **Owner:** signs Storage `Enroll` with its nullifier key, its list tag, its viewing key, an ephemeral key and a ciphertext. The ciphertext seals its nullifier secret and list salt to the ring's auditor key, and a `RegisterKey` proof shows the seal. A wallet signs directly, and a program signs its PDA through CPI. The payer funds the account and authorizes nothing. Ring RPC relays it for a wallet with no SOL when its operator funds a relay budget.
 2. **Storage program:** verifies the proof against the ring id and the auditor key the tracking registry pins and the member of the signing owner. It refuses the zero nullifier key and stores the tracking authorization. `Enroll` moves no root.
 3. **Any applier:** sends `ApplyEnrollments` with a proof over the authorization accounts it names. The program computes each entry from its account and marks the account applied, so no applier can alter or repeat one. Ring RPC applies the rings its operator names, under a key none of its other jobs uses.
 4. **Ring indexer:** lists pending authorizations, projects the tracking tree and serves its openings.
 
-An enrollment grants nothing until an apply places its row under a tracking root. A recipient becomes usable at the first root that holds its row. Before then the SDKs refuse to pay the owner under a nonzero key, and a salted owner write for it fails. Any party can apply, so no single applier holds an enrollment back. No authority writes the tracking tree, so no authority can gate an enrollment. [Tracking](design/records-and-roots.md#tracking)
+An enrollment grants nothing until an apply places its row under a tracking root. The owner's notes under its key spend from the first root that holds its row. Before then a salted owner write for it fails. Any party can apply, so no single applier holds an enrollment back. No authority writes the tracking tree, so no authority can gate an enrollment. [Tracking](design/records-and-roots.md#tracking)
 
 A wallet rotates its viewing key per ring. It signs `Enroll` again on that ring's tracking registry with the new viewing key and every other field unchanged. The rotation carries no proof, and the program refuses a change to any other field. The rotation moves only the authorization's viewing key and waits on no apply. A sender verifies the owner's row under a tracking root and reads the viewing key from the owner's authorization at `confirmed`. An address that carries an older viewing key therefore seals to the current one.
 
@@ -289,7 +289,7 @@ A deposit moves SOL or tokens from a wallet's public balance into up to 8 ring n
    3. Sends the deposit request to **Ring RPC** on the deposit relay rail. The funder signs `deposit_request_digest`, the SHA-256 of `"zolana/ring-rpc-relay-deposit"` and the proof input bytes. No owner signs.
 2. **Ring RPC:**
    1. Checks that the ring is active. Refuses a frame with a real input, with two funders, with the fee payer as funder, or with a signature the funder did not make.
-   2. Generates the transfer proof. It shows the owner and asset rules hold for each recipient and asset. It also shows that each nonzero nullifier key matches its owner's tracking row. It also proves each zero-key recipient absent at the accepted tracking root.
+   2. Generates the transfer proof. It shows the owner and asset rules hold for each recipient and asset. It also proves each zero-key recipient absent at the accepted tracking root.
    3. Returns the transaction to the **Wallet** for signing.
 3. **Wallet:** the funder signs the transaction to authorize the SOL or SPL token transfer.
 4. **Ring RPC:**
@@ -348,7 +348,7 @@ The capacity profiles below use one input, a separate payer, one co-signer and o
 | Confidential published owner | 8 total slots | Change consumes a slot, leaving at most 7 recipient payments when change is present |
 | Anonymous hidden owner | 8 total slots | Change consumes a slot, leaving at most 7 recipient payments when change is present |
 
-No key carries more than 8 outputs. A 16-output transfer passes the 4,096-byte limit on every rail, so a 16-recipient payout takes two transactions.
+No key carries more than 8 outputs. A 16-output transfer exceeds the 4,096-byte limit on every rail, so a 16-recipient payout takes two transactions.
 
 The confidential in-proof SDK rail does not accept default-ring inputs. Other combinations require their own frame-fit check. A missing proving key refuses the operation. A supported encoding does not establish that its production key is available.
 
