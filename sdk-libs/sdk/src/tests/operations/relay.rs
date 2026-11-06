@@ -1735,7 +1735,6 @@ mod delegate_message {
         ));
     }
 
-    /// A pinned frame's published nullifiers, the honest case spends only the vector source's note.
     /// The honest frame's spent notes, the authority rail publishes notes ahead of its padding.
     fn honest_spends(
         message: &[u8],
