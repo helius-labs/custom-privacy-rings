@@ -1286,6 +1286,17 @@ describe("ring read request", () => {
     expect(received.view.withdrawals).toEqual([]);
   });
 
+  it("reads a record whose payload rebuilt no commitment without its data hashes", async () => {
+    const wire = rustItem("decrypted_page.json");
+    const [output] = wire["outputs"] as { utxo: Record<string, unknown> }[];
+    delete output!.utxo["dataHash"];
+    delete output!.utxo["ringDataHash"];
+    const opening = (await readItem(wire)).outputs[0]!.opening;
+    if (opening.kind !== "ring") throw new Error("a ring output");
+    expect(opening.utxo).not.toHaveProperty("dataHash");
+    expect(opening.utxo).not.toHaveProperty("ringDataHash");
+  });
+
   it("reads the default-ring notes of the anonymous page in note order with its real count", async () => {
     const item = await readItem(anonymousItem());
     expect(item.realInputs).toBe(3);
