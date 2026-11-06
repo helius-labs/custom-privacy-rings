@@ -2027,11 +2027,13 @@ async fn the_member_policy_request_opens_each_subject_once_in_padded_pools() {
     assert_eq!(request_layout(&built), request_layout(&pinned));
 }
 
-/// `frame` runs before any witness read or prover call, the ceiling keeps no margin.
 #[tokio::test]
 async fn the_ceiling_frame_passes_and_a_longer_reply_is_refused_before_proving() {
     let at_ceiling = ceiling_entry(CEILING_REPLY_LEN).fit().await;
-    assert_eq!(at_ceiling.bytes, solana_message::v1::MAX_TRANSACTION_SIZE);
+    assert_eq!(
+        at_ceiling.bytes,
+        solana_message::v1::MAX_TRANSACTION_SIZE - 1
+    );
     assert!(at_ceiling.addresses.is_some());
     let past = ceiling_entry(CEILING_REPLY_LEN + 1).fit().await;
     assert_eq!(past.bytes, solana_message::v1::MAX_TRANSACTION_SIZE + 1);
@@ -2042,7 +2044,7 @@ async fn the_ceiling_frame_passes_and_a_longer_reply_is_refused_before_proving()
     }
     .fit()
     .await;
-    assert_eq!(paid.bytes, solana_message::v1::MAX_TRANSACTION_SIZE + 8);
+    assert_eq!(paid.bytes, solana_message::v1::MAX_TRANSACTION_SIZE + 7);
     assert!(
         paid.addresses.is_none(),
         "the fee moves the frame past the ceiling"
@@ -2079,7 +2081,7 @@ async fn a_payment_names_the_viewing_key_of_its_owners_authorization() {
     ));
 }
 
-/// One body takes the reply, each byte of it is one byte of the frame.
+/// Each reply byte lands in both bodies of the 1x2 entry.
 fn ceiling_entry(reply_len: usize) -> Measure {
     Measure {
         reply_len: Some(reply_len),
@@ -2087,8 +2089,8 @@ fn ceiling_entry(reply_len: usize) -> Measure {
     }
 }
 
-/// Sets [`ceiling_entry`] at the transaction ceiling exactly.
-const CEILING_REPLY_LEN: usize = 2402;
+/// The widest reply [`ceiling_entry`] carries under the transaction ceiling.
+const CEILING_REPLY_LEN: usize = 1181;
 
 include!("size_pins.rs");
 
@@ -2764,8 +2766,8 @@ async fn every_frame_limit_of_the_byte_model_holds() {
     let ceiling = solana_message::v1::MAX_TRANSACTION_SIZE;
     let pin = |measure: Measure| async move { measure.bytes().await };
 
-    // An entry whose reply reaches the ceiling exactly.
-    assert_eq!(pin(ceiling_entry(CEILING_REPLY_LEN)).await, ceiling);
+    // An entry at its widest reply.
+    assert_eq!(pin(ceiling_entry(CEILING_REPLY_LEN)).await, ceiling - 1);
 
     // Plain policy at 24x4 with an outsider payer.
     let signer_policy = Measure {
@@ -2776,8 +2778,8 @@ async fn every_frame_limit_of_the_byte_model_holds() {
         payer: Payer::Outsider,
         ..Measure::pinned(Measured::InProofOwnerPolicy, Shape::new(24, 4))
     };
-    assert_eq!(pin(signer_policy).await, 3414);
-    assert_eq!(pin(in_proof_policy).await, 3413);
+    assert_eq!(pin(signer_policy).await, 3373);
+    assert_eq!(pin(in_proof_policy).await, 3372);
 
     // An outsider payer adds its signature and key.
     let owner_paid = Measure::pinned(Measured::Confidential, Shape::IN16_OUT8);
@@ -2849,19 +2851,19 @@ async fn every_frame_boundary_takes_its_modelled_bytes() {
         ..relayed(Measured::ConfidentialPolicy, Shape::new(16, 8))
     };
     for (measure, bytes) in [
-        (with_reply(Measured::AnonymousEntry, 3), 4269),
-        (with_reply(Measured::Anonymous, 5), 3951),
+        (with_reply(Measured::AnonymousEntry, 3), 4357),
+        (with_reply(Measured::Anonymous, 5), 4039),
         (
             relayed(Measured::ConfidentialPolicy, Shape::new(16, 8)),
-            3762,
+            3689,
         ),
         (
             relayed(Measured::InProofOwnerPolicy, Shape::new(16, 8)),
-            3761,
+            3688,
         ),
-        (compact_fifteen, 3697),
-        (key_escrow_co_signed, 3544),
-        (loaded_commitment, 3249),
+        (compact_fifteen, 3624),
+        (key_escrow_co_signed, 3503),
+        (loaded_commitment, 3288),
     ] {
         assert_eq!(
             measure.bytes().await,
@@ -2986,24 +2988,23 @@ async fn omitted_slots_save_their_bytes_on_each_family() {
     }
 }
 
-/// A slot without a body costs its body and a change cell, a reply its length per body.
+/// A change slot carries a body like any slot, a reply costs its length per body.
 #[tokio::test]
-async fn change_slots_and_replies_move_the_anonymous_frame_by_their_bytes() {
+async fn change_slots_cost_nothing_and_replies_move_each_body() {
     use spr_client::Shape;
     let base = Measure::pinned(Measured::Anonymous, Shape::new(2, 4));
     let at = |change_slots| Measure {
         change_slots,
         ..base
     };
-    assert_eq!(at(0).bytes().await - at(1).bytes().await, 64);
-    assert_eq!(at(1).bytes().await - at(2).bytes().await, 64);
+    assert_eq!(at(0).bytes().await, at(2).bytes().await);
     let replied = Measure {
         reply_len: Some(custom_ring_interface::MIN_REPLY_LEN),
         ..base
     };
     assert_eq!(
         replied.bytes().await - base.bytes().await,
-        2 + 3 * custom_ring_interface::MIN_REPLY_LEN,
+        2 + 4 * custom_ring_interface::MIN_REPLY_LEN,
         "the length and one reply per body"
     );
     let co_owned = Measure {
