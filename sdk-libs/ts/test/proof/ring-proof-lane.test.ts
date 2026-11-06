@@ -17,14 +17,14 @@ import {
 } from "../../src/proof/cosign.js";
 import {
   defaultInputBits,
-  entryInput,
+  entryRecord,
   inputClassOf,
   inputMapOf,
   isDefaultRingNote,
   ownerRows,
 } from "../../src/proof/audit-proof.js";
 import { checkHiddenOwnerSpends } from "../../src/operations/payments/anonymous.js";
-import { InputClass } from "../../src/protocol/codec/audit-stream.js";
+import { EMPTY_ENTRY_RECORD, InputClass } from "../../src/protocol/codec/audit-stream.js";
 import {
   DisclosureFormat,
   type AuditStreamLayout,
@@ -397,6 +397,7 @@ const note = (
     isCompact: () => false,
     isDummy: () => input.dummy === true,
     isAddress: () => input.address === true,
+    hash: () => fill(0x0c),
     nullifierPublicKey: input.key ?? fill(9),
     utxo: {
       owner: {
@@ -452,9 +453,15 @@ describe("input evidence", () => {
     const inputs = [note({ ring: RING }), note({}), address, note({ dummy: true })];
     expect(defaultInputBits(inputs)).toBe(2n);
     expect(inputs.map(isDefaultRingNote)).toEqual([false, true, false, false]);
-    expect(entryInput(inputs[0] as ProofInputUtxo).amount).toBe(0n);
-    expect(entryInput(inputs[1] as ProofInputUtxo).amount).toBe(5n);
-    expect(entryInput(address).amount).toBe(0n);
+    expect(entryRecord(inputs[0] as ProofInputUtxo)).toBe(EMPTY_ENTRY_RECORD);
+    expect(entryRecord(inputs[1] as ProofInputUtxo)).toEqual({
+      ownerKey: fill(7),
+      nullifierPk: fill(9),
+      amount: 5n,
+      mint: RING,
+      inputCommitment: fill(0x0c),
+    });
+    expect(entryRecord(address)).toBe(EMPTY_ENTRY_RECORD);
     expect(inputMapOf(inputs, layout(4)).validateDefaultInputBits(defaultInputBits(inputs))).toBe(
       undefined,
     );
@@ -682,7 +689,6 @@ describe("prover/ring/params.go", () => {
       signers: repeat(24, zero),
       rows: repeat(4, zero),
       privateTxHash: zero,
-      privateTxBlinding: zero,
       trackingRoot: zero,
       trackingPool: {
         records: repeat(capacity.tracking, row0()),
