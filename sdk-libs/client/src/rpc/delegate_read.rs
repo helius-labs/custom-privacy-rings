@@ -245,7 +245,7 @@ mod tests {
     fn each_note_opens_only_under_the_key_it_commits() {
         let registered = NullifierKey::from_secret([7; BLINDING_LEN]);
         let read = GetDelegateNotesResponse {
-            nullifier_secret: Some(Hash(right_align(&*registered.secret()))),
+            nullifier_secret: Some(Hash(right_align(&registered.secret()))),
             status: GetWalletStatusResponse {
                 history_through: 1,
                 enrollment: WalletEnrollment::Applied,

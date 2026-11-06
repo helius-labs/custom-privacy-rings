@@ -94,8 +94,8 @@ pub use crate::{
     },
     reader::{Ed25519ReaderKey, P256ReaderKey, ReaderKey, ReaderKeyError},
     records::{
-        member_record, quad_path, storage_apply_proof_inputs, MemberOpeningRead, RecordPoolCheck,
-        RecordPoolRead, StorageTip,
+        member_record, owner_record_key, quad_path, storage_apply_proof_inputs, MemberOpeningRead,
+        RecordPoolCheck, RecordPoolRead, StorageTip,
     },
     recover::{
         MemberRecovery, RecoveredNotes, RecoveryProgress, RecoveryStep, RingRecovery, SourceMember,

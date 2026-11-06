@@ -144,7 +144,6 @@ impl Relayed<'_> {
                 };
                 let exits = exits.owners(client).await?;
                 let spend = AnonymousSpend {
-                    exit_destination: exits.destination,
                     token_owner: exits.token_owner,
                     signer: OwnerAuthorization::Prepared {
                         owner: sender.signing_pubkey,

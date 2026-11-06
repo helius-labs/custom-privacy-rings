@@ -102,7 +102,10 @@ async fn a_wallet_scoped_reader_sees_only_its_wallet_rows() {
     let reader = stranger();
     let grant = Member::wallet_grant(
         &Member::owner_tag(wallet.as_array()).expect("wallet member"),
-        &reader_member(ReaderKey::ed25519(reader.pubkey()).expect("reader")),
+        &ReaderKey::ed25519(reader.pubkey())
+            .expect("reader")
+            .member()
+            .expect("reader identity"),
     )
     .expect("grant member");
     source.records.list_reader(grant, true);
@@ -219,7 +222,10 @@ fn wallet_reader(source: &StaticSource, wallet: Address) -> Keypair {
     let reader = stranger();
     let grant = Member::wallet_grant(
         &Member::owner_tag(wallet.as_array()).expect("wallet member"),
-        &reader_member(ReaderKey::ed25519(reader.pubkey()).expect("reader")),
+        &ReaderKey::ed25519(reader.pubkey())
+            .expect("reader")
+            .member()
+            .expect("reader identity"),
     )
     .expect("grant member");
     source.records.list_reader(grant, true);

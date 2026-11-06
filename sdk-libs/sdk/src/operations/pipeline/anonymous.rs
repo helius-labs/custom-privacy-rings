@@ -413,7 +413,6 @@ impl AnonymousKey {
 pub(crate) struct HiddenOwner(pub Address);
 
 pub(crate) struct AnonymousSpend<'a> {
-    pub exit_destination: Option<Address>,
     pub token_owner: Option<Address>,
     pub signer: OwnerAuthorization<'a>,
 }
@@ -515,7 +514,6 @@ impl Anonymous<'_> {
             owner_signers,
             interface_transfer_accounts: self.owner.interface_transfer_accounts.clone(),
             spend: Spend::Anonymous(Box::new(AnonymousSpend {
-                exit_destination: exits.destination,
                 token_owner: exits.token_owner,
                 signer: OwnerAuthorization::SigningKey(self.signer),
             })),
@@ -681,7 +679,6 @@ pub(super) struct AnonymousExits<'a> {
 }
 
 pub(super) struct ExitOwners {
-    pub destination: Option<Address>,
     pub token_owner: Option<Address>,
 }
 
@@ -709,10 +706,7 @@ impl AnonymousExits<'_> {
         {
             return Err(CustomRingError::AnonymousExitDestinationsDiffer.into());
         }
-        Ok(ExitOwners {
-            destination: token_owner.or(sol_owner),
-            token_owner,
-        })
+        Ok(ExitOwners { token_owner })
     }
 
     /// The SPL withdrawal's token owner, `None` without one.

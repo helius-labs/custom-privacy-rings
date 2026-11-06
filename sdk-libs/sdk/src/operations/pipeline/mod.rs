@@ -1030,19 +1030,9 @@ impl Unwitnessed<'_> {
             ..
         } = self;
         let ring = frame.ring;
-        let exit_destination = match &spend {
-            Spend::Anonymous(anonymous) => anonymous.exit_destination,
-            Spend::Owner
-            | Spend::InProofOwner(_)
-            | Spend::PublicOwners
-            | Spend::Delegate { .. } => None,
-        };
         let party_identities = match frame.parts.rail.anonymous_frame() {
             true => AnonymousParties {
-                payer: frame.proof_inputs.payer.as_array(),
                 co_signers: &frame.accounts.co_signers,
-                funders: &frame.accounts.deposit_funders(&frame.parts),
-                exit_destination: exit_destination.as_ref().map(Address::as_array),
             }
             .identities()?,
             false => [[0; 32]; ANONYMOUS_PARTIES],

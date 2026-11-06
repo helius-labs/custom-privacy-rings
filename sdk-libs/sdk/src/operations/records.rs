@@ -435,11 +435,13 @@ impl WalletRecordUpdate {
         })
     }
 
+    /// Writes the wallet's public record, a grant keys on its identity instead.
     pub fn with_lists(mut self, lists: ListWrite) -> Result<Self, RingError> {
         check_writer(lists, Writer::Member)?;
+        let record = Member::public(&self.member)?;
         self.draft
             .entries
-            .push(RecordUpdateEntry::Write(list_write(self.member, lists)));
+            .push(RecordUpdateEntry::Write(list_write(record, lists)));
         Ok(self)
     }
 

@@ -117,10 +117,10 @@ impl ReadScope {
 
 impl<S: TransactionSource> GrantSource for TreeGrants<'_, S> {
     async fn grants(&self, query: GrantQuery) -> Result<bool, RingRpcError> {
-        let reader = query.reader.member()?;
-        let mut members = vec![*reader.as_bytes()];
+        let mut members = vec![*query.reader.record_key()?.as_bytes()];
         if let Some(wallet) = query.wallet {
             let wallet = Member::owner_tag(wallet.as_array())?;
+            let reader = query.reader.member()?;
             members.push(*Member::wallet_grant(&wallet, &reader)?.as_bytes());
         }
         let RecordsTip::Newest(records) = self.source.records_root(query.ring).await? else {
