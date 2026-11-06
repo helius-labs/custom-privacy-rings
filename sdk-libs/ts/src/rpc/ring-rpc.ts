@@ -1205,8 +1205,9 @@ export interface RingWalletNote {
   readonly mint?: Address;
   readonly amount: bigint;
   readonly blinding: Bytes32;
-  readonly dataHash: Bytes32;
-  readonly ringDataHash: Bytes32;
+  /** Absent with `ringDataHash` while no payload rebuilt the published commitment. */
+  readonly dataHash?: Bytes32;
+  readonly ringDataHash?: Bytes32;
   readonly treeId: number;
   readonly leafIndex: bigint;
   readonly slot: bigint;
@@ -2414,8 +2415,7 @@ function decodeWalletNote(row: Record<string, unknown>, path: string): RingWalle
     ...(row["mint"] == null ? {} : { mint: address(row["mint"], `${path}.mint`) }),
     amount: integer(row["amount"], `${path}.amount`),
     blinding: hash(row["blinding"], `${path}.blinding`),
-    dataHash: hash(row["dataHash"], `${path}.dataHash`),
-    ringDataHash: hash(row["ringDataHash"], `${path}.ringDataHash`),
+    ...optionalDataHashes(row, path, hash),
     treeId: u16(row["treeId"], `${path}.treeId`),
     leafIndex: integer(row["leafIndex"], `${path}.leafIndex`),
     slot: integer(row["slot"], `${path}.slot`),
@@ -2603,8 +2603,20 @@ function utxoFields(
     ...(absent(mint) ? {} : { mint: address(mint, `${path}.mint`) }),
     amount: u64(wire["amount"], `${path}.amount`),
     blinding: field(wire["blinding"], `${path}.blinding`),
-    dataHash: field(wire["dataHash"], `${path}.dataHash`),
-    ringDataHash: field(wire["ringDataHash"], `${path}.ringDataHash`),
+    ...optionalDataHashes(wire, path, field),
+  };
+}
+
+function optionalDataHashes(
+  wire: Record<string, unknown>,
+  path: string,
+  field: (input: unknown, path: string) => Bytes32,
+): Readonly<{ dataHash?: Bytes32; ringDataHash?: Bytes32 }> {
+  const dataHash = wire["dataHash"];
+  const ringDataHash = wire["ringDataHash"];
+  return {
+    ...(absent(dataHash) ? {} : { dataHash: field(dataHash, `${path}.dataHash`) }),
+    ...(absent(ringDataHash) ? {} : { ringDataHash: field(ringDataHash, `${path}.ringDataHash`) }),
   };
 }
 
@@ -2681,6 +2693,7 @@ function mergeRow(
 export const RING_PAYLOAD_ERROR_KINDS: readonly OutputPayloadErrorKind[] = Object.freeze([
   "disclosure",
   "commitment",
+  "payload",
 ]);
 
 function payloadErrorKind(value: unknown, path: string): OutputPayloadErrorKind {
