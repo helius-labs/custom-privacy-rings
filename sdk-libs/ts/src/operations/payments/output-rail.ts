@@ -53,6 +53,7 @@ import {
   txKeySlotSecret,
 } from "../../crypto/derivation/ring-stream.js";
 import { randomTagPreimage } from "../../crypto/derivation/dummy-tag.js";
+import { dummyRecipientKey } from "../../crypto/derivation/dummy-key.js";
 import { withOutputFields } from "../../protocol/proof/proof-output.js";
 import type { NoteData } from "./anonymous.js";
 import {
@@ -337,36 +338,20 @@ export class RingOutputRail {
   readonly salt: Bytes16;
   readonly delivery: RingDelivery;
   readonly #firstNullifier: Bytes32;
-  /** Drawn once, every encoding of one dummy slot seals to the same key and publishes one tag. */
-  readonly #dummyKeys: readonly X25519PublicKey[];
 
-  /**
-   * `firstNullifier` is the transfer's input slot 0, padding never moves it. `dummyKeys` holds one
-   * key per output slot exactly as a sealed rail drew them, absent draws fresh ones.
-   */
+  /** `firstNullifier` is the transfer's input slot 0, padding never moves it. */
   constructor(
     txViewingKey: ViewingKey,
     firstNullifier: Bytes32,
     delivery: RingDelivery,
     paymentData: readonly (NoteData | undefined)[] = [],
-    dummyKeys?: readonly X25519PublicKey[],
   ) {
-    if (dummyKeys !== undefined && dummyKeys.length !== MAX_OUTPUTS)
-      throw new TransactionError("TRANSACTION_TOO_MANY_OUTPUTS");
     this.#paymentData = paymentData;
     this.txViewingKey = txViewingKey;
     this.salt = randomSalt();
     this.delivery = delivery;
     this.#firstNullifier = firstNullifier;
-    this.#dummyKeys = Object.freeze([
-      ...(dummyKeys ?? Array.from({ length: MAX_OUTPUTS }, randomPublicKey)),
-    ]);
     Object.freeze(this);
-  }
-
-  /** One per output slot, a relay rebuilds the same dummy records from them. */
-  dummyKeys(): readonly X25519PublicKey[] {
-    return this.#dummyKeys;
   }
 
   /** The CRDS slot secret of the slot at `slotIndex` sealed to `recipient`. */
@@ -526,10 +511,15 @@ export class RingOutputRail {
     sender: ShieldedAddress,
     auditor: X25519PublicKey,
   ): readonly PlannedSlot[] {
+    // Every encoding of one dummy slot seals to one key, a relay holding the transaction key
+    // rederives it.
     const dummyKey = (slotIndex: number): X25519PublicKey => {
-      const key = this.#dummyKeys[slotIndex];
-      if (key === undefined) throw new TransactionError("TRANSACTION_TOO_MANY_OUTPUTS");
-      return key;
+      const txViewingSecret = this.txViewingKey.secretBytes();
+      try {
+        return dummyRecipientKey(txViewingSecret, slotIndex);
+      } finally {
+        txViewingSecret.fill(0);
+      }
     };
     if (this.delivery.kind === "anonymous") {
       const anonymousSlots = this.delivery.plan.slots(outputs, sender);
@@ -552,7 +542,7 @@ export class RingOutputRail {
       const owner = output.ownerAddress;
       if (owner === undefined || output.isDummy()) {
         const recipientKey = dummyKey(slotIndex);
-        // A random key publishes its confidential tag as a real recipient's would.
+        // The derived key publishes its confidential tag as a real recipient's would.
         return Object.freeze({
           output,
           recipientKey,
@@ -805,16 +795,6 @@ function exitTag(output: ProofOutputUtxo, slotIndex: number): Bytes32 {
   const owner = output.ownerAddress;
   if (owner === undefined) throw framingError(slotIndex);
   return owner.signingPublicKey.confidentialViewTag() as Bytes32;
-}
-
-/** A dummy's `V_i`, its secret discarded at once. */
-function randomPublicKey(): X25519PublicKey {
-  const key = ViewingKey.generate();
-  try {
-    return key.publicKey();
-  } finally {
-    key.destroy();
-  }
 }
 
 function framingError(slotIndex: number): RingError {
