@@ -45,7 +45,7 @@ func (c *SectionCircuit) Define(api frontend.API) error {
 	rc := rangecheck.New(api)
 	envelope := c.OpenEnvelope(api, rc)
 	hasData := c.Shape.DecodeLayout(api, c.Layout)
-	opened := c.Shape.OpenSlots(api, rc, c.AuditWires, envelope, hasData, c.Outputs, c.OutputCount)
+	opened := c.Shape.OpenSlots(api, rc, hasData, c.Outputs, c.OutputCount)
 	count := ringgadget.SelectCount(api, c.InputCount, 1, len(c.Inputs))
 	slots := make([]shared.Output, len(c.Inputs))
 	for i, input := range c.Inputs {
