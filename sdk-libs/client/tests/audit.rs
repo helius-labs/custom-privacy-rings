@@ -276,6 +276,34 @@ fn each_record_field_changed_fails_the_rebuild() {
 }
 
 #[test]
+fn a_noncanonical_nullifier_key_or_blinding_refuses_the_transaction() {
+    let transfer = Transfer::fixture();
+    let built = build(&transfer, Rail::Delivered, delivered_outputs());
+    type Spoil = fn(&mut OutputRecord);
+    let spoils: [(&str, Spoil); 2] = [
+        ("nullifier_pk", |record| record.nullifier_pk = [0xff; 32]),
+        ("blinding", |record| record.blinding = [0xff; 32]),
+    ];
+    for (name, spoil) in spoils {
+        let mut spoiled = built.disclosure.clone();
+        spoil(&mut spoiled.records[0]);
+        let forged = transfer.publish(Publish {
+            slots: built.transaction.output_slots.clone(),
+            disclosure: &spoiled,
+            auditor: &auditor().pubkey(),
+            rail: built.rail,
+        });
+        assert!(
+            matches!(
+                audit(&forged, built.layout),
+                Err(AuditError::DisclosureField)
+            ),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn a_record_of_one_slot_at_another_is_rejected_on_the_commitment() {
     let transfer = Transfer::fixture();
     let built = build(&transfer, Rail::Delivered, delivered_outputs());
