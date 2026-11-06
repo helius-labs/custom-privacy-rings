@@ -1040,7 +1040,7 @@ impl Transfer {
 
 fn maxima(table: &mut String) -> Result<()> {
     writeln!(table)?;
-    writeln!(table, "Maxima. Load max is full with data tails, every extension but the cache, two SPP input trees, replies on anonymous frames. Each row widens one axis from that load to the largest value one transaction clears. reply: the reply length. messages: empty application messages. message bytes: one application message. over: what refuses one more step. Heap is not measured here.")?;
+    writeln!(table, "Maxima. Load max is full with recipient payloads, every extension but the cache, two SPP input trees, replies on anonymous frames. Each row widens one axis from that load to the largest value one transaction clears. reply: the reply length. messages: empty application messages. message bytes: one application message. over: what refuses one more step. Heap is not measured here.")?;
     writeln!(
         table,
         "| shape | rail | axis | widest | frame | SPP CPI | bytes | accounts | signatures | over |"

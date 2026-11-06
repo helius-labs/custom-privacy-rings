@@ -311,7 +311,10 @@ impl MergeOutput {
         ring: Address,
         nullifiers: &[[u8; 32]],
     ) -> Result<MergeRecordOutput, AuditError> {
-        let MergeRecord { record, seed: secret } = opened;
+        let MergeRecord {
+            record,
+            seed: secret,
+        } = opened;
         if record.kind != RecordKind::Ring || !is_canonical_bn254_scalar_be(&record.nullifier_pk) {
             return Err(AuditError::DisclosureField);
         }

@@ -63,9 +63,10 @@ impl AuditStreamSeal<'_> {
         let mut envelope = plaintext.encode();
         plaintext.tx_viewing_secret.zeroize();
         // The opener's checks hold on the seal, a seal off its layout never leaves the wallet.
-        let checked = custom_ring_interface::AuditEnvelope::decode(&envelope, layout).map(|mut opened| {
-            opened.tx_viewing_secret.zeroize();
-        });
+        let checked =
+            custom_ring_interface::AuditEnvelope::decode(&envelope, layout).map(|mut opened| {
+                opened.tx_viewing_secret.zeroize();
+            });
         if checked.is_err() || envelope.len() != layout.envelope().len {
             envelope.zeroize();
             return Err(AuditError::DisclosureLayout);

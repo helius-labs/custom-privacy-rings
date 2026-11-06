@@ -21,11 +21,10 @@ mod tests;
 use custom_ring_interface::{
     cosign::{ApprovalMask, CoSignDemand, CoSignOperation},
     key_catalog::{RecordPools, RingCircuit, RowAuthorization, TransferAddresses, TransferSpend},
-    AnonymousParties, CheckedAuthorization, CustomRingError, CustomRingProof,
-    FramedSenderBundle, InputTrees, InstructionTag, ParsedTransact, PlainGroth16Proof,
-    PolicyProof, PublicLeg, PublicSlots, RingPolicy, RingRail, RootRead, Settlement,
-    SignerSet, TransferBinding, ANONYMOUS_PARTIES,
-    TRANSFER_OUTPUT_CAPACITIES,
+    AnonymousParties, CheckedAuthorization, CustomRingError, CustomRingProof, FramedSenderBundle,
+    InputTrees, InstructionTag, ParsedTransact, PlainGroth16Proof, PolicyProof, PublicLeg,
+    PublicSlots, RingPolicy, RingRail, RootRead, Settlement, SignerSet, TransferBinding,
+    ANONYMOUS_PARTIES, TRANSFER_OUTPUT_CAPACITIES,
 };
 use solana_address::Address;
 use solana_instruction::Instruction;

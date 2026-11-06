@@ -70,7 +70,9 @@ impl AuditSeal<'_> {
         let exit_records = slots
             .iter()
             .enumerate()
-            .filter(|(_, output)| output.owner_address.is_some() && output.ring_program_id.is_none())
+            .filter(|(_, output)| {
+                output.owner_address.is_some() && output.ring_program_id.is_none()
+            })
             .map(|(slot, output)| self.rail.exit_record(output, &first_nullifier, slot))
             .collect::<Result<_, _>>()?;
         Ok(SealedAudit {
@@ -92,9 +94,7 @@ impl AuditSeal<'_> {
         for (note, input) in spent_notes(self.inputs).enumerate() {
             if is_default_ring(input) {
                 default_note_bits |= 1 << note;
-                *inputs
-                    .get_mut(note)
-                    .ok_or(RingError::RelayAuditorMessage)? = entry_record(input)?;
+                *inputs.get_mut(note).ok_or(RingError::RelayAuditorMessage)? = entry_record(input)?;
             }
         }
         Ok(AuditEvidence::Entry {
@@ -162,7 +162,11 @@ impl SealedAudit {
                 &self.eph_u,
                 [self.envelope.as_slice(), self.keys.as_slice()]
                     .into_iter()
-                    .chain(self.exit_records.iter().map(<[u8; OUTPUT_RECORD_LEN]>::as_slice)),
+                    .chain(
+                        self.exit_records
+                            .iter()
+                            .map(<[u8; OUTPUT_RECORD_LEN]>::as_slice),
+                    ),
             ),
         }
     }

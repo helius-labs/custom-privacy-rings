@@ -71,8 +71,7 @@ pub fn open_merge_record(
     let mut envelope = Zeroizing::new(*sealed.envelope);
     opening_ring_stream(auditor, sealed.eph_pk, MERGE_RECORD_LABEL)?
         .apply_at(STREAM_FIRST_COUNTER, &mut *envelope);
-    let mut opened =
-        MergeEnvelope::decode(&*envelope).map_err(|_| AuditError::DisclosureField)?;
+    let mut opened = MergeEnvelope::decode(&*envelope).map_err(|_| AuditError::DisclosureField)?;
     let ephemeral = X25519Keypair::from_bytes(&opened.eph_sk);
     opened.eph_sk.zeroize();
     // The proof derives the published key from the sealed secret, another secret is no seal of it.

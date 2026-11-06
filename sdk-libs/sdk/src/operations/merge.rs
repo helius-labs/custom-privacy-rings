@@ -1,9 +1,9 @@
 //! The record opens the merged note for its auditor.
 
 use custom_ring_interface::{
-    key_catalog::RingCircuit, CustomRingMergeIxData, InstructionTag, MergePublicInput,
-    MergeRecord, OutputRecord, RecordKind, RingMode, SealedMergeRecord, MERGE_ENVELOPE_LEN,
-    MERGE_RECORD_LEN, TAGGED_X25519_KEY_LEN,
+    key_catalog::RingCircuit, CustomRingMergeIxData, InstructionTag, MergePublicInput, MergeRecord,
+    OutputRecord, RecordKind, RingMode, SealedMergeRecord, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN,
+    TAGGED_X25519_KEY_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};

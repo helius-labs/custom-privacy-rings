@@ -2,9 +2,10 @@
 
 use custom_ring_interface::cosign::ApprovalMask;
 use custom_ring_interface::{
-    compute_unit_limit, funder_account_position, stream::{confidential_slot_tag, DeliveredSlot}, tag, OutputRecord,
-    InstructionTag, ParsedTransact, RecordKind, RingMode, RingRail, RingTransactData,
-    RING_TRANSACT_RING_CONFIG_INDEX, STORAGE_PROGRAM_ID,
+    compute_unit_limit, funder_account_position,
+    stream::{confidential_slot_tag, DeliveredSlot},
+    tag, InstructionTag, OutputRecord, ParsedTransact, RecordKind, RingMode, RingRail,
+    RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX, STORAGE_PROGRAM_ID,
 };
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -29,8 +30,8 @@ use zolana_ring_client::{
     rpc::{AuthorityWithdrawal, RelayEnrollInputs, RelayId, TxViewingSecret, ENROLL_COMPUTE_UNITS},
     AuditEnvelope, OpenedAudit,
 };
-use zolana_ring_transaction::open_recipient_body;
 use zolana_ring_policy::{ApprovalTotals, Member, OutputTotals, OwnerDebit, PublicTotals};
+use zolana_ring_transaction::open_recipient_body;
 
 use crate::{
     pipeline::delegate_rail, AllowedNullifiers, CustomRing, CustomRingConfig, PendingSignature,

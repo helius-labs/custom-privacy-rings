@@ -260,9 +260,9 @@ impl AnonymousSeal<'_> {
         };
         let published =
             u32::try_from(self.slots.len()).map_err(|_| TransactionError::TooManyOutputs)?;
-        let secret = self
-            .rail
-            .slot_secret(&sender.viewing_pubkey, &self.first_nullifier, published)?;
+        let secret =
+            self.rail
+                .slot_secret(&sender.viewing_pubkey, &self.first_nullifier, published)?;
         seal_sender_bundle(&bundle, &secret)
     }
 }
