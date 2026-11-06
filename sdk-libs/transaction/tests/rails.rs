@@ -753,12 +753,11 @@ fn the_bundle_names_the_sender_at_each_change_output_of_any_asset() {
     let rail = anonymous(tx_key, AnonymousPlan::new());
     let proof = rail.encrypt(tx, &address(&sender)).unwrap();
     let sent = bundle(&sender.viewing_key, &rail, &proof);
-    assert!(sent
-        .recipient_keys
-        .iter()
-        .all(|key| *key == address(&sender).viewing_pubkey.u()));
+    // The shape's padding dummy keeps a zero key.
+    let sender_u = address(&sender).viewing_pubkey.u();
+    assert_eq!(sent.recipient_keys, [sender_u, sender_u, sender_u, [0; 32]]);
     let assets = RingAssets::new([USDC]).unwrap();
-    let mut amounts: Vec<u64> = (0..sent.recipient_keys.len())
+    let mut amounts: Vec<u64> = (0..3)
         .map(|slot| change_at(&sender, &rail, &assets, &proof, slot))
         .inspect(|utxo| assert_eq!(utxo.asset, USDC))
         .map(|utxo| utxo.amount)
@@ -912,10 +911,10 @@ fn a_reply_frame_gives_every_body_one_length() {
     tx.pad_utxos(Shape::IN1_OUT4, &address(&sender)).unwrap();
     let proof = rail.encrypt(tx, &address(&sender)).unwrap();
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
-    for slot in &published[1..] {
+    // The change at slot 0 carries random reply bytes too.
+    for slot in &published {
         assert_eq!(slot.reply.len(), MIN_REPLY_LEN);
     }
-    assert!(published[0].reply.is_empty(), "change carries no reply");
     let data = proof.external_data.outputs[1].data.as_ref().unwrap();
     let (_, reply) = ring_body_output(data).unwrap();
     let secret = delivered_secret(&receiver.viewing_key, &proof, &rail, 1);
