@@ -875,24 +875,29 @@ function checkMoved(
   // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
   if (!expected.allowed.countsSpends(envelope.realInputs, frame.nullifiers))
     throw mismatch("SpendsUnrequestedNote");
-  // 3. Each live record pays one requested payment or returns change to a requested source.
+  // 3. Each live record pays one requested payment or returns change to a requested source,
+  // sealed to that owner's viewing key so the owner can open it.
   const owns = (owner: ExpectedOwner, record: OutputRecord): boolean =>
     equalBytes(record.ownerKey, owner.ownerKey) &&
     equalBytes(record.nullifierPk, owner.nullifierPk);
   const unpaid = [...expected.payments];
   records.forEach((record, slot) => {
     if (record.kind === RecordKind.dummy) return;
+    const sealedTo = (owner: ExpectedOwner): boolean =>
+      record.kind === RecordKind.exit ||
+      (recipientKeys[slot] !== undefined && equalBytes(recipientKeys[slot], owner.viewingU));
     const paid = unpaid.findIndex(
       (payment) =>
         record.kind === payment.kind &&
         record.mint === payment.mint &&
         record.amount === payment.amount &&
-        owns(payment.owner, record),
+        owns(payment.owner, record) &&
+        sealedTo(payment.owner),
     );
     if (paid < 0) {
       if (
         record.kind !== RecordKind.ring ||
-        !expected.sources.some((source) => owns(source, record))
+        !expected.sources.some((source) => owns(source, record) && sealedTo(source))
       )
         throw mismatch("Recipients");
       return;
