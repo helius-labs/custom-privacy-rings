@@ -1,6 +1,6 @@
 use custom_ring_interface::{
     blinding::ring_blinding_seed, AuditEvidence, AuditRecord, AuditStreamLayout, AuditorMessage,
-    DataTail, EntryRecord, InputClass, InputMap, ParsedTransact, RecordKind,
+    DataTail, EntryRecord, ParsedTransact, RecordKind,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -18,8 +18,8 @@ use crate::{
     disclosure::{canonical, AuditEnvelope},
     encryption::auditor_view_tag,
     types::{
-        AuditedEntryInput, AuditedInput, AuditedOutput, AuditedTransaction, AuditedUtxo,
-        InputOpening, OutputOpening, OutputPayloadError, OutputPayloadErrorKind, RingOwnerTag,
+        AuditedEntryInput, AuditedOutput, AuditedTransaction, AuditedUtxo, OutputOpening,
+        OutputPayloadError, OutputPayloadErrorKind, RingOwnerTag,
     },
     AuditError,
 };
@@ -123,7 +123,8 @@ impl<'a> TransactionAudit<'a> {
             real_inputs: opened.inputs.note_count(),
             outputs: Vec::new(),
             payload_errors: Vec::new(),
-            inputs: Vec::new(),
+            nullifiers: tx.nullifiers.clone(),
+            entries: entry_inputs(&opened.evidence)?,
         };
         for (index, output) in (0u32..).zip(&tx.output_slots) {
             let slot = Slot { index, output };
@@ -141,11 +142,6 @@ impl<'a> TransactionAudit<'a> {
                 transfer.slot(slot, record, tail)?,
             );
         }
-        audited.inputs = transfer.inputs(SpentInputs {
-            map: opened.inputs,
-            evidence: &opened.evidence,
-            nullifiers: &tx.nullifiers,
-        })?;
         Ok(audited)
     }
 }
@@ -200,12 +196,6 @@ struct Transfer {
     ring: Address,
     first_nullifier: [u8; 32],
     seed_out: [u8; 32],
-}
-
-struct SpentInputs<'a> {
-    map: InputMap,
-    evidence: &'a AuditEvidence,
-    nullifiers: &'a [[u8; 32]],
 }
 
 impl Transfer {
@@ -291,42 +281,23 @@ impl Transfer {
             slot.index,
         )?)
     }
+}
 
-    /// The proven map classifies each position, its default bits name notes alone.
-    fn inputs(&self, spent: SpentInputs<'_>) -> Result<Vec<AuditedInput>, AuditError> {
-        let SpentInputs {
-            map,
-            evidence,
-            nullifiers,
-        } = spent;
-        nullifiers
-            .iter()
-            .enumerate()
-            .map(|(index, nullifier)| {
-                let class = map.slot(index).ok_or(AuditError::DisclosureLayout)?;
-                let opening = match class {
-                    InputClass::Dummy => InputOpening::Dummy,
-                    InputClass::Address => InputOpening::Address,
-                    InputClass::Note => match evidence {
-                        AuditEvidence::Entry {
-                            default_input_bits,
-                            inputs,
-                        } if default_input_bits >> index & 1 == 1 => {
-                            let entry = inputs.get(index).ok_or(AuditError::DisclosureLayout)?;
-                            InputOpening::External(Box::new(entry_input(entry)?))
-                        }
-                        AuditEvidence::None
-                        | AuditEvidence::SingleAssetPayout { .. }
-                        | AuditEvidence::Entry { .. } => InputOpening::Real,
-                    },
-                };
-                Ok(AuditedInput {
-                    nullifier: *nullifier,
-                    opening,
-                })
-            })
-            .collect()
-    }
+/// The default-ring notes in note order, each bit names one of the `R` notes.
+fn entry_inputs(evidence: &AuditEvidence) -> Result<Vec<AuditedEntryInput>, AuditError> {
+    let AuditEvidence::Entry {
+        default_input_bits,
+        inputs,
+    } = evidence
+    else {
+        return Ok(Vec::new());
+    };
+    inputs
+        .iter()
+        .enumerate()
+        .filter(|(note, _)| default_input_bits >> note & 1 == 1)
+        .map(|(_, entry)| entry_input(entry))
+        .collect()
 }
 
 /// The opener refused a noncanonical nullifier key or commitment.

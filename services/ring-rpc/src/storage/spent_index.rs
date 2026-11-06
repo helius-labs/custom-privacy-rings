@@ -247,10 +247,8 @@ pub(crate) fn state_name(state: SpendState) -> &'static str {
     match state {
         SpendState::Observed => "observed",
         SpendState::Padding => "padding",
-        SpendState::Address => "address",
-        SpendState::External => "external",
         SpendState::Resolved { .. } => "resolved",
-        SpendState::UnresolvedReal => "unresolved",
+        SpendState::Unclassified => "unclassified",
     }
 }
 
@@ -258,10 +256,8 @@ fn state_of(name: &str, link: Option<[u8; 32]>) -> Result<SpendState, DbErr> {
     match (name, link) {
         ("observed", None) => Ok(SpendState::Observed),
         ("padding", None) => Ok(SpendState::Padding),
-        ("address", None) => Ok(SpendState::Address),
-        ("external", None) => Ok(SpendState::External),
         ("resolved", Some(note)) => Ok(SpendState::Resolved { note }),
-        ("unresolved", None) => Ok(SpendState::UnresolvedReal),
+        ("unclassified", None) => Ok(SpendState::Unclassified),
         _ => Err(DbErr::Custom(format!("unknown spend state {name}"))),
     }
 }
@@ -269,11 +265,7 @@ fn state_of(name: &str, link: Option<[u8; 32]>) -> Result<SpendState, DbErr> {
 fn state_link(state: SpendState) -> Option<[u8; 32]> {
     match state {
         SpendState::Resolved { note } => Some(note),
-        SpendState::UnresolvedReal
-        | SpendState::Observed
-        | SpendState::Padding
-        | SpendState::Address
-        | SpendState::External => None,
+        SpendState::Unclassified | SpendState::Observed | SpendState::Padding => None,
     }
 }
 

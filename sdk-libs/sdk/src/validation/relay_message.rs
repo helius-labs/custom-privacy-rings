@@ -399,7 +399,7 @@ fn check_message<E: ExpectedFrame>(
 }
 
 /// The proof binds each record to its slot under the key the frame publishes, a slot tag is an unproved hint.
-fn open_stream(
+pub(crate) fn open_stream(
     parsed: &ParsedTransact<'_>,
     tx_viewing_key: &TxViewingSecret,
     auditor: &X25519Pubkey,
@@ -528,10 +528,9 @@ impl ExpectedDelegate {
             return Err(MessageMismatch::Data);
         }
         self.check_withdrawals(data, accounts)?;
-        // 2. Matching outputs bind no input, each proven note position answers to the requested
-        // openings.
+        // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
         self.allowed
-            .check_inputs(opened.inputs.classes().zip(data.nullifiers))
+            .check_spends(opened.inputs.note_count(), data.nullifiers)
             .map_err(|_| MessageMismatch::SpendsUnrequestedNote)?;
         // 3. Each live record pays one requested payment or returns change to a requested source.
         let records = data

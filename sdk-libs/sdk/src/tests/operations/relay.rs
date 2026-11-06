@@ -1736,23 +1736,27 @@ mod delegate_message {
     }
 
     /// A pinned frame's published nullifiers, the honest case spends only the vector source's note.
-    fn published_nullifiers(message: &[u8]) -> Vec<[u8; 32]> {
+    /// The honest frame's spent notes, the authority rail publishes notes ahead of its padding.
+    fn honest_spends(
+        message: &[u8],
+        tx_viewing_key: &TxViewingSecret,
+        auditor: &spr_keypair::X25519Pubkey,
+    ) -> Vec<[u8; 32]> {
         let message: solana_message::VersionedMessage = wincode::deserialize(message).unwrap();
-        message
+        let data = message
             .instructions()
             .iter()
-            .filter_map(|instruction| {
-                let data = instruction.data.split_first()?;
-                (*data.0 == tag::AUTHORITY_TRANSFER).then_some(data.1)
+            .find_map(|instruction| {
+                let (tag, data) = instruction.data.split_first()?;
+                (*tag == tag::AUTHORITY_TRANSFER).then_some(data)
             })
-            .flat_map(|data| {
-                RingTransactData::parse(data, RingRail::Delegate)
-                    .unwrap()
-                    .data()
-                    .nullifiers
-                    .to_vec()
-            })
-            .collect()
+            .unwrap();
+        let parsed = RingTransactData::parse(data, RingRail::Delegate).unwrap();
+        let spent = crate::relay_message::open_stream(&parsed, tx_viewing_key, auditor)
+            .unwrap()
+            .inputs
+            .note_count();
+        parsed.data().nullifiers[..usize::from(spent)].to_vec()
     }
 
     #[tokio::test]
@@ -1943,11 +1947,16 @@ mod delegate_message {
             .iter()
             .map(|source| source.0)
             .collect();
+        let spends = honest_spends(
+            &vector.cases[0].message.0,
+            &vector.request.prepare.tx_viewing_key,
+            &config.auditor_pubkey,
+        );
         let expected = ExpectedDelegate::new(&RequestedAuthorityTransfer {
             request: vector.request.prepare,
             quote: &quote(),
             config: &config,
-            allowed: allowed_as_pinned(&sources, published_nullifiers(&vector.cases[0].message.0)),
+            allowed: allowed_as_pinned(&sources, spends),
         })
         .unwrap();
         for case in vector.cases {
@@ -2018,7 +2027,13 @@ mod delegate_message {
             .cases
             .iter()
             .find(|case| case.name == "honest")
-            .map(|case| published_nullifiers(&case.message.0))
+            .map(|case| {
+                honest_spends(
+                    &case.message.0,
+                    &vector.request.prepare.tx_viewing_key,
+                    &config.auditor_pubkey,
+                )
+            })
             .unwrap();
         let sources: Vec<ShieldedAddress> = vector
             .request

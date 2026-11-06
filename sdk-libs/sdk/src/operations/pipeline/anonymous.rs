@@ -449,7 +449,9 @@ impl Anonymous<'_> {
         if self.signer.pubkey() != sender.signing_pubkey {
             return Err(RingError::AnonymousSignerMismatch);
         }
-        let guarded = self.exposure.guard(HiddenOwner::of(&sender.signing_pubkey)?);
+        let guarded = self
+            .exposure
+            .guard(HiddenOwner::of(&sender.signing_pubkey)?);
         self.owner.check_settlement_accounts()?;
         if let Some(owner) = guarded {
             owner.check_signers([self.owner.transaction.payer()])?;

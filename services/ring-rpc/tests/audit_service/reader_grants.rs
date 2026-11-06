@@ -363,14 +363,11 @@ async fn wallet_activity(
 /// A spender of unnamed inputs reads no input opening and only its own notes.
 fn assert_reads_own_notes_alone(items: Vec<WalletActivity>) {
     let [item] = items.try_into().expect("the spender's transfer");
-    let WalletView::Sender {
-        inputs, outputs, ..
-    } = item.view
-    else {
+    let WalletView::Sender { spent, outputs, .. } = item.view else {
         panic!("a sender view")
     };
     assert!(outputs.is_empty());
-    assert!(inputs.is_empty());
+    assert!(spent.is_empty());
 }
 
 #[tokio::test]
@@ -420,15 +417,13 @@ fn enrolled_spend(fixture: &Fixture, co_spent: &[[u8; 32]]) -> StaticSource {
 /// The output amounts of the wallet's spend, one input of its own, after the note it received.
 fn sender_amounts(items: Vec<WalletActivity>) -> Vec<u64> {
     let Some(WalletActivity {
-        view: WalletView::Sender {
-            inputs, outputs, ..
-        },
+        view: WalletView::Sender { spent, outputs, .. },
         ..
     }) = items.into_iter().last()
     else {
         panic!("a sender view")
     };
-    assert_eq!(inputs.len(), 1);
+    assert_eq!(spent.len(), 1);
     outputs
         .iter()
         .flat_map(|output| &output.utxo)
@@ -461,14 +456,11 @@ async fn a_confidential_in_proof_owner_with_an_unopened_input_reads_its_own_note
         .await
         .try_into()
         .expect("the spender's transfer");
-    let WalletView::Sender {
-        inputs, outputs, ..
-    } = item.view
-    else {
+    let WalletView::Sender { spent, outputs, .. } = item.view else {
         panic!("a sender view")
     };
     assert!(
-        outputs.is_empty() && inputs.is_empty(),
+        outputs.is_empty() && spent.is_empty(),
         "an input the service never opened names no sole owner"
     );
 }
@@ -525,13 +517,10 @@ async fn a_data_output_signer_of_dummy_inputs_reads_only_its_own_output() {
         .await
         .try_into()
         .expect("the signer's transfer");
-    let WalletView::Sender {
-        inputs, outputs, ..
-    } = item.view
-    else {
+    let WalletView::Sender { spent, outputs, .. } = item.view else {
         panic!("a sender view")
     };
-    assert!(inputs.is_empty());
+    assert!(spent.is_empty());
     let amounts: Vec<u64> = outputs
         .iter()
         .flat_map(|output| &output.utxo)
@@ -699,7 +688,7 @@ fn anonymous_spend(fixture: &Fixture, others: &[([u8; 32], bool)]) -> StaticSour
 }
 
 #[tokio::test]
-async fn an_anonymous_spend_reads_a_resolved_input_an_unresolved_one_and_padding_apart() {
+async fn an_anonymous_spend_resolves_its_own_input_and_leaves_the_rest_unclassified() {
     let fixture = Fixture::new();
     let source = anonymous_spend(&fixture, &[(field(0x71), true), (field(0x72), false)]);
     let reader = wallet_reader(&source, OWNER);
@@ -711,15 +700,15 @@ async fn an_anonymous_spend_reads_a_resolved_input_an_unresolved_one_and_padding
         .await
         .expect("coverage");
     assert_eq!(coverage.totals.expect("first page totals").resolved, 1);
-    assert_eq!(coverage.totals.expect("first page totals").padding, 1);
-    // The paying transfer's own input stays unresolved beside the spend's.
+    // The proof names no position, the padding beside the unresolved note reads unclassified too.
+    assert_eq!(coverage.totals.expect("first page totals").padding, 0);
     assert_eq!(
         coverage
-            .unresolved_real
+            .unclassified
             .iter()
             .map(|row| row.nullifier.0)
             .collect::<Vec<_>>(),
-        [field(0x62), field(0x71)]
+        [field(0x62), field(0x71), field(0x72)]
     );
     assert!(coverage.unreadable.is_empty());
     assert!(coverage.integrity_faults.is_empty());

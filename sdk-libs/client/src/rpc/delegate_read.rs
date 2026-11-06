@@ -263,7 +263,9 @@ mod tests {
             .nullifier_key(&note(ZERO_NULLIFIER_PUBKEY))
             .expect("the zero key opens a zero-key note");
         assert_eq!(zero.pubkey().unwrap(), ZERO_NULLIFIER_PUBKEY);
-        let foreign = NullifierKey::from_secret([8; BLINDING_LEN]).pubkey().unwrap();
+        let foreign = NullifierKey::from_secret([8; BLINDING_LEN])
+            .pubkey()
+            .unwrap();
         assert!(read.nullifier_key(&note(foreign)).is_none());
         let unread = GetDelegateNotesResponse {
             nullifier_secret: None,

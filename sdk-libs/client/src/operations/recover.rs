@@ -25,7 +25,7 @@ use crate::{
     merge_audit::RingMergeBody,
     origin::{ConfirmedEventKind, RingOrigin, TransactionOrigin},
     scan::{RingHistory, SkippedRow, RING_HISTORY_MAX_PAGES, RING_HISTORY_PAGE_SIZE},
-    types::{InputOpening, OutputOpening},
+    types::OutputOpening,
     AuditError, MergeLedger,
 };
 
@@ -84,8 +84,10 @@ pub struct RecoveredNotes {
     pub unopened: Vec<[u8; 32]>,
     /// Verified merge mints the asset registry lacks, their notes stay unresolved.
     pub unknown_mints: BTreeSet<Address>,
-    /// First unmatched nullifiers, limited by `RECOVERY_INPUT_SAMPLE_LIMIT`.
+    /// First unmatched nullifiers of frames that spent an unopened note, limited by
+    /// `RECOVERY_INPUT_SAMPLE_LIMIT`. An address or padding slot of such a frame reads here too.
     pub unseen_inputs: Vec<[u8; 32]>,
+    /// Spent notes no batch opened, each frame's `R` less its matched nullifiers.
     pub unseen_input_count: u64,
 }
 
@@ -215,6 +217,13 @@ impl SourceMember<'_> {
     }
 }
 
+/// One frame's `R` and every nullifier it published, the proof names no note position.
+#[derive(Clone)]
+struct FrameSpends {
+    real_inputs: u8,
+    nullifiers: Vec<[u8; 32]>,
+}
+
 /// Notes found so far, by the commitments already claimed.
 #[derive(Clone, Default)]
 struct Found {
@@ -223,8 +232,8 @@ struct Found {
     unresolved: Vec<([u8; 32], [u8; 32])>,
     seen: HashSet<[u8; 32]>,
     unknown_mints: BTreeSet<Address>,
-    /// The batch's real inputs in history order.
-    real_inputs: Vec<[u8; 32]>,
+    /// The batch's spends in history order.
+    spends: Vec<FrameSpends>,
 }
 
 #[derive(Clone, Default)]
@@ -398,14 +407,18 @@ impl<'a> MemberRecovery<'a> {
         }
         .recover(&self.source)?;
         let opened_nullifiers = found.nullifiers();
-        for nullifier in std::mem::take(&mut found.real_inputs)
-            .into_iter()
-            .filter(|nullifier| !opened_nullifiers.contains(nullifier))
-        {
-            *unseen_input_count = unseen_input_count.saturating_add(1);
-            if unseen_inputs.len() < RECOVERY_INPUT_SAMPLE_LIMIT {
-                unseen_inputs.push(nullifier);
+        for spends in std::mem::take(&mut found.spends) {
+            let (matched, unmatched): (Vec<_>, Vec<_>) = spends
+                .nullifiers
+                .into_iter()
+                .partition(|nullifier| opened_nullifiers.contains(nullifier));
+            let unseen = usize::from(spends.real_inputs).saturating_sub(matched.len());
+            if unseen == 0 {
+                continue;
             }
+            *unseen_input_count = unseen_input_count.saturating_add(unseen as u64);
+            let room = RECOVERY_INPUT_SAMPLE_LIMIT.saturating_sub(unseen_inputs.len());
+            unseen_inputs.extend(unmatched.into_iter().take(room));
         }
         unopened_merges.extend(
             merges
@@ -436,13 +449,10 @@ impl<'a> MemberRecovery<'a> {
     ) -> Result<(), AuditError> {
         let frame = origin.audit_frame(self.recovery.mode)?;
         let audited = TransactionAudit::new(transaction, frame).run(self.recovery.auditor)?;
-        found.real_inputs.extend(
-            audited
-                .inputs
-                .iter()
-                .filter(|input| input.opening == InputOpening::Real)
-                .map(|input| input.nullifier),
-        );
+        found.spends.push(FrameSpends {
+            real_inputs: audited.real_inputs,
+            nullifiers: audited.nullifiers.clone(),
+        });
         if let Some(error) = audited.payload_errors.first() {
             return Err(AuditError::UnopenedOutput {
                 slot: error.slot_index,

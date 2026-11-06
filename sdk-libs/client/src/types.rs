@@ -1,6 +1,5 @@
 use core::fmt;
 
-use custom_ring_interface::InputClass;
 #[cfg(feature = "rpc")]
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -28,10 +27,13 @@ pub struct AuditedTransaction {
     /// Published order, a slot that did not open sits in `payload_errors` instead.
     pub outputs: Vec<AuditedOutput>,
     pub payload_errors: Vec<OutputPayloadError>,
-    /// `R`, spent notes among the published inputs.
+    /// `R`, the notes the proof spent. Their nullifiers sit among `nullifiers` at positions no
+    /// stream names, the auditor's own index places them.
     pub real_inputs: u8,
-    /// One per published nullifier.
-    pub inputs: Vec<AuditedInput>,
+    /// SPP's published nullifiers, notes, addresses and padding alike.
+    pub nullifiers: Vec<[u8; 32]>,
+    /// The default-ring notes among the `R`, in note order.
+    pub entries: Vec<AuditedEntryInput>,
 }
 
 /// One opened slot, its note rebuilt to the published commitment.
@@ -101,42 +103,7 @@ pub struct CreatedUtxo {
     pub ring_note: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuditedInput {
-    pub nullifier: [u8; 32],
-    pub opening: InputOpening,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum InputOpening {
-    /// Past the notes and addresses.
-    Dummy,
-    /// SPP's address slot, neither a spent note nor evidence of an owner.
-    Address,
-    /// A spent note, never padding or unspent.
-    Real,
-    /// A default-ring note the entry record names.
-    External(Box<AuditedEntryInput>),
-}
-
-impl InputOpening {
-    pub fn class(&self) -> InputClass {
-        match self {
-            Self::Dummy => InputClass::Dummy,
-            Self::Address => InputClass::Address,
-            Self::Real | Self::External(_) => InputClass::Note,
-        }
-    }
-
-    pub fn default_input(&self) -> Option<&AuditedEntryInput> {
-        match self {
-            Self::External(input) => Some(input.as_ref()),
-            Self::Dummy | Self::Address | Self::Real => None,
-        }
-    }
-}
-
-/// Bound by the proof to the spent input at its position.
+/// Bound by the proof to the spent note at its note position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AuditedEntryInput {
     pub owner_key: [u8; 32],

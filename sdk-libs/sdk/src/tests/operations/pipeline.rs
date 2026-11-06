@@ -3154,7 +3154,12 @@ async fn an_accepted_exposure_admits_each_party_the_default_refuses_but_no_hidde
         exposed(hidden_exit(), OwnerExposure::Refused, &chain).await,
         Err(RingError::AnonymousExitLinksOwner(exit)) if exit == hidden
     ));
-    for transfer in [zero_key_spend(), hidden_payer(), hidden_funder(), hidden_exit()] {
+    for transfer in [
+        zero_key_spend(),
+        hidden_payer(),
+        hidden_funder(),
+        hidden_exit(),
+    ] {
         exposed(transfer, OwnerExposure::Accepted, &chain)
             .await
             .unwrap();

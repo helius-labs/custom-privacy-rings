@@ -103,9 +103,8 @@ pub use crate::{
     resolver::{AuthorizationCheck, RecipientResolver, ResolveError, ResolvedRecipient},
     scan::{AuditedPage, RingScan, RingScanPage, ScanPage, SkippedRow},
     types::{
-        AuditedEntryInput, AuditedInput, AuditedOutput, AuditedTransaction, AuditedUtxo,
-        CreatedUtxo, InputOpening, KnownUtxo, OutputOpening, OutputPayloadError,
-        OutputPayloadErrorKind, RingOwnerTag, UtxoOwner,
+        AuditedEntryInput, AuditedOutput, AuditedTransaction, AuditedUtxo, CreatedUtxo, KnownUtxo,
+        OutputOpening, OutputPayloadError, OutputPayloadErrorKind, RingOwnerTag, UtxoOwner,
     },
 };
 pub use program_data::{program_data, ProgramData, PROGRAM_DATA_METADATA_LEN};

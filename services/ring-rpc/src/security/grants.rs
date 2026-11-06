@@ -68,7 +68,11 @@ impl WalletScope {
         let parties = store
             .input_parties(
                 &self.wallet,
-                response.value.items.iter().flat_map(|item| &item.inputs),
+                response
+                    .value
+                    .items
+                    .iter()
+                    .flat_map(|item| &item.nullifiers),
             )
             .await?;
         Ok(GetWalletActivityResponse {
@@ -79,9 +83,7 @@ impl WalletScope {
                     .items
                     .into_iter()
                     .filter_map(|item| {
-                        WalletActivity::of(self.wallet, item, |input| {
-                            parties.party(&self.wallet, input)
-                        })
+                        WalletActivity::of(self.wallet, item, |nullifier| parties.owns(nullifier))
                     })
                     .collect(),
                 cursor: response.value.cursor,
