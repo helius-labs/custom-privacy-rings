@@ -45,7 +45,7 @@ type Screening struct {
 // Screen holds a spend to the policy, withdrawal legs join the payments only once their hash binds them.
 func (p *Policy) Screen(api frontend.API, rc frontend.Rangechecker, g Gates, spend Spend, outputs []shared.Output) Screening {
 	cmp := newComparator(rc)
-	payments := append(slotPayments(outputs), p.openWithdrawals(api, rc)...)
+	payments := append(slotPayments(outputs), p.openWithdrawals(api)...)
 	resolved := p.screenPayments(api, cmp, g, spend, payments)
 	// The outflow section binds on a ring with an own registry, with or without a policy hash.
 	screening := p.constrainOutflow(api, cmp, g.Outflow, spend, outputs, resolved)
