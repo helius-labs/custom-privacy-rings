@@ -107,8 +107,8 @@ impl Opening {
         ))
     }
 
-    /// A slot past the spent notes, a zero domain opens neither a note nor a dummy.
-    pub fn input_padding() -> Self {
+    /// A slot past the published count, the circuit admits a dummy domain alone.
+    pub fn padding() -> Self {
         let mut domain = [0; 32];
         domain[30..].copy_from_slice(&spr_interface::DUMMY_DOMAIN.to_be_bytes());
         Self {
