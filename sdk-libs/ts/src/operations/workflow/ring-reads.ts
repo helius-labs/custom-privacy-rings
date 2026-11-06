@@ -1,7 +1,7 @@
 /** The registries an instruction reads after the ring account and the tracking rows its proof opens. */
 import type { Address } from "@solana/kit";
 
-import { addressBytes, equalBytes, isZero, ZERO_NULLIFIER_PK } from "@heliuslabs/spr/internal";
+import { addressBytes, isZero } from "@heliuslabs/spr/internal";
 import type { Bytes32, RequestContext } from "@heliuslabs/spr/interface";
 
 import { registryCurator, type RingPolicy } from "../../protocol/codec/ring-codecs.js";
@@ -40,7 +40,7 @@ export function ringRegistrySlots(
   ]);
 }
 
-/** Each output key under `root`, a nonzero key at its own row and the zero key at any row, Rust `check_output_key`. */
+/** Each output owner's opening under `root`, any output key pays its owner, Rust `check_output_key`. */
 export async function readOutputKeys(
   input: Readonly<{
     client: Pick<TrackingReader, "getTrackingOpenings">;
@@ -61,13 +61,9 @@ export async function readOutputKeys(
   if (openings.length !== outputs.length)
     throw new RingError("RING_TRACKING_INVALID", { details: { reason: "openings" } });
   return Object.freeze(
-    outputs.map(({ member, nullifierPk }, index) => {
+    outputs.map(({ member }, index) => {
       const opening = openings[index] as TrackingOpening;
-      const row = verifyTrackingOpening(opening, root.root, member);
-      if (equalBytes(nullifierPk, ZERO_NULLIFIER_PK)) return opening;
-      if (row === undefined) throw new RingError("RING_RECIPIENT_NOT_ENROLLED");
-      if (!equalBytes(row.nullifierPk, nullifierPk))
-        throw new RingError("RING_ADDRESS_MISMATCH", { details: { field: "nullifierPk" } });
+      verifyTrackingOpening(opening, root.root, member);
       return opening;
     }),
   );

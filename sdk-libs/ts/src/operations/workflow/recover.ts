@@ -243,10 +243,8 @@ function applyRows(
   refuseSkipped(rows.skipped);
   // 2. Outputs before spends, the batch's merges and inputs need the notes they consume.
   for (const transaction of audited) {
-    for (const { nullifier, opening } of transaction.inputs)
-      // Rust `InputOpening::Real`, a batch opening never hides a spend, the result stays the same at any page size.
-      if (opening.kind === "unresolvedReal" || opening.kind === "opened")
-        found.realInputs.push(nullifier);
+    // No stream classifies a nullifier, an address or padding one marks no note it never matches.
+    for (const { nullifier } of transaction.inputs) found.realInputs.push(nullifier);
     // An unopened slot could hide a source UTXO.
     const [unopened] = transaction.payloadErrors;
     if (unopened !== undefined)
