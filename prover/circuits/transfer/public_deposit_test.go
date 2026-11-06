@@ -57,7 +57,7 @@ func TestPublicDepositIntoTheRing(t *testing.T) {
 	})
 	t.Run("a recipient key with no row", func(t *testing.T) {
 		b := signerDeposit(t, func(w *ringtransfer.World) { w.Unenrolled = []*big.Int{recipient} })
-		refused(t, b.Circuit, "transfer.AssertOutputOwners")
+		requireSolved(t, b.Circuit)
 	})
 	t.Run("a zero key recipient must be absent", func(t *testing.T) {
 		for _, enrolled := range []bool{false, true} {

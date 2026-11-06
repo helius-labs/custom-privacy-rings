@@ -433,8 +433,9 @@ fn every_confidential_owner_slot_signs() {
     );
 }
 
+/// A stray signer takes no co-signer cell, the wallet decides whether it names the hidden owner.
 #[test]
-fn an_anonymous_transfer_signs_with_the_payer_and_the_owner_run_alone() {
+fn an_anonymous_owner_run_signs_and_another_signer_reaches_the_proof() {
     let fixture = Fixture::new();
     let mut ring = Ring::new(Setup::Anonymous);
     let data = fixture.transfer(RingRail::Anonymous, 2, 2, false);
@@ -452,17 +453,14 @@ fn an_anonymous_transfer_signs_with_the_payer_and_the_owner_run_alone() {
     let mut stray = spp_list(&ring.payer.pubkey(), &data, &[]);
     stray[RING_TRANSACT_RING_CONFIG_INDEX + 1].pubkey = owner.pubkey();
     stray[RING_TRANSACT_RING_CONFIG_INDEX + 1].is_signer = true;
-    refused(
-        send(
-            &mut ring,
-            tag::TRANSFER,
-            Vec::new(),
-            data.encode().unwrap(),
-            stray,
-            &[&owner],
-        ),
-        CustomRingError::InvalidAnonymousSigner,
-    );
+    reaches_verification(send(
+        &mut ring,
+        tag::TRANSFER,
+        Vec::new(),
+        data.encode().unwrap(),
+        stray,
+        &[&owner],
+    ));
     let unsigned = [AccountMeta::new_readonly(owner.pubkey(), false)];
     let spp = spp_list(&ring.payer.pubkey(), &data, &unsigned);
     refused(
@@ -1337,9 +1335,9 @@ fn public_legs_fit_the_account_list_and_the_leg_cap() {
     );
 }
 
-/// A leg's funder stands apart from the owner run, a signer on a withdrawal has no such role.
+/// A leg's funder stands apart from the owner run, a signer on a withdrawal takes no cell either.
 #[test]
-fn an_anonymous_deposit_leg_admits_its_funder_and_no_other_signer() {
+fn an_anonymous_leg_admits_its_funder_and_a_withdrawal_signer() {
     let fixture = Fixture::new();
     let mut ring = Ring::new(Setup::Anonymous);
     let signer = Keypair::new();
@@ -1366,17 +1364,14 @@ fn an_anonymous_deposit_leg_admits_its_funder_and_no_other_signer() {
     let withdrawn = frame(InterfaceTransfer::SolWithdrawal { amount: 5 });
     let mut spp = spp_list(&ring.payer.pubkey(), &withdrawn, &[]);
     spp.extend_from_slice(&group);
-    refused(
-        send(
-            &mut ring,
-            tag::TRANSFER,
-            Vec::new(),
-            withdrawn.encode().unwrap(),
-            spp,
-            &[&signer],
-        ),
-        CustomRingError::InvalidAnonymousSigner,
-    );
+    reaches_verification(send(
+        &mut ring,
+        tag::TRANSFER,
+        Vec::new(),
+        withdrawn.encode().unwrap(),
+        spp,
+        &[&signer],
+    ));
 }
 
 #[test]
@@ -1692,8 +1687,9 @@ fn anonymous_exit(
     )
 }
 
+/// The program reads no exit destination, a hidden sender may leave to any account and the wallet decides.
 #[test]
-fn an_anonymous_spend_leaves_to_one_destination_that_names_one_key() {
+fn an_anonymous_spend_leaves_to_any_destination() {
     let mut ring = Ring::new(Setup::Anonymous);
     let sol = InterfaceTransfer::SolWithdrawal { amount: 5 };
     let sol_group = |recipient: Address| {
@@ -1703,37 +1699,14 @@ fn an_anonymous_spend_leaves_to_one_destination_that_names_one_key() {
         ]
     };
     let wallet = Address::new_unique();
-    reaches_verification(anonymous_exit(&mut ring, &[sol], sol_group(wallet)));
     reaches_verification(anonymous_exit(
         &mut ring,
         &[sol, sol],
-        [sol_group(wallet), sol_group(wallet)].concat(),
+        [sol_group(wallet), sol_group(Address::new_unique())].concat(),
     ));
-    refused(
-        anonymous_exit(
-            &mut ring,
-            &[sol, sol],
-            [sol_group(wallet), sol_group(Address::new_unique())].concat(),
-        ),
-        CustomRingError::AnonymousExitDestinationsDiffer,
-    );
     let with_data = Address::new_unique();
     ring.store(with_data, SYSTEM, vec![1]);
-    refused(
-        anonymous_exit(&mut ring, &[sol], sol_group(with_data)),
-        CustomRingError::AnonymousExitAccountHasData,
-    );
-    let spl = InterfaceTransfer::SplWithdrawal {
-        amount: 5,
-        spl_interface_bump: 255,
-    };
-    let spl_group = (0..5)
-        .map(|_| AccountMeta::new(Address::new_unique(), false))
-        .collect();
-    refused(
-        anonymous_exit(&mut ring, &[spl], spl_group),
-        CustomRingError::AnonymousExitTokenAccountInvalid,
-    );
+    reaches_verification(anonymous_exit(&mut ring, &[sol], sol_group(with_data)));
 }
 
 #[test]
