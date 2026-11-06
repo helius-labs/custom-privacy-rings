@@ -1373,7 +1373,7 @@ fn a_signed_authority_transfer_matches_the_shared_vector() {
 fn signed_update_pending_approval() -> SubmitRecordUpdateRequest {
     let wallet = Keypair::new_from_array([7; 32]);
     let identity = Hash(
-        *zolana_ring_policy::Member::owner_tag(wallet.pubkey().as_array())
+        *crate::records::owner_record_key(wallet.pubkey().as_array())
             .expect("wallet")
             .as_bytes(),
     );
