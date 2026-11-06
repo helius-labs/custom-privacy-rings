@@ -48,6 +48,8 @@ const (
 	ListTagDomain = 0x43525054
 	// ListKeyDomain = "CRPL"
 	ListKeyDomain = 0x4352504c
+	// DeliveredSlotDomain = "CRDS"
+	DeliveredSlotDomain = 0x43524453
 )
 
 // The root of every auditor stream, mirrored by AUDIT_SHARED_SECRET in program-libs/interface/src/proof/domain.rs and DOM_SEP_CR_SHARED in sdk-libs/ts/src/crypto/audit/audit.ts.
@@ -64,6 +66,10 @@ const (
 	NfKeyEncInfo = "CRING/nfk"
 	// MergeEncInfo mirrors MERGE_RECORD_LABEL.
 	MergeEncInfo = "CRING/mrg"
+	// OutputRecordInfo mirrors RECIPIENT_BODY_LABEL, the record is the slot's recipient body.
+	OutputRecordInfo = "CRING/rcp"
+	// MergeOutputInfo mirrors MERGE_OUTPUT_LABEL.
+	MergeOutputInfo = "CRING/mro"
 )
 
 // ZeroNullifierPk permits nullifier derivation from the opening without a secret.

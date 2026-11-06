@@ -24,7 +24,7 @@ func signerDeposit(t *testing.T, edit func(*ringtransfer.World)) ringtransfer.Bu
 	w.World = publicDeposit(t, w.World)
 	edit(&w.World)
 	b := w.Build(t)
-	b.Run, b.Circuit.SignerCount, b.Circuit.Signers[0], b.Circuit.SignerDataCounts = nil, 0, 0, 0
+	b.Run, b.Circuit.SignerCount, b.Circuit.Signers[0] = nil, 0, 0
 	b.Rebind(t)
 	if !b.Values(t).NoSpend {
 		t.Fatal("a deposit spent a note")
@@ -51,7 +51,7 @@ func TestPublicDepositIntoTheRing(t *testing.T) {
 		w := onAnonymous(anonymous2, ringtransfer.PublicOwners)
 		w.World = publicDeposit(t, w.World)
 		b := w.Build(t)
-		b.Run, b.Circuit.SignerCount, b.Circuit.Signers[0], b.Circuit.SignerDataCounts = nil, 0, 0, 0
+		b.Run, b.Circuit.SignerCount, b.Circuit.Signers[0] = nil, 0, 0
 		b.Rebind(t)
 		requireSolved(t, b.Circuit)
 	})

@@ -451,10 +451,7 @@ fn compute_vectors() -> StatementVectors {
     };
     let entry = TransferStatement {
         head: values.head(
-            AuditLayout {
-                entry: true,
-                ..no_flags
-            },
+            AuditLayout { entry: true },
             stream(entry_key, 3, &four),
         ),
         roots: &tracking_roots,

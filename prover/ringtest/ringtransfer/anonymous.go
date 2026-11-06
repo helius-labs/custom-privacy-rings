@@ -67,7 +67,7 @@ func (w Anonymous) Build(t testing.TB) BuiltAnonymous {
 // Rehash recomputes private_tx_hash from the fixture slots and inputs, then the public input.
 func (b BuiltAnonymous) Rehash(t testing.TB) {
 	t.Helper()
-	rehash(t, &b.Circuit.Sections, b.Audit)
+	b.World.World.rehash(t, &b.Circuit.Sections, b.Audit)
 	b.Rebind(t)
 }
 
