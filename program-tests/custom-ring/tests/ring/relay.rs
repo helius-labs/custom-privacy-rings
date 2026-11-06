@@ -15,6 +15,8 @@ use zolana_ring_client::rpc::{
 };
 
 use super::*;
+use std::time::Instant;
+use zolana_ring_rpc::ClientRates;
 
 #[test]
 fn a_relayed_anonymous_payment_reaches_its_recipient() -> Result<()> {
@@ -212,8 +214,15 @@ fn a_relayed_authority_transfer_moves_the_enrolled_members_note() -> Result<()> 
     let config = env.run(relayed.ring.require_config(env.client.as_async()))?;
     let quote = ring_rpc.quote(env, RelayOperation::Delegate)?;
 
-    // The service opens the member's deposit under its enrolled key at its next backfill.
+    // The service opens the member's deposit under its enrolled key at its next backfill. Each
+    // prepare spends the delegate's write bucket, a poll past its refill reads only the refusal.
+    let refill = Duration::from_secs(60) / ClientRates::default().signed_writes.per_minute.get();
+    let mut sent: Option<Instant> = None;
     let pending = wait_for("the service to open the enrolled note", || {
+        if sent.is_some_and(|at| at.elapsed() < refill) {
+            return Ok(Probe::NotYet);
+        }
+        sent = Some(Instant::now());
         let request = AuthorityTransferRequest::new(AuthorityTransferAttestation {
             target: ring_rpc.target,
             delegate: delegate.pubkey(),

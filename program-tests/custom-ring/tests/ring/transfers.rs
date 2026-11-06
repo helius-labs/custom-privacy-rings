@@ -1031,7 +1031,7 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
         payer: env.payer.pubkey(),
         authority: cosign_admin.pubkey(),
         signer: cosigner.pubkey(),
-        scope: CoSignScope::WITHDRAWALS,
+        scope: CoSignScope::APPROVE_WITHDRAWAL,
     }
     .instruction()?])?;
     StorageRecords::mint_policy(
