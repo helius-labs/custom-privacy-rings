@@ -74,7 +74,7 @@ The rail bits:
 
 `withdrawal_hash = HashChain4([CRPW, right_align(count), (owner, asset, right_align(amount)) per withdrawal leg])`, in settlement order. A SOL leg's owner is `solana_owner_identity(recipient)`, and an SPL leg's owner is the identity of the token account's owner. The program reads both from the live settlement accounts, and each amount from the u64 settlement leg. The circuit range checks no leg amount, since a leg at or past `2^64` opens no digest the program builds. The list is empty on a ring without own records and on the delegate rails.
 
-No zolana ciphertext enters the statement, an exit's scheme 3 body included. The circuit holds every spent UTXO to its rail's owner predicate and reopens SPP's `private_tx_hash` as `Poseidon(note_chain, output_chain, address_chain, private_tx_blinding)`. `note_chain` and `output_chain` are the `NonZeroHashChain`s of the opened notes and the real outputs, both in SPP's order. `address_chain` and `private_tx_blinding` stay private, and the shared hash alone checks the address chain. No statement element carries a nullifier but `n0`.
+No SPP ciphertext enters the statement, an exit's scheme 3 body included. The circuit holds every spent UTXO to its rail's owner predicate and reopens SPP's `private_tx_hash` as `Poseidon(note_chain, output_chain, address_chain, private_tx_blinding)`. `note_chain` and `output_chain` are the `NonZeroHashChain`s of the opened notes and the real outputs, both in SPP's order. `address_chain` and `private_tx_blinding` stay private, and the shared hash alone checks the address chain. No statement element carries a nullifier but `n0`.
 
 ## Apply records
 

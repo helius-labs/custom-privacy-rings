@@ -48,7 +48,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit opens each slot in `OpenInputs` through `OpenSlot`. A dummy carries nothing but its blinding, as SPP's `CheckDummy` reads it. No address enters a ring input slot.
 - The notes come in SPP's note order, then the dummies, in `AssertDummiesLast`. The circuit holds `input_count` to at least one through `SelectCount`, and refuses a note at or past the count.
 - The program sets `input_count` to the frame's nullifier count. No statement element carries a nullifier but `n0`, so the proof names no note position.
-- The circuit takes the address chain as a private witness, and `private_tx_hash` alone checks it. A note called an address would leave the note chain SPP hashed.
+- The circuit takes the address chain as a private witness, and `private_tx_hash` alone checks it.
 - Position `k` is note `k`, the order the entry records and the hidden rail read. The hidden rail holds slot 0 to a note.
 - The tests are `TestInputOrder`, `TestAddressSlots`, `TestInputsHoldNotesThenDummies`, `TestInputCompositionRefusesAnotherOrder`, `TestInputCompositionFillsTheEntryBitmap`, `TestAddressChainIsBoundThroughThePrivateTransactionHash` and `TestHiddenOwnerRequiresAFirstNote`, and `TestAnInputSlotHoldsANoteOrADummy` in `prover/circuits/audit`.
 
@@ -113,7 +113,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 ### The settled outputs are the audited outputs
 
 - The circuit opens each slot once in `OpenSlots`, then hands one `shared.Output` to the tracking checks, the policy and the stream.
-- The circuit reopens `private_tx_hash` in `bindTransaction`. A note called an address would leave the note chain SPP hashed.
+- The circuit reopens `private_tx_hash` in `bindTransaction`. A note relabelled as an address changes the note chain, and `private_tx_hash` fails.
 - The circuit holds every output slot to the UTXO or the dummy domain, dummies last, and a dummy to zero fields but its blinding. Ring slot `i` is then SPP slot `i` with no output hash in the statement.
 - SPP holds each output's ring id to 0 or the ring's in `AssertRingMemberOrFree`. Its authority rail holds it to the ring's in `AssertRingMember`, and its exit selector lets an output leave.
 - The data hashes enter no ring constraint but the UTXO hash, and no layout bit reads them. A malformed payload loses them for the recipient and the auditor.

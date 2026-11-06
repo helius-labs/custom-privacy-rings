@@ -1,6 +1,6 @@
 # Disclosure
 
-A ring transfer opens through one proven record per output slot. Each record is sealed to the recipient key the sender supplies for its slot. One AES-256-CTR stream, the auditor stream, seals the transaction viewing secret, the note count and every slot's recipient key to the auditor. Payloads, tags, replies and the sender bundle stay outside every proof. [Spec](../../spec.md) [Envelope](envelope.md)
+A ring transfer opens through one proven record per output slot. Each record is sealed to the recipient key the sender supplies for its slot. One AES-256-CTR stream, the auditor stream, seals the transaction viewing secret, the note count and every slot's recipient key to the auditor. Payloads, non-exit tags, replies and the sender bundle stay outside every proof. [Spec](../../spec.md) [Envelope](envelope.md)
 
 ## Verified audit recovery
 
@@ -101,7 +101,7 @@ record_ct_i = CRING/rcp stream under CRDS_i from counter 2, plaintext bytes 0 ..
 | Dummy | the slot's [dummy recipient key](hashing.md#slot-secret) |
 | Unpublished capacity slot | prover only, the SDKs supply the auditor's `u` |
 
-No constraint ties `V_i` to the intended recipient. A record sealed to another key credits nobody, since a reader accepts a note only when the commitment rebuilds. The sender chooses `V_i`, as it chose a body's key before.
+No constraint ties `V_i` to the intended recipient. A record sealed to another key credits nobody, since a reader accepts a note only when the commitment rebuilds. The sender chooses `V_i`.
 
 ## Slot body
 

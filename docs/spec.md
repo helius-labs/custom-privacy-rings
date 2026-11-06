@@ -307,7 +307,7 @@ A unified flow for anonymous and confidential transfers, exits and withdrawals. 
 
 **Variants:**
 
-1. **Anonymous:** a hidden owner signs inside the SPP proof, and public co-owners can sign beside it. The sender and recipients stay hidden from chain observers. No proof constrains a payload, a tag or the sender bundle, and SPP's external data hash binds their bytes. The discovery guarantee is [Discovery](spec/crypto/disclosure.md#discovery). A sender can attach reply metadata, and a recipient reads it as an unauthenticated claim.
+1. **Anonymous:** a hidden owner signs inside the SPP proof, and public co-owners can sign beside it. The sender and recipients stay hidden from chain observers. No proof constrains a payload, a non-exit tag or the sender bundle, and SPP's external data hash binds their bytes. The discovery guarantee is [Discovery](spec/crypto/disclosure.md#discovery). A sender can attach reply metadata, and a recipient reads it as an unauthenticated claim.
 2. **Confidential:** the policy screens the sender and recipients as public inputs. The wallet signs inside the proof, and the signer rail serves one or more owners who send their own transaction.
 3. **Exit to the default ring:** some outputs leave the ring to a public owner.
 4. **Public withdrawal:** SOL or SPL transfers to one or more accounts, optionally alongside other outputs. On the anonymous rail every withdrawal pays one key. Ring RPC can create the missing token account of an SPL withdrawal.
@@ -348,7 +348,7 @@ The capacity profiles below use one input, a separate payer, one co-signer and o
 | Confidential published owner | 8 total slots | Change consumes a slot, leaving at most 7 recipient payments when change is present |
 | Anonymous hidden owner | 8 total slots | Change consumes a slot, leaving at most 7 recipient payments when change is present |
 
-No key carries more than 8 outputs. A 16-output transfer exceeds the 4,096-byte limit on every rail, so a 16-recipient payout takes two transactions.
+No key carries more than 8 outputs, so a payout to more recipients takes several transactions.
 
 The confidential in-proof SDK rail does not accept default-ring inputs. Other combinations require their own frame-fit check. A missing proving key refuses the operation. A supported encoding does not establish that its production key is available.
 
@@ -503,7 +503,7 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 37. A slot's discovery tag is a hint no proof constrains. One every-site scan reads no tag, so a wrong tag cannot hide a note its recipient can decrypt.
 38. A salted owner write proves the owner's row under one tracking root. In the same instruction it raises the source's tracking floor to that root's revision. Rows never leave the tracking tree, so every root a salted read accepts holds each owner with a private entry. No such owner proves absence. An owner with no applied row has no private entry, so its proven absence hides none.
 39. The envelope seals the note count `R` and no note position. The ring's inputs hold SPP's spent notes in note order, and the proof takes the address chain as a private witness the shared `private_tx_hash` checks. The auditor classifies each nullifier from its own index, and `R` checks the count.
-40. No statement element counts a signer's outputs. A relayed signer signs only after it opens every published output, so no data-bearing output stays out of its view.
+40. No statement element counts a signer's outputs. The SDKs sign for a relayed signer only after every published output opens to it.
 
 ## Notes
 

@@ -1,6 +1,6 @@
 # Audit and recovery
 
-The auditor holds one viewing key for the ring's life. Every operation proves a record per output, sealed to a recipient key the auditor reads. Payloads, tags and the sender bundle stay outside every proof. [Spec](../spec.md)
+The auditor holds one viewing key for the ring's life. Every operation proves a record per output, sealed to a recipient key the auditor reads. Payloads, non-exit tags and the sender bundle stay outside every proof. [Spec](../spec.md)
 
 ## Transfers
 
@@ -8,7 +8,7 @@ The auditor holds one viewing key for the ring's life. Every operation proves a 
 - The key schedule binds the auditor key, the transaction key and a salt. A resend repeats the key, and a fresh salt gives a different keystream.
 - The stream contains an envelope and one recipient key per published slot.
 - Each slot has one record, sealed from the transaction viewing secret to that slot's recipient key. A non-exit slot's body carries it, and an exit's travels in the auditor message. The recipient and the auditor read the same record.
-- A record contains the kind, amount, owner key, mint, nullifier key and blinding. A dummy's record is all zero, so the auditor skips it by its kind byte.
+- A record contains the kind, amount, owner key, mint, nullifier key and blinding. A dummy's record is all zero, and the auditor rebuilds the dummy hash from its blinding.
 - The proof holds every published blinding to a derivation from the sealed key, the salt, the first nullifier and the slot index.
 - The auditor rebuilds each commitment from its record, the payload's data hashes and the tree id. It needs no other slot, no history and no mint registry.
 - A record of another slot rebuilds no published hash, so the reader refuses it.
@@ -53,7 +53,7 @@ The sender's SDK pays a nonzero key to any owner, enrolled or not, since only th
 
 ## Auditor fallback
 
-- `getWalletStatus` returns each of the wallet's notes with its opening, read from the proven record. The nullifier key stays absent on a deposit whose owner the service has not resolved. A wallet whose record was sealed to another key rebuilds its note from that opening.
+- `getWalletStatus` returns each of the wallet's notes with its opening, read from the proven record. A wallet whose record was sealed to another key rebuilds its note from that opening.
 - A wallet authorizes the read with its signature. A program cannot sign off chain, so it writes an `OwnerGrant` account through CPI that names a reader key.
 - The fallback covers notes the service opened.
 
