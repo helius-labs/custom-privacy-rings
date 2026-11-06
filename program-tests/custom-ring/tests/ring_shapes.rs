@@ -8,7 +8,8 @@ use custom_ring_interface::{
     key_catalog::{
         ApplyMode, FrameKey, RingCircuit, RingKey, TransferShape, RING_KEYS, TRANSFER_SHAPES,
     },
-    ParsedTransact, SINGLE_ASSET_PAYOUT_OUTPUTS, TRANSFER_OUTPUT_CAPACITIES,
+    ParsedTransact, SINGLE_ASSET_PAYOUT_INPUTS, SINGLE_ASSET_PAYOUT_OUTPUTS,
+    TRANSFER_OUTPUT_CAPACITIES,
 };
 use custom_ring_test_validator::{
     policy::{EnrollOwners, RingNotes},
@@ -32,7 +33,7 @@ const SALTED: RuleTable = RuleTable::builder()
 /// One apply proof per batch, width one is the configured actors' own.
 const ENROLLMENT_BATCHES: [usize; 4] = [16, 8, 4, 2];
 const RECORD_BATCHES: [usize; 5] = [1, 2, 4, 8, 16];
-/// With the sender and the legs' destinations these pass the narrow row's tracking pool.
+/// Payees ahead of the legs' destinations, each owner its own tracking row.
 const SALTED_RECIPIENTS: usize = 15;
 const TRANSFER_KEY_PREFIX: &str = "custom-ring-transfer-";
 
@@ -58,7 +59,7 @@ enum Column {
     Anonymous,
     AnonymousPolicy,
     Delegate,
-    /// A ring reading a salted list, the one pressure past a narrow row's pools.
+    /// A ring reading a salted list, a second record per owner and a tracking row per destination.
     Salted,
 }
 
@@ -177,6 +178,17 @@ const fn entry(outputs: u8, inputs: u8, withdrawals: u8, owners: u8) -> RingCirc
     }
 }
 
+/// Only the owner's confidential rail reaches sixteen outputs, one note paying one asset.
+const PAYOUT: RingCircuit = RingCircuit::Transfer {
+    format: custom_ring_interface::DisclosureFormat::SingleAssetPayout,
+    outputs: SINGLE_ASSET_PAYOUT_OUTPUTS as u8,
+    inputs: SINGLE_ASSET_PAYOUT_INPUTS as u8,
+    withdrawals: 0,
+    owners: 1,
+    entry: false,
+    wide: false,
+};
+
 /// `key` is what production selection must name for the spend, the gate refuses another.
 #[derive(Clone, Copy, Debug)]
 struct KeyCase {
@@ -207,6 +219,7 @@ const CONFIDENTIAL_KEY_CASES: &[KeyCase] = &[
     KeyCase::of(narrow(4, 24, 4, 4), Shape::IN1_OUT4, 1, 0),
     KeyCase::of(narrow(8, 16, 4, 4), Shape::IN1_OUT8, 1, 0),
     KeyCase::of(wide(2, 40, 4, 8), Shape::IN32_OUT2, 1, 0),
+    KeyCase::of(PAYOUT, Shape::IN1_OUT16, 1, 0),
 ];
 const WIDE_LEG_KEY_CASES: &[KeyCase] = &[KeyCase::of(wide(8, 24, 32, 13), Shape::IN1_OUT8, 1, 5)];
 const ENTRY_KEY_CASES: &[KeyCase] = &[
@@ -216,16 +229,20 @@ const ENTRY_KEY_CASES: &[KeyCase] = &[
     // Five legs pass every smaller entry key.
     KeyCase::of(entry(8, 8, 32, 8), Shape::IN1_OUT2, 1, 5),
 ];
-const SALTED_KEY_CASES: &[KeyCase] = &[KeyCase::of(wide(8, 24, 32, 13), Shape::IN1_OUT8, 1, 4)];
+/// One owner, seven payees and four destinations fill the narrow row's twelve tracking rows.
+const SALTED_KEY_CASES: &[KeyCase] = &[KeyCase::of(narrow(8, 16, 4, 4), Shape::IN1_OUT8, 1, 4)];
 
 const CONFIDENTIAL_POLICY_CAPACITY: &[KeyCase] = &[
     KeyCase::of(narrow(2, 24, 4, 4), Shape::IN24_OUT2, 24, 4),
     KeyCase::of(narrow(4, 24, 4, 4), Shape::IN24_OUT4, 24, 4),
     KeyCase::of(narrow(8, 16, 4, 4), Shape::IN16_OUT8, 16, 4),
 ];
-/// An audit only ring opens no record and takes the fewest accounts.
-const CONFIDENTIAL_CAPACITY: &[KeyCase] =
-    &[KeyCase::of(wide(2, 40, 4, 8), Shape::IN40_OUT2, 40, 4)];
+/// An audit only ring opens no record and takes the fewest accounts. Forty notes leave room for
+/// three legs, the key's fourth leg fits only at thirty two.
+const CONFIDENTIAL_CAPACITY: &[KeyCase] = &[
+    KeyCase::of(wide(2, 40, 4, 8), Shape::IN40_OUT2, 40, 3),
+    KeyCase::of(wide(2, 40, 4, 8), Shape::IN32_OUT2, 32, 4),
+];
 /// Every leg of a hidden sender names one destination, each entry case at the most inputs its legs leave inline.
 const ANONYMOUS_POLICY_CAPACITY: &[KeyCase] = &[
     KeyCase::of(wide(8, 24, 32, 13), Shape::IN8_OUT8, 8, 32),
@@ -235,7 +252,7 @@ const ANONYMOUS_POLICY_CAPACITY: &[KeyCase] = &[
     KeyCase::of(entry(8, 8, 32, 8), Shape::IN8_OUT2, 8, 32),
     KeyCase::of(entry(8, 8, 32, 8), Shape::IN1_OUT8, 1, 32),
 ];
-const SALTED_CAPACITY: &[KeyCase] = &[KeyCase::of(wide(8, 24, 32, 13), Shape::IN1_OUT8, 1, 4)];
+const SALTED_CAPACITY: &[KeyCase] = &[KeyCase::of(narrow(8, 16, 4, 4), Shape::IN1_OUT8, 1, 4)];
 
 /// Every prover call of a column passes here, the selection under test is the SDK's own.
 #[derive(Clone, Debug, Default)]
@@ -697,7 +714,7 @@ impl ShapeRing<'_> {
         Ok(())
     }
 
-    /// On a salted ring every destination holds a tracking row, the reads past the narrow row need it.
+    /// On a salted ring every destination holds a tracking row, the salted read opens it.
     fn case_legs(&self, legs: usize) -> Result<Vec<Leg>> {
         if legs == 0 {
             return Ok(Vec::new());
@@ -740,12 +757,12 @@ impl ShapeRing<'_> {
         Ok(())
     }
 
-    /// No inline transaction reaches sixteen outputs, the catalog keys none.
+    /// Sixteen outputs key only the confidential payout, the authority rail keys none.
     fn sixteen_outputs_refused(&self) -> Result<()> {
         let transfer = ShapeTransfer {
             shape: Shape::IN1_OUT16,
             inputs: self.utxos(1)?,
-            spend: Spend::Rail(RingRail::Confidential),
+            spend: Spend::Rail(RingRail::Delegate),
             legs: Vec::new(),
         };
         match self
@@ -769,10 +786,15 @@ impl ShapeRing<'_> {
         let wide = the_wide_key()?;
         let widest = usize::from(wide.withdrawals);
         let destinations = funded_destinations(self.env, distinct_targets(rail, widest))?;
-        for legs in [past_narrow_legs(wide)?, widest] {
+        // The key's widest leg count fits inline only beside its fewest outputs.
+        let fewest = TRANSFER_OUTPUT_CAPACITIES[0];
+        for (legs, outputs) in [
+            (past_narrow_legs(wide)?, wide.outputs.into()),
+            (widest, fewest),
+        ] {
             restart_prover()?;
             let transfer = ShapeTransfer {
-                shape: Shape::new(1, wide.outputs.into()),
+                shape: Shape::new(1, outputs),
                 inputs: self.utxos(1)?,
                 spend: Spend::Rail(rail),
                 legs: match rail {
@@ -1290,18 +1312,24 @@ impl ShapeRing<'_> {
                     env,
                 }
                 .send()?;
-                let mut anonymous = owner_transfer(transaction(env.payer.pubkey())?)?
-                    .with_anonymous_signer(&sender.signing_key);
-                for recipient in &recipients {
-                    anonymous = anonymous.with_payment(custom_ring_sdk::AnonymousPayment {
-                        to: ring_address(recipient, program)?,
-                        asset: env.assets.mint(&asset)?,
-                        amount,
-                        reply: None,
-                        data: custom_ring_sdk::NoteData::default(),
-                    })?;
-                }
-                env.run(anonymous.with_shape(shape)?.prove(client))
+                // The recipients' apply moves the tracking root, the indexer serves it a projection later.
+                wait_for("the ring indexer to serve the applied roots", || {
+                    let mut anonymous = owner_transfer(transaction(env.payer.pubkey())?)?
+                        .with_anonymous_signer(&sender.signing_key);
+                    for recipient in &recipients {
+                        anonymous = anonymous.with_payment(custom_ring_sdk::AnonymousPayment {
+                            to: ring_address(recipient, program)?,
+                            asset: env.assets.mint(&asset)?,
+                            amount,
+                            reply: None,
+                            data: custom_ring_sdk::NoteData::default(),
+                        })?;
+                    }
+                    Ok(match env.run(anonymous.with_shape(shape)?.prove(client)) {
+                        Err(error) if error.is_projection_lag() => Probe::Retry(error.into()),
+                        proven => Probe::Ready(proven),
+                    })
+                })?
             }
             Spend::Rail(RingRail::Delegate) => {
                 ensure!(legs.is_empty(), "the authority rail settles no public leg");
