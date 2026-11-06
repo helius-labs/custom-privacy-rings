@@ -12,7 +12,7 @@ use custom_ring_interface::{
     mint_policy_write,
     storage::{Revision, StorageRegistry},
     storage_instruction::StorageUpdateIxData,
-    tracking::TrackingAuthorization,
+    tracking::{TrackingAuthorization, TrackingRegistry},
     RecordWriteData, RingPolicy, WriteRecordsIxData,
 };
 use custom_ring_sdk::{
@@ -345,11 +345,22 @@ pub struct ApplyOwnerEnrollments<'a> {
 }
 
 impl ApplyOwnerEnrollments<'_> {
+    /// An apply evicting an unexpired root refuses, the round ends and waits out that root's grace.
     pub fn send(self) -> Result<()> {
         let env = self.env;
         let registry = env
             .run(self.ring.require_policy(env.client.as_async()))?
             .tracking;
+        while let Some(expiry) = self.round(registry)? {
+            println!("RING_ROOT_RETAINED until slot {expiry}");
+            wait_for_slot(env, expiry)?;
+        }
+        Ok(())
+    }
+
+    /// `Some` names the slot the oldest kept root expires at, the next apply waits for it.
+    fn round(&self, registry: Address) -> Result<Option<u64>> {
+        let env = self.env;
         wait_for("the applied enrollments", || {
             let mut applied = true;
             for owner in self.owners {
@@ -357,18 +368,14 @@ impl ApplyOwnerEnrollments<'_> {
                     .is_some_and(|enrollment| !enrollment.is_pending());
             }
             if applied {
-                let pending =
-                    env.client
-                        .indexer()
-                        .get_pending_enrollments(GetPendingEnrollmentsRequest {
-                            registry: registry.into(),
-                            after: None,
-                            limit: 1,
-                        })?;
-                return Ok(match pending.enrollments.is_empty() {
-                    true => Probe::Ready(()),
-                    false => Probe::NotYet,
+                return Ok(match pending_enrollments(env, registry, 1)? {
+                    Probe::Ready(0) => Probe::Ready(None),
+                    Probe::Ready(_) | Probe::NotYet => Probe::NotYet,
+                    Probe::Retry(error) => Probe::Retry(error),
                 });
+            }
+            if let Some(expiry) = retained_root(env, registry)? {
+                return Ok(Probe::Ready(Some(expiry)));
             }
             match env.run(EnrollPending { ring: self.ring }.prove(env.client.ring_client())) {
                 Ok(Some(instruction)) => {
@@ -381,6 +388,50 @@ impl ApplyOwnerEnrollments<'_> {
             }
         })
     }
+}
+
+/// A lagging ring indexer answers a later poll.
+fn pending_enrollments(env: &TestEnv, registry: Address, limit: u64) -> Result<Probe<usize>> {
+    let read = env
+        .client
+        .indexer()
+        .get_pending_enrollments(GetPendingEnrollmentsRequest {
+            registry: registry.into(),
+            after: None,
+            limit,
+        })
+        .map_err(RingError::from);
+    match read {
+        Ok(pending) => Ok(Probe::Ready(pending.enrollments.len())),
+        Err(error) if error.is_projection_lag() => Ok(Probe::Retry(error.into())),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// The slot the oldest kept root expires at, `None` while the history has room for an apply.
+fn retained_root(env: &TestEnv, registry: Address) -> Result<Option<u64>> {
+    let account =
+        spr_test_utils::test_validator_asserts::fetch_account(env.client.rpc(), &registry)?;
+    let tracking = TrackingRegistry::from_data(&account.data)
+        .ok_or_else(|| anyhow!("{registry} holds no tracking registry"))?;
+    let expiry = tracking.roots.last().map_or(0, |root| root.expires_at());
+    Ok((env.client.rpc().get_slot()? < expiry).then_some(expiry))
+}
+
+/// Refuses a validator whose slot stops advancing.
+fn wait_for_slot(env: &TestEnv, target: u64) -> Result<()> {
+    let mut last = env.client.rpc().get_slot()?;
+    let mut moved = Instant::now();
+    while last < target {
+        sleep(Duration::from_millis(500));
+        let slot = env.client.rpc().get_slot()?;
+        if slot > last {
+            (last, moved) = (slot, Instant::now());
+        } else if moved.elapsed() > INDEXING_TIMEOUT {
+            return Err(anyhow!("the slot stalled at {last} before {target}"));
+        }
+    }
+    Ok(())
 }
 
 /// Applied on return.
@@ -410,17 +461,11 @@ impl EnrollOwners<'_> {
             .run(self.ring.require_policy(env.client.as_async()))?
             .tracking;
         wait_for("the whole pending batch", || {
-            let pending =
-                env.client
-                    .indexer()
-                    .get_pending_enrollments(GetPendingEnrollmentsRequest {
-                        registry: registry.into(),
-                        after: None,
-                        limit: u64::try_from(self.owners.len())?,
-                    })?;
-            Ok(match pending.enrollments.len() == self.owners.len() {
-                true => Probe::Ready(()),
-                false => Probe::NotYet,
+            let limit = u64::try_from(self.owners.len())?;
+            Ok(match pending_enrollments(env, registry, limit)? {
+                Probe::Ready(count) if count == self.owners.len() => Probe::Ready(()),
+                Probe::Ready(_) | Probe::NotYet => Probe::NotYet,
+                Probe::Retry(error) => Probe::Retry(error),
             })
         })?;
         let owners: Vec<Address> = self.owners.iter().map(|owner| owner.pubkey()).collect();
