@@ -12,7 +12,7 @@ use custom_ring_interface::{
     TRANSFER_OUTPUT_CAPACITIES,
 };
 use custom_ring_test_validator::{
-    policy::{EnrollOwners, RingNotes},
+    policy::{EnrollOwners, PrivateBlockWrites, RingNotes},
     shared::restart_prover,
 };
 use spr_api::{ApiError, HttpClient, HttpFuture, HttpRequest};
@@ -739,7 +739,8 @@ impl ShapeRing<'_> {
             .collect()
     }
 
-    /// Each batch's write count selects the apply key of its width.
+    /// Each batch's write count selects the apply key of its width, a public batch of allow writes
+    /// and a private batch of salted list keys, each owner a fresh enrolled tracking row.
     fn record_keys(&self, coverage: &mut Coverage) -> Result<()> {
         for width in RECORD_BATCHES {
             restart_prover()?;
@@ -752,6 +753,32 @@ impl ShapeRing<'_> {
             coverage.cover_proved(
                 self.gate,
                 RingCircuit::apply_records(u64::try_from(width)?, ApplyMode::Public),
+            )?;
+        }
+        let owners = (0..RECORD_BATCHES.iter().sum())
+            .map(|_| Ok(ShieldedKeypair::new_ed25519()?))
+            .collect::<Result<Vec<_>>>()?;
+        let owners: Vec<&ShieldedKeypair> = owners.iter().collect();
+        EnrollOwners {
+            ring: self.ring,
+            owners: &owners,
+            env: self.env,
+        }
+        .send()?;
+        let mut unwritten = owners.as_slice();
+        for width in RECORD_BATCHES {
+            restart_prover()?;
+            let (batch, rest) = unwritten.split_at(width);
+            unwritten = rest;
+            PrivateBlockWrites {
+                ring: self.ring,
+                owners: batch,
+                env: self.env,
+            }
+            .send()?;
+            coverage.cover_proved(
+                self.gate,
+                RingCircuit::apply_records(u64::try_from(width)?, ApplyMode::Private),
             )?;
         }
         Ok(())

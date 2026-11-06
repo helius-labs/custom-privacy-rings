@@ -17,8 +17,8 @@ use custom_ring_interface::{
 };
 use custom_ring_sdk::{
     CustomRing, CustomRingTransfer, CustomRingTransferInput, DepositAsset, DepositRecipient,
-    Enroll, EnrollPending, InitializeStorage, ProvenRingTransfer, RingDeposit, RingDepositReceipt,
-    RingError, StorageApplyProof, UpdateStorage,
+    Enroll, EnrollPending, InitializeStorage, PrivateStorageWrite, ProvenRingTransfer, RingDeposit,
+    RingDepositReceipt, RingError, SaltedOwnerWrite, StorageApplyProof, UpdateStorage,
 };
 use solana_address::Address;
 use solana_keypair::Keypair;
@@ -522,6 +522,42 @@ pub fn enroll_actors(env: &TestEnv, ring: CustomRing) -> Result<()> {
     .send()
 }
 
+/// Sets `PrivateBlock` on each enrolled owner's list key, every write private.
+pub struct PrivateBlockWrites<'a> {
+    pub ring: CustomRing,
+    pub owners: &'a [&'a ShieldedKeypair],
+    pub env: &'a TestEnv,
+}
+
+impl PrivateBlockWrites<'_> {
+    pub fn send(self) -> Result<Signature> {
+        let Self { ring, owners, env } = self;
+        let program = ring.program_id();
+        let mut writes = Vec::with_capacity(owners.len());
+        let mut salted = Vec::with_capacity(owners.len());
+        for (index, owner) in owners.iter().enumerate() {
+            let list_salt = owner.list_salt(&program)?;
+            writes.push(RecordWriteData {
+                member: *Member::salted(&owner_member(owner)?, &list_salt)?.as_bytes(),
+                lists: WriteRecordsIxData::new(
+                    ListChange {
+                        set: ListSet::single(ListId::PrivateBlock),
+                        clear: ListSet::EMPTY,
+                    }
+                    .check()?,
+                ),
+                mint_policy: mint_policy_write(None),
+            });
+            salted.push(SaltedOwnerWrite {
+                write_index: u8::try_from(index)?,
+                owner: owner.pubkey(),
+                list_salt,
+            });
+        }
+        StorageRecords { ring, writes, env }.send_with_owners(&salted)
+    }
+}
+
 /// Needs the payer as storage authority of the ring's records.
 pub struct StorageRecords<'a> {
     pub ring: CustomRing,
@@ -549,6 +585,11 @@ impl StorageRecords<'_> {
     }
 
     pub fn send(self) -> Result<Signature> {
+        self.send_with_owners(&[])
+    }
+
+    /// Salted owners make the batch private, its proof opens each owner's tracking row.
+    fn send_with_owners(self, owners: &[SaltedOwnerWrite]) -> Result<Signature> {
         let env = self.env;
         let authority = env.payer.pubkey();
         let registry = InitializeStorage::records(self.ring, authority).registry();
@@ -591,14 +632,32 @@ impl StorageRecords<'_> {
                 },
             )
         })?;
-        let apply = env.run(
-            StorageApplyProof {
-                inputs: &inputs,
-                registry: &state,
-                asset_writes: &[],
+        let (apply, tracking_revision) = match owners.is_empty() {
+            true => (
+                env.run(
+                    StorageApplyProof {
+                        inputs: &inputs,
+                        registry: &state,
+                        asset_writes: &[],
+                    }
+                    .prove(env.client.ring_client()),
+                )?,
+                None,
+            ),
+            false => {
+                let proven = env.run(
+                    PrivateStorageWrite {
+                        ring: self.ring,
+                        inputs: &inputs,
+                        registry: &state,
+                        asset_writes: &[],
+                        owners,
+                    }
+                    .prove(env.client.ring_client()),
+                )?;
+                (proven.apply, Some(proven.tracking_revision))
             }
-            .prove(env.client.ring_client()),
-        )?;
+        };
         let update = UpdateStorage {
             authority,
             registry,
@@ -607,7 +666,7 @@ impl StorageRecords<'_> {
                 revision: Revision::from(response.revision),
                 writes: self.writes,
                 asset_writes: Vec::new(),
-                tracking_revision: None,
+                tracking_revision,
                 apply: &apply,
             },
         };
