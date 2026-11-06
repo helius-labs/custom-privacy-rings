@@ -263,7 +263,7 @@ func (w World) registries(t testing.TB, a ringaudit.Audit, senders []frontend.Va
 		}
 		seen[identity.String()] = true
 		bits := new(big.Int).SetUint64(lists)
-		own.Apply(t, ringregistry.Entry{Member: identity, Mask: bits, Value: bits, MintPolicy: zero, WithdrawalThreshold: zero})
+		own.Apply(t, ringregistry.Entry{Member: ringregistry.PublicKey(t, identity), Mask: bits, Value: bits, MintPolicy: zero, WithdrawalThreshold: zero})
 	}
 	sender := Sender(t)
 	for _, cell := range senders {

@@ -45,7 +45,6 @@ pinned_codes! {
     DelegateAlreadySet = 8153,
     MissingFundingSigner = 8173,
     InvalidRingMode = 8174,
-    InvalidAnonymousSigner = 8178,
     InvalidMergeDisclosure = 8179,
     MissingOwnerSigner = 8192,
     RingTransactLength = 8200,

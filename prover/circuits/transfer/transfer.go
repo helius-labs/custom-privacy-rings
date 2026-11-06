@@ -79,7 +79,7 @@ type TransferCircuit struct {
 	// Delegate is the authority rail.
 	InProof, Hidden, Delegate frontend.Variable
 	Sender                    frontend.Variable
-	// PartyIdentities are an anonymous frame's public parties, an absent party is zero.
+	// PartyIdentities are an anonymous frame's co-signers, an absent co-signer is zero.
 	PartyIdentities [shared.AnonymousParties]frontend.Variable
 	Sections
 }
@@ -201,7 +201,7 @@ func (c *TransferCircuit) Define(api frontend.API) error {
 	// 5. Owner rows read the tracking root. The auditor derives a nullifier from the secret sealed behind an enrolled key or from the public zero secret, so after the step no spent ring note carries a key the auditor cannot read.
 	tracking := c.OpenTracking(api)
 	rows := OpenOwnerRows(api, c.Rows, c.RowEntries, tracking)
-	rows.AssertInputOwners(api, InputRail{Delegate: c.Delegate, Hidden: c.Hidden, HiddenOwner: hiddenOwner}, section.Slots)
+	rows.AssertInputOwners(api, c.Delegate, section.Slots)
 	// 6. PrivateTxHash binds the opened notes, the real outputs, SPP's address chain and the derived blinding.
 	c.bindTransaction(api, section, opened.Slots, envelope.PrivateTxBlinding)
 	c.assertBypass(api, c.Delegate)

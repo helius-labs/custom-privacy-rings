@@ -65,7 +65,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 - The circuit holds each live input to a live row, in `AssertInputOwners`. Only a zero-key note on the delegate rail goes without.
 - The circuit holds a ring note's nonzero key to the row's enrolled key under the tracking root. A default-ring note carries a key the ring never enrolled.
-- The circuit refuses a hidden owner's zero-key input, since anyone who holds the opening computes that nullifier.
+- A hidden owner may spend a zero-key note. Anyone who holds the opening computes that nullifier and names the spender, the wallet decides.
 - The circuit holds live rows strictly ascending with zero rows last, except on the delegate rail, in `assertRowsAscending`.
 - The tests are `TestInputPredicateOnEveryRail`, `TestZeroKeyInputs`, `TestDelegateInputOwners`, `TestOwnerCapacity`, and `TestRowsAscend` in `prover/circuits/policy`.
 
@@ -73,13 +73,13 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 - The program reads the SPP owner run, deduplicates by first occurrence, and builds `signer_count` and `signer_chain`. Each entry must sign, and none can be a demanded co-signer.
 - The program refuses a note-spending frame with an empty run on the signer and public-owner rails.
-- On the hidden and public-owner rails the program refuses any signer other than the payer, the run, the co-signers and the funders, with `InvalidAnonymousSigner`.
+- On the anonymous rails the program takes any other signer. The proof holds the hidden owner out of the run, and the payer, a funder or another signer may still name it.
 - The circuit holds each member past the count to zero, and chains zero at a count of zero. It holds the count to zero on the delegate rail.
 - The tests are `TestSignerSetVector` and `TestRailsSolve`.
 
-### Every live ring output reads its owner's row
+### A zero-key ring output reads its owner's row
 
-- The circuit holds a nonzero key to its owner's enrolled key under the tracking root, in `AssertOutputOwners`. A literal zero is refused.
+- A ring output may carry any nonzero key, in `AssertOutputOwners`. Its note spends only once that key is its owner's enrolled key. A literal zero is refused.
 - A zero-key output requires owner absence at the accepted tracking root. A retained root can prove absence during the enrollment grace period.
 - An exit reads `Ring = 0`, so it stands outside the rule.
 - A present row opens by its leaf, and an absent owner by the leaf that brackets it, in `prover/circuits/registry/tracking.go`.
@@ -97,7 +97,8 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 - The circuit answers each query through a pool bound to a root, present or proven absent, in `resolveSubjects`. No prover list bit reaches a rule.
 - `curatorColumns` projects list bits alone, and mint settings read the own pool.
-- The circuit forces a present owner's salt to open its row's `list_tag`, then reads the record at the forced salted key. An owner proven absent reads off every private list.
+- An owner reads its public lists at `ListKey(owner, 0)`, and an asset at its asset field.
+- The circuit forces a present owner's salt to open its row's `list_tag`, then reads the record at the forced salted key. An owner proven absent reads off every private list. Registration refuses a zero salt, so no private record sits on the public key.
 - `RegistrySlots::load` refuses a salted source that pins another tracking registry. `LiveRoots::tracking` refuses a tracking revision below the highest floor of the salted sources.
 - The tests in `programs/custom-ring/tests/rules/storage_root_rules.rs` are `a_tracking_root_below_the_salted_floor_is_refused_at_load` and `a_private_list_mapped_to_a_curator_on_another_tracking_registry_is_refused`.
 - The tests in `prover/circuits/policy` are `TestPooledPolicyBindsSubjectReferences`, `TestRecordPoolBindsEveryActiveQuery`, `TestPublicAndPrivateBlocksAreTwoRules` and `TestPresentRowCannotSkipTheSaltedRead`.
@@ -201,11 +202,11 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - `ApplyRecordsCircuit` keeps list bits outside each mask, moves mint settings only under the entry's flag, and keeps the records sorted. It sets the restrictive bit exactly when an active write tightens a list, guard or bound, writes a private list or changes an asset limit. It reads an absent member's old fields as zero.
 - The tests in `prover/circuits/registry` are `TestApplyRecordsAppliesWritesInOrder`, `TestApplyRecordsRefusals` and `TestMintRecordsMatchRustAndPreserveSettings`.
 
-### A hidden sender stays apart from the public parties
+### A hidden sender approves none of its own outflow
 
-- The program supplies the identities of the payer, each co-signer, each funder and a hidden sender's withdrawal destination as party cells.
-- The circuit refuses each nonzero party that equals the hidden owner, in `AssertAnonymousParties`.
-- No layer checks a key only linked to the sender.
+- The program supplies each co-signer's identity as a party cell on the anonymous frame.
+- The circuit refuses each nonzero cell that equals the hidden owner, in `AssertAnonymousParties`.
+- The payer, a funder and the withdrawal destination take no cell, and may name the hidden owner.
 - The test is `TestAnonymousOwnerRails`.
 
 ### A merge seals its output and keeps one owner
