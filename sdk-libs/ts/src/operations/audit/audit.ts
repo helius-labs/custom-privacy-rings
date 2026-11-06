@@ -697,14 +697,10 @@ function openSlot(
   // Rust `first_chunk`, data shorter than a hash reads a zero hash and fails the commitment.
   const dataHash = data.length < 32 ? ZERO_32 : (data.slice(0, 32) as Bytes32);
   const ringDataHash = payload?.ringDataHash ?? ZERO_32;
-  // Proven canonical, Rust fails the transaction in `utxo.commitment`.
-  if (!isCanonicalField(record.blinding)) throw auditRefusal("blinding");
-  if (
-    !isCanonicalField(record.nullifierPk) ||
-    !isCanonicalField(dataHash) ||
-    !isCanonicalField(ringDataHash)
-  )
-    return DISCLOSURE;
+  // The proof holds both record fields canonical.
+  if (!isCanonicalField(record.nullifierPk) || !isCanonicalField(record.blinding))
+    throw auditRefusal("record field");
+  if (!isCanonicalField(dataHash) || !isCanonicalField(ringDataHash)) return DISCLOSURE;
   const utxo: AuditedUtxo = Object.freeze({
     ownerKey: record.ownerKey,
     nullifierPk: record.nullifierPk,

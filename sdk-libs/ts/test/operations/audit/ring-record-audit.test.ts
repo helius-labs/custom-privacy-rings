@@ -249,17 +249,22 @@ describe("the transfer reader", () => {
     expect(row.outputs.map(({ slotIndex }) => slotIndex)).not.toContain(0);
   });
 
-  it("reads a noncanonical key as a disclosure error and refuses a noncanonical blinding", () => {
+  it("refuses a noncanonical nullifier key or blinding in any record", () => {
     const entry = caseNamed("plain_with_exit_and_dummy");
-    const noncanonical = hex(entry.records[0] as string);
-    noncanonical.fill(0xff, 73, 105);
-    const { audited: row } = audited(entry, { records: new Map([[0, noncanonical]]) });
-    expect(row.payloadErrors).toEqual([{ slotIndex: 0, kind: "disclosure" }]);
+    const nullifierPk = hex(entry.records[0] as string);
+    nullifierPk.fill(0xff, 73, 105);
     const blinding = hex(entry.records[1] as string);
     blinding.fill(0xff, 105, OUTPUT_RECORD_LEN);
-    expect(() => audited(entry, { records: new Map([[1, blinding]]) })).toThrow(
-      expect.objectContaining({ code: "RING_AUDIT_MESSAGE", details: { reason: "blinding" } }),
-    );
+    for (const [slot, record] of [
+      [0, nullifierPk],
+      [1, blinding],
+    ] as const)
+      expect(() => audited(entry, { records: new Map([[slot, record]]) })).toThrow(
+        expect.objectContaining({
+          code: "RING_AUDIT_MESSAGE",
+          details: { reason: "record field" },
+        }),
+      );
   });
 
   it("refuses a dummy record on a live slot by its commitment", () => {

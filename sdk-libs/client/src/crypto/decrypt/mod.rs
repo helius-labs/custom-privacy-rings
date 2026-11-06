@@ -258,6 +258,10 @@ impl Transfer {
             blinding,
             ..
         } = record;
+        // The proof holds both record fields canonical.
+        if canonical(nullifier_pk).is_err() || canonical(blinding).is_err() {
+            return Err(AuditError::DisclosureField);
+        }
         let payload = payload.unwrap_or_default();
         let data_hash = payload
             .data
@@ -265,10 +269,7 @@ impl Transfer {
             .copied()
             .unwrap_or_default();
         let ring_data_hash = payload.ring_data_hash.unwrap_or_default();
-        if canonical(nullifier_pk).is_err()
-            || canonical(data_hash).is_err()
-            || canonical(ring_data_hash).is_err()
-        {
+        if canonical(data_hash).is_err() || canonical(ring_data_hash).is_err() {
             return Ok(Err(OutputPayloadErrorKind::Disclosure));
         }
         let utxo = AuditedUtxo {
