@@ -148,24 +148,44 @@ mod tests {
         hex_bytes(value).try_into().unwrap()
     }
 
+    fn first_nullifier(case: &Value) -> [u8; 32] {
+        array(&case["request"]["firstNullifier"])
+    }
+
     #[test]
     fn both_modes_open_and_seal_to_the_go_vector() {
         let vector: Value = serde_json::from_str(VECTOR).unwrap();
         let auditor = X25519Keypair::from_bytes(&array(&vector["auditor_sk"]));
         let eph_pk = X25519Pubkey::from_bytes(array(&vector["eph_pk"])).unwrap();
         for case in vector["cases"].as_array().unwrap() {
-            let ciphertext = array(&case["ciphertext"]);
-            let opened = open_merge_record(&auditor, &eph_pk, &ciphertext).unwrap();
+            let envelope = array(&case["envelope_ciphertext"]);
+            let record = array(&case["ciphertext"]);
+            let first_nullifier = first_nullifier(case);
+            let opened = open_merge_record(
+                &auditor,
+                &SealedMergeCiphertexts {
+                    eph_pk: &eph_pk,
+                    envelope: &envelope,
+                    record: &record,
+                    first_nullifier: &first_nullifier,
+                },
+            )
+            .unwrap();
             assert_eq!(opened.encode().to_vec(), hex_bytes(&case["record"]));
             let ephemeral = X25519Keypair::from_bytes(&array(&case["request"]["ephSk"]));
-            let sealed = MergeRecordSeal { record: opened }
-                .seal_with(ephemeral, &auditor.pubkey())
-                .unwrap();
-            assert_eq!(sealed.ciphertext, ciphertext);
+            let recipient = X25519Pubkey::from_u(array(&case["request"]["recipientKey"])).unwrap();
+            let sealed = MergeRecordSeal {
+                record: opened,
+                recipient,
+                first_nullifier,
+            }
+            .seal_with(ephemeral, &auditor.pubkey())
+            .unwrap();
+            assert_eq!((sealed.envelope, sealed.record), (envelope, record));
             assert_eq!(sealed.eph_pk, eph_pk);
-            let blinding = MergeSeed::from_bytes(opened.secret)
+            let blinding = MergeSeed::from_bytes(opened.seed)
                 .unwrap()
-                .output_blinding(&array(&case["request"]["firstNullifier"]))
+                .output_blinding(&first_nullifier)
                 .unwrap();
             assert_eq!(blinding, array::<32>(&case["output_blinding"]));
         }
@@ -177,10 +197,21 @@ mod tests {
         let auditor = X25519Keypair::from_bytes(&array(&vector["auditor_sk"]));
         let eph_pk = X25519Pubkey::from_bytes(array(&vector["eph_pk"])).unwrap();
         let case = &vector["cases"][0];
-        let mut ciphertext: [u8; OPENING_RECORD_LEN] = array(&case["ciphertext"]);
+        let envelope: [u8; MERGE_ENVELOPE_LEN] = array(&case["envelope_ciphertext"]);
+        let mut ciphertext: [u8; MERGE_RECORD_LEN] = array(&case["ciphertext"]);
+        let first_nullifier = first_nullifier(case);
         let record = hex_bytes(&case["record"]);
-        let read = |auditor: &X25519Keypair, ciphertext: &[u8; OPENING_RECORD_LEN]| {
-            open_merge_record(auditor, &eph_pk, ciphertext).map(|opened| opened.encode().to_vec())
+        let read = |auditor: &X25519Keypair, ciphertext: &[u8; MERGE_RECORD_LEN]| {
+            open_merge_record(
+                auditor,
+                &SealedMergeCiphertexts {
+                    eph_pk: &eph_pk,
+                    envelope: &envelope,
+                    record: ciphertext,
+                    first_nullifier: &first_nullifier,
+                },
+            )
+            .map(|opened| opened.encode().to_vec())
         };
         assert!(read(&X25519Keypair::new(), &ciphertext).unwrap_or_default() != record);
         ciphertext[100] ^= 1;
