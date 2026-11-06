@@ -42,7 +42,7 @@ import {
   RECIPIENT_KEY_LEN,
   type AuditStreamLayout,
 } from "../../../src/protocol/codec/ring-disclosure-layout.js";
-import { ciphertextDigest, recordChain } from "../../../src/protocol/proof/statement.js";
+import { envelopeDigest, recordChain } from "../../../src/protocol/proof/statement.js";
 import { dummyUtxoHash, fieldUtxoHash } from "../../../src/protocol/membership/utxo-hash.js";
 import { RingError } from "../../../src/protocol/error.js";
 
@@ -146,6 +146,20 @@ describe("the stream regions", () => {
   });
 });
 
+/** The vector carries no payload, the Go writer's hashes on the data case's first output stand in. */
+const dataHashes = (
+  name: string,
+  slot: number,
+): Readonly<{ dataHash?: Bytes32; ringDataHash?: Bytes32 }> => {
+  if (name !== "data" || slot !== 0) return {};
+  const field = (value: number): Bytes32 => {
+    const bytes = new Uint8Array(32);
+    new DataView(bytes.buffer).setUint32(28, value, false);
+    return bytes as Bytes32;
+  };
+  return { dataHash: field(0xda7a), ringDataHash: field(0x5ca1e) };
+};
+
 const keyCiphertexts = (testCase: StreamCase): string[] =>
   testCase.recipient_keys.map((_, slot) =>
     testCase.recipient_keys_ciphertext.slice(
@@ -205,13 +219,18 @@ describe("the stream vector", () => {
     it(`${testCase.name} binds its digest and record chain`, async () => {
       await initializePoseidon();
       const outputs = testCase.record_ciphertexts.map((record) => ({ record: hex(record) }));
-      expect(bytesToHex(ciphertextDigest(hex(testCase.envelope_ciphertext)))).toBe(
-        testCase.envelope_digest,
-      );
+      expect(
+        bytesToHex(
+          envelopeDigest(
+            hex(testCase.envelope_ciphertext),
+            hex(testCase.recipient_keys_ciphertext),
+          ),
+        ),
+      ).toBe(testCase.envelope_digest);
       expect(bytesToHex(recordChain(outputs, testCase.outputs))).toBe(testCase.record_chain);
     });
 
-    it(`${testCase.name} rebuilds every published hash from its record alone`, async () => {
+    it(`${testCase.name} rebuilds every published hash from its record and data hashes`, async () => {
       await initializePoseidon();
       const opened = openRingDisclosure(auditor(), { layout, message: message(), salt });
       const firstNullifier = hex(vector.first_nullifier) as Bytes32;
@@ -237,6 +256,7 @@ describe("the stream vector", () => {
                 amount: record.amount,
                 blinding: record.blinding,
                 treeId: vector.output_tree_id,
+                ...dataHashes(testCase.name, slot),
                 ringId:
                   record.kind === RecordKind.ring
                     ? (hex(vector.ring_id) as Bytes32)
@@ -364,7 +384,8 @@ describe("the stream codecs", () => {
 
   it("frames the payload with its length and refuses what the encoder never writes", () => {
     const ringDataHash = new Uint8Array(32).fill(4) as Bytes32;
-    expect(encodeRecipientPayload({ data: new Uint8Array() })).toEqual(new Uint8Array(2));
+    // The presence byte is always written, an empty payload is `u16be(1) ‖ 0`.
+    expect(encodeRecipientPayload({ data: new Uint8Array() })).toEqual(Uint8Array.of(0, 1, 0));
     const withHash = encodeRecipientPayload({ ringDataHash, data: new Uint8Array() }, 40);
     expect(withHash).toHaveLength(40);
     expect([...withHash.subarray(0, 3)]).toEqual([0, 33, 1]);
@@ -378,7 +399,8 @@ describe("the stream codecs", () => {
     const pastBytes = Uint8Array.of(0, 9, 0);
     const presence = Uint8Array.of(0, 1, 2);
     const shortHash = Uint8Array.of(0, 2, 1, 0);
-    for (const refused of [padding, pastBytes, presence, shortHash, new Uint8Array(1)])
+    const empty = Uint8Array.of(0, 0, 0);
+    for (const refused of [padding, pastBytes, presence, shortHash, empty, new Uint8Array(1)])
       expect(() => decodeRecipientPayload(refused)).toThrow(RingError);
     expect(() => encodeRecipientPayload({ data }, 10)).toThrow(RingError);
   });

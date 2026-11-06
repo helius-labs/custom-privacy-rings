@@ -243,7 +243,7 @@ describe("ring-statements.json", () => {
       txViewingU: field(vector.tx_viewing_u),
       auditorPubkey: bytes<Bytes33>(vector.auditor_pubkey, 33),
       envelope: bytes(vector.envelope),
-      recipientKeys: bytes((vector as unknown as { keys?: string }).keys ?? ""),
+      recipientKeys: bytes(vector.recipient_keys),
       salt: bytes<Bytes16>(vector.salt, 16),
       layout: { entry: (vector.layout & 2) !== 0 },
     },

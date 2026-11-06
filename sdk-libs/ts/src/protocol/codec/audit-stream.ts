@@ -156,6 +156,7 @@ export function encodeMergeRecord(merge: MergeRecord): Uint8Array {
 export function decodeMergeRecord(plaintext: Uint8Array): MergeRecord {
   if (plaintext.length !== MERGE_RECORD_LEN) throw refused();
   const record = decodeOutputRecord(plaintext.subarray(0, OUTPUT_RECORD_LEN));
+  if (record.kind !== RecordKind.ring) throw refused();
   return Object.freeze({ record, seed: plaintext.slice(OUTPUT_RECORD_LEN) as Bytes32 });
 }
 

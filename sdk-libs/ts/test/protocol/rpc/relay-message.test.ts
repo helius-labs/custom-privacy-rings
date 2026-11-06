@@ -6,6 +6,7 @@ import {
   openOutputSlot,
   openSealedDisclosure,
   sealOutputSlot,
+  type RingDisclosure,
 } from "../../../src/crypto/audit/ring-disclosure.js";
 import { txKeySlotSecret } from "../../../src/crypto/derivation/ring-stream.js";
 import { x25519FromU } from "../../../src/crypto/keys/x25519.js";
@@ -134,7 +135,7 @@ function auditorOf(request: DelegateRequest): X25519PublicKey {
 
 function delegate(
   request: DelegateRequest,
-  cases: readonly MessageCase[] = delegates.cases,
+  pinned: Vector<DelegateRequest> = delegates,
 ): Promise<ExpectedRelayMessage> {
   const shielded = (text: string) => ShieldedAddress.fromBytes(new Uint8Array(base58.encode(text)));
   const { prepare } = request;
@@ -163,12 +164,12 @@ function delegate(
     } as unknown as PrepareAuthorityTransferRequest,
     quote: { feePayer: request.feePayer, validUntilSlot: 0n },
     config: { mode: "confidential", auditorPublicKey: auditorOf(request) },
-    allowed: pinnedAllowed(cases),
+    allowed: pinnedAllowed(pinned),
   });
 }
 
-/** The vector holds no openings, the honest frame's published nullifiers stand in as in Rust. */
-function pinnedAllowed(cases: readonly MessageCase[]): AllowedNullifiers {
+/** The vector holds no openings, the honest frame's spent notes stand in as in Rust. */
+function pinnedAllowed({ request, cases }: Vector<DelegateRequest>): AllowedNullifiers {
   const compiled = getCompiledTransactionMessageDecoder().decode(message(cases, "honest"));
   const { instructions } = decompileTransactionMessage(
     compiled as Parameters<typeof decompileTransactionMessage>[0] & { version: 1 },
@@ -178,15 +179,36 @@ function pinnedAllowed(cases: readonly MessageCase[]): AllowedNullifiers {
     (instructions as readonly Instruction[])
       .map((instruction) => Uint8Array.from(instruction.data ?? []))
       .filter((data) => data[0] === RingInstructionTag.authorityTransfer)
-      .flatMap((data) =>
-        RingTransactData.parse(data.subarray(1), rail).nullifiers.map(encodeBase58),
-      ),
+      .flatMap((data) => {
+        const frame = RingTransactData.parse(data.subarray(1), rail);
+        // The authority rail publishes its notes ahead of the padding.
+        const spent = openedStream(request, frame).envelope.realInputs;
+        return frame.nullifiers.slice(0, spent).map(encodeBase58);
+      }),
   );
   return {
     checkSources: () => undefined,
-    spendsOnly: (notes: Iterable<Bytes32>) =>
-      [...notes].every((nullifier) => honest.has(encodeBase58(nullifier))),
+    countsSpends: (spent: number, published: Iterable<Bytes32>) =>
+      [...published].filter((nullifier) => honest.has(encodeBase58(nullifier))).length === spent,
   } as unknown as AllowedNullifiers;
+}
+
+function openedStream(request: DelegateRequest, frame: RingTransactData): RingDisclosure {
+  return openSealedDisclosure(txViewingSecretOf(request), auditorOf(request), {
+    layout: RingTransactData.streamLayout(frame),
+    salt: frame.salt,
+    message: {
+      ephemeralPublicKey: x25519FromU(frame.txViewingU),
+      envelope: frame.envelope,
+      recipientKeys: frame.outputs.map((_, slot) =>
+        frame.recipientKeys.subarray(slot * RECIPIENT_KEY_LEN, (slot + 1) * RECIPIENT_KEY_LEN),
+      ),
+    },
+  });
+}
+
+function txViewingSecretOf(request: DelegateRequest): Bytes32 {
+  return Uint8Array.from(Buffer.from(request.prepare.txViewingKey, "base64")) as Bytes32;
 }
 
 function verdict(
@@ -261,7 +283,7 @@ describe("relay message check", () => {
   });
 
   it.each(settlements.cases)("binds every hosted settlement field for $name", async (entry) => {
-    expect(verdict(await delegate(settlements.request, settlements.cases), entry.message)).toBe(
+    expect(verdict(await delegate(settlements.request, settlements), entry.message)).toBe(
       entry.verdict,
     );
   });
@@ -332,27 +354,8 @@ describe("relay message check", () => {
     /** Reseals the payment's record to its slot key under the frame's own transaction key. */
     const rewritten = (change: (record: OutputRecord) => OutputRecord): RingTransactData => {
       const frame = honestFrame();
-      const txViewingSecret = Uint8Array.from(
-        Buffer.from(delegates.request.prepare.txViewingKey, "base64"),
-      ) as Bytes32;
-      const { recipientKeys } = openSealedDisclosure(
-        txViewingSecret,
-        auditorOf(delegates.request),
-        {
-          layout: RingTransactData.streamLayout(frame),
-          salt: frame.salt,
-          message: {
-            ephemeralPublicKey: x25519FromU(frame.txViewingU),
-            envelope: frame.envelope,
-            recipientKeys: frame.outputs.map((_, slot) =>
-              frame.recipientKeys.subarray(
-                slot * RECIPIENT_KEY_LEN,
-                (slot + 1) * RECIPIENT_KEY_LEN,
-              ),
-            ),
-          },
-        },
-      );
+      const txViewingSecret = txViewingSecretOf(delegates.request);
+      const { recipientKeys } = openedStream(delegates.request, frame);
       const payee = new Uint8Array(
         base58.encode(delegates.request.prepare.transfer.payments[0]!.recipient),
       );
