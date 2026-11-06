@@ -270,9 +270,9 @@ describe("the tag 57 reader", () => {
     expect(open(row(entry, { sealed: resealed({ blinding: memberOf(0x44) }) }))).toThrow(
       expect.objectContaining({ code: "RING_AUDIT_MESSAGE", details: { reason: "merge record" } }),
     );
-    // The merge record codec admits a ring note alone.
+    // The merge reader admits a ring note alone.
     expect(open(row(entry, { sealed: resealed({ kind: RecordKind.exit }) }))).toThrow(
-      expect.objectContaining({ code: "RING_TRANSACT_DATA_INVALID" }),
+      expect.objectContaining({ code: "RING_AUDIT_MESSAGE", details: { reason: "merge record" } }),
     );
     const noncanonical = new Uint8Array(32).fill(0xff) as Bytes32;
     expect(open(row(entry, { sealed: resealed({ nullifierPk: noncanonical }) }))).toThrow(

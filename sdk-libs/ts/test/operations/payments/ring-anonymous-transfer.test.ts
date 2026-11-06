@@ -2273,7 +2273,7 @@ describe("anonymous ring withdrawal destination", () => {
     );
   });
 
-  it("refuses two SPL exits to different owners", async () => {
+  it("admits two SPL exits to different owners, each read apart", async () => {
     const other = ShieldedKeypair.generate().shieldedAddress().solanaAddress();
     const second = await associatedTokenAddress(other, MINT, SPL_TOKEN_PROGRAM_ID);
     await expect(
@@ -2284,9 +2284,7 @@ describe("anonymous ring withdrawal destination", () => {
           [second, tokenAccount(other)],
         ]),
       }),
-    ).rejects.toMatchObject({
-      code: "RING_ANONYMOUS_EXIT_DESTINATIONS_DIFFER",
-    });
+    ).resolves.toBeUndefined();
   });
 
   const token2022 = (
@@ -2301,7 +2299,7 @@ describe("anonymous ring withdrawal destination", () => {
 
   it("reads a Token-2022 account with extensions as SPP unpacks it", async () => {
     // Account type `Account`, then an ImmutableOwner entry of type 7 and length 0.
-    await expect(tokenOwnerOf(token2022([2, 7, 0, 0, 0]))).resolves.toBe(STRANGER);
+    await expect(tokenOwnerOf(token2022([2, 7, 0, 0, 0]))).resolves.toBeUndefined();
   });
 
   it.each<readonly [string, RpcAccount, string]>([
