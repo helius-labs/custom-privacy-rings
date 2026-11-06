@@ -11,7 +11,7 @@ A ring reads two kinds of tree, each in a Storage program account with its own r
 ## Records
 
 - A policy record contains one member's list bits and, for an asset, its mint settings.
-- A member is an owner identity, an owner's salted key, a reader key or an asset. It can also be the grant key of one wallet and one reader.
+- A member is an owner's public key `ListKey(owner, 0)`, an owner's salted key, a reader key or an asset. It can also be the grant key of one wallet and one reader.
 - Each record points to the next member in sort order. The records are the leaves of a 4-ary tree in insert order.
 - A proof opens a present member by its leaf and an absent member by the record that brackets it. A prover cannot leave out the record that convicts its subject.
 - A tree has a fixed number of leaves, each member keeps its leaf permanently, and a full tree takes no new member.
