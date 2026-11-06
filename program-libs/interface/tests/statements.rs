@@ -619,7 +619,7 @@ fn ring_statements_vector() {
         .iter()
         .map(|case| case.elements.len())
         .collect();
-    assert!(transfer.iter().all(|len| *len == 42 + ANONYMOUS_PARTIES));
+    assert!(transfer.iter().all(|len| *len == 43));
 }
 
 #[test]

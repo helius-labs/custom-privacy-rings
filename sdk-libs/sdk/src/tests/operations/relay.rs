@@ -509,7 +509,7 @@ async fn a_salted_read_raises_the_flag_on_a_frame_of_one_stream() {
     );
 }
 
-/// Ring data tails at two outputs take another `N` on the wide row, so the narrow seal cannot carry over.
+/// The exact approval opening spans `N` and binds the seal to its row.
 #[tokio::test]
 async fn a_salted_read_of_another_stream_refuses_until_the_owner_reseals() {
     use custom_ring_interface::domain;
@@ -528,11 +528,15 @@ async fn a_salted_read_of_another_stream_refuses_until_the_owner_reseals() {
         .with_registry(load.registry(), &rules)
         .with_tracking_tag(&addresses, domain::list_tag(&salt).unwrap())
         .client();
-    let transfer = addresses.iter().fold(load.transfer(), |transfer, address| {
-        let member =
-            Member::from_bytes(address.signing_pubkey.owner_proof_input_hash().unwrap()).unwrap();
-        transfer.with_list_salt(member, salt)
-    });
+    let transfer = addresses.iter().fold(
+        load.transfer().with_exact_approval(),
+        |transfer, address| {
+            let member =
+                Member::from_bytes(address.signing_pubkey.owner_proof_input_hash().unwrap())
+                    .unwrap();
+            transfer.with_list_salt(member, salt)
+        },
+    );
     let (inputs, refused) = relay_attempt(&client, &transfer, FULL_LOAD_PAYER).await;
     assert!(!inputs.wide_owners);
     let Err(RingError::ResealRequired { row }) = refused else {
