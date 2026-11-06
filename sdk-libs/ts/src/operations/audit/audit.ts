@@ -51,7 +51,7 @@ import {
 } from "../../crypto/audit/ring-disclosure.js";
 import { ringIdField, txKeySlotSecret } from "../../crypto/derivation/ring-stream.js";
 import { x25519FromU } from "../../crypto/keys/x25519.js";
-import { readRingOutput, ringBodyOutput, RingScheme } from "../../protocol/transaction/output.js";
+import { ringBodyOutput } from "../../protocol/transaction/output.js";
 
 import { RingError } from "../../protocol/error.js";
 import { zeroKeyNullifier } from "../../state/exposed-notes.js";
@@ -346,7 +346,8 @@ export function openRingTransfer(input: TransactionAuditInput): OpenedRingAudit 
     layout.inputs !== transaction.nullifiers.length
   )
     throw auditRefusal("layout");
-  const exits = transaction.outputSlots.map((slot) => isExitSlot(slot.payload));
+  // A slot without a ring body is an exit, its record the next one in the auditor message.
+  const exits = transaction.outputSlots.map((slot) => ringBodyOutput(slot.payload) === undefined);
   const message = parsedMessage(
     auditorMessage(transaction, auditor.publicKey()),
     layout,
@@ -646,16 +647,6 @@ type SlotOpening =
   | Readonly<{ ok: true; opening: OutputOpening }>
   | Readonly<{ ok: false; kind: OutputPayloadErrorKind }>;
 
-/** An exit keeps SPP's scheme 3 body, every other slot carries scheme 10. */
-function isExitSlot(payload: Uint8Array): boolean {
-  try {
-    const frame = readRingOutput(payload);
-    return frame.encoding === "encrypted" && frame.scheme === RingScheme.confidential;
-  } catch {
-    return false;
-  }
-}
-
 /** `V_i` must be a contributory key, the proof refuses any other. */
 function openedSlot(
   input: Readonly<{
@@ -703,10 +694,10 @@ function openSlot(
       ? Object.freeze({ ok: true, opening: DUMMY })
       : COMMITMENT;
   const data = payload?.data ?? EMPTY;
-  const dataHash = data.length === 0 ? ZERO_32 : (data.slice(0, 32) as Bytes32);
+  // Rust `first_chunk`, data shorter than a hash reads a zero hash and fails the commitment.
+  const dataHash = data.length < 32 ? ZERO_32 : (data.slice(0, 32) as Bytes32);
   const ringDataHash = payload?.ringDataHash ?? ZERO_32;
   if (
-    (data.length > 0 && data.length < 32) ||
     !isCanonicalField(record.nullifierPk) ||
     !isCanonicalField(record.blinding) ||
     !isCanonicalField(dataHash) ||
