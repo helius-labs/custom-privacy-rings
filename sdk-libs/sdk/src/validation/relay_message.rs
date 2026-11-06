@@ -1,7 +1,5 @@
 //! The message a wallet signs for Ring RPC, checked against the request the wallet made.
 
-use std::collections::BTreeSet;
-
 use custom_ring_interface::cosign::ApprovalMask;
 use custom_ring_interface::{
     compute_unit_limit, funder_account_position, stream::confidential_slot_tag, tag, AuditRecord,
@@ -14,15 +12,18 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_message::{v1, VersionedMessage};
 use solana_signature::Signature;
 use solana_signer::Signer;
-use spr_client::MAX_LOADED_ACCOUNTS_DATA_SIZE;
+use spr_client::{ProofInputUtxo, MAX_LOADED_ACCOUNTS_DATA_SIZE};
+use spr_hasher::primitives::right_align;
 use spr_indexer_api::{Hash, SerializablePubkey};
 use spr_interface::{
     instruction::{instruction_data::settlement_accounts, InterfaceTransfer},
-    pda, N_PUBLIC_SLOTS,
+    pda,
+    tree_slot::tree_id_field,
+    N_PUBLIC_SLOTS,
 };
 use spr_keypair::{PublicKey, ShieldedAddress, X25519Pubkey};
 use spr_program::instruction::CreateAssociatedTokenAccount;
-use spr_transaction::{Mint, TransactionError, Utxo, WalletUtxo, SOL_MINT};
+use spr_transaction::{utxo::DUMMY_DOMAIN, Mint, TransactionError, Utxo, WalletUtxo, SOL_MINT};
 use thiserror::Error;
 use zolana_ring_client::{
     rpc::{AuthorityWithdrawal, RelayEnrollInputs, RelayId, TxViewingSecret, ENROLL_COMPUTE_UNITS},
@@ -75,8 +76,8 @@ pub enum MessageMismatch {
     SpendsUnnamedNote,
     #[error("the message spends a note no requested source opening derives")]
     SpendsUnrequestedNote,
-    #[error("the terms open another number of data outputs than the proof counts for the signer")]
-    DataOutputCount,
+    #[error("the terms leave a published output unopened")]
+    UnopenedOutput,
     #[error("the deposit legs the signer funds differ from its terms")]
     FunderLegs,
     #[error("the request asks for no signature")]
@@ -111,7 +112,7 @@ pub struct RelayTransferTerms {
     pub ring: SerializablePubkey,
     pub fee_payer: SerializablePubkey,
     pub signer: SerializablePubkey,
-    /// Each rebuilds its slot's commitment, no key opens another slot.
+    /// One per published slot in slot order, each rebuilds its slot's commitment.
     pub slots: Vec<SlotOpening>,
     /// The signer's notes the transfer spends.
     pub nullifiers: Vec<Hash>,
@@ -715,49 +716,36 @@ impl ExpectedPublicOwner {
     }
 
     /// SPP reads one signature as approval of every data-bearing output its signer owns, and each
-    /// published owner tag of a ring output is zero, so no frame field names those outputs. The terms
-    /// stay selective, the proof supplies only how many exist.
+    /// published owner tag of a ring output is zero, so no frame field names those outputs. The
+    /// signer reads every published output before it signs, no data output stays out of its view.
     fn check_moved(
         &self,
         data: &RingTransactData<'_>,
-        accounts: &[AccountMeta],
+        _accounts: &[AccountMeta],
     ) -> Result<(), MessageMismatch> {
         let terms = &self.terms;
         if terms.slots.is_empty() && terms.nullifiers.is_empty() {
             return Err(MessageMismatch::Unrequested);
         }
-        // 1. Each opening rebuilds the commitment published at its slot and names the signer. Past the
-        // loop a slot index stands for one real output of the signer, so the count below cannot read
-        // another owner's slot or a preimage the sender made up.
-        for opening in &terms.slots {
-            let published = data
-                .outputs
-                .get(opening.slot as usize)
-                .ok_or(MessageMismatch::Recipients)?;
-            // An exit commits no ring, a ring id here would refuse every exit the owner holds.
+        // 1. One opening per published slot in slot order, a missing or repeated slot could hide an
+        // output the signature approves.
+        let in_order = terms.slots.len() == data.outputs.len()
+            && terms
+                .slots
+                .iter()
+                .zip(0u32..)
+                .all(|(opening, slot)| opening.slot == slot);
+        if !in_order {
+            return Err(MessageMismatch::UnopenedOutput);
+        }
+        // 2. Each opening rebuilds the commitment published at its slot, so the signer reads each
+        // owner, amount and data hash the proof commits.
+        for (opening, published) in terms.slots.iter().zip(&data.outputs) {
+            // An exit commits no ring, a ring id here would refuse every exit.
             let rebuilt = opening.utxo_hash((!published.is_exit()).then_some(terms.ring.0))?;
-            if opening.owner != terms.signer || rebuilt != *published.hash {
+            if rebuilt != *published.hash {
                 return Err(MessageMismatch::Recipients);
             }
-        }
-        // 2. The circuit counts the live slots the signer owns with a nonzero `data_hash`, per entry of
-        // the run `signers.Chain` binds. Equality with the distinct opened slots closes the omission
-        // that step 1 alone leaves open, a second data output the sender keeps out of the terms. Slots
-        // dedupe a repeated opening, the filter keeps an ordinary payment from standing in for a data
-        // output, and `ring_data_hash` stays outside since SPP asks no owner signature for it. A
-        // member past the last packed entry reads zero and the circuit holds it to no data output.
-        // The count reveals the public signers that receive data outputs and how many, never an amount.
-        let opened: BTreeSet<u32> = terms
-            .slots
-            .iter()
-            .filter(|opening| opening.data_hash.0 != [0; 32])
-            .map(|opening| opening.slot)
-            .collect();
-        let proved = data
-            .signer_data_counts()
-            .count(self.run_entry(data, accounts)?);
-        if opened.len() != usize::from(proved) {
-            return Err(MessageMismatch::DataOutputCount);
         }
         // 3. A named note the wallet cannot place means no list stood behind the check.
         let named_and_held = terms.nullifiers.iter().all(|nullifier| {
@@ -774,36 +762,6 @@ impl ExpectedPublicOwner {
             true => Err(MessageMismatch::SpendsUnnamedNote),
             false => Ok(()),
         }
-    }
-
-    /// The signer's entry in the run the program hashes into `signers.Chain`. The ring auth PDA finds
-    /// SPP's list with no read of the registries or co-signers ahead of it, since the program refuses
-    /// a second copy anywhere in that list and neither a registry slot nor a signer slot can hold the
-    /// PDA.
-    fn run_entry(
-        &self,
-        data: &RingTransactData<'_>,
-        accounts: &[AccountMeta],
-    ) -> Result<usize, MessageMismatch> {
-        let spp = spp_accounts(self.terms.ring.0, accounts)?;
-        let settlements = settlement_accounts(&data.interface_transfers, data.circuit(), spp)
-            .ok_or(MessageMismatch::Accounts)?;
-        let window = data
-            .owner_signers(spp, settlements.len())
-            .map_err(|_| MessageMismatch::Accounts)?;
-        let first = window
-            .iter()
-            .position(|meta| meta.pubkey == self.terms.signer.0)
-            .ok_or(MessageMismatch::Accounts)?;
-        // SPP and `SignerSet::new` deduplicate the window by first occurrence and the counts index
-        // that run. Under `[X, X, V]` a raw position reads V past its entry, finds zero, and V signs
-        // for a data output its terms leave out. The program accepts a repeat, so none is refused.
-        Ok(window
-            .iter()
-            .take(first)
-            .map(|meta| meta.pubkey)
-            .collect::<BTreeSet<_>>()
-            .len())
     }
 }
 
@@ -826,7 +784,11 @@ fn spp_accounts(
 }
 
 impl SlotOpening {
+    /// A zero owner opens a dummy, SPP pays no zero owner and holds a dummy's other fields to zero.
     fn utxo_hash(&self, ring: Option<Address>) -> Result<[u8; 32], MessageMismatch> {
+        if self.owner.0 == Address::default() {
+            return self.dummy_hash();
+        }
         Utxo {
             owner: PublicKey::from_ed25519(self.owner.0.as_array()),
             asset: Mint::new(self.mint.0, 0),
@@ -841,6 +803,25 @@ impl SlotOpening {
             &self.ring_data_hash.0,
             self.tree_id,
         )
+        .map_err(|_| MessageMismatch::Recipients)
+    }
+
+    fn dummy_hash(&self) -> Result<[u8; 32], MessageMismatch> {
+        if self.mint.0 != Address::default()
+            || self.amount != 0
+            || [&self.nullifier_pk, &self.data_hash, &self.ring_data_hash]
+                .iter()
+                .any(|field| field.0 != [0; 32])
+        {
+            return Err(MessageMismatch::Recipients);
+        }
+        ProofInputUtxo {
+            domain: right_align(&DUMMY_DOMAIN.to_be_bytes()),
+            tree_id: tree_id_field(self.tree_id),
+            blinding: self.blinding.0,
+            ..ProofInputUtxo::default()
+        }
+        .hash()
         .map_err(|_| MessageMismatch::Recipients)
     }
 }
