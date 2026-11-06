@@ -715,14 +715,14 @@ async fn an_anonymous_entry_reports_capacity_without_ring_funding() {
     let sender = keypair(1);
     let paid = ring_address(&keypair(2));
     let client = enrolled(&[&sender, &keypair(2)]).client();
-    let utxos: Vec<_> = (0..5)
+    let utxos: Vec<_> = (0..6)
         .map(|leaf| default_ring_utxo(&sender, 1, leaf))
         .collect();
     let owner = MoveSender {
         sender: &sender,
         payer: payer(),
     };
-    let payments = (0..5).map(|_| RingPayment::new(paid.clone(), 1)).collect();
+    let payments = (0..6).map(|_| RingPayment::new(paid.clone(), 1)).collect();
     let result = owner.anonymous_move(&utxos, payments).select(&client).await;
     assert!(
         matches!(&result, Err(RingError::TransferTooWide { .. })),
@@ -2057,7 +2057,7 @@ fn ceiling_entry(reply_len: usize) -> Measure {
 }
 
 /// Sets [`ceiling_entry`] at the transaction ceiling exactly.
-const CEILING_REPLY_LEN: usize = 2338;
+const CEILING_REPLY_LEN: usize = 2402;
 
 include!("size_pins.rs");
 
@@ -2828,7 +2828,7 @@ async fn every_frame_boundary_takes_its_modelled_bytes() {
         ..relayed(Measured::ConfidentialPolicy, Shape::new(16, 8))
     };
     for (measure, bytes) in [
-        (with_reply(Measured::AnonymousEntry, 2), 4196),
+        (with_reply(Measured::AnonymousEntry, 3), 4269),
         (with_reply(Measured::Anonymous, 5), 3951),
         (
             relayed(Measured::ConfidentialPolicy, Shape::new(16, 8)),
