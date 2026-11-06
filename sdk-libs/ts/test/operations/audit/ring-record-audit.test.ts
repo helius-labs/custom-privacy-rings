@@ -240,12 +240,18 @@ describe("the transfer reader", () => {
     }
   });
 
-  it("reads a record at another slot as a commitment error", () => {
+  it("keeps a record at another slot without its data hashes as Rust does", () => {
     const entry = caseNamed("plain_with_exit_and_dummy");
     const { audited: row } = audited(entry, {
       records: new Map([[0, hex(entry.records[1] as string)]]),
     });
-    expect(row.payloadErrors).toEqual([{ slotIndex: 0, kind: "commitment" }]);
+    // The ring proof binds the record to its commitment, a mismatch lands on the payload.
+    expect(row.payloadErrors).toEqual([{ slotIndex: 0, kind: "payload" }]);
+    const [kept] = row.outputs;
+    expect(kept?.slotIndex).toBe(0);
+    if (kept?.opening.kind !== "ring" && kept?.opening.kind !== "exit") throw new Error("a record");
+    expect(kept.opening.utxo).not.toHaveProperty("dataHash");
+    expect(kept.opening.utxo).not.toHaveProperty("ringDataHash");
   });
 
   it("reads a record under a substituted recipient key as a disclosure or commitment error", () => {
@@ -422,18 +428,15 @@ describe("the note index", () => {
   });
 });
 
-/** The merge vector's added envelope, read loosely until the coordinator regenerates it. */
-type MergeCase = (typeof mergeVector.cases)[number] & { readonly envelope?: string };
-
 describe("the merge reader", () => {
-  for (const entry of mergeVector.cases as readonly MergeCase[]) {
+  for (const entry of mergeVector.cases) {
     it(`opens the ${entry.name} record and rebuilds its commitment`, () => {
       const { request } = entry;
       const record = openMergeRecord(
         X25519Keypair.fromBytes(field(mergeVector.auditor_sk)),
         {
           ephemeralPublicKey: hex(mergeVector.eph_pk) as Bytes33,
-          envelope: hex(entry.envelope ?? ""),
+          envelope: hex(entry.envelope_ciphertext),
           record: hex(entry.ciphertext),
         },
         field(request.firstNullifier),

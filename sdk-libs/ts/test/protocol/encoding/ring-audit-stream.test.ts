@@ -364,9 +364,10 @@ describe("the stream codecs", () => {
     const merge = encodeMergeRecord({ record, seed });
     expect(merge).toHaveLength(169);
     expect(decodeMergeRecord(merge)).toEqual({ record, seed });
+    // The codec reads any kind as Rust does, the merge reader refuses one other than a ring note.
     const exit = merge.slice();
     exit[0] = RecordKind.exit;
-    expect(() => decodeMergeRecord(exit)).toThrow(RingError);
+    expect(decodeMergeRecord(exit).record.kind).toBe(RecordKind.exit);
     expect(() => decodeMergeRecord(merge.subarray(1))).toThrow(RingError);
   });
 
