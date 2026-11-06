@@ -562,18 +562,15 @@ describe("tracking predicates", () => {
     const checked = (
       outputs: readonly (ProofOutputUtxo | undefined)[],
       served: TrackingRecord | undefined,
-      saltedPayees = true,
     ) =>
       checkOutputKeys({
         outputs,
         rowOf: () => served,
         viewingKeyOf: () => fill(4),
         spenders: [],
-        saltedPayees,
       });
     checked([output(fill(9)), undefined], row(fill(9)));
     checked([output(zero)], undefined);
-    checked([output(zero)], row(fill(9)), false);
     expect(refusal(() => checked([output(zero)], row(fill(9)))).code).toBe(
       "RING_RECIPIENT_ENROLLED",
     );
@@ -600,7 +597,6 @@ describe("tracking predicates", () => {
         rowOf: () => row(fill(9)),
         viewingKeyOf: () => fill(4),
         spenders: [],
-        saltedPayees: false,
       }),
     );
     expect(stale.code).toBe("RING_RECIPIENT_VIEWING_KEY_STALE");
@@ -609,7 +605,6 @@ describe("tracking predicates", () => {
       rowOf: () => row(fill(9)),
       viewingKeyOf: () => undefined,
       spenders: [spender],
-      saltedPayees: false,
     });
   });
 });

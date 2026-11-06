@@ -288,7 +288,7 @@ A deposit moves SOL or tokens from a wallet's public balance into up to 8 ring n
    3. Sends the deposit request to **Ring RPC** on the deposit relay rail. The funder signs `deposit_request_digest`, the SHA-256 of `"zolana/ring-rpc-relay-deposit"` and the proof input bytes. No owner signs.
 2. **Ring RPC:**
    1. Checks that the ring is active. Refuses a frame with a real input, with two funders, with the fee payer as funder, or with a signature the funder did not make.
-   2. Generates the transfer proof. It shows the owner and asset rules hold for each recipient and asset. It also shows that each nonzero nullifier key matches its owner's tracking row. Under a salted payee read it shows that each zero-key owner has no row.
+   2. Generates the transfer proof. It shows the owner and asset rules hold for each recipient and asset. It also shows that each nonzero nullifier key matches its owner's tracking row. It also proves each zero-key recipient absent at the accepted tracking root.
    3. Returns the transaction to the **Wallet** for signing.
 3. **Wallet:** the funder signs the transaction to authorize the SOL or SPL token transfer.
 4. **Ring RPC:**
@@ -497,7 +497,7 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 33. Enrollment lives in a tracking tree apart from the policy registry, because one tree would make enrollment and revocation race on one revision. A curator source reads list bits only, so any registry other than the ring's records can serve as a curator.
 34. Reply metadata is optional and off by default. The mandatory body names neither sender nor memo, and a reply stays an unauthenticated claim.
 35. A transfer's co-signer derives each owner's debit from the frame it signs with the auditor key. Client-sent openings would widen what the co-signer learns.
-36. A note under the zero nullifier key needs no tracking row for its key, so a program-owned note needs no enrollment. The proof accepts a zero-key output to an enrolled owner only while no salted payee read is active. Under a salted payee read the payee's row must be absent, a requirement of its own since the salted read opens a payee's row by owner identity whatever the key. The SDKs accept that zero-key recipient and read its current viewing key from its authorization account. Readers mark a zero-key note `exposed_if_spent`, and automatic selection leaves it out.
+36. A note under the zero nullifier key needs no enrollment. A zero-key transfer output requires owner absence at the accepted tracking root. A retained root can prove absence during the enrollment grace period. An old zero-key note stays spendable after enrollment, and a merge preserves its key. Readers mark a zero-key note `exposed_if_spent`, and automatic selection leaves it out.
 37. A slot's discovery tag is a hint no proof constrains. One every-site scan reads no tag, so a wrong tag cannot hide a note its recipient can decrypt.
 38. A salted owner write proves the owner's row under one tracking root. In the same instruction it raises the source's tracking floor to that root's revision. Rows never leave the tracking tree, so every root a salted read accepts holds each owner with a private entry. No such owner proves absence. An owner with no applied row has no private entry, so its proven absence hides none.
 39. The input map is part of the sealed envelope and the proof derives it from the forwarded nullifiers. Notes and addresses interleave in SPP's order before the dummy suffix, and a reader never takes an address for a spent note.

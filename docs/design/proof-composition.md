@@ -80,7 +80,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 ### Every live ring output reads its owner's row
 
 - The circuit holds a nonzero key to its owner's enrolled key under the tracking root, in `AssertOutputOwners`. A literal zero is refused.
-- A zero-key output to an enrolled owner passes only while no salted payee read is active. Under a salted payee read a zero key needs the payee's row absent.
+- A zero-key output requires owner absence at the accepted tracking root. A retained root can prove absence during the enrollment grace period.
 - An exit reads `Ring = 0`, so it stands outside the rule.
 - A present row opens by its leaf, and an absent owner by the leaf that brackets it, in `prover/circuits/registry/tracking.go`.
 - The tests are `TestOutputPredicateOnEveryRail`, and `TestTrackingOpeningRefusals` and `TestTrackingOpeningResolvesPresentAndAbsentOwners` in `prover/circuits/registry`.
