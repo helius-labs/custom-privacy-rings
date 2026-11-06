@@ -3396,8 +3396,9 @@ async fn a_keyed_input_spends_under_its_owners_enrolled_key_and_a_zero_key_waive
     ));
 }
 
+/// Any nonzero key pays, the zero key pays an unregistered owner alone, the literal zero pays no one.
 #[tokio::test]
-async fn an_output_takes_the_registered_key_or_zero_for_an_absent_owner() {
+async fn an_output_takes_any_nonzero_key_and_the_zero_key_only_for_an_absent_owner() {
     use crate::tests::support::keypair;
     let (sender, payee) = (keypair(1), keypair(2));
     let (from, to) = (
@@ -3421,24 +3422,28 @@ async fn an_output_takes_the_registered_key_or_zero_for_an_absent_owner() {
         ..to
     };
     let enrolled = client(&[from, to]);
-    assert!(paying(&to).frame(&enrolled).await.is_ok());
-    assert!(paying(&zero).frame(&client(&[from])).await.is_ok());
-    assert!(matches!(
-        paying(&to).frame(&client(&[from])).await.err(),
-        Some(RingError::RecipientNotEnrolled { .. })
-    ));
-    assert!(matches!(
-        paying(&zero).frame(&enrolled).await.err(),
-        Some(RingError::EnrolledRecipientAtZeroKey { .. })
-    ));
     let rekeyed = spr_keypair::ShieldedAddress {
         nullifier_pubkey: from.nullifier_pubkey,
         ..to
     };
+    assert!(paying(&to).frame(&enrolled).await.is_ok());
+    assert!(paying(&zero).frame(&client(&[from])).await.is_ok());
+    assert!(paying(&to).frame(&client(&[from])).await.is_ok());
+    assert!(paying(&rekeyed).frame(&enrolled).await.is_ok());
     assert!(matches!(
-        paying(&rekeyed).frame(&enrolled).await.err(),
-        Some(RingError::RecipientKeyMismatch { .. })
+        paying(&zero).frame(&enrolled).await.err(),
+        Some(RingError::EnrolledRecipientAtZeroKey { .. })
     ));
+    let literal = spr_keypair::ShieldedAddress {
+        nullifier_pubkey: [0; 32],
+        ..to
+    };
+    for chain in [client(&[from]), enrolled] {
+        assert!(matches!(
+            paying(&literal).frame(&chain).await.err(),
+            Some(RingError::RecipientLiteralZeroKey { .. })
+        ));
+    }
 }
 
 #[tokio::test]
@@ -3728,10 +3733,7 @@ async fn a_public_spend_on_an_anonymous_ring_publishes_its_owners_alone() {
     let unenrolled = Chain::ring(anonymous())
         .with_tracking(&[keypair(2).shielded_address().unwrap()])
         .client();
-    assert!(matches!(
-        transfer().frame(&unenrolled).await.err(),
-        Some(RingError::RecipientNotEnrolled { slot_index: 0 })
-    ));
+    assert!(transfer().frame(&unenrolled).await.is_ok());
     assert!(transfer()
         .with_zero_key_change()
         .frame(&unenrolled)

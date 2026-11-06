@@ -308,6 +308,8 @@ impl TrackingMemberRead {
 }
 
 /// Mirror `AssertOutputOwners` in `prover/circuits/transfer/owners.go`.
+///
+/// A nonzero key pays any owner, registered or not, and only a matching registration spends it.
 pub(crate) struct OutputKey<'a> {
     pub row: Option<&'a TrackingRecord>,
     pub nullifier_pk: &'a [u8; 32],
@@ -321,14 +323,12 @@ impl OutputKey<'_> {
             nullifier_pk,
             slot_index,
         } = self;
+        if *nullifier_pk == [0; 32] {
+            return Err(RingError::RecipientLiteralZeroKey { slot_index });
+        }
         match (row, *nullifier_pk == ZERO_NULLIFIER_PUBKEY) {
-            (None, true) => Ok(()),
-            (None, false) => Err(RingError::RecipientNotEnrolled { slot_index }),
             (Some(_), true) => Err(RingError::EnrolledRecipientAtZeroKey { slot_index }),
-            (Some(record), false) if record.nullifier_pk != *nullifier_pk => {
-                Err(RingError::RecipientKeyMismatch { slot_index })
-            }
-            (Some(_), false) => Ok(()),
+            _ => Ok(()),
         }
     }
 }
