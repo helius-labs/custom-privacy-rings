@@ -81,7 +81,10 @@ cleanup() {
   "$ZOLANA_CLI_BIN" dev start --local --stop \
     --rpc-port "$ZOLANA_LOCALNET_RPC_PORT" --photon-port "$ZOLANA_LOCALNET_PHOTON_PORT" \
     --prover-port "$prover_port" || true
-  lsof -ti "tcp:$ring_indexer_port" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
+  # The harness starts these two itself, the CLI holds no receipt for them.
+  for port in "$ring_indexer_port" "$ZOLANA_LOCALNET_PHOTON_PORT"; do
+    lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
+  done
   echo "Ring test logs: $ZOLANA_PROCESS_SCOPE_DIR"
 }
 trap cleanup EXIT

@@ -56,7 +56,7 @@ use zolana_ring_client::{MemberOpeningRead, RingConfidentialScan};
 use zolana_ring_policy::{ListId, Member, RuleTable};
 use zolana_ring_transaction::RingAssets;
 
-use crate::ring_indexer::RingIndexerLaunch;
+use crate::ring_indexer::{PhotonRestart, RingIndexerLaunch};
 
 /// Funds the fee payer for the whole bootstrap (smart accounts, protocol
 /// config, tree allocation) plus every deposit a test drives through it.
@@ -593,17 +593,9 @@ pub fn setup_with_extra_rings(extra_ring_programs: &[Address]) -> Result<TestEnv
             }),
     )
     .collect();
+    // An earlier bring-up's restarted Photon holds no CLI receipt, the CLI refuses its port.
+    crate::ring_indexer::stop_listener(crate::ring_indexer::port(&validator.ports.photon_url())?)?;
     validator.start_with_upgradeable_programs(&deployments)?;
-    RingIndexerLaunch {
-        indexer_url: &localnet_indexer_url(),
-        photon_url: &validator.ports.photon_url(),
-        rpc_url: &localnet_rpc_url(),
-        log_dir: &validator.log_dir,
-    }
-    .spawn()
-    .context("start the ring indexer")?;
-
-    start_prover(&validator.cli_bin)?;
 
     let rpc_url = localnet_rpc_url();
     let indexer_url = localnet_indexer_url();
@@ -693,6 +685,24 @@ pub fn setup_with_extra_rings(extra_ring_programs: &[Address]) -> Result<TestEnv
     )?;
 
     let tree = tree_creation.tree;
+
+    // Photon reads the new tree at its restart, the ring indexer and prover read through Photon.
+    PhotonRestart {
+        photon_url: &validator.ports.photon_url(),
+        rpc_url: &rpc_url,
+        log_dir: &validator.log_dir,
+    }
+    .spawn()
+    .context("restart Photon past the tree creation")?;
+    RingIndexerLaunch {
+        indexer_url: &indexer_url,
+        photon_url: &validator.ports.photon_url(),
+        rpc_url: &rpc_url,
+        log_dir: &validator.log_dir,
+    }
+    .spawn()
+    .context("start the ring indexer")?;
+    start_prover(&validator.cli_bin)?;
 
     let usdc_mint = create_mint(&rpc, &payer)?;
     RegisterSplAsset {
