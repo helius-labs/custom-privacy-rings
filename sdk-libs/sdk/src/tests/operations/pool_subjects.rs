@@ -161,7 +161,6 @@ fn an_owner_entry_carries_the_go_field_names() {
 #[test]
 fn a_salted_row_past_a_narrow_pool_takes_the_wide_key() {
     let spend = |own: usize| TransferSpend {
-        format: custom_ring_interface::DisclosureFormat::Standard,
         rail: RingRail::Confidential,
         inputs: 1,
         outputs: 2,
@@ -224,7 +223,6 @@ fn output_and_settlement_subjects_fit_the_wide_record_pools() {
     }
     plan.asset(asset(0));
     let spend = TransferSpend {
-        format: custom_ring_interface::DisclosureFormat::Standard,
         rail: RingRail::Confidential,
         inputs: 1,
         outputs: 8,
