@@ -4,7 +4,7 @@
  * order, the envelope counts, entry records and owner rows read that order.
  * Read after `protocol/codec/audit-stream.ts`. Read before `proof/transfer-proof.ts`.
  */
-import { RING_INPUT_PADDING, ringInputOpening, ringOutputOpening } from "../rpc/prover/assembly.js";
+import { RING_SLOT_PADDING, ringInputOpening, ringOutputOpening } from "../rpc/prover/assembly.js";
 import {
   bigIntBytes,
   bytesKey,
@@ -218,7 +218,7 @@ export function outputOpenings(
   const keyOf = (slot: number): Bytes32 => (recipientKeys[slot] ?? auditor).u();
   const padding = Array.from({ length: Math.max(0, capacity - outputs.length) }, (_, index) =>
     Object.freeze({
-      output: zeroSlotOpening(),
+      output: RING_SLOT_PADDING,
       ...zeroEntryOpening(),
       recipientKey: keyOf(outputs.length + index),
     }),
@@ -248,7 +248,7 @@ export function inputOpenings(
   const notes = spentNotes(inputs);
   return Object.freeze([
     ...notes.map(ringInputOpening),
-    ...Array.from({ length: inputClass - notes.length }, () => RING_INPUT_PADDING),
+    ...Array.from({ length: inputClass - notes.length }, () => RING_SLOT_PADDING),
   ]);
 }
 
@@ -295,21 +295,6 @@ export function ownerRows(
       details: { owners: rows.length, maximum: slots },
     });
   return Object.freeze([...rows, ...Array<Bytes32>(slots - rows.length).fill(ZERO_32)]);
-}
-
-function zeroSlotOpening(): RingSlotOpening {
-  return {
-    domain: ZERO_32,
-    treeId: ZERO_32,
-    ownerPkHash: ZERO_32,
-    nullifierPk: ZERO_32,
-    asset: ZERO_32,
-    amount: ZERO_32,
-    blinding: ZERO_32,
-    dataHash: ZERO_32,
-    ringDataHash: ZERO_32,
-    ringProgramId: ZERO_32,
-  };
 }
 
 function zeroEntryOpening(): EntryOpeningProofInput {

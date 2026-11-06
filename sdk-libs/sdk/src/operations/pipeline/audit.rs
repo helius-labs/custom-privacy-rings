@@ -208,6 +208,7 @@ impl AuditSection<'_> {
             .map(|(slot, key)| {
                 let Some(output) = published.get(slot) else {
                     return Ok(OutputOpening {
+                        output: Opening::padding(),
                         recipient_key: key.u(),
                         ..OutputOpening::default()
                     });
@@ -232,7 +233,7 @@ impl AuditSection<'_> {
         let mut openings = spent_notes(self.inputs)
             .map(Opening::input)
             .collect::<Result<Vec<_>, _>>()?;
-        openings.resize(class, Opening::input_padding());
+        openings.resize(class, Opening::padding());
         Ok(openings)
     }
 

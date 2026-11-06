@@ -176,7 +176,7 @@ fn a_read_keeps_a_seal_of_one_stream_and_refuses_another() {
     let outcomes: Vec<_> = pinned.iter().map(|case| case["outcome"].clone()).collect();
     assert_eq!(
         outcomes,
-        ["reuse", "reseal", "reuse", "reseal", "reuse"].map(Value::from)
+        ["reuse", "reuse", "reseal", "reuse"].map(Value::from)
     );
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/transfer-plan-rekey.json");

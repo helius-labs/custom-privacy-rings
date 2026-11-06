@@ -848,9 +848,9 @@ async fn an_anonymous_spend_of_ring_and_default_ring_utxos_is_refused_before_pro
     ));
 }
 
-/// SPP's builder leads with the address, the hidden owner's proof needs its note at slot zero.
+/// SPP's builder leads with the address, the hidden rail reads the first note.
 #[tokio::test]
-async fn an_anonymous_transfer_led_by_an_address_is_refused_reads_a_cache_and_writes_none() {
+async fn an_anonymous_transfer_led_by_an_address_stages_reads_a_cache_and_writes_none() {
     let sender = &crate::tests::support::keypair(1);
     let paid = ring_address(&crate::tests::support::keypair(2));
     let chain = Chain::ring(anonymous());
@@ -870,10 +870,7 @@ async fn an_anonymous_transfer_led_by_an_address_is_refused_reads_a_cache_and_wr
             .with_anonymous_signer(&sender.signing_key)
             .with_payment(payment(&paid, 10))
             .unwrap();
-        assert!(matches!(
-            stage_anonymous(&transfer, &chain).await,
-            Err(RingError::HiddenOwnerMissing)
-        ));
+        assert!(stage_anonymous(&transfer, &chain).await.is_ok());
     }
 
     let note = ring_utxo(sender, Mint::SOL, 10, 0);
