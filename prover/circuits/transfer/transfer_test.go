@@ -122,9 +122,6 @@ func TestEveryKeySolves(t *testing.T) {
 			w.DefaultInput = shape.Entry
 			requireSolved(t, w.Build(t).Circuit)
 		})
-		if shape.SingleAssetPayout {
-			continue
-		}
 		t.Run(shape.String()+"/hidden", func(t *testing.T) {
 			w := ringtransfer.Hidden(shape)
 			w.DefaultInput = shape.Entry && shape.Inputs > 2
@@ -579,7 +576,7 @@ func TestDataOutputs(t *testing.T) {
 		w.HasData = true
 		requireSolved(t, w.Build(t).Circuit)
 	})
-	t.Run("the bit clear pays no tails", func(t *testing.T) {
+	t.Run("no data output", func(t *testing.T) {
 		requireSolved(t, ringtransfer.Signed(dataKey2).Build(t).Circuit)
 	})
 }
@@ -606,53 +603,34 @@ func TestInputOrder(t *testing.T) {
 	})
 }
 
+// SPP's addresses stay off the ring's slots, their chain reaches the proof as a witness.
 func TestAddressSlots(t *testing.T) {
 	sender, nk, ring := ringtransfer.Sender(t), ringtransfer.SenderNullifierPk(t), ringID(t)
-	addressSlot := func() ringaudit.Input {
-		slot := ringaudit.SpareInput(1)
-		slot.Domain, slot.OwnerPkHash = transaction.AddressDomain, sender
-		return ringaudit.Input{Utxo: slot}
-	}
 	world := func(t *testing.T) ringtransfer.Confidential {
 		w := ringtransfer.Signed(confidential2)
-		w.Inputs = []ringaudit.Input{{Utxo: ringaudit.SpentUtxo(t, sender, nk, ring, 100, 51)}, addressSlot()}
+		w.Inputs = []ringaudit.Input{{Utxo: ringaudit.SpentUtxo(t, sender, nk, ring, 100, 51)}}
+		w.Addresses = []*big.Int{big.NewInt(0x77)}
 		return w
 	}
 	t.Run("beside a spent note", func(t *testing.T) {
-		b := world(t).Build(t)
-		b.Circuit.InputNullifiers[1] = 0x77
-		b.Rehash(t)
-		requireSolved(t, b.Circuit)
+		requireSolved(t, world(t).Build(t).Circuit)
 	})
 	t.Run("the chain binds the transaction hash", func(t *testing.T) {
 		b := world(t).Build(t)
-		b.Circuit.InputNullifiers[1] = 0x77
-		b.Rehash(t)
-		privateTxHash := b.Circuit.PrivateTxHash
-		b.Circuit.InputNullifiers[1] = 0x78
-		b.Rehash(t)
-		b.Circuit.PrivateTxHash = privateTxHash
-		b.Rebind(t)
+		b.Circuit.AddressChain = big.NewInt(0x78)
 		refused(t, b.Circuit, "transfer.transactionBinding.bindTransaction")
 	})
 	t.Run("a note called an address leaves the input chain SPP hashed", func(t *testing.T) {
 		w := world(t)
-		w.Inputs[1] = ringaudit.Input{Utxo: ringaudit.SpentUtxo(t, sender, nk, ring, 60, 52)}
+		w.Inputs = append(w.Inputs, ringaudit.Input{Utxo: ringaudit.SpentUtxo(t, sender, nk, ring, 60, 52)})
 		b := w.Build(t)
-		spent := b.Circuit.PrivateTxHash
 		b.Circuit.Inputs[1].Domain = transaction.AddressDomain
-		b.Circuit.PrivateTxHash = spent
-		refused(t, b.Circuit, "transfer.transactionBinding.bindTransaction")
-	})
-	t.Run("a note after an address", func(t *testing.T) {
-		w := world(t)
-		w.Inputs = []ringaudit.Input{addressSlot(), {Utxo: ringaudit.SpentUtxo(t, sender, nk, ring, 100, 51)}}
-		requireSolved(t, w.Build(t).Circuit)
+		refused(t, b.Circuit, "shared.UtxoWires.OpenSlot")
 	})
 	t.Run("an unknown domain", func(t *testing.T) {
 		b := world(t).Build(t)
 		b.Circuit.Inputs[1].Domain = 9
-		refused(t, b.Circuit, "shared.UtxoWires.OpenInput")
+		refused(t, b.Circuit, "shared.UtxoWires.OpenSlot")
 	})
 }
 

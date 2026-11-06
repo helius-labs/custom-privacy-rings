@@ -6,10 +6,10 @@ use custom_ring_interface::{
     funder_account_position, input_flag,
     key_catalog::{FrameKey, RingCircuit},
     shape_flag, spl_withdrawal_count, tag, transact_flag, AnonymousProofData, BundleLayout,
-    CoSignScope, CustomRingError, CustomRingProof, DisclosureFormat, FramedSenderBundle,
-    InputTrees, PlainGroth16Proof, PolicyProof, RingOutput, RingPolicy, RingRail, RingRole,
-    RingTransactData, RootRead, SlotBody, AUDIT_RECORD_LEN, CONFIDENTIAL_DATA_FREE_BODY_LEN,
-    RECIPIENT_BODY_LEN, RING_TRANSACT_RING_CONFIG_INDEX, TRANSACT_PAYER_INDEX,
+    CoSignScope, CustomRingError, CustomRingProof, FramedSenderBundle, InputTrees,
+    PlainGroth16Proof, PolicyProof, RingOutput, RingPolicy, RingRail, RingRole, RingTransactData,
+    RootRead, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN, OUTPUT_RECORD_LEN,
+    RING_TRANSACT_RING_CONFIG_INDEX, TRANSACT_PAYER_INDEX,
 };
 use solana_address::Address;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
@@ -38,17 +38,18 @@ fn field(seed: u8) -> [u8; 32] {
 }
 
 pub struct Fixture {
-    format: DisclosureFormat,
     proofs: [CustomRingProof; 2],
     spp_proof: PlainGroth16Proof,
     fields: Vec<[u8; 32]>,
     keys: [[u8; 32]; 16],
-    records: [[u8; AUDIT_RECORD_LEN]; 16],
-    bodies: [[u8; RECIPIENT_BODY_LEN]; 16],
-    /// Cut to the frame's output and bodiless counts.
+    /// Slot `i`'s record, a body with no payload.
+    records: [[u8; OUTPUT_RECORD_LEN]; 16],
+    /// Cut to the frame's output count.
     bundle: Vec<u8>,
     /// Cut to the stream layout's envelope length.
     envelope: Vec<u8>,
+    /// Cut to one sealed key per published slot.
+    recipient_keys: Vec<u8>,
     tags: [[u8; 32]; 16],
     salt: [u8; 16],
     spl_owners: [[u8; 32]; 8],
@@ -66,7 +67,6 @@ impl Fixture {
             commitment_pok: [seed + 4; 32],
         };
         Self {
-            format: DisclosureFormat::Standard,
             proofs: [proof(0x10), proof(0x20)],
             spp_proof: PlainGroth16Proof {
                 proof_a: [0x31; 32],
@@ -75,27 +75,14 @@ impl Fixture {
             },
             fields: (1..=120u8).map(field).collect(),
             keys: core::array::from_fn(|i| [0x40 + i as u8; 32]),
-            records: core::array::from_fn(|i| [0x80 + i as u8; AUDIT_RECORD_LEN]),
-            bodies: core::array::from_fn(|i| [0x90 + i as u8; RECIPIENT_BODY_LEN]),
-            bundle: vec![
-                0x3c;
-                BundleLayout {
-                    outputs: 16,
-                    change: 16
-                }
-                .byte_len()
-            ],
+            records: core::array::from_fn(|i| [0x80 + i as u8; OUTPUT_RECORD_LEN]),
+            bundle: vec![0x3c; BundleLayout { outputs: 16 }.byte_len()],
             envelope: (0..5000u32).map(|byte| byte as u8 ^ 0x93).collect(),
+            recipient_keys: (0..512u32).map(|byte| byte as u8 ^ 0x71).collect(),
             tags: core::array::from_fn(|i| field(0xa0 + i as u8)),
             salt: [0x5c; 16],
             spl_owners: [[0x73; 32]; 8],
         }
-    }
-
-    #[must_use]
-    pub fn with_format(mut self, format: DisclosureFormat) -> Self {
-        self.format = format;
-        self
     }
 
     pub fn settle_legs<'a>(
@@ -139,15 +126,11 @@ impl Fixture {
             expiry_unix_ts: 1_800_000_000,
             tx_viewing_u: &self.keys[0],
             salt: &self.salt,
-            extensions: custom_ring_interface::FrameExtensions {
-                format: self.format,
-                ..Default::default()
-            },
+            extensions: custom_ring_interface::FrameExtensions::default(),
             interface_transfers: Vec::new(),
             has_data: false,
             entry: false,
             wide_owners: FrameKey {
-                format: self.format,
                 rail,
                 inputs: usize::from(n_in),
                 outputs: usize::from(n_out),
@@ -163,6 +146,7 @@ impl Fixture {
                 body: &[],
             }),
             envelope: &[],
+            recipient_keys: &[],
             private_tx_hash: &self.fields[0],
             anonymous: hidden_sender.then(|| AnonymousProofData {
                 commitment: &self.keys[3],
@@ -181,9 +165,8 @@ impl Fixture {
             .map(|slot| RingOutput {
                 hash: &self.fields[10 + slot],
                 owner_tag: custom_ring_interface::stream::slot_tag(self.tags[slot]),
-                body: SlotBody::Recipient(&self.bodies[slot][..self.format.recipient_body_len()]),
-                record: &self.records[slot][..self.format.record_len()],
-                tail: None,
+                body: SlotBody::Recipient(&self.records[slot]),
+                record: &self.records[slot],
             })
             .collect();
         self.fit_stream(&mut data);
@@ -217,7 +200,9 @@ impl Fixture {
     }
 
     pub fn fit_stream<'a>(&'a self, data: &mut RingTransactData<'a>) {
-        data.envelope = &self.envelope[..data.audit_stream().unwrap().envelope().len];
+        let stream = data.audit_stream().unwrap();
+        data.envelope = &self.envelope[..stream.envelope().len];
+        data.recipient_keys = &self.recipient_keys[..stream.keys_len()];
     }
 
     pub fn fit_bundle<'a>(&'a self, data: &mut RingTransactData<'a>) {
@@ -502,9 +487,13 @@ fn the_entry_key_takes_an_owner_run() {
 /// A run wider than `S` cannot fit the chain the key binds.
 #[test]
 fn an_owner_run_past_the_key_slots_is_refused() {
-    let fixture = Fixture::new().with_format(DisclosureFormat::SingleAssetPayout);
+    let fixture = Fixture::new();
     let mut ring = Ring::new(Setup::AuditOnly);
-    let data = fixture.transfer(RingRail::Confidential, 1, 16, false);
+    // The two input entry key binds the narrowest run.
+    let mut data = fixture.transfer(RingRail::Confidential, 2, 8, false);
+    data.entry = true;
+    fixture.fit_stream(&mut data);
+    assert_eq!(data.audit_stream().unwrap().key.signer_slots(), 2);
     let slots = data.audit_stream().unwrap().key.signer_slots();
     let owners: Vec<Keypair> = (0..=slots).map(|_| Keypair::new()).collect();
     let run: Vec<AccountMeta> = owners
@@ -674,8 +663,7 @@ fn a_truncated_or_appended_ciphertext_is_refused() {
             .windows(data.envelope.len())
             .position(|window| window == data.envelope)
             .unwrap()
-            + stream.envelope().len
-            + stream.records_len();
+            + stream.sealed_len();
         let mut truncated = compact.clone();
         truncated.remove(end - 1);
         let mut appended = compact;
