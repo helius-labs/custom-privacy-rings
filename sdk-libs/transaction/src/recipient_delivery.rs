@@ -10,7 +10,6 @@ use custom_ring_interface::{
 };
 use solana_address::Address;
 use spr_hasher::primitives::is_canonical_x25519_public_key;
-use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use spr_keypair::{ShieldedAddress, X25519Keypair, X25519Pubkey};
 use spr_transaction::{
     derive_output_blinding_seed, utxo::derive_transact_output_blinding, Blinding, Data, DataRecord,
@@ -113,9 +112,7 @@ pub fn seal_recipient_body(
     if let Some((payload, width)) = payload {
         plaintext.extend_from_slice(&payload.encode_padded(width)?);
     }
-    let mut ciphertext = plaintext.to_vec();
-    symmetric_apply_audit(slot_secret.as_bytes(), RECIPIENT_BODY_LABEL, &mut ciphertext)?;
-    Ok(ciphertext)
+    encrypt_recipient_body(plaintext.to_vec(), slot_secret)
 }
 
 /// The cipher is unauthenticated, only the commitment a reader rebuilds proves ownership.
