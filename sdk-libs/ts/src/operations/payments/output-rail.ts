@@ -288,9 +288,11 @@ function withPaymentData(
   });
 }
 
-/** The frame's `HAS_DATA`, every non-exit slot then carries a payload of one length. */
+/** The frame's `HAS_DATA`, every non-exit slot then carries a payload of one length, Rust `payload_width`. */
 export function framesData(outputs: readonly ProofOutputUtxo[]): boolean {
-  return outputs.some(carriesData);
+  return outputs.some(
+    (output) => !output.isDummy() && (output.data.utxoData() !== undefined || carriesData(output)),
+  );
 }
 
 export type SlotWire = RingOutput;
