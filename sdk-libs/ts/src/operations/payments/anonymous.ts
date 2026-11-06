@@ -123,7 +123,7 @@ export function checkHiddenOwnerSpends(proofInputs: SppProofInputs, sender: Shie
     throw new RingError("RING_NO_HIDDEN_OWNER", { details: { index: firstForeign } });
 }
 
-/** Rust `AnonymousExits::token_owner`, the owner SPP binds for the SPL withdrawal, `undefined` without one. */
+/** Rust `AnonymousExits::owners`, each exit checked apart, the named owner a missing token account takes. */
 export async function anonymousExitTokenOwner(
   input: Readonly<{
     client: Pick<ChainReader, "getAccount">;
@@ -141,7 +141,6 @@ export async function anonymousExitTokenOwner(
   const withdrawals = input.transfers.filter((transfer) => !transfer.isDeposit);
   if (named !== undefined && !withdrawals.some((transfer) => transfer.kind === "spl"))
     throw new RingError("RING_ANONYMOUS_EXIT_TOKEN_OWNER_MISMATCH");
-  let tokenOwner: Address | undefined;
   for (const transfer of withdrawals) {
     if (transfer.kind === "sol") {
       await checkSolExit(
@@ -155,11 +154,8 @@ export async function anonymousExitTokenOwner(
       throw new RingError("RING_ANONYMOUS_EXIT_NAMED_OWNER_MISMATCH", {
         details: { destination: transfer.tokenAccount, named, owner },
       });
-    if (tokenOwner !== undefined && tokenOwner !== owner)
-      throw new RingError("RING_ANONYMOUS_EXIT_DESTINATIONS_DIFFER");
-    tokenOwner = owner;
   }
-  return tokenOwner;
+  return named;
 }
 
 export function checkEntryInputs(proofInputs: SppProofInputs, sender: ShieldedAddress): void {

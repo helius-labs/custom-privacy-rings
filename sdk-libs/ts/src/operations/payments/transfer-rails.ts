@@ -835,10 +835,6 @@ export class AnonymousTransfer {
       },
       context,
     );
-    const solExit = prepared.interfaceTransfers.find((t) => t.kind === "sol" && !t.isDeposit);
-    const destination = solExit?.kind === "sol" ? solExit.userSolAccount : exitTokenOwner;
-    if (destination !== undefined && exitTokenOwner !== undefined && destination !== exitTokenOwner)
-      throw new RingError("RING_ANONYMOUS_EXIT_DESTINATIONS_DIFFER");
     if (this.#payments.some((payment) => isSmallOrder(payment.to.recipient.viewingPublicKey)))
       throw new RingError("RING_RECIPIENT_KEY_NOT_CONTRIBUTORY");
     const rail = new RingOutputRail(

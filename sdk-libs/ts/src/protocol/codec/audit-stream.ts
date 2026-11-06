@@ -152,34 +152,29 @@ export function encodeMergeRecord(merge: MergeRecord): Uint8Array {
   );
 }
 
-/** A merge output is a ring note, any other kind is refused. */
+/** Rust `MergeRecord::decode`, the merge reader refuses a kind other than a ring note. */
 export function decodeMergeRecord(plaintext: Uint8Array): MergeRecord {
   if (plaintext.length !== MERGE_RECORD_LEN) throw refused();
   const record = decodeOutputRecord(plaintext.subarray(0, OUTPUT_RECORD_LEN));
-  if (record.kind !== RecordKind.ring) throw refused();
   return Object.freeze({ record, seed: plaintext.slice(OUTPUT_RECORD_LEN) as Bytes32 });
 }
 
-/** `u16be(len) ‖ u8(has_ring_data) ‖ ring_data_hash? ‖ data ‖ zero padding`, `paddedLength` counts the prefix. */
+/** `u16be(len) ‖ u8(has_ring_data) ‖ ring_data_hash? ‖ data ‖ zero padding`, `paddedLength` counts the prefix, Rust `RecipientPayload::encode_padded`. */
 export function encodeRecipientPayload(
   payload: RecipientPayload,
   paddedLength?: number,
 ): Uint8Array {
   const { ringDataHash, data } = payload;
-  const content =
-    ringDataHash === undefined && data.length === 0
-      ? new Uint8Array()
-      : concatBytes(
-          Uint8Array.of(ringDataHash === undefined ? 0 : 1),
-          ...(ringDataHash === undefined
-            ? []
-            : [checkedBytes<Bytes32>(ringDataHash, FIELD_LEN, "ring data hash")]),
-          data,
-        );
+  const content = concatBytes(
+    Uint8Array.of(ringDataHash === undefined ? 0 : 1),
+    ...(ringDataHash === undefined
+      ? []
+      : [checkedBytes<Bytes32>(ringDataHash, FIELD_LEN, "ring data hash")]),
+    data,
+  );
   const length = paddedLength ?? PAYLOAD_LENGTH_LEN + content.length;
   if (
     !Number.isSafeInteger(length) ||
-    content.length > 0xffff ||
     length > 0xffff ||
     length < PAYLOAD_LENGTH_LEN + content.length
   )
@@ -190,13 +185,13 @@ export function encodeRecipientPayload(
   return encoded;
 }
 
-/** Refuses a short prefix, a length past the bytes, nonzero padding and a presence byte off its two values. */
+/** Refuses a short prefix, a length past the bytes, nonzero padding and a presence byte off 0 or 1, Rust `RecipientPayload::decode`. */
 export function decodeRecipientPayload(plaintext: Uint8Array): RecipientPayload {
   if (plaintext.length < PAYLOAD_LENGTH_LEN) throw refused();
   const length = new DataView(plaintext.buffer, plaintext.byteOffset, 2).getUint16(0, false);
   const end = PAYLOAD_LENGTH_LEN + length;
-  if (end > plaintext.length || plaintext.subarray(end).some((byte) => byte !== 0)) throw refused();
-  if (length === 0) return EMPTY_PAYLOAD;
+  if (length === 0 || end > plaintext.length || plaintext.subarray(end).some((byte) => byte !== 0))
+    throw refused();
   const presence = plaintext[PAYLOAD_LENGTH_LEN];
   const rest = plaintext.subarray(PAYLOAD_LENGTH_LEN + 1, end);
   if (presence === 0) return Object.freeze({ data: rest.slice() });

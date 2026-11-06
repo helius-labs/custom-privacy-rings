@@ -45,7 +45,6 @@ import {
   type OutputRecord,
   type RecipientPayload,
 } from "../../protocol/codec/audit-stream.js";
-import { PAYLOAD_LENGTH_LEN } from "../../protocol/codec/ring-disclosure-layout.js";
 import { sealOutputSlot } from "../../crypto/audit/ring-disclosure.js";
 import {
   anonymousSlotTag,
@@ -778,7 +777,7 @@ function frameLengths(delivery: RingDelivery, outputs: readonly ProofOutputUtxo[
             output.ringProgramId === undefined || output.isDummy()
               ? width
               : Math.max(width, encodeRecipientPayload(recipientPayload(output)).length),
-          PAYLOAD_LENGTH_LEN,
+          encodeRecipientPayload(EMPTY_PAYLOAD).length,
         )
       : undefined,
     replyLength: replies.length === 0 ? undefined : replyLength(replies),
