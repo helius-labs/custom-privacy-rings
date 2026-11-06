@@ -503,7 +503,7 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 37. A slot's discovery tag is a hint no proof constrains. One every-site scan reads no tag, so a wrong tag cannot hide a note its recipient can decrypt.
 38. A salted owner write proves the owner's row under one tracking root. In the same instruction it raises the source's tracking floor to that root's revision. Rows never leave the tracking tree, so every root a salted read accepts holds each owner with a private entry. No such owner proves absence. An owner with no applied row has no private entry, so its proven absence hides none.
 39. The envelope seals the note count `R` and no note position. The ring's inputs hold SPP's spent notes in note order, and the proof takes the address chain as a private witness the shared `private_tx_hash` checks. The auditor classifies each nullifier from its own index, and `R` checks the count.
-40. No statement element counts a signer's outputs. A relayed owner signs only after it opens every published output, so no data-bearing output stays out of its view.
+40. No statement element counts a signer's outputs. A relayed signer signs only after it opens every published output, so no data-bearing output stays out of its view.
 
 ## Notes
 
