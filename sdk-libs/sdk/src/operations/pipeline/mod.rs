@@ -52,7 +52,7 @@ use zolana_ring_transaction::{random_field_element, ClassifiedInput};
 pub use self::{
     anonymous::{
         Anonymous, AnonymousMove, AnonymousPayment, AnonymousTransfer, ApplicationData, CachedNote,
-        CoOwner, EntrySpend, NoteData, ReadCache, RingPayment,
+        CoOwner, EntrySpend, NoteData, OwnerExposure, ReadCache, RingPayment,
     },
     delegate::{
         DelegateCandidates, DelegateFunding, DelegateMove, DelegateOutput, DelegatePayment,
@@ -883,9 +883,12 @@ impl<'a> Sealed<'a> {
             | Spend::PublicOwners
             | Spend::Delegate { .. } => None,
         };
+        // A hidden owner co-signing approves its own outflow, no exposure waiver admits it.
         if let Some(anonymous) = anonymous {
-            HiddenOwner::of(&anonymous.signer.public_key())?
-                .check_signers(co_signers.iter().copied())?;
+            let hidden = HiddenOwner::of(&anonymous.signer.public_key())?;
+            if co_signers.contains(&hidden.0) {
+                return Err(CustomRingError::CoSignerIsOwner.into());
+            }
         }
         let authorization = spend.row_authorization();
         check_owner_capacity(&OwnerCapacity {

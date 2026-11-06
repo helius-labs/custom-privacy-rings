@@ -171,10 +171,33 @@ pub enum EntrySpend {
     Allow,
 }
 
-/// The owner's spends on an anonymous ring, no transaction signer names the owner.
+/// What a public party or a zero-key spend may reveal about the hidden owner.
+///
+/// The proof refuses only a hidden owner in the published owner run. A payer, funder, extra signer or
+/// exit destination equal to it settles and names it. A zero-key note opens to anyone holding its
+/// opening, so its spend names the spender.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OwnerExposure {
+    #[default]
+    Refused,
+    Accepted,
+}
+
+impl OwnerExposure {
+    /// Accepted exposure checks nothing.
+    fn guard(self, owner: HiddenOwner) -> Option<HiddenOwner> {
+        match self {
+            Self::Refused => Some(owner),
+            Self::Accepted => None,
+        }
+    }
+}
+
+/// The owner's spends on an anonymous ring, no transaction signer names the owner by default.
 pub struct Anonymous<'a> {
     pub(super) owner: Owner<'a>,
     pub(super) signer: &'a SigningKey,
+    exposure: OwnerExposure,
     /// In declared order, the order of their ring outputs.
     payments: Vec<AnonymousPayment>,
     pub(super) exit_token_owner: Option<Address>,
@@ -215,6 +238,7 @@ impl<'a> RingTransfer<Owner<'a>> {
             rail: Anonymous {
                 owner: self.rail,
                 signer,
+                exposure: OwnerExposure::Refused,
                 payments: Vec::new(),
                 exit_token_owner: None,
                 co_owners: Vec::new(),
@@ -263,6 +287,13 @@ impl<'a> RingTransfer<Anonymous<'a>> {
         Ok(self)
     }
 
+    /// Admits the parties and zero-key spends [`OwnerExposure`] names, a co-signer stays refused.
+    #[must_use = "use the updated transfer"]
+    pub fn with_owner_exposure(mut self, exposure: OwnerExposure) -> Self {
+        self.rail.exposure = exposure;
+        self
+    }
+
     /// A missing exit token account must be the associated token account of `owner`.
     #[must_use = "use the updated transfer"]
     pub fn with_exit_token_owner(mut self, owner: Address) -> Self {
@@ -274,7 +305,11 @@ impl<'a> RingTransfer<Anonymous<'a>> {
         &self,
         signers: impl IntoIterator<Item = Address>,
     ) -> Result<(), RingError> {
-        HiddenOwner::of(&self.rail.owner.sender.address()?.signing_pubkey)?.check_signers(signers)
+        let owner = HiddenOwner::of(&self.rail.owner.sender.address()?.signing_pubkey)?;
+        match self.rail.exposure.guard(owner) {
+            Some(owner) => owner.check_signers(signers),
+            None => Ok(()),
+        }
     }
 }
 
@@ -414,15 +449,16 @@ impl Anonymous<'_> {
         if self.signer.pubkey() != sender.signing_pubkey {
             return Err(RingError::AnonymousSignerMismatch);
         }
-        let owner = HiddenOwner::of(&sender.signing_pubkey)?;
-        let payer = self.owner.transaction.payer();
-        owner.check_signers([payer])?;
+        let guarded = self.exposure.guard(HiddenOwner::of(&sender.signing_pubkey)?);
         self.owner.check_settlement_accounts()?;
-        self.owner.check_deposit_funders(owner)?;
+        if let Some(owner) = guarded {
+            owner.check_signers([self.owner.transaction.payer()])?;
+            self.owner.check_deposit_funders(owner)?;
+        }
         let transfers = self.owner.transaction.interface_transfers()?;
         let exits = AnonymousExits {
             transfers: &transfers,
-            hidden_owner: &owner.0,
+            hidden_owner: guarded.map(|owner| owner.0),
             named_owner: self.exit_token_owner,
         }
         .owners(client)
@@ -445,7 +481,7 @@ impl Anonymous<'_> {
         );
         let transaction = pad_under_rail(transaction, &rail, shape, &sender)?;
         let proof_inputs = self.cached(rail.encrypt(transaction, &sender)?)?;
-        check_anonymous_inputs(&proof_inputs, &sender)?;
+        check_anonymous_inputs(&proof_inputs, &sender, self.exposure)?;
         let owner_signers = public_co_owners(&proof_inputs, &sender)?;
         // A signer owning no input authorizes its data output alone, it spends with no key, and an address slot spends nothing.
         let spends = |owner: &&Address| {
@@ -551,6 +587,7 @@ pub(super) fn anonymous_plan(payments: &[AnonymousPayment]) -> AnonymousPlan {
 pub(super) fn check_anonymous_inputs(
     inputs: &SppProofInputs,
     sender: &ShieldedAddress,
+    exposure: OwnerExposure,
 ) -> Result<(), RingError> {
     let hidden_leads = inputs
         .input_utxos
@@ -569,7 +606,9 @@ pub(super) fn check_anonymous_inputs(
     {
         return Err(RingError::InvalidAnonymousSlot);
     }
-    check_zero_key_inputs(&inputs.input_utxos, &sender.signing_pubkey)?;
+    if exposure == OwnerExposure::Refused {
+        check_zero_key_inputs(&inputs.input_utxos, &sender.signing_pubkey)?;
+    }
     check_entry_inputs(inputs, sender)?;
     check_audit_key(inputs)
 }
@@ -634,7 +673,8 @@ fn check_entry_inputs(inputs: &SppProofInputs, sender: &ShieldedAddress) -> Resu
 
 pub(super) struct AnonymousExits<'a> {
     pub transfers: &'a [SettlementTransfer],
-    pub hidden_owner: &'a Address,
+    /// `None` once the owner accepts exposure, no exit is then checked against it.
+    pub hidden_owner: Option<Address>,
     pub named_owner: Option<Address>,
 }
 
@@ -734,7 +774,7 @@ impl AnonymousExits<'_> {
         client: &R,
         recipient: Address,
     ) -> Result<(), RingError> {
-        if recipient == *self.hidden_owner {
+        if self.hidden_owner == Some(recipient) {
             return Err(RingError::AnonymousExitLinksOwner(recipient));
         }
         // SPP reads a missing account as a system account without data.
@@ -789,11 +829,13 @@ impl AnonymousExits<'_> {
             }
         };
         let owner = Address::new_from_array(*control.owner());
-        let hidden = *self.hidden_owner;
-        // An associated token account stays derivable from its first owner.
-        let associated = pda::associated_token_address_with_program(&hidden, &mint, &token_program);
-        if [token_account, owner].contains(&hidden) || associated == token_account {
-            return Err(RingError::AnonymousExitLinksOwner(token_account));
+        if let Some(hidden) = self.hidden_owner {
+            // An associated token account stays derivable from its first owner.
+            let associated =
+                pda::associated_token_address_with_program(&hidden, &mint, &token_program);
+            if [token_account, owner].contains(&hidden) || associated == token_account {
+                return Err(RingError::AnonymousExitLinksOwner(token_account));
+            }
         }
         AnonymousExitDestination::Spl {
             token_account: &token_account,

@@ -10,6 +10,7 @@ use zolana_ring_transaction::{RingDelivery, RingOutputRail};
 use super::{
     anonymous::{
         check_anonymous_inputs, public_co_owners, AnonymousExits, AnonymousSpend, HiddenOwner,
+        OwnerExposure,
     },
     audit::PresealedAudit,
     delegate::delegate_rail,
@@ -135,10 +136,10 @@ impl Relayed<'_> {
                 let owner = HiddenOwner::of(&sender.signing_pubkey)?;
                 owner.check_signers([self.fee_payer])?;
                 owner.check_signers(relayed.deposit_funders())?;
-                check_anonymous_inputs(&proof_inputs, &sender)?;
+                check_anonymous_inputs(&proof_inputs, &sender, OwnerExposure::Refused)?;
                 let exits = AnonymousExits {
                     transfers: &proof_inputs.external_data.interface_transfers,
-                    hidden_owner: &owner.0,
+                    hidden_owner: Some(owner.0),
                     named_owner: *exit_token_owner,
                 };
                 let exits = exits.owners(client).await?;

@@ -99,7 +99,7 @@ pub use crate::{
         AnonymousTransfer, ApplicationData, CachedNote, CoOwner, CustomRingTransfer,
         CustomRingTransferInput, DelegateCandidates, DelegateFunding, DelegateMove, DelegateOutput,
         DelegatePayment, DelegateSource, DelegateTransfer, DelegateTransferInput,
-        DelegateWithdrawal, Delegated, EntrySpend, NoteData, Owner, ProvenRingTransfer,
+        DelegateWithdrawal, Delegated, EntrySpend, NoteData, Owner, OwnerExposure, ProvenRingTransfer,
         PublicOwnerTransfer, PublicOwners, Rail, RailKind, ReadCache, Relayed, RelayedTransfer,
         RelayedTransferInput, RingPayment, RingSender, RingTransfer, SealRow, TransferKey,
         UnsignedRelay,

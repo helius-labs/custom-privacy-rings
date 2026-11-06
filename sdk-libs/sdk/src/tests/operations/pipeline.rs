@@ -872,7 +872,11 @@ async fn an_anonymous_transfer_led_by_an_address_is_refused_reads_a_cache_and_wr
     let mut writing = staged.proof_inputs.clone();
     writing.output_utxos[0] = writing.output_utxos[0].clone().with_cache_slot(0).unwrap();
     assert!(matches!(
-        anonymous::check_anonymous_inputs(&writing, &sender.shielded_address().unwrap()),
+        anonymous::check_anonymous_inputs(
+            &writing,
+            &sender.shielded_address().unwrap(),
+            OwnerExposure::Refused
+        ),
         Err(RingError::InvalidAnonymousSlot)
     ));
 }
@@ -3080,6 +3084,99 @@ async fn an_anonymous_deposit_leg_takes_a_separate_funder_but_never_the_hidden_o
     assert!(matches!(
         stage_anonymous(&stage(hidden), &chain).await,
         Err(RingError::AnonymousPublicSignerLinksOwner)
+    ));
+}
+
+/// The proof no longer names the hidden owner's parties, the SDK refuses each by default and the
+/// caller's waiver admits it. A hidden co-signer approves its own outflow and stays refused.
+#[tokio::test]
+async fn an_accepted_exposure_admits_each_party_the_default_refuses_but_no_hidden_co_signer() {
+    use crate::tests::support::keypair;
+    let sender = &keypair(1);
+    let paid = ring_address(&keypair(2));
+    let hidden = sender.shielded_address().unwrap().solana_address().unwrap();
+    let chain = enrolled(&[sender, &keypair(2)]);
+    async fn exposed(
+        transfer: AnonymousTransfer<'_>,
+        exposure: OwnerExposure,
+        chain: &Chain,
+    ) -> Result<(), RingError> {
+        let transfer = transfer.with_owner_exposure(exposure);
+        stage_anonymous(&transfer, chain).await.map(|_| ())
+    }
+    let zero_key_spend = || {
+        owner_transfer(
+            sender,
+            ring_transaction(vec![zero_key(ring_utxo(sender, Mint::SOL, 10, 0))]),
+        )
+        .with_anonymous_signer(&sender.signing_key)
+    };
+    let hidden_payer = || {
+        owner_transfer(
+            sender,
+            paid_ring_transaction(vec![ring_utxo(sender, Mint::SOL, 10, 0)], hidden),
+        )
+        .with_anonymous_signer(&sender.signing_key)
+    };
+    let hidden_funder = || {
+        let mut transaction = ring_transaction(vec![ring_utxo(sender, Mint::SOL, 10, 0)]);
+        transaction.deposit_sol(5, hidden).unwrap();
+        owner_transfer(sender, transaction)
+            .with_interface_transfer_accounts(vec![TransactInterfaceTransferAccounts::Sol(
+                TransactSolTransferAccounts { recipient: hidden },
+            )])
+            .with_anonymous_signer(&sender.signing_key)
+            .with_payment(payment(&paid, 4))
+            .unwrap()
+    };
+    let hidden_exit = || {
+        let mut transaction = ring_transaction(vec![ring_utxo(sender, Mint::SOL, 10, 0)]);
+        transaction.withdraw_sol(4, hidden).unwrap();
+        owner_transfer(sender, transaction)
+            .with_interface_transfer_accounts(vec![TransactInterfaceTransferAccounts::Sol(
+                TransactSolTransferAccounts { recipient: hidden },
+            )])
+            .with_anonymous_signer(&sender.signing_key)
+    };
+    assert!(matches!(
+        exposed(zero_key_spend(), OwnerExposure::Refused, &chain).await,
+        Err(RingError::ZeroKeyInputUnnamed { index: 0 })
+    ));
+    assert!(matches!(
+        exposed(hidden_payer(), OwnerExposure::Refused, &chain).await,
+        Err(RingError::AnonymousPublicSignerLinksOwner)
+    ));
+    assert!(matches!(
+        exposed(hidden_funder(), OwnerExposure::Refused, &chain).await,
+        Err(RingError::AnonymousPublicSignerLinksOwner)
+    ));
+    assert!(matches!(
+        exposed(hidden_exit(), OwnerExposure::Refused, &chain).await,
+        Err(RingError::AnonymousExitLinksOwner(exit)) if exit == hidden
+    ));
+    for transfer in [zero_key_spend(), hidden_payer(), hidden_funder(), hidden_exit()] {
+        exposed(transfer, OwnerExposure::Accepted, &chain)
+            .await
+            .unwrap();
+    }
+
+    let client = Chain::ring(RingSettings {
+        co_signer: Some((hidden, custom_ring_interface::CoSignScope::TRANSFERS)),
+        ..anonymous()
+    })
+    .client();
+    let co_signed = owner_transfer(
+        sender,
+        ring_transaction(vec![ring_utxo(sender, Mint::SOL, 10, 0)]),
+    )
+    .with_co_signer(hidden)
+    .with_anonymous_signer(&sender.signing_key)
+    .with_payment(payment(&paid, 4))
+    .unwrap()
+    .with_owner_exposure(OwnerExposure::Accepted);
+    assert!(matches!(
+        co_signed.assemble(&client).await,
+        Err(RingError::Program(CustomRingError::CoSignerIsOwner))
     ));
 }
 
