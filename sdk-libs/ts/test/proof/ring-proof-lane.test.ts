@@ -532,13 +532,8 @@ describe("tracking predicates", () => {
     listTag: fill(5),
   });
   const zero = ZERO_NULLIFIER_PK as Bytes32;
-  const check = (input: ProofInputUtxo, rowOf: TrackingRecord | undefined, rail = "confidential") =>
-    checkInputKeys({
-      inputs: [input],
-      rail: rail as "confidential",
-      publicOwners: false,
-      rowOf: () => rowOf,
-    });
+  const check = (input: ProofInputUtxo, rowOf: TrackingRecord | undefined) =>
+    checkInputKeys({ inputs: [input], rowOf: () => rowOf });
 
   it("holds a nonzero input key to its row and waives only the equality on a zero key", () => {
     check(note({ ring: RING, key: fill(9) }), row(fill(9)));
@@ -552,10 +547,8 @@ describe("tracking predicates", () => {
     );
   });
 
-  it("refuses a hidden owner's zero key", () => {
-    expect(refusal(() => check(note({ ring: RING, key: zero }), undefined, "anonymous")).code).toBe(
-      "RING_ZERO_KEY_INPUT_UNNAMED",
-    );
+  it("admits a zero key on every rail, the hidden owner's refusal is the wallet's waivable safeguard", () => {
+    expect(() => check(note({ ring: RING, key: zero }), undefined)).not.toThrow();
   });
 
   it("holds an output to the rule of its key", () => {

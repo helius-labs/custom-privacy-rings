@@ -77,6 +77,13 @@ import {
 import { encodeRingTransactInstructionData } from "../../../src/protocol/proof/circuit.js";
 import { RingInstructionTag } from "../../../src/protocol/transaction/instruction-tag.js";
 
+/** The commitment of a test opening, every fixture carries its data hashes. */
+function rebuiltHash(utxo: Parameters<typeof knownUtxoHash>[0], ringId: Bytes32): Bytes32 {
+  const hash = knownUtxoHash(utxo, ringId);
+  if (hash === undefined) throw new Error("no data hashes");
+  return hash;
+}
+
 const hex = (value: string): Uint8Array => hexToBytes(value.replace(/^0x/u, ""));
 const field = (value: string): Bytes32 => hex(value) as Bytes32;
 const ring = encodeBase58(new Uint8Array(32).fill(0x90));
@@ -435,7 +442,7 @@ describe("the merge reader", () => {
       const blinding = seededMergeOutputBlinding(record.seed, field(request.firstNullifier));
       expect(blinding).toEqual(field(entry.output_blinding));
       expect(record.record.blinding).toEqual(blinding);
-      const rebuilt = knownUtxoHash(
+      const rebuilt = rebuiltHash(
         {
           ownerKey: record.record.ownerKey,
           owner: { kind: "keyed", nullifierPk: record.record.nullifierPk },
@@ -516,7 +523,7 @@ describe("the merge reader", () => {
   }
 
   const commitment = (): Bytes32 =>
-    knownUtxoHash(
+    rebuiltHash(
       {
         ownerKey,
         owner: { kind: "keyed", nullifierPk: ZERO_NULLIFIER_PK as Bytes32 },

@@ -58,8 +58,10 @@ import { zeroKeyNullifier } from "../../../src/state/exposed-notes.js";
 import {
   KnownUtxoIndex,
   auditRing,
+  auditedUtxos,
   knownUtxoHash,
   openedUtxo,
+  type AuditedRingTransaction,
   type KnownUtxos,
 } from "../../../src/operations/audit/audit.js";
 import {
@@ -77,6 +79,13 @@ import { transactionsPage } from "../../../../../zolana/sdk-libs/ts/test/helpers
 import { x25519FromU } from "../../../src/crypto/keys/x25519.js";
 import { transactionItems } from "../../../../../zolana/sdk-libs/ts/test/helpers/pages.js";
 import { historyCursor } from "../../../src/rpc/history.js";
+
+/** The commitment of a test opening, every fixture carries its data hashes. */
+function rebuiltHash(utxo: Parameters<typeof knownUtxoHash>[0], ringId: Bytes32): Bytes32 {
+  const hash = knownUtxoHash(utxo, ringId);
+  if (hash === undefined) throw new Error("no data hashes");
+  return hash;
+}
 
 await initializePoseidon();
 
@@ -206,7 +215,7 @@ function noteHash(record: RecordFields, blinding: Bytes32, ringDataHash = ZERO_3
     },
     TREE_ID,
   );
-  return knownUtxoHash(utxo, record.kind === RecordKind.ring ? ringIdField(RING) : ZERO_32);
+  return rebuiltHash(utxo, record.kind === RecordKind.ring ? ringIdField(RING) : ZERO_32);
 }
 
 const leaf = (hash: Bytes32, leafIndex: bigint) => ({
@@ -229,6 +238,8 @@ function sealedTransfer(
     addresses?: number;
     txSignature?: Signature;
     disclosed?: (keys: readonly X25519PublicKey[]) => readonly X25519PublicKey[];
+    /** A ring data hash every published commitment binds, no payload carries it. */
+    ringDataHash?: Bytes32;
   }>,
 ) {
   const records = input.records ?? otherRecords;
@@ -285,7 +296,7 @@ function sealedTransfer(
     salt: TX_SALT,
     outputSlots: records.map((record, slot) => ({
       viewTag: new Uint8Array(32).fill(slot + 1) as Bytes32,
-      outputContext: leaf(noteHash(record, blindings[slot]!), BigInt(slot)),
+      outputContext: leaf(noteHash(record, blindings[slot]!, input.ringDataHash), BigInt(slot)),
       payload:
         record.kind === RecordKind.exit
           ? encodeRingOutput(
@@ -441,6 +452,41 @@ describe("auditRing", () => {
     const refused = await scan([substituted], TRANSFERS, { auditor });
     expect(refused.transactions[0]?.outputs.map((output) => output.slotIndex)).toEqual([1]);
     expect(refused.transactions[0]?.payloadErrors.map((error) => error.slotIndex)).toEqual([0]);
+  });
+
+  it("keeps each proven record when no payload rebuilds its commitment and reports the payload", async () => {
+    const auditor = X25519Keypair.generate();
+    const ringDataHash = field("0000000000000000000000000000000000000000000000000000000000000077");
+    const { transaction, blindings } = sealedTransfer({
+      auditor: auditor.publicKey(),
+      ringDataHash,
+    });
+    const opened = await scan([transaction], TRANSFERS, { auditor });
+    const [audited] = opened.transactions;
+    // The proof binds the record to the commitment, the lost data hashes stop no read of it.
+    expect(audited?.outputs.map((output) => output.opening.kind)).toEqual(["ring", "exit"]);
+    expect(audited?.payloadErrors).toEqual([
+      { slotIndex: 0, kind: "payload" },
+      { slotIndex: 1, kind: "payload" },
+    ]);
+    const [ringOutput] = audited?.outputs ?? [];
+    if (ringOutput?.opening.kind !== "ring") throw new Error("ring output");
+    expect(ringOutput.opening.utxo.blinding).toEqual(blindings[0]);
+    expect(ringOutput.opening.utxo.dataHash).toBeUndefined();
+    expect(ringOutput.opening.utxo.ringDataHash).toBeUndefined();
+    // A spend traces from the published commitment, the record's blinding and the owner's secret.
+    const secret = field("0000000000000000000000000000000000000000000000000000000000000009");
+    const index = new KnownUtxoIndex(
+      auditedUtxos(audited as AuditedRingTransaction).map(({ commitment, utxo }) => ({
+        commitment,
+        utxo,
+      })),
+      { secrets: { secret: () => secret } },
+    );
+    const commitment = ringOutput.outputContext.hash;
+    expect(
+      index.byNullifier(poseidon([commitment, blindings[0]!, secret]) as Bytes32)?.commitment,
+    ).toEqual(commitment);
   });
 
   it("resolves a merged input before tracing its later transfer in either history order", async () => {
@@ -1171,7 +1217,7 @@ describe("recoverRingMemberNotes", () => {
     },
   );
 
-  it("refuses another nullifier key, an output the auditor cannot open and a scan the page cap cuts", async () => {
+  it("refuses another nullifier key, a record the auditor cannot open and a scan the page cap cuts", async () => {
     const auditor = X25519Keypair.generate();
     const owner = ShieldedKeypair.generate();
     const { transaction, commitment } = ownedTransfer(owner, auditor.publicKey());
@@ -1187,11 +1233,16 @@ describe("recoverRingMemberNotes", () => {
       ...slot,
       outputContext: { ...slot.outputContext, hash: commitment },
     }))(transaction);
-    await expect(recover({ owner, auditor, transaction: moved })).rejects.toThrow(
-      ringError("RING_AUDIT_OUTPUT_MISMATCH", {
-        reason: "unopened",
-        slotIndex: 1,
-      }),
+    // A verified frame's record stands under its published commitment, a payload that rebuilds
+    // another commitment loses the data hashes alone and the recovery goes on.
+    await expect(recover({ owner, auditor, transaction: moved })).resolves.toBeDefined();
+    // Noise under the slot secret decodes to no record, the slot stays unopened.
+    const unreadable = withSlot(1, (slot) => ({
+      ...slot,
+      payload: encodeRingBodyOutput(new Uint8Array(137).fill(0x5c), new Uint8Array()),
+    }))(transaction);
+    await expect(recover({ owner, auditor, transaction: unreadable })).rejects.toThrow(
+      ringError("RING_AUDIT_OUTPUT_MISMATCH", { reason: "unopened", slotIndex: 1 }),
     );
     let page = 0;
     const endless = () => transactionsPage({ paginationToken: `t${++page}` });

@@ -40,6 +40,13 @@ import {
 } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import { transactionItems } from "../../../../../zolana/sdk-libs/ts/test/helpers/pages.js";
 
+/** The commitment of a test opening, every fixture carries its data hashes. */
+function rebuiltHash(utxo: Parameters<typeof knownUtxoHash>[0], ringId: Bytes32): Bytes32 {
+  const hash = knownUtxoHash(utxo, ringId);
+  if (hash === undefined) throw new Error("no data hashes");
+  return hash;
+}
+
 await initializePoseidon();
 
 const SIGNATURE = "5".repeat(87) as Signature;
@@ -88,7 +95,7 @@ describe("the tag 57 reader", () => {
     const mint = encodeBase58(record.subarray(41, 73));
     const hash =
       overrides.hash ??
-      knownUtxoHash(
+      rebuiltHash(
         {
           ownerKey: record.slice(9, 41) as Bytes32,
           owner: { kind: "keyed", nullifierPk: hex(request.nullifierPk) as Bytes32 },
