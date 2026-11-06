@@ -38,8 +38,6 @@ type Screening struct {
 	// Asset, peak and outflow per output slot, then asset, peak, outflow and gross per public slot, mirrored by ApprovalTotals in program-libs/policy/src/approval_totals.rs.
 	totals  []frontend.Variable
 	outflow frontend.Variable
-	// SaltedPayees is set while every live payee reads its tracking row for a salted list.
-	SaltedPayees frontend.Variable
 }
 
 // Screen holds a spend to the policy, withdrawal legs join the payments only once their hash binds them.
@@ -48,9 +46,7 @@ func (p *Policy) Screen(api frontend.API, rc frontend.Rangechecker, g Gates, spe
 	payments := append(slotPayments(outputs), p.openWithdrawals(api, rc)...)
 	resolved := p.screenPayments(api, cmp, g, spend, payments)
 	// The outflow section binds on a ring with an own registry, with or without a policy hash.
-	screening := p.constrainOutflow(api, cmp, g.Outflow, spend, outputs, resolved)
-	screening.SaltedPayees = resolved.saltedPayees
-	return screening
+	return p.constrainOutflow(api, cmp, g.Outflow, spend, outputs, resolved)
 }
 
 // screenPayments runs the rule sections over one flow.

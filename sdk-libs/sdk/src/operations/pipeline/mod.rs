@@ -68,7 +68,7 @@ pub use self::{
 pub(crate) use self::{
     anonymous::HiddenOwner,
     delegate::{delegate_rail, same_owner},
-    pool_subjects::{KnownSalts, SourceGates},
+    pool_subjects::KnownSalts,
 };
 
 use self::{

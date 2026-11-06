@@ -225,8 +225,8 @@ func (c *TransferCircuit) Define(api frontend.API) error {
 	// A ring with an own policy registry reads its root on every rail but the delegate's, no prover bit clears the thresholds.
 	g := policy.Rail{ThresholdsActive: ringgadget.IsNonZero(api, c.OwnRoot), Delegate: c.Delegate}.Gates(api, c.PolicyHash)
 	screening := c.Screen(api, rc, g, policy.Spend{Senders: rows.Members, Inputs: section.Slots, Tracking: tracking}, opened.Slots)
-	// Output keys read the same root, a zero key proves absence only under the salted payee read the screen derived.
-	AssertOutputOwners(api, tracking, opened.Slots, c.OutputEntries, screening.SaltedPayees)
+	// Zero key recipients must be absent at the accepted tracking root, including on delegate transfers.
+	AssertOutputOwners(api, tracking, opened.Slots, c.OutputEntries)
 	// The mask is equal and never at least. A short mask would drop a demanded co-signer, the program acts on these bits and derives no threshold.
 	api.AssertIsEqual(c.ApprovalMask, screening.ApprovalMask)
 	screening.AssertApprovalTotals(api, c.ApprovalTotals, c.ApprovalBlinder)
