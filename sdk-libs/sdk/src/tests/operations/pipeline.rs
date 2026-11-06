@@ -220,6 +220,48 @@ async fn an_anonymous_spl_exit_names_neither_the_hidden_owner_nor_a_second_key()
     ));
 }
 
+/// Exits pay several destinations, the hidden owner at any of them is refused unless waived.
+#[tokio::test]
+async fn anonymous_exits_pay_several_destinations_and_each_answers_to_the_safeguard() {
+    let sender = &crate::tests::support::keypair(1);
+    let hidden = Address::new_from_array(sender.signing_pubkey().as_ed25519().unwrap());
+    let mint = Address::new_from_array([0x31; 32]);
+    let stranger = Address::new_from_array([0x32; 32]);
+    let wallet = Address::new_from_array([0x34; 32]);
+    let token_program = Address::new_from_array(SPL_TOKEN_PROGRAM_ID);
+    let destination = pda::associated_token_address_with_program(&stranger, &mint, &token_program);
+    let exits = |sol: Address| {
+        let mut transaction = ring_transaction(vec![
+            ring_utxo(sender, Mint::new(mint, 2), 10, 0),
+            ring_utxo(sender, Mint::SOL, 10, 1),
+        ]);
+        transaction.withdraw(mint, 4, destination).unwrap();
+        transaction.withdraw_sol(4, sol).unwrap();
+        owner_transfer(sender, transaction)
+            .with_interface_transfer_accounts(vec![
+                TransactInterfaceTransferAccounts::SplWithdrawal(TransactSplWithdrawalAccounts {
+                    mint,
+                    spl_interface: pda::spl_interface(&mint),
+                    user_token_account: destination,
+                    token_program,
+                }),
+                TransactInterfaceTransferAccounts::Sol(TransactSolTransferAccounts {
+                    recipient: sol,
+                }),
+            ])
+            .with_anonymous_signer(&sender.signing_key)
+    };
+    let chain =
+        Chain::ring(anonymous()).with(destination, token_account(token_state(mint, stranger)));
+    stage_anonymous(&exits(wallet), &chain).await.unwrap();
+    assert!(matches!(
+        stage_anonymous(&exits(hidden), &chain).await,
+        Err(RingError::AnonymousExitLinksOwner(exit)) if exit == hidden
+    ));
+    let accepted = exits(hidden).with_owner_exposure(OwnerExposure::Accepted);
+    stage_anonymous(&accepted, &chain).await.unwrap();
+}
+
 /// SPP binds a SOL exit's recipient alone, a program owner, data or the hidden owner there is
 /// refused before proving.
 #[tokio::test]
@@ -872,7 +914,11 @@ async fn an_anonymous_transfer_led_by_an_address_is_refused_reads_a_cache_and_wr
     let mut writing = staged.proof_inputs.clone();
     writing.output_utxos[0] = writing.output_utxos[0].clone().with_cache_slot(0).unwrap();
     assert!(matches!(
-        anonymous::check_anonymous_inputs(&writing, &sender.shielded_address().unwrap()),
+        anonymous::check_anonymous_inputs(
+            &writing,
+            &sender.shielded_address().unwrap(),
+            OwnerExposure::Refused
+        ),
         Err(RingError::InvalidAnonymousSlot)
     ));
 }
@@ -3083,6 +3129,104 @@ async fn an_anonymous_deposit_leg_takes_a_separate_funder_but_never_the_hidden_o
     ));
 }
 
+/// The waiver admits each unproven hidden owner party the default refuses, a hidden co-signer stays
+/// refused.
+#[tokio::test]
+async fn an_accepted_exposure_admits_each_party_the_default_refuses_but_no_hidden_co_signer() {
+    use crate::tests::support::keypair;
+    let sender = &keypair(1);
+    let paid = ring_address(&keypair(2));
+    let hidden = sender.shielded_address().unwrap().solana_address().unwrap();
+    let chain = enrolled(&[sender, &keypair(2)]);
+    async fn exposed(
+        transfer: AnonymousTransfer<'_>,
+        exposure: OwnerExposure,
+        chain: &Chain,
+    ) -> Result<(), RingError> {
+        let transfer = transfer.with_owner_exposure(exposure);
+        stage_anonymous(&transfer, chain).await.map(|_| ())
+    }
+    let zero_key_spend = || {
+        owner_transfer(
+            sender,
+            ring_transaction(vec![zero_key(ring_utxo(sender, Mint::SOL, 10, 0))]),
+        )
+        .with_anonymous_signer(&sender.signing_key)
+    };
+    let hidden_payer = || {
+        owner_transfer(
+            sender,
+            paid_ring_transaction(vec![ring_utxo(sender, Mint::SOL, 10, 0)], hidden),
+        )
+        .with_anonymous_signer(&sender.signing_key)
+    };
+    let hidden_funder = || {
+        let mut transaction = ring_transaction(vec![ring_utxo(sender, Mint::SOL, 10, 0)]);
+        transaction.deposit_sol(5, hidden).unwrap();
+        owner_transfer(sender, transaction)
+            .with_interface_transfer_accounts(vec![TransactInterfaceTransferAccounts::Sol(
+                TransactSolTransferAccounts { recipient: hidden },
+            )])
+            .with_anonymous_signer(&sender.signing_key)
+            .with_payment(payment(&paid, 4))
+            .unwrap()
+    };
+    let hidden_exit = || {
+        let mut transaction = ring_transaction(vec![ring_utxo(sender, Mint::SOL, 10, 0)]);
+        transaction.withdraw_sol(4, hidden).unwrap();
+        owner_transfer(sender, transaction)
+            .with_interface_transfer_accounts(vec![TransactInterfaceTransferAccounts::Sol(
+                TransactSolTransferAccounts { recipient: hidden },
+            )])
+            .with_anonymous_signer(&sender.signing_key)
+    };
+    assert!(matches!(
+        exposed(zero_key_spend(), OwnerExposure::Refused, &chain).await,
+        Err(RingError::ZeroKeyInputUnnamed { index: 0 })
+    ));
+    assert!(matches!(
+        exposed(hidden_payer(), OwnerExposure::Refused, &chain).await,
+        Err(RingError::AnonymousPublicSignerLinksOwner)
+    ));
+    assert!(matches!(
+        exposed(hidden_funder(), OwnerExposure::Refused, &chain).await,
+        Err(RingError::AnonymousPublicSignerLinksOwner)
+    ));
+    assert!(matches!(
+        exposed(hidden_exit(), OwnerExposure::Refused, &chain).await,
+        Err(RingError::AnonymousExitLinksOwner(exit)) if exit == hidden
+    ));
+    for transfer in [
+        zero_key_spend(),
+        hidden_payer(),
+        hidden_funder(),
+        hidden_exit(),
+    ] {
+        exposed(transfer, OwnerExposure::Accepted, &chain)
+            .await
+            .unwrap();
+    }
+
+    let client = Chain::ring(RingSettings {
+        co_signer: Some((hidden, custom_ring_interface::CoSignScope::TRANSFERS)),
+        ..anonymous()
+    })
+    .client();
+    let co_signed = owner_transfer(
+        sender,
+        ring_transaction(vec![ring_utxo(sender, Mint::SOL, 10, 0)]),
+    )
+    .with_co_signer(hidden)
+    .with_anonymous_signer(&sender.signing_key)
+    .with_payment(payment(&paid, 4))
+    .unwrap()
+    .with_owner_exposure(OwnerExposure::Accepted);
+    assert!(matches!(
+        co_signed.assemble(&client).await,
+        Err(RingError::Program(CustomRingError::CoSignerIsOwner))
+    ));
+}
+
 #[test]
 fn a_payment_total_past_a_u64_is_refused() {
     assert!(matches!(
@@ -3299,8 +3443,9 @@ async fn a_keyed_input_spends_under_its_owners_enrolled_key_and_a_zero_key_waive
     ));
 }
 
+/// Any nonzero key pays, the zero key pays an unregistered owner alone, the literal zero pays no one.
 #[tokio::test]
-async fn an_output_takes_the_registered_key_or_zero_for_an_absent_owner() {
+async fn an_output_takes_any_nonzero_key_and_the_zero_key_only_for_an_absent_owner() {
     use crate::tests::support::keypair;
     let (sender, payee) = (keypair(1), keypair(2));
     let (from, to) = (
@@ -3324,24 +3469,28 @@ async fn an_output_takes_the_registered_key_or_zero_for_an_absent_owner() {
         ..to
     };
     let enrolled = client(&[from, to]);
-    assert!(paying(&to).frame(&enrolled).await.is_ok());
-    assert!(paying(&zero).frame(&client(&[from])).await.is_ok());
-    assert!(matches!(
-        paying(&to).frame(&client(&[from])).await.err(),
-        Some(RingError::RecipientNotEnrolled { .. })
-    ));
-    assert!(matches!(
-        paying(&zero).frame(&enrolled).await.err(),
-        Some(RingError::EnrolledRecipientAtZeroKey { .. })
-    ));
     let rekeyed = spr_keypair::ShieldedAddress {
         nullifier_pubkey: from.nullifier_pubkey,
         ..to
     };
+    assert!(paying(&to).frame(&enrolled).await.is_ok());
+    assert!(paying(&zero).frame(&client(&[from])).await.is_ok());
+    assert!(paying(&to).frame(&client(&[from])).await.is_ok());
+    assert!(paying(&rekeyed).frame(&enrolled).await.is_ok());
     assert!(matches!(
-        paying(&rekeyed).frame(&enrolled).await.err(),
-        Some(RingError::RecipientKeyMismatch { .. })
+        paying(&zero).frame(&enrolled).await.err(),
+        Some(RingError::EnrolledRecipientAtZeroKey { .. })
     ));
+    let literal = spr_keypair::ShieldedAddress {
+        nullifier_pubkey: [0; 32],
+        ..to
+    };
+    for chain in [client(&[from]), enrolled] {
+        assert!(matches!(
+            paying(&literal).frame(&chain).await.err(),
+            Some(RingError::RecipientLiteralZeroKey { .. })
+        ));
+    }
 }
 
 #[tokio::test]
@@ -3631,10 +3780,7 @@ async fn a_public_spend_on_an_anonymous_ring_publishes_its_owners_alone() {
     let unenrolled = Chain::ring(anonymous())
         .with_tracking(&[keypair(2).shielded_address().unwrap()])
         .client();
-    assert!(matches!(
-        transfer().frame(&unenrolled).await.err(),
-        Some(RingError::RecipientNotEnrolled { slot_index: 0 })
-    ));
+    assert!(transfer().frame(&unenrolled).await.is_ok());
     assert!(transfer()
         .with_zero_key_change()
         .frame(&unenrolled)

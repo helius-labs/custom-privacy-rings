@@ -24,9 +24,9 @@ use tokio::sync::Mutex as AsyncMutex;
 use zolana_ring_client::{
     history::HistoryPosition,
     rpc::{
-        AuditedUtxoView, DecryptedInput, DecryptedInputClass, GetSpendCoverageResponse,
-        GetWalletStatusResponse, InputParty, SpendCoverageTotals, WalletBalance, WalletEnrollment,
-        WalletNote, WalletNoteStatus, WALLET_SNAPSHOT_CURSOR_VERSION,
+        AuditedUtxoView, GetSpendCoverageResponse, GetWalletStatusResponse, SpendCoverageTotals,
+        WalletBalance, WalletEnrollment, WalletNote, WalletNoteStatus,
+        WALLET_SNAPSHOT_CURSOR_VERSION,
     },
     AuditedMergeOutput, ConfirmedMerge, KnownUtxo, UtxoOwner,
 };
@@ -885,8 +885,6 @@ impl AuditStore {
             response.totals = Some(SpendCoverageTotals {
                 observed: count(SpendState::Observed),
                 padding: count(SpendState::Padding),
-                address: count(SpendState::Address),
-                external: count(SpendState::External),
                 resolved: count(SpendState::Resolved { note: [0; 32] }),
             });
         }
@@ -894,7 +892,7 @@ impl AuditStore {
         details.unresolved(
             book.rows
                 .values()
-                .filter(|row| matches!(row.state, SpendState::UnresolvedReal))
+                .filter(|row| matches!(row.state, SpendState::Unclassified))
                 .copied(),
         );
         details.unread(book.unread.iter().copied());
@@ -1132,18 +1130,15 @@ impl AuditStore {
         Ok(opened.then(|| merge.output().ok()).flatten())
     }
 
-    /// The real inputs among `inputs` whose resolved note `wallet` owns.
+    /// The nullifiers among `nullifiers` whose resolved note `wallet` owns.
     pub(crate) async fn input_parties<'i>(
         &self,
         wallet: &Address,
-        inputs: impl IntoIterator<Item = &'i DecryptedInput>,
+        nullifiers: impl IntoIterator<Item = &'i Hash>,
     ) -> Result<InputParties, RingRpcError> {
-        let nullifiers: Vec<[u8; 32]> = inputs
+        let nullifiers: Vec<[u8; 32]> = nullifiers
             .into_iter()
-            .filter(|input| {
-                input.class == DecryptedInputClass::Note && input.default_input.is_none()
-            })
-            .map(|input| input.nullifier.0)
+            .map(|nullifier| nullifier.0)
             .collect();
         let resolved: Vec<([u8; 32], [u8; 32])> = self
             .spend_rows(&nullifiers)
@@ -1180,21 +1175,9 @@ impl From<[u8; 32]> for LateOwner {
 }
 
 impl InputParties {
-    /// Fails closed, a note no row names to `wallet` reads as another party's and an address as no party's.
-    pub(crate) fn party(&self, wallet: &Address, input: &DecryptedInput) -> InputParty {
-        if input.class != DecryptedInputClass::Note {
-            return InputParty::Padding;
-        }
-        if let Some(default_input) = &input.default_input {
-            return match default_input.owner_key.0 == *wallet {
-                true => InputParty::Own,
-                false => InputParty::Other,
-            };
-        }
-        match self.own.contains(&input.nullifier.0) {
-            true => InputParty::Own,
-            false => InputParty::Other,
-        }
+    /// Fails closed, a nullifier no resolved row names to the wallet reads as another party's.
+    pub(crate) fn owns(&self, nullifier: &Hash) -> bool {
+        self.own.contains(&nullifier.0)
     }
 }
 
@@ -1472,7 +1455,7 @@ impl AuditStore {
                     event_index: 0,
                 },
                 position: 0,
-                read: InputRead::Real,
+                read: InputRead::Spend,
                 hit: None,
             });
         }

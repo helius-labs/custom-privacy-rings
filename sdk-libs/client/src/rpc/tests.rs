@@ -5,7 +5,7 @@ use spr_transaction::OutputContext;
 
 use super::*;
 use crate::{
-    AuditedEntryInput, InputOpening, OutputPayloadError,
+    AuditedEntryInput, OutputPayloadError,
     OutputPayloadErrorKind::{self, Commitment, Disclosure},
 };
 
@@ -259,7 +259,8 @@ fn delivered_audited() -> AuditedTransaction {
             kind: Commitment,
         }],
         real_inputs: 0,
-        inputs: Vec::new(),
+        nullifiers: vec![[12; 32]],
+        entries: Vec::new(),
     }
 }
 
@@ -276,18 +277,10 @@ fn a_decrypted_page_keeps_its_wire_json() {
     );
 }
 
-/// The TypeScript decoder reads the same page.
+/// The TypeScript decoder reads the same page, a spender sees its own nullifier alone.
 #[test]
-fn a_real_input_reads_apart_from_a_dummy() {
-    let real = AuditedInput {
-        nullifier: [12; 32],
-        opening: InputOpening::Real,
-    };
-    let dummy = AuditedInput {
-        nullifier: [11; 32],
-        opening: InputOpening::Dummy,
-    };
-    let page = in_proof_page(real.clone(), dummy);
+fn a_spenders_page_names_its_own_spend_alone() {
+    let page = in_proof_page();
     let json = serde_json::to_string(&page).expect("json");
     assert_eq!(
         json,
@@ -295,53 +288,33 @@ fn a_real_input_reads_apart_from_a_dummy() {
     );
     let parsed: GetDecryptedTransactionsResponse = serde_json::from_str(&json).expect("parses");
     assert_eq!(parsed, page);
-    let [read_real, read_dummy] = parsed.value.items[0].inputs.as_slice() else {
-        panic!("two inputs")
-    };
-    assert_eq!(read_real.class, DecryptedInputClass::Note);
-    assert_eq!(read_real.default_input, None);
-    assert_eq!(read_dummy.class, DecryptedInputClass::Dummy);
-    assert_eq!(
-        DecryptedInput::from(AuditedInput {
-            opening: InputOpening::Address,
-            ..real.clone()
-        })
-        .class,
-        DecryptedInputClass::Address
-    );
-    assert_ne!(
-        DecryptedInput::from(real.clone()),
-        DecryptedInput::from(AuditedInput {
-            opening: InputOpening::Dummy,
-            ..real
-        })
-    );
     let [transaction] = page.value.items.as_slice() else {
         panic!("one transaction")
     };
     let activity = WalletActivity::of(
         Address::new_from_array([13; 32]),
         transaction.clone(),
-        |input| match input.class {
-            DecryptedInputClass::Note => InputParty::Own,
-            DecryptedInputClass::Address | DecryptedInputClass::Dummy => InputParty::Padding,
-        },
+        |nullifier| *nullifier == Hash::from([12; 32]),
     )
     .expect("a spender");
     let read: WalletActivity =
         serde_json::from_str(&serde_json::to_string(&activity).expect("json")).expect("parses");
     assert_eq!(read, activity);
-    let WalletView::Sender { inputs, .. } = read.view else {
+    let WalletView::Sender { spent, .. } = read.view else {
         panic!("the spender's view")
     };
-    assert_eq!(inputs.len(), 1, "padding never reaches a wallet");
+    assert_eq!(
+        spent,
+        [Hash::from([12; 32])],
+        "padding never reaches a wallet"
+    );
 }
 
-fn in_proof_page(real: AuditedInput, dummy: AuditedInput) -> GetDecryptedTransactionsResponse {
+fn in_proof_page() -> GetDecryptedTransactionsResponse {
     let mut page = page(
         AuditedTransaction {
             real_inputs: 1,
-            inputs: vec![real, dummy],
+            nullifiers: vec![[12; 32], [11; 32]],
             ..delivered_audited()
         },
         vec![[12; 32], [11; 32]],
@@ -374,34 +347,24 @@ fn two_owner_transaction(wallet: Address) -> DecryptedTransaction {
                 slot_index: 2,
                 kind: OutputPayloadErrorKind::Commitment,
             }],
-            inputs: Vec::new(),
+            real_inputs: 2,
             ..delivered_audited()
         },
-        Vec::new(),
+        vec![[1; 32], [2; 32], [3; 32]],
     )
     .value
     .items
     .remove(0);
     transaction.spenders = vec![wallet.to_bytes().into()];
-    let input = |seed: u8| {
-        DecryptedInput::from(AuditedInput {
-            nullifier: [seed; 32],
-            opening: InputOpening::Real,
-        })
-    };
-    transaction.inputs = vec![input(1), input(2), input(3)];
     transaction
 }
 
 fn sender_slots(view: WalletView) -> (Vec<Hash>, Vec<u32>) {
-    let WalletView::Sender {
-        inputs, outputs, ..
-    } = view
-    else {
+    let WalletView::Sender { spent, outputs, .. } = view else {
         panic!("the spender's view")
     };
     (
-        inputs.into_iter().map(|input| input.nullifier).collect(),
+        spent,
         outputs.iter().map(|output| output.slot_index).collect(),
     )
 }
@@ -410,29 +373,22 @@ fn sender_slots(view: WalletView) -> (Vec<Hash>, Vec<u32>) {
 #[test]
 fn a_co_owner_reads_its_own_notes_alone() {
     let co_owner = Address::new_from_array([0x10; 32]);
-    let activity =
-        WalletActivity::of(co_owner, two_owner_transaction(co_owner), |input| {
-            match input.nullifier == Hash::from([1; 32]) {
-                true => InputParty::Own,
-                false => InputParty::Other,
-            }
-        })
-        .expect("a spender");
+    let activity = WalletActivity::of(co_owner, two_owner_transaction(co_owner), |nullifier| {
+        *nullifier == Hash::from([1; 32])
+    })
+    .expect("a spender");
     assert_eq!(
         sender_slots(activity.view),
         (vec![Hash::from([1; 32])], vec![0])
     );
 }
 
-/// Every output of a sole owner is its own payment, padding counts as no other owner.
+/// Every output of a wallet owning all `R` notes is its own payment, padding counts as no other owner.
 #[test]
 fn a_wallet_owning_every_input_keeps_all_outputs_without_a_marker() {
     let owner = Address::new_from_array([0x10; 32]);
-    let activity = WalletActivity::of(owner, two_owner_transaction(owner), |input| {
-        match input.nullifier == Hash::from([3; 32]) {
-            true => InputParty::Padding,
-            false => InputParty::Own,
-        }
+    let activity = WalletActivity::of(owner, two_owner_transaction(owner), |nullifier| {
+        *nullifier != Hash::from([3; 32])
     })
     .expect("a spender");
     assert_eq!(
@@ -448,7 +404,7 @@ fn a_wallet_with_no_spent_input_reads_only_its_own_outputs() {
         WalletActivity::of(
             Address::new_from_array([wallet; 32]),
             transaction.clone(),
-            |_| InputParty::Other,
+            |_| false,
         )
     };
     assert!(matches!(
@@ -480,24 +436,8 @@ fn anonymous_audited() -> AuditedTransaction {
         ],
         payload_errors: Vec::new(),
         real_inputs: 3,
-        inputs: vec![
-            AuditedInput {
-                nullifier: [12; 32],
-                opening: InputOpening::Real,
-            },
-            AuditedInput {
-                nullifier: [11; 32],
-                opening: InputOpening::External(Box::new(entry_input(0x60))),
-            },
-            AuditedInput {
-                nullifier: [10; 32],
-                opening: InputOpening::External(Box::new(entry_input(0x70))),
-            },
-            AuditedInput {
-                nullifier: [9; 32],
-                opening: InputOpening::Dummy,
-            },
-        ],
+        nullifiers: vec![[12; 32], [11; 32], [10; 32], [9; 32]],
+        entries: vec![entry_input(0x60), entry_input(0x70)],
     }
 }
 
@@ -534,14 +474,14 @@ fn a_wallet_activity_page_keeps_its_wire_json() {
         WalletActivity::of(
             Address::new_from_array([wallet; 32]),
             transaction.clone(),
-            |_| InputParty::Own,
+            |nullifier| *nullifier == Hash::from([12; 32]),
         )
         .expect("a party")
     };
     let recipient = WalletActivity::of(
         Address::new_from_array([0x10; 32]),
         transaction.clone(),
-        |_| InputParty::Other,
+        |_| false,
     )
     .expect("the output's owner");
     let activity = GetWalletActivityResponse {
@@ -1805,16 +1745,7 @@ fn write_storage_writes_vector() {
 fn write_decrypted_page_vectors() {
     let mut delivered = page(delivered_audited(), vec![[12; 32]]);
     delivered.value.items[0].spenders = vec![[13; 32].into()];
-    let in_proof = in_proof_page(
-        AuditedInput {
-            nullifier: [12; 32],
-            opening: InputOpening::Real,
-        },
-        AuditedInput {
-            nullifier: [11; 32],
-            opening: InputOpening::Dummy,
-        },
-    );
+    let in_proof = in_proof_page();
     let anonymous = anonymous_page();
     let directory = concat!(env!("CARGO_MANIFEST_DIR"), "/src/rpc/");
     for (name, page) in [
@@ -1828,18 +1759,18 @@ fn write_decrypted_page_vectors() {
     let [transaction] = anonymous.value.items.as_slice() else {
         panic!("one transaction")
     };
-    let of = |wallet: u8, party: InputParty| {
+    let of = |wallet: u8, owns: bool| {
         WalletActivity::of(
             Address::new_from_array([wallet; 32]),
             transaction.clone(),
-            |_| party,
+            |nullifier| owns && *nullifier == Hash::from([12; 32]),
         )
         .expect("a party")
     };
     let activity = GetWalletActivityResponse {
         context: anonymous.context,
         value: WalletActivityPage {
-            items: vec![of(0x50, InputParty::Own), of(0x10, InputParty::Other)],
+            items: vec![of(0x50, true), of(0x10, false)],
             cursor: anonymous.value.cursor.clone(),
         },
     };

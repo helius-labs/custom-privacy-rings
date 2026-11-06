@@ -1735,24 +1735,27 @@ mod delegate_message {
         ));
     }
 
-    /// A pinned frame's published nullifiers, the honest case spends only the vector source's note.
-    fn published_nullifiers(message: &[u8]) -> Vec<[u8; 32]> {
+    /// The honest frame's spent notes, the authority rail publishes notes ahead of its padding.
+    fn honest_spends(
+        message: &[u8],
+        tx_viewing_key: &TxViewingSecret,
+        auditor: &spr_keypair::X25519Pubkey,
+    ) -> Vec<[u8; 32]> {
         let message: solana_message::VersionedMessage = wincode::deserialize(message).unwrap();
-        message
+        let data = message
             .instructions()
             .iter()
-            .filter_map(|instruction| {
-                let data = instruction.data.split_first()?;
-                (*data.0 == tag::AUTHORITY_TRANSFER).then_some(data.1)
+            .find_map(|instruction| {
+                let (tag, data) = instruction.data.split_first()?;
+                (*tag == tag::AUTHORITY_TRANSFER).then_some(data)
             })
-            .flat_map(|data| {
-                RingTransactData::parse(data, RingRail::Delegate)
-                    .unwrap()
-                    .data()
-                    .nullifiers
-                    .to_vec()
-            })
-            .collect()
+            .unwrap();
+        let parsed = RingTransactData::parse(data, RingRail::Delegate).unwrap();
+        let spent = crate::relay_message::open_stream(&parsed, tx_viewing_key, auditor)
+            .unwrap()
+            .inputs
+            .note_count();
+        parsed.data().nullifiers[..usize::from(spent)].to_vec()
     }
 
     #[tokio::test]
@@ -1943,11 +1946,16 @@ mod delegate_message {
             .iter()
             .map(|source| source.0)
             .collect();
+        let spends = honest_spends(
+            &vector.cases[0].message.0,
+            &vector.request.prepare.tx_viewing_key,
+            &config.auditor_pubkey,
+        );
         let expected = ExpectedDelegate::new(&RequestedAuthorityTransfer {
             request: vector.request.prepare,
             quote: &quote(),
             config: &config,
-            allowed: allowed_as_pinned(&sources, published_nullifiers(&vector.cases[0].message.0)),
+            allowed: allowed_as_pinned(&sources, spends),
         })
         .unwrap();
         for case in vector.cases {
@@ -2018,7 +2026,13 @@ mod delegate_message {
             .cases
             .iter()
             .find(|case| case.name == "honest")
-            .map(|case| published_nullifiers(&case.message.0))
+            .map(|case| {
+                honest_spends(
+                    &case.message.0,
+                    &vector.request.prepare.tx_viewing_key,
+                    &config.auditor_pubkey,
+                )
+            })
             .unwrap();
         let sources: Vec<ShieldedAddress> = vector
             .request
@@ -2050,7 +2064,6 @@ mod delegate_message {
 mod public_signers {
     //! The public owners of a relayed transfer, each rebuilds its own slots against the frame.
 
-    use custom_ring_interface::statement::SignerDataCounts;
     use custom_ring_interface::{
         cosign::ApprovalMask, tag, CoSignScope, InstructionTag, RingRail, RingTransactData,
     };
@@ -2290,7 +2303,7 @@ mod public_signers {
     }
 
     #[tokio::test]
-    async fn a_data_recipient_opens_its_own_slot_and_signs() {
+    async fn a_data_recipient_reads_every_slot_and_signs() {
         let (sender, payee, thief) = (keypair(1), keypair(2), keypair(3));
         let client = chain(RingMode::Anonymous, None, &[&sender, &payee, &thief]).client();
         let config = ring().require_config(client.zolana()).await.unwrap();
@@ -2315,55 +2328,29 @@ mod public_signers {
             .transfer_terms(address(&payee))
             .unwrap()
             .clone();
-        let [opening] = terms.slots.as_slice() else {
-            panic!("one slot of its own");
-        };
         assert!(terms.nullifiers.is_empty());
-        assert_eq!(opening.owner.0, address(&payee));
+        let own = terms
+            .slots
+            .iter()
+            .position(|opening| opening.owner.0 == address(&payee))
+            .expect("the payee's slot");
         let built = frame(&client, &asked.request).await;
         let message = relay_message(&FEE_PAYER, core::slice::from_ref(&built), UNITS).0;
         let pending = pending_for(&asked.relay_id, message.clone(), &terms, &config);
         signs(&pending, &payee).await;
         refused(&pending, &sender, MessageMismatch::Unrequested);
 
-        let false_opening = RelayTransferTerms {
-            slots: vec![SlotOpening {
-                amount: opening.amount + 1,
-                ..opening.clone()
-            }],
-            ..terms.clone()
-        };
-        refused(
-            &pending_for(&asked.relay_id, message.clone(), &false_opening, &config),
-            &payee,
-            MessageMismatch::Recipients,
-        );
-
-        let another_slot = RelayTransferTerms {
-            slots: vec![SlotOpening {
-                slot: opening.slot + 1,
-                ..opening.clone()
-            }],
-            ..terms.clone()
-        };
-        refused(
-            &pending_for(&asked.relay_id, message.clone(), &another_slot, &config),
-            &payee,
-            MessageMismatch::Recipients,
-        );
-
-        let another_owner = RelayTransferTerms {
-            slots: vec![SlotOpening {
-                owner: SerializablePubkey(address(&thief)),
-                ..opening.clone()
-            }],
-            ..terms.clone()
-        };
-        refused(
-            &pending_for(&asked.relay_id, message, &another_owner, &config),
-            &payee,
-            MessageMismatch::Recipients,
-        );
+        let mut false_opening = terms.clone();
+        false_opening.slots[own].amount += 1;
+        let mut another_owner = terms.clone();
+        another_owner.slots[own].owner = SerializablePubkey(address(&thief));
+        for altered in [false_opening, another_owner] {
+            refused(
+                &pending_for(&asked.relay_id, message.clone(), &altered, &config),
+                &payee,
+                MessageMismatch::Recipients,
+            );
+        }
 
         let stolen = paying(&thief);
         let forged = sent(
@@ -2729,13 +2716,8 @@ mod public_signers {
         .await;
         let forged_message =
             relay_message(&FEE_PAYER, &[frame(&client, &forged.request).await], UNITS).0;
-        let false_opening = RelayTransferTerms {
-            slots: vec![SlotOpening {
-                amount: terms.slots[0].amount + 1,
-                ..terms.slots[0].clone()
-            }],
-            ..terms.clone()
-        };
+        let mut false_opening = terms.clone();
+        false_opening.slots[0].amount += 1;
 
         let spent = ring_utxo(&co_owner, Mint::SOL, 10, 1);
         let kept = ring_utxo(&co_owner, Mint::SOL, 10, 2);
@@ -2869,7 +2851,12 @@ mod public_signers {
             .transfer_terms(address(&co_owner))
             .unwrap()
             .clone();
-        assert_eq!(exit_terms.slots.len(), 1);
+        assert!(exit_terms.slots.len() > 1);
+        assert!(exit_terms
+            .slots
+            .iter()
+            .zip(0u32..)
+            .all(|(opening, slot)| opening.slot == slot));
         let exit_message = relay_message(
             &FEE_PAYER,
             &[frame(&client, &exit_asked.request).await],
@@ -2879,8 +2866,8 @@ mod public_signers {
         let exit_known = [exit_note.nullifier];
 
         let fresh = OwnerMessages {
-            description: "Relayed anonymous transfers a public owner signs. A data recipient \
-                          opens its own slot, a co-owner names its notes against the notes its \
+            description: "Relayed anonymous transfers a public owner signs. A signer reads \
+                          every published slot opened, a co-owner names its notes against the notes its \
                           wallet holds. Each case holds the owner's terms, what its wallet knows, \
                           the message Ring RPC answers with, and the MessageMismatch the Rust \
                           ExpectedPublicOwner and the TypeScript check return. Frames carry \
@@ -2907,11 +2894,11 @@ mod public_signers {
                     "Accepted",
                 ),
                 owner_case(
-                    "repeatedSignerOmitsDataOutput",
+                    "repeatedSignerOmitsOutputs",
                     &omitted_terms,
                     &recipient_known,
                     &repeated_message,
-                    "DataOutputCount",
+                    "UnopenedOutput",
                 ),
                 owner_case(
                     "exitHonest",
@@ -3073,24 +3060,8 @@ mod public_signers {
         .pending()
     }
 
-    /// `frame` under the proved counts `packed` names.
-    async fn frame_counting(
-        client: &crate::RingClient<Chain, Chain>,
-        request: &PrepareRelayRequest,
-        packed: u64,
-    ) -> Instruction {
-        let mut assembled = assembled(client, request).await;
-        assembled.frame.parts.extensions.signer_data_counts =
-            (packed != 0).then(|| SignerDataCounts::new(packed).unwrap());
-        let frame = &assembled.frame;
-        frame
-            .accounts
-            .instruction(frame.ring, &assembled.config, &frame.parts)
-            .unwrap()
-    }
-
     #[tokio::test]
-    async fn a_signers_terms_open_exactly_the_data_outputs_the_proof_counts() {
+    async fn a_signer_signs_only_once_every_published_output_opens() {
         let (sender, payee) = (keypair(1), keypair(2));
         let client = chain(RingMode::Anonymous, None, &[&sender, &payee]).client();
         let config = ring().require_config(client.zolana()).await.unwrap();
@@ -3098,9 +3069,9 @@ mod public_signers {
             .with_anonymous_signer(&sender.signing_key)
             .with_payment(data_payment(&payee))
             .unwrap()
-            .with_payment(data_payment(&payee))
-            .unwrap()
             .with_payment(pay(&payee, 1))
+            .unwrap()
+            .with_shape(spr_interface::shape::Shape::new(1, 4))
             .unwrap();
         let asked = sent(
             paying
@@ -3116,119 +3087,56 @@ mod public_signers {
             .transfer_terms(address(&payee))
             .unwrap()
             .clone();
-        let (data, ordinary): (Vec<SlotOpening>, Vec<SlotOpening>) = terms
-            .slots
-            .iter()
-            .cloned()
-            .partition(|opening| opening.data_hash.0 != [0; 32]);
-        let ([first, second], [ordinary]) = (data.as_slice(), ordinary.as_slice()) else {
-            panic!("two data outputs and one ordinary payment");
-        };
-        let built = frame_counting(&client, &asked.request, 2).await;
+        let built = frame(&client, &asked.request).await;
         let message = relay_message(&FEE_PAYER, core::slice::from_ref(&built), UNITS).0;
-        let opening = |slots: &[&SlotOpening]| RelayTransferTerms {
-            slots: slots.iter().copied().cloned().collect(),
-            ..terms.clone()
-        };
         let pending = |terms: &RelayTransferTerms| {
             pending_for(&asked.relay_id, message.clone(), terms, &config)
         };
-
+        // The terms open the sender's change and the padding dummy beside both payments.
+        let dummy = terms
+            .slots
+            .iter()
+            .find(|opening| opening.owner.0 == Address::default())
+            .expect("a dummy slot")
+            .clone();
+        assert!(terms
+            .slots
+            .iter()
+            .any(|opening| opening.owner.0 == address(&sender)));
         signs(&pending(&terms), &payee).await;
-        // An ordinary payment stays out of the count either way.
-        signs(&pending(&opening(&[first, second])), &payee).await;
 
-        let omitted = opening(&[first]);
-        let duplicated = opening(&[first, first]);
-        let substituted = opening(&[first, ordinary]);
-        let only_ordinary = opening(&[ordinary]);
-        for short in [&omitted, &duplicated, &substituted, &only_ordinary] {
-            refused(&pending(short), &payee, MessageMismatch::DataOutputCount);
+        let with_slots = |slots: Vec<SlotOpening>| RelayTransferTerms {
+            slots,
+            ..terms.clone()
+        };
+        let own: Vec<SlotOpening> = terms
+            .slots
+            .iter()
+            .filter(|opening| opening.owner.0 == address(&payee))
+            .cloned()
+            .collect();
+        let mut repeated = terms.slots.clone();
+        let last = repeated.len() - 1;
+        repeated[last] = repeated[0].clone();
+        let mut reordered = terms.slots.clone();
+        reordered.swap(0, 1);
+        for short in [
+            with_slots(own),
+            with_slots(terms.slots[1..].to_vec()),
+            with_slots(repeated),
+            with_slots(reordered),
+        ] {
+            refused(&pending(&short), &payee, MessageMismatch::UnopenedOutput);
         }
 
-        // An absent extension reads zero, a signer still refuses an output no proof counts.
-        let uncounted = frame_counting(&client, &asked.request, 0).await;
-        refused(
-            &pending_for(
-                &asked.relay_id,
-                relay_message(&FEE_PAYER, core::slice::from_ref(&uncounted), UNITS).0,
-                &terms,
-                &config,
-            ),
-            &payee,
-            MessageMismatch::DataOutputCount,
-        );
-    }
-
-    #[tokio::test]
-    async fn a_signer_reads_the_count_at_its_own_run_entry() {
-        let (sender, lead, next) = (keypair(1), keypair(2), keypair(3));
-        let client = chain(RingMode::Anonymous, None, &[&sender, &lead, &next]).client();
-        let config = ring().require_config(client.zolana()).await.unwrap();
-        let paying = transfer(&sender, vec![ring_utxo(&sender, Mint::SOL, 20, 0)])
-            .with_anonymous_signer(&sender.signing_key)
-            .with_payment(data_payment(&lead))
-            .unwrap()
-            .with_payment(data_payment(&next))
-            .unwrap()
-            .with_payment(data_payment(&next))
-            .unwrap();
-        let asked = sent(
-            paying
-                .prepare_relay(client.zolana(), quote())
-                .await
-                .unwrap()
-                .sign()
-                .unwrap(),
-        )
-        .await;
-        let lead_terms = asked
-            .pending
-            .transfer_terms(address(&lead))
-            .unwrap()
-            .clone();
-        let next_terms = asked
-            .pending
-            .transfer_terms(address(&next))
-            .unwrap()
-            .clone();
-        let bits = SignerDataCounts::ENTRY_BITS;
-        let message =
-            |built: &Instruction| relay_message(&FEE_PAYER, core::slice::from_ref(built), UNITS).0;
-
-        let honest = frame_counting(&client, &asked.request, 1 | 2 << bits).await;
-        let pending = |built: &Instruction, terms: &RelayTransferTerms| {
-            pending_for(&asked.relay_id, message(built), terms, &config)
-        };
-        signs(&pending(&honest, &lead_terms), &lead).await;
-        signs(&pending(&honest, &next_terms), &next).await;
-
-        // The lanes of the other order, each signer's own slots still open.
-        let swapped = frame_counting(&client, &asked.request, 2 | 1 << bits).await;
-        refused(
-            &pending(&swapped, &lead_terms),
-            &lead,
-            MessageMismatch::DataOutputCount,
-        );
-        refused(
-            &pending(&swapped, &next_terms),
-            &next,
-            MessageMismatch::DataOutputCount,
-        );
-
-        // A second copy of the PDA leaves no list the program would read.
-        let mut copied = honest.clone();
-        copied
-            .accounts
-            .push(solana_instruction::AccountMeta::new_readonly(
-                ring().ring_auth_pda(),
-                false,
-            ));
-        refused(
-            &pending(&copied, &lead_terms),
-            &lead,
-            MessageMismatch::Accounts,
-        );
+        // A dummy opens to its blinding alone, a field beside it would open no published slot.
+        let mut padded = terms.clone();
+        let at = dummy.slot as usize;
+        padded.slots[at].amount = 1;
+        refused(&pending(&padded), &payee, MessageMismatch::Recipients);
+        let mut blinded = terms.clone();
+        blinded.slots[at].blinding.0[31] ^= 1;
+        refused(&pending(&blinded), &payee, MessageMismatch::Recipients);
     }
 
     #[tokio::test]

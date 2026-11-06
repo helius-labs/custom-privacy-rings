@@ -33,8 +33,8 @@ use zolana_ring_client::{
     auditor_view_tag, confirmed_merge,
     history::{HistoryCursor, HistoryQuery, HistoryStream},
     AuditError, AuditStreamSeal, AuditedEntryInput, AuditedTransaction, ConfirmedMerge,
-    ConfirmedMergeDisclosure, InputOpening, MergeAudit, MergeLedger, MergeRecordSeal,
-    OutputOpening, OutputPayloadError, OutputPayloadErrorKind, RingOrigin, RingOwnerTag, RingScan,
+    ConfirmedMergeDisclosure, MergeAudit, MergeLedger, MergeRecordSeal, OutputOpening,
+    OutputPayloadError, OutputPayloadErrorKind, RingOrigin, RingOwnerTag, RingScan,
     TransactionAudit, TransactionOrigin,
 };
 
@@ -316,8 +316,9 @@ fn a_live_slot_under_a_dummy_record_is_rejected_on_the_commitment() {
     );
 }
 
+/// The proof names `R` and no note position, the reader keeps every published nullifier for the index.
 #[test]
-fn inputs_read_real_up_to_the_proven_count_and_padding_past_it() {
+fn the_reader_keeps_the_proven_count_and_every_published_nullifier() {
     let mut transfer = Transfer::fixture();
     transfer.nullifiers = vec![transfer.first_nullifier, field(0x61), field(0x62)];
     let outputs = delivered_outputs()[..2].to_vec();
@@ -326,52 +327,8 @@ fn inputs_read_real_up_to_the_proven_count_and_padding_past_it() {
     let built = publish(&transfer, Rail::Delivered, outputs, disclosure);
     let audited = audit(&built.transaction, built.layout).unwrap();
     assert_eq!(audited.real_inputs, 2);
-    let read: Vec<_> = audited
-        .inputs
-        .iter()
-        .map(|input| (input.nullifier, input.opening.clone()))
-        .collect();
-    assert_eq!(
-        read,
-        [
-            (transfer.first_nullifier, InputOpening::Real),
-            (field(0x61), InputOpening::Real),
-            (field(0x62), InputOpening::Dummy),
-        ]
-    );
-}
-
-/// SPP order `address, note, note, dummy`, the address neither spends a note nor names an owner.
-#[test]
-fn an_address_ahead_of_the_notes_reads_apart_from_them() {
-    let mut transfer = Transfer::fixture();
-    transfer.nullifiers = vec![
-        transfer.first_nullifier,
-        field(0x61),
-        field(0x62),
-        field(0x63),
-    ];
-    let outputs = delivered_outputs()[..2].to_vec();
-    let mut disclosure = transfer.disclosure(Rail::Delivered, &outputs);
-    disclosure.real_inputs = 2;
-    disclosure.address_input_bits = 0b001;
-    let built = publish(&transfer, Rail::Delivered, outputs, disclosure);
-    let audited = audit(&built.transaction, built.layout).unwrap();
-    assert_eq!(audited.real_inputs, 2);
-    let read: Vec<_> = audited
-        .inputs
-        .iter()
-        .map(|input| input.opening.clone())
-        .collect();
-    assert_eq!(
-        read,
-        [
-            InputOpening::Address,
-            InputOpening::Real,
-            InputOpening::Real,
-            InputOpening::Dummy,
-        ]
-    );
+    assert_eq!(audited.nullifiers, transfer.nullifiers);
+    assert!(audited.entries.is_empty());
 }
 
 /// The entry bit names absolute note position 1.
@@ -393,17 +350,16 @@ fn an_entry_input_opens_under_its_default_bit_with_its_proven_commitment() {
     );
     let built = publish(&transfer, Rail::Anonymous, outputs, disclosure);
     let audited = audit(&built.transaction, built.layout).unwrap();
-    assert_eq!(audited.inputs[0].opening, InputOpening::Real);
     assert_eq!(
-        audited.inputs[1].opening,
-        InputOpening::External(Box::new(AuditedEntryInput {
+        audited.entries,
+        [AuditedEntryInput {
             owner_key: spent.owner_key,
             nullifier_pk: spent.nullifier_pk,
             asset: spent.asset(),
             mint: MINT,
             amount: 70,
             commitment,
-        }))
+        }]
     );
 }
 

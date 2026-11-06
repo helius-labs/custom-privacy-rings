@@ -3,7 +3,7 @@ use std::{
     num::{NonZeroU32, NonZeroUsize},
 };
 
-use custom_ring_interface::{OpeningRecord, RecordKind};
+use custom_ring_interface::{MergeRecord, RecordKind};
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{
@@ -20,7 +20,7 @@ use spr_keypair::{X25519Keypair, X25519Pubkey};
 use spr_transaction::{instructions::merge::MergeSeed, OutputSlot};
 
 use crate::{
-    encryption::open_merge_record,
+    encryption::{open_merge_record, SealedMergeCiphertexts},
     history::{HistoryCursor, HistoryPosition, HistoryQuery, HistoryStream, PageEnd},
     merge_ledger::{ConfirmedMerge, MergeRecordOutput},
     origin::{ConfirmedEventKind, ConfirmedMergeDisclosure, RingOrigin, TransactionOrigin},
@@ -284,8 +284,20 @@ impl MergeOutput {
         disclosure: &ConfirmedMergeDisclosure,
         transaction: &ShieldedTransaction,
     ) -> Result<MergeRecordOutput, AuditError> {
-        let ConfirmedMergeDisclosure { eph_pk, ciphertext } = disclosure;
-        let record = open_merge_record(auditor, &X25519Pubkey::from_bytes(*eph_pk)?, ciphertext)?;
+        let ConfirmedMergeDisclosure {
+            eph_pk,
+            envelope,
+            record,
+        } = disclosure;
+        let record = open_merge_record(
+            auditor,
+            &SealedMergeCiphertexts {
+                eph_pk: &X25519Pubkey::from_bytes(*eph_pk)?,
+                envelope,
+                record,
+                first_nullifier: &self.first_nullifier,
+            },
+        )?;
         let ring = transaction
             .ring_program_id
             .ok_or(AuditError::MissingRingProgram)?;
@@ -295,11 +307,14 @@ impl MergeOutput {
     /// Accepted only when the record and its seed's blinding hash to the published output.
     fn rebuild(
         &self,
-        opened: OpeningRecord,
+        opened: MergeRecord,
         ring: Address,
         nullifiers: &[[u8; 32]],
     ) -> Result<MergeRecordOutput, AuditError> {
-        let OpeningRecord { record, secret } = opened;
+        let MergeRecord {
+            record,
+            seed: secret,
+        } = opened;
         if record.kind != RecordKind::Ring || !is_canonical_bn254_scalar_be(&record.nullifier_pk) {
             return Err(AuditError::DisclosureField);
         }

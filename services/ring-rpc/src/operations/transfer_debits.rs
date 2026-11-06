@@ -16,9 +16,7 @@ use spr_interface::{
     pda, PROGRAM_ID_PUBKEY,
 };
 use spr_transaction::{instructions::transact::SettlementTransfer, SOL_MINT};
-use zolana_ring_client::{
-    AuditedTransaction, FramedRow, InputOpening, OutputOpening, TransactionAudit,
-};
+use zolana_ring_client::{AuditedTransaction, FramedRow, OutputOpening, TransactionAudit};
 use zolana_ring_policy::{
     owner_debits, DebitInput, DebitOutput, DebitTransfer, Member, PublicGross,
 };
@@ -381,7 +379,7 @@ impl OwnerFlows<'_> {
     }
 }
 
-/// The note of each real input by its nullifier, a missing one refuses the read.
+/// The note of each published nullifier the index holds, the rest spend no note it opened.
 type InputNotes = HashMap<[u8; 32], ([u8; 32], StoredUtxo)>;
 
 /// Read before the flow math, a note the cache evicted answers from storage.
@@ -389,13 +387,7 @@ async fn real_input_notes(
     store: &AuditStore,
     audited: &AuditedTransaction,
 ) -> Result<InputNotes, RingRpcError> {
-    let real: Vec<[u8; 32]> = audited
-        .inputs
-        .iter()
-        .filter(|input| matches!(input.opening, InputOpening::Real))
-        .map(|input| input.nullifier)
-        .collect();
-    store.notes_of_nullifiers(&real).await
+    store.notes_of_nullifiers(&audited.nullifiers).await
 }
 
 struct FrameFlows<'a> {
@@ -427,29 +419,32 @@ impl FrameFlows<'_> {
         })
     }
 
-    /// A real input the index cannot name refuses, as an unknown note does.
+    /// The proof's `R` must equal the notes the index names plus the entry records, one note the
+    /// index cannot name refuses the read.
     fn inputs(&self) -> Result<Vec<DebitInput>, RingRpcError> {
+        let audited = self.audited;
         let mut inputs = Vec::new();
-        for input in &self.audited.inputs {
-            match &input.opening {
-                InputOpening::Dummy | InputOpening::Address => {}
-                // The frame's proven entry evidence, a default-ring note holds no index row.
-                InputOpening::External(external) => inputs.push(DebitInput {
-                    owner: identity(&external.owner_key)?,
-                    asset: external.asset,
-                    amount: external.amount,
-                }),
-                InputOpening::Real => {
-                    let (_, note) = self.notes.get(&input.nullifier).ok_or_else(unavailable)?;
-                    inputs.push(DebitInput {
-                        owner: identity(&note.utxo.owner_key)?,
-                        asset: note.utxo.asset,
-                        amount: note.utxo.amount,
-                    });
-                }
+        for nullifier in &audited.nullifiers {
+            if let Some((_, note)) = self.notes.get(nullifier) {
+                inputs.push(DebitInput {
+                    owner: identity(&note.utxo.owner_key)?,
+                    asset: note.utxo.asset,
+                    amount: note.utxo.amount,
+                });
             }
         }
-        Ok(inputs)
+        // The frame's proven entry evidence, a default-ring note holds no index row.
+        for entry in &audited.entries {
+            inputs.push(DebitInput {
+                owner: identity(&entry.owner_key)?,
+                asset: entry.asset,
+                amount: entry.amount,
+            });
+        }
+        match inputs.len() == usize::from(audited.real_inputs) {
+            true => Ok(inputs),
+            false => Err(unavailable()),
+        }
     }
 
     /// A slot that failed to open could return funds, the outflow stays unknown.
