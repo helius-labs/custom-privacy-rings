@@ -9,7 +9,9 @@ use spr_event::MessageData;
 use spr_hasher::primitives::hash_bytes;
 use spr_keypair::{ViewingKey, X25519Keypair};
 use spr_transaction::{OutputContext, OutputSlot, ShieldedTransaction};
-use zolana_ring_client::{OutputOpening, TransactionAudit};
+use zolana_ring_client::{
+    OutputOpening, OutputPayloadError, OutputPayloadErrorKind, TransactionAudit,
+};
 
 const STREAM: &str = include_str!("../../../test-vectors/audit/audit-stream.json");
 const RING: Address = Address::new_from_array([0x90; 32]);
@@ -107,11 +109,15 @@ fn every_stream_rebuilds_its_published_hashes_with_no_mint_registry() {
             ring_program_id: Some(RING),
         };
         let audited = TransactionAudit::new(&tx, layout).run(&auditor()).unwrap();
-        assert!(
-            audited.payload_errors.is_empty(),
-            "{name}: {:?}",
-            audited.payload_errors
-        );
+        // The data case's payload holds its data hashes, the vector omits it.
+        let lost: &[OutputPayloadError] = match name {
+            "data" => &[OutputPayloadError {
+                slot_index: 0,
+                kind: OutputPayloadErrorKind::Payload,
+            }],
+            _ => &[],
+        };
+        assert_eq!(audited.payload_errors, lost, "{name}");
         assert_eq!(audited.outputs.len(), hashes.len(), "{name}");
         let plaintext = bytes(&case["envelope_plaintext"]);
         assert_eq!(audited.real_inputs, plaintext[32], "{name}");
