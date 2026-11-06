@@ -478,6 +478,7 @@ impl Anonymous<'_> {
         let tx_viewing_key = transaction_key(keys, first_nullifier)?;
         let rail = RingOutputRail::new(
             tx_viewing_key,
+            config.auditor_pubkey,
             RingDelivery::Anonymous(Box::new(anonymous_plan(&self.payments))),
         );
         let transaction = pad_under_rail(transaction, &rail, shape, &sender)?;
@@ -583,7 +584,8 @@ pub(super) fn anonymous_plan(payments: &[AnonymousPayment]) -> AnonymousPlan {
     })
 }
 
-/// The hidden owner's note leads, a frame of only public owners takes the confidential family.
+/// The hidden owner's note is the first note, ring input 0, an address ahead of it spends nothing.
+/// A frame of only public owners takes the confidential family.
 pub(super) fn check_anonymous_inputs(
     inputs: &SppProofInputs,
     sender: &ShieldedAddress,
@@ -591,8 +593,9 @@ pub(super) fn check_anonymous_inputs(
 ) -> Result<(), RingError> {
     let hidden_leads = inputs
         .input_utxos
-        .first()
-        .is_some_and(|input| input.is_note() && input.utxo.owner == sender.signing_pubkey);
+        .iter()
+        .find(|input| input.is_note())
+        .is_some_and(|input| input.utxo.owner == sender.signing_pubkey);
     if !hidden_leads {
         return Err(RingError::HiddenOwnerMissing);
     }
@@ -635,7 +638,6 @@ fn check_audit_key(inputs: &SppProofInputs) -> Result<(), RingError> {
         .filter(|input| !input.is_compact())
         .count();
     let keyed = transfer_key(TransferSpend {
-        format: custom_ring_interface::DisclosureFormat::Standard,
         rail: RingRail::Anonymous,
         inputs: published,
         outputs: inputs.output_utxos.len(),

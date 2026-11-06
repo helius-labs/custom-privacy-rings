@@ -2,7 +2,7 @@
 
 use custom_ring_interface::cosign::ApprovalMask;
 use custom_ring_interface::{
-    compute_unit_limit, funder_account_position, stream::confidential_slot_tag, tag, AuditRecord,
+    compute_unit_limit, funder_account_position, stream::{confidential_slot_tag, DeliveredSlot}, tag, OutputRecord,
     InstructionTag, ParsedTransact, RecordKind, RingMode, RingRail, RingTransactData,
     RING_TRANSACT_RING_CONFIG_INDEX, STORAGE_PROGRAM_ID,
 };
@@ -29,6 +29,7 @@ use zolana_ring_client::{
     rpc::{AuthorityWithdrawal, RelayEnrollInputs, RelayId, TxViewingSecret, ENROLL_COMPUTE_UNITS},
     AuditEnvelope, OpenedAudit,
 };
+use zolana_ring_transaction::open_recipient_body;
 use zolana_ring_policy::{ApprovalTotals, Member, OutputTotals, OwnerDebit, PublicTotals};
 
 use crate::{
@@ -420,6 +421,46 @@ pub(crate) fn open_stream(
     .map_err(|_| MessageMismatch::Data)
 }
 
+/// Each slot's record and the key it seals to, a non-exit record leads its body and an exit's sits
+/// in the auditor message the frame rebuilds.
+fn open_records(
+    parsed: &ParsedTransact<'_>,
+    tx_viewing_key: &TxViewingSecret,
+    opened: &OpenedAudit,
+) -> Result<Vec<(OutputRecord, X25519Pubkey)>, MessageMismatch> {
+    let data = parsed.data();
+    let tx_viewing_key = tx_viewing_key
+        .key()
+        .map_err(|_| MessageMismatch::TransactionKey)?;
+    let keys = opened
+        .recipient_keys(data.recipient_keys)
+        .map_err(|_| MessageMismatch::Data)?;
+    let first_nullifier = data.first_nullifier().map_err(|_| MessageMismatch::Data)?;
+    data.outputs
+        .iter()
+        .zip(keys)
+        .zip(0u32..)
+        .map(|((output, key), slot)| {
+            let secret = DeliveredSlot {
+                agreement: &tx_viewing_key
+                    .ecdh(&key)
+                    .map_err(|_| MessageMismatch::Data)?,
+                tx_viewing_pk: tx_viewing_key.pubkey().as_bytes(),
+                recipient_viewing_pk: key.as_bytes(),
+                salt: data.salt,
+                output_index: slot,
+                first_nullifier,
+            }
+            .secret()
+            .map_err(|_| MessageMismatch::Data)?;
+            let record = open_recipient_body(output.record, &secret)
+                .map_err(|_| MessageMismatch::Data)?
+                .record;
+            Ok((record, key))
+        })
+        .collect()
+}
+
 /// The signer named once and read only, the ring account first.
 fn check_signer(envelope: &Envelope, accounts: &[AccountMeta]) -> Result<(), MessageMismatch> {
     let mut named = accounts
@@ -530,22 +571,22 @@ impl ExpectedDelegate {
         self.check_withdrawals(data, accounts)?;
         // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
         self.allowed
-            .check_spends(opened.inputs.note_count(), data.nullifiers)
+            .check_spends(opened.real_inputs, data.nullifiers)
             .map_err(|_| MessageMismatch::SpendsUnrequestedNote)?;
-        // 3. Each live record pays one requested payment or returns change to a requested source.
-        let records = data
-            .outputs
-            .iter()
-            .enumerate()
-            .map(|(slot, output)| opened.record(slot, output.record))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| MessageMismatch::Data)?;
+        // 3. Each live record pays one requested payment or returns change to a requested source,
+        // sealed to that owner's viewing key so the owner can open it.
+        let records = open_records(parsed, &self.tx_viewing_key, &opened)?;
         let mut unpaid = self.payments.clone();
-        for (output, record) in data.outputs.iter().zip(records) {
+        for (output, (record, key)) in data.outputs.iter().zip(records) {
             if record.kind == RecordKind::Dummy {
                 continue;
             }
-            let paid = unpaid.iter().position(|payment| payment.matches(&record));
+            let sealed_to = |owner: &ExpectedOwner| {
+                record.kind == RecordKind::Exit || key.u() == owner.viewing_u
+            };
+            let paid = unpaid
+                .iter()
+                .position(|payment| payment.matches(&record) && sealed_to(&payment.owner));
             match paid {
                 Some(index) => {
                     let payment = unpaid.swap_remove(index);
@@ -561,7 +602,10 @@ impl ExpectedDelegate {
                     }
                 }
                 None if record.kind == RecordKind::Ring
-                    && self.sources.iter().any(|source| source.owns(&record)) => {}
+                    && self
+                        .sources
+                        .iter()
+                        .any(|source| source.owns(&record) && sealed_to(source)) => {}
                 None => return Err(MessageMismatch::Recipients),
             }
         }
@@ -1141,13 +1185,13 @@ impl ExpectedOwner {
         })
     }
 
-    fn owns(&self, record: &AuditRecord) -> bool {
+    fn owns(&self, record: &OutputRecord) -> bool {
         record.owner_key == self.owner_key && record.nullifier_pk == self.nullifier_pk
     }
 }
 
 impl ExpectedPayment {
-    fn matches(&self, record: &AuditRecord) -> bool {
+    fn matches(&self, record: &OutputRecord) -> bool {
         self.kind == record.kind
             && self.owner.owns(record)
             && record.mint == self.mint.to_bytes()

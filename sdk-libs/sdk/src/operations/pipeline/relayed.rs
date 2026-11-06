@@ -118,6 +118,7 @@ impl Relayed<'_> {
             RingOutputRail::sealed(
                 relayed.tx_viewing_key.clone(),
                 proof_inputs.external_data.salt,
+                config.auditor_pubkey,
                 delivery,
             )
         };
