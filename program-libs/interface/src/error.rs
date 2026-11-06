@@ -46,7 +46,6 @@ ring_errors! {
     DelegateAlreadySet = 8153 => "the delegate is permanent",
     MissingFundingSigner = 8173 => "forwarded funding account must sign on entry",
     InvalidRingMode = 8174 => "the ring mode is unknown",
-    InvalidAnonymousSigner = 8178 => "an anonymous ring transaction takes no signer outside the payer, the owner run, the co-signers and the funders",
     InvalidMergeDisclosure = 8179 =>
         "the merge disclosure's ephemeral key is not tagged",
     MissingOwnerSigner = 8192 => "forwarded owner signer must sign on entry",
@@ -111,7 +110,7 @@ ring_errors! {
     TrackingRootBelowFloor = 8503 => "the frame names a tracking root below a salted source's floor",
     SaltedSourceOtherTracking = 8504 => "a salted source pins no tracking registry or another one",
     InvalidSignerDataCounts = 8527 => "signer data counts are zero under their bit or pass the encoding",
-    TooManyAnonymousParties = 8528 => "the co-signers and deposit funders pass the statement's party cells",
+    TooManyAnonymousParties = 8528 => "the co-signers pass the statement's co-signer cells",
 }
 
 impl From<CustomRingError> for ProgramError {
