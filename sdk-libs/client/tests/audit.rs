@@ -226,8 +226,8 @@ fn a_data_bearing_note_rebuilds_from_its_payload() {
     let audited = audit(&built.transaction, built.layout).unwrap();
     expect_every_slot(&built, &audited);
     let opened = audited.outputs[0].opening.utxo().unwrap();
-    assert_eq!(opened.data_hash, field(0x71));
-    assert_eq!(opened.ring_data_hash, field(0x72));
+    assert_eq!(opened.data_hash, Some(field(0x71)));
+    assert_eq!(opened.ring_data_hash, Some(field(0x72)));
     // The commitment holds both hashes.
     let mut cleared = built.disclosure.clone();
     cleared.payloads.as_mut().unwrap()[0] = Default::default();
@@ -237,10 +237,15 @@ fn a_data_bearing_note_rebuilds_from_its_payload() {
         auditor: &auditor().pubkey(),
         rail: built.rail,
     });
+    let audited = audit(&forged, built.layout).unwrap();
     assert_eq!(
-        audit(&forged, built.layout).unwrap().payload_errors,
-        [slot_error(0, OutputPayloadErrorKind::Commitment)]
+        audited.payload_errors,
+        [slot_error(0, OutputPayloadErrorKind::Payload)]
     );
+    // The proven record stands under the published commitment, its data hashes stay unknown.
+    let kept = audited.outputs[0].opening.utxo().unwrap();
+    assert_eq!((kept.amount, kept.owner_key), (note.amount, note.owner_key));
+    assert_eq!((kept.data_hash, kept.ring_data_hash), (None, None));
 }
 
 #[test]
@@ -267,10 +272,11 @@ fn each_record_field_changed_fails_the_rebuild() {
             let audited = audit(&forged, built.layout).unwrap();
             assert_eq!(
                 audited.payload_errors,
-                [slot_error(slot as u32, OutputPayloadErrorKind::Commitment)],
+                [slot_error(slot as u32, OutputPayloadErrorKind::Payload)],
                 "{name} of slot {slot}"
             );
-            assert_eq!(audited.outputs.len(), built.outputs.len() - 1);
+            // The reader keeps the record, only the ring proof refuses a forged one.
+            assert_eq!(audited.outputs.len(), built.outputs.len());
         }
     }
 }
@@ -304,7 +310,7 @@ fn a_noncanonical_nullifier_key_or_blinding_refuses_the_transaction() {
 }
 
 #[test]
-fn a_record_of_one_slot_at_another_is_rejected_on_the_commitment() {
+fn a_record_of_one_slot_at_another_drops_its_data_hashes() {
     let transfer = Transfer::fixture();
     let built = build(&transfer, Rail::Delivered, delivered_outputs());
     let mut swapped = built.disclosure.clone();
@@ -319,11 +325,11 @@ fn a_record_of_one_slot_at_another_is_rejected_on_the_commitment() {
     assert_eq!(
         audited.payload_errors,
         [
-            slot_error(0, OutputPayloadErrorKind::Commitment),
-            slot_error(1, OutputPayloadErrorKind::Commitment),
+            slot_error(0, OutputPayloadErrorKind::Payload),
+            slot_error(1, OutputPayloadErrorKind::Payload),
         ]
     );
-    assert_eq!(opened_slots(&audited), [2, 3, 4, 5, 6, 7]);
+    assert_eq!(opened_slots(&audited), [0, 1, 2, 3, 4, 5, 6, 7]);
 }
 
 #[test]
@@ -416,7 +422,33 @@ fn an_exit_opens_with_its_published_owner_tag() {
     });
     assert_eq!(
         audit(&forged, built.layout).unwrap().payload_errors,
-        [slot_error(0, OutputPayloadErrorKind::Commitment)]
+        [slot_error(0, OutputPayloadErrorKind::Payload)]
+    );
+}
+
+/// An exit's data sits in its scheme 3 body, the auditor opens its record without the data hashes.
+#[test]
+fn an_honest_data_bearing_exit_opens() {
+    let exit = UtxoFields {
+        data_hash: field(0x75),
+        ..utxo(0xe5, SOL, 40)
+    };
+    let built = build(
+        &Transfer::fixture(),
+        Rail::Delivered,
+        vec![Output::Exit(exit), Output::Dummy],
+    );
+    let audited = audit(&built.transaction, built.layout).unwrap();
+    let OutputOpening::Exit(opened) = audited.outputs[0].opening else {
+        panic!("an exit")
+    };
+    assert_eq!(
+        (opened.owner_key, opened.amount, opened.nullifier_pk),
+        (exit.owner_key, exit.amount, exit.nullifier_pk)
+    );
+    assert_eq!(
+        audited.payload_errors,
+        [slot_error(0, OutputPayloadErrorKind::Payload)]
     );
 }
 
@@ -619,7 +651,7 @@ fn a_merge_record_resolves_alone_in_the_ledger() {
         opened.asset,
         hash_bytes(spent[1].utxo.asset_address.as_array()).unwrap()
     );
-    assert_eq!(opened.commitment(Some(transfer.ring)).unwrap(), hash);
+    assert_eq!(opened.commitment(Some(transfer.ring)).unwrap(), Some(hash));
     assert_eq!(opened.amount, spent[1].utxo.amount);
 }
 

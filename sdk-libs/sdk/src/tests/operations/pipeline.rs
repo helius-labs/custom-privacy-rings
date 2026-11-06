@@ -3918,7 +3918,10 @@ async fn a_hidden_sender_pays_a_note_carrying_data() {
         .position(|output| output.owner_address == Some(recipient.recipient))
         .unwrap();
     assert_eq!(
-        payment_at(&staged, &reader, position).payload.unwrap().data,
+        match payment_at(&staged, &reader, position).payload {
+            zolana_ring_transaction::PayloadRead::Opened(payload) => payload.data,
+            other => panic!("an opened payload, got {other:?}"),
+        },
         [&[4; 32][..], b"app"].concat()
     );
     let assembled = signed

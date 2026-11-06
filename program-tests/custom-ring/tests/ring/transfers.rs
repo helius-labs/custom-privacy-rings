@@ -1304,12 +1304,12 @@ fn the_auditor_rebuilds_a_data_bearing_output_from_its_tail() -> Result<()> {
         .find(|output| output.slot_index == slot)
         .context("the auditor opens the data-bearing slot")?;
     let utxo = output.opening.utxo().context("a real output")?;
-    assert_eq!(utxo.data_hash, DATA_HASH);
+    assert_eq!(utxo.data_hash, Some(DATA_HASH));
     assert_eq!(utxo.amount, RING_TRANSFER_AMOUNT);
     assert_eq!(
         KnownUtxo::opened(*utxo, output.context.tree_id).commitment(Some(ring_program))?,
-        output.context.hash,
-        "the record and tail rebuild the published commitment"
+        Some(output.context.hash),
+        "the record and payload rebuild the published commitment"
     );
     Ok(())
 }

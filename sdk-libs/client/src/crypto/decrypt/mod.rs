@@ -14,7 +14,7 @@ use spr_transaction::{
     OutputContext, OutputSlot, ShieldedTransaction,
 };
 
-use zolana_ring_transaction::{open_recipient_body, OpenedRecipientBody};
+use zolana_ring_transaction::{open_recipient_body, OpenedRecipientBody, PayloadRead};
 
 use crate::{
     disclosure::{canonical, AuditEnvelope},
@@ -159,15 +159,11 @@ impl<'a> TransactionAudit<'a> {
                     &record[..]
                 }
             };
-            let opened = open_recipient_body(ciphertext, &secret);
-            audited.place(
-                index,
-                output.output_context.clone(),
-                match opened {
-                    Ok(body) => transfer.slot(slot, body)?,
-                    Err(_) => Err(OutputPayloadErrorKind::Disclosure),
-                },
-            );
+            let read = match open_recipient_body(ciphertext, &secret) {
+                Ok(body) => transfer.slot(slot, body)?,
+                Err(_) => SlotRead::refused(OutputPayloadErrorKind::Disclosure),
+            };
+            audited.place(index, output.output_context.clone(), read);
         }
         Ok(audited)
     }
@@ -209,15 +205,25 @@ impl Slot<'_> {
         self.output.output_context.tree_id
     }
 
-    fn rebuilt(self, commitment: [u8; 32], opening: OutputOpening) -> SlotOpening {
-        match commitment == self.output.output_context.hash {
-            true => Ok(opening),
-            false => Err(OutputPayloadErrorKind::Commitment),
-        }
+    fn commitment(self) -> [u8; 32] {
+        self.output.output_context.hash
     }
 }
 
-type SlotOpening = Result<OutputOpening, OutputPayloadErrorKind>;
+/// A slot's proven opening and its payload's fault, apart.
+struct SlotRead {
+    opening: Option<OutputOpening>,
+    error: Option<OutputPayloadErrorKind>,
+}
+
+impl SlotRead {
+    const fn refused(kind: OutputPayloadErrorKind) -> Self {
+        Self {
+            opening: None,
+            error: Some(kind),
+        }
+    }
+}
 
 struct Transfer {
     ring: Address,
@@ -242,8 +248,9 @@ impl Transfer {
         })
     }
 
-    /// The proof holds the record, a wrong payload data hash fails the commitment.
-    fn slot(&self, slot: Slot<'_>, body: OpenedRecipientBody) -> Result<SlotOpening, AuditError> {
+    /// The proof binds each record field to the published commitment, payload data hashes join only
+    /// when they rebuild it.
+    fn slot(&self, slot: Slot<'_>, body: OpenedRecipientBody) -> Result<SlotRead, AuditError> {
         let OpenedRecipientBody { record, payload } = body;
         let ring = match record.kind {
             RecordKind::Dummy => return self.verify_dummy(slot),
@@ -262,40 +269,51 @@ impl Transfer {
         if canonical(nullifier_pk).is_err() || canonical(blinding).is_err() {
             return Err(AuditError::DisclosureField);
         }
-        let payload = payload.unwrap_or_default();
-        let data_hash = payload
-            .data
-            .first_chunk::<32>()
-            .copied()
-            .unwrap_or_default();
-        let ring_data_hash = payload.ring_data_hash.unwrap_or_default();
-        if canonical(data_hash).is_err() || canonical(ring_data_hash).is_err() {
-            return Ok(Err(OutputPayloadErrorKind::Disclosure));
+        // An exit's data sits in its scheme 3 body, sealed to its owner alone.
+        let claimed = match payload {
+            PayloadRead::Absent => Some(([0; 32], [0; 32])),
+            PayloadRead::Opened(payload) => Some((
+                payload
+                    .data
+                    .first_chunk::<32>()
+                    .copied()
+                    .unwrap_or_default(),
+                payload.ring_data_hash.unwrap_or_default(),
+            )),
+            PayloadRead::Malformed => None,
         }
-        let utxo = AuditedUtxo {
+        .filter(|(data_hash, ring_data_hash)| {
+            canonical(*data_hash).is_ok() && canonical(*ring_data_hash).is_ok()
+        });
+        let mut utxo = AuditedUtxo {
             owner_key,
             nullifier_pk,
             asset: hash_bytes(&mint)?,
             mint: Some(Address::new_from_array(mint)),
             amount,
             blinding,
-            data_hash,
-            ring_data_hash,
+            data_hash: claimed.map(|(data_hash, _)| data_hash),
+            ring_data_hash: claimed.map(|(_, ring_data_hash)| ring_data_hash),
         };
-        let commitment = utxo.commitment(slot.tree_id(), ring)?;
-        Ok(slot.rebuilt(
-            commitment,
-            match ring {
+        let mut error = None;
+        if utxo.commitment(slot.tree_id(), ring)? != Some(slot.commitment()) {
+            utxo.data_hash = None;
+            utxo.ring_data_hash = None;
+            error = Some(OutputPayloadErrorKind::Payload);
+        }
+        Ok(SlotRead {
+            opening: Some(match ring {
                 Some(_) => OutputOpening::Ring {
                     utxo,
                     owner_tag: RingOwnerTag(slot.owner_tag()),
                 },
                 None => OutputOpening::Exit(utxo),
-            },
-        ))
+            }),
+            error,
+        })
     }
 
-    fn verify_dummy(&self, slot: Slot<'_>) -> Result<SlotOpening, AuditError> {
+    fn verify_dummy(&self, slot: Slot<'_>) -> Result<SlotRead, AuditError> {
         let commitment = ProofInputUtxo {
             domain: right_align(&DUMMY_DOMAIN.to_be_bytes()),
             tree_id: tree_id_field(slot.tree_id()),
@@ -303,7 +321,13 @@ impl Transfer {
             ..ProofInputUtxo::default()
         }
         .hash()?;
-        Ok(slot.rebuilt(commitment, OutputOpening::Dummy))
+        Ok(match commitment == slot.commitment() {
+            true => SlotRead {
+                opening: Some(OutputOpening::Dummy),
+                error: None,
+            },
+            false => SlotRead::refused(OutputPayloadErrorKind::Commitment),
+        })
     }
 
     /// SPP's TXOB blinding under the seed the transaction key derives.
@@ -347,32 +371,31 @@ fn entry_input(entry: &EntryRecord) -> Result<AuditedEntryInput, AuditError> {
 
 impl AuditedTransaction {
     /// A slot appears once, in published order.
-    fn place(&mut self, slot_index: u32, context: OutputContext, opened: SlotOpening) {
+    /// A slot whose record stands and whose payload failed sits in both lists.
+    fn place(&mut self, slot_index: u32, context: OutputContext, read: SlotRead) {
         self.outputs
             .retain(|output| output.slot_index != slot_index);
         self.payload_errors
             .retain(|error| error.slot_index != slot_index);
-        match opened {
-            Ok(opening) => {
-                let at = self
-                    .outputs
-                    .partition_point(|output| output.slot_index < slot_index);
-                self.outputs.insert(
-                    at,
-                    AuditedOutput {
-                        slot_index,
-                        context,
-                        opening,
-                    },
-                );
-            }
-            Err(kind) => {
-                let at = self
-                    .payload_errors
-                    .partition_point(|error| error.slot_index < slot_index);
-                self.payload_errors
-                    .insert(at, OutputPayloadError { slot_index, kind });
-            }
+        if let Some(opening) = read.opening {
+            let at = self
+                .outputs
+                .partition_point(|output| output.slot_index < slot_index);
+            self.outputs.insert(
+                at,
+                AuditedOutput {
+                    slot_index,
+                    context,
+                    opening,
+                },
+            );
+        }
+        if let Some(kind) = read.error {
+            let at = self
+                .payload_errors
+                .partition_point(|error| error.slot_index < slot_index);
+            self.payload_errors
+                .insert(at, OutputPayloadError { slot_index, kind });
         }
     }
 }

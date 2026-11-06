@@ -6,7 +6,7 @@ use spr_transaction::OutputContext;
 use super::*;
 use crate::{
     AuditedEntryInput, OutputPayloadError,
-    OutputPayloadErrorKind::{self, Commitment, Disclosure},
+    OutputPayloadErrorKind::{self, Commitment, Disclosure, Payload},
 };
 
 fn temp_dir(label: &str) -> PathBuf {
@@ -174,8 +174,8 @@ fn utxo(seed: u8, mint: Option<Address>) -> AuditedUtxo {
         mint,
         amount: u64::from(seed),
         blinding: [seed + 3; 32],
-        data_hash: [seed + 4; 32],
-        ring_data_hash: [seed + 5; 32],
+        data_hash: Some([seed + 4; 32]),
+        ring_data_hash: Some([seed + 5; 32]),
     }
 }
 
@@ -424,8 +424,8 @@ fn anonymous_audited() -> AuditedTransaction {
                 0,
                 OutputOpening::Ring {
                     utxo: AuditedUtxo {
-                        data_hash: [0; 32],
-                        ring_data_hash: [0; 32],
+                        data_hash: Some([0; 32]),
+                        ring_data_hash: Some([0; 32]),
                         ..utxo(0x10, Some(Address::new_from_array([4; 32])))
                     },
                     owner_tag: RingOwnerTag([0x31; 32]),
@@ -504,13 +504,13 @@ fn a_wallet_activity_page_keeps_its_wire_json() {
 fn payload_errors_keep_the_encoding_of_the_shared_vector() {
     // A new kind fails to compile here, `kinds` and the vector must then name it.
     let named = |kind: OutputPayloadErrorKind| match kind {
-        Disclosure | Commitment => kind,
+        Disclosure | Commitment | Payload => kind,
     };
-    let kinds = [Disclosure, Commitment].map(named);
+    let kinds = [Disclosure, Commitment, Payload].map(named);
     let slots = [(2, Commitment), (5, Disclosure)]
         .map(|(slot_index, kind)| DecryptedPayloadError { slot_index, kind });
     let written = serde_json::json!({
-        "description": "Payload errors of a DecryptedTransaction as the ring rpc serializes them. kinds names every OutputPayloadErrorKind. commitment_and_disclosure holds the errors of one transfer whose slot 2 record opens to another commitment and whose slot 5 record holds a value outside the field. Written by the sdk-libs/client rpc tests and decoded by the TypeScript RingRpc tests.",
+        "description": "Payload errors of a DecryptedTransaction as the ring rpc serializes them. kinds names every OutputPayloadErrorKind, payload keeps the record in outputs. commitment_and_disclosure holds the errors of one transfer whose slot 2 record opens to another commitment and whose slot 5 record holds a value outside the field. Written by the sdk-libs/client rpc tests and decoded by the TypeScript RingRpc tests.",
         "kinds": kinds,
         "commitment_and_disclosure": slots,
     });
@@ -648,8 +648,8 @@ fn audited_utxos_are_used_only_when_they_rebuild_their_hashes() {
         mint: Some(mint),
         amount: 40,
         blinding: small_field(6),
-        data_hash: [0; 32],
-        ring_data_hash: [0; 32],
+        data_hash: Some([0; 32]),
+        ring_data_hash: Some([0; 32]),
         tree_id: 3,
     };
     let second = KnownUtxo {
@@ -659,7 +659,7 @@ fn audited_utxos_are_used_only_when_they_rebuild_their_hashes() {
         amount: 12,
         ..keyed
     };
-    let hashes = [keyed, second].map(|utxo| utxo.commitment(Some(ring)).unwrap());
+    let hashes = [keyed, second].map(|utxo| utxo.commitment(Some(ring)).unwrap().unwrap());
     let hash = |index: usize| Hash(hashes[index]);
     let view = |utxo: KnownUtxo, utxo_hash: Hash| AuditedUtxoView {
         utxo_hash,

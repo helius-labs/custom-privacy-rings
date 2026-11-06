@@ -17,8 +17,8 @@ use spr_transaction::{
 use zolana_ring_transaction::{
     open_recipient_body, open_reply, open_sender_bundle, random_tag_preimage, seal_recipient_body,
     seal_reply, AnonymousOutput, AnonymousPlan, AnonymousSlot, OpenedBody, OpenedNote,
-    OpenedRecipientBody, OutputBlindings, PublishedSlot, ReplyMetadata, RingAssets, RingDelivery,
-    RingOutputRail, RingRailError as E,
+    OpenedRecipientBody, OutputBlindings, PayloadRead, PublishedSlot, ReplyMetadata, RingAssets,
+    RingDelivery, RingOutputRail, RingRailError as E,
 };
 
 const RING: Address = Address::new_from_array([42; 32]);
@@ -157,7 +157,10 @@ fn decrypt(
 }
 
 fn payload(body: &OpenedRecipientBody) -> RecipientPayload {
-    body.payload.clone().unwrap()
+    match &body.payload {
+        PayloadRead::Opened(payload) => payload.clone(),
+        other => panic!("an opened payload, got {other:?}"),
+    }
 }
 
 /// The sender bundle at index `m`, `m` read from the frame's published slots.
@@ -502,7 +505,7 @@ fn a_reader_opens_under_the_key_its_record_names() {
             nullifier_pk,
             ..record(&owner, USDC.asset, 9, blinding)
         },
-        payload: None,
+        payload: PayloadRead::Absent,
     };
     let hash_under = |nullifier_pk: &[u8; 32]| {
         Utxo {
@@ -610,7 +613,7 @@ fn a_body_with_a_mutated_data_hash_opens_to_none() {
         let opens = |payload: RecipientPayload| {
             reader(&recipient, &assets, &frame.proof, frame.position)
                 .open_body(&OpenedRecipientBody {
-                    payload: Some(payload),
+                    payload: PayloadRead::Opened(payload),
                     ..body.clone()
                 })
                 .unwrap()
@@ -663,7 +666,7 @@ fn a_rebuilt_body_of_an_unregistered_mint_names_the_mint() {
     }
     .open_body(&OpenedRecipientBody {
         record: record(&owner, mint, 9, [5; 32]),
-        payload: None,
+        payload: PayloadRead::Absent,
     })
     .unwrap();
     assert!(matches!(
@@ -1163,7 +1166,7 @@ fn a_body_with_data_under_a_zero_hash_opens_nothing() {
     };
     let body = |data: Vec<u8>| OpenedRecipientBody {
         record: record(&owner_address, Mint::SOL.asset, 5, [7; 32]),
-        payload: Some(RecipientPayload {
+        payload: PayloadRead::Opened(RecipientPayload {
             ring_data_hash: None,
             data,
         }),
