@@ -68,7 +68,10 @@ import { ringBlindingSeed, ringOutputBlinding } from "../../crypto/derivation/bl
 import { dummyUtxoHash, fieldUtxoHash } from "../../protocol/membership/utxo-hash.js";
 import { outputTreeId } from "../../protocol/membership/trees.js";
 
-/** Rust `AuditedUtxo`, an opening whose UTXO hash the audit rebuilt. */
+/**
+ * Rust `AuditedUtxo`, a proven record under its published commitment. The ring proof binds every
+ * record field to the commitment, the payload alone supplies the data hashes and no proof reads it.
+ */
 export interface AuditedUtxo {
   /** The raw Solana key whose owner identity the commitment binds. */
   readonly ownerKey: Bytes32;
@@ -79,8 +82,9 @@ export interface AuditedUtxo {
   readonly mint?: Address;
   readonly amount: bigint;
   readonly blinding: Bytes32;
-  readonly dataHash: Bytes32;
-  readonly ringDataHash: Bytes32;
+  /** Absent with `ringDataHash` while no payload rebuilt the published commitment. */
+  readonly dataHash?: Bytes32;
+  readonly ringDataHash?: Bytes32;
 }
 
 /** The owner tag a ring output was published under, Rust `RingOwnerTag`. */
@@ -97,15 +101,18 @@ export type OutputOpening =
   | Readonly<{ kind: "exit"; utxo: AuditedUtxo }>
   | Readonly<{ kind: "dummy" }>;
 
-/** Rust `AuditedOutput`, one published slot whose rebuilt commitment is the published one. */
+/** Rust `AuditedOutput`, one published slot opened from its proven record. */
 export interface AuditedRingOutput {
   readonly slotIndex: number;
   readonly outputContext: OutputContext;
   readonly opening: OutputOpening;
 }
 
-/** Rust `OutputPayloadErrorKind`, why a published slot did not open. */
-export type OutputPayloadErrorKind = "disclosure" | "commitment";
+/**
+ * Rust `OutputPayloadErrorKind`. `disclosure` and `commitment` leave the slot unopened, `payload`
+ * keeps the record in `outputs` without its data hashes.
+ */
+export type OutputPayloadErrorKind = "disclosure" | "commitment" | "payload";
 
 export interface OutputPayloadError {
   readonly slotIndex: number;
@@ -158,7 +165,7 @@ export interface AuditedRingTransaction {
   readonly slot: bigint;
   /** Checked against the key the auditor envelope seals. */
   readonly txViewingPublicKey: X25519PublicKey;
-  /** Published order, a slot that did not open sits in `payloadErrors` instead. */
+  /** Published order, a slot whose record did not open sits in `payloadErrors` instead. */
   readonly outputs: readonly AuditedRingOutput[];
   readonly payloadErrors: readonly OutputPayloadError[];
   /** One per published slot, a payload error names its slot here. */
@@ -403,7 +410,8 @@ export function openRingTransfer(input: TransactionAuditInput): OpenedRingAudit 
             opening: opened.opening,
           }),
         );
-      else payloadErrors.push(Object.freeze({ slotIndex, kind: opened.kind }));
+      if (!opened.ok || opened.payload === false)
+        payloadErrors.push(Object.freeze({ slotIndex, kind: opened.ok ? "payload" : opened.kind }));
     });
     // The auditor's own index places each nullifier, the stream names none.
     const inputs = transaction.nullifiers.map((nullifier) =>
@@ -461,8 +469,9 @@ export function openedUtxo(utxo: AuditedUtxo, treeId: number): KnownUtxo {
   });
 }
 
-/** Rust `KnownUtxo::commitment`, `ringId` zero for a default-ring UTXO. */
-export function knownUtxoHash(utxo: KnownUtxo, ringId: Bytes32): Bytes32 {
+/** Rust `KnownUtxo::commitment`, `ringId` zero for a default-ring UTXO, `undefined` without the data hashes. */
+export function knownUtxoHash(utxo: KnownUtxo, ringId: Bytes32): Bytes32 | undefined {
+  if (utxo.dataHash === undefined || utxo.ringDataHash === undefined) return undefined;
   return fieldUtxoHash({
     owner: knownUtxoOwnerHash(utxo),
     assetField: utxo.asset,
@@ -644,7 +653,8 @@ interface SlotReader {
 }
 
 type SlotOpening =
-  | Readonly<{ ok: true; opening: OutputOpening }>
+  /** `payload` is false while the payload rebuilt no commitment, the record still stands. */
+  | Readonly<{ ok: true; opening: OutputOpening; payload: boolean }>
   | Readonly<{ ok: false; kind: OutputPayloadErrorKind }>;
 
 /** `V_i` must be a contributory key, the proof refuses any other. */
@@ -676,8 +686,10 @@ function openedSlot(
 }
 
 /**
- * The record rebuilds the published commitment, the payload supplies the data hashes. A malformed
- * payload leaves a data-bearing slot unrebuilt, no other source holds its data hashes.
+ * The ring proof binds every record field to the slot's published commitment, so a verified frame's
+ * record stands whatever its payload holds. The payload's data hashes join the opening only when they
+ * rebuild that commitment, else the slot reports a payload error beside its record. Spend tracing
+ * reads the published commitment, the record's blinding and the owner's secret, never the data hashes.
  */
 function openSlot(
   reader: SlotReader,
@@ -689,33 +701,41 @@ function openSlot(
   const opened = reader.open(slot, output.payload);
   if (opened === undefined) return DISCLOSURE;
   const { record, payload } = opened;
+  // 1. A dummy's commitment is fixed by its derived blinding alone.
   if (record.kind === RecordKind.dummy)
     return equalBytes(dummyUtxoHash(treeId, reader.dummyBlinding(slot)), context.hash)
-      ? Object.freeze({ ok: true, opening: DUMMY })
+      ? Object.freeze({ ok: true, opening: DUMMY, payload: true })
       : COMMITMENT;
-  const data = payload?.data ?? EMPTY;
-  // Rust `first_chunk`, data shorter than a hash reads a zero hash and fails the commitment.
-  const dataHash = data.length < 32 ? ZERO_32 : (data.slice(0, 32) as Bytes32);
-  const ringDataHash = payload?.ringDataHash ?? ZERO_32;
-  // The proof holds both record fields canonical.
+  // 2. The proof holds both record fields canonical.
   if (!isCanonicalField(record.nullifierPk) || !isCanonicalField(record.blinding))
     throw auditRefusal("record field");
-  if (!isCanonicalField(dataHash) || !isCanonicalField(ringDataHash)) return DISCLOSURE;
-  const utxo: AuditedUtxo = Object.freeze({
+  const recorded: AuditedUtxo = Object.freeze({
     ownerKey: record.ownerKey,
     nullifierPk: record.nullifierPk,
     asset: hashBytes(addressBytes(record.mint, "mint")) as Bytes32,
     mint: record.mint,
     amount: record.amount,
     blinding: record.blinding,
-    dataHash,
-    ringDataHash,
   });
+  // 3. The payload is unproven, its hashes join only when they rebuild the commitment. An exit's data
+  // sits in its scheme 3 body, sealed to its owner alone.
+  const data = payload?.data ?? EMPTY;
+  // Rust `first_chunk`, data shorter than a hash reads a zero hash.
+  const dataHash = data.length < 32 ? ZERO_32 : (data.slice(0, 32) as Bytes32);
+  const ringDataHash = payload?.ringDataHash ?? ZERO_32;
   const ringNote = record.kind === RecordKind.ring;
-  const rebuilt = knownUtxoHash(openedUtxo(utxo, treeId), ringNote ? reader.ringId : ZERO_32);
-  if (!equalBytes(rebuilt, context.hash)) return COMMITMENT;
+  const withData = Object.freeze({ ...recorded, dataHash, ringDataHash });
+  const rebuilds =
+    isCanonicalField(dataHash) &&
+    isCanonicalField(ringDataHash) &&
+    equalBytes(
+      knownUtxoHash(openedUtxo(withData, treeId), ringNote ? reader.ringId : ZERO_32) ?? EMPTY,
+      context.hash,
+    );
+  const utxo = rebuilds ? withData : recorded;
   return Object.freeze({
     ok: true,
+    payload: rebuilds,
     opening: ringNote
       ? Object.freeze({
           kind: "ring",
