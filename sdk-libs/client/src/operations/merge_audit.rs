@@ -328,11 +328,11 @@ impl MergeOutput {
             mint: Some(Address::new_from_array(record.mint)),
             amount: record.amount,
             blinding: seed.output_blinding(&self.first_nullifier)?,
-            data_hash: [0; 32],
-            ring_data_hash: self.ring_data_hash,
+            data_hash: Some([0; 32]),
+            ring_data_hash: Some(self.ring_data_hash),
             tree_id: self.tree_id,
         };
-        if rebuilt.commitment(Some(ring))? != self.commitment {
+        if rebuilt.commitment(Some(ring))? != Some(self.commitment) {
             return Err(AuditError::MergeDisclosureMismatch);
         }
         let mut real_nullifiers = Vec::with_capacity(nullifiers.len());
@@ -426,12 +426,13 @@ mod tests {
             mint: None,
             amount: 12,
             blinding,
-            data_hash: [0; 32],
-            ring_data_hash: RING_DATA,
+            data_hash: Some([0; 32]),
+            ring_data_hash: Some(RING_DATA),
             tree_id: 1,
         }
         .commitment(Some(RING))
-        .unwrap();
+        .unwrap()
+        .expect("data hashes");
         let record = MergeRecord {
             record: OutputRecord {
                 kind: RecordKind::Ring,

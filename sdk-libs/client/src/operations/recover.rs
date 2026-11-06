@@ -25,7 +25,7 @@ use crate::{
     merge_audit::RingMergeBody,
     origin::{ConfirmedEventKind, RingOrigin, TransactionOrigin},
     scan::{RingHistory, SkippedRow, RING_HISTORY_MAX_PAGES, RING_HISTORY_PAGE_SIZE},
-    types::OutputOpening,
+    types::{OutputOpening, OutputPayloadErrorKind},
     AuditError, MergeLedger,
 };
 
@@ -453,7 +453,12 @@ impl<'a> MemberRecovery<'a> {
             real_inputs: audited.real_inputs,
             nullifiers: audited.nullifiers.clone(),
         });
-        if let Some(error) = audited.payload_errors.first() {
+        // An unopened record could hide a source UTXO, a payload error keeps its record.
+        if let Some(error) = audited
+            .payload_errors
+            .iter()
+            .find(|error| error.kind != OutputPayloadErrorKind::Payload)
+        {
             return Err(AuditError::UnopenedOutput {
                 slot: error.slot_index,
                 kind: error.kind,
@@ -482,8 +487,9 @@ impl<'a> MemberRecovery<'a> {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let Some(mint) = mint else {
-                // Ownership and spentness remain known even without the asset preimage.
+            let data = opened.data_hash.zip(opened.ring_data_hash);
+            let Some((mint, (data_hash, ring_data_hash))) = mint.zip(data) else {
+                // Ownership and spentness remain known even without the asset or data preimage.
                 found.unresolved.push((
                     context.hash,
                     self.source
@@ -492,8 +498,8 @@ impl<'a> MemberRecovery<'a> {
                 continue;
             };
             let hashes = UtxoDataHashes {
-                data_hash: Some(opened.data_hash).filter(|hash| *hash != [0; 32]),
-                ring_data_hash: Some(opened.ring_data_hash).filter(|hash| *hash != [0; 32]),
+                data_hash: Some(data_hash).filter(|hash| *hash != [0; 32]),
+                ring_data_hash: Some(ring_data_hash).filter(|hash| *hash != [0; 32]),
             };
             let utxo = Utxo {
                 ring_program_id: Some(self.recovery.ring_program_id),
@@ -574,7 +580,7 @@ impl<'h> MergeRecovery<'_, 'h> {
                                     output,
                                     UtxoDataHashes {
                                         data_hash: None,
-                                        ring_data_hash: Some(opening.ring_data_hash),
+                                        ring_data_hash: opening.ring_data_hash,
                                     },
                                     transaction,
                                     0,

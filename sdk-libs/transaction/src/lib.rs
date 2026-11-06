@@ -47,7 +47,7 @@ pub use published::PublishedSlot;
 pub use recipient_delivery::{
     is_contributory, open_recipient_body, open_reply, open_sender_bundle, recipient_payload,
     seal_recipient_body, seal_reply, seal_sender_bundle, AnonymousOutput, OpenedBody, OpenedNote,
-    OpenedRecipientBody, OutputBlindings, ReplyClaim, ReplyMetadata,
+    OpenedRecipientBody, OutputBlindings, PayloadRead, ReplyClaim, ReplyMetadata,
 };
 
 #[derive(Clone, Debug)]

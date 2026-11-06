@@ -7,7 +7,7 @@ use serde::Deserialize;
 use spr_keypair::{ViewingKey, X25519Pubkey};
 use zolana_ring_transaction::{
     open_recipient_body, open_sender_bundle, seal_recipient_body, seal_sender_bundle,
-    AnonymousPlan, AnonymousSlot, RingDelivery, RingOutputRail,
+    AnonymousPlan, AnonymousSlot, PayloadRead, RingDelivery, RingOutputRail,
 };
 
 #[derive(Deserialize)]
@@ -58,7 +58,10 @@ fn sealers_and_readers_agree_with_the_proven_ciphertexts() {
     assert_eq!(hex::encode(sealed), vector.body);
     let ciphertext: [u8; OUTPUT_RECORD_LEN] = array(&vector.body);
     let opened = open_recipient_body(&ciphertext, &secret).unwrap();
-    assert_eq!((opened.record, opened.payload), (record, None));
+    assert_eq!(
+        (opened.record, opened.payload),
+        (record, PayloadRead::Absent)
+    );
 
     let bundle = SenderBundle {
         output_seed: array(&vector.output_seed),

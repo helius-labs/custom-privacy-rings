@@ -758,7 +758,11 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
             .sync
             .recipients
             .iter()
-            .filter(|address| address.viewing_pubkey == *recipient)
+            // The record names its nullifier key, a held address verifies only its own.
+            .filter(|address| {
+                address.viewing_pubkey == *recipient
+                    && address.nullifier_pubkey == plain.record.nullifier_pk
+            })
             .find_map(|address| {
                 match self
                     .output_at(body, address, position)

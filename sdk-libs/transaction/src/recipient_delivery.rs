@@ -98,8 +98,16 @@ impl ReplyMetadata {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenedRecipientBody {
     pub record: OutputRecord,
-    /// Absent on a frame without data.
-    pub payload: Option<RecipientPayload>,
+    pub payload: PayloadRead,
+}
+
+/// The unproven bytes past the record, a malformed one leaves the proven record whole.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PayloadRead {
+    /// A frame without data.
+    Absent,
+    Opened(RecipientPayload),
+    Malformed,
 }
 
 /// The record then the payload padded to the frame's width, one slot secret keys one body.
@@ -128,8 +136,9 @@ pub fn open_recipient_body(
     Ok(OpenedRecipientBody {
         record: OutputRecord::decode(record)?,
         payload: match payload.is_empty() {
-            true => None,
-            false => Some(RecipientPayload::decode(payload)?),
+            true => PayloadRead::Absent,
+            false => RecipientPayload::decode(payload)
+                .map_or(PayloadRead::Malformed, PayloadRead::Opened),
         },
     })
 }
@@ -240,7 +249,11 @@ impl AnonymousOutput<'_> {
         {
             return Ok(None);
         }
-        let payload = body.payload.clone().unwrap_or_default();
+        let payload = match &body.payload {
+            PayloadRead::Absent => RecipientPayload::default(),
+            PayloadRead::Opened(payload) => payload.clone(),
+            PayloadRead::Malformed => return Ok(None),
+        };
         let mint = Address::new_from_array(record.mint);
         let asset = self.assets.by_mint(&mint);
         let (data_hash, app_data) = match payload.data.split_first_chunk::<32>() {

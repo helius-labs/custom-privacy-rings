@@ -378,12 +378,13 @@ impl Transfer {
         .unwrap()
     }
 
-    /// Slot `index`'s record sealed to its recipient key, with the payload under a data frame.
+    /// Slot `index`'s record sealed to its recipient key, an exit's without its payload.
     pub fn sealed_record(&self, disclosure: &Disclosure, index: usize) -> Vec<u8> {
         let payload = disclosure
             .payloads
             .as_ref()
             .zip(disclosure.payload_width())
+            .filter(|_| disclosure.records[index].kind != RecordKind::Exit)
             .map(|(payloads, width)| (&payloads[index], width));
         seal_recipient_body(
             &disclosure.records[index],
@@ -665,8 +666,8 @@ pub fn audited_opening(output: &Output, slot: &Slot) -> OutputOpening {
         mint: Some(utxo.asset_address),
         amount: utxo.amount,
         blinding: slot.blinding,
-        data_hash: utxo.data_hash,
-        ring_data_hash: slot.ring_data_hash,
+        data_hash: Some(utxo.data_hash),
+        ring_data_hash: Some(slot.ring_data_hash),
     };
     match output {
         Output::Ring {
@@ -693,8 +694,8 @@ pub fn known_utxo(utxo: &UtxoFields, placement: Placement) -> KnownUtxo {
         mint: Some(utxo.asset_address),
         amount: utxo.amount,
         blinding: placement.blinding,
-        data_hash: utxo.data_hash,
-        ring_data_hash: utxo.ring_data_hash,
+        data_hash: Some(utxo.data_hash),
+        ring_data_hash: Some(utxo.ring_data_hash),
         tree_id: placement.tree_id,
     }
 }

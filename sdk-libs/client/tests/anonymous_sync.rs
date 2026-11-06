@@ -1080,7 +1080,7 @@ async fn a_relayed_proof_under_another_transaction_key_is_not_missed_by_the_fast
     assert_eq!(scan.sent[0].tx_signature, own.tx_signature);
 }
 
-/// A payment to itself and the change are two SPL change outputs, each rebuilt from its own cell.
+/// A payment to itself and the change are two SPL change outputs, each opened from its own record.
 #[tokio::test]
 async fn a_sender_recovers_two_spl_change_outputs_after_a_wipe() {
     let indexer = Indexer::default();
@@ -1092,7 +1092,7 @@ async fn a_sender_recovers_two_spl_change_outputs_after_a_wipe() {
     let paid = alice.pay(&indexer, &[pay(&alice.address(), 25)]);
     assert!(paid.output_slots[..2]
         .iter()
-        .all(|slot| slot.payload.is_empty()));
+        .all(|slot| custom_ring_interface::ring_body_output(&slot.payload).is_some()));
     let (keys, history) = wiped(1, &[]);
     let restored = restore(&indexer, &keys, &history).await;
     let mut amounts: Vec<(Mint, u64)> = restored

@@ -799,8 +799,8 @@ async fn missing_or_invalid_mandatory_disclosure_never_returns_a_partial_balance
         if missing {
             tx.messages.clear();
         } else {
-            // A flipped record byte rebuilds no commitment, the body follows an 8 byte header.
-            tx.output_slots[0].payload[8 + 20] ^= 1;
+            // A record kind outside the enum opens no record, the body follows an 8 byte header.
+            tx.output_slots[0].payload[8] ^= 0x80;
         }
         let history = History {
             transactions: vec![tx],

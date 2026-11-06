@@ -56,8 +56,8 @@ fn note(owner_key: [u8; 32], commitment: u8, amount: u64) -> CreatedUtxo {
             mint: None,
             amount,
             blinding: [5; 32],
-            data_hash: [0; 32],
-            ring_data_hash: [0; 32],
+            data_hash: Some([0; 32]),
+            ring_data_hash: Some([0; 32]),
             tree_id: 1,
         },
         ring_note: true,
@@ -120,8 +120,8 @@ fn utxo(owner_key: [u8; 32], amount: u64) -> AuditedUtxo {
         mint: None,
         amount,
         blinding: [6; 32],
-        data_hash: [0; 32],
-        ring_data_hash: [0; 32],
+        data_hash: Some([0; 32]),
+        ring_data_hash: Some([0; 32]),
     }
 }
 

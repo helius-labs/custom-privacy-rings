@@ -1216,8 +1216,8 @@ impl StoredUtxo {
             mint: utxo.mint.map(Into::into),
             amount: utxo.amount,
             blinding: Hash(utxo.blinding),
-            data_hash: Hash(utxo.data_hash),
-            ring_data_hash: Hash(utxo.ring_data_hash),
+            data_hash: utxo.data_hash.map(Hash),
+            ring_data_hash: utxo.ring_data_hash.map(Hash),
             tree_id: utxo.tree_id,
             leaf_index: self.leaf_index,
             slot: self.created_in.slot,
@@ -1258,7 +1258,8 @@ impl<'a> SpendableScan<'a> {
                 != (UtxoOwner::Keyed {
                     nullifier_pk: self.nullifier_pubkey,
                 })
-            || utxo.data_hash != [0; 32]
+            || utxo.data_hash != Some([0; 32])
+            || utxo.ring_data_hash.is_none()
             || self.query.held.contains(&nullifier)
         {
             return None;
@@ -1277,7 +1278,7 @@ impl<'a> SpendableScan<'a> {
             nullifier,
             tx_viewing_key: None,
             data_hash: None,
-            ring_data_hash: (utxo.ring_data_hash != [0; 32]).then_some(utxo.ring_data_hash),
+            ring_data_hash: utxo.ring_data_hash.filter(|hash| *hash != [0; 32]),
             tree_id: utxo.tree_id,
             leaf_index: stored.leaf_index,
             latest_tree_id: None,
