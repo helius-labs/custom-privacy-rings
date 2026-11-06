@@ -173,7 +173,7 @@ export async function prepareRingMergeRelay(params: RingMergeRelayParams): Promi
     await initializePoseidon();
     const sender = params.wallet.identity;
     const { feePayer } = params.quote;
-    // The merge circuit keeps a hidden owner off the payer.
+    // The merge circuit admits a hidden owner as payer, the wallet keeps one off it.
     checkHiddenParties(checkAnonymousSigner({ signer: params.signer, sender }), [feePayer]);
     const asset = params.asset ?? SOL_MINT;
     const notes = selectMergeNotes({

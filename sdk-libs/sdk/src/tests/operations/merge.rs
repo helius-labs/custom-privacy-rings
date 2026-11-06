@@ -82,7 +82,7 @@ async fn an_anonymous_merge_its_owner_would_sign_in_public_is_refused_before_pro
         .is_ok());
 }
 
-/// The merge circuit keeps the owner off the payer and co-signer on every ring.
+/// The merge circuit admits its owner as payer, only the wallet refuses one.
 #[tokio::test]
 async fn a_confidential_merge_its_owner_pays_is_refused_before_proving() {
     let owner = keypair(1);

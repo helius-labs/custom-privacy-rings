@@ -176,7 +176,7 @@ pub enum TransferFamily<'a> {
     Confidential { sender: ConfidentialSender<'a> },
     /// The anonymous rail, the head's layout picks the entry disclosure.
     Anonymous {
-        /// `solana_owner_identity` of the payer, each co-signer, each funder and the withdrawal destination, zero when absent.
+        /// `solana_owner_identity` of each co-signer in account order, zero past the last.
         party_identities: &'a [[u8; 32]; ANONYMOUS_PARTIES],
         /// No hidden sender exists, every live owner is a published signer.
         public_owners: bool,
