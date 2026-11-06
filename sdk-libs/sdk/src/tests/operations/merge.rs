@@ -151,7 +151,7 @@ async fn a_merge_takes_every_input_one_transaction_carries() {
 }
 
 /// Inputs a keyed merge carries in one v1 transaction, measured here.
-const WIDEST_MERGE: usize = 45;
+const WIDEST_MERGE: usize = 44;
 
 /// The relay's keyed build refuses the zero secret, every derivation under it is public.
 #[test]
