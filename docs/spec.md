@@ -213,7 +213,7 @@ Ring RPC keeps one key file per role. The auditor key opens ring activity. The s
 | 24 | **Policy authority** | Authority | Sets the ring's rules, lists, mint settings and ring-wide grants. |
 | 25 | **Storage authority** | Authority | Signs the updates of one record tree. Ring RPC holds it for the ring's records. |
 | 26 | **Upgrade authority** | Authority | Deploys and upgrades the ring program and signs `Initialize`. |
-| 27 | **Auditor stream** | Ciphertext | One AES-256-CTR stream per transfer, sealed to the auditor key and proven. It carries the transaction viewing secret, the input map and the entry openings on an entry key. It also carries one record per published slot and, under `has_data`, one data tail per slot. |
+| 27 | **Auditor stream** | Ciphertext | One AES-256-CTR stream per transfer, sealed to the auditor key and proven. It carries the transaction viewing secret, the input map and the entry records on an entry key. It also carries one record per published slot and, under `has_data`, one data tail per slot. |
 | 28 | **Recipient body** | Ciphertext | A ring output's blinding, amount and mint, encrypted to its recipient's viewing key. No proof constrains it. |
 | 29 | **Change** | Output | An anonymous output to the sender, published with no recipient body. The sender bundle rebuilds it. |
 | 30 | **Sender bundle** | Ciphertext | One per anonymous transfer, encrypted to the sender's viewing key. It holds the change cells, the output seed and each recipient's viewing key. No proof constrains it. |
@@ -333,7 +333,7 @@ The table names construction paths, subject to policy, key capacity and frame fi
 | Confidential in-proof owner, ring inputs, optional public co-owners | Yes | Yes | Yes | SPP verifies the owner's proof signature and each public co-owner's transaction signature. |
 | Confidential in-proof owner with a default-ring input | Refused | Refused | Refused | The ring entry proof permits the input, but the SDK paths refuse it. |
 | Anonymous hidden owner, ring inputs, optional public co-owners | Yes | Yes | Yes | Input zero belongs to the hidden owner. Its key is nonzero. Public co-owners sign. |
-| Anonymous entry, one owner, default-ring inputs only, no input data | Yes | Yes | Yes | SPP publishes the default-ring owner's identity. An entry key opens those inputs to the auditor. |
+| Anonymous entry, one owner, default-ring inputs only, no input data | Yes | Yes | Yes | SPP publishes the default-ring owner's identity. An entry key names those inputs to the auditor in entry records. |
 | Anonymous entry with public co-owners or input data | Yes | Yes | Yes | The hidden owner cannot mix its own ring and default-ring notes. Public co-owners sign. |
 | Anonymous owner mixing its own ring and default-ring inputs | Refused | Refused | Refused | SPP refuses the mixture. Use the public-owner path. |
 | Anonymous public owners, ring or default-ring inputs | Yes | Yes | No public-owner path | Every spending owner signs. Default-ring inputs select an entry key. Recipients remain hidden. |
