@@ -71,7 +71,6 @@ pinned_codes! {
     UnexpectedApproval = 8241,
     InvalidSettlementAccounts = 8242,
     TooManyPublicLegs = 8243,
-    AnonymousExitDestinationsDiffer = 8246,
     AnonymousExitTokenAccountShared = 8247,
     AnonymousExitAccountHasData = 8248,
     AnonymousExitTokenAccountOnCurve = 8249,

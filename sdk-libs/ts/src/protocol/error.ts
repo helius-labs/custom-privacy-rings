@@ -276,7 +276,6 @@ export const RingProgramError = Object.freeze({
   unexpectedApproval: 8241,
   invalidSettlementAccounts: 8242,
   tooManyPublicLegs: 8243,
-  anonymousExitDestinationsDiffer: 8246,
   anonymousExitTokenAccountShared: 8247,
   anonymousExitAccountHasData: 8248,
   anonymousExitTokenAccountOnCurve: 8249,

@@ -73,8 +73,6 @@ ring_errors! {
     UnexpectedApproval = 8241 => "a delegate frame carries no approval bit",
     InvalidSettlementAccounts = 8242 => "settlement accounts do not match the public legs",
     TooManyPublicLegs = 8243 => "too many public legs",
-    AnonymousExitDestinationsDiffer = 8246 =>
-        "all withdrawals of an anonymous spend must name the same destination key",
     AnonymousExitTokenAccountShared = 8247 =>
         "an anonymous SPL withdrawal's token account must have no delegate and no close authority",
     AnonymousExitAccountHasData = 8248 =>
