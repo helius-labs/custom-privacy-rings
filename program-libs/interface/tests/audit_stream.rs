@@ -3,9 +3,9 @@
 use custom_ring_interface::{
     ciphertext_digest, key_catalog::TRANSFER_SHAPES, AuditEnvelope, AuditEvidence, AuditKey,
     AuditRecord, AuditStreamLayout, AuditorMessage, BundleLayout, ChangeCell, CustomRingError,
-    DataTail, EntryRecord, OpeningRecord, RecipientBody, RecordKind, SenderBundle, AUDIT_RECORD_LEN,
-    DATA_TAIL_LEN, ENTRY_RECORD_LEN, OPENING_RECORD_LEN, RECIPIENT_BODY_LEN, RECORD_STRIDE,
-    STREAM_BLOCK_LEN,
+    DataTail, EntryRecord, OpeningRecord, RecipientBody, RecordKind, SenderBundle,
+    AUDIT_RECORD_LEN, DATA_TAIL_LEN, ENTRY_RECORD_LEN, OPENING_RECORD_LEN, RECIPIENT_BODY_LEN,
+    RECORD_STRIDE, STREAM_BLOCK_LEN,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
