@@ -74,7 +74,7 @@ import {
   ringRail,
   type FrameExtensions,
 } from "../../protocol/transaction/transact.js";
-import { RingError } from "../../protocol/error.js";
+import { RingError, RingProgramError } from "../../protocol/error.js";
 import { chargedOutflowsOf, relayListSalts, type RingListSalt } from "../../proof/policy-proof.js";
 import { transferApprovalOf } from "../../proof/transfer-proof.js";
 import { isDefaultRingNote } from "../../proof/audit-proof.js";
@@ -881,7 +881,10 @@ export class AnonymousTransfer {
           ...(exitTokenOwner === undefined ? {} : { tokenOwner: exitTokenOwner }),
           // A hidden co-signer approves its own outflow, no exposure waiver admits it.
           partyIdentities: (coSigners: readonly Address[]) => {
-            checkHiddenParties(owner, coSigners);
+            if (coSigners.some((coSigner) => equalBytes(addressBytes(coSigner), owner)))
+              throw new RingError("RING_CO_SIGNER_INVALID", {
+                details: { reason: "CoSignerIsOwner", code: RingProgramError.coSignerIsOwner },
+              });
             return anonymousPartyIdentities(coSigners);
           },
         },

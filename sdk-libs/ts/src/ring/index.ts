@@ -562,6 +562,7 @@ export {
   readerKeyEquals,
   readerKeyFromBytes,
   readerKeyMember,
+  readerKeyRecordKey,
   readerKeyToString,
 } from "../operations/management/reader-access.js";
 export type { ReaderKey } from "../operations/management/reader-access.js";

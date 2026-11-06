@@ -485,8 +485,8 @@ function transferJson(request: TransferProofRequest): Json {
     outputCount: integer(request.outputCount, "outputCount", 1, request.outputs.length),
     outputs: request.outputs.map((output, i) => outputJson(output, `outputs[${i}]`)),
     inputCount: integer(request.inputCount, "inputCount", 1, slots),
-    addressChain: field(request.addressChain, "addressChain"),
     inputs: request.inputs.map((input, i) => openingJson(input, `inputs[${i}]`)),
+    addressChain: field(request.addressChain, "addressChain"),
     ...(flag(request.layout.entry)
       ? {
           entries: sized(request.entries, slots, "entries").map((entry, i) =>

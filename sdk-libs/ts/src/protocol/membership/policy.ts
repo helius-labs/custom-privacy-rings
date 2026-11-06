@@ -696,6 +696,11 @@ export function publicMember(owner: Member): Member {
   return checkedMember(publicListKey(checkedMember(owner)));
 }
 
+/** Mirrors Rust `owner_record_key`, the one record every writer and reader of an owner's lists names. */
+export function ownerRecordKey(owner: Uint8Array): Member {
+  return publicMember(memberOfTag(owner));
+}
+
 /** Mirrors Rust `Member::asset`, the mint as the UTXO asset field. */
 export function memberOfAsset(mint: Address): Member {
   return checkedMember(hashBytes(decodeAddress(mint)) as Bytes32);

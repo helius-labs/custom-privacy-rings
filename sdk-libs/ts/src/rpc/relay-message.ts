@@ -983,6 +983,16 @@ function openStream(
   });
 }
 
+/** @internal Every slot's record of `frame` under the transaction key that sealed it. */
+export function frameOutputRecords(
+  txViewingKey: Bytes32,
+  auditor: X25519PublicKey,
+  frame: RingTransactData,
+): readonly OutputRecord[] {
+  const { recipientKeys } = openStream(txViewingKey, auditor, frame);
+  return frameRecords(txViewingKey, frame, recipientKeys);
+}
+
 /** Each slot's record under `CRDS_i`, the proof binds it to `V_i` and the slot's commitment. */
 function frameRecords(
   txViewingKey: Bytes32,

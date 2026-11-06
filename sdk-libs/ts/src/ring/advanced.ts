@@ -232,6 +232,7 @@ export {
   memberOfAsset,
   memberOfIdentity,
   memberOfTag,
+  ownerRecordKey,
   publicMember,
   pinnedPolicy,
   policySourceOwners,
