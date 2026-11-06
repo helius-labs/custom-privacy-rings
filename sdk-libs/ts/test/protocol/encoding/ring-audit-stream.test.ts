@@ -39,6 +39,7 @@ import {
   envelopeRegion,
   firstRecipientKeyCounter,
   recipientKeyRegion,
+  RECIPIENT_KEY_LEN,
   type AuditStreamLayout,
 } from "../../../src/protocol/codec/ring-disclosure-layout.js";
 import { ciphertextDigest, recordChain } from "../../../src/protocol/proof/statement.js";
@@ -53,11 +54,10 @@ interface RangeKey {
   readonly entry: boolean;
   readonly outputs: number;
   readonly envelope_blocks: number;
-  readonly first_recipient_key_counter: number;
+  readonly first_key_counter: number;
   readonly capacity_blocks: number;
   readonly envelope_len_by_input_count: readonly number[];
-  readonly message_len_by_input_count: readonly number[];
-  readonly recipient_key_start_counters: readonly number[];
+  readonly key_start_counters: readonly number[];
 }
 
 interface StreamCase {
@@ -70,7 +70,7 @@ interface StreamCase {
   readonly envelope_plaintext: string;
   readonly envelope_ciphertext: string;
   readonly recipient_keys: readonly string[];
-  readonly key_ciphertexts: readonly string[];
+  readonly recipient_keys_ciphertext: string;
   readonly records: readonly string[];
   readonly record_ciphertexts: readonly string[];
   readonly output_hashes: readonly string[];
@@ -101,15 +101,12 @@ describe("the stream regions", () => {
       });
       const layout = layoutAt(1);
       expect(envelopeBlocks(layout.key)).toBe(key.envelope_blocks);
-      expect(firstRecipientKeyCounter(layout.key)).toBe(key.first_recipient_key_counter);
+      expect(firstRecipientKeyCounter(layout.key)).toBe(key.first_key_counter);
       expect(capacityBlocks(layout)).toBe(key.capacity_blocks);
       key.envelope_len_by_input_count.forEach((length, index) =>
         expect(envelopeRegion(layoutAt(index + 1)).length).toBe(length),
       );
-      key.message_len_by_input_count.forEach((length, index) =>
-        expect(auditorMessageLen(layoutAt(index + 1), 0)).toBe(length),
-      );
-      key.recipient_key_start_counters.forEach((counter, slot) => {
+      key.key_start_counters.forEach((counter, slot) => {
         const region = recipientKeyRegion(layout, slot);
         expect(region.startCounter).toBe(counter);
         expect(region.length).toBe(32);
@@ -149,6 +146,14 @@ describe("the stream regions", () => {
   });
 });
 
+const keyCiphertexts = (testCase: StreamCase): string[] =>
+  testCase.recipient_keys.map((_, slot) =>
+    testCase.recipient_keys_ciphertext.slice(
+      slot * 2 * RECIPIENT_KEY_LEN,
+      (slot + 1) * 2 * RECIPIENT_KEY_LEN,
+    ),
+  );
+
 describe("the stream vector", () => {
   const auditor = (): X25519Keypair => X25519Keypair.fromBytes(hex(vector.auditor_sk) as Bytes32);
 
@@ -165,7 +170,7 @@ describe("the stream vector", () => {
     const message = () => ({
       ephemeralPublicKey: txKey().publicKey(),
       envelope: hex(testCase.envelope_ciphertext),
-      recipientKeys: testCase.key_ciphertexts.map(hex),
+      recipientKeys: keyCiphertexts(testCase).map(hex),
     });
 
     it(`${testCase.name} seals byte for byte as Rust and refuses another salt`, async () => {
@@ -182,7 +187,7 @@ describe("the stream vector", () => {
       });
       expect(bytesToHex(sealed.envelope)).toBe(testCase.envelope_ciphertext);
       expect(sealed.recipientKeys.map((bytes) => bytesToHex(bytes))).toEqual(
-        testCase.key_ciphertexts,
+        keyCiphertexts(testCase),
       );
       const other = Uint8Array.from(salt, (byte) => byte ^ 1) as Bytes16;
       expect(() =>
