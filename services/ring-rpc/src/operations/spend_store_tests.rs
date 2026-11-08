@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Mutex};
 use sea_orm::ConnectionTrait;
 use spr_hasher::primitives::solana_owner_identity;
 use spr_keypair::NullifierKey;
-use zolana_ring_client::{rpc::WalletNoteStatus, CreatedUtxo, KnownUtxo, UtxoOwner};
+use zolana_ring_client::{rpc::WalletNoteStatus, ClaimedData, CreatedUtxo, KnownUtxo, UtxoOwner};
 
 use super::{page_work::MAX_LATE_NOTES, *};
 use crate::{
@@ -229,6 +229,97 @@ fn a_late_key_recomputes_the_owners_notes_and_resolves_their_rows() {
     assert!(store.late_owners.read().expect("late").is_empty());
     through(&store, &keys, 10);
     assert!(status_of(&store, owner).notes.is_empty());
+}
+
+/// `note` as a record without its key publishes it, the payload's hashes claimed apart.
+fn unresolved(created: &CreatedUtxo, claimed: ClaimedData) -> CreatedUtxo {
+    CreatedUtxo {
+        utxo: KnownUtxo {
+            owner: UtxoOwner::Unresolved {
+                claimed: Some(claimed),
+            },
+            data_hash: None,
+            ring_data_hash: None,
+            ..created.utxo
+        },
+        ..*created
+    }
+}
+
+/// `note` under the commitment its opening rebuilds in `RING`.
+fn rebuilt(owner: Address, key: &NullifierKey) -> CreatedUtxo {
+    let created = note(owner, key, 0x10, 50);
+    CreatedUtxo {
+        commitment: created
+            .utxo
+            .commitment(Some(RING))
+            .expect("hash")
+            .expect("keyed"),
+        ..created
+    }
+}
+
+/// The owner registers after the payment, its note keys once under the commitment and spends.
+#[test]
+fn an_unresolved_note_keys_once_when_its_owner_enrolls_late() {
+    let store = AuditStore::new(RING, Backing::Memory);
+    let owner = wallet(1);
+    let keys = Keys::none();
+    let created = rebuilt(owner, &secret(7));
+    apply(&store, &keys, |work| {
+        work.open(frame(5), [unresolved(&created, ClaimedData::default())]);
+    });
+    through(&store, &keys, 10);
+    let read = status_of(&store, owner);
+    assert_eq!(statuses(&read), [WalletNoteStatus::Unknown]);
+    assert_eq!(read.notes[0].nullifier_pk, None);
+
+    keys.grant(owner, 7);
+    store.queue_late_owners([owner.to_bytes()]);
+    apply(&store, &keys, |work| work.late_keys());
+    through(&store, &keys, 11);
+    let read = status_of(&store, owner);
+    assert_eq!(statuses(&read), [WalletNoteStatus::Unspent]);
+    assert_eq!(read.notes[0].utxo_hash, Hash(created.commitment));
+    assert_eq!(
+        read.notes[0].nullifier_pk,
+        Some(Hash(secret(7).pubkey().expect("key")))
+    );
+    assert_eq!(read.notes[0].data_hash, Some(Hash([0; 32])));
+    assert_eq!(balance(&read), created.utxo.amount);
+
+    let nullifier = nullifier_of(&created, &secret(7));
+    apply(&store, &keys, |work| work.observe(real(nullifier, frame(12), 0)));
+    assert_eq!(
+        store.row_state(&nullifier),
+        Some(SpendState::Resolved {
+            note: created.commitment
+        })
+    );
+}
+
+/// The registered key stands without the payload's hashes, the only key a spend opens under.
+#[test]
+fn an_unresolved_note_whose_payload_does_not_rebuild_keeps_the_key_and_drops_the_hashes() {
+    let store = AuditStore::new(RING, Backing::Memory);
+    let owner = wallet(1);
+    let keys = Keys::with(owner, 7);
+    let created = rebuilt(owner, &secret(7));
+    let claimed = ClaimedData {
+        data_hash: [9; 32],
+        ring_data_hash: [0; 32],
+    };
+    apply(&store, &keys, |work| {
+        work.open(frame(5), [unresolved(&created, claimed)]);
+    });
+    through(&store, &keys, 10);
+    let read = status_of(&store, owner);
+    assert_eq!(read.notes.len(), 1);
+    assert_eq!(
+        read.notes[0].nullifier_pk,
+        Some(Hash(secret(7).pubkey().expect("key")))
+    );
+    assert_eq!(read.notes[0].data_hash, None);
 }
 
 #[test]

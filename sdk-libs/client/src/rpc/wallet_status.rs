@@ -70,7 +70,8 @@ pub struct WalletBalance {
 pub struct WalletNote {
     pub utxo_hash: Hash,
     pub status: WalletNoteStatus,
-    /// Absent on a deposit whose capsule discloses the owner hash alone.
+    /// Absent on a deposit whose capsule discloses the owner hash alone, and on a ring note whose
+    /// owner's registered key the auditor has not read yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullifier_pk: Option<Hash>,
     pub asset: Hash,

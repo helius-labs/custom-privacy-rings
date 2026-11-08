@@ -467,6 +467,13 @@ mod tests {
         async fn get_account(&self, _address: Address) -> Result<Option<Account>, ClientError> {
             Ok(self.account.clone())
         }
+
+        async fn get_multiple_accounts(
+            &self,
+            addresses: Vec<Address>,
+        ) -> Result<Vec<Option<Account>>, ClientError> {
+            Ok(vec![self.account.clone(); addresses.len()])
+        }
     }
 
     #[tokio::test]
@@ -518,6 +525,48 @@ mod tests {
         assert!(matches!(
             refusal(Some(other_owner)).await,
             ResolveError::AuthorizationOwner
+        ));
+    }
+
+    /// An unapplied authorization already names the key, a missing one leaves the owner unresolved.
+    #[tokio::test]
+    async fn registered_keys_read_an_authorization_and_refuse_a_foreign_one() {
+        let owner = wallet(3);
+        let owner_key = solana_owner(&owner).to_bytes();
+        let read = |account: Option<Account>| async move {
+            RegisteredKeys {
+                registry: REGISTRY,
+                owners: &[owner_key],
+            }
+            .read(&Served::new(&[], account))
+            .await
+        };
+        let mut held = authorization(REGISTRY, solana_owner(&owner), ViewingKey::new().pubkey());
+        let mut stored = *TrackingAuthorization::from_data(&held.data).unwrap();
+        stored.nullifier_pk = [8; 32];
+        stored.applied = 0;
+        held.data = bytemuck::bytes_of(&stored).to_vec();
+        assert_eq!(
+            read(Some(held)).await.unwrap(),
+            HashMap::from([(owner_key, [8; 32])])
+        );
+        assert!(read(None).await.unwrap().is_empty());
+        let viewing = ViewingKey::new().pubkey();
+        let other_registry = authorization(RING, solana_owner(&owner), viewing);
+        assert!(matches!(
+            read(Some(other_registry)).await,
+            Err(ResolveError::AuthorizationRegistry)
+        ));
+        let other_owner = authorization(REGISTRY, solana_owner(&wallet(4)), viewing);
+        assert!(matches!(
+            read(Some(other_owner)).await,
+            Err(ResolveError::AuthorizationOwner)
+        ));
+        let mut foreign = authorization(REGISTRY, solana_owner(&owner), viewing);
+        foreign.owner = Address::new_from_array([6; 32]);
+        assert!(matches!(
+            read(Some(foreign)).await,
+            Err(ResolveError::AuthorizationProgramOwner)
         ));
     }
 
