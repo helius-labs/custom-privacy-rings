@@ -8,8 +8,8 @@ use custom_ring_interface::{
     domain::{MERGE_OUTPUT_LABEL, MERGE_RECORD_LABEL},
     storage::Revision,
     CustomRingError, CustomRingMergeIxData, CustomRingMergeIxDataRef, CustomRingProof,
-    MergeEnvelope, MergePublicInput, MergeRecord, OutputRecord, PlainGroth16Proof, RecordKind,
-    SealedMergeRecord, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN,
+    MergeEnvelope, MergePublicInput, MergeRecord, OutputRecord, PlainGroth16Proof, RecordKey,
+    RecordKind, SealedMergeRecord, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN,
 };
 use serde::Deserialize;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
@@ -148,8 +148,8 @@ fn the_merge_record_is_a_transfer_record_and_its_seed() {
             amount: 12,
             owner_key: [0xa1; 32],
             mint: [0xa2; 32],
-            nullifier_pk: [0xa3; 32],
             blinding: [0xa5; 32],
+            key: RecordKey::Carried([0xa3; 32]),
         },
         seed: [0xa4; 32],
     };

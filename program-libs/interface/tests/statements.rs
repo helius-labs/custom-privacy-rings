@@ -6,7 +6,7 @@ use custom_ring_interface::{
     ApplyRecordsStatement, AuditHead, AuditKey, AuditLayout, AuditStreamLayout, ConfidentialSender,
     CustomRingError, PrivateWrites, RegisterKeyStatement, RingOutput, SignerSet, SlotBody,
     TransferFamily, TransferRoots, TransferStatement, ANONYMOUS_PARTIES, AUDIT_HEAD_ELEMENTS,
-    OUTPUT_RECORD_LEN,
+    EXIT_RECORD_LEN, RING_RECORD_LEN,
 };
 use custom_ring_interface::{PublicLeg, PublicSlotError, PublicSlots, SOL_ASSET_ADDRESS};
 use serde::{Deserialize, Serialize};
@@ -171,7 +171,7 @@ fn hexes(values: &[[u8; 32]]) -> Vec<String> {
 struct Values {
     fields: Vec<[u8; 32]>,
     keys: Vec<[u8; 32]>,
-    records: [[u8; OUTPUT_RECORD_LEN]; 8],
+    records: [[u8; EXIT_RECORD_LEN]; 8],
     envelope: Vec<u8>,
     recipient_keys: Vec<u8>,
     auditor_pubkey: [u8; 33],
@@ -184,7 +184,7 @@ impl Values {
         Self {
             fields: (0..80).map(field).collect(),
             keys: (0..16).map(|seed| [0x60 + seed; 32]).collect(),
-            records: core::array::from_fn(|slot| [0x90 + slot as u8; OUTPUT_RECORD_LEN]),
+            records: core::array::from_fn(|slot| [0x90 + slot as u8; EXIT_RECORD_LEN]),
             envelope: (0..1024u32).map(|byte| byte as u8 ^ 0x93).collect(),
             recipient_keys: (0..512u32).map(|byte| byte as u8 ^ 0x71).collect(),
             auditor_pubkey: tagged(0xa1),
@@ -206,16 +206,27 @@ impl Values {
         }
     }
 
+    /// Slot 2 an exit carrying its key, every other slot a recipient body.
     fn outputs(&self, count: usize) -> Vec<RingOutput<'_>> {
         (0..count)
-            .map(|slot| RingOutput {
-                hash: &self.fields[20 + slot],
-                owner_tag: custom_ring_interface::stream::slot_tag(self.keys[4 + slot % 4]),
-                body: SlotBody::Recipient(&self.records[slot]),
-                record: &self.records[slot],
+            .map(|slot| match slot {
+                Self::EXIT => RingOutput {
+                    hash: &self.fields[20 + slot],
+                    owner_tag: self.keys[4 + slot % 4],
+                    body: SlotBody::Exit(&[]),
+                    record: &self.records[slot],
+                },
+                _ => RingOutput {
+                    hash: &self.fields[20 + slot],
+                    owner_tag: custom_ring_interface::stream::slot_tag(self.keys[4 + slot % 4]),
+                    body: SlotBody::Recipient(&self.records[slot][..RING_RECORD_LEN]),
+                    record: &self.records[slot][..RING_RECORD_LEN],
+                },
             })
             .collect()
     }
+
+    const EXIT: usize = 2;
 }
 
 /// The stream of a statement fixture.
@@ -654,7 +665,15 @@ fn the_record_chain_hashes_each_published_slot() {
     let values = Values::new();
     let outputs = values.outputs(4);
     let records: Vec<[u8; 32]> = (0..4)
-        .map(|slot| hash_bytes(&values.records[slot]).unwrap())
+        .map(|slot| match slot {
+            Values::EXIT => hash_bytes(&values.records[slot]),
+            _ => hash_bytes(
+                values.records[slot]
+                    .first_chunk::<RING_RECORD_LEN>()
+                    .unwrap(),
+            ),
+        })
+        .map(Result::unwrap)
         .collect();
     assert_eq!(
         record_chain(&outputs, 4).unwrap(),
@@ -902,7 +921,7 @@ fn delivery_bytes_stay_outside_the_statement() {
     assert_eq!(moved.hash().unwrap(), statement.hash().unwrap());
     // A record does reach it.
     let mut record = outputs.clone();
-    record[1].record = &values.records[7];
+    record[1].record = &values.records[7][..RING_RECORD_LEN];
     let moved = TransferStatement {
         outputs: &record,
         ..statement

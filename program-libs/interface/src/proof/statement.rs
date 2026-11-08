@@ -23,13 +23,14 @@ use spr_interface::N_PUBLIC_SLOTS;
 
 use crate::{
     anonymous_exit::ANONYMOUS_PARTIES,
+    audit_stream::{EXIT_RECORD_LEN, RING_RECORD_LEN},
     cosign::ApprovalMask,
     disclosure::{pack_disclosure, AuditLayout},
     domain,
     error::CustomRingError,
     key_catalog::{ApplyMode, RingCircuit},
     tagged_x25519,
-    transact::RingOutput,
+    transact::{RingOutput, SlotBody},
     REGISTER_KEY_CIPHERTEXT_LEN, TAGGED_X25519_KEY_LEN,
 };
 
@@ -290,13 +291,25 @@ pub fn ciphertext_digest(ciphertext: &[u8]) -> Result<[u8; 32], HasherError> {
     ])
 }
 
-/// `HashChain4(hash_bytes(record_i))`, untagged since every record is one length.
+/// `HashChain4(hash_bytes(record_i))` over each published record, untagged since the proof derives each slot's length from its ring id.
 pub fn record_chain(outputs: &[RingOutput<'_>], capacity: usize) -> Result<[u8; 32], HasherError> {
     let mut hashes = Vec::with_capacity(outputs.len());
     for output in outputs {
-        hashes.push(hash_bytes(output.record)?);
+        hashes.push(published_record_hash(output)?);
     }
     zero_filled_chain(hashes.iter(), capacity)
+}
+
+fn published_record_hash(output: &RingOutput<'_>) -> Result<[u8; 32], HasherError> {
+    let refused = || HasherError::InvalidInputLength(output.body.record_len(), output.record.len());
+    match output.body {
+        SlotBody::Recipient(_) => {
+            hash_bytes(<&[u8; RING_RECORD_LEN]>::try_from(output.record).map_err(|_| refused())?)
+        }
+        SlotBody::Exit(_) => {
+            hash_bytes(<&[u8; EXIT_RECORD_LEN]>::try_from(output.record).map_err(|_| refused())?)
+        }
+    }
 }
 
 /// An application of `count` writes, mirror `prover/circuits/registry`.
