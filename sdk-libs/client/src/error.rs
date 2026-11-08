@@ -291,6 +291,8 @@ pub enum AnonymousError {
     CounterOverflow,
     #[error("the recipient's viewing key agrees on no shared secret")]
     RecipientKeyNotContributory,
+    #[error("the sender's auditor stream is unavailable")]
+    SenderAudit(#[source] Box<AuditError>),
 }
 
 #[cfg(test)]

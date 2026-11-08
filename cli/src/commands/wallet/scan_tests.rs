@@ -390,6 +390,7 @@ impl Member {
             store: &self.store,
             mode,
             ring: RING,
+            sender_audit: None,
         }
         .fetch(zolana)
         .unwrap()

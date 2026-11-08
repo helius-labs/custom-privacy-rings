@@ -546,7 +546,7 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHol
                                 body,
                                 secret,
                             };
-                            if self.recovery_body(work)? == PageProgress::Paused {
+                            if self.recovery_body(work).await? == PageProgress::Paused {
                                 return Ok(PageProgress::Paused);
                             }
                             offset.site = site + 1;
@@ -594,7 +594,10 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHol
         }
     }
 
-    fn recovery_body(&mut self, work: BodyWork<'_, '_>) -> Result<PageProgress, AnonymousError> {
+    async fn recovery_body(
+        &mut self,
+        work: BodyWork<'_, '_>,
+    ) -> Result<PageProgress, AnonymousError> {
         let BodyWork {
             entry,
             body,
@@ -610,7 +613,8 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHol
                     message,
                     secret,
                     own.get(&body.context.first_nullifier),
-                )?;
+                )
+                .await?;
                 return Ok(PageProgress::Done);
             }
             Site::Output(position) => position,

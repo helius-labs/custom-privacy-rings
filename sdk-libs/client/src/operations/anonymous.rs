@@ -5,11 +5,13 @@ mod recovery;
 pub use recovery::RecoveryStatus;
 pub(crate) use recovery::{RecoverySession, RecoveryUpdate};
 
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use custom_ring_interface::{
-    ring_body_output, ring_sender_bundle_output_body, stream::SlotSecret, BundleLayout,
+    ring_body_output, ring_sender_bundle_output_body, stream::SlotSecret, AuditStreamLayout,
+    BundleLayout, RingMode,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -32,13 +34,16 @@ use zolana_ring_transaction::{
 use crate::history::HistoryPosition;
 use crate::{
     anonymous_wallet::{AnonymousWallet, PendingNote, WalletRevision},
+    decrypt::SealedRecipientKeys,
+    error::RowDisposition,
+    origin::TransactionOrigin,
     confidential::is_ring_merge,
     delivered::{self, RingDeliveryContext},
     exactly_one, exactly_one_each,
     merge_audit::RingMergeBody,
     tags::IndexerReads,
     viewing_history::{ViewingHistory, ViewingKeyEntry},
-    AnonymousError,
+    AnonymousError, AuditError,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +91,56 @@ pub enum SentCheck {
     Verified { mint: Mint },
     /// No held address names the owner and viewing key, or the body rebuilds no hash.
     Unverified,
+}
+
+/// One own transaction's audit stream layout and its ring's auditor key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SenderAuditFrame {
+    pub layout: AuditStreamLayout,
+    pub auditor_pk: X25519Pubkey,
+}
+
+/// The sender bundle carries the output seed alone, a sender reads its payments' keys from the
+/// auditor stream its transaction key sealed.
+#[async_trait]
+pub trait SenderAuditFrames: Sync {
+    /// `None` for a transaction of a ring the source does not serve.
+    async fn frame(
+        &self,
+        transaction: &ShieldedTransaction,
+    ) -> Result<Option<SenderAuditFrame>, AuditError>;
+}
+
+/// One ring's frames, each layout parsed from the instruction the origin confirms.
+#[must_use]
+pub struct RingSenderAudit<'a, O> {
+    pub origin: &'a O,
+    pub ring: Address,
+    pub mode: RingMode,
+    pub auditor_pk: X25519Pubkey,
+}
+
+#[async_trait]
+impl<O: TransactionOrigin> SenderAuditFrames for RingSenderAudit<'_, O> {
+    async fn frame(
+        &self,
+        transaction: &ShieldedTransaction,
+    ) -> Result<Option<SenderAuditFrame>, AuditError> {
+        if transaction.ring_program_id != Some(self.ring) {
+            return Ok(None);
+        }
+        let event_index = transaction
+            .event_index
+            .ok_or(AuditError::MissingEventIndex)?;
+        let origin = self
+            .origin
+            .origin(transaction.tx_signature, event_index, self.ring)
+            .await?;
+        Ok(Some(SenderAuditFrame {
+            layout: origin.audit_frame(self.mode)?,
+            auditor_pk: self.auditor_pk,
+        }))
+    }
 }
 
 /// Bodies no held key rebuilt, an owner's note under a bad body opens only through an auditor read.
@@ -191,6 +246,7 @@ pub struct AnonymousSync<'a, K: ?Sized> {
     page_budget: usize,
     recipients: &'a [ShieldedAddress],
     sender_fast_path: bool,
+    sender_audit: Option<&'a dyn SenderAuditFrames>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -210,6 +266,7 @@ impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> AnonymousSync<'a
             page_budget: 32,
             recipients: &[],
             sender_fast_path: false,
+            sender_audit: None,
         }
     }
 
@@ -227,6 +284,12 @@ impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> AnonymousSync<'a
     /// Every stream and ring from its start, for a wallet that keeps no notes between syncs.
     pub fn with_full_rescan(mut self) -> Self {
         self.from = ScanFrom::Start;
+        self
+    }
+
+    /// Without it a scan records no sent payment, change still opens.
+    pub fn with_sender_audit(mut self, frames: &'a dyn SenderAuditFrames) -> Self {
+        self.sender_audit = Some(frames);
         self
     }
 
@@ -636,8 +699,9 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
         Ok(())
     }
 
-    /// Change publishes a zero tag, its body opens under the viewing key the bundle names.
-    fn open_bundle(
+    /// Change publishes a zero tag and opens by trial under the entry's key, payments by the keys the
+    /// auditor stream seals. The sender recovers its outputs through that stream, the bundle names none.
+    async fn open_bundle(
         &mut self,
         index: usize,
         body: &Body<'_>,
@@ -645,6 +709,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
         secret: &SlotSecret,
         own: Option<&ViewingKey>,
     ) -> Result<(), AnonymousError> {
+        // 1. Only a bundle that opens marks the transaction the entry's own.
         let Some(ciphertext) = ring_sender_bundle_output_body(&body.tx.messages[message].data)
         else {
             return Ok(());
@@ -652,16 +717,21 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
         let layout = BundleLayout {
             outputs: body.tx.output_slots.len(),
         };
-        let Ok(bundle) = open_sender_bundle(ciphertext, secret, layout) else {
+        if open_sender_bundle(ciphertext, secret, layout).is_err() {
             return Ok(());
-        };
+        }
+        // 2. Every ring body not yet found is a change candidate, `open_body` accepts a rebuilt
+        // commitment alone.
         let viewing_pubkey = self.history.entries()[index].viewing_pubkey();
-        let change: Vec<u32> = (0u32..)
-            .zip(&bundle.recipient_keys)
-            .filter(|(_, key)| **key == viewing_pubkey.u())
+        let candidates: Vec<u32> = (0u32..)
+            .zip(&body.tx.output_slots)
+            .filter(|(_, slot)| {
+                ring_body_output(&slot.payload).is_some()
+                    && !self.found_hashes.contains(&slot.output_context.hash)
+            })
             .map(|(position, _)| position)
             .collect();
-        let requests: Vec<RingDeliveryRequest> = change
+        let requests: Vec<RingDeliveryRequest> = candidates
             .iter()
             .map(|&position| RingDeliveryRequest {
                 viewing_pubkey,
@@ -675,7 +745,8 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
             self.sync.keys.ring_delivery_secrets(&requests)?,
             requests.len(),
         )?;
-        for (position, secret) in change.into_iter().zip(secrets) {
+        let mut change = Vec::new();
+        for (position, secret) in candidates.into_iter().zip(secrets) {
             let position = position as usize;
             let Some((ciphertext, _)) = ring_body_output(&body.tx.output_slots[position].payload)
             else {
@@ -694,18 +765,42 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
                     self.accept(index, body.tx, body.found, position, note)?
                 }
                 Some(OpenedBody::UnknownMint(note)) => self.hold_back(body.tx, position, note)?,
-                None => {}
+                None => continue,
             }
+            change.push(position);
         }
-        // Only the wallet's own transaction key proves the listed payments its own.
+        // 3. Only the wallet's own transaction key reopens the auditor stream it sealed.
         let Some(tx_viewing_key) = own else {
             return Ok(());
         };
-        let listed: Vec<_> = bundle
-            .recipient_keys
+        let Some(frames) = self.sync.sender_audit else {
+            return Ok(());
+        };
+        let keys = frames.frame(body.tx).await.and_then(|frame| {
+            frame
+                .map(|frame| {
+                    SealedRecipientKeys {
+                        transaction: body.tx,
+                        layout: frame.layout,
+                        auditor_pk: &frame.auditor_pk,
+                    }
+                    .open(tx_viewing_key)
+                })
+                .transpose()
+        });
+        let keys = match keys {
+            Ok(Some(keys)) => keys,
+            Err(error) if error.disposition() == RowDisposition::Retry => {
+                return Err(AnonymousError::SenderAudit(Box::new(error)))
+            }
+            // A frame the stream does not reopen lists no payment, its change already opened.
+            Ok(None) | Err(_) => return Ok(()),
+        };
+        let listed: Vec<_> = keys
             .into_iter()
+            .map(|key| key.u())
             .enumerate()
-            .filter(|(_, key)| *key != viewing_pubkey.u())
+            .filter(|(position, key)| *key != viewing_pubkey.u() && !change.contains(position))
             .collect();
         self.record_sent(body, &listed, tx_viewing_key);
         Ok(())
@@ -758,11 +853,8 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
             .sync
             .recipients
             .iter()
-            // The record names its nullifier key, a held address verifies only its own.
-            .filter(|address| {
-                address.viewing_pubkey == *recipient
-                    && address.nullifier_pubkey == plain.record.nullifier_pk
-            })
+            // A held address verifies only under its own key, `open_body` rebuilds with it.
+            .filter(|address| address.viewing_pubkey == *recipient)
             .find_map(|address| {
                 match self
                     .output_at(body, address, position)

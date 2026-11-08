@@ -106,15 +106,7 @@ impl<'a> TransactionAudit<'a> {
         let ring = tx.ring_program_id.ok_or(AuditError::MissingRingProgram)?;
         let first_nullifier = *tx.nullifiers.first().ok_or(AuditError::MissingNullifier)?;
         let data = auditor_message(tx, &auditor.pubkey())?;
-        check_published(layout, tx)?;
-        // A slot without a ring body is an exit, its record sits in the auditor message.
-        let exits = tx
-            .output_slots
-            .iter()
-            .filter(|slot| ring_body_output(&slot.payload).is_none())
-            .count();
-        let message = AuditorMessage::parse(data, layout, exits)
-            .ok_or(AuditError::AuditorMessageLength(data.len()))?;
+        let message = parse_message(tx, data, layout)?;
         let opened = AuditEnvelope {
             eph_u: X25519Pubkey::from_bytes(*message.eph_pk)?.u(),
             salt: &salt,
@@ -170,6 +162,50 @@ impl<'a> TransactionAudit<'a> {
         }
         Ok(audited)
     }
+}
+
+/// The recipient keys a sender's own transaction sealed to the auditor, the sender's only record of
+/// its payments' keys.
+#[must_use]
+pub struct SealedRecipientKeys<'a> {
+    pub transaction: &'a ShieldedTransaction,
+    pub layout: AuditStreamLayout,
+    pub auditor_pk: &'a X25519Pubkey,
+}
+
+impl SealedRecipientKeys<'_> {
+    /// `tx_viewing_key` must reopen the envelope to itself, another key decrypts noise.
+    pub fn open(self, tx_viewing_key: &ViewingKey) -> Result<Vec<X25519Pubkey>, AuditError> {
+        let tx = self.transaction;
+        let salt = tx.salt.ok_or(AuditError::MissingSalt)?;
+        let data = auditor_message(tx, self.auditor_pk)?;
+        let message = parse_message(tx, data, self.layout)?;
+        let opened = AuditEnvelope {
+            eph_u: X25519Pubkey::from_bytes(*message.eph_pk)?.u(),
+            salt: &salt,
+            ciphertext: message.envelope,
+        }
+        .open_sealed(tx_viewing_key, self.auditor_pk, self.layout)?;
+        if opened.tx_viewing_key.pubkey() != tx_viewing_key.pubkey() {
+            return Err(AuditError::TxViewingKeyMismatch);
+        }
+        opened.recipient_keys(message.recipient_keys)
+    }
+}
+
+/// A slot without a ring body is an exit, its record sits in the auditor message.
+fn parse_message<'a>(
+    tx: &ShieldedTransaction,
+    data: &'a [u8],
+    layout: AuditStreamLayout,
+) -> Result<AuditorMessage<'a>, AuditError> {
+    check_published(layout, tx)?;
+    let exits = tx
+        .output_slots
+        .iter()
+        .filter(|slot| ring_body_output(&slot.payload).is_none())
+        .count();
+    AuditorMessage::parse(data, layout, exits).ok_or(AuditError::AuditorMessageLength(data.len()))
 }
 
 fn check_published(layout: AuditStreamLayout, tx: &ShieldedTransaction) -> Result<(), AuditError> {

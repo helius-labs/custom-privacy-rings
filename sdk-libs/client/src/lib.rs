@@ -56,7 +56,8 @@ pub(crate) const REDACTED: &str = "<redacted>";
 
 pub use crate::anonymous::{
     AnonymousRingUtxo, AnonymousScan, AnonymousStream, AnonymousSync, AuditorRecovery,
-    RecoveryStatus, SenderClaim, SentCheck, SentPayment,
+    RecoveryStatus, RingSenderAudit, SenderAuditFrame, SenderAuditFrames, SenderClaim, SentCheck,
+    SentPayment,
 };
 pub use crate::anonymous_wallet::{
     AnonymousWallet, LedgerScan, PendingClaim, PendingNote, ScanCommit,
@@ -71,7 +72,7 @@ pub use crate::{
     confidential::{
         open_ring_confidential, RingConfidentialNotes, RingConfidentialScan, RingFullScan,
     },
-    decrypt::{FramedRow, TransactionAudit},
+    decrypt::{FramedRow, SealedRecipientKeys, TransactionAudit},
     disclosure::{AuditEnvelope, AuditStreamSeal, OpenedAudit, SealedAuditStream},
     encryption::{
         auditor_view_tag, open_merge_record, open_owned_merge_record, MergeRecordSeal,
