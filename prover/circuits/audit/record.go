@@ -13,15 +13,16 @@
 // Exit marks a note of the default ring, its recipient body is SPP's.
 //
 // The nullifier key sits last and only an exit publishes it. A non-exit record names its key by the
-// ZeroKey bit alone. A zero key is the public Poseidon(0). A nonzero key on a ring note spends only as its
-// owner's registered key, transfer/owners.go, and registration never changes that key, so an accepted
-// nonzero-key spend matches the key the reader takes from the owner's row. An exit keeps its key, the
-// default ring registers nobody. The bit is no prover choice, it derives from the key the hash commits.
+// ZeroKey bit alone, set exactly when the key is the public Poseidon(0). A nonzero key on a ring note
+// spends only as its owner's registered key, transfer/owners.go, so an accepted nonzero-key spend matches
+// the owner's immutable registered key, the one the reader takes from the owner's row. An exit publishes
+// its key, the default ring registers nobody. The bit is no prover choice, it derives from the key the
+// hash commits.
 //
 // The file proves the following.
 //  1. A live record's kind, amount, owner key, mint, blinding and nullifier key are the opened slot's,
-//     with the amount below 2^64 and each field the one canonical encoding. Kind sets ZeroKey exactly when
-//     the slot's key is Poseidon(0).
+//     with the amount below 2^64 and each field the one canonical encoding. The kind byte sets ZeroKey
+//     exactly when the slot's key is Poseidon(0).
 //  2. Every other record is all zero.
 //  3. A merge record is a record followed by the seed that rebuilds its blinding.
 //  4. R counts only notes, and a key with no entry capacity refuses a default ring note.
@@ -78,13 +79,12 @@ type RecordOpening struct {
 	MintChunks                                                    [2]frontend.Variable
 }
 
-// Encode mirrors OutputRecord::encode in program-libs/interface/src/proof/audit_stream.rs, RecordLen bytes.
+// Encode mirrors OutputRecord::encode in program-libs/interface/src/proof/audit_stream.rs over the published bytes, RecordLen bytes.
 func (r RecordOpening) Encode(api frontend.API, rc frontend.Rangechecker) []frontend.Variable {
 	raw := identityOpening{Live: r.Live, OwnerPkHash: r.OwnerPkHash, Asset: r.Asset, OwnerKey: r.OwnerKey, MintChunks: r.MintChunks}.open(api)
 	// FieldToBytesBEWith holds the one be32 below q, UintBytesBE fails a live amount at or above 2^64.
 	blinding := ringgadget.FieldToBytesBEWith(api, rc, api.Mul(r.Live, r.Blinding))
 	nullifierPk := ringgadget.FieldToBytesBEWith(api, rc, api.Mul(r.Live, r.NullifierPk))
-	// A published prefix without the key still rebuilds the commitment, the bit names Poseidon(0) and the owner's row names every other key.
 	zeroKey := api.Mul(r.Live, api.IsZero(api.Sub(r.NullifierPk, shared.ZeroNullifierPk)))
 	kind := api.Add(r.Kind, api.Mul(zeroKey, KindZeroKey))
 	return slices.Concat([]frontend.Variable{kind}, ringgadget.UintBytesBE(api, api.Mul(r.Live, r.Amount), amountLen), raw.ownerKey, raw.mint, blinding[:], nullifierPk[:])

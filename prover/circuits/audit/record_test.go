@@ -68,7 +68,7 @@ func TestRecordPublishesItsKeyOnAnExitAlone(t *testing.T) {
 	}
 }
 
-// The zero key bit is the slot's key, a reader trusting a forged bit would rebuild under the wrong key.
+// The zero key bit follows the slot's key, a flipped bit fails the binding.
 func TestZeroKeyBitFollowsTheKey(t *testing.T) {
 	s := ringaudit.NewSection(t, plainShape)
 	for name, slot := range map[string]int{"a bit set on a registered key": 0, "a bit cleared on the zero key": 1} {

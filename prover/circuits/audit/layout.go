@@ -12,7 +12,6 @@
 // inputs, or they select another keystream.
 //
 // Each output record is its own stream under its slot secret, so no counter of the auditor stream serves it.
-// A non-exit slot publishes the record's first RingRecordLen bytes and an exit all RecordLen.
 //
 // The file proves the following.
 //  1. The layout value holds the entry flag alone, a value past it fails its decomposition.
@@ -70,7 +69,7 @@ const (
 	kindLen             = 1
 	// RecordLen is the plaintext every slot seals and an exit publishes, mirrored by EXIT_RECORD_LEN.
 	RecordLen = RingRecordLen + fieldLen
-	// RingRecordLen is the prefix a non-exit slot publishes, the nullifier key past it stays with the prover. Mirrored by RING_RECORD_LEN.
+	// RingRecordLen is the prefix a non-exit slot publishes without the nullifier key, mirrored by RING_RECORD_LEN.
 	RingRecordLen = kindLen + amountLen + 3*fieldLen
 	// KeyLen is one sealed recipient key, its region holds no padding.
 	KeyLen    = fieldLen

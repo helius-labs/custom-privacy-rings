@@ -20,7 +20,7 @@ type SenderBundle struct {
 	OutputSeed *big.Int
 }
 
-// SenderBundleLen mirrors BundleLayout::byte_len, the same for every m.
+// SenderBundleLen mirrors SENDER_BUNDLE_LEN, the same for every m.
 const SenderBundleLen = 32
 
 func (b SenderBundle) Seal(t testing.TB, slotSecret *big.Int) []byte {
