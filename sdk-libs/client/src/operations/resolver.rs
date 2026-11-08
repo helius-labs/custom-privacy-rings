@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use custom_ring_interface::{domain, tracking::TrackingAuthorization, STORAGE_PROGRAM_ID};
 use solana_account::Account;
 use solana_address::Address;
@@ -196,6 +198,15 @@ impl RecipientResolver<'_> {
 impl AuthorizationCheck<'_> {
     /// The viewing key the owner last signed into its authorization.
     pub fn viewing_u(self) -> Result<[u8; 32], ResolveError> {
+        Ok(self.authorization()?.viewing_u)
+    }
+
+    /// Final from the account's creation, an account not yet applied still names it.
+    pub fn nullifier_pk(self) -> Result<[u8; 32], ResolveError> {
+        Ok(self.authorization()?.nullifier_pk)
+    }
+
+    fn authorization(self) -> Result<TrackingAuthorization, ResolveError> {
         let account = self.account.ok_or(ResolveError::AuthorizationMissing)?;
         if account.owner != STORAGE_PROGRAM_ID {
             return Err(ResolveError::AuthorizationProgramOwner);
@@ -208,7 +219,55 @@ impl AuthorizationCheck<'_> {
         if authorization.owner != self.owner {
             return Err(ResolveError::AuthorizationOwner);
         }
-        Ok(authorization.viewing_u)
+        Ok(*authorization)
+    }
+}
+
+/// The registered nullifier keys of ring output owners, read for an auditor.
+#[must_use]
+pub struct RegisteredKeys<'a> {
+    /// The ring's pinned tracking registry.
+    pub registry: Address,
+    pub owners: &'a [[u8; 32]],
+}
+
+impl RegisteredKeys<'_> {
+    /// An owner with no account is absent and its outputs stay unresolved.
+    pub async fn read(
+        self,
+        rpc: &(impl AsyncRpc + ?Sized),
+    ) -> Result<HashMap<[u8; 32], [u8; 32]>, ResolveError> {
+        if self.owners.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let owners: Vec<Address> = self
+            .owners
+            .iter()
+            .copied()
+            .map(Address::new_from_array)
+            .collect();
+        let addresses = owners
+            .iter()
+            .map(|owner| TrackingAuthorization::find_address(&self.registry, owner).0)
+            .collect();
+        let accounts = rpc
+            .get_multiple_accounts(addresses)
+            .await
+            .map_err(|error| ResolveError::Rpc(Box::new(error)))?;
+        let mut keys = HashMap::with_capacity(owners.len());
+        for (index, owner) in owners.into_iter().enumerate() {
+            let Some(account) = accounts.get(index).and_then(Option::as_ref) else {
+                continue;
+            };
+            let nullifier_pk = AuthorizationCheck {
+                registry: self.registry,
+                owner,
+                account: Some(account),
+            }
+            .nullifier_pk()?;
+            keys.insert(owner.to_bytes(), nullifier_pk);
+        }
+        Ok(keys)
     }
 }
 

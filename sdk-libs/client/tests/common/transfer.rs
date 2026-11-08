@@ -25,6 +25,7 @@ use spr_interface::{
     instruction::{instruction_data::transact::TreeContext, OwnerTag},
     shape::SPP_SUPPORTED_SHAPES,
     tree_slot::tree_id_field,
+    ZERO_NULLIFIER_PUBKEY,
 };
 use spr_keypair::{ViewingKey, X25519Keypair, X25519Pubkey};
 use spr_transaction::{
@@ -33,7 +34,7 @@ use spr_transaction::{
     OutputContext, OutputSlot, ShieldedTransaction,
 };
 use zolana_ring_client::{
-    AuditStreamSeal, AuditedUtxo, KnownUtxo, OutputOpening, RingOwnerTag, SealedAuditStream,
+    AuditStreamSeal, AuditedUtxo, ClaimedData, KnownUtxo, OutputOpening, RingOwnerTag, SealedAuditStream,
     UtxoOwner,
 };
 use zolana_ring_transaction::seal_recipient_body;
@@ -658,10 +659,13 @@ fn wire<'a>(slot: &'a OutputSlot, record: &'a [u8; OUTPUT_RECORD_LEN]) -> RingOu
     }
 }
 
+/// A ring output under a nonzero key waits for the owner's registered key.
 pub fn audited_opening(output: &Output, slot: &Slot) -> OutputOpening {
     let audited = |utxo: &UtxoFields| AuditedUtxo {
         owner_key: utxo.owner_key,
-        nullifier_pk: utxo.nullifier_pk,
+        owner: UtxoOwner::Keyed {
+            nullifier_pk: utxo.nullifier_pk,
+        },
         asset: utxo.asset(),
         mint: Some(utxo.asset_address),
         amount: utxo.amount,
@@ -675,7 +679,20 @@ pub fn audited_opening(output: &Output, slot: &Slot) -> OutputOpening {
             recipient_u,
             tag,
         } => OutputOpening::Ring {
-            utxo: audited(utxo),
+            utxo: match utxo.nullifier_pk == ZERO_NULLIFIER_PUBKEY {
+                true => audited(utxo),
+                false => AuditedUtxo {
+                    owner: UtxoOwner::Unresolved {
+                        claimed: Some(ClaimedData {
+                            data_hash: utxo.data_hash,
+                            ring_data_hash: slot.ring_data_hash,
+                        }),
+                    },
+                    data_hash: None,
+                    ring_data_hash: None,
+                    ..audited(utxo)
+                },
+            },
             owner_tag: RingOwnerTag(slot_tag(tag.unwrap_or(*recipient_u))),
         },
         Output::Exit(utxo) => OutputOpening::Exit(audited(utxo)),

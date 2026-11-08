@@ -182,14 +182,28 @@ fn zero_key_and_enrolled_outputs_in_one_frame_are_each_identified() {
         Rail::Delivered,
         vec![ring(enrolled, 0x41), ring(exposed, 0x42)],
     );
-    let audited = audit(&built.transaction, built.layout).unwrap();
+    let mut audited = audit(&built.transaction, built.layout).unwrap();
     expect_every_slot(&built, &audited);
-    let keys: Vec<_> = audited
-        .outputs
-        .iter()
-        .map(|output| output.opening.utxo().unwrap().nullifier_pk)
-        .collect();
-    assert_eq!(keys, [enrolled.nullifier_pk, ZERO_NULLIFIER_PUBKEY]);
+    let keys = |audited: &AuditedTransaction| -> Vec<_> {
+        audited
+            .outputs
+            .iter()
+            .map(|output| output.opening.utxo().unwrap().owner.nullifier_pk())
+            .collect()
+    };
+    assert_eq!(keys(&audited), [None, Some(ZERO_NULLIFIER_PUBKEY)]);
+    assert_eq!(audited.unresolved_owners(), [enrolled.owner_key]);
+    audited
+        .resolve_owners(Transfer::fixture().ring, |owner| {
+            (*owner == enrolled.owner_key).then_some(enrolled.nullifier_pk)
+        })
+        .unwrap();
+    assert_eq!(
+        keys(&audited),
+        [Some(enrolled.nullifier_pk), Some(ZERO_NULLIFIER_PUBKEY)]
+    );
+    assert!(audited.payload_errors.is_empty());
+    assert!(audited.unresolved_owners().is_empty());
 }
 
 #[test]
@@ -443,8 +457,8 @@ fn an_honest_data_bearing_exit_opens() {
         panic!("an exit")
     };
     assert_eq!(
-        (opened.owner_key, opened.amount, opened.nullifier_pk),
-        (exit.owner_key, exit.amount, exit.nullifier_pk)
+        (opened.owner_key, opened.amount, opened.owner.nullifier_pk()),
+        (exit.owner_key, exit.amount, Some(exit.nullifier_pk))
     );
     assert_eq!(
         audited.payload_errors,

@@ -25,7 +25,7 @@ use crate::{
     merge_audit::RingMergeBody,
     origin::{ConfirmedEventKind, RingOrigin, TransactionOrigin},
     scan::{RingHistory, SkippedRow, RING_HISTORY_MAX_PAGES, RING_HISTORY_PAGE_SIZE},
-    types::{OutputOpening, OutputPayloadErrorKind},
+    types::{AuditedUtxo, KnownUtxo, OutputOpening, OutputPayloadErrorKind, UtxoOwner},
     AuditError, MergeLedger,
 };
 
@@ -152,6 +152,17 @@ impl SourceMember<'_> {
             }
         }
         Ok(None)
+    }
+
+    /// A record that publishes no key belongs to the member by its owner key alone, the rebuild
+    /// under the member's key decides whether it opens.
+    fn nullifier_pk_of_output(&self, opened: &AuditedUtxo) -> Result<Option<[u8; 32]>, AuditError> {
+        match opened.owner {
+            UtxoOwner::Keyed { .. } => self.nullifier_pk_of(opened.owner_hash()?),
+            UtxoOwner::Unresolved { .. } => Ok((opened.owner_key
+                == self.address.signing_pubkey.confidential_view_tag()?)
+            .then_some(self.address.nullifier_pubkey)),
+        }
     }
 
     /// A zero-key note's nullifier needs no secret, anyone with the opening derives it.
@@ -469,12 +480,18 @@ impl<'a> MemberRecovery<'a> {
                 continue;
             };
             let context = &output.context;
-            let Some(nullifier_pk) = self.source.nullifier_pk_of(opened.owner_hash()?)? else {
+            let Some(nullifier_pk) = self.source.nullifier_pk_of_output(opened)? else {
                 continue;
             };
             if !found.seen.insert(context.hash) {
                 continue;
             }
+            // An unopened rebuild drops the payload's hashes and the note joins `unresolved` below.
+            let opened = KnownUtxo::opened(*opened, context.tree_id).resolve(
+                nullifier_pk,
+                self.recovery.ring_program_id,
+                &context.hash,
+            )?;
             let mint = match opened
                 .mint
                 .map(|mint| assets.registry().mint(&mint))

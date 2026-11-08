@@ -18,7 +18,7 @@ use solana_address::Address;
 use solana_signature::Signature;
 use spr_indexer_api::{Context, PaginationToken};
 use spr_keypair::X25519Keypair;
-use zolana_ring_client::{history::HistoryPosition, KnownUtxo, UtxoOwner};
+use zolana_ring_client::{history::HistoryPosition, ClaimedData, KnownUtxo, UtxoOwner};
 
 use crate::{
     frame_repairs::RepairAttempt,
@@ -151,14 +151,23 @@ impl NoteSeal {
 /// The one layout of a sealed note.
 pub(crate) fn note_body(note: &StoredUtxo) -> Vec<u8> {
     let utxo = &note.utxo;
-    let UtxoOwner::Keyed { nullifier_pk } = utxo.owner;
+    // Kind 1 holds an unresolved note's claimed hashes in the data fields, unverified.
+    let (owner_kind, nullifier_pk, data) = match utxo.owner {
+        UtxoOwner::Keyed { nullifier_pk } => {
+            (0, nullifier_pk, utxo.data_hash.zip(utxo.ring_data_hash))
+        }
+        UtxoOwner::Unresolved { claimed } => (
+            1,
+            [0; 32],
+            claimed.map(|claimed| (claimed.data_hash, claimed.ring_data_hash)),
+        ),
+    };
     let mint = utxo.mint.map_or([0; 32], |mint| mint.to_bytes());
     let nullifier = note.nullifier.unwrap_or_default();
-    let data = utxo.data_hash.zip(utxo.ring_data_hash);
     let (data_hash, ring_data_hash) = data.unwrap_or_default();
     [
         utxo.owner_key.as_slice(),
-        &[0],
+        &[owner_kind],
         &nullifier_pk,
         &utxo.asset,
         &[u8::from(utxo.mint.is_some())],
@@ -200,12 +209,6 @@ pub(crate) fn note_from_body(body: &[u8]) -> Result<StoredUtxo, DbErr> {
     let owner_key = array(take(32));
     let owner_kind = take(1)[0];
     let owner_field: [u8; 32] = array(take(32));
-    let owner = match owner_kind {
-        0 => UtxoOwner::Keyed {
-            nullifier_pk: owner_field,
-        },
-        _ => return Err(malformed()),
-    };
     let asset = array(take(32));
     let has_mint = take(1)[0] == 1;
     let mint_bytes: [u8; 32] = array(take(32));
@@ -214,6 +217,24 @@ pub(crate) fn note_from_body(body: &[u8]) -> Result<StoredUtxo, DbErr> {
     let has_data = take(1)[0] == 1;
     let data_hash: [u8; 32] = array(take(32));
     let ring_data_hash: [u8; 32] = array(take(32));
+    let (owner, has_data) = match owner_kind {
+        0 => (
+            UtxoOwner::Keyed {
+                nullifier_pk: owner_field,
+            },
+            has_data,
+        ),
+        1 if owner_field == [0; 32] => (
+            UtxoOwner::Unresolved {
+                claimed: has_data.then_some(ClaimedData {
+                    data_hash,
+                    ring_data_hash,
+                }),
+            },
+            false,
+        ),
+        _ => return Err(malformed()),
+    };
     let tree_id = u16::from_be_bytes(array(take(2)));
     let ring_note = take(1)[0] == 1;
     let slot = u64::from_be_bytes(array(take(8)));

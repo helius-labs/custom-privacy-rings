@@ -22,7 +22,7 @@ use crate::{
     history::{HistoryCursor, HistoryPosition, HistoryQuery, HistoryStream, PageEnd},
     origin::{ConfirmedEventKind, RingOrigin, TransactionOrigin},
     types::AuditedTransaction,
-    AuditError,
+    AuditError, RegisteredKeys,
 };
 
 /// One bounded read, `next_cursor` is live only when the page cap stopped it.
@@ -213,6 +213,7 @@ pub struct RingScan {
     page_size: NonZeroU32,
     max_pages: NonZeroUsize,
     indexer_config: Option<IndexerRpcConfig>,
+    tracking_registry: Option<Address>,
 }
 
 impl RingScan {
@@ -225,7 +226,15 @@ impl RingScan {
             page_size: DEFAULT_PAGE_SIZE,
             max_pages: DEFAULT_MAX_PAGES,
             indexer_config: None,
+            tracking_registry: None,
         }
+    }
+
+    /// The ring's pinned tracking registry, its authorizations key the outputs whose record publishes
+    /// no key. Without it those outputs stay unresolved.
+    pub fn with_tracking_registry(mut self, registry: Address) -> Self {
+        self.tracking_registry = Some(registry);
+        self
     }
 
     /// The rail a ring `Transact` frame parses under.
@@ -281,6 +290,8 @@ impl RingScan {
     ) -> Result<AuditedPage, AuditError> {
         self.auditor_key = auditor.pubkey();
         let mode = self.mode;
+        let ring = self.ring_program_id;
+        let registry = self.tracking_registry;
         let page = self.confirmed(indexer, origin).await?;
         let mut transactions = Vec::with_capacity(page.transactions.len());
         let mut skipped = page.skipped;
@@ -291,6 +302,24 @@ impl RingScan {
             match opened {
                 Ok(audited) => transactions.push(audited),
                 Err(error) => skipped.push(SkippedRow::of(transaction, error)?),
+            }
+        }
+        // One read for the page, an owner with no account yet stays unresolved for a later scan.
+        if let Some(registry) = registry {
+            let mut owners: Vec<[u8; 32]> = transactions
+                .iter()
+                .flat_map(AuditedTransaction::unresolved_owners)
+                .collect();
+            owners.sort_unstable();
+            owners.dedup();
+            let keys = RegisteredKeys {
+                registry,
+                owners: &owners,
+            }
+            .read(indexer)
+            .await?;
+            for audited in &mut transactions {
+                audited.resolve_owners(ring, |owner| keys.get(owner).copied())?;
             }
         }
         Ok(ScanPage {
