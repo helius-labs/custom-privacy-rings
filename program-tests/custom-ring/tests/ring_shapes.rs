@@ -100,7 +100,7 @@ impl Column {
         match self {
             Self::Confidential => CONFIDENTIAL_KEY_CASES,
             Self::ConfidentialPolicy | Self::AnonymousPolicy => WIDE_LEG_KEY_CASES,
-            Self::Anonymous => ENTRY_KEY_CASES,
+            Self::Anonymous => ANONYMOUS_KEY_CASES,
             Self::Salted => SALTED_KEY_CASES,
             Self::Delegate => &[],
         }
@@ -203,15 +203,20 @@ const CONFIDENTIAL_KEY_CASES: &[KeyCase] = &[
     KeyCase::of(narrow(2, 24, 4, 4), Shape::IN1_OUT2, 1, 0),
     KeyCase::of(narrow(4, 24, 4, 4), Shape::IN1_OUT4, 1, 0),
     KeyCase::of(narrow(8, 16, 4, 4), Shape::IN1_OUT8, 1, 0),
-    KeyCase::of(wide(2, 40, 4, 8), Shape::IN32_OUT2, 1, 0),
+    KeyCase::of(wide(2, 40, 4, 9), Shape::IN32_OUT2, 1, 0),
+    KeyCase::of(narrow(16, 4, 4, 2), Shape::IN1_OUT16, 1, 0),
+    KeyCase::of(narrow(16, 4, 4, 2), Shape::IN2_OUT16, 2, 0),
 ];
 const WIDE_LEG_KEY_CASES: &[KeyCase] = &[KeyCase::of(wide(8, 24, 32, 13), Shape::IN1_OUT8, 1, 5)];
-const ENTRY_KEY_CASES: &[KeyCase] = &[
+const ANONYMOUS_KEY_CASES: &[KeyCase] = &[
     KeyCase::of(entry(4, 8, 4, 8), Shape::IN1_OUT4, 1, 0),
     KeyCase::of(entry(8, 2, 4, 2), Shape::IN1_OUT8, 1, 0),
     KeyCase::of(entry(8, 5, 4, 4), Shape::IN3_OUT8, 3, 0),
     // Five legs pass every smaller entry key.
     KeyCase::of(entry(8, 8, 32, 8), Shape::IN1_OUT2, 1, 5),
+    KeyCase::of(entry(8, 8, 32, 8), Shape::IN6_OUT8, 6, 0),
+    KeyCase::of(entry(8, 8, 32, 8), Shape::IN8_OUT8, 8, 0),
+    KeyCase::of(narrow(16, 4, 4, 2), Shape::IN2_OUT16, 2, 0),
 ];
 /// One owner, seven payees and four destinations fill the narrow row's twelve tracking rows.
 const SALTED_KEY_CASES: &[KeyCase] = &[KeyCase::of(narrow(8, 16, 4, 4), Shape::IN1_OUT8, 1, 4)];
@@ -224,8 +229,8 @@ const CONFIDENTIAL_POLICY_CAPACITY: &[KeyCase] = &[
 /// An audit only ring opens no record and takes the fewest accounts. Forty notes leave room for
 /// three legs, the key's fourth leg fits only at thirty two.
 const CONFIDENTIAL_CAPACITY: &[KeyCase] = &[
-    KeyCase::of(wide(2, 40, 4, 8), Shape::IN40_OUT2, 40, 3),
-    KeyCase::of(wide(2, 40, 4, 8), Shape::IN32_OUT2, 32, 4),
+    KeyCase::of(wide(2, 40, 4, 9), Shape::IN40_OUT2, 40, 3),
+    KeyCase::of(wide(2, 40, 4, 9), Shape::IN32_OUT2, 32, 4),
 ];
 /// Every leg of a hidden sender names one destination, each entry case at the most inputs its legs leave inline.
 const ANONYMOUS_POLICY_CAPACITY: &[KeyCase] = &[

@@ -390,23 +390,27 @@ fn a_recipient_receives_before_registration_then_registers_and_spends() -> Resul
     );
 
     // 3. The auditor keeps the proven record and leaves its key unresolved.
-    let recipient_key = |env: &TestEnv| -> Result<Option<[u8; 32]>> {
+    let recipient_key = |env: &TestEnv| -> Result<(Option<[u8; 32]>, usize)> {
         let audited = AuditLookup {
             scan: RingScan::new(ring_program, auditor.pubkey()),
             auditor: &auditor,
             signature: paid.signature,
         }
         .run(env)?;
-        let output = audited
+        let [output] = audited
             .outputs
             .iter()
-            .find(|output| output.slot_index == RECIPIENT_SLOT)
-            .context("the recipient slot")?;
+            .filter(|output| output.slot_index == RECIPIENT_SLOT)
+            .collect::<Vec<_>>()[..]
+        else {
+            bail!("one opening of the recipient slot");
+        };
         let utxo = output.opening.utxo().context("a real output")?;
         ensure!(utxo.amount == ENTRY_AMOUNT, "the record stands unresolved");
-        Ok(utxo.owner.nullifier_pk())
+        Ok((utxo.owner.nullifier_pk(), audited.outputs.len()))
     };
-    assert_eq!(recipient_key(&env)?, None);
+    let (unresolved, opened) = recipient_key(&env)?;
+    assert_eq!(unresolved, None);
 
     // 4. Registration names the address key, the auditor resolves the same output.
     EnrollOwners {
@@ -417,7 +421,8 @@ fn a_recipient_receives_before_registration_then_registers_and_spends() -> Resul
     .send()?;
     assert_eq!(
         recipient_key(&env)?,
-        Some(recipient_address.nullifier_pubkey)
+        (Some(recipient_address.nullifier_pubkey), opened),
+        "the late registration keys the same output and loses none"
     );
 
     // 5. The spend proves its key equal to the registered row.
