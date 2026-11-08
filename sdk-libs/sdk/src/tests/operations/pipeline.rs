@@ -730,14 +730,18 @@ async fn an_anonymous_entry_reports_capacity_without_ring_funding() {
     let sender = keypair(1);
     let paid = ring_address(&keypair(2));
     let client = enrolled(&[&sender, &keypair(2)]).client();
-    let utxos: Vec<_> = (0..6)
+    let utxos: Vec<_> = (0..8)
         .map(|leaf| default_ring_utxo(&sender, 1, leaf))
         .collect();
     let owner = MoveSender {
         sender: &sender,
         payer: payer(),
     };
-    let payments = (0..6).map(|_| RingPayment::new(paid.clone(), 1)).collect();
+    // A reply moves the widest entry past the ceiling.
+    let reply = measured_reply(&sender, custom_ring_interface::MIN_REPLY_LEN);
+    let payments = core::iter::once(RingPayment::new(paid.clone(), 1).with_reply(reply))
+        .chain((1..7).map(|_| RingPayment::new(paid.clone(), 1)))
+        .collect();
     let result = owner.anonymous_move(&utxos, payments).select(&client).await;
     assert!(
         matches!(&result, Err(RingError::TransferTooWide { .. })),
@@ -2073,7 +2077,7 @@ fn ceiling_entry(reply_len: usize) -> Measure {
 }
 
 /// The widest reply [`ceiling_entry`] carries under the transaction ceiling.
-const CEILING_REPLY_LEN: usize = 1181;
+const CEILING_REPLY_LEN: usize = 1245;
 
 include!("size_pins.rs");
 
@@ -2727,7 +2731,8 @@ fn a_shape_past_a_confidential_class_is_unkeyed() {
     use spr_client::Shape;
     assert!(shape_keyed(RingRail::Confidential, Shape::IN40_OUT2));
     assert!(shape_keyed(RingRail::Confidential, Shape::IN16_OUT8));
-    for (inputs, outputs) in [(41, 2), (25, 4), (25, 8), (1, 16)] {
+    assert!(shape_keyed(RingRail::Confidential, Shape::new(4, 16)));
+    for (inputs, outputs) in [(41, 2), (25, 4), (25, 8), (5, 16)] {
         let spend = TransferSpend {
             rail: RingRail::Confidential,
             inputs,
@@ -2761,8 +2766,8 @@ async fn every_frame_limit_of_the_byte_model_holds() {
         payer: Payer::Outsider,
         ..Measure::pinned(Measured::InProofOwnerPolicy, Shape::new(24, 4))
     };
-    assert_eq!(pin(signer_policy).await, 3373);
-    assert_eq!(pin(in_proof_policy).await, 3372);
+    assert_eq!(pin(signer_policy).await, 3245);
+    assert_eq!(pin(in_proof_policy).await, 3244);
 
     // An outsider payer adds its signature and key.
     let owner_paid = Measure::pinned(Measured::Confidential, Shape::IN16_OUT8);
@@ -2834,19 +2839,19 @@ async fn every_frame_boundary_takes_its_modelled_bytes() {
         ..relayed(Measured::ConfidentialPolicy, Shape::new(16, 8))
     };
     for (measure, bytes) in [
-        (with_reply(Measured::AnonymousEntry, 3), 4357),
-        (with_reply(Measured::Anonymous, 5), 4039),
+        (with_reply(Measured::AnonymousEntry, 5), 4247),
+        (with_reply(Measured::Anonymous, 12), 3982),
         (
             relayed(Measured::ConfidentialPolicy, Shape::new(16, 8)),
-            3689,
+            3433,
         ),
         (
             relayed(Measured::InProofOwnerPolicy, Shape::new(16, 8)),
-            3688,
+            3432,
         ),
-        (compact_fifteen, 3624),
-        (key_escrow_co_signed, 3503),
-        (loaded_commitment, 3288),
+        (compact_fifteen, 3368),
+        (key_escrow_co_signed, 3375),
+        (loaded_commitment, 3160),
     ] {
         assert_eq!(
             measure.bytes().await,
@@ -2921,23 +2926,23 @@ async fn a_second_input_tree_takes_its_account_context_and_bitmap() {
     for (measure, bytes) in [
         (
             Measure::pinned(Measured::Confidential, Shape::new(2, 2)),
-            1429 + 38,
+            1365 + 38,
         ),
         (
             Measure::pinned(Measured::Anonymous, Shape::new(2, 2)),
-            1620 + 38,
+            1492 + 38,
         ),
         (
             Measure::pinned(Measured::ConfidentialPolicy, Shape::new(16, 8)),
-            3593 + 39,
+            3337 + 39,
         ),
         (
             Measure::relayed(Measured::ConfidentialPolicy, Shape::new(24, 4)),
-            3373 + 40,
+            3245 + 40,
         ),
         (
             Measure::relayed(Measured::InProofOwnerPolicy, Shape::new(24, 4)),
-            3372 + 40,
+            3244 + 40,
         ),
     ] {
         let second_tree = Measure {
@@ -2959,9 +2964,9 @@ async fn a_second_input_tree_takes_its_account_context_and_bitmap() {
 async fn omitted_slots_save_their_bytes_on_each_family() {
     use spr_client::Shape;
     for (rail, saved) in [
-        (Measured::Confidential, 209),
-        (Measured::ConfidentialPolicy, 209),
-        (Measured::Anonymous, 241),
+        (Measured::Confidential, 177),
+        (Measured::ConfidentialPolicy, 177),
+        (Measured::Anonymous, 177),
     ] {
         let at = |published| Measure {
             published: Some(published),
