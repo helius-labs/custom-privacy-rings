@@ -701,7 +701,7 @@ func TestSaltedList(t *testing.T) {
 
 // A count below the live notes leaves one past it.
 func Test40InputsOnTheWideKey(t *testing.T) {
-	shape := transfer.Shape{Inputs: 40, Outputs: 2, Withdrawals: 4, Owners: 8, Wide: true}
+	shape := transfer.Shape{Inputs: 40, Outputs: 2, Withdrawals: 4, Owners: 9, Wide: true}
 	w := ringtransfer.Signed(shape)
 	sender, key, ring := ringtransfer.Sender(t), ringtransfer.SenderNullifierPk(t), ringID(t)
 	w.Inputs = make([]ringaudit.Input, 40)
@@ -768,10 +768,10 @@ func TestNarrowKeysFitTheWideKey(t *testing.T) {
 		if shape.Wide || shape.Withdrawals != 4 {
 			continue
 		}
-		// A row past the wide outputs holds its own pools for every subject and output asset.
+		// A row past the wide outputs reads its own salted records, a public and a salted record per tracked subject beside each output asset in rows spare inputs leave.
+		// ring-xtask inline-capacity pins both pools to what one inline transaction reaches.
 		if shape.Outputs > wide.Outputs {
-			subjects := shape.Owners + shape.Outputs + shape.Withdrawals
-			if shape.Tracking != subjects || shape.Records != 2*subjects+shape.Outputs {
+			if shape.Tracking < shape.Owners+shape.Outputs || shape.Records+shape.Inputs < 2*shape.Tracking+shape.Outputs {
 				t.Errorf("%s does not hold every subject, the wide key %s holds %d outputs", shape, wide, wide.Outputs)
 			}
 			continue

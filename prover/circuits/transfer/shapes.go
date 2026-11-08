@@ -31,13 +31,13 @@ var Shapes = [...]Shape{
 	{Inputs: 24, Outputs: 4, Withdrawals: 4, Owners: 4, Tracking: 8, Records: 16},
 	{Inputs: 16, Outputs: 8, Withdrawals: 4, Owners: 4, Tracking: 12, Records: 24},
 	// Sixteen outputs have no wide row, so each owner row, output and leg owner takes a salted read beside its public records.
-	{Inputs: 4, Outputs: 16, Withdrawals: 4, Owners: 2, Tracking: 22, Records: 60},
+	{Inputs: 4, Outputs: 16, Withdrawals: 4, Owners: 2, Tracking: 21, Records: 56},
 	{Inputs: 24, Outputs: 8, Withdrawals: 32, Owners: 13, Wide: true, Tracking: 42, Records: 88},
-	{Inputs: 40, Outputs: 2, Withdrawals: 4, Owners: 8, Wide: true, Tracking: 11, Records: 24},
-	{Inputs: 8, Outputs: 4, Withdrawals: 4, Owners: 8, Entry: true, Wide: true, Tracking: 14, Records: 32},
+	{Inputs: 40, Outputs: 2, Withdrawals: 4, Owners: 9, Wide: true, Tracking: 12, Records: 18},
+	{Inputs: 8, Outputs: 4, Withdrawals: 4, Owners: 8, Entry: true, Wide: true, Tracking: 16, Records: 36},
 	{Inputs: 2, Outputs: 8, Withdrawals: 4, Owners: 2, Entry: true, Wide: true, Tracking: 14, Records: 36},
-	{Inputs: 5, Outputs: 8, Withdrawals: 4, Owners: 4, Entry: true, Wide: true, Tracking: 15, Records: 38},
-	{Inputs: 8, Outputs: 8, Withdrawals: 32, Owners: 8, Entry: true, Wide: true, Tracking: 38, Records: 80},
+	{Inputs: 5, Outputs: 8, Withdrawals: 4, Owners: 4, Entry: true, Wide: true, Tracking: 16, Records: 40},
+	{Inputs: 8, Outputs: 8, Withdrawals: 32, Owners: 8, Entry: true, Wide: true, Tracking: 41, Records: 83},
 }
 
 // Keyed returns the catalog row with the widths of shape.

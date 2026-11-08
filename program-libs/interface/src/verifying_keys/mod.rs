@@ -48,8 +48,6 @@ pub mod transfer_entry_8_in2_w4_s2_verifying_key;
 pub mod transfer_entry_8_in5_w4_s4_verifying_key;
 #[path = "transfer/transfer_entry_8_in8_w32_s8_verifying_key.rs"]
 pub mod transfer_entry_8_in8_w32_s8_verifying_key;
-#[path = "transfer/transfer_wide_2_in40_w4_s8_verifying_key.rs"]
-pub mod transfer_wide_2_in40_w4_s8_verifying_key;
 #[path = "transfer/transfer_wide_8_in24_w32_s13_verifying_key.rs"]
 pub mod transfer_wide_8_in24_w32_s13_verifying_key;
 pub const PROVING_KEY_SHA256S: &[(&str, [u8; 32])] = &[
@@ -68,10 +66,6 @@ pub const PROVING_KEY_SHA256S: &[(&str, [u8; 32])] = &[
     (
         "custom_ring_transfer_wide_8_in24_w32_s13.key",
         transfer_wide_8_in24_w32_s13_verifying_key::VERIFYINGKEY_PROVING_KEY_SHA256,
-    ),
-    (
-        "custom_ring_transfer_wide_2_in40_w4_s8.key",
-        transfer_wide_2_in40_w4_s8_verifying_key::VERIFYINGKEY_PROVING_KEY_SHA256,
     ),
     (
         "custom_ring_transfer_entry_4_in8_w4_s8.key",
@@ -194,14 +188,6 @@ pub fn verifying_key(
             entry: false,
             wide: true,
         } => Some(&transfer_wide_8_in24_w32_s13_verifying_key::VERIFYINGKEY),
-        key_catalog::RingCircuit::Transfer {
-            outputs: 2,
-            inputs: 40,
-            withdrawals: 4,
-            owners: 8,
-            entry: false,
-            wide: true,
-        } => Some(&transfer_wide_2_in40_w4_s8_verifying_key::VERIFYINGKEY),
         key_catalog::RingCircuit::Transfer {
             outputs: 4,
             inputs: 8,

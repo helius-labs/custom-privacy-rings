@@ -61,11 +61,11 @@ pub const RING_KEYS: [RingKey; 27] = [
             outputs: 2,
             inputs: 40,
             withdrawals: 4,
-            owners: 8,
+            owners: 9,
             entry: false,
             wide: true,
         },
-        name: "custom-ring-transfer-wide-2-in40-w4-s8",
+        name: "custom-ring-transfer-wide-2-in40-w4-s9",
     },
     RingKey {
         circuit: RingCircuit::Transfer {
