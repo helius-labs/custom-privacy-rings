@@ -57,11 +57,11 @@ const WIDE_SHAPES: readonly TransferShape[] = Object.freeze([
 ]);
 /** A frame takes the first row holding its width. */
 const ENTRY_SHAPES: readonly TransferShape[] = Object.freeze([
-  shape(4, 8, 4, 8, ENTRY, [14, 32]),
+  shape(4, 8, 4, 8, ENTRY, [16, 36]),
   shape(8, 2, 4, 2, ENTRY, [14, 36]),
-  shape(8, 5, 4, 4, ENTRY, [15, 38]),
+  shape(8, 5, 4, 4, ENTRY, [16, 40]),
 ]);
-const WIDE_ENTRY_SHAPE = shape(8, 8, 32, 8, ENTRY, [38, 80]);
+const WIDE_ENTRY_SHAPE = shape(8, 8, 32, 8, ENTRY, [41, 83]);
 
 export const TRANSFER_SHAPES: readonly TransferShape[] = Object.freeze([
   ...NARROW_SHAPES,
