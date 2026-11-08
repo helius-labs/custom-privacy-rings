@@ -515,10 +515,10 @@ mod tests {
         };
         assert_eq!(wide_spend(24, 0, 1), Some(WIDE));
         assert_eq!(wide_spend(25, 0, 1), Some(WIDE_INPUTS));
-        assert_eq!(wide_spend(40, 4, 8), Some(WIDE_INPUTS));
+        assert_eq!(wide_spend(40, 4, 9), Some(WIDE_INPUTS));
         assert_eq!(wide_spend(41, 0, 1), None);
         assert_eq!(wide_spend(25, 5, 1), None);
-        assert_eq!(wide_spend(25, 0, 9), None);
+        assert_eq!(wide_spend(25, 0, 10), None);
     }
 
     #[test]
@@ -681,11 +681,11 @@ mod tests {
         assert_eq!(pools(FOUR), (43, 43, 8));
         assert_eq!(pools(EIGHT), (43, 43, 12));
         assert_eq!(pools(WIDE), (115, 115, 42));
-        assert_eq!(pools(WIDE_INPUTS), (67, 67, 11));
-        assert_eq!(pools(ENTRY_FOUR), (43, 43, 14));
+        assert_eq!(pools(WIDE_INPUTS), (61, 61, 12));
+        assert_eq!(pools(ENTRY_FOUR), (47, 47, 16));
         assert_eq!(pools(ENTRY_EIGHT_TWO), (41, 41, 14));
-        assert_eq!(pools(ENTRY_EIGHT_FIVE), (46, 46, 15));
-        assert_eq!(pools(WIDE_ENTRY), (91, 91, 38));
+        assert_eq!(pools(ENTRY_EIGHT_FIVE), (48, 48, 16));
+        assert_eq!(pools(WIDE_ENTRY), (94, 94, 41));
     }
 
     #[test]
