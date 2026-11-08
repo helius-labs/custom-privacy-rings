@@ -11,11 +11,12 @@ use custom_ring_interface::{
     spl_withdrawal_count,
     storage::Revision,
     stream::slot_tag,
-    tag, AnonymousProofData, AppMessage, BundleLayout, CustomRingError, CustomRingMergeIxData,
-    CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
-    PlainGroth16Proof, PolicyProof, RecipientPayload, Replies, RingOutput, RingPolicy, RingRail,
-    RingTransactData, RootRead, SealedMergeRecord, SlotBody, MAX_CPI_DATA_LEN, MERGE_ENVELOPE_LEN,
-    MERGE_RECORD_LEN, MIN_REPLY_LEN, OUTPUT_RECORD_LEN, RECIPIENT_KEY_LEN, TAGGED_X25519_KEY_LEN,
+    tag, AnonymousProofData, AppMessage, CustomRingError, CustomRingMergeIxData, CustomRingProof,
+    FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof,
+    RecipientPayload, Replies, RingOutput, RingPolicy, RingRail, RingTransactData, RootRead,
+    SealedMergeRecord, SlotBody, EXIT_RECORD_LEN, MAX_CPI_DATA_LEN, MERGE_ENVELOPE_LEN,
+    MERGE_RECORD_LEN, MIN_REPLY_LEN, RECIPIENT_KEY_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
+    TAGGED_X25519_KEY_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -351,11 +352,11 @@ impl Transfer {
         };
         let spp_proof = proof.groth16;
         let field = [6u8; 32];
-        let record = [7u8; OUTPUT_RECORD_LEN];
+        let record = [7u8; EXIT_RECORD_LEN];
         let salt = [9u8; 16];
         let ring_data = load.has_data.then_some([10u8; 32]);
         // A recipient body is the record, then under `has_data` one padded payload.
-        let mut recipient_body = record.to_vec();
+        let mut recipient_body = record[..RING_RECORD_LEN].to_vec();
         if load.has_data {
             let payload = RecipientPayload {
                 ring_data_hash: ring_data,
@@ -382,7 +383,7 @@ impl Transfer {
         let nullifiers: Vec<[u8; 32]> = (0..inputs)
             .map(|input| indexed(0xb0, input).to_bytes())
             .collect();
-        let bundle = vec![12u8; BundleLayout { outputs }.byte_len()];
+        let bundle = [12u8; SENDER_BUNDLE_LEN];
         let revision = Revision::from(1);
 
         let legs = self.legs(frame);
@@ -394,14 +395,17 @@ impl Transfer {
         };
 
         let slots: Vec<RingOutput<'_>> = (0..outputs)
-            .map(|slot| RingOutput {
-                hash: &field,
-                owner_tag: slot_tag(field),
-                body: match load.every_body && slot + 1 == outputs {
+            .map(|slot| {
+                let body = match load.every_body && slot + 1 == outputs {
                     true => SlotBody::Exit(&exit_body),
                     false => SlotBody::Recipient(&recipient_body),
-                },
-                record: &record,
+                };
+                RingOutput {
+                    hash: &field,
+                    owner_tag: slot_tag(field),
+                    body,
+                    record: &record[..body.record_len()],
+                }
             })
             .collect();
         let reply_bodies = slots

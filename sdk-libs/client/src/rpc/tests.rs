@@ -169,7 +169,9 @@ fn an_audit_page_holds_at_its_cursor_and_limit_bounds() {
 fn utxo(seed: u8, mint: Option<Address>) -> AuditedUtxo {
     AuditedUtxo {
         owner_key: [seed; 32],
-        nullifier_pk: [seed + 1; 32],
+        owner: UtxoOwner::Keyed {
+            nullifier_pk: [seed + 1; 32],
+        },
         asset: [seed + 2; 32],
         mint,
         amount: u64::from(seed),

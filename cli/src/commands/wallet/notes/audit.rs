@@ -33,7 +33,10 @@ pub(crate) struct OpenedSlot<'a> {
 pub fn run(ctx: &Context, args: AuditArgs) -> Result<()> {
     let config = ctx.ring_config()?;
     let auditor = ring_auditor_key(ctx, &args.auditor_key)?;
-    let mut scan = RingScan::new(ctx.ring.program_id(), auditor.pubkey()).with_mode(config.mode);
+    let tracking = ctx.block(ctx.ring.require_policy(ctx.chain()))?.tracking;
+    let mut scan = RingScan::new(ctx.ring.program_id(), auditor.pubkey())
+        .with_mode(config.mode)
+        .with_tracking_registry(tracking);
     if let Some(cursor) = &args.cursor {
         scan = scan.with_cursor(
             cursor
@@ -44,7 +47,7 @@ pub fn run(ctx: &Context, args: AuditArgs) -> Result<()> {
     let chain = ctx.chain();
     let page = ctx.block(scan.audit(&auditor, chain.indexer(), chain.rpc()))?;
     let senders = match config.mode {
-        RingMode::Anonymous => HiddenSenders::read(ctx, &auditor, config.mode)?,
+        RingMode::Anonymous => HiddenSenders::read(ctx, &auditor, config.mode, &tracking)?,
         RingMode::Confidential => HiddenSenders::default(),
     };
     for transaction in &page.transactions {
@@ -66,23 +69,31 @@ pub fn run(ctx: &Context, args: AuditArgs) -> Result<()> {
 struct HiddenSenders(HashMap<[u8; 32], Address>);
 
 impl HiddenSenders {
-    fn read(ctx: &Context, auditor: &X25519Keypair, mode: RingMode) -> Result<Self> {
-        let tracking = ctx.block(ctx.ring.require_policy(ctx.chain()))?.tracking;
+    fn read(
+        ctx: &Context,
+        auditor: &X25519Keypair,
+        mode: RingMode,
+        tracking: &Address,
+    ) -> Result<Self> {
         // A zero key note spends under the public zero secret, every other under the enrolled key.
         let zero = NullifierKey::from_secret([0; 31]);
         let mut keys = HashMap::new();
         let mut spent = HashMap::new();
-        for (hash, utxo) in created_notes(ctx, auditor, mode)? {
+        for (hash, utxo) in created_notes(ctx, auditor, mode, tracking)? {
+            // An owner with no authorization yet spends nothing.
+            let Some(nullifier_pk) = utxo.owner.nullifier_pk() else {
+                continue;
+            };
             let owner = Address::new_from_array(utxo.owner_key);
             let key = match keys.entry(owner) {
                 Entry::Occupied(held) => held.into_mut(),
-                Entry::Vacant(open) => open.insert(enrolled_key(ctx, auditor, &tracking, &owner)?),
+                Entry::Vacant(open) => open.insert(enrolled_key(ctx, auditor, tracking, &owner)?),
             };
-            let key = match utxo.nullifier_pk == ZERO_NULLIFIER_PUBKEY {
+            let key = match nullifier_pk == ZERO_NULLIFIER_PUBKEY {
                 true => Some(&zero),
                 false => key.as_ref(),
             };
-            if let Some(key) = key.filter(|key| key.pubkey().ok() == Some(utxo.nullifier_pk)) {
+            if let Some(key) = key.filter(|key| key.pubkey().ok() == Some(nullifier_pk)) {
                 spent.insert(key.nullifier(&hash, &utxo.blinding)?, owner);
             }
         }
@@ -103,12 +114,15 @@ fn created_notes(
     ctx: &Context,
     auditor: &X25519Keypair,
     mode: RingMode,
+    tracking: &Address,
 ) -> Result<Vec<([u8; 32], AuditedUtxo)>> {
     let chain = ctx.chain();
     let mut notes = Vec::new();
     let mut cursor = None;
     loop {
-        let mut scan = RingScan::new(ctx.ring.program_id(), auditor.pubkey()).with_mode(mode);
+        let mut scan = RingScan::new(ctx.ring.program_id(), auditor.pubkey())
+            .with_mode(mode)
+            .with_tracking_registry(*tracking);
         if let Some(cursor) = cursor.take() {
             scan = scan.with_cursor(cursor);
         }

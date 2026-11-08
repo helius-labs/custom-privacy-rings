@@ -25,7 +25,9 @@ use spr_transaction::{
     AssetRegistry, Data, Mint, OwnerCx, Utxo, UtxoSerialization,
 };
 use zolana_ring_keys::{MergeSeedHolder, MergeSeedRequest};
-use zolana_ring_transaction::{seal_recipient_body, seal_sender_bundle, OutputBlindings};
+use zolana_ring_transaction::{
+    record_key, seal_recipient_body, seal_sender_bundle, OutputBlindings,
+};
 
 use super::{
     fixtures::{keypair, Member, RING},
@@ -89,8 +91,8 @@ fn ring_body(
         amount: sealed.amount,
         owner_key: owner.signing_pubkey.confidential_view_tag().unwrap(),
         mint: sealed.asset.asset.to_bytes(),
-        nullifier_pk: owner.nullifier_pubkey,
         blinding,
+        key: record_key(RecordKind::Ring, owner.nullifier_pubkey),
     };
     let ciphertext = seal_recipient_body(&record, None, secret).unwrap();
     encode_ring_body_output(&ciphertext, &[]).unwrap()
@@ -197,7 +199,6 @@ impl Ledger {
         let ciphertext = seal_sender_bundle(
             &SenderBundle {
                 output_seed: *blindings.output_seed(),
-                recipient_keys: vec![owner.viewing_pubkey.u()],
             },
             &secret,
         )
@@ -390,6 +391,7 @@ impl Member {
             store: &self.store,
             mode,
             ring: RING,
+            sender_audit: None,
         }
         .fetch(zolana)
         .unwrap()

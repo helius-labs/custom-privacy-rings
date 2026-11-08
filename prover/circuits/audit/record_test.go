@@ -2,6 +2,7 @@ package audit_test
 
 import (
 	"math/big"
+	"slices"
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
@@ -34,14 +35,75 @@ func TestSectionSolvesEveryKeyShape(t *testing.T) {
 	}
 }
 
-// Each byte range of a record is sealed from its slot, a stream naming another value fails the binding.
+// Each published byte range of a record is sealed from its slot, a stream naming another value fails the binding.
 func TestEveryRecordFieldIsSealed(t *testing.T) {
 	s := ringaudit.NewSection(t, plainShape)
-	for name, offset := range map[string]int{"kind": 0, "amount": 8, "owner key": 9, "mint": 41, "nullifier key": 104, "blinding": 136} {
+	const ring, exit = 0, 2
+	for name, field := range map[string]struct{ slot, offset int }{
+		"kind": {ring, 0}, "amount": {ring, 8}, "owner key": {ring, 9}, "mint": {ring, 41}, "blinding": {ring, 104},
+		"exit blinding": {exit, 104}, "exit nullifier key": {exit, 136},
+	} {
 		t.Run(name, func(t *testing.T) {
-			refuseSealed(t, s, func(p *ringaudit.Plaintexts) { p.Records[0][offset] ^= 1 })
+			refuseSealed(t, s, func(p *ringaudit.Plaintexts) { p.Records[field.slot][field.offset] ^= 1 })
 		})
 	}
+}
+
+// A non-exit slot publishes the record without its key, an exit the whole record, and the kind names a zero key.
+func TestRecordPublishesItsKeyOnAnExitAlone(t *testing.T) {
+	s := ringaudit.NewSection(t, plainShape)
+	compileSection(t, plainShape).RequireSolved(t, s.Circuit(t))
+	stream, p := s.Stream(t), s.Plaintexts(t)
+	exitKind := byte(audit.KindExit)
+	if s.Outputs[2].Utxo.NullifierPk.Cmp(shared.ZeroNullifierPk) == 0 {
+		exitKind |= audit.KindZeroKey
+	}
+	for i, want := range []struct {
+		kind byte
+		len  int
+	}{{audit.KindRing, audit.RingRecordLen}, {audit.KindRing | audit.KindZeroKey, audit.RingRecordLen}, {exitKind, audit.RecordLen}, {audit.KindDummy, audit.RingRecordLen}} {
+		if p.Records[i][0] != want.kind || len(stream.Record(i)) != want.len {
+			t.Fatalf("slot %d: kind %d over %d bytes, want %d over %d", i, p.Records[i][0], len(stream.Record(i)), want.kind, want.len)
+		}
+	}
+}
+
+// The zero key bit follows the slot's key, a flipped bit fails the binding.
+func TestZeroKeyBitFollowsTheKey(t *testing.T) {
+	s := ringaudit.NewSection(t, plainShape)
+	for name, slot := range map[string]int{"a bit set on a registered key": 0, "a bit cleared on the zero key": 1} {
+		t.Run(name, func(t *testing.T) {
+			refuseSealed(t, s, func(p *ringaudit.Plaintexts) { p.Records[slot][0] ^= audit.KindZeroKey })
+		})
+	}
+}
+
+// The record chain hashes each slot's published length, a key tail added, dropped or replaced names bytes the proof never bound.
+func TestRecordChainBindsThePublishedLength(t *testing.T) {
+	s := ringaudit.NewSection(t, plainShape)
+	c := compileSection(t, plainShape)
+	const ring, exit = 0, 2
+	refuse := func(t *testing.T, edit func(records [][]byte)) {
+		t.Helper()
+		stream := s.Stream(t)
+		stream.Records = slices.Clone(stream.Records)
+		edit(stream.Records)
+		c.RefuseStatement(t, s.Circuit(t), s.StatementOf(t, stream, s.Claim()))
+	}
+	t.Run("a non-exit record carrying its key", func(t *testing.T) {
+		p := s.Plaintexts(t)
+		full := s.Keys.SealRecord(t, p.SealedTo[ring], s.Salt, ring, s.FirstNullifier, p.Records[ring])
+		refuse(t, func(records [][]byte) { records[ring] = full })
+	})
+	t.Run("an exit record without its key", func(t *testing.T) {
+		refuse(t, func(records [][]byte) { records[exit] = records[exit][:audit.RingRecordLen] })
+	})
+	t.Run("an exit record with another key tail", func(t *testing.T) {
+		refuse(t, func(records [][]byte) {
+			records[exit] = slices.Clone(records[exit])
+			records[exit][audit.RecordLen-1] ^= 1
+		})
+	})
 }
 
 // The auditor skips a slot by one byte, the byte is the slot's class under the proof.

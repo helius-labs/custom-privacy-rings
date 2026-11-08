@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use custom_ring_interface::{domain, tracking::TrackingAuthorization, STORAGE_PROGRAM_ID};
 use solana_account::Account;
 use solana_address::Address;
@@ -24,8 +26,8 @@ pub struct ResolvedRecipient {
     pub nullifier_pk: [u8; 32],
     /// The authorization's, a rotation moves it past the address.
     pub viewing_pubkey: X25519Pubkey,
-    /// Zero under the zero key.
-    pub list_tag: [u8; 32],
+    /// `None` with no row, off every private list. Zero under the zero key.
+    pub list_tag: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Error)]
@@ -50,8 +52,6 @@ pub enum ResolveError {
     ListTagMismatch,
     #[error("the tracking leaf holds another nullifier key than the address")]
     NullifierKeyMismatch,
-    #[error("the owner holds no tracking row under the root, a pending enrollment grants nothing")]
-    NotEnrolled,
     #[error("the owner's tracking authorization is absent")]
     AuthorizationMissing,
     #[error("the tracking authorization is not a storage program account")]
@@ -135,11 +135,11 @@ impl RecipientResolver<'_> {
         Ok(ResolvedRecipient {
             nullifier_pk,
             viewing_pubkey: X25519Pubkey::from_u(viewing_u)?,
-            list_tag,
+            list_tag: Some(list_tag),
         })
     }
 
-    /// Zero key resolution defers enrollment checks to payment validation.
+    /// An owner with no row resolves to the address keys, only a later registration of the same key spends.
     fn verify(
         &self,
         member: &[u8; 32],
@@ -162,16 +162,15 @@ impl RecipientResolver<'_> {
         .map_err(ResolveError::Opening)?;
         let nullifier_pk = address.recipient.nullifier_pubkey;
         match (row, nullifier_pk == ZERO_NULLIFIER_PUBKEY) {
-            (None, true) => Ok(Opened::Resolved(ResolvedRecipient {
+            (None, _) => Ok(Opened::Resolved(ResolvedRecipient {
                 nullifier_pk,
                 viewing_pubkey: address.recipient.viewing_pubkey,
-                list_tag: [0; 32],
+                list_tag: None,
             })),
             (Some(_), true) => Ok(Opened::Enrolled {
                 nullifier_pk,
                 list_tag: [0; 32],
             }),
-            (None, false) => Err(ResolveError::NotEnrolled),
             (Some(row), false) if row.nullifier_pk != nullifier_pk => {
                 Err(ResolveError::NullifierKeyMismatch)
             }
@@ -199,6 +198,15 @@ impl RecipientResolver<'_> {
 impl AuthorizationCheck<'_> {
     /// The viewing key the owner last signed into its authorization.
     pub fn viewing_u(self) -> Result<[u8; 32], ResolveError> {
+        Ok(self.authorization()?.viewing_u)
+    }
+
+    /// Final from the account's creation, an account not yet applied still names it.
+    pub fn nullifier_pk(self) -> Result<[u8; 32], ResolveError> {
+        Ok(self.authorization()?.nullifier_pk)
+    }
+
+    fn authorization(self) -> Result<TrackingAuthorization, ResolveError> {
         let account = self.account.ok_or(ResolveError::AuthorizationMissing)?;
         if account.owner != STORAGE_PROGRAM_ID {
             return Err(ResolveError::AuthorizationProgramOwner);
@@ -211,7 +219,55 @@ impl AuthorizationCheck<'_> {
         if authorization.owner != self.owner {
             return Err(ResolveError::AuthorizationOwner);
         }
-        Ok(authorization.viewing_u)
+        Ok(*authorization)
+    }
+}
+
+/// The registered nullifier keys of ring output owners, read for an auditor.
+#[must_use]
+pub struct RegisteredKeys<'a> {
+    /// The ring's pinned tracking registry.
+    pub registry: Address,
+    pub owners: &'a [[u8; 32]],
+}
+
+impl RegisteredKeys<'_> {
+    /// An owner with no account is absent and its outputs stay unresolved.
+    pub async fn read(
+        self,
+        rpc: &(impl AsyncRpc + ?Sized),
+    ) -> Result<HashMap<[u8; 32], [u8; 32]>, ResolveError> {
+        if self.owners.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let owners: Vec<Address> = self
+            .owners
+            .iter()
+            .copied()
+            .map(Address::new_from_array)
+            .collect();
+        let addresses = owners
+            .iter()
+            .map(|owner| TrackingAuthorization::find_address(&self.registry, owner).0)
+            .collect();
+        let accounts = rpc
+            .get_multiple_accounts(addresses)
+            .await
+            .map_err(|error| ResolveError::Rpc(Box::new(error)))?;
+        let mut keys = HashMap::with_capacity(owners.len());
+        for (index, owner) in owners.into_iter().enumerate() {
+            let Some(account) = accounts.get(index).and_then(Option::as_ref) else {
+                continue;
+            };
+            let nullifier_pk = AuthorizationCheck {
+                registry: self.registry,
+                owner,
+                account: Some(account),
+            }
+            .nullifier_pk()?;
+            keys.insert(owner.to_bytes(), nullifier_pk);
+        }
+        Ok(keys)
     }
 }
 
@@ -411,6 +467,13 @@ mod tests {
         async fn get_account(&self, _address: Address) -> Result<Option<Account>, ClientError> {
             Ok(self.account.clone())
         }
+
+        async fn get_multiple_accounts(
+            &self,
+            addresses: Vec<Address>,
+        ) -> Result<Vec<Option<Account>>, ClientError> {
+            Ok(vec![self.account.clone(); addresses.len()])
+        }
     }
 
     #[tokio::test]
@@ -427,7 +490,7 @@ mod tests {
             ResolvedRecipient {
                 nullifier_pk: leaf.nullifier_pk,
                 viewing_pubkey: rotated,
-                list_tag: leaf.list_tag,
+                list_tag: Some(leaf.list_tag),
             }
         );
     }
@@ -465,6 +528,48 @@ mod tests {
         ));
     }
 
+    /// An unapplied authorization already names the key, a missing one leaves the owner unresolved.
+    #[tokio::test]
+    async fn registered_keys_read_an_authorization_and_refuse_a_foreign_one() {
+        let owner = wallet(3);
+        let owner_key = solana_owner(&owner).to_bytes();
+        let read = |account: Option<Account>| async move {
+            RegisteredKeys {
+                registry: REGISTRY,
+                owners: &[owner_key],
+            }
+            .read(&Served::new(&[], account))
+            .await
+        };
+        let mut held = authorization(REGISTRY, solana_owner(&owner), ViewingKey::new().pubkey());
+        let mut stored = *TrackingAuthorization::from_data(&held.data).unwrap();
+        stored.nullifier_pk = [8; 32];
+        stored.applied = 0;
+        held.data = bytemuck::bytes_of(&stored).to_vec();
+        assert_eq!(
+            read(Some(held)).await.unwrap(),
+            HashMap::from([(owner_key, [8; 32])])
+        );
+        assert!(read(None).await.unwrap().is_empty());
+        let viewing = ViewingKey::new().pubkey();
+        let other_registry = authorization(RING, solana_owner(&owner), viewing);
+        assert!(matches!(
+            read(Some(other_registry)).await,
+            Err(ResolveError::AuthorizationRegistry)
+        ));
+        let other_owner = authorization(REGISTRY, solana_owner(&wallet(4)), viewing);
+        assert!(matches!(
+            read(Some(other_owner)).await,
+            Err(ResolveError::AuthorizationOwner)
+        ));
+        let mut foreign = authorization(REGISTRY, solana_owner(&owner), viewing);
+        foreign.owner = Address::new_from_array([6; 32]);
+        assert!(matches!(
+            read(Some(foreign)).await,
+            Err(ResolveError::AuthorizationProgramOwner)
+        ));
+    }
+
     #[tokio::test]
     async fn a_salt_of_another_list_tag_is_refused() {
         let owner = wallet(3);
@@ -487,15 +592,22 @@ mod tests {
         ));
     }
 
+    /// The absence opening still verifies, a forged absence never reaches the address keys.
     #[tokio::test]
-    async fn a_keyed_address_with_no_row_is_refused_as_pending_grants_nothing() {
+    async fn a_keyed_address_with_no_row_resolves_to_its_own_keys_off_every_list() {
         let owner = wallet(3);
-        assert!(matches!(
+        let address = enrolled(&owner);
+        assert_eq!(
             Served::new(&[entry(&wallet(4))], None)
-                .resolve(&enrolled(&owner))
-                .await,
-            Err(ResolveError::NotEnrolled)
-        ));
+                .resolve(&address)
+                .await
+                .unwrap(),
+            ResolvedRecipient {
+                nullifier_pk: address.recipient.nullifier_pubkey,
+                viewing_pubkey: address.recipient.viewing_pubkey,
+                list_tag: None,
+            }
+        );
     }
 
     /// Payment validation refuses an enrolled recipient under the zero key.
@@ -510,7 +622,7 @@ mod tests {
             ResolvedRecipient {
                 nullifier_pk: ZERO_NULLIFIER_PUBKEY,
                 viewing_pubkey: address.recipient.viewing_pubkey,
-                list_tag: [0; 32],
+                list_tag: None,
             }
         );
         let rotated = ViewingKey::new().pubkey();
@@ -523,7 +635,7 @@ mod tests {
             ResolvedRecipient {
                 nullifier_pk: ZERO_NULLIFIER_PUBKEY,
                 viewing_pubkey: rotated,
-                list_tag: [0; 32],
+                list_tag: Some([0; 32]),
             }
         );
         assert!(matches!(

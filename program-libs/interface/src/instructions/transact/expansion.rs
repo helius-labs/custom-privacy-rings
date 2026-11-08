@@ -165,7 +165,7 @@ impl RingTransactData<'_> {
             .outputs
             .iter()
             .filter(|output| output.is_exit())
-            .map(|output| &output.record[..]);
+            .map(|output| output.record);
         [self.envelope, self.recipient_keys]
             .into_iter()
             .chain(exits)

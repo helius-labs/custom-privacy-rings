@@ -4,7 +4,7 @@ use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, tag, AnonymousProofData, AppMessage, CustomRingError,
     CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
     PlainGroth16Proof, PolicyProof, Replies, RingOutput, RingPolicy, RingRail, RingTransactData,
-    RootRead, SlotBody, MAX_SPP_CPI_ACCOUNTS, OUTPUT_RECORD_LEN,
+    RootRead, SlotBody, EXIT_RECORD_LEN, MAX_SPP_CPI_ACCOUNTS,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -45,8 +45,8 @@ pub(crate) struct OwnedOutput {
     pub hash: [u8; 32],
     pub owner_tag: [u8; 32],
     pub body: OwnedBody,
-    /// A recipient body's leading bytes, an exit's sealed record.
-    pub record: [u8; OUTPUT_RECORD_LEN],
+    /// A recipient body's leading bytes, an exit's sealed record, [`SlotBody::record_len`] long.
+    pub record: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,7 +77,7 @@ impl OwnedOutput {
             hash: *output.hash,
             owner_tag: output.owner_tag,
             body: OwnedBody::of(output.body),
-            record: *output.record,
+            record: output.record.to_vec(),
         }
     }
 
@@ -186,13 +186,13 @@ impl TransactParts {
         &mut self,
         envelope: Vec<u8>,
         recipient_keys: Vec<u8>,
-        exit_records: &[[u8; OUTPUT_RECORD_LEN]],
+        exit_records: &[[u8; EXIT_RECORD_LEN]],
     ) {
         self.envelope = envelope;
         self.recipient_keys = recipient_keys;
         let exits = self.outputs.iter_mut().filter(|output| output.is_exit());
         for (output, record) in exits.zip(exit_records) {
-            output.record = *record;
+            output.record = record.to_vec();
         }
     }
 

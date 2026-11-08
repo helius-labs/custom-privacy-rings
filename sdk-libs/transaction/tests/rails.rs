@@ -2,8 +2,8 @@
 
 use custom_ring_interface::{
     blinding::ring_blinding_seed, ring_body_output, stream::DeliveredSlot, stream::SlotSecret,
-    BundleLayout, OutputRecord, RecipientPayload, RecordKind, SenderBundle, SlotBody,
-    CONFIDENTIAL_DATA_FREE_BODY_LEN, MIN_REPLY_LEN, OUTPUT_RECORD_LEN,
+    OutputRecord, RecipientPayload, RecordKey, RecordKind, SenderBundle, SlotBody,
+    CONFIDENTIAL_DATA_FREE_BODY_LEN, MIN_REPLY_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -15,10 +15,10 @@ use spr_transaction::{
     Data, Mint, TransactionError, Utxo, WalletUtxo,
 };
 use zolana_ring_transaction::{
-    open_recipient_body, open_reply, open_sender_bundle, random_tag_preimage, seal_recipient_body,
-    seal_reply, AnonymousOutput, AnonymousPlan, AnonymousSlot, OpenedBody, OpenedNote,
-    OpenedRecipientBody, OutputBlindings, PayloadRead, PublishedSlot, ReplyMetadata, RingAssets,
-    RingDelivery, RingOutputRail, RingRailError as E,
+    open_recipient_body, open_reply, open_sender_bundle, random_tag_preimage, record_key,
+    seal_recipient_body, seal_reply, AnonymousOutput, AnonymousPlan, AnonymousSlot, OpenedBody,
+    OpenedNote, OpenedRecipientBody, OutputBlindings, PayloadRead, PublishedSlot, ReplyMetadata,
+    RingAssets, RingDelivery, RingOutputRail, RingRailError as E,
 };
 
 const RING: Address = Address::new_from_array([42; 32]);
@@ -46,8 +46,8 @@ fn record(owner: &ShieldedAddress, mint: Address, amount: u64, blinding: [u8; 32
         amount,
         owner_key: owner.signing_pubkey.confidential_view_tag().unwrap(),
         mint: mint.to_bytes(),
-        nullifier_pk: owner.nullifier_pubkey,
         blinding,
+        key: record_key(RecordKind::Ring, owner.nullifier_pubkey),
     }
 }
 
@@ -170,11 +170,17 @@ fn bundle(reader: &ViewingKey, rail: &RingOutputRail, proof: &SppProofInputs) ->
         .unwrap()
         .unwrap();
     let outputs = &proof.external_data.outputs;
-    let layout = BundleLayout {
-        outputs: outputs.len(),
-    };
     let secret = delivered_secret(reader, proof, rail, u32::try_from(outputs.len()).unwrap());
-    open_sender_bundle(sender.body, &secret, layout).unwrap()
+    open_sender_bundle(sender.body, &secret).unwrap()
+}
+
+/// `V_i` of each published slot, the keys the auditor stream seals and the sender reads back.
+fn sealed_keys(rail: &RingOutputRail, proof: &SppProofInputs) -> Vec<[u8; 32]> {
+    rail.recipient_keys(&proof.output_utxos, proof.external_data.outputs.len())
+        .unwrap()
+        .iter()
+        .map(X25519Pubkey::u)
+        .collect()
 }
 
 /// The change at `slot`, its body opened under the sender's own viewing key.
@@ -390,9 +396,11 @@ fn an_anonymous_transfer_seals_each_payment_at_its_position_and_the_bundle_after
         proof.external_data.messages[0].view_tag
     );
 
+    // The bundle carries the seed alone, the keys come from the auditor stream.
     let sent = bundle(&sender.viewing_key, &rail, &proof);
+    let keys = sealed_keys(&rail, &proof);
     assert_eq!(
-        sent.recipient_keys,
+        keys,
         [
             address(&sender).viewing_pubkey.u(),
             recipient.viewing_pubkey.u()
@@ -456,13 +464,12 @@ fn the_bundle_carries_the_spl_and_the_sol_change() {
         assert!(matches!(change.body, SlotBody::Recipient(_)));
     }
     let assets = RingAssets::new([USDC]).unwrap();
-    let sent = bundle(&sender.viewing_key, &rail, &proof);
-    assert_eq!(sent.recipient_keys[2], recipient.viewing_pubkey.u());
+    // The bundle opens to the sender, the keys come from the auditor stream.
+    bundle(&sender.viewing_key, &rail, &proof);
+    let keys = sealed_keys(&rail, &proof);
+    assert_eq!(keys[2], recipient.viewing_pubkey.u());
     for (position, (asset, amount)) in [(USDC, 6), (Mint::SOL, 5)].into_iter().enumerate() {
-        assert_eq!(
-            sent.recipient_keys[position],
-            address(&sender).viewing_pubkey.u()
-        );
+        assert_eq!(keys[position], address(&sender).viewing_pubkey.u());
         let utxo = change_at(&sender, &rail, &assets, &proof, position);
         assert_eq!((utxo.asset, utxo.amount), (asset, amount));
     }
@@ -487,22 +494,25 @@ fn a_zero_amount_change_slot_opens_under_the_sender_key() {
     })
     .unwrap();
     let proof = rail.encrypt(tx, &address(&sender)).unwrap();
-    let sent = bundle(&sender.viewing_key, &rail, &proof);
-    assert_eq!(sent.recipient_keys[0], address(&sender).viewing_pubkey.u());
+    // The bundle opens to the sender, the keys come from the auditor stream.
+    bundle(&sender.viewing_key, &rail, &proof);
+    let keys = sealed_keys(&rail, &proof);
+    assert_eq!(keys[0], address(&sender).viewing_pubkey.u());
     let assets = RingAssets::new([]).unwrap();
     let change = change_at(&sender, &rail, &assets, &proof, 0);
     assert_eq!(change.amount, 0);
 }
 
-/// The record names the key, any key the commitment holds opens and no other.
+/// The reader rebuilds under its own key or the zero key the record's kind names, never a key it
+/// does not hold.
 #[test]
-fn a_reader_opens_under_the_key_its_record_names() {
+fn a_reader_opens_under_its_own_key_or_the_zero_key_alone() {
     let owner = address(&keypair(2));
     let blinding = [5; 32];
     let assets = RingAssets::new([USDC]).unwrap();
-    let body = |nullifier_pk: [u8; 32]| OpenedRecipientBody {
+    let body = |key: RecordKey| OpenedRecipientBody {
         record: OutputRecord {
-            nullifier_pk,
+            key,
             ..record(&owner, USDC.asset, 9, blinding)
         },
         payload: PayloadRead::Absent,
@@ -530,16 +540,24 @@ fn a_reader_opens_under_the_key_its_record_names() {
         .open_body(body)
         .unwrap()
     };
-    for key in [owner.nullifier_pubkey, ZERO_NULLIFIER_PUBKEY, [0x11; 32]] {
+    for (key, published) in [
+        (owner.nullifier_pubkey, RecordKey::Unpublished),
+        (ZERO_NULLIFIER_PUBKEY, RecordKey::Zero),
+    ] {
         assert!(matches!(
-            open(&hash_under(&key), &body(key)),
+            open(&hash_under(&key), &body(published)),
             Some(OpenedBody::Note(OpenedNote { nullifier_pk, .. })) if nullifier_pk == key
         ));
     }
     assert_eq!(
-        open(&hash_under(&[0x11; 32]), &body(owner.nullifier_pubkey)),
+        open(&hash_under(&[0x11; 32]), &body(RecordKey::Unpublished)),
         None,
-        "a record naming another key misses"
+        "a note under a key the reader does not hold misses"
+    );
+    assert_eq!(
+        open(&hash_under(&owner.nullifier_pubkey), &body(RecordKey::Zero)),
+        None,
+        "the zero key bit names the zero key alone"
     );
 
     let sender = keypair(1);
@@ -564,7 +582,7 @@ fn a_reader_opens_under_the_key_its_record_names() {
                 OpenedBody::Note(note) => note.nullifier_pk,
                 other => panic!("a note expected, got {other:?}"),
             });
-            assert_eq!(rebuilt, Some(key));
+            assert_eq!(rebuilt, (key != [0x11; 32]).then_some(key));
         }
     }
 }
@@ -701,19 +719,23 @@ fn a_dummy_publishes_the_tag_of_its_preimage_and_a_recipient_length_body() {
         assert_eq!(dummy.owner_tag, &tag);
         assert!(matches!(
             dummy.body,
-            SlotBody::Recipient(body) if body.len() == OUTPUT_RECORD_LEN
+            SlotBody::Recipient(body) if body.len() == RING_RECORD_LEN
         ));
     }
-    let sent = bundle(&sender.viewing_key, &rail, &proof);
+    // The bundle opens to the sender, the keys come from the auditor stream.
+    bundle(&sender.viewing_key, &rail, &proof);
+    let keys = sealed_keys(&rail, &proof);
     assert_eq!(
-        sent.recipient_keys,
+        keys[..2],
         [
             address(&sender).viewing_pubkey.u(),
-            recipient.viewing_pubkey.u(),
-            [0; 32],
-            [0; 32]
+            recipient.viewing_pubkey.u()
         ]
     );
+    // A dummy seals to a key derived from the transaction secret, never a party's.
+    assert!(keys[2..]
+        .iter()
+        .all(|key| *key != address(&sender).viewing_pubkey.u() && *key != [0; 32]));
 }
 
 #[test]
@@ -733,11 +755,11 @@ fn a_transfer_with_no_change_leads_with_its_payment_and_the_bundle_stays() {
         published[0].anonymous,
         Some(AnonymousSlot::Payment { .. })
     ));
-    let sent = bundle(&sender.viewing_key, &rail, &proof);
-    assert!(!sent
-        .recipient_keys
-        .contains(&address(&sender).viewing_pubkey.u()));
-    assert_eq!(sent.recipient_keys[0], recipient.viewing_pubkey.u());
+    // The bundle opens to the sender, the keys come from the auditor stream.
+    bundle(&sender.viewing_key, &rail, &proof);
+    let keys = sealed_keys(&rail, &proof);
+    assert!(!keys.contains(&address(&sender).viewing_pubkey.u()));
+    assert_eq!(keys[0], recipient.viewing_pubkey.u());
     let body = decrypt(&receiver.viewing_key, &rail, &proof, &published[0], 0);
     assert_eq!(body.record.amount, 10);
 }
@@ -752,10 +774,13 @@ fn the_bundle_names_the_sender_at_each_change_output_of_any_asset() {
     }
     let rail = anonymous(tx_key, AnonymousPlan::new());
     let proof = rail.encrypt(tx, &address(&sender)).unwrap();
-    let sent = bundle(&sender.viewing_key, &rail, &proof);
-    // The shape's padding dummy keeps a zero key.
+    // The bundle opens to the sender, the keys come from the auditor stream.
+    bundle(&sender.viewing_key, &rail, &proof);
+    let keys = sealed_keys(&rail, &proof);
+    // The shape's padding dummy seals to its derived key.
     let sender_u = address(&sender).viewing_pubkey.u();
-    assert_eq!(sent.recipient_keys, [sender_u, sender_u, sender_u, [0; 32]]);
+    assert_eq!(keys[..3], [sender_u, sender_u, sender_u]);
+    assert_ne!(keys[3], sender_u);
     let assets = RingAssets::new([USDC]).unwrap();
     let mut amounts: Vec<u64> = (0..3)
         .map(|slot| change_at(&sender, &rail, &assets, &proof, slot))
@@ -833,7 +858,7 @@ fn compact_padding_omits_a_suffix_and_keeps_every_index() {
         .published_sender(&proof, &address(&sender).viewing_pubkey)
         .unwrap()
         .unwrap();
-    assert_eq!(framed.body.len(), BundleLayout { outputs: 2 }.byte_len());
+    assert_eq!(framed.body.len(), SENDER_BUNDLE_LEN);
     let body = decrypt(&receiver.viewing_key, &rail, &proof, &published[1], 1);
     assert_eq!(body.record.blinding, proof.output_utxos[1].blinding);
     let assets = RingAssets::new([]).unwrap();
@@ -973,16 +998,15 @@ fn a_body_and_a_reply_under_one_secret_read_different_keystreams() {
             .collect::<Vec<_>>(),
         body[..32],
     );
-    assert_eq!(OUTPUT_RECORD_LEN, body.len());
+    assert_eq!(RING_RECORD_LEN, body.len());
 }
 
 #[test]
-fn a_bundle_of_another_length_than_the_frame_counts_is_refused() {
+fn a_bundle_longer_than_its_seed_is_refused() {
     let secret = SlotSecret::new([3; 32]).unwrap();
-    let layout = BundleLayout { outputs: 2 };
     assert!(matches!(
-        open_sender_bundle(&[0; 112], &secret, layout),
-        Err(E::SenderBundleLength { len: 112 })
+        open_sender_bundle(&[0; 96], &secret),
+        Err(E::SenderBundleLength { len: 96 })
     ));
 }
 
@@ -1017,10 +1041,13 @@ fn an_exit_publishes_scheme_3_under_its_owner_tag() {
         proof.external_data.outputs[1].owner_tag,
         OwnerTag::Inline(exit.signing_pubkey.confidential_view_tag().unwrap())
     );
-    let sent = bundle(&sender.viewing_key, &rail, &proof);
+    // The bundle opens to the sender, the keys come from the auditor stream.
+    bundle(&sender.viewing_key, &rail, &proof);
+    let keys = sealed_keys(&rail, &proof);
     assert_eq!(
-        sent.recipient_keys[1], [0; 32],
-        "an exit's owner reads no shared tag and is never listed"
+        keys[1],
+        auditor().u(),
+        "an exit seals to the auditor, its owner is never listed"
     );
 }
 
@@ -1090,7 +1117,7 @@ fn a_dataless_delivered_slot_takes_the_plain_body_length() {
     for slot in &published {
         assert!(matches!(
             slot.body,
-            SlotBody::Recipient(body) if body.len() == OUTPUT_RECORD_LEN
+            SlotBody::Recipient(body) if body.len() == RING_RECORD_LEN
         ));
     }
 }
@@ -1239,7 +1266,7 @@ fn data_padding_hides_real_ring_body_lengths_on_both_rails() {
             .collect();
         assert!(widths.len() > 1);
         assert!(widths.iter().all(|width| *width == widths[0]));
-        assert!(widths[0] > OUTPUT_RECORD_LEN);
+        assert!(widths[0] > RING_RECORD_LEN);
         let index = proof
             .output_utxos
             .iter()

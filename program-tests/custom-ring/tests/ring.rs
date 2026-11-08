@@ -781,11 +781,13 @@ impl AuditLookup<'_> {
     fn run(self, env: &TestEnv) -> Result<AuditedTransaction> {
         custom_ring_cli::wait_for_indexed_transaction(&env.client, self.signature)?;
         let client = env.client.as_async();
+        let registry = CustomRing::new(self.scan.ring_program_id()).tracking_registry()?;
         env.client
-            .block_on(
-                self.scan
-                    .audit(self.auditor, client.indexer(), client.rpc()),
-            )?
+            .block_on(self.scan.with_tracking_registry(registry).audit(
+                self.auditor,
+                client.indexer(),
+                client.rpc(),
+            ))?
             .transactions
             .into_iter()
             .find(|tx| tx.tx_signature == self.signature)
@@ -808,6 +810,7 @@ impl AuditedSpends<'_> {
         let history = env.client.block_on(
             RingScan::new(self.ring.program_id(), self.auditor.pubkey())
                 .with_mode(config.mode)
+                .with_tracking_registry(self.ring.tracking_registry()?)
                 .audit(self.auditor, client.indexer(), client.rpc()),
         )?;
         ensure!(

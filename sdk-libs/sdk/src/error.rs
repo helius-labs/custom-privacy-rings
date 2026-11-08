@@ -182,6 +182,10 @@ pub enum RingError {
     ListSaltUnknown { member: [u8; 32] },
     #[error("no known list salt of owner {member:?} opens its tracking leaf's list tag")]
     ListSaltMismatch { member: [u8; 32] },
+    #[error(
+        "owner {member:?} holds no tracking row, a salted entry reads it only after registration"
+    )]
+    SaltedOwnerUnregistered { member: [u8; 32] },
     #[error("the policy refuses the transfer, {0}")]
     PolicyRuleUnsatisfied(#[from] RuleRefusal),
     #[error("transfer references another ring {0}")]

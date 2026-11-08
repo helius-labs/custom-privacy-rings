@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use custom_ring_interface::{
     key_catalog::{FrameKey, TransferShape, TRANSFER_SHAPES},
     tag, CustomRingError, RecipientPayload, Replies, RingPolicy, RingRail, RingTransactData,
-    RootRead, SlotBody, MAX_CPI_DATA_LEN, MIN_REPLY_LEN, OUTPUT_RECORD_LEN,
+    RootRead, SlotBody, EXIT_RECORD_LEN, MAX_CPI_DATA_LEN, MIN_REPLY_LEN, RING_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{error::InstructionError, AccountMeta, Instruction};
@@ -274,14 +274,14 @@ fn instruction(ring: &mut Ring, case: Wide) -> Option<Instruction> {
         ring_data_hash: Some([0x5a; 32]),
         data: Vec::new(),
     };
-    let records: Vec<[u8; OUTPUT_RECORD_LEN]> = (0..16u8)
-        .map(|slot| [0xc0 + slot; OUTPUT_RECORD_LEN])
+    let records: Vec<[u8; EXIT_RECORD_LEN]> = (0..16u8)
+        .map(|slot| [0xc0 + slot; EXIT_RECORD_LEN])
         .collect();
     let bodies: Vec<Vec<u8>> = records
         .iter()
         .map(|record| {
             [
-                &record[..],
+                &record[..RING_RECORD_LEN],
                 &payload.encode_padded(payload.encoded_len()).unwrap(),
             ]
             .concat()
@@ -295,7 +295,7 @@ fn instruction(ring: &mut Ring, case: Wide) -> Option<Instruction> {
     if case.payload != Payload::Base {
         data.has_data = true;
         for (slot, output) in data.outputs.iter_mut().enumerate() {
-            output.record = &records[slot];
+            output.record = &records[slot][..output.body.record_len()];
             output.body = match output.body {
                 SlotBody::Recipient(_) => SlotBody::Recipient(&bodies[slot]),
                 exit @ SlotBody::Exit(_) => exit,

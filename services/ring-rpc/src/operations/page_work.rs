@@ -107,6 +107,10 @@ impl<'a> PageWork<'a> {
         }
     }
 
+    pub(crate) fn store(&self) -> &'a AuditStore {
+        self.store
+    }
+
     /// A later opening of a known commitment changes it only to name its mint.
     pub(crate) fn open(
         &mut self,
@@ -247,6 +251,23 @@ impl Replay<'_> {
             return;
         };
         if note.ring_note && note.nullifier.is_none() {
+            // 1. A record without a key takes the held enrollment's key once, the note keeps its
+            // commitment and owner rows, so a late resolution adds no second entry.
+            if note.utxo.owner.nullifier_pk().is_none() {
+                let Some(registered) = self
+                    .enrolled_key(&note.utxo.owner_key)
+                    .and_then(|key| key.pubkey().ok())
+                else {
+                    return;
+                };
+                let Ok(resolved) = note.utxo.resolve(registered, self.store.ring, commitment)
+                else {
+                    return;
+                };
+                note.utxo = resolved;
+                self.delta.notes.insert(*commitment, note);
+            }
+            // 2. The registered key derives the nullifier whether or not the payload rebuilt.
             let blinding = note.utxo.blinding;
             note.nullifier = self
                 .key_of(&note.utxo)
@@ -441,18 +462,20 @@ impl Replay<'_> {
                 .or_insert_with(|| Some(NullifierKey::from_secret([0; 31])))
                 .as_ref();
         }
-        if !self.keys.contains_key(&utxo.owner_key) {
-            let opener = self.opener;
-            let opened = self
-                .enrollment(&utxo.owner_key)
-                .and_then(|held| opener(&held));
-            self.keys.insert(utxo.owner_key, opened);
-        }
-        let key = self.keys.get(&utxo.owner_key)?;
-        key.as_ref().filter(|key| {
+        self.enrolled_key(&utxo.owner_key).filter(|key| {
             key.pubkey()
                 .is_ok_and(|registered| registered == nullifier_pk)
         })
+    }
+
+    /// The key the owner's held enrollment seals, opened once per replay.
+    fn enrolled_key(&mut self, owner_key: &[u8; 32]) -> Option<&NullifierKey> {
+        if !self.keys.contains_key(owner_key) {
+            let opener = self.opener;
+            let opened = self.enrollment(owner_key).and_then(|held| opener(&held));
+            self.keys.insert(*owner_key, opened);
+        }
+        self.keys.get(owner_key)?.as_ref()
     }
 
     fn apply(&mut self, transition: Transition) {

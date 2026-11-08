@@ -323,3 +323,129 @@ fn cli_init_names_the_roles_and_reruns_from_the_chain() -> Result<()> {
     project.remove()?;
     Ok(())
 }
+
+/// A keyed recipient reads a payment before it registers, the auditor keys the output once the
+/// recipient's authorization appears, and the recipient spends it under that same key.
+#[test]
+fn a_recipient_receives_before_registration_then_registers_and_spends() -> Result<()> {
+    let mut env = setup()?;
+    let rpc = env.client.rpc();
+    let indexer = env.client.indexer();
+    let ring_program = custom_ring_program_id()?;
+    let ring = CustomRing::new(ring_program);
+    let auditor = X25519Keypair::new();
+    let auditor_tag = auditor_view_tag(&auditor.pubkey());
+    RegisterRing {
+        ring,
+        payer: &env.payer,
+        auditor_pubkey: auditor.pubkey(),
+        tier: Tier::policy(&EMPTY),
+    }
+    .send(&env.client)?;
+    // 1. Only the sender registers, the payment needs no row for its recipient.
+    EnrollOwners {
+        ring,
+        owners: &[&env.sender.keypair],
+        env: &env,
+    }
+    .send()?;
+    let sender = &env.sender.keypair;
+    let recipient = &env.recipient.keypair;
+    let recipient_address = recipient.shielded_address()?;
+    let deposited = DefaultRingDeposit {
+        depositor: sender,
+        tree: env.tree,
+        asset: DepositAsset::Sol,
+        amount: DEFAULT_DEPOSIT,
+    }
+    .send(rpc, indexer, &env.assets)?;
+    let entry_input = deposited.input_utxo(&env)?;
+    wait_for_merkle_proof(indexer, env.tree, entry_input.utxo_hash);
+    let mut prepared =
+        ConfidentialTransaction::new_with_ring(vec![entry_input], sender.pubkey(), ring_program)?;
+    prepared.transfer_sol(&recipient_address, ENTRY_AMOUNT)?;
+    let paid = OwnerTransfer {
+        ring,
+        sender,
+        prepared,
+        interface_transfer_accounts: Vec::new(),
+        auditor_tag,
+        cosigner: None,
+    }
+    .send(&env)?;
+
+    // 2. The recipient rebuilds the note under its own key, no registry read.
+    let assets = env.ring_assets()?;
+    WalletSync {
+        wallet: &mut env.recipient.wallet,
+        keys: &env.recipient.keypair,
+        assets: &assets,
+        transactions: std::slice::from_ref(&paid.indexed),
+    }
+    .sync()?;
+    assert_eq!(
+        sorted_unspent_notes(&env.recipient.wallet),
+        vec![(SOL_MINT, ENTRY_AMOUNT, Some(ring_program))],
+        "the recipient reads the payment before it registers"
+    );
+
+    // 3. The auditor keeps the proven record and leaves its key unresolved.
+    let recipient_key = |env: &TestEnv| -> Result<Option<[u8; 32]>> {
+        let audited = AuditLookup {
+            scan: RingScan::new(ring_program, auditor.pubkey()),
+            auditor: &auditor,
+            signature: paid.signature,
+        }
+        .run(env)?;
+        let output = audited
+            .outputs
+            .iter()
+            .find(|output| output.slot_index == RECIPIENT_SLOT)
+            .context("the recipient slot")?;
+        let utxo = output.opening.utxo().context("a real output")?;
+        ensure!(utxo.amount == ENTRY_AMOUNT, "the record stands unresolved");
+        Ok(utxo.owner.nullifier_pk())
+    };
+    assert_eq!(recipient_key(&env)?, None);
+
+    // 4. Registration names the address key, the auditor resolves the same output.
+    EnrollOwners {
+        ring,
+        owners: &[&env.recipient.keypair],
+        env: &env,
+    }
+    .send()?;
+    assert_eq!(
+        recipient_key(&env)?,
+        Some(recipient_address.nullifier_pubkey)
+    );
+
+    // 5. The spend proves its key equal to the registered row.
+    let received = Note {
+        owner: &env.recipient.keypair,
+        asset: SOL_MINT,
+        amount: ENTRY_AMOUNT,
+        blinding: output_blinding(&paid.outputs, RECIPIENT_SLOT)?,
+        ring_program_id: Some(ring_program),
+    };
+    let mut prepared = ConfidentialTransaction::new_with_ring(
+        vec![received.input_utxo(&env)?],
+        env.recipient.keypair.pubkey(),
+        ring_program,
+    )?;
+    prepared.transfer_sol(&env.sender.keypair.shielded_address()?, EXIT_AMOUNT)?;
+    let spent = OwnerTransfer {
+        ring,
+        sender: &env.recipient.keypair,
+        prepared,
+        interface_transfer_accounts: Vec::new(),
+        auditor_tag,
+        cosigner: None,
+    }
+    .send(&env)?;
+    ensure!(
+        !spent.outputs.is_empty(),
+        "the registered recipient spends its note"
+    );
+    Ok(())
+}

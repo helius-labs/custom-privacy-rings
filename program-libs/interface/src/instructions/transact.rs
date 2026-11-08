@@ -57,8 +57,8 @@ use wincode::{containers, len::FixIntLen, Serialize};
 use crate::{
     anonymous_exit::ANONYMOUS_PARTIES,
     audit_stream::{
-        AuditStreamLayout, BundleLayout, MIN_REPLY_LEN, OUTPUT_RECORD_LEN,
-        RECIPIENT_PAYLOAD_LENGTH_LEN,
+        AuditStreamLayout, RecordKind, EXIT_RECORD_LEN, MIN_REPLY_LEN,
+        RECIPIENT_PAYLOAD_LENGTH_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
     },
     bytes::Bytes,
     cosign::ApprovalMask,
@@ -385,10 +385,19 @@ impl InputTrees {
 /// The bytes a slot hands SPP outside the proof, the external data hash binds them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SlotBody<'a> {
-    /// The record then the payload, one stream under the slot's delivered secret.
+    /// The published record then the payload, one stream under the slot's delivered secret.
     Recipient(&'a [u8]),
     /// Scheme 3 under its own owner tag, a default-ring wallet reads it.
     Exit(&'a [u8]),
+}
+
+impl SlotBody<'_> {
+    pub const fn record_len(&self) -> usize {
+        match self {
+            Self::Recipient(_) => RecordKind::Ring.published_len(),
+            Self::Exit(_) => RecordKind::Exit.published_len(),
+        }
+    }
 }
 
 /// A published output slot without its SPP framing.
@@ -398,8 +407,8 @@ pub struct RingOutput<'a> {
     /// SPP binds an exit's tag to its owner, any other is a slot tag.
     pub owner_tag: [u8; 32],
     pub body: SlotBody<'a>,
-    /// A recipient body's leading bytes, an exit's own section of the auditor message.
-    pub record: &'a [u8; OUTPUT_RECORD_LEN],
+    /// A recipient body's leading bytes, an exit's own section of the auditor message, [`SlotBody::record_len`] long.
+    pub record: &'a [u8],
 }
 
 impl<'a> RingOutput<'a> {
@@ -415,7 +424,7 @@ impl<'a> RingOutput<'a> {
     /// The bytes past the record, a payload or an exit's scheme 3 body.
     const fn extra_len(&self) -> usize {
         match self.body {
-            SlotBody::Recipient(body) => body.len().saturating_sub(OUTPUT_RECORD_LEN),
+            SlotBody::Recipient(body) => body.len().saturating_sub(RING_RECORD_LEN),
             SlotBody::Exit(body) => body.len(),
         }
     }
@@ -423,20 +432,22 @@ impl<'a> RingOutput<'a> {
     /// A frame with no data carries each body at its plain length.
     const fn has_plain_body(&self) -> bool {
         match self.body {
-            SlotBody::Recipient(body) => body.len() == OUTPUT_RECORD_LEN,
+            SlotBody::Recipient(body) => body.len() == RING_RECORD_LEN,
             SlotBody::Exit(payload) => payload.len() == CONFIDENTIAL_DATA_FREE_BODY_LEN,
         }
     }
 
+    /// The record chain hashes the record at its slot's length, a key tail added or dropped names no proven bytes.
     fn record_leads_body(&self) -> bool {
-        match self.body {
-            SlotBody::Recipient(body) => body.first_chunk() == Some(self.record),
-            SlotBody::Exit(_) => true,
-        }
+        self.record.len() == self.body.record_len()
+            && match self.body {
+                SlotBody::Recipient(body) => body.starts_with(self.record),
+                SlotBody::Exit(_) => true,
+            }
     }
 }
 
-/// Sender bundle, forwarded under its tag as the first SPP message, `m` fixes the length.
+/// Sender bundle, forwarded under its tag as the first SPP message at [`SENDER_BUNDLE_LEN`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FramedSenderBundle<'a> {
     pub tag: &'a [u8; 32],
@@ -695,17 +706,15 @@ impl<'a> RingTransactData<'a> {
                 true => RingOutput {
                     hash,
                     owner_tag,
-                    record: bytes.array()?,
+                    record: bytes.take(EXIT_RECORD_LEN)?,
                     body: SlotBody::Exit(bytes.take(extra)?),
                 },
                 false => {
-                    let body = bytes.take(OUTPUT_RECORD_LEN + extra)?;
+                    let body = bytes.take(RING_RECORD_LEN + extra)?;
                     RingOutput {
                         hash,
                         owner_tag,
-                        record: body
-                            .first_chunk()
-                            .ok_or(CustomRingError::RingTransactLength)?,
+                        record: &body[..RING_RECORD_LEN],
                         body: SlotBody::Recipient(body),
                     }
                 }
@@ -723,16 +732,11 @@ impl<'a> RingTransactData<'a> {
                 Some(Replies::new(len, bytes.take(usize::from(len) * bodies)?)?.checked(bodies)?)
             }
         };
-        // 7. The bundle's length follows `m`, the frame spends no byte on it.
+        // 7. The bundle has one length, the frame spends no byte on it.
         let sender = match rail.anonymous_frame() {
             true => Some(FramedSenderBundle {
                 tag: bytes.array()?,
-                body: bytes.take(
-                    BundleLayout {
-                        outputs: output_count,
-                    }
-                    .byte_len(),
-                )?,
+                body: bytes.take(SENDER_BUNDLE_LEN)?,
             }),
             false => None,
         };
@@ -936,7 +940,7 @@ impl<'a> RingTransactData<'a> {
             || self.sender.is_some() != anonymous_frame
             || self
                 .sender
-                .is_some_and(|sender| sender.body.len() != self.bundle_layout().byte_len())
+                .is_some_and(|sender| sender.body.len() != SENDER_BUNDLE_LEN)
             || self.envelope.len() != stream.envelope().len
             || self.recipient_keys.len() != stream.keys_len()
             || !self.outputs.iter().all(|output| {
@@ -995,7 +999,7 @@ impl<'a> RingTransactData<'a> {
             SlotBody::Exit(_) => None,
         });
         if let Some(width) = widths.next() {
-            if width < OUTPUT_RECORD_LEN + RECIPIENT_PAYLOAD_LENGTH_LEN
+            if width < RING_RECORD_LEN + RECIPIENT_PAYLOAD_LENGTH_LEN
                 || widths.any(|next| next != width)
             {
                 return Err(CustomRingError::OutputBodyLength);
@@ -1044,7 +1048,7 @@ impl<'a> RingTransactData<'a> {
                 } else {
                     SLOT_TAG_LEN
                 };
-                len_prefix + FIELD + tag + OUTPUT_RECORD_LEN + output.extra_len()
+                len_prefix + FIELD + tag + output.body.record_len() + output.extra_len()
             })
             .sum::<usize>();
         Ok(1 + 3
@@ -1221,12 +1225,6 @@ impl<'a> RingTransactData<'a> {
             inputs: self.nullifiers.len(),
             outputs: self.outputs.len(),
             capacity: usize::from(shape.outputs),
-        }
-    }
-
-    pub fn bundle_layout(&self) -> BundleLayout {
-        BundleLayout {
-            outputs: self.outputs.len(),
         }
     }
 

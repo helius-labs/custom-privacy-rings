@@ -2,9 +2,9 @@
 
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, stream::slot_tag, AnonymousProofData, AppMessage,
-    BundleLayout, CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
+    CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
     PlainGroth16Proof, PolicyProof, Replies, RingOutput, RingRail, RingTransactData, SlotBody,
-    CONFIDENTIAL_DATA_FREE_BODY_LEN, OUTPUT_RECORD_LEN,
+    CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
 };
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
 use spr_interface::instruction::{InterfaceTransfer, TreeContext};
@@ -21,17 +21,16 @@ pub struct Fixture {
     pub spp_proof: PlainGroth16Proof,
     pub fields: Vec<[u8; 32]>,
     pub bytes: [[u8; 32]; 64],
-    /// Slot `i`'s record, a recipient body with no payload.
-    pub records: [[u8; OUTPUT_RECORD_LEN]; 16],
+    /// Slot `i`'s exit record, its first `RING_RECORD_LEN` bytes a recipient body with no payload.
+    pub records: [[u8; EXIT_RECORD_LEN]; 16],
     /// Cut to the stream layout's envelope length.
     pub envelope: Vec<u8>,
     /// Cut to one sealed key per published slot.
     pub keys: Vec<u8>,
     pub tags: [[u8; 32]; 16],
     /// A record and a payload, a data-bearing frame's.
-    pub extended_bodies: [[u8; OUTPUT_RECORD_LEN + 35]; 16],
-    /// Cut to the frame's `m`.
-    pub sender_body: Vec<u8>,
+    pub extended_bodies: [[u8; RING_RECORD_LEN + 35]; 16],
+    pub sender_body: [u8; SENDER_BUNDLE_LEN],
     /// Cut to one length per body-bearing slot.
     pub replies: Vec<u8>,
     pub payload: Vec<u8>,
@@ -58,19 +57,17 @@ impl Fixture {
             },
             fields: (0..=u8::MAX).map(field).collect(),
             bytes: core::array::from_fn(|i| [0x40 + i as u8; 32]),
-            records: core::array::from_fn(|i| [0x80 + i as u8; OUTPUT_RECORD_LEN]),
+            records: core::array::from_fn(|i| [0x80 + i as u8; EXIT_RECORD_LEN]),
             envelope: (0..8192u32).map(|byte| byte as u8 ^ 0x93).collect(),
             keys: (0..512u32).map(|byte| byte as u8 ^ 0x71).collect(),
             tags: core::array::from_fn(|i| field(0xa0 + i as u8)),
             extended_bodies: core::array::from_fn(|i| {
-                core::array::from_fn(|byte| match byte < OUTPUT_RECORD_LEN {
+                core::array::from_fn(|byte| match byte < RING_RECORD_LEN {
                     true => 0x80 + i as u8,
                     false => byte as u8 ^ 0x3c,
                 })
             }),
-            sender_body: (0..BundleLayout { outputs: 16 }.byte_len() as u16)
-                .map(|byte| byte as u8 ^ 0x2d)
-                .collect(),
+            sender_body: core::array::from_fn(|byte| byte as u8 ^ 0x2d),
             replies: (0..2048u32).map(|byte| byte as u8 ^ 0x17).collect(),
             payload: (0..CONFIDENTIAL_DATA_FREE_BODY_LEN as u8)
                 .map(|byte| byte ^ 0x66)
@@ -258,7 +255,7 @@ impl Fixture {
                 _ => self.tagged(slot),
             })
             .collect();
-        data.sender = self.sender(4);
+        data.sender = self.sender();
         data.anonymous = Some(AnonymousProofData {
             commitment: &self.bytes[20],
             commitment_pok: &self.bytes[21],
@@ -271,7 +268,7 @@ impl Fixture {
         let mut data = self.base(RingRail::Anonymous, 2, 2);
         data.entry = true;
         data.outputs = vec![self.tagged(0), self.exit(1, &self.payload)];
-        data.sender = self.sender(2);
+        data.sender = self.sender();
         data.anonymous = Some(AnonymousProofData {
             commitment: &self.bytes[20],
             commitment_pok: &self.bytes[21],
@@ -290,7 +287,7 @@ impl Fixture {
     pub fn anonymous_delegate(&self) -> RingTransactData<'_> {
         let mut data = self.base(RingRail::AnonymousDelegate, 2, 2);
         data.outputs = vec![self.tagged(0), self.tagged(1)];
-        data.sender = self.sender(2);
+        data.sender = self.sender();
         self.with_audit_stream(data)
     }
 
@@ -299,7 +296,7 @@ impl Fixture {
         let mut data = self.base(RingRail::Anonymous, 2, 2);
         data.public_owners = true;
         data.outputs = vec![self.tagged(0), self.tagged(1)];
-        data.sender = self.sender(2);
+        data.sender = self.sender();
         self.with_audit_stream(data)
     }
 
@@ -307,8 +304,8 @@ impl Fixture {
         RingOutput {
             hash: &self.fields[10 + slot],
             owner_tag: slot_tag(self.bytes[3 + slot]),
-            body: SlotBody::Recipient(&self.records[slot]),
-            record: &self.records[slot],
+            body: SlotBody::Recipient(&self.records[slot][..RING_RECORD_LEN]),
+            record: &self.records[slot][..RING_RECORD_LEN],
         }
     }
 
@@ -321,16 +318,15 @@ impl Fixture {
             } else {
                 slot_tag(self.tags[slot])
             },
-            body: SlotBody::Recipient(&self.records[slot]),
-            record: &self.records[slot],
+            body: SlotBody::Recipient(&self.records[slot][..RING_RECORD_LEN]),
+            record: &self.records[slot][..RING_RECORD_LEN],
         }
     }
 
-    /// `outputs` is the frame's `m`.
-    pub fn sender(&self, outputs: usize) -> Option<FramedSenderBundle<'_>> {
+    pub fn sender(&self) -> Option<FramedSenderBundle<'_>> {
         Some(FramedSenderBundle {
             tag: &self.tags[0],
-            body: &self.sender_body[..BundleLayout { outputs }.byte_len()],
+            body: &self.sender_body,
         })
     }
 
@@ -344,7 +340,7 @@ impl Fixture {
     pub fn anonymous_compact(&self) -> RingTransactData<'_> {
         let mut data = self.base(RingRail::Anonymous, 3, 4);
         data.outputs = vec![self.tagged(0), self.tagged(1)];
-        data.sender = self.sender(2);
+        data.sender = self.sender();
         data.anonymous = Some(AnonymousProofData {
             commitment: &self.bytes[20],
             commitment_pok: &self.bytes[21],

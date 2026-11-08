@@ -4,7 +4,7 @@ use bytemuck::Zeroable;
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, stream::slot_tag, AppMessage, CustomRingProof,
     FrameExtensions, InputTrees, InstructionTag, PlainGroth16Proof, RingMode, RingOutput, RingRail,
-    RingTransactData, SlotBody, OUTPUT_RECORD_LEN,
+    RingTransactData, SlotBody, RING_RECORD_LEN,
 };
 use spr_interface::instruction::TreeContext;
 
@@ -20,7 +20,7 @@ pub fn wide_frame(tag: u8) -> Vec<u8> {
     let field = [7; 32];
     let nullifiers = [[1; 32], [2; 32]];
     let salt = [3; 16];
-    let record = [4; OUTPUT_RECORD_LEN];
+    let record = [4; RING_RECORD_LEN];
     let keys = [5; 64];
     let message = vec![6; 6000];
     let output = RingOutput {

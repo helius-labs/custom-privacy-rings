@@ -449,7 +449,9 @@ pub enum DecryptedOutputKind {
 pub struct DecryptedUtxo {
     /// Base58 of it is the owner's Solana address.
     pub owner_key: SerializablePubkey,
-    pub nullifier_pk: Hash,
+    /// Absent on a ring output whose owner's registered key the auditor has not read yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nullifier_pk: Option<Hash>,
     pub asset: Hash,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mint: Option<SerializablePubkey>,
@@ -466,7 +468,9 @@ pub struct DecryptedUtxo {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DecryptedKnownUtxo {
     pub owner_key: SerializablePubkey,
-    pub nullifier_pk: Hash,
+    /// Absent on a ring note whose owner's registered key the auditor has not read yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nullifier_pk: Option<Hash>,
     pub asset: Hash,
     /// Absent while the asset registry does not know the asset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -702,7 +706,7 @@ impl From<AuditedUtxo> for DecryptedUtxo {
     fn from(utxo: AuditedUtxo) -> Self {
         Self {
             owner_key: utxo.owner_key.into(),
-            nullifier_pk: utxo.nullifier_pk.into(),
+            nullifier_pk: utxo.owner.nullifier_pk().map(Into::into),
             asset: utxo.asset.into(),
             mint: utxo.mint.map(Into::into),
             amount: utxo.amount,
@@ -715,10 +719,9 @@ impl From<AuditedUtxo> for DecryptedUtxo {
 
 impl From<KnownUtxo> for DecryptedKnownUtxo {
     fn from(utxo: KnownUtxo) -> Self {
-        let UtxoOwner::Keyed { nullifier_pk } = utxo.owner;
         Self {
             owner_key: utxo.owner_key.into(),
-            nullifier_pk: nullifier_pk.into(),
+            nullifier_pk: utxo.owner.nullifier_pk().map(Into::into),
             asset: utxo.asset.into(),
             mint: utxo.mint.map(Into::into),
             amount: utxo.amount,
@@ -733,12 +736,20 @@ impl From<KnownUtxo> for DecryptedKnownUtxo {
 impl TryFrom<&DecryptedKnownUtxo> for KnownUtxo {
     type Error = AuditError;
 
+    /// An unresolved note carries no data hashes, they bind only under a key.
     fn try_from(utxo: &DecryptedKnownUtxo) -> Result<Self, AuditError> {
+        let owner = match &utxo.nullifier_pk {
+            Some(nullifier_pk) => UtxoOwner::Keyed {
+                nullifier_pk: nullifier_pk.0,
+            },
+            None if utxo.data_hash.is_some() || utxo.ring_data_hash.is_some() => {
+                return Err(AuditError::DisclosureField)
+            }
+            None => UtxoOwner::Unresolved { claimed: None },
+        };
         Ok(Self {
             owner_key: utxo.owner_key.0.to_bytes(),
-            owner: UtxoOwner::Keyed {
-                nullifier_pk: utxo.nullifier_pk.0,
-            },
+            owner,
             asset: utxo.asset.0,
             mint: utxo.mint.map(|mint| mint.0),
             amount: utxo.amount,

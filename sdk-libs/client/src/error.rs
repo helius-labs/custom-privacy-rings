@@ -17,6 +17,10 @@ use crate::OutputPayloadErrorKind;
 
 #[derive(Debug, Error)]
 pub enum AuditError {
+    #[error("the ring output's owner key is not resolved yet")]
+    UnresolvedOwner,
+    #[error("an owner's tracking authorization is refused")]
+    Authorization(#[source] Box<crate::ResolveError>),
     #[error("the last message of the transaction is not tagged for the auditor")]
     MissingAuditorMessage,
     #[error("auditor message of {0} bytes does not fit the disclosure layout")]
@@ -200,6 +204,8 @@ impl AuditError {
             | Self::UnopenedOutput { .. }
             | Self::NullifierPad
             | Self::NullifierKeyMismatch
+            | Self::UnresolvedOwner
+            | Self::Authorization(_)
             | Self::RecoveryProgressMismatch
             | Self::MergeDisclosureMismatch
             | Self::MergeAuditWorkBudget
@@ -219,6 +225,15 @@ impl AuditError {
 impl From<BlockingInsideRuntime> for AuditError {
     fn from(error: BlockingInsideRuntime) -> Self {
         Self::Client(error.into())
+    }
+}
+
+impl From<crate::ResolveError> for AuditError {
+    fn from(error: crate::ResolveError) -> Self {
+        match error {
+            crate::ResolveError::Rpc(error) => Self::Client(*error),
+            refused => Self::Authorization(Box::new(refused)),
+        }
     }
 }
 
@@ -276,6 +291,8 @@ pub enum AnonymousError {
     CounterOverflow,
     #[error("the recipient's viewing key agrees on no shared secret")]
     RecipientKeyNotContributory,
+    #[error("the sender's auditor stream is unavailable")]
+    SenderAudit(#[source] Box<AuditError>),
 }
 
 #[cfg(test)]

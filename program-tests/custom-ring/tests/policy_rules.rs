@@ -287,7 +287,8 @@ impl<'a> DemoRing<'a> {
 
     fn audited(&self) -> Result<Vec<AuditedTransaction>> {
         let client = self.env.client.as_async();
-        let scan = RingScan::new(self.ring.program_id(), self.auditor.pubkey());
+        let scan = RingScan::new(self.ring.program_id(), self.auditor.pubkey())
+            .with_tracking_registry(self.ring.tracking_registry()?);
         Ok(self
             .env
             .client

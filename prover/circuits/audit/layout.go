@@ -67,8 +67,10 @@ const (
 	fieldLen            = 32
 	amountLen           = 8
 	kindLen             = 1
-	// RecordLen is the bytes a slot carries, mirrored by OUTPUT_RECORD_LEN.
-	RecordLen = kindLen + amountLen + 4*fieldLen
+	// RecordLen is the plaintext every slot seals and an exit publishes, mirrored by EXIT_RECORD_LEN.
+	RecordLen = RingRecordLen + fieldLen
+	// RingRecordLen is the prefix a non-exit slot publishes without the nullifier key, mirrored by RING_RECORD_LEN.
+	RingRecordLen = kindLen + amountLen + 3*fieldLen
 	// KeyLen is one sealed recipient key, its region holds no padding.
 	KeyLen    = fieldLen
 	KeyBlocks = KeyLen / streamBlockLen

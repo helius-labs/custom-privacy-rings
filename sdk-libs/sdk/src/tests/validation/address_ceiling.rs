@@ -1,7 +1,7 @@
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, stream::slot_tag, AnonymousProofData, AppMessage,
-    BundleLayout, CustomRingProof, FrameExtensions, FramedSenderBundle, InputTrees,
-    PlainGroth16Proof, Replies, RingOutput, SlotBody, MIN_REPLY_LEN, OUTPUT_RECORD_LEN,
+    CustomRingProof, FrameExtensions, FramedSenderBundle, InputTrees, PlainGroth16Proof, Replies,
+    RingOutput, SlotBody, MIN_REPLY_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -318,8 +318,8 @@ fn anonymous_transfer_with(
     let spp_proof = PlainGroth16Proof::zeroed();
     let field = [1; 32];
     let salt = [2; 16];
-    let body = [4; OUTPUT_RECORD_LEN];
-    let bundle = vec![5; BundleLayout { outputs }.byte_len()];
+    let body = [4; RING_RECORD_LEN];
+    let bundle = [5; SENDER_BUNDLE_LEN];
     let nullifiers = vec![field; inputs];
     let region = vec![6; reply_len.unwrap_or(0) * outputs];
     let keys = vec![8; 32 * outputs];

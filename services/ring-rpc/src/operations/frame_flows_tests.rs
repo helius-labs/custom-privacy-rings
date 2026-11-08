@@ -115,7 +115,9 @@ fn spend(created: &CreatedUtxo) -> Input {
 fn utxo(owner_key: [u8; 32], amount: u64) -> AuditedUtxo {
     AuditedUtxo {
         owner_key,
-        nullifier_pk: [3; 32],
+        owner: UtxoOwner::Keyed {
+            nullifier_pk: [3; 32],
+        },
         asset: asset_field(),
         mint: None,
         amount,

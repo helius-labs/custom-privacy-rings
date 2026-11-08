@@ -14,14 +14,16 @@ use spr_transaction::{
     OutputContext, OutputSlot, ShieldedTransaction,
 };
 
-use zolana_ring_transaction::{open_recipient_body, OpenedRecipientBody, PayloadRead};
+use zolana_ring_transaction::{
+    open_recipient_body, published_nullifier_pk, OpenedRecipientBody, PayloadRead,
+};
 
 use crate::{
     disclosure::{canonical, AuditEnvelope},
     encryption::auditor_view_tag,
     types::{
-        AuditedEntryInput, AuditedOutput, AuditedTransaction, AuditedUtxo, OutputOpening,
-        OutputPayloadError, OutputPayloadErrorKind, RingOwnerTag,
+        AuditedEntryInput, AuditedOutput, AuditedTransaction, AuditedUtxo, ClaimedData,
+        OutputOpening, OutputPayloadError, OutputPayloadErrorKind, RingOwnerTag, UtxoOwner,
     },
     AuditError,
 };
@@ -94,7 +96,8 @@ impl<'a> TransactionAudit<'a> {
         }
     }
 
-    /// Reads no mint registry or earlier note.
+    /// Reads no mint registry, earlier note or authorization, a ring output under a nonzero key
+    /// stays unresolved until [`AuditedTransaction::resolve_owners`].
     pub fn run(self, auditor: &X25519Keypair) -> Result<AuditedTransaction, AuditError> {
         let tx = self.transaction;
         let layout = self.layout;
@@ -103,15 +106,7 @@ impl<'a> TransactionAudit<'a> {
         let ring = tx.ring_program_id.ok_or(AuditError::MissingRingProgram)?;
         let first_nullifier = *tx.nullifiers.first().ok_or(AuditError::MissingNullifier)?;
         let data = auditor_message(tx, &auditor.pubkey())?;
-        check_published(layout, tx)?;
-        // A slot without a ring body is an exit, its record sits in the auditor message.
-        let exits = tx
-            .output_slots
-            .iter()
-            .filter(|slot| ring_body_output(&slot.payload).is_none())
-            .count();
-        let message = AuditorMessage::parse(data, layout, exits)
-            .ok_or(AuditError::AuditorMessageLength(data.len()))?;
+        let message = parse_message(tx, data, layout)?;
         let opened = AuditEnvelope {
             eph_u: X25519Pubkey::from_bytes(*message.eph_pk)?.u(),
             salt: &salt,
@@ -167,6 +162,50 @@ impl<'a> TransactionAudit<'a> {
         }
         Ok(audited)
     }
+}
+
+/// The recipient keys a sender's own transaction sealed to the auditor, the sender's only record of
+/// its payments' keys.
+#[must_use]
+pub struct SealedRecipientKeys<'a> {
+    pub transaction: &'a ShieldedTransaction,
+    pub layout: AuditStreamLayout,
+    pub auditor_pk: &'a X25519Pubkey,
+}
+
+impl SealedRecipientKeys<'_> {
+    /// `tx_viewing_key` must reopen the envelope to itself, another key decrypts noise.
+    pub fn open(self, tx_viewing_key: &ViewingKey) -> Result<Vec<X25519Pubkey>, AuditError> {
+        let tx = self.transaction;
+        let salt = tx.salt.ok_or(AuditError::MissingSalt)?;
+        let data = auditor_message(tx, self.auditor_pk)?;
+        let message = parse_message(tx, data, self.layout)?;
+        let opened = AuditEnvelope {
+            eph_u: X25519Pubkey::from_bytes(*message.eph_pk)?.u(),
+            salt: &salt,
+            ciphertext: message.envelope,
+        }
+        .open_sealed(tx_viewing_key, self.auditor_pk, self.layout)?;
+        if opened.tx_viewing_key.pubkey() != tx_viewing_key.pubkey() {
+            return Err(AuditError::TxViewingKeyMismatch);
+        }
+        opened.recipient_keys(message.recipient_keys)
+    }
+}
+
+/// A slot without a ring body is an exit, its record sits in the auditor message.
+fn parse_message<'a>(
+    tx: &ShieldedTransaction,
+    data: &'a [u8],
+    layout: AuditStreamLayout,
+) -> Result<AuditorMessage<'a>, AuditError> {
+    check_published(layout, tx)?;
+    let exits = tx
+        .output_slots
+        .iter()
+        .filter(|slot| ring_body_output(&slot.payload).is_none())
+        .count();
+    AuditorMessage::parse(data, layout, exits).ok_or(AuditError::AuditorMessageLength(data.len()))
 }
 
 fn check_published(layout: AuditStreamLayout, tx: &ShieldedTransaction) -> Result<(), AuditError> {
@@ -249,7 +288,7 @@ impl Transfer {
     }
 
     /// The proof binds each record field to the published commitment, payload data hashes join only
-    /// when they rebuild it.
+    /// when they rebuild it under the key the record publishes.
     fn slot(&self, slot: Slot<'_>, body: OpenedRecipientBody) -> Result<SlotRead, AuditError> {
         let OpenedRecipientBody { record, payload } = body;
         let ring = match record.kind {
@@ -261,12 +300,12 @@ impl Transfer {
             owner_key,
             mint,
             amount,
-            nullifier_pk,
             blinding,
             ..
         } = record;
-        // The proof holds both record fields canonical.
-        if canonical(nullifier_pk).is_err() || canonical(blinding).is_err() {
+        let published = published_nullifier_pk(&record);
+        // The proof holds every published record field canonical.
+        if published.is_some_and(|key| canonical(key).is_err()) || canonical(blinding).is_err() {
             return Err(AuditError::DisclosureField);
         }
         // An exit's data sits in its scheme 3 body, sealed to its owner alone.
@@ -285,22 +324,37 @@ impl Transfer {
         .filter(|(data_hash, ring_data_hash)| {
             canonical(*data_hash).is_ok() && canonical(*ring_data_hash).is_ok()
         });
-        let mut utxo = AuditedUtxo {
+        let claimed = claimed.map(|(data_hash, ring_data_hash)| ClaimedData {
+            data_hash,
+            ring_data_hash,
+        });
+        let asset = hash_bytes(&mint)?;
+        let opened = |owner, data: Option<ClaimedData>| AuditedUtxo {
             owner_key,
-            nullifier_pk,
-            asset: hash_bytes(&mint)?,
+            owner,
+            asset,
             mint: Some(Address::new_from_array(mint)),
             amount,
             blinding,
-            data_hash: claimed.map(|(data_hash, _)| data_hash),
-            ring_data_hash: claimed.map(|(_, ring_data_hash)| ring_data_hash),
+            data_hash: data.map(|data| data.data_hash),
+            ring_data_hash: data.map(|data| data.ring_data_hash),
         };
         let mut error = None;
-        if utxo.commitment(slot.tree_id(), ring)? != Some(slot.commitment()) {
-            utxo.data_hash = None;
-            utxo.ring_data_hash = None;
-            error = Some(OutputPayloadErrorKind::Payload);
-        }
+        let utxo = match published {
+            // The rebuild waits for the owner's registered key, no payload error before it.
+            None => opened(UtxoOwner::Unresolved { claimed }, None),
+            Some(nullifier_pk) => {
+                let owner = UtxoOwner::Keyed { nullifier_pk };
+                let utxo = opened(owner, claimed);
+                match utxo.commitment(slot.tree_id(), ring)? == Some(slot.commitment()) {
+                    true => utxo,
+                    false => {
+                        error = Some(OutputPayloadErrorKind::Payload);
+                        opened(owner, None)
+                    }
+                }
+            }
+        };
         Ok(SlotRead {
             opening: Some(match ring {
                 Some(_) => OutputOpening::Ring {

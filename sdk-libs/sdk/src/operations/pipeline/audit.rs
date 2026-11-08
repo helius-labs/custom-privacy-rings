@@ -5,7 +5,7 @@
 
 use custom_ring_interface::{
     disclosure::AuditLayout, AuditEvidence, AuditStreamLayout, AuditorMessage, EntryRecord,
-    RecordKind, OUTPUT_RECORD_LEN,
+    RecordKind, EXIT_RECORD_LEN,
 };
 use spr_event::MessageData;
 use spr_hasher::primitives::pack_be;
@@ -31,7 +31,7 @@ pub(crate) struct SealedAudit {
     /// One sealed recipient key per published slot.
     pub keys: Vec<u8>,
     /// One record per exit in slot order.
-    pub exit_records: Vec<[u8; OUTPUT_RECORD_LEN]>,
+    pub exit_records: Vec<[u8; EXIT_RECORD_LEN]>,
 }
 
 pub(crate) struct PresealedAudit {
@@ -165,7 +165,7 @@ impl SealedAudit {
                     .chain(
                         self.exit_records
                             .iter()
-                            .map(<[u8; OUTPUT_RECORD_LEN]>::as_slice),
+                            .map(<[u8; EXIT_RECORD_LEN]>::as_slice),
                     ),
             ),
         }

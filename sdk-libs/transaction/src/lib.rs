@@ -18,7 +18,8 @@ use custom_ring_interface::{
     blinding::ring_blinding_seed,
     encode_ring_sender_bundle_output,
     stream::{confidential_slot_tag, DeliveredSlot, SlotSecret},
-    OutputRecord, RecipientPayload, RecordKind, RingOutput, SlotBody, OUTPUT_RECORD_LEN,
+    OutputRecord, RecipientPayload, RecordKind, RingOutput, SlotBody, EXIT_RECORD_LEN,
+    RING_RECORD_LEN,
 };
 use rand::{rngs::OsRng, RngCore};
 use spr_event::MessageData;
@@ -45,9 +46,10 @@ pub use error::RingRailError;
 pub use input_map::{address_chain, note_count, ClassifiedInput, InputClass};
 pub use published::PublishedSlot;
 pub use recipient_delivery::{
-    is_contributory, open_recipient_body, open_reply, open_sender_bundle, recipient_payload,
-    seal_recipient_body, seal_reply, seal_sender_bundle, AnonymousOutput, OpenedBody, OpenedNote,
-    OpenedRecipientBody, OutputBlindings, PayloadRead, ReplyClaim, ReplyMetadata,
+    carried_key, is_contributory, open_recipient_body, open_reply, open_sender_bundle,
+    published_nullifier_pk, recipient_payload, record_key, seal_recipient_body, seal_reply,
+    seal_sender_bundle, AnonymousOutput, OpenedBody, OpenedNote, OpenedRecipientBody,
+    OutputBlindings, PayloadRead, ReplyClaim, ReplyMetadata,
 };
 
 #[derive(Clone, Debug)]
@@ -213,16 +215,17 @@ impl RingOutputRail {
         let Some(owner) = output.owner_address else {
             return Ok(OutputRecord::default());
         };
+        let kind = match output.ring_program_id {
+            Some(_) => RecordKind::Ring,
+            None => RecordKind::Exit,
+        };
         Ok(OutputRecord {
-            kind: match output.ring_program_id {
-                Some(_) => RecordKind::Ring,
-                None => RecordKind::Exit,
-            },
+            kind,
             amount: output.amount,
             owner_key: owner.signing_pubkey.confidential_view_tag()?,
             mint: output.asset.asset.to_bytes(),
-            nullifier_pk: owner.nullifier_pubkey,
             blinding: output.blinding,
+            key: record_key(kind, owner.nullifier_pubkey),
         })
     }
 
@@ -232,7 +235,7 @@ impl RingOutputRail {
         output: &SppProofOutputUtxo,
         first_nullifier: &[u8; 32],
         slot_index: usize,
-    ) -> Result<[u8; OUTPUT_RECORD_LEN], RingRailError> {
+    ) -> Result<[u8; EXIT_RECORD_LEN], RingRailError> {
         let position = u32::try_from(slot_index).map_err(|_| TransactionError::TooManyOutputs)?;
         let secret = self.slot_secret(&self.auditor, first_nullifier, position)?;
         let body = seal_recipient_body(&Self::output_record(output)?, None, &secret)?;
@@ -558,7 +561,7 @@ impl OutputEncoder for SppEncoder<'_> {
 pub(crate) fn record_of(
     body: &[u8],
     slot_index: usize,
-) -> Result<&[u8; OUTPUT_RECORD_LEN], RingRailError> {
+) -> Result<&[u8; RING_RECORD_LEN], RingRailError> {
     body.first_chunk()
         .ok_or(RingRailError::RingOutputFraming { slot_index })
 }

@@ -8,10 +8,10 @@ use custom_ring_interface::{
     ring_body_output,
     stream::{DeliveredSlot, SlotSecret},
     tag as ring_tag, tagged_x25519, AnonymousProofData, AuditEvidence, AuditKey, AuditStreamLayout,
-    AuditorMessage, BundleLayout, CustomRingProof, EntryRecord, FrameExtensions,
-    FramedSenderBundle, InProofOwner, InputTrees, OutputRecord, PlainGroth16Proof,
-    RecipientPayload, RecordKind, RingOutput, RingRail, RingTransactData, SlotBody,
-    CONFIDENTIAL_DATA_FREE_BODY_LEN, OUTPUT_RECORD_LEN,
+    AuditorMessage, CustomRingProof, EntryRecord, FrameExtensions, FramedSenderBundle,
+    InProofOwner, InputTrees, OutputRecord, PlainGroth16Proof, RecipientPayload, RecordKind,
+    RingOutput, RingRail, RingTransactData, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN,
+    EXIT_RECORD_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -25,6 +25,7 @@ use spr_interface::{
     instruction::{instruction_data::transact::TreeContext, OwnerTag},
     shape::SPP_SUPPORTED_SHAPES,
     tree_slot::tree_id_field,
+    ZERO_NULLIFIER_PUBKEY,
 };
 use spr_keypair::{ViewingKey, X25519Keypair, X25519Pubkey};
 use spr_transaction::{
@@ -33,10 +34,10 @@ use spr_transaction::{
     OutputContext, OutputSlot, ShieldedTransaction,
 };
 use zolana_ring_client::{
-    AuditStreamSeal, AuditedUtxo, KnownUtxo, OutputOpening, RingOwnerTag, SealedAuditStream,
-    UtxoOwner,
+    AuditStreamSeal, AuditedUtxo, ClaimedData, KnownUtxo, OutputOpening, RingOwnerTag,
+    SealedAuditStream, UtxoOwner,
 };
-use zolana_ring_transaction::seal_recipient_body;
+use zolana_ring_transaction::{record_key, seal_recipient_body};
 
 /// Byte `i` is `seed ^ i` under a `0x01` lead byte, the Go `ringaudit.Scalar`.
 pub fn scalar(seed: u8) -> [u8; 32] {
@@ -152,8 +153,8 @@ impl Output {
             amount: utxo.amount,
             owner_key: utxo.owner_key,
             mint: utxo.asset_address.to_bytes(),
-            nullifier_pk: utxo.nullifier_pk,
             blinding,
+            key: record_key(kind, utxo.nullifier_pk),
         };
         match self {
             Self::Ring { utxo, .. } => of(RecordKind::Ring, utxo),
@@ -209,7 +210,7 @@ pub struct Slot {
 }
 
 /// A body before publish seals the slot's record over it.
-pub const ANONYMOUS_BODY: [u8; OUTPUT_RECORD_LEN] = [0xb1; OUTPUT_RECORD_LEN];
+pub const ANONYMOUS_BODY: [u8; RING_RECORD_LEN] = [0xb1; RING_RECORD_LEN];
 pub const SENDER_BUNDLE_BYTE: u8 = 0xb2;
 pub const SENDER_TAG: [u8; 32] = [0x1e; 32];
 
@@ -281,7 +282,7 @@ impl Transfer {
 
     pub fn slot(&self, index: u32, output: &Output) -> Slot {
         let blinding = self.blinding(index);
-        let record = [0; OUTPUT_RECORD_LEN];
+        let record = [0; EXIT_RECORD_LEN];
         let published = |hash: [u8; 32], owner_tag: [u8; 32], body: SlotBody<'_>| {
             indexed(
                 RingOutput {
@@ -291,7 +292,7 @@ impl Transfer {
                         SlotBody::Recipient(_) => slot_tag(owner_tag),
                     },
                     body,
-                    record: &record,
+                    record: &record[..body.record_len()],
                 },
                 self.tree_id,
                 u64::from(index),
@@ -409,14 +410,8 @@ impl Transfer {
         }
         let bundle = MessageData {
             view_tag: SENDER_TAG,
-            data: encode_ring_sender_bundle_output(&vec![
-                SENDER_BUNDLE_BYTE;
-                BundleLayout {
-                    outputs: publish.disclosure.layout.outputs,
-                }
-                .byte_len()
-            ])
-            .unwrap(),
+            data: encode_ring_sender_bundle_output(&[SENDER_BUNDLE_BYTE; SENDER_BUNDLE_LEN])
+                .unwrap(),
         };
         ShieldedTransaction {
             slot: 1,
@@ -589,8 +584,8 @@ impl Transfer {
                 tx.output_slots
                     .iter()
                     .map(|output| {
-                        let record = match ring_body_output(&output.payload) {
-                            Some((body, _)) => body.first_chunk().unwrap(),
+                        let record: &[u8] = match ring_body_output(&output.payload) {
+                            Some((body, _)) => &body[..RING_RECORD_LEN],
                             None => {
                                 exit += 1;
                                 message.exit_record(exit - 1).unwrap()
@@ -641,7 +636,7 @@ struct Keyed<'a> {
 }
 
 /// The inverse of `RingOutput::transact_output`, an exit's record from the auditor message.
-fn wire<'a>(slot: &'a OutputSlot, record: &'a [u8; OUTPUT_RECORD_LEN]) -> RingOutput<'a> {
+fn wire<'a>(slot: &'a OutputSlot, record: &'a [u8]) -> RingOutput<'a> {
     let payload = &slot.payload;
     let body = match ring_body_output(payload) {
         Some((body, _)) => SlotBody::Recipient(body),
@@ -658,10 +653,13 @@ fn wire<'a>(slot: &'a OutputSlot, record: &'a [u8; OUTPUT_RECORD_LEN]) -> RingOu
     }
 }
 
+/// A ring output under a nonzero key waits for the owner's registered key.
 pub fn audited_opening(output: &Output, slot: &Slot) -> OutputOpening {
     let audited = |utxo: &UtxoFields| AuditedUtxo {
         owner_key: utxo.owner_key,
-        nullifier_pk: utxo.nullifier_pk,
+        owner: UtxoOwner::Keyed {
+            nullifier_pk: utxo.nullifier_pk,
+        },
         asset: utxo.asset(),
         mint: Some(utxo.asset_address),
         amount: utxo.amount,
@@ -675,7 +673,20 @@ pub fn audited_opening(output: &Output, slot: &Slot) -> OutputOpening {
             recipient_u,
             tag,
         } => OutputOpening::Ring {
-            utxo: audited(utxo),
+            utxo: match utxo.nullifier_pk == ZERO_NULLIFIER_PUBKEY {
+                true => audited(utxo),
+                false => AuditedUtxo {
+                    owner: UtxoOwner::Unresolved {
+                        claimed: Some(ClaimedData {
+                            data_hash: utxo.data_hash,
+                            ring_data_hash: slot.ring_data_hash,
+                        }),
+                    },
+                    data_hash: None,
+                    ring_data_hash: None,
+                    ..audited(utxo)
+                },
+            },
             owner_tag: RingOwnerTag(slot_tag(tag.unwrap_or(*recipient_u))),
         },
         Output::Exit(utxo) => OutputOpening::Exit(audited(utxo)),

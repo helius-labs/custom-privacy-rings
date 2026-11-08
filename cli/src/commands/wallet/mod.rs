@@ -17,7 +17,8 @@ use spr_client::{BlockingIndexer, BlockingRpc, IndexerRpcConfig, Rpc, UtxoScan};
 use spr_keypair::X25519Pubkey;
 use spr_transaction::{SpendableDecryptionResult, WalletUtxo};
 use zolana_ring_client::{
-    verify_ring_owned, AnonymousSync, AnonymousWallet, RingConfidentialScan, ViewingHistory,
+    verify_ring_owned, AnonymousSync, AnonymousWallet, RingConfidentialScan, RingSenderAudit,
+    SenderAuditFrames, ViewingHistory,
 };
 use zolana_ring_keys::RotatingRingKeys;
 use zolana_ring_transaction::RingAssets;
@@ -58,6 +59,8 @@ struct ScanAt<'a> {
     store: &'a AnonymousWalletStore,
     mode: RingMode,
     ring: Address,
+    /// `None` records no sent payment, change still opens.
+    sender_audit: Option<&'a dyn SenderAuditFrames>,
 }
 
 /// Held while a store's file changes, any part file found under it is a crashed run's.
@@ -158,6 +161,12 @@ impl WalletScan<'_> {
 
     pub fn fetch_notes(self, ctx: &Context) -> Result<WalletNotes> {
         let store = ctx.anonymous_wallet_store(self.keys.identity_viewing_pubkey());
+        let sender_audit = RingSenderAudit {
+            origin: ctx.chain().rpc(),
+            ring: ctx.ring.program_id(),
+            mode: self.config.mode,
+            auditor_pk: self.config.auditor_pubkey,
+        };
         ScanAt {
             keys: self.keys,
             assets: self.assets,
@@ -166,6 +175,7 @@ impl WalletScan<'_> {
             store: &store,
             mode: self.config.mode,
             ring: ctx.ring.program_id(),
+            sender_audit: Some(&sender_audit),
         }
         .fetch(&ctx.zolana)
     }
@@ -200,9 +210,11 @@ impl ScanAt<'_> {
         };
         let anonymous = |assets: &RingAssets, wallet: &mut AnonymousWallet| {
             let scan = zolana.block_on(async {
-                AnonymousSync::new(keys, assets)
-                    .with_indexer_config(config)
-                    .fetch_wallet(zolana.as_async().indexer(), wallet)
+                let mut sync = AnonymousSync::new(keys, assets).with_indexer_config(config);
+                if let Some(frames) = self.sender_audit {
+                    sync = sync.with_sender_audit(frames);
+                }
+                sync.fetch_wallet(zolana.as_async().indexer(), wallet)
                     .await
                     .map_err(anyhow::Error::from)
             })?;

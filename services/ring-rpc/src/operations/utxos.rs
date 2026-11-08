@@ -72,6 +72,8 @@ pub(crate) const MAX_CACHED_ENTRIES: usize = 65_536;
 /// The guards are never held across an await, a commit writes the mirror after its transaction.
 #[derive(Default)]
 pub(crate) struct AuditStore {
+    /// A note whose record publishes no key rebuilds under this ring's program id.
+    pub(crate) ring: Address,
     book: RwLock<SpendBook>,
     enrollments: RwLock<HeldEnrollments>,
     /// The registry last named on the notes, a different one names them again.
@@ -562,7 +564,7 @@ impl PageDelta {
 }
 
 impl AuditStore {
-    pub(crate) fn new(backing: Backing) -> Self {
+    pub(crate) fn new(ring: Address, backing: Backing) -> Self {
         let (book, enrollments) = match &backing {
             Backing::Database { capacity, .. } => (
                 SpendBook::bounded(*capacity),
@@ -573,6 +575,7 @@ impl AuditStore {
             }
         };
         Self {
+            ring,
             book: RwLock::new(book),
             enrollments: RwLock::new(enrollments),
             backing,
@@ -1091,6 +1094,15 @@ impl AuditStore {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(rows);
+    }
+
+    /// The held enrollment's key, `None` on a cache miss, the replay then resolves the note.
+    pub(crate) fn registered_key(&self, owner_key: &[u8; 32]) -> Option<[u8; 32]> {
+        let member = Member::owner_tag(owner_key).ok()?;
+        match self.read_enrollments().by_member(member.as_bytes()) {
+            Cached::Hit(held) => Some(held.nullifier_pk),
+            Cached::Absent | Cached::Unknown => None,
+        }
     }
 
     fn read_enrollments(&self) -> std::sync::RwLockReadGuard<'_, HeldEnrollments> {

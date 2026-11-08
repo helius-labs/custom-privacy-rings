@@ -16,7 +16,8 @@ use custom_ring_interface::stream::slot_tag;
 use custom_ring_interface::{
     encode_ring_body_output, encode_ring_sender_bundle_output,
     stream::{DeliveredSlot, SlotSecret},
-    OutputRecord, RecipientPayload, RecordKind, SenderBundle, MIN_REPLY_LEN, OUTPUT_RECORD_LEN,
+    AuditEvidence, AuditKey, AuditStreamLayout, AuditorMessage, OutputRecord, RecipientPayload,
+    RecordKind, SenderBundle, MIN_REPLY_LEN, RING_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -41,8 +42,9 @@ use spr_transaction::{
     TransactionError, TransactionKeyRequest, Utxo, WalletUtxo,
 };
 use zolana_ring_client::{
-    note_state, open_ring_confidential, verify_ring_owned, AnonymousError, AnonymousScan,
-    AnonymousStream, AnonymousSync, AnonymousWallet, NoteState, RingConfidentialScan, SentCheck,
+    auditor_view_tag, note_state, open_ring_confidential, verify_ring_owned, AnonymousError,
+    AnonymousScan, AnonymousStream, AnonymousSync, AnonymousWallet, AuditError, AuditStreamSeal,
+    NoteState, RingConfidentialScan, SenderAuditFrame, SenderAuditFrames, SentCheck,
     ViewingHistory,
 };
 use zolana_ring_keys::{
@@ -50,8 +52,8 @@ use zolana_ring_keys::{
     RotatingRingKeys, ViewTagRequest,
 };
 use zolana_ring_transaction::{
-    seal_recipient_body, seal_reply, seal_sender_bundle, AnonymousPlan, ReplyMetadata, RingAssets,
-    RingDelivery, RingOutputRail,
+    published_outputs, record_key, seal_recipient_body, seal_reply, seal_sender_bundle,
+    AnonymousPlan, ReplyMetadata, RingAssets, RingDelivery, RingOutputRail,
 };
 
 use history_page::EventsPage;
@@ -421,7 +423,12 @@ fn indexed(
                 payload: output.data.clone().unwrap_or_default(),
             })
             .collect(),
-        messages: external.messages.clone(),
+        messages: external
+            .messages
+            .iter()
+            .cloned()
+            .chain([auditor_message(rail, proof)])
+            .collect(),
         nullifiers: proof
             .input_utxos
             .iter()
@@ -430,6 +437,77 @@ fn indexed(
         proofless: false,
         ring_config: None,
         ring_program_id: Some(RING),
+    }
+}
+
+/// A key of the frame's own counts, the layout [`TestFrames`] names for every row.
+fn test_layout(inputs: usize, outputs: usize) -> AuditStreamLayout {
+    AuditStreamLayout {
+        key: AuditKey {
+            class: inputs,
+            entry: false,
+        },
+        inputs,
+        outputs,
+        capacity: outputs,
+    }
+}
+
+/// The last message, the auditor stream every recipient key travels in.
+fn auditor_message(
+    rail: &RingOutputRail,
+    proof: &spr_transaction::instructions::transact::SppProofInputs,
+) -> MessageData {
+    let outputs = published_outputs(&proof.output_utxos);
+    let layout = test_layout(proof.input_utxos.len(), outputs.len());
+    let sealed = AuditStreamSeal {
+        layout,
+        tx_viewing_key: rail.tx_viewing_key(),
+        salt: &rail.salt(),
+        real_inputs: u8::try_from(proof.input_utxos.len()).unwrap(),
+        evidence: AuditEvidence::None,
+        recipient_keys: rail
+            .recipient_keys(outputs, outputs.len())
+            .unwrap()
+            .iter()
+            .map(X25519Pubkey::u)
+            .collect(),
+    }
+    .seal(&audit_key())
+    .unwrap();
+    let first_nullifier = proof.input_utxos[0].nullifier();
+    let exits: Vec<Vec<u8>> = outputs
+        .iter()
+        .enumerate()
+        .filter(|(_, output)| output.ring_program_id.is_none() && !output.is_dummy())
+        .map(|(index, output)| {
+            rail.exit_record(output, &first_nullifier, index)
+                .unwrap()
+                .to_vec()
+        })
+        .collect();
+    let ciphertexts = [&sealed.envelope[..], &sealed.keys[..]]
+        .into_iter()
+        .chain(exits.iter().map(Vec::as_slice));
+    MessageData {
+        view_tag: auditor_view_tag(&audit_key()),
+        data: AuditorMessage::data(&sealed.eph_u, ciphertexts),
+    }
+}
+
+/// The ring's auditor and each row's layout, a sender reads its payments' keys through them.
+struct TestFrames;
+
+#[async_trait]
+impl SenderAuditFrames for TestFrames {
+    async fn frame(
+        &self,
+        transaction: &ShieldedTransaction,
+    ) -> Result<Option<SenderAuditFrame>, AuditError> {
+        Ok(Some(SenderAuditFrame {
+            layout: test_layout(transaction.nullifiers.len(), transaction.output_slots.len()),
+            auditor_pk: audit_key(),
+        }))
     }
 }
 
@@ -447,8 +525,8 @@ fn ring_body(
             amount,
             owner_key: owner.signing_pubkey.confidential_view_tag().unwrap(),
             mint,
-            nullifier_pk: owner.nullifier_pubkey,
             blinding,
+            key: record_key(RecordKind::Ring, owner.nullifier_pubkey),
         },
         payload
             .as_ref()
@@ -563,6 +641,7 @@ async fn tag_scan<K: ShieldedKeys + RingKeys + MergeSeedHolder>(
     history: &ViewingHistory,
 ) -> AnonymousScan {
     AnonymousSync::new(keys, &assets())
+        .with_sender_audit(&TestFrames)
         .fetch(indexer, history)
         .await
         .unwrap()
@@ -574,6 +653,7 @@ async fn restore<K: ShieldedKeys + RingKeys + MergeSeedHolder>(
     history: &ViewingHistory,
 ) -> AnonymousScan {
     AnonymousSync::new(keys, &assets())
+        .with_sender_audit(&TestFrames)
         .full_scan(&RecoveryHistory(indexer), history, RING)
         .await
         .unwrap()
@@ -1072,6 +1152,7 @@ async fn a_relayed_proof_under_another_transaction_key_is_not_missed_by_the_fast
     let own = alice.pay(&indexer, &[pay(&bob.address(), 20)]);
     let scan = AnonymousSync::new(&alice.keys, &assets())
         .with_sender_fast_path()
+        .with_sender_audit(&TestFrames)
         .fetch(&indexer, &fresh(&alice))
         .await
         .unwrap();
@@ -1227,6 +1308,7 @@ async fn the_change_lists_every_payment_and_a_held_address_verifies_its_row() {
     };
     let held = [bob, forged];
     let scan = AnonymousSync::new(&alice.keys, &assets())
+        .with_sender_audit(&TestFrames)
         .with_recipient_addresses(&held)
         .fetch(&indexer, &fresh(&alice))
         .await
@@ -1286,7 +1368,7 @@ async fn a_sent_body_that_fails_to_open_leaves_no_row() {
     let bob = Wallet::new(2).address();
     let mut paid = alice.seal(&indexer, &[pay(&bob, 30)]);
     // A ring body cut short, behind the encoding tag, the length and the scheme.
-    let short_body = OUTPUT_RECORD_LEN - 1;
+    let short_body = RING_RECORD_LEN - 1;
     let payload = &mut paid.output_slots[1].payload;
     payload.truncate(6 + short_body);
     payload[1..5].copy_from_slice(&u32::try_from(1 + short_body).unwrap().to_le_bytes());
@@ -1304,7 +1386,7 @@ async fn sender_chosen_garbage_under_a_tag_hint_never_fails_the_sync() {
     let bob = Wallet::new(2);
     let tx_key = ViewingKey::new();
     let salt = random_salt();
-    let noise = [0x5c; OUTPUT_RECORD_LEN];
+    let noise = [0x5c; RING_RECORD_LEN];
     let first_nullifier = field(9, 9);
     let bundle_nullifier = field(9, 8);
     let bob_view = bob.keys.viewing_pubkey();
@@ -1327,9 +1409,8 @@ async fn sender_chosen_garbage_under_a_tag_hint_never_fails_the_sync() {
         None,
         &secret(&first_nullifier, 1),
     );
-    let bundle = |recipient_keys: Vec<[u8; 32]>| SenderBundle {
+    let bundle = SenderBundle {
         output_seed: [0x0b; 32],
-        recipient_keys,
     };
     // Rebuilds under a mint the registry does not name.
     let unregistered = Mint {
@@ -1381,11 +1462,7 @@ async fn sender_chosen_garbage_under_a_tag_hint_never_fails_the_sync() {
         messages: vec![MessageData {
             view_tag: secret(&first_nullifier, 3).sender_tag().unwrap(),
             data: encode_ring_sender_bundle_output(
-                &seal_sender_bundle(
-                    &bundle(vec![keypair(8).viewing_pubkey().u(); 3]),
-                    &secret(&first_nullifier, 3),
-                )
-                .unwrap(),
+                &seal_sender_bundle(&bundle, &secret(&first_nullifier, 3)).unwrap(),
             )
             .unwrap(),
         }],
@@ -1405,7 +1482,7 @@ async fn sender_chosen_garbage_under_a_tag_hint_never_fails_the_sync() {
         messages: vec![MessageData {
             view_tag: secret(&bundle_nullifier, 0).sender_tag().unwrap(),
             data: encode_ring_sender_bundle_output(
-                &seal_sender_bundle(&bundle(Vec::new()), &secret(&bundle_nullifier, 0)).unwrap(),
+                &seal_sender_bundle(&bundle, &secret(&bundle_nullifier, 0)).unwrap(),
             )
             .unwrap(),
         }],
@@ -1982,7 +2059,7 @@ async fn a_payment_without_a_reply_names_no_sender() {
     let paid = alice.pay(&indexer, &[pay(&bob.address(), 10)]);
     assert_eq!(
         paid.output_slots[1].payload.len(),
-        8 + OUTPUT_RECORD_LEN,
+        8 + RING_RECORD_LEN,
         "no reply bytes follow the body"
     );
     let scan = bob.sync(&indexer, &fresh(&bob)).await;
@@ -2362,7 +2439,7 @@ async fn an_extended_recipient_body_rebuilds_its_commitment_with_its_data() {
         }),
         &secret,
     );
-    assert!(body.len() > OUTPUT_RECORD_LEN);
+    assert!(body.len() > RING_RECORD_LEN);
     indexer.publish(ShieldedTransaction {
         slot: 1,
         tx_signature: Signature::from([0x78; 64]),

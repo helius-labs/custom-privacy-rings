@@ -2,7 +2,7 @@
 //
 // SPP's output hash commits the owner key and the mint only as hashes, and no reader inverts a hash. A
 // record therefore carries the raw key and the raw mint with the proof holding each to its hash, so the
-// auditor names an owner and an asset with no directory. Its amount, nullifier key and blinding are the
+// auditor names an owner and an asset with no directory. Its amount, blinding and nullifier key are the
 // slot's own wires. The recipient holds no viewing secret of the transaction, so the record carries the
 // blinding SPP derived. The reader rebuilds the published hash from these fields, the frame's tree id
 // and the data hashes of the slot's payload, so a record of another slot rebuilds nothing.
@@ -12,9 +12,17 @@
 // from the domain and ring id the slot's hash commits, a note called a dummy would need another hash.
 // Exit marks a note of the default ring, its recipient body is SPP's.
 //
+// The nullifier key sits last and only an exit publishes it. A non-exit record names its key by the
+// ZeroKey bit alone, set exactly when the key is the public Poseidon(0). A nonzero key on a ring note
+// spends only as its owner's registered key, transfer/owners.go, so an accepted nonzero-key spend matches
+// the owner's immutable registered key, the one the reader takes from the owner's row. An exit publishes
+// its key, the default ring registers nobody. The bit is no prover choice, it derives from the key the
+// hash commits.
+//
 // The file proves the following.
-//  1. A live record's kind, amount, owner key, mint, nullifier key and blinding are the opened slot's,
-//     with the amount below 2^64 and each field the one canonical encoding.
+//  1. A live record's kind, amount, owner key, mint, blinding and nullifier key are the opened slot's,
+//     with the amount below 2^64 and each field the one canonical encoding. The kind byte sets ZeroKey
+//     exactly when the slot's key is Poseidon(0).
 //  2. Every other record is all zero.
 //  3. A merge record is a record followed by the seed that rebuilds its blinding.
 //  4. R counts only notes, and a key with no entry capacity refuses a default ring note.
@@ -43,6 +51,8 @@ const (
 	KindDummy = 0
 	KindRing  = 1
 	KindExit  = 2
+	// KindZeroKey adds to KindRing or KindExit.
+	KindZeroKey = 4
 )
 
 type OutputWires struct {
@@ -62,20 +72,22 @@ func (o OutputWires) record(api frontend.API, rc frontend.Rangechecker, slot sha
 	}.Encode(api, rc)
 }
 
-// Live clear masks every byte but Kind, a dummy's Kind derives to zero.
+// Live clear masks every byte but Kind, a dummy's Kind derives to zero. Kind excludes the ZeroKey bit, Encode derives it.
 type RecordOpening struct {
 	Live, Kind, Amount, OwnerPkHash, NullifierPk, Asset, Blinding frontend.Variable
 	OwnerKey                                                      [32]frontend.Variable
 	MintChunks                                                    [2]frontend.Variable
 }
 
-// Encode mirrors OutputRecord::encode in program-libs/interface/src/proof/audit_stream.rs, RecordLen bytes.
+// Encode mirrors OutputRecord::encode in program-libs/interface/src/proof/audit_stream.rs over the published bytes, RecordLen bytes.
 func (r RecordOpening) Encode(api frontend.API, rc frontend.Rangechecker) []frontend.Variable {
 	raw := identityOpening{Live: r.Live, OwnerPkHash: r.OwnerPkHash, Asset: r.Asset, OwnerKey: r.OwnerKey, MintChunks: r.MintChunks}.open(api)
 	// FieldToBytesBEWith holds the one be32 below q, UintBytesBE fails a live amount at or above 2^64.
-	nullifierPk := ringgadget.FieldToBytesBEWith(api, rc, api.Mul(r.Live, r.NullifierPk))
 	blinding := ringgadget.FieldToBytesBEWith(api, rc, api.Mul(r.Live, r.Blinding))
-	return slices.Concat([]frontend.Variable{r.Kind}, ringgadget.UintBytesBE(api, api.Mul(r.Live, r.Amount), amountLen), raw.ownerKey, raw.mint, nullifierPk[:], blinding[:])
+	nullifierPk := ringgadget.FieldToBytesBEWith(api, rc, api.Mul(r.Live, r.NullifierPk))
+	zeroKey := api.Mul(r.Live, api.IsZero(api.Sub(r.NullifierPk, shared.ZeroNullifierPk)))
+	kind := api.Add(r.Kind, api.Mul(zeroKey, KindZeroKey))
+	return slices.Concat([]frontend.Variable{kind}, ringgadget.UintBytesBE(api, api.Mul(r.Live, r.Amount), amountLen), raw.ownerKey, raw.mint, blinding[:], nullifierPk[:])
 }
 
 // identityOpening is a slot's owner and asset beside the raw key and mint the auditor reads.

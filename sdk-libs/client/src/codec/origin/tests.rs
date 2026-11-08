@@ -1199,7 +1199,7 @@ fn origin_of_frame(
         commitment_pok: zero,
     };
     let (hash, u) = ([1u8; 32], [2u8; 32]);
-    let record = [4u8; custom_ring_interface::OUTPUT_RECORD_LEN];
+    let record = [4u8; custom_ring_interface::RING_RECORD_LEN];
     let nullifiers = [[7u8; 32]];
     let envelope = [0u8; 2048];
     let keys = [0u8; 64];
