@@ -45,8 +45,8 @@ pub use error::RingRailError;
 pub use input_map::{address_chain, note_count, ClassifiedInput, InputClass};
 pub use published::PublishedSlot;
 pub use recipient_delivery::{
-    is_contributory, open_recipient_body, open_reply, open_sender_bundle, recipient_payload,
-    seal_recipient_body, seal_reply, seal_sender_bundle, AnonymousOutput, OpenedBody, OpenedNote,
+    is_contributory, open_recipient_body, open_reply, open_sender_bundle, published_nullifier_pk,
+    recipient_payload, seal_recipient_body, seal_reply, seal_sender_bundle, AnonymousOutput, OpenedBody, OpenedNote,
     OpenedRecipientBody, OutputBlindings, PayloadRead, ReplyClaim, ReplyMetadata,
 };
 

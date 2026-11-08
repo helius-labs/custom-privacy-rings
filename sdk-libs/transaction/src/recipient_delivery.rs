@@ -10,6 +10,7 @@ use custom_ring_interface::{
 };
 use solana_address::Address;
 use spr_hasher::primitives::is_canonical_x25519_public_key;
+use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use spr_keypair::{ShieldedAddress, X25519Keypair, X25519Pubkey};
 use spr_transaction::{
     derive_output_blinding_seed, utxo::derive_transact_output_blinding, Blinding, Data, DataRecord,
@@ -108,6 +109,20 @@ pub enum PayloadRead {
     Absent,
     Opened(RecipientPayload),
     Malformed,
+}
+
+/// The nullifier key a reader rebuilds `record` under, `None` on a ring output under a nonzero key.
+///
+/// A ring row names the spending key, so readers take a ring output's nonzero key from the
+/// recipient's own address or the owner's authorization, never from the record.
+pub fn published_nullifier_pk(record: &OutputRecord) -> Option<[u8; 32]> {
+    match record.kind {
+        RecordKind::Exit => Some(record.nullifier_pk),
+        RecordKind::Ring if record.nullifier_pk == ZERO_NULLIFIER_PUBKEY => {
+            Some(ZERO_NULLIFIER_PUBKEY)
+        }
+        RecordKind::Ring | RecordKind::Dummy => None,
+    }
 }
 
 /// The record then the payload padded to the frame's width, one slot secret keys one body.
@@ -216,7 +231,7 @@ pub struct AnonymousOutput<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenedNote {
     pub utxo: Utxo,
-    /// The key the record names, the owner spends the note once that key is its registered one.
+    /// The reader's own key or the zero key, the owner spends the note once that key is its registered one.
     pub nullifier_pk: [u8; 32],
     pub data_hash: Option<[u8; 32]>,
     pub ring_data_hash: Option<[u8; 32]>,
@@ -237,8 +252,8 @@ pub struct OutputBlindings {
 }
 
 impl AnonymousOutput<'_> {
-    /// `None` unless the record names the reader as a ring output's owner and rebuilds the
-    /// commitment, its key unchecked.
+    /// `None` unless the record names the reader as a ring output's owner and the commitment rebuilds
+    /// under the reader's own key, or the zero key the record's kind names.
     pub fn open_body(
         &self,
         body: &OpenedRecipientBody,
@@ -254,6 +269,9 @@ impl AnonymousOutput<'_> {
             PayloadRead::Opened(payload) => payload.clone(),
             PayloadRead::Malformed => return Ok(None),
         };
+        // No registry lookup, an owner not yet registered reads its note at once.
+        let nullifier_pk =
+            published_nullifier_pk(record).unwrap_or(self.owner.nullifier_pubkey);
         let mint = Address::new_from_array(record.mint);
         let asset = self.assets.by_mint(&mint);
         let (data_hash, app_data) = match payload.data.split_first_chunk::<32>() {
@@ -281,7 +299,7 @@ impl AnonymousOutput<'_> {
         }));
         let rebuilds = probe
             .hash(
-                &record.nullifier_pk,
+                &nullifier_pk,
                 &data_hash.unwrap_or_default(),
                 &payload.ring_data_hash.unwrap_or_default(),
                 self.tree_id,
@@ -292,7 +310,7 @@ impl AnonymousOutput<'_> {
         }
         let opened = |utxo| OpenedNote {
             utxo,
-            nullifier_pk: record.nullifier_pk,
+            nullifier_pk,
             data_hash,
             ring_data_hash: payload.ring_data_hash,
         };
