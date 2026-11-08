@@ -286,7 +286,7 @@ impl RingScan {
     }
 
     /// Reads no earlier page.
-    pub async fn audit<I: AsyncRpc, O: TransactionOrigin>(
+    pub async fn audit<I: AsyncRpc, O: TransactionOrigin + AsyncRpc>(
         mut self,
         auditor: &X25519Keypair,
         indexer: &I,
@@ -316,11 +316,12 @@ impl RingScan {
                 .collect();
             owners.sort_unstable();
             owners.dedup();
+            // Authorizations are chain accounts, the indexer serves none.
             let keys = RegisteredKeys {
                 registry,
                 owners: &owners,
             }
-            .read(indexer)
+            .read(origin)
             .await?;
             for audited in &mut transactions {
                 audited.resolve_owners(ring, |owner| keys.get(owner).copied())?;

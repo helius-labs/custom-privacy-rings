@@ -928,6 +928,9 @@ struct KnownOrigins {
     lookups: AtomicUsize,
 }
 
+#[async_trait::async_trait]
+impl AsyncRpc for KnownOrigins {}
+
 impl TransactionOrigin for KnownOrigins {
     async fn origin(
         &self,
@@ -1106,6 +1109,9 @@ struct FailingOrigin {
     failing: Signature,
     error: fn(Signature) -> AuditError,
 }
+
+#[async_trait::async_trait]
+impl AsyncRpc for FailingOrigin {}
 
 impl TransactionOrigin for FailingOrigin {
     async fn origin(
