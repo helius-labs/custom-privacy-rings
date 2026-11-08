@@ -401,7 +401,7 @@
       "entry": false,
       "inputs": 4,
       "outputs": 16,
-      "owners": 4,
+      "owners": 2,
       "wide": false,
       "withdrawals": 4
     },
