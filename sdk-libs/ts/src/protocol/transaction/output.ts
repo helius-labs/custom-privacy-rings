@@ -1,5 +1,5 @@
 /** Ring output bodies in SPP's output framing, Rust `custom_ring_interface::output`. */
-import { OUTPUT_RECORD_LEN } from "../codec/ring-disclosure-layout.js";
+import { RING_RECORD_LEN } from "../codec/ring-disclosure-layout.js";
 import { TransactionError } from "@heliuslabs/spr/transaction";
 
 /** The schemes a ring output publishes, SPP stores the ring-owned ones unparsed. */
@@ -85,7 +85,7 @@ export function ringBodyOutput(
   const payload = frame.body;
   const length = new DataView(payload.buffer, payload.byteOffset, 2).getUint16(0, true);
   const rest = payload.subarray(2);
-  if (length > rest.length || length < OUTPUT_RECORD_LEN) return undefined;
+  if (length > rest.length || length < RING_RECORD_LEN) return undefined;
   return Object.freeze({ body: rest.subarray(0, length), reply: rest.subarray(length) });
 }
 

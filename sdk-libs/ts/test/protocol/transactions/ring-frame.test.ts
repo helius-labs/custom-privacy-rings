@@ -17,8 +17,9 @@ import {
   type TransferBinding,
 } from "../../../src/protocol/proof/statement.js";
 import {
-  OUTPUT_RECORD_LEN,
+  EXIT_RECORD_LEN,
   RECIPIENT_KEY_LEN,
+  RING_RECORD_LEN,
 } from "../../../src/protocol/codec/ring-disclosure-layout.js";
 import {
   CONFIDENTIAL_DATA_FREE_BODY_LEN,
@@ -216,20 +217,46 @@ describe("the ring frame", () => {
     expect(() => RingTransactData.parse(bytes, "confidential")).toThrow(RingError);
   });
 
-  it("carries one 137 byte record per slot and 32 bytes per recipient key", () => {
+  it("carries a 105 byte record per non-exit slot, 137 on an exit and 32 bytes per recipient key", () => {
     const frame = ringFrame({ rail: "confidential", inputs: 1, outputs: 2 });
-    const shortRecord = {
+    const longRecord = {
       ...frame,
-      outputs: frame.outputs.map((output) => ({ ...output, record: new Uint8Array(105) })),
+      outputs: frame.outputs.map((output) => ({
+        ...output,
+        record: new Uint8Array(EXIT_RECORD_LEN),
+      })),
     };
-    expect(reason(() => RingTransactData.encode(shortRecord))).toBe("RingTransactLength");
+    expect(reason(() => RingTransactData.encode(longRecord))).toBe("RingTransactLength");
+    const exitAt = (record: Uint8Array) => ({
+      ...frame,
+      outputs: frame.outputs.map((output, index) =>
+        index === 1
+          ? {
+              ...output,
+              ownerTag: field(7),
+              record,
+              body: {
+                kind: "exit" as const,
+                payload: new Uint8Array(CONFIDENTIAL_DATA_FREE_BODY_LEN),
+              },
+            }
+          : output,
+      ),
+    });
+    expect(reason(() => RingTransactData.encode(exitAt(new Uint8Array(RING_RECORD_LEN))))).toBe(
+      "RingTransactLength",
+    );
+    const exit = exitAt(new Uint8Array(EXIT_RECORD_LEN).fill(4));
+    expect(
+      RingTransactData.parse(RingTransactData.encode(exit), "confidential").outputs[1]!.record,
+    ).toHaveLength(EXIT_RECORD_LEN);
     for (const length of [RECIPIENT_KEY_LEN, 3 * RECIPIENT_KEY_LEN, 2 * RECIPIENT_KEY_LEN + 1])
       expect(
         reason(() => RingTransactData.encode({ ...frame, recipientKeys: new Uint8Array(length) })),
       ).toBe("RingTransactLength");
     const bytes = RingTransactData.encode(frame);
     expect(indexOf(bytes, frame.outputs[0]!.record)).toBeGreaterThan(0);
-    expect(frame.outputs[0]!.record).toHaveLength(OUTPUT_RECORD_LEN);
+    expect(frame.outputs[0]!.record).toHaveLength(RING_RECORD_LEN);
   });
 
   it("refuses flags the rail forbids", () => {
@@ -432,7 +459,7 @@ describe("the transfer statement", () => {
       transferStatementHash(ringTransferStatement({ ...frame, recipientKeys: keys }, binding())),
     ).not.toEqual(base);
     const record = frame.outputs.map((output, slot) =>
-      slot === 0 ? { ...output, record: new Uint8Array(OUTPUT_RECORD_LEN) } : output,
+      slot === 0 ? { ...output, record: new Uint8Array(RING_RECORD_LEN) } : output,
     );
     expect(
       transferStatementHash(ringTransferStatement({ ...frame, outputs: record }, binding())),
@@ -485,7 +512,7 @@ describe("ring body", () => {
 
   it("frames record, payload then reply and reads them back", () => {
     if (slot === undefined) throw new Error("a slot");
-    const record = new Uint8Array(OUTPUT_RECORD_LEN).fill(5);
+    const record = new Uint8Array(RING_RECORD_LEN).fill(5);
     const payload = new Uint8Array(4).fill(6);
     const reply = new Uint8Array(97).fill(9);
     const { data } = ringTransactOutput(
@@ -499,11 +526,11 @@ describe("ring body", () => {
 
   it("refuses a length past the payload and below a record", () => {
     expect(ringBodyOutput(new Uint8Array())).toBeUndefined();
-    const short = encodeRingBodyOutput(new Uint8Array(OUTPUT_RECORD_LEN - 1), new Uint8Array());
+    const short = encodeRingBodyOutput(new Uint8Array(RING_RECORD_LEN - 1), new Uint8Array());
     expect(ringBodyOutput(short)).toBeUndefined();
-    const framed = encodeRingBodyOutput(new Uint8Array(OUTPUT_RECORD_LEN), new Uint8Array());
+    const framed = encodeRingBodyOutput(new Uint8Array(RING_RECORD_LEN), new Uint8Array());
     const past = framed.slice();
-    past[6] = OUTPUT_RECORD_LEN + 1;
+    past[6] = RING_RECORD_LEN + 1;
     expect(ringBodyOutput(past)).toBeUndefined();
   });
 
@@ -525,6 +552,7 @@ describe("ring body", () => {
           ? {
               ...output,
               ownerTag: field(7),
+              record: new Uint8Array(EXIT_RECORD_LEN).fill(8),
               body: {
                 kind: "exit" as const,
                 payload: new Uint8Array(CONFIDENTIAL_DATA_FREE_BODY_LEN),
@@ -534,8 +562,8 @@ describe("ring body", () => {
       ),
     };
     const message = RingTransactData.auditorMessage(exit);
-    expect(message).toHaveLength(33 + frame.envelope.length + 64 + OUTPUT_RECORD_LEN);
-    expect(message.subarray(message.length - OUTPUT_RECORD_LEN)).toEqual(exit.outputs[1]!.record);
+    expect(message).toHaveLength(33 + frame.envelope.length + 64 + EXIT_RECORD_LEN);
+    expect(message.subarray(message.length - EXIT_RECORD_LEN)).toEqual(exit.outputs[1]!.record);
     expect(RingTransactData.auditorMessage(frame)).toHaveLength(33 + frame.envelope.length + 64);
   });
 });

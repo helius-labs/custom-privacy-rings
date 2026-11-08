@@ -63,6 +63,7 @@ import {
   EMPTY_ENTRY_RECORD,
   encodeAuditEnvelope,
   RecordKind,
+  sealedRecordKey,
 } from "../../src/protocol/codec/audit-stream.js";
 import {
   recipientKeyRegion,
@@ -943,14 +944,15 @@ function checkTransferStatement(typed: TransferProofRequest): void {
   const txKey = ViewingKey.fromBytes(typed.txViewingSk.slice() as Bytes32);
   const records = slots.map((slot, at) => {
     const { output } = slot;
+    const kind = isRingOutput(output) ? RecordKind.ring : RecordKind.exit;
     const record = isUtxo(output)
       ? {
-          kind: isRingOutput(output) ? RecordKind.ring : RecordKind.exit,
+          kind,
           amount: amountOf(output.amount),
           ownerKey: slot.ownerKey,
           mint: mintOf(slot.mintChunks),
-          nullifierPk: output.nullifierPk,
           blinding: output.blinding,
+          key: sealedRecordKey(kind, output.nullifierPk),
         }
       : DUMMY_RECORD;
     const secret = txKeySlotSecret({

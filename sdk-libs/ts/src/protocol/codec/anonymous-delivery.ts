@@ -1,5 +1,5 @@
 /** The anonymous frame's sender bundle and replies, Rust `zolana_ring_transaction::recipient_delivery`. */
-import { checkedBytes, concatBytes, encodeData, Reader, readData } from "@heliuslabs/spr/internal";
+import { checkedBytes, encodeData, Reader, readData } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
 import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
 import type { Data } from "@heliuslabs/spr/transaction";
@@ -21,16 +21,8 @@ const REPLY_HEAD_LEN = 3 * FIELD_LEN;
 /** A reply holding empty data. */
 export const MIN_REPLY_LEN = REPLY_HEAD_LEN + 1;
 
-/** Rust `BundleLayout`, the frame publishes `m` and the bundle spends no byte on it. */
-export interface BundleLayout {
-  /** The frame's `m`. */
-  readonly outputs: number;
-}
-
-/** `output_seed ‖ recipient_u * m`. */
-export function senderBundleLen(layout: BundleLayout): number {
-  return FIELD_LEN + FIELD_LEN * layout.outputs;
-}
+/** `output_seed`, the same at every `m`. */
+export const SENDER_BUNDLE_LEN = FIELD_LEN;
 
 /** Semantics unproved, the statement binds only its presence, length and bytes. */
 export interface ReplyMetadata {
@@ -45,10 +37,9 @@ export interface ReplyClaim {
   readonly claimed: ReplyMetadata;
 }
 
-/** `output_seed ‖ recipient keys`, key `k` is slot `k`'s `V_k`, zero on an exit or a dummy. */
+/** The sender reads each `V_k` back from the auditor stream it sealed, the bundle names none. */
 export interface SenderBundle {
   readonly outputSeed: Bytes32;
-  readonly recipientKeys: readonly Bytes32[];
 }
 
 /** The longest reply `replies` encode to, every body of a frame shares one length. */
@@ -96,36 +87,13 @@ export function openReply(slotSecret: Bytes32, ciphertext: Uint8Array): ReplyCla
 
 export function sealSenderBundle(slotSecret: Bytes32, bundle: SenderBundle): Uint8Array {
   return seal(slotSecret, SENDER_BUNDLE_ENC_INFO, () =>
-    concatBytes(
-      checkedBytes<Bytes32>(bundle.outputSeed, FIELD_LEN, "outputSeed"),
-      ...bundle.recipientKeys.map((key) => checkedBytes<Bytes32>(key, FIELD_LEN, "recipientKey")),
-    ),
+    checkedBytes<Bytes32>(bundle.outputSeed, FIELD_LEN, "outputSeed").slice(),
   );
 }
 
-/** `layout` holds the frame's published count, never a count a reader inferred from the ciphertext. */
-export function openSenderBundle(
-  slotSecret: Bytes32,
-  ciphertext: Uint8Array,
-  layout: BundleLayout,
-): SenderBundle {
-  return open(
-    slotSecret,
-    SENDER_BUNDLE_ENC_INFO,
-    ciphertext,
-    senderBundleLen(layout),
-    (plaintext) => {
-      const keyAt = (index: number): number => FIELD_LEN + FIELD_LEN * index;
-      return Object.freeze({
-        outputSeed: plaintext.slice(0, FIELD_LEN) as Bytes32,
-        recipientKeys: Object.freeze(
-          Array.from(
-            { length: layout.outputs },
-            (_, index) => plaintext.slice(keyAt(index), keyAt(index + 1)) as Bytes32,
-          ),
-        ),
-      });
-    },
+export function openSenderBundle(slotSecret: Bytes32, ciphertext: Uint8Array): SenderBundle {
+  return open(slotSecret, SENDER_BUNDLE_ENC_INFO, ciphertext, SENDER_BUNDLE_LEN, (plaintext) =>
+    Object.freeze({ outputSeed: plaintext.slice() as Bytes32 }),
   );
 }
 

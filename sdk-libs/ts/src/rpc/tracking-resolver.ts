@@ -43,6 +43,16 @@ export type ResolvedRecipient =
       kind: "zeroKey";
       root: TrackingRoot;
       viewingPublicKey: X25519PublicKey;
+    }>
+  /**
+   * A nonzero key with no row under `root`, read from the address with no list tag.
+   * Only a later registration of the same key spends the note.
+   */
+  | Readonly<{
+      kind: "unregistered";
+      root: TrackingRoot;
+      nullifierPk: Bytes32;
+      viewingPublicKey: X25519PublicKey;
     }>;
 
 /**
@@ -85,7 +95,14 @@ export async function resolveRingRecipient(
           );
     return Object.freeze({ kind: "zeroKey", root, viewingPublicKey });
   }
-  if (row === undefined) throw new RingError("RING_RECIPIENT_NOT_ENROLLED");
+  // A nonzero key pays an owner the opening proved absent under `root`.
+  if (row === undefined)
+    return Object.freeze({
+      kind: "unregistered",
+      root,
+      nullifierPk: named,
+      viewingPublicKey: to.recipient.viewingPublicKey,
+    });
   if (!equalBytes(row.nullifierPk, named))
     throw new RingError("RING_ADDRESS_MISMATCH", {
       details: { field: "nullifierPk" },

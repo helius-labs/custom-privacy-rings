@@ -20,7 +20,7 @@ import type { OutputContext } from "@heliuslabs/spr/transaction";
 
 import { openMergeRecord, type MergeRingAuthority } from "../../crypto/audit/merge-disclosure.js";
 import { ringIdField } from "../../crypto/derivation/ring-stream.js";
-import { RecordKind } from "../../protocol/codec/audit-stream.js";
+import { namedNullifierPk, RecordKind } from "../../protocol/codec/audit-stream.js";
 import { RingError } from "../../protocol/error.js";
 import { outputTreeId } from "../../protocol/membership/trees.js";
 import {
@@ -165,16 +165,19 @@ export function openRingMerge(
   const { record, seed } = openMergeRecord(input.auditor, confirmed.sealedRecord, firstNullifier);
   try {
     // The proof holds the blinding to the seed, a record off it would rebuild a note no seed spends.
+    // The merge record is the full form, it carries the key or names the zero key.
+    const nullifierPk = namedNullifierPk(record.key);
     if (
       record.kind !== RecordKind.ring ||
-      !isCanonicalField(record.nullifierPk) ||
+      nullifierPk === undefined ||
+      !isCanonicalField(nullifierPk) ||
       !isCanonicalField(seed) ||
       !equalBytes(record.blinding, seededMergeOutputBlinding(seed, firstNullifier))
     )
       throw new RingError("RING_AUDIT_MESSAGE", { details: { reason: "merge record" } });
     const utxo: AuditedUtxo = Object.freeze({
       ownerKey: record.ownerKey,
-      nullifierPk: record.nullifierPk,
+      nullifierPk,
       asset: hashBytes(addressBytes(record.mint, "mint")) as Bytes32,
       mint: record.mint,
       amount: record.amount,

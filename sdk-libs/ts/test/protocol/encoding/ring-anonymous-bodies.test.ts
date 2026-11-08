@@ -3,12 +3,16 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import replyVector from "../../../../../test-vectors/wallet/reply_metadata.json" with { type: "json" };
 import { initializePoseidon } from "@heliuslabs/spr";
-import { concatBytes, encodeBase58, ZERO_32 } from "@heliuslabs/spr/internal";
+import { concatBytes, encodeBase58, ZERO_32, ZERO_NULLIFIER_PK } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
 import { X25519Keypair } from "@heliuslabs/spr/keypair";
 import { Data } from "@heliuslabs/spr/transaction";
 
-import { openOutputSlot, sealOutputSlot } from "../../../src/crypto/audit/ring-disclosure.js";
+import {
+  openExitRecord,
+  openOutputSlot,
+  sealOutputSlot,
+} from "../../../src/crypto/audit/ring-disclosure.js";
 import {
   OUTPUT_RECORD_ENC_INFO,
   REPLY_ENC_INFO,
@@ -23,18 +27,31 @@ import {
   replyLength,
   sealReply,
   sealSenderBundle,
-  senderBundleLen,
+  SENDER_BUNDLE_LEN,
   type ReplyMetadata,
-  type BundleLayout,
   type SenderBundle,
 } from "../../../src/protocol/codec/anonymous-delivery.js";
 import {
   DUMMY_RECORD,
+  EMPTY_PAYLOAD,
+  RECORD_ZERO_KEY_BIT,
   RecordKind,
+  UNPUBLISHED_RECORD_KEY,
+  ZERO_RECORD_KEY,
+  carriedRecordKey,
+  decodeMergeRecord,
+  decodeOutputRecord,
+  encodeMergeRecord,
+  encodeOutputRecord,
+  encodeRecipientPayload,
+  publishedRecordLen,
+  sealedRecordKey,
   type OutputRecord,
 } from "../../../src/protocol/codec/audit-stream.js";
 import {
-  OUTPUT_RECORD_LEN,
+  EXIT_RECORD_LEN,
+  MERGE_RECORD_LEN,
+  RING_RECORD_LEN,
   STREAM_FIRST_COUNTER,
 } from "../../../src/protocol/codec/ring-disclosure-layout.js";
 
@@ -61,14 +78,22 @@ function sealedReplyBytes(plaintext: Uint8Array): Uint8Array {
   );
 }
 
+/** A ring output, its nonzero key unpublished. */
 const RECORD: OutputRecord = {
   kind: RecordKind.ring,
   amount: 0x0102_0304_0506_0708n,
   ownerKey: filled(0x33),
   mint: encodeBase58(filled(0x22)),
-  nullifierPk: filled(0x0a),
   blinding: filled(0x11),
+  key: UNPUBLISHED_RECORD_KEY,
 };
+const EXIT_KEY = filled(0x0a);
+const EXIT: OutputRecord = {
+  ...RECORD,
+  kind: RecordKind.exit,
+  key: { kind: "carried", nullifierPk: EXIT_KEY },
+};
+const ZERO_KEY: OutputRecord = { ...RECORD, key: ZERO_RECORD_KEY };
 
 function reply(data = new Data()): ReplyMetadata {
   return {
@@ -79,27 +104,98 @@ function reply(data = new Data()): ReplyMetadata {
   };
 }
 
-/** One key per slot, zero on an exit or a dummy. */
-function bundle(layout: BundleLayout): SenderBundle {
-  return {
-    outputSeed: filled(0x77),
-    recipientKeys: Array.from({ length: layout.outputs }, (_, key) =>
-      key % 3 === 2 ? ZERO_32 : filled(0x80 + key),
-    ),
-  };
-}
+const BUNDLE: SenderBundle = { outputSeed: filled(0x77) };
 
 beforeAll(initializePoseidon);
 
-describe("output slot body", () => {
-  it("opens what it sealed at the record's length", () => {
-    const sealed = sealOutputSlot(SECRET, { record: RECORD });
-    expect(sealed).toHaveLength(OUTPUT_RECORD_LEN);
-    expect(openOutputSlot(SECRET, sealed)).toEqual({ record: RECORD });
-    expect(() => openOutputSlot(OTHER_SECRET, sealed)).toThrow();
+describe("output record codec", () => {
+  it("lays the key last, the blinding at the ring record's end", () => {
+    const exit = encodeOutputRecord(EXIT);
+    expect(exit).toHaveLength(EXIT_RECORD_LEN);
+    expect(exit[0]).toBe(RecordKind.exit);
+    expect(exit.subarray(73, RING_RECORD_LEN)).toEqual(EXIT.blinding);
+    expect(exit.subarray(RING_RECORD_LEN)).toEqual(EXIT_KEY);
+    // An unpublished key seals as zero past the published bytes.
+    expect(encodeOutputRecord(RECORD).subarray(RING_RECORD_LEN)).toEqual(ZERO_32);
+    const zero = encodeOutputRecord(ZERO_KEY);
+    expect(zero[0]).toBe(RecordKind.ring | RECORD_ZERO_KEY_BIT);
+    expect(zero.subarray(RING_RECORD_LEN)).toEqual(ZERO_NULLIFIER_PK);
+    expect(encodeOutputRecord({ ...EXIT, key: ZERO_RECORD_KEY })[0]).toBe(
+      RecordKind.exit | RECORD_ZERO_KEY_BIT,
+    );
+    expect(carriedRecordKey(ZERO_NULLIFIER_PK as Bytes32)).toEqual(ZERO_RECORD_KEY);
   });
 
-  it("refuses a body shorter than a record and a record its kind refuses", () => {
+  it("names a ring key by the bit alone and carries an exit's", () => {
+    const published = (record: OutputRecord) =>
+      encodeOutputRecord(record).subarray(0, publishedRecordLen(record.kind));
+    for (const record of [RECORD, ZERO_KEY, EXIT, { ...EXIT, key: ZERO_RECORD_KEY }])
+      expect(decodeOutputRecord(published(record))).toEqual(record);
+    expect(sealedRecordKey(RecordKind.ring, EXIT_KEY)).toEqual(UNPUBLISHED_RECORD_KEY);
+    expect(sealedRecordKey(RecordKind.exit, EXIT_KEY)).toEqual(EXIT.key);
+    expect(sealedRecordKey(RecordKind.ring, ZERO_NULLIFIER_PK as Bytes32)).toEqual(ZERO_RECORD_KEY);
+  });
+
+  it("refuses a 105-byte exit record and a 137-byte non-exit record", () => {
+    expect(() =>
+      decodeOutputRecord(encodeOutputRecord(EXIT).subarray(0, RING_RECORD_LEN)),
+    ).toThrow();
+    expect(() => decodeOutputRecord(encodeOutputRecord(RECORD))).toThrow();
+    expect(() => decodeOutputRecord(new Uint8Array(EXIT_RECORD_LEN))).toThrow();
+  });
+
+  it("refuses a kind off the three, a dummy with the bit and an exit whose bit disagrees", () => {
+    const ring = encodeOutputRecord(RECORD).subarray(0, RING_RECORD_LEN);
+    for (const kind of [3, RecordKind.dummy | RECORD_ZERO_KEY_BIT, 8]) {
+      const edited = ring.slice();
+      edited[0] = kind;
+      expect(() => decodeOutputRecord(edited)).toThrow();
+    }
+    const flagged = encodeOutputRecord(EXIT);
+    flagged[0] = RecordKind.exit | RECORD_ZERO_KEY_BIT;
+    expect(() => decodeOutputRecord(flagged)).toThrow();
+    const unflagged = encodeOutputRecord({ ...EXIT, key: ZERO_RECORD_KEY });
+    unflagged[0] = RecordKind.exit;
+    expect(() => decodeOutputRecord(unflagged)).toThrow();
+  });
+
+  it("keeps the merge record's key and bit, the full form then the seed", () => {
+    for (const record of [ZERO_KEY, { ...RECORD, key: EXIT.key }]) {
+      const merge = { record, seed: filled(0x66) };
+      const encoded = encodeMergeRecord(merge);
+      expect(encoded).toHaveLength(MERGE_RECORD_LEN);
+      expect(decodeMergeRecord(encoded)).toEqual(merge);
+    }
+    const flipped = encodeMergeRecord({ record: ZERO_KEY, seed: filled(0x66) });
+    flipped[0] = RecordKind.ring;
+    expect(() => decodeMergeRecord(flipped)).toThrow();
+  });
+});
+
+describe("output slot body", () => {
+  it("publishes a ring record without its key and an exit with it", () => {
+    const sealed = sealOutputSlot(SECRET, { record: RECORD });
+    expect(sealed).toHaveLength(RING_RECORD_LEN);
+    expect(openOutputSlot(SECRET, sealed)).toEqual({ record: RECORD });
+    expect(() => openOutputSlot(OTHER_SECRET, sealed)).toThrow();
+    const exit = sealOutputSlot(SECRET, { record: EXIT });
+    expect(exit).toHaveLength(EXIT_RECORD_LEN);
+    expect(openExitRecord(SECRET, exit)).toEqual(EXIT);
+  });
+
+  it("continues the payload at the ring record's end of one stream", () => {
+    const payloadLength = encodeRecipientPayload(EMPTY_PAYLOAD).length;
+    const sealed = sealOutputSlot(SECRET, {
+      record: RECORD,
+      payload: EMPTY_PAYLOAD,
+      payloadLength,
+    });
+    expect(sealed).toHaveLength(RING_RECORD_LEN + payloadLength);
+    expect(sealed.subarray(0, RING_RECORD_LEN)).toEqual(sealOutputSlot(SECRET, { record: RECORD }));
+    expect(openOutputSlot(SECRET, sealed)).toEqual({ record: RECORD, payload: EMPTY_PAYLOAD });
+  });
+
+  it("refuses a body shorter than a record, an exit in a ring body and a ring record as an exit", () => {
     const sealed = sealOutputSlot(SECRET, { record: RECORD });
     expect(() => openOutputSlot(SECRET, sealed.subarray(1))).toThrow();
     // A payload byte past a record without one reads a two byte length it cannot hold.
@@ -107,6 +203,16 @@ describe("output slot body", () => {
     expect(openOutputSlot(SECRET, sealOutputSlot(SECRET, { record: DUMMY_RECORD }))).toEqual({
       record: DUMMY_RECORD,
     });
+    expect(() => openOutputSlot(SECRET, sealOutputSlot(SECRET, { record: EXIT }))).toThrow();
+    expect(() =>
+      openExitRecord(SECRET, sealOutputSlot(SECRET, { record: EXIT }).subarray(0, RING_RECORD_LEN)),
+    ).toThrow();
+    expect(() =>
+      openExitRecord(
+        SECRET,
+        sealOutputSlot(SECRET, { record: RECORD, payload: EMPTY_PAYLOAD, payloadLength: 32 }),
+      ),
+    ).toThrow();
   });
 
   it("refuses an amount past u64 at sealing", () => {
@@ -176,7 +282,7 @@ describe("reply metadata", () => {
     const asRecord = symmetricAuditApply(
       SECRET,
       { label: OUTPUT_RECORD_ENC_INFO, counter: STREAM_FIRST_COUNTER },
-      concatBytes(plaintext, new Uint8Array(OUTPUT_RECORD_LEN - MIN_REPLY_LEN)),
+      concatBytes(plaintext, new Uint8Array(RING_RECORD_LEN - MIN_REPLY_LEN)),
     );
     expect(sealedReply).not.toEqual(asRecord.subarray(0, MIN_REPLY_LEN));
   });
@@ -215,21 +321,17 @@ describe("the shared reply vector", () => {
 });
 
 describe("sender bundle", () => {
-  it.each([{ outputs: 1 }, { outputs: 2 }, { outputs: 4 }, { outputs: 8 }])(
-    "opens what it sealed at $outputs outputs",
-    (layout) => {
-      const sealed = sealSenderBundle(SECRET, bundle(layout));
-      expect(sealed).toHaveLength(senderBundleLen(layout));
-      expect(sealed).toHaveLength(32 + 32 * layout.outputs);
-      expect(openSenderBundle(SECRET, sealed, layout)).toEqual(bundle(layout));
-    },
-  );
+  it("seals the output seed alone, one length at every output count", () => {
+    const sealed = sealSenderBundle(SECRET, BUNDLE);
+    expect(sealed).toHaveLength(SENDER_BUNDLE_LEN);
+    expect(SENDER_BUNDLE_LEN).toBe(32);
+    expect(openSenderBundle(SECRET, sealed)).toEqual(BUNDLE);
+  });
 
-  it("refuses a bundle off the length the published count fixes", () => {
-    const sealed = sealSenderBundle(SECRET, bundle({ outputs: 2 }));
-    expect(() => openSenderBundle(SECRET, sealed, { outputs: 3 })).toThrow();
-    expect(() => openSenderBundle(SECRET, sealed, { outputs: 1 })).toThrow();
-    expect(() => openSenderBundle(SECRET, sealed.subarray(1), { outputs: 2 })).toThrow();
+  it("refuses a bundle of any other length", () => {
+    const sealed = sealSenderBundle(SECRET, BUNDLE);
+    expect(() => openSenderBundle(SECRET, sealed.subarray(1))).toThrow();
+    expect(() => openSenderBundle(SECRET, Uint8Array.of(...sealed, 0))).toThrow();
   });
 });
 
@@ -243,7 +345,7 @@ describe("delivery streams", () => {
       ).size,
     ).toBe(3);
     const streams = [OUTPUT_RECORD_ENC_INFO, REPLY_ENC_INFO, SENDER_BUNDLE_ENC_INFO].map((label) =>
-      Buffer.from(keystream(label, OUTPUT_RECORD_LEN)).toString("hex"),
+      Buffer.from(keystream(label, RING_RECORD_LEN)).toString("hex"),
     );
     expect(new Set(streams).size).toBe(3);
     expect(Buffer.from(sealOutputSlot(SECRET, { record: DUMMY_RECORD })).toString("hex")).toBe(

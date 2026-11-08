@@ -27,7 +27,10 @@ import {
   StreamCounter,
   ViewingHistory,
 } from "../../src/state/viewing-history.js";
-import { sealSenderBundle, senderBundleLen } from "../../src/protocol/codec/anonymous-delivery.js";
+import {
+  sealSenderBundle,
+  SENDER_BUNDLE_LEN,
+} from "../../src/protocol/codec/anonymous-delivery.js";
 import {
   deliveredSlotSecret,
   recipientTag,
@@ -52,7 +55,7 @@ import {
   ScanWallet,
   sealedNote,
 } from "../helpers/ring-scan.js";
-import { OUTPUT_RECORD_LEN } from "../../src/protocol/codec/ring-disclosure-layout.js";
+import { RING_RECORD_LEN } from "../../src/protocol/codec/ring-disclosure-layout.js";
 
 await initializePoseidon();
 
@@ -230,7 +233,7 @@ describe("anonymous sync", () => {
         outputIndex,
         firstNullifier,
       });
-    const noise = new Uint8Array(OUTPUT_RECORD_LEN).fill(0x5c);
+    const noise = new Uint8Array(RING_RECORD_LEN).fill(0x5c);
     // Opens under bob's key, its blinding outside the field fails the hash rebuild.
     const named = sealedNote(secret(2), {
       owner: bob.address,
@@ -238,10 +241,9 @@ describe("anonymous sync", () => {
       amount: 5n,
       mint: SOL_MINT,
     });
-    // Opens under bob's key, the change key names bob, whose slot rebuilds no published hash.
+    // Opens under bob's key, no slot publishes a zero tag and no message carries an auditor stream.
     const bundle = sealSenderBundle(secret(3), {
       outputSeed: new Uint8Array(32).fill(0x0b) as Bytes32,
-      recipientKeys: [ZERO, bob.viewingKey.u(), keypair(8).shieldedAddress().viewingPublicKey.u()],
     });
     const payloads = [
       new Uint8Array(),
@@ -465,7 +467,7 @@ describe("anonymous sync", () => {
     expect(undecodable.senderClaims).toEqual([]);
   });
 
-  it("opens the bundle under its published count and skips a bundle of another length", async () => {
+  it("opens the bundle at its one length and skips a bundle of another length", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2).address;
@@ -473,7 +475,7 @@ describe("anonymous sync", () => {
     expect(paid.outputSlots).toHaveLength(2);
     const [message] = paid.messages;
     if (message === undefined) throw new Error("no bundle");
-    expect(senderBundleOutputBody(message.data)).toHaveLength(senderBundleLen({ outputs: 2 }));
+    expect(senderBundleOutputBody(message.data)).toHaveLength(SENDER_BUNDLE_LEN);
 
     indexer.publish(paid);
     const opened = await alice.sync(indexer, alice.fresh());

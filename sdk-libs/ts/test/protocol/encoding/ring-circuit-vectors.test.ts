@@ -29,7 +29,7 @@ import {
   MIN_REPLY_LEN,
   openReply,
   openSenderBundle,
-  senderBundleLen,
+  SENDER_BUNDLE_LEN,
   sealReply,
   sealSenderBundle,
 } from "../../../src/protocol/codec/anonymous-delivery.js";
@@ -118,13 +118,9 @@ describe("anonymous_bodies.json", () => {
     ]);
   });
 
-  // Key `k` names slot `k`, the change slot carries the sender's own key.
-  const layout = { outputs: bodies.output_count };
   const recipientKey = bodies.recipient_keys[bodies.body_index] ?? "";
-  const bundle = {
-    outputSeed: field(bodies.output_seed),
-    recipientKeys: bodies.recipient_keys.map((key) => (key === "" ? ZERO_32 : field(key))),
-  };
+  // The bundle names no slot, the sender reads each key back from the auditor stream.
+  const bundle = { outputSeed: field(bodies.output_seed) };
 
   it("rebuilds both CRDS slot secrets, the bundle's at index m", () => {
     const txViewing = X25519Keypair.fromBytes(field(bodies.tx_viewing_sk));
@@ -181,9 +177,9 @@ describe("anonymous_bodies.json", () => {
 
   it("seals and opens the sender bundle and hashes its digest", () => {
     const secret = field(bodies.bundle_slot_secret);
-    const sealed = bytes(bodies.bundle, senderBundleLen(layout));
+    const sealed = bytes(bodies.bundle, SENDER_BUNDLE_LEN);
     expect(hex(sealSenderBundle(secret, bundle))).toBe(bodies.bundle);
-    expect(openSenderBundle(secret, sealed, layout)).toEqual(bundle);
+    expect(openSenderBundle(secret, sealed)).toEqual(bundle);
     expect(hex(ciphertextDigest(sealed))).toBe(bodies.bundle_digest);
   });
 

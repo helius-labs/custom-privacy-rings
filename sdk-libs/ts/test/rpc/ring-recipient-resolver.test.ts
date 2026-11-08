@@ -139,15 +139,19 @@ describe("resolveRingRecipient", () => {
       });
   });
 
-  it("refuses a keyed address with no row, a pending enrollment grants nothing", async () => {
+  it("resolves a keyed address with no row to its own keys, no zero key and no list", async () => {
     const { to } = await addressed();
-    await expect(
-      resolveRingRecipient({
-        client: chain(TRACKING_SENTINEL, "absent"),
-        trackingRegistry: REGISTRY,
-        to,
-      }),
-    ).rejects.toMatchObject({ code: "RING_RECIPIENT_NOT_ENROLLED" });
+    // No authorization account exists, the absence opening alone resolves the address.
+    const resolved = await resolveRingRecipient({
+      client: chain(TRACKING_SENTINEL, "absent"),
+      trackingRegistry: REGISTRY,
+      to,
+    });
+    if (resolved.kind !== "unregistered") throw new Error("unregistered");
+    expect(resolved.nullifierPk).toEqual(to.recipient.nullifierPublicKey);
+    expect(resolved.nullifierPk).not.toEqual(ZERO_NULLIFIER_PK);
+    expect(resolved.viewingPublicKey.u()).toEqual(to.recipient.viewingPublicKey.u());
+    expect(Object.keys(resolved)).not.toContain("listTag");
   });
 
   it("resolves an address from before a rotation to the authorization's current viewing key", async () => {

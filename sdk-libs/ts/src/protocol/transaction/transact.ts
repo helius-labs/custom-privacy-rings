@@ -36,15 +36,16 @@ import type {
 } from "@heliuslabs/spr/interface";
 import { CUSTOM_RING_PROOF_LENGTH } from "../proof/custom-ring-proof.js";
 import {
-  OUTPUT_RECORD_LEN,
   PAYLOAD_LENGTH_LEN,
+  EXIT_RECORD_LEN,
+  RING_RECORD_LEN,
   checkedStreamLayout,
   envelopeRegion,
   recipientKeysLen,
   type AuditLayout,
   type AuditStreamLayout,
 } from "../codec/ring-disclosure-layout.js";
-import { MIN_REPLY_LEN, senderBundleLen } from "../codec/anonymous-delivery.js";
+import { MIN_REPLY_LEN, SENDER_BUNDLE_LEN } from "../codec/anonymous-delivery.js";
 import {
   SLOT_TAG_LEN,
   framedSlotTag,
@@ -140,15 +141,20 @@ export type SlotBody =
 export interface RingOutput {
   readonly hash: Bytes32;
   readonly ownerTag: Bytes32;
-  /** `OUTPUT_RECORD_LEN` sealed bytes, in the slot's SPP data or, on an exit, the auditor message. */
+  /** `slotRecordLen(body)` sealed bytes, in the slot's SPP data or, on an exit, the auditor message. */
   readonly record: Uint8Array;
   readonly body: SlotBody;
 }
 
-/** Sender bundle, forwarded under its tag as the first SPP message, its length fixed by `m`. */
+/** Sender bundle, forwarded under its tag as the first SPP message, the tag derived for index `m`. */
 export interface PublishedSenderBundle {
   readonly tag: Bytes32;
   readonly body: Uint8Array;
+}
+
+/** Rust `SlotBody::record_len`, an exit alone publishes its record's key. */
+export function slotRecordLen(body: Pick<SlotBody, "kind">): number {
+  return body.kind === "exit" ? EXIT_RECORD_LEN : RING_RECORD_LEN;
 }
 
 /** Every reply of a frame, one length, a hidden dummy matches a recipient, Rust `Replies`. */
@@ -628,7 +634,7 @@ function readCompact(bytes: Reader, rail: RingRail): RingTransactData {
   const sender: PublishedSenderBundle | undefined = isAnonymousFrame(rail)
     ? Object.freeze({
         tag: field32(bytes, "sender.tag"),
-        body: bytes.bytes(senderBundleLen({ outputs: outputCount }), "sender.body"),
+        body: bytes.bytes(SENDER_BUNDLE_LEN, "sender.body"),
       })
     : undefined;
   const envelope = bytes.bytes(envelopeRegion(stream).length, "envelope");
@@ -707,7 +713,7 @@ function readSlot(bytes: Reader, hasData: boolean, exit: boolean): RingOutput {
   const ownerTag = exit
     ? field32(bytes, "output.ownerTag")
     : unframedSlotTag(bytes.bytes(SLOT_TAG_LEN, "output.ownerTag"));
-  const record = bytes.bytes(OUTPUT_RECORD_LEN, "output.record");
+  const record = bytes.bytes(exit ? EXIT_RECORD_LEN : RING_RECORD_LEN, "output.record");
   const payload = bytes.bytes(length, "output.extra");
   const body: SlotBody = Object.freeze({ kind: exit ? "exit" : "recipient", payload });
   return Object.freeze({ hash, ownerTag, record, body });
@@ -867,8 +873,7 @@ function writeCompact(data: RingTransactData): Uint8Array {
     data.splWithdrawalOwners.length !== ownersExpected ||
     (data.anonymous !== undefined) !== hiddenOwnerProof ||
     (data.sender !== undefined) !== anonymousFrame ||
-    (data.sender !== undefined &&
-      data.sender.body.length !== senderBundleLen({ outputs: data.outputs.length })) ||
+    (data.sender !== undefined && data.sender.body.length !== SENDER_BUNDLE_LEN) ||
     data.envelope.length !== envelopeRegion(stream).length ||
     data.recipientKeys.length !== recipientKeysLen(stream) ||
     !data.outputs.every((output) => slotFits(output, data.hasData))
@@ -949,12 +954,12 @@ function writeSlot(out: Writer, output: RingOutput, hasData: boolean): void {
   out.bytes(output.hash, 32, "output.hash");
   if (output.body.kind === "exit") out.bytes(output.ownerTag, 32, "output.ownerTag");
   else out.bytes(framedSlotTag(output.ownerTag), SLOT_TAG_LEN, "output.ownerTag");
-  out.bytes(output.record, OUTPUT_RECORD_LEN, "output.record").bytes(extra);
+  out.bytes(output.record, slotRecordLen(output.body), "output.record").bytes(extra);
 }
 
 /** A frame with no data carries no payload and each exit body at its plain length. */
 function slotFits(output: RingOutput, hasData: boolean): boolean {
-  if (output.record.length !== OUTPUT_RECORD_LEN) return false;
+  if (output.record.length !== slotRecordLen(output.body)) return false;
   if (output.body.kind !== "exit" && !equalBytes(slotTag(output.ownerTag), output.ownerTag))
     return false;
   if (hasData) return true;

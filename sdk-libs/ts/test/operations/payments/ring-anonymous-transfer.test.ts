@@ -146,14 +146,18 @@ import {
   type RingFixtureOptions,
 } from "../../helpers/ring-pipeline.js";
 import { type RingKeys } from "../../../src/state/ring-keys.js";
-import { openOutputSlot } from "../../../src/crypto/audit/ring-disclosure.js";
+import { openOutputSlot, openSealedDisclosure } from "../../../src/crypto/audit/ring-disclosure.js";
+import { x25519FromU } from "../../../src/crypto/keys/x25519.js";
 import { publicListKey } from "../../../src/protocol/membership/private-list.js";
-import { OUTPUT_RECORD_LEN } from "../../../src/protocol/codec/ring-disclosure-layout.js";
+import {
+  RECIPIENT_KEY_LEN,
+  RING_RECORD_LEN,
+} from "../../../src/protocol/codec/ring-disclosure-layout.js";
 import {
   MIN_REPLY_LEN,
   openReply,
   openSenderBundle,
-  senderBundleLen,
+  SENDER_BUNDLE_LEN,
   type ReplyMetadata,
 } from "../../../src/protocol/codec/anonymous-delivery.js";
 
@@ -314,9 +318,33 @@ function openedBundle(
   call: Fixture["sppCalls"][number],
 ) {
   if (data.sender === undefined) throw new Error("no sender bundle");
-  return openSenderBundle(slotSecretOf(sender, data, call, data.outputs.length), data.sender.body, {
-    outputs: data.outputs.length,
-  });
+  return openSenderBundle(slotSecretOf(sender, data, call, data.outputs.length), data.sender.body);
+}
+
+/** `V_k` of each slot as the sender reads it back from the auditor stream its own key sealed. */
+function sentRecipientKeys(
+  fixture: Fixture,
+  sender: ShieldedKeypair,
+  data: RingTransactData,
+): readonly Bytes32[] {
+  const txKey = sender.transactionViewingKey(RingTransactData.firstNullifier(data));
+  const txViewingSecret = txKey.secretBytes();
+  try {
+    return openSealedDisclosure(txViewingSecret, fixture.auditor.publicKey(), {
+      layout: RingTransactData.streamLayout(data),
+      salt: data.salt,
+      message: {
+        ephemeralPublicKey: x25519FromU(data.txViewingU),
+        envelope: data.envelope,
+        recipientKeys: data.outputs.map((_, slot) =>
+          data.recipientKeys.subarray(slot * RECIPIENT_KEY_LEN, (slot + 1) * RECIPIENT_KEY_LEN),
+        ),
+      },
+    }).recipientKeys;
+  } finally {
+    txViewingSecret.fill(0);
+    txKey.destroy();
+  }
 }
 
 const ZERO_KEY = new Uint8Array(32) as Bytes32;
@@ -438,7 +466,7 @@ describe("anonymous ring payment", () => {
     expect(data.sender?.tag).toEqual(
       bundleTag(slotSecretOf(sender.keypair, data, call, data.outputs.length)),
     );
-    expect(payment.record).toHaveLength(OUTPUT_RECORD_LEN);
+    expect(payment.record).toHaveLength(RING_RECORD_LEN);
     expect(payment.body.payload).toHaveLength(0);
     await checkAccounts(instruction, {
       fixture,
@@ -468,9 +496,11 @@ describe("anonymous ring payment", () => {
       ringProgramId: fixture.ringProgramId,
     });
     expect(note.hash(bob.nullifierPublicKey(), TREE_ID)).toEqual(payment.hash);
-    const bundle = openedBundle(sender.keypair, data, call);
+    // The bundle carries the output seed alone, the sender reads each key from the stream.
+    expect(data.sender?.body).toHaveLength(SENDER_BUNDLE_LEN);
+    expect(openedBundle(sender.keypair, data, call).outputSeed).toHaveLength(32);
     expect(changeAmounts(sender.keypair, data, call)).toEqual([9_600n]);
-    expect(bundle.recipientKeys).toEqual([
+    expect(sentRecipientKeys(fixture, sender.keypair, data)).toEqual([
       sender.keypair.shieldedAddress().viewingPublicKey.u(),
       bob.shieldedAddress().viewingPublicKey.u(),
     ]);
@@ -540,15 +570,14 @@ describe("anonymous ring payment", () => {
     const { data, call } = await expanded(fixture, await paying.prove(fixture.client), "anonymous");
 
     expect(bodyKinds(data)).toEqual(["change", "recipient", "exit", "recipient"]);
-    expect(openedBundle(sender.keypair, data, call).recipientKeys).toEqual([
+    expect(sentRecipientKeys(fixture, sender.keypair, data).slice(0, 3)).toEqual([
       sender.keypair.shieldedAddress().viewingPublicKey.u(),
       bob.shieldedAddress().viewingPublicKey.u(),
-      ZERO_KEY,
-      ZERO_KEY,
+      fixture.auditor.publicKey().u(),
     ]);
     const dummy = data.outputs[3];
     if (dummy?.body.kind !== "recipient") throw new Error("no dummy slot");
-    expect(dummy.record).toHaveLength(OUTPUT_RECORD_LEN);
+    expect(dummy.record).toHaveLength(RING_RECORD_LEN);
     expect(hex(dummy.ownerTag)).not.toBe(hex(ZERO_KEY));
     expect(dummy.ownerTag).toEqual(slotTag(dummy.ownerTag));
     checkDisclosure(fixture, call, data);
@@ -666,7 +695,7 @@ describe("anonymous delivery slots", () => {
     );
 
     expect([data.nOut, data.outputs.length]).toEqual([4, 3]);
-    expect(data.sender?.body).toHaveLength(senderBundleLen({ outputs: 3 }));
+    expect(data.sender?.body).toHaveLength(SENDER_BUNDLE_LEN);
     checkRingBlindings(call, data);
     const request = checkTransferProof(fixture, data);
     expect([request.outputCount, request.outputs.length]).toEqual([3, 4]);
@@ -1312,9 +1341,8 @@ describe("anonymous ring exits and entries", () => {
     const proven = await rail({ fixture, sender, transfer }).prove(fixture.client);
     const { data, call } = await expanded(fixture, proven, "anonymous");
     expect(bodyKinds(data).slice(0, 3)).toEqual(["change", "change", "change"]);
-    const bundle = openedBundle(sender.keypair, data, call);
     expect(changeAmounts(sender.keypair, data, call).toSorted()).toEqual([100n, 200n, 9_700n]);
-    expect(bundle.recipientKeys.slice(0, 3)).toEqual(
+    expect(sentRecipientKeys(fixture, sender.keypair, data).slice(0, 3)).toEqual(
       Array(3).fill(sender.keypair.shieldedAddress().viewingPublicKey.u()),
     );
   });

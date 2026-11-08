@@ -1000,6 +1000,7 @@ describe("audited UTXO read", () => {
   };
 
   function wireUtxo(utxo: KnownUtxo): Record<string, unknown> {
+    if (utxo.owner.kind === "unresolved") throw new Error("Ring RPC names every key");
     const owner =
       utxo.owner.kind === "keyed"
         ? { nullifierPk: getAddressDecoder().decode(utxo.owner.nullifierPk) }

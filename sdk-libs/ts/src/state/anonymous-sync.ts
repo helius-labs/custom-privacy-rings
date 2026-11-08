@@ -32,15 +32,25 @@ import {
   type WalletUtxo,
 } from "@heliuslabs/spr/transaction";
 
-import { txKeySlotSecret } from "../crypto/derivation/ring-stream.js";
+import { anonymousSlotTag, txKeySlotSecret } from "../crypto/derivation/ring-stream.js";
 import { isSmallOrder, x25519FromU } from "../crypto/keys/x25519.js";
 import {
   openReply,
   openSenderBundle,
-  senderBundleLen,
+  SENDER_BUNDLE_LEN,
   type ReplyClaim,
 } from "../protocol/codec/anonymous-delivery.js";
-import { openOutputSlot, type OpenedOutput } from "../crypto/audit/ring-disclosure.js";
+import { parseAuditorMessage } from "../crypto/audit/audit.js";
+import {
+  openOutputSlot,
+  openSealedDisclosure,
+  type OpenedOutput,
+} from "../crypto/audit/ring-disclosure.js";
+import {
+  auditorMessageLen,
+  type AuditStreamLayout,
+} from "../protocol/codec/ring-disclosure-layout.js";
+import { TRANSFER_SHAPES } from "../protocol/proof/transfer-shapes.js";
 import { ringBodyOutput, senderBundleOutputBody } from "../protocol/transaction/output.js";
 import { openRecipientNote } from "../crypto/derivation/blinding.js";
 import { HalvingPageLimit, readRingPages, scanLimits, type ScanLimits } from "../rpc/history.js";
@@ -85,7 +95,7 @@ export type SentCheck =
   /** No held address names the viewing key and rebuilds the hash. */
   | Readonly<{ kind: "unverified" }>;
 
-/** One payment the wallet's sender bundle lists, its body opened with the transaction key. */
+/** One payment of a transfer the wallet sent, its key read back from the auditor stream. */
 export interface SentPayment {
   readonly txSignature: IndexedShieldedTransaction["txSignature"];
   readonly utxoHash: Bytes32;
@@ -1348,8 +1358,10 @@ class BodyRead {
   }
 
   /**
-   * Each change slot sealed to the sender's own key, opened under the secret `changeSecrets` derives
-   * at its position with no auditor read, then the payments only the sender's own key proves.
+   * The bundle names the sender's transaction and no slot. Change publishes a zero tag no tag scan
+   * reaches, each zero-tag body opens by trial under the secret `changeSecrets` derives for the
+   * sender's own key and counts only when its commitment rebuilds. The payments come from the
+   * auditor stream the wallet's own transaction key sealed.
    */
   async senderBundle(
     body: Body,
@@ -1357,15 +1369,12 @@ class BodyRead {
     txViewingKey: ViewingKey | undefined,
     changeSecrets: (positions: readonly number[]) => Promise<readonly Bytes32[]>,
   ): Promise<void> {
-    const bundle = decoded(() =>
-      openSenderBundle(secret, body.ciphertext, { outputs: body.tx.outputSlots.length }),
-    );
+    const bundle = decoded(() => openSenderBundle(secret, body.ciphertext));
     if (bundle === undefined) return;
     bundle.outputSeed.fill(0);
     const own = this.#owner.viewingPublicKey.u();
-    // A change key is the sender's own, its slot's tag is zero and no tag scan reaches it.
-    const change = bundle.recipientKeys.flatMap((key, position) =>
-      equalBytes(key, own) ? [position] : [],
+    const change = body.tx.outputSlots.flatMap((slot, position) =>
+      isZero(slot.viewTag) && ringBodyOutput(slot.payload) !== undefined ? [position] : [],
     );
     const secrets = change.length === 0 ? [] : await changeSecrets(change);
     try {
@@ -1385,10 +1394,15 @@ class BodyRead {
       secrets.forEach((changeSecret) => changeSecret.fill(0));
     }
     if (txViewingKey === undefined) return;
-    for (const [position, recipient] of listedRecipients(bundle.recipientKeys, own)) {
-      const sent = this.#sentPayment(body, position, recipient, txViewingKey);
-      if (sent !== undefined) this.sent.push(sent);
-    }
+    const sent = new Set<number>();
+    for (const keys of sentRecipientKeys(body.tx, txViewingKey))
+      for (const [position, recipient] of listedRecipients(keys, own)) {
+        if (sent.has(position)) continue;
+        const payment = this.#sentPayment(body, position, recipient, txViewingKey);
+        if (payment === undefined) continue;
+        sent.add(position);
+        this.sent.push(payment);
+      }
   }
 
   /** Only a rebuilt commitment counts, the cipher authenticates nothing. */
@@ -1414,7 +1428,7 @@ class BodyRead {
     this.notes.push({ ...rebuilt, body, position, claim, pending });
   }
 
-  /** `undefined` when the body at `position` fails to open under the recipient's key. */
+  /** `undefined` unless `recipient` derives the slot's published tag and the body opens under it. */
   #sentPayment(
     body: Body,
     position: number,
@@ -1433,6 +1447,8 @@ class BodyRead {
     });
     let opening: OpenedOutput | undefined;
     try {
+      // The tag binds `V_k` to its slot, a key read under another layout derives another tag.
+      if (!equalBytes(anonymousSlotTag(secret), slot.viewTag)) return undefined;
       opening = decoded(() => openOutputSlot(secret, parts.body));
     } finally {
       secret.fill(0);
@@ -1581,6 +1597,61 @@ function rebuild(
   );
 }
 
+/**
+ * `V_k` of every slot from the auditor stream under the sender's own transaction key, Rust
+ * `AuditEnvelope::open_sealed`, the auditor key read from the last message's view tag. The frame
+ * names no key class, and an entry key's envelope moves the key counters, so each class the
+ * catalog keys at `n` gives one candidate and the slot tag decides.
+ */
+function sentRecipientKeys(
+  tx: IndexedShieldedTransaction,
+  txViewingKey: ViewingKey,
+): readonly (readonly Bytes32[])[] {
+  const { salt } = tx;
+  const message = tx.messages.at(-1);
+  if (message === undefined || salt === undefined) return [];
+  const auditor = decoded(() => x25519FromU(message.viewTag));
+  if (auditor === undefined || isSmallOrder(auditor)) return [];
+  const exits = tx.outputSlots.filter((slot) => ringBodyOutput(slot.payload) === undefined).length;
+  const txViewingSecret = txViewingKey.secretBytes();
+  try {
+    return senderAuditLayouts(tx.nullifiers.length, tx.outputSlots.length)
+      .filter((layout) => auditorMessageLen(layout, exits) === message.data.length)
+      .flatMap((layout) => {
+        const opened = decoded(() =>
+          openSealedDisclosure(txViewingSecret, auditor, {
+            layout,
+            salt,
+            message: parseAuditorMessage(message.data, layout, exits),
+          }),
+        );
+        if (opened === undefined) return [];
+        opened.envelope.txViewingSecret.fill(0);
+        return [opened.recipientKeys];
+      });
+  } finally {
+    txViewingSecret.fill(0);
+  }
+}
+
+/** One plain layout, the plain envelope fixes every counter, then one per entry class holding `n`. */
+function senderAuditLayouts(inputs: number, outputs: number): readonly AuditStreamLayout[] {
+  const entryClasses = new Set(
+    TRANSFER_SHAPES.filter((shape) => shape.entry && shape.inputs >= inputs).map(
+      (shape) => shape.inputs,
+    ),
+  );
+  return [
+    { key: { class: inputs, entry: false }, inputs, outputs, capacity: outputs },
+    ...[...entryClasses].map((keyClass) => ({
+      key: { class: keyClass, entry: true },
+      inputs,
+      outputs,
+      capacity: outputs,
+    })),
+  ];
+}
+
 /** Key `k` names slot `k`, zero keys, the sender's own change keys and keys no ECDH accepts left out. */
 function listedRecipients(
   keys: readonly Bytes32[],
@@ -1627,7 +1698,7 @@ function bodyAt(
   const message = tx.messages[site.message];
   const bundle = message === undefined ? undefined : senderBundleOutputBody(message.data);
   // Compact slots never reach the event, a bundle of any other `m` opens under another secret.
-  return bundle?.length === senderBundleLen({ outputs: tx.outputSlots.length })
+  return bundle?.length === SENDER_BUNDLE_LEN
     ? { tx, site, ciphertext: bundle, reply: new Uint8Array(), context, found }
     : undefined;
 }

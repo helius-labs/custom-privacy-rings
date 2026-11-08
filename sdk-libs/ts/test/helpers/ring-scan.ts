@@ -24,8 +24,11 @@ import {
 } from "@heliuslabs/spr/transaction";
 
 import { AnonymousPlan, RingOutputRail } from "../../src/operations/payments/output-rail.js";
+import { sealAudit } from "../../src/proof/audit-proof.js";
+import { auditorMessageData } from "../../src/crypto/audit/audit.js";
+import { frameKeyShape } from "../../src/protocol/proof/transfer-shapes.js";
 import { sealOutputSlot } from "../../src/crypto/audit/ring-disclosure.js";
-import { RecordKind } from "../../src/protocol/codec/audit-stream.js";
+import { RecordKind, sealedRecordKey } from "../../src/protocol/codec/audit-stream.js";
 import type { ReplyMetadata } from "../../src/protocol/codec/anonymous-delivery.js";
 import {
   AnonymousSync,
@@ -36,7 +39,7 @@ import { ViewingHistory } from "../../src/state/viewing-history.js";
 import { transactionItems } from "../../../../zolana/sdk-libs/ts/test/helpers/pages.js";
 import { TREE, TREE_ID, randomAddress, walletKeys } from "./ring-pipeline.js";
 
-/** An exit's record seals to it, no scan reads the auditor stream. */
+/** Exit records seal to the scan auditor, a sender reads its payment keys back from the stream sealed to it. */
 const SCAN_AUDITOR = X25519Keypair.generate();
 
 export const RING = randomAddress();
@@ -270,6 +273,30 @@ export class ScanWallet {
       instructionDiscriminator: InstructionTag.ringTransact,
     });
     const { outputs, resolvedOwnerTags, messages } = proof.externalData;
+    const spent = proof.inputUtxos.filter((input) => !input.isCompact());
+    const nullifiers = spent.map((input) => input.nullifier());
+    // The program appends the auditor message last, as Rust `SealedAudit::message`.
+    const shape = frameKeyShape({
+      rail: "anonymous",
+      inputs: nullifiers.length,
+      outputs: prepared.shape.outputs,
+      spendsDefaultRing: false,
+      wide: false,
+    });
+    if (shape === undefined) throw new Error("no key at the shape");
+    const audit = sealAudit({
+      rail,
+      layout: {
+        key: { class: shape.inputs, entry: false },
+        inputs: nullifiers.length,
+        outputs: outputs.length,
+        capacity: shape.outputs,
+      },
+      published: rail.publishedSlots(proof, this.address, SCAN_AUDITOR.publicKey()),
+      inputs: spent,
+      auditor: SCAN_AUDITOR.publicKey(),
+    });
+    audit.ephemeralSecret.fill(0);
     const leaf = indexer.leaves(outputs.length);
     return {
       slot: options.slot ?? leaf + 1n,
@@ -287,8 +314,8 @@ export class ScanWallet {
         },
         payload: output.data ?? new Uint8Array(),
       })),
-      messages,
-      nullifiers: proof.inputUtxos.map((spent) => spent.nullifier()),
+      messages: [...messages, auditorMessageData(audit, SCAN_AUDITOR.publicKey())],
+      nullifiers,
       proofless: false,
       ringProgramId: RING,
     };
@@ -343,8 +370,8 @@ export function sealedNote(
       amount: note.amount,
       ownerKey: note.owner.signingPublicKey.confidentialViewTag() as Bytes32,
       mint: note.mint,
-      nullifierPk: note.nullifierPk ?? note.owner.nullifierPublicKey,
       blinding: note.blinding,
+      key: sealedRecordKey(RecordKind.ring, note.nullifierPk ?? note.owner.nullifierPublicKey),
     },
   });
 }

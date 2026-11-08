@@ -20,14 +20,17 @@ import {
   encodeAuditEnvelope,
   encodeOutputRecord,
   encodeRecipientPayload,
+  publishedRecordLen,
+  RecordKind,
   type AuditEnvelope,
   type OutputRecord,
   type RecipientPayload,
 } from "../../protocol/codec/audit-stream.js";
 import {
   ENVELOPE_KEY_LEN,
-  OUTPUT_RECORD_LEN,
+  EXIT_RECORD_LEN,
   RECIPIENT_KEY_LEN,
+  RING_RECORD_LEN,
   STREAM_FIRST_COUNTER,
   checkedStreamLayout,
   envelopeRegion,
@@ -126,14 +129,16 @@ export function openSealedDisclosure(
 
 /**
  * `record_ct ‖ payload_ct` as one `CRING/rcp` stream under the slot secret `CRDS_i`. The circuit
- * binds the first 137 bytes, the payload continues the keystream and no proof reads it.
+ * encrypts the full record and binds the bytes the slot publishes. A non-exit slot publishes
+ * `RING_RECORD_LEN` of them and its payload continues the keystream there, unread by any proof.
  */
 export function sealOutputSlot(
   slotSecret: Bytes32,
   output: Readonly<{ record: OutputRecord; payload?: RecipientPayload; payloadLength?: number }>,
 ): Uint8Array {
+  const record = encodeOutputRecord(output.record);
   const plaintext = concatBytes(
-    encodeOutputRecord(output.record),
+    record.subarray(0, publishedRecordLen(output.record.kind)),
     ...(output.payload === undefined
       ? []
       : [encodeRecipientPayload(output.payload, output.payloadLength)]),
@@ -141,22 +146,36 @@ export function sealOutputSlot(
   try {
     return symmetricAuditApply(slotSecret, recordPosition(), plaintext);
   } finally {
+    record.fill(0);
     plaintext.fill(0);
   }
 }
 
-/** Refuses a body shorter than a record, the bytes past it are the payload of a data frame. */
+/** A non-exit body, the bytes past its record are the payload of a data frame, an exit kind is refused. */
 export function openOutputSlot(slotSecret: Bytes32, body: Uint8Array): OpenedOutput {
-  if (body.length < OUTPUT_RECORD_LEN) throw shapeError("outputBody");
+  if (body.length < RING_RECORD_LEN) throw shapeError("outputBody");
   const plaintext = symmetricAuditApply(slotSecret, recordPosition(), body);
   try {
-    const record = decodeOutputRecord(plaintext.subarray(0, OUTPUT_RECORD_LEN));
+    const record = decodeOutputRecord(plaintext.subarray(0, RING_RECORD_LEN));
     return Object.freeze({
       record,
-      ...(body.length > OUTPUT_RECORD_LEN
-        ? { payload: decodeRecipientPayload(plaintext.subarray(OUTPUT_RECORD_LEN)) }
+      ...(body.length > RING_RECORD_LEN
+        ? { payload: decodeRecipientPayload(plaintext.subarray(RING_RECORD_LEN)) }
         : {}),
     });
+  } finally {
+    plaintext.fill(0);
+  }
+}
+
+/** An exit's full record, refused at any other length or kind. */
+export function openExitRecord(slotSecret: Bytes32, recordCiphertext: Uint8Array): OutputRecord {
+  if (recordCiphertext.length !== EXIT_RECORD_LEN) throw shapeError("exitRecord");
+  const plaintext = symmetricAuditApply(slotSecret, recordPosition(), recordCiphertext);
+  try {
+    const record = decodeOutputRecord(plaintext);
+    if (record.kind !== RecordKind.exit) throw shapeError("exitRecord");
+    return record;
   } finally {
     plaintext.fill(0);
   }

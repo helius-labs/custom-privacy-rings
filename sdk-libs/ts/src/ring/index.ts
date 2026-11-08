@@ -421,6 +421,8 @@ export type {
   TransactionAuditInput,
   UtxoOwner,
 } from "../operations/audit/audit.js";
+export { TrackingOwnerKeys } from "../operations/audit/owner-keys.js";
+export type { OwnerNullifierKeys } from "../operations/audit/owner-keys.js";
 export {
   auditRingMerges,
   classifyMergeNullifier,

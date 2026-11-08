@@ -232,13 +232,20 @@ function applyRows(
   rows: RowOrigins,
 ): BatchNotes {
   const found = new BatchNotes(before);
-  // 1. Every row is a transfer or a merge, a deposit lands as a transfer output.
+  // 1. Every row is a transfer or a merge, a deposit lands as a transfer output. A source record
+  // omits its key, the source's own key resolves it and the rebuilt commitment decides, so a note
+  // paid before registration recovers.
+  const sourceOwner = input.source.signingPublicKey.confidentialViewTag();
   const audited = auditConfirmedRingHistory({
     auditor: input.auditor,
     ringProgramId: input.ringProgramId,
     history: batch,
     rows,
     known: found.openings,
+    ownerKeys: {
+      nullifierKey: (ownerKey) =>
+        equalBytes(ownerKey, sourceOwner) ? input.source.nullifierPublicKey : undefined,
+    },
   });
   refuseSkipped(rows.skipped);
   // 2. Outputs before spends, the batch's merges and inputs need the notes they consume.
@@ -354,7 +361,8 @@ function keepSourceNote(
   opening: KnownUtxo,
   outputContext: OutputContext,
 ): void {
-  const nullifierPk = sourceNullifierPk(input.source, knownUtxoOwnerHash(opening));
+  const owner = knownUtxoOwnerHash(opening);
+  const nullifierPk = owner === undefined ? undefined : sourceNullifierPk(input.source, owner);
   if (nullifierPk === undefined || !found.claim(outputContext.hash)) return;
   const nullifier = sourceNullifier(input, nullifierPk, outputContext.hash, opening.blinding);
   const mint = registeredMint(input.assets, opening.mint);

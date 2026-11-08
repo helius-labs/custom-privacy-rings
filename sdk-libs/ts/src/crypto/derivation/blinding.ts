@@ -114,7 +114,7 @@ export interface RingNoteOwner {
 export interface OpenedRingNote {
   readonly utxo: Utxo;
   readonly utxoHash: Bytes32;
-  /** The reader's key or zero, as the record names it. */
+  /** The reader's key or zero, as the record's bit names it. */
   readonly nullifierPublicKey: Bytes32;
   readonly dataHash?: Bytes32;
   readonly ringDataHash?: Bytes32;
@@ -123,9 +123,10 @@ export interface OpenedRingNote {
 }
 
 /**
- * `undefined` unless the record names the reader's key or the zero key and rebuilds the published
- * commitment, Rust `AnonymousOutput::open_body`. The cipher authenticates nothing, the commitment
- * match alone proves the opening.
+ * `undefined` unless the record rebuilds the published commitment under the reader's own key, or
+ * the zero key when its bit is set, Rust `AnonymousOutput::open_body`. No registry names the key, so
+ * a payment to an unregistered address opens at once. The cipher authenticates nothing, the
+ * commitment match alone proves the opening.
  */
 export function openRecipientNote(
   reader: RingOutputReader,
@@ -142,14 +143,9 @@ export function openRecipientNote(
   if (dataHash !== undefined && isZero(dataHash)) return undefined;
   const appData = data.subarray(32);
   const { signingPublicKey, nullifierPublicKey } = reader.owner;
-  const candidate = [nullifierPublicKey, ZERO_NULLIFIER_PK as Bytes32].find((key) =>
-    equalBytes(key, record.nullifierPk),
-  );
-  if (
-    candidate === undefined ||
-    !equalBytes(record.ownerKey, signingPublicKey.confidentialViewTag())
-  )
-    return undefined;
+  const candidate =
+    record.key.kind === "zero" ? (ZERO_NULLIFIER_PK as Bytes32) : nullifierPublicKey;
+  if (!equalBytes(record.ownerKey, signingPublicKey.confidentialViewTag())) return undefined;
   const utxo = new Utxo({
     owner: signingPublicKey,
     asset: record.mint,

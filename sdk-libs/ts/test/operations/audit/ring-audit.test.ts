@@ -44,7 +44,12 @@ import {
   type SealedMergeRecord,
 } from "../../../src/crypto/audit/merge-disclosure.js";
 import { ringIdField, txKeySlotSecret } from "../../../src/crypto/derivation/ring-stream.js";
-import { RecordKind, type OutputRecord } from "../../../src/protocol/codec/audit-stream.js";
+import {
+  RecordKind,
+  carriedRecordKey,
+  sealedRecordKey,
+  type OutputRecord,
+} from "../../../src/protocol/codec/audit-stream.js";
 import {
   CONFIDENTIAL_DATA_FREE_BODY_LEN,
   encodeRingBodyOutput,
@@ -74,7 +79,14 @@ import {
   retainedRecovery,
   type RingRecoveryStep,
 } from "../../../src/operations/workflow/recover.js";
-import { ringAuditReader } from "../../helpers/clients.js";
+import { confirmedAccountReads, ringAuditReader } from "../../helpers/clients.js";
+import {
+  ownedAccount,
+  ringPolicyData,
+  trackingAuthorizationAccount,
+} from "../../helpers/ring-accounts.js";
+import { ringPolicyAddress, trackingAuthorizationPda } from "../../../src/protocol/pda/index.js";
+import type { RpcAccount } from "@heliuslabs/spr/client";
 import { transactionsPage } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import { x25519FromU } from "../../../src/crypto/keys/x25519.js";
 import { transactionItems } from "../../../../../zolana/sdk-libs/ts/test/helpers/pages.js";
@@ -164,8 +176,52 @@ const OTHER_NULLIFIER = field(`${"00".repeat(31)}71`);
 const OTHER_OWNER = new Uint8Array(32).fill(0xb2) as Bytes32;
 const OTHER_NULLIFIER_PK = field(`${"00".repeat(31)}21`);
 
-/** A record before its slot's blinding joins it. */
-type RecordFields = Omit<OutputRecord, "blinding">;
+type RecordFields = Omit<OutputRecord, "blinding" | "key"> & { readonly nullifierPk: Bytes32 };
+
+function fullRecord(record: RecordFields, blinding: Bytes32): OutputRecord {
+  const { nullifierPk, ...fields } = record;
+  return { ...fields, blinding, key: sealedRecordKey(record.kind, nullifierPk) };
+}
+
+const TRACKING = encodeBase58(new Uint8Array(32).fill(0x0c));
+
+/** The ring's policy and an authorization per owner, the accounts an auditor reads for a key. */
+async function auditAccounts(
+  keys: ReadonlyMap<Bytes32, Bytes32>,
+  registry: Address = TRACKING,
+): Promise<ReadonlyMap<Address, RpcAccount>> {
+  const authorizations = await Promise.all(
+    [...keys].map(([owner, nullifierPk]) =>
+      trackingAuthorizationAccount({
+        registry,
+        owner: encodeBase58(owner),
+        nullifierPk,
+        listTag: new Uint8Array(32),
+        viewingU: new Uint8Array(32).fill(9),
+      }),
+    ),
+  );
+  return new Map([
+    [
+      await ringPolicyAddress(RING),
+      ownedAccount(RING, ringPolicyData({ bump: 255, tracking: TRACKING })),
+    ],
+    ...authorizations,
+  ]);
+}
+
+/** The audit reader over `accounts`, every other account absent. */
+function auditClient(
+  getShieldedTransactionsByTags: Parameters<
+    typeof ringAuditReader
+  >[0]["getShieldedTransactionsByTags"],
+  accounts: ReadonlyMap<Address, RpcAccount>,
+) {
+  return ringAuditReader({
+    getShieldedTransactionsByTags,
+    solanaRpc: confirmedAccountReads(async (address) => accounts.get(address)),
+  });
+}
 
 const otherRecords: readonly RecordFields[] = [
   {
@@ -262,7 +318,7 @@ function sealedTransfer(
         outputIndex: slot,
         firstNullifier,
       }),
-      { record: { ...record, blinding: blindings[slot]! } },
+      { record: fullRecord(record, blindings[slot]!) },
     ),
   );
   txKey.destroy();
@@ -324,9 +380,10 @@ function sealedMerge(
 ): Omit<SealedMergeRecord, "proof"> {
   return sealMergeRecord({
     merge: {
+      // A merge record carries its key, a transfer's ring output does not.
       record: {
-        ...input.record,
-        blinding: seededMergeOutputBlinding(input.seed, input.firstNullifier),
+        ...fullRecord(input.record, seededMergeOutputBlinding(input.seed, input.firstNullifier)),
+        key: carriedRecordKey(input.record.nullifierPk),
       },
       seed: input.seed,
     },
@@ -350,22 +407,27 @@ const transferRows = (rail: RingRail): TransactionOrigin => ({
 });
 const TRANSFERS = transferRows("confidential");
 
+const OTHER_ACCOUNTS = auditAccounts(new Map([[OTHER_OWNER, OTHER_NULLIFIER_PK]]));
+
 describe("auditRing", () => {
   const ring = RING;
   const transfers = TRANSFERS;
 
-  function scan(
+  /** `OTHER_OWNER` holds an authorization for its key unless `accounts` says otherwise. */
+  async function scan(
     transactions: readonly IndexedShieldedTransaction[],
     origin: TransactionOrigin,
-    extra: Readonly<{ auditor: X25519Keypair; knownUtxos?: KnownUtxos }>,
+    extra: Readonly<{
+      auditor: X25519Keypair;
+      knownUtxos?: KnownUtxos;
+      accounts?: ReadonlyMap<Address, RpcAccount>;
+    }>,
   ) {
     return auditRing({
-      client: ringAuditReader({
-        getShieldedTransactionsByTags: async () =>
-          transactionsPage({
-            data: transactionItems([...transactions]),
-          }),
-      }),
+      client: auditClient(
+        async () => transactionsPage({ data: transactionItems([...transactions]) }),
+        extra.accounts ?? (await OTHER_ACCOUNTS),
+      ),
       auditor: extra.auditor,
       ringProgramId: ring,
       origin,
@@ -487,6 +549,96 @@ describe("auditRing", () => {
     expect(
       index.byNullifier(poseidon([commitment, blindings[0]!, secret]) as Bytes32)?.commitment,
     ).toEqual(commitment);
+  });
+
+  it("keeps a ring output unresolved before its owner's authorization and resolves it once after", async () => {
+    const auditor = X25519Keypair.generate();
+    const { transaction } = sealedTransfer({ auditor: auditor.publicKey() });
+    const early = (
+      await scan([transaction], TRANSFERS, { auditor, accounts: await auditAccounts(new Map()) })
+    ).transactions[0]!;
+    // A missing registration is no malformed delivery, the exit carries its own key.
+    expect(early.payloadErrors).toEqual([]);
+    const [ringOutput, exitOutput] = early.outputs;
+    if (ringOutput?.opening.kind !== "ring" || exitOutput?.opening.kind !== "exit")
+      throw new Error("ring and exit outputs");
+    expect(ringOutput.opening.utxo.nullifierPk).toBeUndefined();
+    expect(exitOutput.opening.utxo.nullifierPk).toEqual(OTHER_NULLIFIER_PK);
+    const commitment = ringOutput.outputContext.hash;
+    const index = new KnownUtxoIndex();
+    const absorb = (audited: AuditedRingTransaction) => {
+      for (const created of auditedUtxos(audited)) index.insert(created.commitment, created.utxo);
+    };
+    absorb(early);
+    expect(index.utxo(commitment)?.owner).toEqual({ kind: "unresolved" });
+    const late = (await scan([transaction], TRANSFERS, { auditor })).transactions[0]!;
+    absorb(late);
+    expect(index.utxo(commitment)?.owner).toEqual({
+      kind: "keyed",
+      nullifierPk: OTHER_NULLIFIER_PK,
+    });
+    // One entry per commitment, a later unresolved read never takes the key back.
+    absorb(early);
+    expect(index.utxo(commitment)?.owner.kind).toBe("keyed");
+  });
+
+  it("names the zero key from the bit and reads no account", async () => {
+    const auditor = X25519Keypair.generate();
+    const { transaction } = sealedTransfer({
+      auditor: auditor.publicKey(),
+      records: [{ ...otherRecords[0]!, nullifierPk: ZERO_NULLIFIER_PK as Bytes32 }],
+    });
+    const audited = (await scan([transaction], TRANSFERS, { auditor, accounts: new Map() }))
+      .transactions[0]!;
+    expect(audited.payloadErrors).toEqual([]);
+    expect(audited.outputs[0]?.opening).toMatchObject({
+      kind: "ring",
+      utxo: { nullifierPk: ZERO_NULLIFIER_PK },
+    });
+  });
+
+  it("reports a payload error when the authorization's key rebuilds no commitment", async () => {
+    const auditor = X25519Keypair.generate();
+    const { transaction } = sealedTransfer({ auditor: auditor.publicKey() });
+    const otherKey = field(`${"00".repeat(31)}22`);
+    const audited = (
+      await scan([transaction], TRANSFERS, {
+        auditor,
+        accounts: await auditAccounts(new Map([[OTHER_OWNER, otherKey]])),
+      })
+    ).transactions[0]!;
+    expect(audited.payloadErrors).toEqual([{ slotIndex: 0, kind: "payload" }]);
+    expect(audited.outputs[0]?.opening).toMatchObject({ kind: "ring" });
+  });
+
+  it("refuses an authorization of another program, registry or owner at the owner's address", async () => {
+    const auditor = X25519Keypair.generate();
+    const { transaction } = sealedTransfer({ auditor: auditor.publicKey() });
+    const [at] = await trackingAuthorizationPda(TRACKING, encodeBase58(OTHER_OWNER));
+    const authorization = async (registry: Address, owner: Bytes32) =>
+      (
+        await trackingAuthorizationAccount({
+          registry,
+          owner: encodeBase58(owner),
+          nullifierPk: OTHER_NULLIFIER_PK,
+          listTag: new Uint8Array(32),
+          viewingU: new Uint8Array(32).fill(9),
+        })
+      )[1];
+    const placed = async (account: RpcAccount) =>
+      new Map([...(await auditAccounts(new Map())), [at, account]]);
+    const cases: readonly (readonly [string, RpcAccount])[] = [
+      ["authorization program", { ...(await authorization(TRACKING, OTHER_OWNER)), owner: RING }],
+      ["authorization registry", await authorization(OTHER_RING, OTHER_OWNER)],
+      [
+        "authorization owner",
+        await authorization(TRACKING, new Uint8Array(32).fill(0xb3) as Bytes32),
+      ],
+    ];
+    for (const [reason, account] of cases)
+      await expect(
+        scan([transaction], TRANSFERS, { auditor, accounts: await placed(account) }),
+      ).rejects.toThrow(ringError("RING_TRACKING_INVALID", { reason }));
   });
 
   it("resolves a merged input before tracing its later transfer in either history order", async () => {
@@ -711,9 +863,10 @@ describe("auditRing", () => {
       async (request: { paginationToken?: string }) =>
         pages[request.paginationToken === undefined ? 0 : 1]!,
     );
+    const accounts = await OTHER_ACCOUNTS;
     const audit = (maxPages?: number) =>
       auditRing({
-        client: ringAuditReader({ getShieldedTransactionsByTags: read }),
+        client: auditClient(read, accounts),
         auditor,
         ringProgramId: ring,
         origin: transfers,

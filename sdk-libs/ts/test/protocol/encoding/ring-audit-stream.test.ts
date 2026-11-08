@@ -29,6 +29,7 @@ import {
   encodeOutputRecord,
   encodeRecipientPayload,
   RecordKind,
+  UNPUBLISHED_RECORD_KEY,
   type OutputRecord,
 } from "../../../src/protocol/codec/audit-stream.js";
 import {
@@ -37,11 +38,14 @@ import {
   checkedStreamLayout,
   envelopeBlocks,
   envelopeRegion,
+  EXIT_RECORD_LEN,
   firstRecipientKeyCounter,
   recipientKeyRegion,
   RECIPIENT_KEY_LEN,
+  RING_RECORD_LEN,
   type AuditStreamLayout,
 } from "../../../src/protocol/codec/ring-disclosure-layout.js";
+import { vectorRecord } from "../../helpers/vector-records.js";
 import { envelopeDigest, recordChain } from "../../../src/protocol/proof/statement.js";
 import { dummyUtxoHash, fieldUtxoHash } from "../../../src/protocol/membership/utxo-hash.js";
 import { RingError } from "../../../src/protocol/error.js";
@@ -236,7 +240,7 @@ describe("the stream vector", () => {
       const firstNullifier = hex(vector.first_nullifier) as Bytes32;
       const seed = ringBlindingSeed(hex(vector.tx_viewing_sk) as Bytes32, salt);
       testCase.records.forEach((plaintext, slot) => {
-        const record = decodeOutputRecord(hex(plaintext));
+        const { record, nullifierPk } = vectorRecord(hex(plaintext));
         const blinding = ringOutputBlinding({
           firstNullifier,
           blindingSeed: seed,
@@ -248,10 +252,7 @@ describe("the stream vector", () => {
           record.kind === RecordKind.dummy
             ? dummyUtxoHash(vector.output_tree_id, blinding)
             : fieldUtxoHash({
-                owner: ownerHash(
-                  solanaOwnerIdentity(record.ownerKey),
-                  record.nullifierPk,
-                ) as Bytes32,
+                owner: ownerHash(solanaOwnerIdentity(record.ownerKey), nullifierPk!) as Bytes32,
                 assetField: hashBytes(addressBytes(record.mint, "mint")) as Bytes32,
                 amount: record.amount,
                 blinding: record.blinding,
@@ -328,33 +329,39 @@ describe("the stream vector", () => {
 });
 
 describe("the stream codecs", () => {
+  const nullifierPk = new Uint8Array(32).fill(2) as Bytes32;
+  /** A merge output's record, the full form carries its key. */
   const record: OutputRecord = {
     kind: RecordKind.ring,
     amount: 7n,
     ownerKey: new Uint8Array(32).fill(1) as Bytes32,
     mint: address("11111111111111111111111111111111"),
-    nullifierPk: new Uint8Array(32).fill(2) as Bytes32,
     blinding: new Uint8Array(32).fill(3) as Bytes32,
+    key: { kind: "carried", nullifierPk },
   };
 
   it("lays the output record out at its contract bytes", () => {
     const bytes = encodeOutputRecord(record);
-    expect(bytes).toHaveLength(137);
+    expect(bytes).toHaveLength(EXIT_RECORD_LEN);
     expect(bytes[0]).toBe(1);
     expect(bytes[8]).toBe(7);
-    expect(bytes.subarray(105)).toEqual(record.blinding);
-    expect(decodeOutputRecord(bytes)).toEqual(record);
+    expect(bytes.subarray(73, RING_RECORD_LEN)).toEqual(record.blinding);
+    expect(bytes.subarray(RING_RECORD_LEN)).toEqual(nullifierPk);
+    expect(decodeOutputRecord(bytes.subarray(0, RING_RECORD_LEN))).toEqual({
+      ...record,
+      key: UNPUBLISHED_RECORD_KEY,
+    });
     expect(encodeOutputRecord(DUMMY_RECORD).every((byte) => byte === 0)).toBe(true);
   });
 
   it("refuses a kind off the three, a dummy with any nonzero byte and another length", () => {
-    const bytes = encodeOutputRecord(record);
+    const bytes = encodeOutputRecord(record).subarray(0, RING_RECORD_LEN);
     const kind = bytes.slice();
     kind[0] = 3;
     const dummy = bytes.slice();
     dummy[0] = 0;
-    const dummyBlinding = new Uint8Array(137);
-    dummyBlinding[136] = 1;
+    const dummyBlinding = new Uint8Array(RING_RECORD_LEN);
+    dummyBlinding[RING_RECORD_LEN - 1] = 1;
     for (const refused of [kind, dummy, dummyBlinding, bytes.subarray(1)])
       expect(() => decodeOutputRecord(refused)).toThrow(RingError);
   });

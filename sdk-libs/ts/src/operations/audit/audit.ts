@@ -28,6 +28,7 @@ import {
 import type { IndexedShieldedTransaction, OutputContext } from "@heliuslabs/spr/transaction";
 import {
   decodeAuditEnvelope,
+  namedNullifierPk,
   RecordKind,
   type AuditEnvelope,
   type EntryRecord,
@@ -46,6 +47,7 @@ import {
 } from "../../crypto/audit/audit.js";
 import {
   canonicalViewingKey,
+  openExitRecord,
   openOutputSlot,
   type OpenedOutput,
 } from "../../crypto/audit/ring-disclosure.js";
@@ -67,6 +69,7 @@ import { openRingMerge } from "./audit-merge.js";
 import { ringBlindingSeed, ringOutputBlinding } from "../../crypto/derivation/blinding.js";
 import { dummyUtxoHash, fieldUtxoHash } from "../../protocol/membership/utxo-hash.js";
 import { outputTreeId } from "../../protocol/membership/trees.js";
+import { TrackingOwnerKeys, type OwnerNullifierKeys } from "./owner-keys.js";
 
 /**
  * Rust `AuditedUtxo`, a proven record under its published commitment. The ring proof binds every
@@ -75,7 +78,8 @@ import { outputTreeId } from "../../protocol/membership/trees.js";
 export interface AuditedUtxo {
   /** The raw Solana key whose owner identity the commitment binds. */
   readonly ownerKey: Bytes32;
-  readonly nullifierPk: Bytes32;
+  /** Absent while a ring output's owner has no tracking authorization. */
+  readonly nullifierPk?: Bytes32;
   /** `hashBytes(mint)`. */
   readonly asset: Bytes32;
   /** Absent until the asset registry knows the asset. */
@@ -182,7 +186,9 @@ export interface AuditedRingTransaction {
 export type UtxoOwner =
   | Readonly<{ kind: "keyed"; nullifierPk: Bytes32 }>
   /** A deposit capsule discloses the owner hash alone. */
-  | Readonly<{ kind: "deposited"; ownerHash: Bytes32 }>;
+  | Readonly<{ kind: "deposited"; ownerHash: Bytes32 }>
+  /** A ring output whose owner has no tracking authorization yet, a later opening names the key. */
+  | Readonly<{ kind: "unresolved" }>;
 
 /** A UTXO an earlier audit opened, a later disclosure names it by its hash. */
 export interface KnownUtxo extends Omit<AuditedUtxo, "nullifierPk"> {
@@ -238,13 +244,18 @@ export class KnownUtxoIndex implements KnownUtxos {
     for (const { commitment, utxo } of utxos) this.insert(commitment, utxo);
   }
 
-  /** A later opening of a known commitment replaces it only to name its mint. */
+  /** A later opening of a known commitment replaces it only to name its mint or its key, one entry per commitment. */
   insert(commitment: Bytes32, utxo: KnownUtxo): void {
     const key = bytesKey(commitment);
     const kept = this.#utxos.get(key);
-    if (kept !== undefined && (kept.mint !== undefined || utxo.mint === undefined)) return;
+    const namesMore =
+      kept === undefined ||
+      (kept.mint === undefined && utxo.mint !== undefined) ||
+      (kept.owner.kind === "unresolved" && utxo.owner.kind !== "unresolved");
+    if (!namesMore) return;
     this.#utxos.set(key, utxo);
-    if (!this.#indexNote({ commitment, utxo })) this.#waiting.set(key, { commitment, utxo });
+    if (this.#indexNote({ commitment, utxo })) this.#waiting.delete(key);
+    else this.#waiting.set(key, { commitment, utxo });
   }
 
   /** A late key recomputes its owner's notes. */
@@ -260,9 +271,10 @@ export class KnownUtxoIndex implements KnownUtxos {
     return this.#notes.get(bytesKey(nullifier)) ?? this.#fallback?.byNullifier?.(nullifier);
   }
 
-  /** False while the owner's secret is unreadable, a `deposited` owner names no key and stays out. */
+  /** False while the owner's key or secret is unknown, a `deposited` owner names no key and stays out. */
   #indexNote(note: KnownNote): boolean {
     const { commitment, utxo } = note;
+    if (utxo.owner.kind === "unresolved") return false;
     if (utxo.owner.kind !== "keyed") return true;
     const { nullifierPk } = utxo.owner;
     if (equalBytes(nullifierPk, ZERO_NULLIFIER_PK)) {
@@ -320,6 +332,8 @@ export interface TransactionAuditInput {
   /** The statement's bit, refused unless it reads `R == 0`. */
   readonly noSpend: boolean;
   readonly knownUtxos?: KnownUtxos;
+  /** Names the key of a ring output whose record omits it, a miss leaves the output unresolved. */
+  readonly ownerKeys?: OwnerNullifierKeys;
 }
 
 export interface OpenedRingAudit {
@@ -382,6 +396,7 @@ export function openRingTransfer(input: TransactionAuditInput): OpenedRingAudit 
     const reader: SlotReader = {
       ringId: ringIdField(ring),
       anonymous: isAnonymousFrame(input.rail),
+      ownerKeys: input.ownerKeys,
       // `V_i` from the stream, `CRDS_i` from `tx_viewing_sk`, the record from the slot data or, on
       // an exit, from the auditor message in slot order.
       open: (slot, payload) => {
@@ -389,11 +404,11 @@ export function openRingTransfer(input: TransactionAuditInput): OpenedRingAudit 
           recipientKeyRegion(layout, slot).startCounter,
           message.recipientKeys[slot] ?? EMPTY,
         ) as Bytes32;
-        const body =
-          exits[slot] === true ? exitRecords.next().value : ringBodyOutput(payload)?.body;
+        const exit = exits[slot] === true;
+        const body = exit ? exitRecords.next().value : ringBodyOutput(payload)?.body;
         return body === undefined
           ? undefined
-          : openedSlot({ txKey: key, recipientKey, salt, slot, firstNullifier, body });
+          : openedSlot({ txKey: key, recipientKey, salt, slot, firstNullifier, body, exit });
       },
       dummyBlinding: (outputIndex) =>
         ringOutputBlinding({ firstNullifier, blindingSeed: seed, outputIndex }),
@@ -464,16 +479,19 @@ export function openedUtxo(utxo: AuditedUtxo, treeId: number): KnownUtxo {
   const { nullifierPk, ...fields } = utxo;
   return Object.freeze({
     ...fields,
-    owner: Object.freeze({ kind: "keyed", nullifierPk }),
+    owner:
+      nullifierPk === undefined ? UNRESOLVED_OWNER : Object.freeze({ kind: "keyed", nullifierPk }),
     treeId,
   });
 }
 
 /** Rust `KnownUtxo::commitment`, `ringId` zero for a default-ring UTXO, `undefined` without the data hashes. */
 export function knownUtxoHash(utxo: KnownUtxo, ringId: Bytes32): Bytes32 | undefined {
-  if (utxo.dataHash === undefined || utxo.ringDataHash === undefined) return undefined;
+  const owner = knownUtxoOwnerHash(utxo);
+  if (owner === undefined || utxo.dataHash === undefined || utxo.ringDataHash === undefined)
+    return undefined;
   return fieldUtxoHash({
-    owner: knownUtxoOwnerHash(utxo),
+    owner,
     assetField: utxo.asset,
     amount: utxo.amount,
     blinding: utxo.blinding,
@@ -484,10 +502,18 @@ export function knownUtxoHash(utxo: KnownUtxo, ringId: Bytes32): Bytes32 | undef
   });
 }
 
-export function knownUtxoOwnerHash(utxo: Pick<KnownUtxo, "ownerKey" | "owner">): Bytes32 {
-  return utxo.owner.kind === "keyed"
-    ? (ownerHash(solanaOwnerIdentity(utxo.ownerKey), utxo.owner.nullifierPk) as Bytes32)
-    : utxo.owner.ownerHash;
+/** `undefined` while the owner's key is unresolved. */
+export function knownUtxoOwnerHash(
+  utxo: Pick<KnownUtxo, "ownerKey" | "owner">,
+): Bytes32 | undefined {
+  switch (utxo.owner.kind) {
+    case "keyed":
+      return ownerHash(solanaOwnerIdentity(utxo.ownerKey), utxo.owner.nullifierPk) as Bytes32;
+    case "deposited":
+      return utxo.owner.ownerHash;
+    case "unresolved":
+      return undefined;
+  }
 }
 
 /** Rust `AuditedTransaction::has_unknown_assets`, a registry refresh may name the mint, a delivered slot opens only after it. */
@@ -518,11 +544,8 @@ export async function auditRing(
   context?: RequestContext,
 ): Promise<RingAuditPage> {
   await initializePoseidon();
-  const rows = new RowOrigins(
-    input.origin ?? new RpcTransactionOrigin(input.client.solanaRpc),
-    input.ringProgramId,
-    context,
-  );
+  const origin = input.origin ?? new RpcTransactionOrigin(input.client.solanaRpc);
+  const rows = new RowOrigins(origin, input.ringProgramId, context);
   const history: ConfirmedRingTransaction[] = [];
   const { nextCursor } = await readRingHistory(
     {
@@ -542,13 +565,25 @@ export async function auditRing(
     ...(input.knownUtxos === undefined ? {} : { fallback: input.knownUtxos }),
     ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
   });
-  const transactions = auditConfirmedRingHistory({
-    auditor: input.auditor,
-    ringProgramId: input.ringProgramId,
-    history,
-    rows,
-    known,
-  });
+  const ownerKeys = new TrackingOwnerKeys();
+  const audit = (attempts: RowOrigins) =>
+    auditConfirmedRingHistory({
+      auditor: input.auditor,
+      ringProgramId: input.ringProgramId,
+      history,
+      rows: attempts,
+      known,
+      ownerKeys,
+    });
+  // The first pass records every owner a record leaves without a key. A pass under the read
+  // authorizations replaces each unresolved entry once, keyed by its commitment.
+  const firstPass = new RowOrigins(origin, input.ringProgramId, context);
+  let transactions = audit(firstPass);
+  if (
+    await ownerKeys.refresh({ client: input.client, ringProgramId: input.ringProgramId }, context)
+  )
+    transactions = audit(rows);
+  else rows.skipped.push(...firstPass.skipped);
   return Object.freeze({
     transactions,
     skipped: Object.freeze(rows.skipped),
@@ -564,6 +599,7 @@ export function auditConfirmedRingHistory(
     history: readonly ConfirmedRingTransaction[];
     rows: RowOrigins;
     known: KnownUtxoIndex;
+    ownerKeys?: OwnerNullifierKeys;
   }>,
 ): readonly AuditedRingTransaction[] {
   const { known, rows } = input;
@@ -594,6 +630,7 @@ export function auditConfirmedRingHistory(
         rail: confirmed.rail,
         noSpend: confirmed.noSpend,
         knownUtxos: known,
+        ...(input.ownerKeys === undefined ? {} : { ownerKeys: input.ownerKeys }),
       }),
     );
     if (audited === undefined) continue;
@@ -647,6 +684,7 @@ function auditRefusal(reason: string): RingError {
 interface SlotReader {
   readonly ringId: Bytes32;
   readonly anonymous: boolean;
+  readonly ownerKeys: OwnerNullifierKeys | undefined;
   /** `undefined` on a body that does not open, the frame or the key being malformed. */
   open(slot: number, payload: Uint8Array): OpenedOutput | undefined;
   dummyBlinding(outputIndex: number): Bytes32;
@@ -666,6 +704,8 @@ function openedSlot(
     slot: number;
     firstNullifier: Bytes32;
     body: Uint8Array;
+    /** `body` is the exit's full record from the auditor message. */
+    exit: boolean;
   }>,
 ): OpenedOutput | undefined {
   let secret: Bytes32 | undefined;
@@ -677,7 +717,9 @@ function openedSlot(
       outputIndex: input.slot,
       firstNullifier: input.firstNullifier,
     });
-    return openOutputSlot(secret, input.body);
+    return input.exit
+      ? Object.freeze({ record: openExitRecord(secret, input.body) })
+      : openOutputSlot(secret, input.body);
   } catch {
     return undefined;
   } finally {
@@ -687,9 +729,12 @@ function openedSlot(
 
 /**
  * The ring proof binds every record field to the slot's published commitment, so a verified frame's
- * record stands whatever its payload holds. The payload's data hashes join the opening only when they
- * rebuild that commitment, else the slot reports a payload error beside its record. Spend tracing
- * reads the published commitment, the record's blinding and the owner's secret, never the data hashes.
+ * record stands whatever its payload holds. A ring output omits its nullifier key, the bit names the
+ * zero key and the owner's tracking authorization names any other. The key and the payload's data
+ * hashes join the opening only when they rebuild that commitment, else the slot reports a payload
+ * error beside its record. An owner with no authorization yet leaves the output unresolved, no
+ * payload error. Spend tracing reads the published commitment, the record's blinding and the
+ * owner's secret, never the data hashes.
  */
 function openSlot(
   reader: SlotReader,
@@ -706,24 +751,37 @@ function openSlot(
     return equalBytes(dummyUtxoHash(treeId, reader.dummyBlinding(slot)), context.hash)
       ? Object.freeze({ ok: true, opening: DUMMY, payload: true })
       : COMMITMENT;
-  // 2. The proof holds both record fields canonical.
-  if (!isCanonicalField(record.nullifierPk) || !isCanonicalField(record.blinding))
+  // 2. An exit carries its key. A ring output's bit names the zero key, its owner's authorization
+  // names any other and no proof reads that account.
+  const { key } = record;
+  const nullifierPk = namedNullifierPk(key) ?? reader.ownerKeys?.nullifierKey(record.ownerKey);
+  // 3. The proof holds the blinding and a carried key canonical.
+  if (
+    !isCanonicalField(record.blinding) ||
+    (key.kind === "carried" && !isCanonicalField(key.nullifierPk))
+  )
     throw auditRefusal("record field");
-  const recorded: AuditedUtxo = Object.freeze({
+  const fields = {
     ownerKey: record.ownerKey,
-    nullifierPk: record.nullifierPk,
     asset: hashBytes(addressBytes(record.mint, "mint")) as Bytes32,
     mint: record.mint,
     amount: record.amount,
     blinding: record.blinding,
-  });
-  // 3. The payload is unproven, its hashes join only when they rebuild the commitment. An exit's data
-  // sits in its scheme 3 body, sealed to its owner alone.
+  };
+  const ringNote = record.kind === RecordKind.ring;
+  if (nullifierPk === undefined)
+    return Object.freeze({
+      ok: true,
+      payload: true,
+      opening: ringOpening(reader, output, Object.freeze(fields)),
+    });
+  const recorded: AuditedUtxo = Object.freeze({ ...fields, nullifierPk });
+  // 4. The payload and an authorization key are unproven, they join only when they rebuild the
+  // commitment. An exit's data sits in its scheme 3 body, sealed to its owner alone.
   const data = payload?.data ?? EMPTY;
   // Rust `first_chunk`, data shorter than a hash reads a zero hash.
   const dataHash = data.length < 32 ? ZERO_32 : (data.slice(0, 32) as Bytes32);
   const ringDataHash = payload?.ringDataHash ?? ZERO_32;
-  const ringNote = record.kind === RecordKind.ring;
   const withData = Object.freeze({ ...recorded, dataHash, ringDataHash });
   const rebuilds =
     isCanonicalField(dataHash) &&
@@ -736,17 +794,23 @@ function openSlot(
   return Object.freeze({
     ok: true,
     payload: rebuilds,
-    opening: ringNote
-      ? Object.freeze({
-          kind: "ring",
-          utxo,
-          ownerTag: Object.freeze(
-            reader.anonymous
-              ? { kind: "view", tag: output.viewTag }
-              : { kind: "recipient", u: output.viewTag },
-          ),
-        })
-      : Object.freeze({ kind: "exit", utxo }),
+    opening: ringNote ? ringOpening(reader, output, utxo) : Object.freeze({ kind: "exit", utxo }),
+  });
+}
+
+function ringOpening(
+  reader: SlotReader,
+  output: IndexedShieldedTransaction["outputSlots"][number],
+  utxo: AuditedUtxo,
+): OutputOpening {
+  return Object.freeze({
+    kind: "ring",
+    utxo,
+    ownerTag: Object.freeze(
+      reader.anonymous
+        ? { kind: "view", tag: output.viewTag }
+        : { kind: "recipient", u: output.viewTag },
+    ),
   });
 }
 
@@ -831,6 +895,7 @@ function ringInput(utxo: KnownUtxo): InputOpening {
 }
 
 const DUMMY: OutputOpening = Object.freeze({ kind: "dummy" });
+const UNRESOLVED_OWNER: UtxoOwner = Object.freeze({ kind: "unresolved" });
 const UNRESOLVED: InputOpening = Object.freeze({ kind: "unresolved" });
 const EMPTY = new Uint8Array();
 const DISCLOSURE: SlotOpening = Object.freeze({ ok: false, kind: "disclosure" });

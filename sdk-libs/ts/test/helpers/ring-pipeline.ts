@@ -56,11 +56,16 @@ import {
 import type { RingProofRequest } from "../../src/rpc/prover/ring.js";
 import { ringAuthAddress, ringPolicyAddress, ringPolicyPda } from "../../src/protocol/pda/index.js";
 import {
+  openExitRecord,
   openOutputSlot,
   openRingDisclosure,
   type RingDisclosure,
 } from "../../src/crypto/audit/ring-disclosure.js";
-import { DUMMY_RECORD, RecordKind } from "../../src/protocol/codec/audit-stream.js";
+import {
+  DUMMY_RECORD,
+  RecordKind,
+  sealedRecordKey,
+} from "../../src/protocol/codec/audit-stream.js";
 import { RECIPIENT_KEY_LEN } from "../../src/protocol/codec/ring-disclosure-layout.js";
 import { ringIdField, txKeySlotSecret } from "../../src/crypto/derivation/ring-stream.js";
 import { RingInstructionTag, ringComputeUnitLimit } from "../../src/operations/management/admin.js";
@@ -740,20 +745,24 @@ export function checkDisclosure(
       outputIndex: index,
       firstNullifier: RingTransactData.firstNullifier(data),
     });
-    const { record } = openOutputSlot(secret, wire.record);
+    const record =
+      wire.body.kind === "exit"
+        ? openExitRecord(secret, wire.record)
+        : openOutputSlot(secret, wire.record).record;
     const output = itemAt(published, index);
     const owner = output.ownerAddress;
     if (owner === undefined || output.isDummy()) {
       expect(record).toEqual(DUMMY_RECORD);
       return;
     }
+    const kind = output.ringProgramId === undefined ? RecordKind.exit : RecordKind.ring;
     expect(record).toEqual({
-      kind: output.ringProgramId === undefined ? RecordKind.exit : RecordKind.ring,
+      kind,
       amount: output.amount,
       ownerKey: owner.signingPublicKey.confidentialViewTag(),
       mint: output.asset,
-      nullifierPk: owner.nullifierPublicKey,
       blinding: output.blinding,
+      key: sealedRecordKey(kind, owner.nullifierPublicKey),
     });
   });
   txKey.destroy();

@@ -14,7 +14,7 @@ import {
   ENVELOPE_KEY_LEN,
   STREAM_FIRST_COUNTER,
   TAGGED_KEY_LEN,
-  OUTPUT_RECORD_LEN,
+  EXIT_RECORD_LEN,
   RECIPIENT_KEY_LEN,
   auditorMessageLen,
   envelopeRegion,
@@ -305,7 +305,7 @@ export function parseAuditorMessage(
     ephemeralPublicKey: X25519PublicKey.fromBytes(bytes.subarray(0, TAGGED_KEY_LEN)),
     envelope: bytes.subarray(TAGGED_KEY_LEN, keysAt),
     recipientKeys: cut(keysAt, RECIPIENT_KEY_LEN, layout.outputs),
-    exitRecords: cut(recordsAt, OUTPUT_RECORD_LEN, exits),
+    exitRecords: cut(recordsAt, EXIT_RECORD_LEN, exits),
   });
 }
 

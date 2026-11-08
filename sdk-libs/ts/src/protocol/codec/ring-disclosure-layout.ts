@@ -2,7 +2,7 @@
 import { InterfaceError } from "@heliuslabs/spr/interface";
 
 /** Rust `TRANSFER_OUTPUT_CAPACITIES`, the output counts of the confidential keys. */
-export const TRANSFER_OUTPUT_CAPACITIES: readonly number[] = Object.freeze([2, 4, 8]);
+export const TRANSFER_OUTPUT_CAPACITIES: readonly number[] = Object.freeze([2, 4, 8, 16]);
 /** Rust `PACK_BE_CHUNK_BYTES`, the bytes of one packed field. */
 export const DISCLOSURE_CHUNK_BYTES = 31;
 export const STREAM_BLOCK_LEN = 16;
@@ -17,10 +17,12 @@ export const ENVELOPE_HEAD_LEN = ENVELOPE_KEY_LEN + REAL_INPUT_COUNT_LEN;
 export const MAX_INPUT_CLASS = 64;
 /** Keys with entry capacity alone, bit `k` set when note `k` is a default-ring note. */
 export const DEFAULT_NOTE_BITS_LEN = 8;
-/** `kind ‖ u64be(amount) ‖ owner_key ‖ mint ‖ be32(nullifier_pk) ‖ be32(blinding)`. */
-export const OUTPUT_RECORD_LEN = 137;
-/** The output record then `be32(seed)`. */
-export const MERGE_RECORD_LEN = OUTPUT_RECORD_LEN + 32;
+/** `kind ‖ u64be(amount) ‖ owner_key ‖ mint ‖ be32(blinding)`, a dummy or ring output slot publishes it. */
+export const RING_RECORD_LEN = 105;
+/** The ring record then `be32(nullifier_pk)`, an exit publishes the full record. */
+export const EXIT_RECORD_LEN = RING_RECORD_LEN + 32;
+/** The full record then `be32(seed)`. */
+export const MERGE_RECORD_LEN = EXIT_RECORD_LEN + 32;
 /** `eph_sk ‖ V`, sealed to the auditor. */
 export const MERGE_ENVELOPE_LEN = 64;
 /** `owner_key ‖ be32(nullifier_pk) ‖ u64be(amount) ‖ mint ‖ be32(input_commitment)`. */
@@ -142,7 +144,7 @@ export function auditorMessageLen(layout: AuditStreamLayout, exits: number): num
     TAGGED_KEY_LEN +
     envelopeRegion(layout).length +
     recipientKeysLen(layout) +
-    OUTPUT_RECORD_LEN * exits
+    EXIT_RECORD_LEN * exits
   );
 }
 

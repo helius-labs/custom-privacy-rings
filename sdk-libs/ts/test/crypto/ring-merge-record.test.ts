@@ -104,11 +104,14 @@ describe("the merge record seal", () => {
       amount: 21n,
       ownerKey: new Uint8Array(32).fill(5) as Bytes32,
       mint: encodeBase58(new Uint8Array(32).fill(6)) as Address,
-      nullifierPk: (() => {
-        const field = new Uint8Array(32);
-        field[31] = 7;
-        return field as Bytes32;
-      })(),
+      key: Object.freeze({
+        kind: "carried" as const,
+        nullifierPk: (() => {
+          const field = new Uint8Array(32);
+          field[31] = 7;
+          return field as Bytes32;
+        })(),
+      }),
       blinding: (() => {
         const field = new Uint8Array(32);
         field[31] = 8;

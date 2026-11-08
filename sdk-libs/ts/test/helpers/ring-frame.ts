@@ -3,12 +3,12 @@ import type { Bytes16, Bytes32 } from "@heliuslabs/spr/interface";
 
 import { CUSTOM_RING_PROOF_LENGTH } from "../../src/protocol/proof/custom-ring-proof.js";
 import {
-  OUTPUT_RECORD_LEN,
+  RING_RECORD_LEN,
   PAYLOAD_LENGTH_LEN,
   envelopeRegion,
   recipientKeysLen,
 } from "../../src/protocol/codec/ring-disclosure-layout.js";
-import { senderBundleLen } from "../../src/protocol/codec/anonymous-delivery.js";
+import { SENDER_BUNDLE_LEN } from "../../src/protocol/codec/anonymous-delivery.js";
 import { RingInstructionTag } from "../../src/protocol/transaction/instruction-tag.js";
 import { RING_AUTHORITY_SHAPES } from "../../src/protocol/transaction/spp.js";
 import {
@@ -61,7 +61,7 @@ export function ringFrame(
     return {
       hash: field(10 + index),
       ownerTag: change ? (new Uint8Array(32) as Bytes32) : field(40 + index),
-      record: new Uint8Array(OUTPUT_RECORD_LEN).fill(index + 1),
+      record: new Uint8Array(RING_RECORD_LEN).fill(index + 1),
       body: {
         kind: "recipient",
         payload: new Uint8Array(hasData ? PAYLOAD_LENGTH_LEN : 0).fill(index + 101),
@@ -89,9 +89,7 @@ export function ringFrame(
     entry,
     wideOwners: input.wideOwners ?? false,
     outputs: Array.from({ length: outputs }, (_, index) => slot(index)),
-    ...(anonymous
-      ? { sender: { tag: field(1), body: new Uint8Array(senderBundleLen({ outputs })) } }
-      : {}),
+    ...(anonymous ? { sender: { tag: field(1), body: new Uint8Array(SENDER_BUNDLE_LEN) } } : {}),
     envelope: new Uint8Array(envelopeRegion(layout).length).fill(3),
     recipientKeys: new Uint8Array(recipientKeysLen(layout)).fill(9),
     privateTxHash: field(4),

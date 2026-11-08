@@ -9,7 +9,11 @@ import { address, type Address } from "@solana/kit";
 
 import { openRecipientNote, type RingOutputReader } from "../../src/crypto/derivation/blinding.js";
 import type { OpenedOutput } from "../../src/crypto/audit/ring-disclosure.js";
-import { RecordKind } from "../../src/protocol/codec/audit-stream.js";
+import {
+  RecordKind,
+  UNPUBLISHED_RECORD_KEY,
+  ZERO_RECORD_KEY,
+} from "../../src/protocol/codec/audit-stream.js";
 
 const RING = address("11111111111111111111111111111112");
 const UNREGISTERED: Address = address("So11111111111111111111111111111111111111112");
@@ -48,18 +52,18 @@ describe("openRecipientNote", () => {
     mint,
   });
 
-  /** The record names `nullifierPk` and the reader's own owner key unless told otherwise. */
+  /** A published ring record, its key unpublished unless the bit names zero, the reader's own owner key unless told otherwise. */
   const opened = (
     body: Body,
-    nullifierPk: Bytes32 = ENROLLED_KEY,
+    zeroKey = false,
     record: Partial<OpenedOutput["record"]> = {},
   ): OpenedOutput => ({
     record: {
       kind: RecordKind.ring,
+      key: zeroKey ? ZERO_RECORD_KEY : UNPUBLISHED_RECORD_KEY,
       amount: body.amount,
       ownerKey: owner.confidentialViewTag() as Bytes32,
       mint: body.mint,
-      nullifierPk,
       blinding: body.blinding,
       ...record,
     },
@@ -95,25 +99,37 @@ describe("openRecipientNote", () => {
     assets,
   });
 
-  it("accepts the exact match under the wallet's ring key", () => {
+  it("accepts the exact match under the wallet's own key, no registry read", () => {
     const note = openRecipientNote(reader(commitment(plain(), ENROLLED_KEY)), opened(plain()));
     expect(note?.nullifierPublicKey).toEqual(ENROLLED_KEY);
     expect(note?.utxo.amount).toBe(42n);
     expect(note?.registered).toBe(true);
   });
 
-  it("accepts the exact match under the zero key", () => {
+  it("accepts the exact match under the zero key its bit names", () => {
     const note = openRecipientNote(
       reader(commitment(plain(), ZERO_NULLIFIER_PK as Bytes32)),
-      opened(plain(), ZERO_NULLIFIER_PK as Bytes32),
+      opened(plain(), true),
     );
     expect(note?.nullifierPublicKey).toEqual(ZERO_NULLIFIER_PK);
   });
 
-  it("refuses a record naming a key the reader holds no part of, even when it rebuilds", () => {
+  it("refuses a commitment under a key the reader holds no part of", () => {
     const published = commitment(plain(), OTHER_KEY);
-    expect(openRecipientNote(reader(published), opened(plain(), OTHER_KEY))).toBeUndefined();
     expect(openRecipientNote(reader(published), opened(plain()))).toBeUndefined();
+    expect(openRecipientNote(reader(published), opened(plain(), true))).toBeUndefined();
+  });
+
+  it("refuses a false zero-key bit either way, the commitment decides", () => {
+    expect(
+      openRecipientNote(reader(commitment(plain(), ENROLLED_KEY)), opened(plain(), true)),
+    ).toBeUndefined();
+    expect(
+      openRecipientNote(
+        reader(commitment(plain(), ZERO_NULLIFIER_PK as Bytes32)),
+        opened(plain(), false),
+      ),
+    ).toBeUndefined();
   });
 
   it("refuses a record naming another owner key or another kind than a ring note", () => {
@@ -121,14 +137,11 @@ describe("openRecipientNote", () => {
     expect(
       openRecipientNote(
         reader(published),
-        opened(plain(), ENROLLED_KEY, { ownerKey: new Uint8Array(32).fill(6) as Bytes32 }),
+        opened(plain(), false, { ownerKey: new Uint8Array(32).fill(6) as Bytes32 }),
       ),
     ).toBeUndefined();
     expect(
-      openRecipientNote(
-        reader(published),
-        opened(plain(), ENROLLED_KEY, { kind: RecordKind.exit }),
-      ),
+      openRecipientNote(reader(published), opened(plain(), false, { kind: RecordKind.exit })),
     ).toBeUndefined();
   });
 

@@ -52,15 +52,19 @@ import {
   type KnownUtxo,
   type TransactionAuditInput,
 } from "../../../src/operations/audit/audit.js";
+import type { OwnerNullifierKeys } from "../../../src/operations/audit/owner-keys.js";
 import {
   decodeAuditEnvelope,
-  decodeOutputRecord,
   EMPTY_ENTRY_RECORD,
   encodeAuditEnvelope,
+  namedNullifierPk,
   RecordKind,
+  ZERO_RECORD_KEY,
 } from "../../../src/protocol/codec/audit-stream.js";
+import { vectorRecord } from "../../helpers/vector-records.js";
 import {
-  OUTPUT_RECORD_LEN,
+  EXIT_RECORD_LEN,
+  RING_RECORD_LEN,
   recipientKeyRegion,
   type AuditStreamLayout,
 } from "../../../src/protocol/codec/ring-disclosure-layout.js";
@@ -114,6 +118,19 @@ function layoutOf(entry: Case): AuditStreamLayout {
   };
 }
 
+/** Each vector owner's key as its tracking authorization would name it. */
+function vectorOwnerKeys(entry: Case): OwnerNullifierKeys {
+  const keys = new Map(
+    entry.records.flatMap((plaintext) => {
+      const { record, nullifierPk } = vectorRecord(hex(plaintext));
+      return nullifierPk === undefined
+        ? []
+        : [[encodeBase58(record.ownerKey), nullifierPk] as const];
+    }),
+  );
+  return { nullifierKey: (ownerKey) => keys.get(encodeBase58(ownerKey)) };
+}
+
 interface StreamEdits {
   readonly envelope?: Uint8Array;
   /** Record plaintext by slot, resealed under the slot's own secret. */
@@ -155,10 +172,12 @@ function audited(entry: Case, edits: StreamEdits = {}, rest: Partial<Transaction
         outputIndex: slot,
         firstNullifier,
       }),
-      { record: decodeOutputRecord(edited) },
+      { record: vectorRecord(edited).record },
     );
   });
-  const exit = entry.records.map((record) => hex(record)[0] === RecordKind.exit);
+  const exit = entry.records.map(
+    (record) => vectorRecord(hex(record)).record.kind === RecordKind.exit,
+  );
   const message = concatBytes(
     txViewingKey.toBytes(),
     envelope,
@@ -202,6 +221,7 @@ function audited(entry: Case, edits: StreamEdits = {}, rest: Partial<Transaction
     rail: "confidential",
     noSpend:
       rest.noSpend ?? decodeAuditEnvelope(hex(entry.envelope_plaintext), layout).realInputs === 0,
+    ownerKeys: vectorOwnerKeys(entry),
     ...rest,
   });
 }
@@ -230,7 +250,7 @@ describe("the transfer reader", () => {
       expect(row.payloadErrors).toEqual([]);
       expect(row.outputs).toHaveLength(entry.output_count);
       row.outputs.forEach((output, slot) => {
-        const record = decodeOutputRecord(hex(entry.records[slot] as string));
+        const { record } = vectorRecord(hex(entry.records[slot] as string));
         expect(output.opening.kind).toBe(["dummy", "ring", "exit"][record.kind]);
         if (output.opening.kind === "ring" || output.opening.kind === "exit") {
           expect(output.opening.utxo.mint).toBe(record.mint);
@@ -262,15 +282,15 @@ describe("the transfer reader", () => {
     expect(row.outputs.map(({ slotIndex }) => slotIndex)).not.toContain(0);
   });
 
-  it("refuses a noncanonical nullifier key or blinding in any record", () => {
+  it("refuses a noncanonical blinding in any record or nullifier key on an exit", () => {
     const entry = caseNamed("plain_with_exit_and_dummy");
-    const nullifierPk = hex(entry.records[0] as string);
-    nullifierPk.fill(0xff, 73, 105);
-    const blinding = hex(entry.records[1] as string);
-    blinding.fill(0xff, 105, OUTPUT_RECORD_LEN);
+    const blinding = hex(entry.records[0] as string);
+    blinding.fill(0xff, 73, RING_RECORD_LEN);
+    const exitKey = hex(entry.records[1] as string);
+    exitKey.fill(0xff, RING_RECORD_LEN, EXIT_RECORD_LEN);
     for (const [slot, record] of [
-      [0, nullifierPk],
-      [1, blinding],
+      [0, blinding],
+      [1, exitKey],
     ] as const)
       expect(() => audited(entry, { records: new Map([[slot, record]]) })).toThrow(
         expect.objectContaining({
@@ -283,7 +303,7 @@ describe("the transfer reader", () => {
   it("refuses a dummy record on a live slot by its commitment", () => {
     const entry = caseNamed("plain_with_exit_and_dummy");
     const { audited: row } = audited(entry, {
-      records: new Map([[0, new Uint8Array(OUTPUT_RECORD_LEN)]]),
+      records: new Map([[0, new Uint8Array(RING_RECORD_LEN)]]),
     });
     expect(row.payloadErrors).toEqual([{ slotIndex: 0, kind: "commitment" }]);
   });
@@ -448,7 +468,7 @@ describe("the merge reader", () => {
       const rebuilt = rebuiltHash(
         {
           ownerKey: record.record.ownerKey,
-          owner: { kind: "keyed", nullifierPk: record.record.nullifierPk },
+          owner: { kind: "keyed", nullifierPk: namedNullifierPk(record.record.key)! },
           asset: hashBytes(addressBytes(record.record.mint)) as Bytes32,
           amount: record.record.amount,
           blinding,
@@ -476,7 +496,7 @@ describe("the merge reader", () => {
           amount: 12n,
           ownerKey,
           mint,
-          nullifierPk: ZERO_NULLIFIER_PK as Bytes32,
+          key: ZERO_RECORD_KEY,
           blinding: seededMergeOutputBlinding(seed, firstNullifier),
         },
         seed,

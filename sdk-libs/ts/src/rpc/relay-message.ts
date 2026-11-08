@@ -38,6 +38,7 @@ import {
   U64_MAX,
   LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
   splInterfaceWithBump,
+  ZERO_NULLIFIER_PK,
 } from "@heliuslabs/spr/internal";
 import {
   ShieldedPublicKey,
@@ -82,6 +83,7 @@ import { RecordKind, type OutputRecord } from "../protocol/codec/audit-stream.js
 import { RECIPIENT_KEY_LEN } from "../protocol/codec/ring-disclosure-layout.js";
 import {
   canonicalViewingKey,
+  openExitRecord,
   openOutputSlot,
   openSealedDisclosure,
   type RingDisclosure,
@@ -876,10 +878,20 @@ function checkMoved(
   if (!expected.allowed.countsSpends(envelope.realInputs, frame.nullifiers))
     throw mismatch("SpendsUnrequestedNote");
   // 3. Each live record pays one requested payment or returns change to a requested source,
-  // sealed to that owner's viewing key so the owner can open it.
-  const owns = (owner: ExpectedOwner, record: OutputRecord): boolean =>
-    equalBytes(record.ownerKey, owner.ownerKey) &&
-    equalBytes(record.nullifierPk, owner.nullifierPk);
+  // sealed to that owner's viewing key so the owner can open it. An exit carries its key, a ring
+  // output's proven bit tells the zero key from any other and its record names no other.
+  const owns = (owner: ExpectedOwner, record: OutputRecord): boolean => {
+    if (!equalBytes(record.ownerKey, owner.ownerKey)) return false;
+    const zero = equalBytes(owner.nullifierPk, ZERO_NULLIFIER_PK);
+    switch (record.key.kind) {
+      case "zero":
+        return zero;
+      case "unpublished":
+        return !zero;
+      case "carried":
+        return equalBytes(record.key.nullifierPk, owner.nullifierPk);
+    }
+  };
   const unpaid = [...expected.payments];
   records.forEach((record, slot) => {
     if (record.kind === RecordKind.dummy) return;
@@ -1018,7 +1030,9 @@ function frameRecords(
           firstNullifier: RingTransactData.firstNullifier(frame),
         });
         try {
-          return openOutputSlot(secret, output.record).record;
+          return output.body.kind === "exit"
+            ? openExitRecord(secret, output.record)
+            : openOutputSlot(secret, output.record).record;
         } finally {
           secret.fill(0);
         }

@@ -8,6 +8,7 @@ import {
   fittedSpend,
   ringTransferCircuit,
   TRANSFER_SHAPES,
+  transferCircuitType,
   transferPoolCapacity,
   transferKeys,
   type TransferShape,
@@ -60,12 +61,32 @@ describe("the entry keys", () => {
     });
     expect(transferPoolCapacity(wide!)).toEqual({ own: 91, curator: 91, tracking: 38 });
     // No single-asset payout key, a general key covers the payout.
-    expect(transferKeys()).toHaveLength(9);
+    expect(transferKeys()).toHaveLength(10);
   });
 
   it("refuses an entry past the wide entry key", () => {
     const past = { ...loaded(row(8, 8, true)), inputs: 9 };
     expect(ringTransferCircuit(fittedSpend(past))).toBeUndefined();
+  });
+});
+
+describe("the 16-output key", () => {
+  it("serves SPP 1x16, 2x16 and 4x16 and no wider input", () => {
+    const sixteen = loaded(row(16, 4, false));
+    for (const inputs of [1, 2, 4]) {
+      const circuit = ringTransferCircuit(fittedSpend({ ...sixteen, inputs }));
+      expect(circuit).toMatchObject({
+        outputs: 16,
+        class: 4,
+        withdrawals: 4,
+        owners: 4,
+        entry: false,
+        wide: false,
+      });
+      expect(transferCircuitType(circuit!)).toBe("custom-ring-transfer-16-in4-w4-s4");
+      expect(transferPoolCapacity(circuit!).tracking).toBe(24);
+    }
+    expect(ringTransferCircuit(fittedSpend({ ...sixteen, inputs: 5 }))).toBeUndefined();
   });
 });
 

@@ -48,6 +48,7 @@ const NARROW_SHAPES: readonly TransferShape[] = Object.freeze([
   shape(2, 24, 4, 4, NARROW, [6, 12]),
   shape(4, 24, 4, 4, NARROW, [8, 16]),
   shape(8, 16, 4, 4, NARROW, [12, 24]),
+  shape(16, 4, 4, 4, NARROW, [24, 64]),
 ]);
 /** The wide flag takes the first row holding the frame, the last only past 24 inputs. */
 const WIDE_SHAPES: readonly TransferShape[] = Object.freeze([

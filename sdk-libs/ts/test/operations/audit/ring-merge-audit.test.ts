@@ -32,7 +32,11 @@ import {
   type SealedMergeRecord,
 } from "../../../src/crypto/audit/merge-disclosure.js";
 import { ringIdField } from "../../../src/crypto/derivation/ring-stream.js";
-import { RecordKind, type OutputRecord } from "../../../src/protocol/codec/audit-stream.js";
+import {
+  RecordKind,
+  carriedRecordKey,
+  type OutputRecord,
+} from "../../../src/protocol/codec/audit-stream.js";
 import {
   kitReads,
   solanaRpcReads,
@@ -162,7 +166,7 @@ describe("the tag 57 reader", () => {
             amount: 12n,
             ownerKey: record.slice(9, 41) as Bytes32,
             mint: encodeBase58(record.subarray(41, 73)),
-            nullifierPk: hex(entry.request.nullifierPk) as Bytes32,
+            key: carriedRecordKey(hex(entry.request.nullifierPk) as Bytes32),
             ...edit,
             blinding: edit.blinding ?? seededMergeOutputBlinding(seed, firstNullifier),
           },
@@ -282,7 +286,13 @@ describe("the tag 57 reader", () => {
       expect.objectContaining({ code: "RING_AUDIT_MESSAGE", details: { reason: "merge record" } }),
     );
     const noncanonical = new Uint8Array(32).fill(0xff) as Bytes32;
-    expect(open(row(entry, { sealed: resealed({ nullifierPk: noncanonical }) }))).toThrow(
+    expect(
+      open(
+        row(entry, {
+          sealed: resealed({ key: { kind: "carried", nullifierPk: noncanonical } }),
+        }),
+      ),
+    ).toThrow(
       expect.objectContaining({ code: "RING_AUDIT_MESSAGE", details: { reason: "merge record" } }),
     );
     expect(

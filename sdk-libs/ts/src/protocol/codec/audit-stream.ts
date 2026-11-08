@@ -10,7 +10,9 @@ import {
   concatBytes,
   encodeBase58,
   equalBytes,
+  isZero,
   u64be,
+  ZERO_NULLIFIER_PK,
 } from "@heliuslabs/spr/internal";
 import type { Address, Bytes32 } from "@heliuslabs/spr/interface";
 
@@ -20,9 +22,10 @@ import {
   ENTRY_RECORD_LEN,
   ENVELOPE_HEAD_LEN,
   ENVELOPE_KEY_LEN,
+  EXIT_RECORD_LEN,
   MERGE_RECORD_LEN,
-  OUTPUT_RECORD_LEN,
   PAYLOAD_LENGTH_LEN,
+  RING_RECORD_LEN,
   checkedStreamLayout,
   envelopeRegion,
   type AuditStreamLayout,
@@ -35,18 +38,37 @@ const ZERO = new Uint8Array(FIELD_LEN) as Bytes32;
 const ZERO_MINT = encodeBase58(ZERO);
 const NO_EVIDENCE: AuditEvidence = Object.freeze({ kind: "none" });
 
-/** A record's first byte, the circuit derives it from the slot's domain and ring id, Rust `RecordKind`. */
+/** A record's kind without its zero-key bit, the circuit derives it from the slot's domain and ring id, Rust `RecordKind`. */
 export const RecordKind = Object.freeze({ dummy: 0, ring: 1, exit: 2 } as const);
 export type RecordKind = (typeof RecordKind)[keyof typeof RecordKind];
+/** Proven in the kind byte of a live record whose key is `ZERO_NULLIFIER_PK`. */
+export const RECORD_ZERO_KEY_BIT = 4;
 
-/** One published slot's opening, the proof holds every field to the slot's commitment, Rust `OutputRecord`. */
+/**
+ * Rust `RecordKey`. A non-exit record names its key by the zero-key bit alone. An accepted
+ * nonzero-key spend matches the owner's immutable registered key, so a reader takes an unpublished
+ * key from its own address or the owner's tracking authorization and keeps it only when the
+ * commitment rebuilds. An exit carries its key, the default ring registers nobody.
+ */
+export type RecordKey =
+  /** `ZERO_NULLIFIER_PK`, named by `RECORD_ZERO_KEY_BIT`. */
+  | Readonly<{ kind: "zero" }>
+  /** A ring output's nonzero key, or a dummy's. */
+  | Readonly<{ kind: "unpublished" }>
+  /** A nonzero key the record carries, an exit's or a merge output's. */
+  | Readonly<{ kind: "carried"; nullifierPk: Bytes32 }>;
+
+export const ZERO_RECORD_KEY: RecordKey = Object.freeze({ kind: "zero" });
+export const UNPUBLISHED_RECORD_KEY: RecordKey = Object.freeze({ kind: "unpublished" });
+
+/** One slot's opening, the proof holds every field to the slot's commitment, Rust `OutputRecord`. */
 export interface OutputRecord {
   readonly kind: RecordKind;
   readonly amount: bigint;
   readonly ownerKey: Bytes32;
   readonly mint: Address;
-  readonly nullifierPk: Bytes32;
   readonly blinding: Bytes32;
+  readonly key: RecordKey;
 }
 
 /** A merge's output record and the seed its blinding derives from, Rust `MergeRecord`. */
@@ -105,8 +127,8 @@ export const DUMMY_RECORD: OutputRecord = Object.freeze({
   amount: 0n,
   ownerKey: ZERO,
   mint: ZERO_MINT,
-  nullifierPk: ZERO,
   blinding: ZERO,
+  key: UNPUBLISHED_RECORD_KEY,
 });
 
 export const EMPTY_ENTRY_RECORD: EntryRecord = Object.freeze({
@@ -117,32 +139,60 @@ export const EMPTY_ENTRY_RECORD: EntryRecord = Object.freeze({
   inputCommitment: ZERO,
 });
 
+/** `zero` on `ZERO_NULLIFIER_PK`, Rust `Carried(ZERO_NULLIFIER_PUBKEY)` encodes as `Zero`. */
+export function carriedRecordKey(nullifierPk: Bytes32): RecordKey {
+  return equalBytes(nullifierPk, ZERO_NULLIFIER_PK)
+    ? ZERO_RECORD_KEY
+    : Object.freeze({ kind: "carried", nullifierPk });
+}
+
+/** The key a writer seals, a ring output's nonzero key stays unpublished. */
+export function sealedRecordKey(kind: RecordKind, nullifierPk: Bytes32): RecordKey {
+  if (kind === RecordKind.dummy) return UNPUBLISHED_RECORD_KEY;
+  const key = carriedRecordKey(nullifierPk);
+  return kind === RecordKind.exit || key.kind === "zero" ? key : UNPUBLISHED_RECORD_KEY;
+}
+
+/** The key a record names, `undefined` while unpublished. */
+export function namedNullifierPk(key: RecordKey): Bytes32 | undefined {
+  switch (key.kind) {
+    case "zero":
+      return ZERO_NULLIFIER_PK as Bytes32;
+    case "carried":
+      return key.nullifierPk;
+    case "unpublished":
+      return undefined;
+  }
+}
+
+/** Rust `RecordKind::published_len`, an exit alone publishes the key. */
+export function publishedRecordLen(kind: RecordKind): number {
+  return kind === RecordKind.exit ? EXIT_RECORD_LEN : RING_RECORD_LEN;
+}
+
+/** The sealed plaintext through `publishedRecordLen`, an unpublished key encodes as zero past it. */
 export function encodeOutputRecord(record: OutputRecord): Uint8Array {
-  const out = new Uint8Array(OUTPUT_RECORD_LEN);
-  out[0] = record.kind;
+  const out = new Uint8Array(EXIT_RECORD_LEN);
+  if (record.kind === RecordKind.dummy) return out;
+  const key = sealedKeyBytes(record.key);
+  out[0] = record.kind | (equalBytes(key, ZERO_NULLIFIER_PK) ? RECORD_ZERO_KEY_BIT : 0);
   out.set(u64be(checkedCounter(record.amount, "amount")), 1);
   out.set(checkedBytes<Bytes32>(record.ownerKey, FIELD_LEN, "owner key"), 9);
   out.set(addressBytes(record.mint, "mint"), 41);
-  out.set(checkedBytes<Bytes32>(record.nullifierPk, FIELD_LEN, "nullifier pk"), 73);
-  out.set(checkedBytes<Bytes32>(record.blinding, FIELD_LEN, "blinding"), 105);
+  out.set(checkedBytes<Bytes32>(record.blinding, FIELD_LEN, "blinding"), 73);
+  out.set(key, RING_RECORD_LEN);
   return out;
 }
 
-/** Refuses a kind off the three and a dummy that carries a value. */
-export function decodeOutputRecord(plaintext: Uint8Array): OutputRecord {
-  if (plaintext.length !== OUTPUT_RECORD_LEN) throw refused();
-  const kind = plaintext[0];
-  if (kind !== RecordKind.dummy && kind !== RecordKind.ring && kind !== RecordKind.exit)
-    throw refused();
-  if (kind === RecordKind.dummy && plaintext.some((byte) => byte !== 0)) throw refused();
-  return Object.freeze({
-    kind,
-    amount: bytesToBigInt(plaintext.subarray(1, 9)),
-    ownerKey: plaintext.slice(9, 41) as Bytes32,
-    mint: encodeBase58(plaintext.subarray(41, 73)),
-    nullifierPk: plaintext.slice(73, 105) as Bytes32,
-    blinding: plaintext.slice(105, OUTPUT_RECORD_LEN) as Bytes32,
-  });
+/** Refuses bytes off the kind's published length, Rust `OutputRecord::decode`. */
+export function decodeOutputRecord(published: Uint8Array): OutputRecord {
+  const head = recordHead(published);
+  const carried = head.record.kind === RecordKind.exit;
+  if (published.length !== publishedRecordLen(head.record.kind)) throw refused();
+  return withKey(
+    head,
+    carried ? (published.slice(RING_RECORD_LEN, EXIT_RECORD_LEN) as Bytes32) : undefined,
+  );
 }
 
 export function encodeMergeRecord(merge: MergeRecord): Uint8Array {
@@ -152,11 +202,14 @@ export function encodeMergeRecord(merge: MergeRecord): Uint8Array {
   );
 }
 
-/** Rust `MergeRecord::decode`, the merge reader refuses a kind other than a ring note. */
+/** Rust `MergeRecord::decode`, the full form with its key, the merge reader refuses a kind other than a ring note. */
 export function decodeMergeRecord(plaintext: Uint8Array): MergeRecord {
   if (plaintext.length !== MERGE_RECORD_LEN) throw refused();
-  const record = decodeOutputRecord(plaintext.subarray(0, OUTPUT_RECORD_LEN));
-  return Object.freeze({ record, seed: plaintext.slice(OUTPUT_RECORD_LEN) as Bytes32 });
+  const record = withKey(
+    recordHead(plaintext),
+    plaintext.slice(RING_RECORD_LEN, EXIT_RECORD_LEN) as Bytes32,
+  );
+  return Object.freeze({ record, seed: plaintext.slice(EXIT_RECORD_LEN) as Bytes32 });
 }
 
 /** `u16be(len) ‖ u8(has_ring_data) ‖ ring_data_hash? ‖ data ‖ zero padding`, `paddedLength` counts the prefix, Rust `RecipientPayload::encode_padded`. */
@@ -283,6 +336,67 @@ function decodeEntryRecord(bytes: Uint8Array): EntryRecord {
     mint: encodeBase58(bytes.subarray(mintAt, commitmentAt)),
     inputCommitment: field(commitmentAt),
   });
+}
+
+/** The published prefix before its key, Rust `RecordHead`. */
+interface RecordHead {
+  readonly record: OutputRecord;
+  readonly zeroKey: boolean;
+}
+
+/** Refuses a kind off the three or bytes short of a ring record, the caller checks the full length. */
+function recordHead(bytes: Uint8Array): RecordHead {
+  if (bytes.length < RING_RECORD_LEN) throw refused();
+  const byte = bytes[0] ?? 0;
+  const kind = byte & ~RECORD_ZERO_KEY_BIT;
+  if (!isRecordKind(kind)) throw refused();
+  return {
+    record: Object.freeze({
+      kind,
+      amount: bytesToBigInt(bytes.subarray(1, 9)),
+      ownerKey: bytes.slice(9, 41) as Bytes32,
+      mint: encodeBase58(bytes.subarray(41, 73)),
+      blinding: bytes.slice(73, RING_RECORD_LEN) as Bytes32,
+      key: UNPUBLISHED_RECORD_KEY,
+    }),
+    zeroKey: (byte & RECORD_ZERO_KEY_BIT) !== 0,
+  };
+}
+
+/** A dummy carries no byte and no key, every other key follows the zero-key bit. */
+function withKey(head: RecordHead, carried: Bytes32 | undefined): OutputRecord {
+  const { record, zeroKey } = head;
+  if (record.kind === RecordKind.dummy) {
+    const empty =
+      !zeroKey &&
+      record.amount === 0n &&
+      [record.ownerKey, addressBytes(record.mint), record.blinding, carried ?? ZERO].every(isZero);
+    if (!empty) throw refused();
+    return record;
+  }
+  return Object.freeze({ ...record, key: readKey(zeroKey, carried) });
+}
+
+/** Refuses a carried key the bit disagrees with. */
+function readKey(zeroKey: boolean, carried: Bytes32 | undefined): RecordKey {
+  if (carried === undefined) return zeroKey ? ZERO_RECORD_KEY : UNPUBLISHED_RECORD_KEY;
+  if (zeroKey !== equalBytes(carried, ZERO_NULLIFIER_PK)) throw refused();
+  return zeroKey ? ZERO_RECORD_KEY : Object.freeze({ kind: "carried", nullifierPk: carried });
+}
+
+function sealedKeyBytes(key: RecordKey): Bytes32 {
+  switch (key.kind) {
+    case "zero":
+      return ZERO_NULLIFIER_PK as Bytes32;
+    case "unpublished":
+      return ZERO;
+    case "carried":
+      return checkedBytes<Bytes32>(key.nullifierPk, FIELD_LEN, "nullifier pk");
+  }
+}
+
+function isRecordKind(kind: number): kind is RecordKind {
+  return kind === RecordKind.dummy || kind === RecordKind.ring || kind === RecordKind.exit;
 }
 
 function refused(): RingError {

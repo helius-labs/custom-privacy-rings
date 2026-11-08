@@ -405,7 +405,7 @@ export function envelopeDigest(envelope: Uint8Array, recipientKeys: Uint8Array):
   return poseidon([ciphertextDigest(envelope), ciphertextDigest(recipientKeys)]) as Bytes32;
 }
 
-/** `HashChain4(hash_bytes(record_ct_i))`, untagged since every record is one length. */
+/** `HashChain4(hash_bytes(record_ct_i))`, untagged since the proof derives each slot's length from its ring id. */
 export function recordChain(
   outputs: readonly Pick<RingOutput, "record">[],
   capacity: number,

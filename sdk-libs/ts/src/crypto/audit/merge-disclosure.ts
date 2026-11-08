@@ -21,6 +21,7 @@ import {
   decodeMergeRecord,
   encodeMergeRecord,
   RecordKind,
+  carriedRecordKey,
   type MergeRecord,
 } from "../../protocol/codec/audit-stream.js";
 import {
@@ -136,8 +137,8 @@ export function completeRingMerge(
       amount: bytesToBigInt(request.amount),
       ownerKey: request.ownerKey,
       mint: request.mint,
-      nullifierPk: request.nullifierPk,
       blinding: seededMergeOutputBlinding(seed, request.firstNullifier),
+      key: carriedRecordKey(request.nullifierPk),
     },
     seed,
   };

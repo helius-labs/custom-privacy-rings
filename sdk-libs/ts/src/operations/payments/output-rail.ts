@@ -30,7 +30,7 @@ import {
   RingScheme,
   senderBundleOutputBody,
 } from "../../protocol/transaction/output.js";
-import { OUTPUT_RECORD_LEN } from "../../protocol/codec/ring-disclosure-layout.js";
+import { RING_RECORD_LEN } from "../../protocol/codec/ring-disclosure-layout.js";
 import {
   replyLength,
   sealReply,
@@ -41,6 +41,7 @@ import {
   DUMMY_RECORD,
   EMPTY_PAYLOAD,
   RecordKind,
+  sealedRecordKey,
   encodeRecipientPayload,
   type OutputRecord,
   type RecipientPayload,
@@ -252,17 +253,18 @@ export function recipientPayload(output: ProofOutputUtxo): RecipientPayload {
   });
 }
 
-/** The circuit derives the kind from the slot's domain and ring id, a dummy's plaintext is zero, Rust `OutputRecord::of`. */
+/** The circuit derives the kind and the zero-key bit from the slot's opening, a dummy's plaintext is zero, Rust `RingOutputRail::output_record`. */
 export function outputRecord(output: ProofOutputUtxo): OutputRecord {
   const owner = output.ownerAddress;
   if (owner === undefined || output.isDummy()) return DUMMY_RECORD;
+  const kind = output.ringProgramId === undefined ? RecordKind.exit : RecordKind.ring;
   return Object.freeze({
-    kind: output.ringProgramId === undefined ? RecordKind.exit : RecordKind.ring,
+    kind,
     amount: output.amount,
     ownerKey: owner.signingPublicKey.confidentialViewTag() as Bytes32,
     mint: output.asset as Address,
-    nullifierPk: owner.nullifierPublicKey,
     blinding: output.blinding,
+    key: sealedRecordKey(kind, owner.nullifierPublicKey),
   });
 }
 
@@ -420,7 +422,7 @@ export class RingOutputRail {
               viewTag: this.#bundleTag(sender.viewingPublicKey, live.length),
               data: encodeRingOutput(
                 RingScheme.ringSenderBundle,
-                this.#senderBundle(slots, sender.viewingPublicKey),
+                this.#senderBundle(slots.length, sender.viewingPublicKey),
               ),
             },
           ]
@@ -595,8 +597,8 @@ export class RingOutputRail {
       return {
         hash,
         ownerTag: slot.tag,
-        record: sealed.slice(0, OUTPUT_RECORD_LEN),
-        body: { kind: "recipient", payload: sealed.slice(OUTPUT_RECORD_LEN) },
+        record: sealed.slice(0, RING_RECORD_LEN),
+        body: { kind: "recipient", payload: sealed.slice(RING_RECORD_LEN) },
       };
     } finally {
       secret.fill(0);
@@ -668,21 +670,17 @@ export class RingOutputRail {
     }
   }
 
-  /** Sealed to the sender at index `m`, key `k` names slot `k`'s `V_k`, zero on an exit or a dummy. */
-  #senderBundle(slots: readonly PlannedSlot[], senderKey: X25519PublicKey): Uint8Array {
+  /**
+   * The output seed sealed to the sender at index `m`. The sender recovers its outputs through the
+   * auditor stream, `V_k` of each slot there and change by trial under its own viewing keys.
+   */
+  #senderBundle(outputCount: number, senderKey: X25519PublicKey): Uint8Array {
     const blindings = new OutputBlindings(this.#firstNullifier, this.blindingSeed());
     const outputSeed = blindings.outputSeed();
     blindings.destroy();
-    const secret = this.slotSecret(senderKey, slots.length);
+    const secret = this.slotSecret(senderKey, outputCount);
     try {
-      return sealSenderBundle(secret, {
-        outputSeed,
-        recipientKeys: slots.map((slot) =>
-          slot.anonymous?.kind === "payment" || slot.anonymous?.kind === "change"
-            ? slot.recipientKey.u()
-            : ZERO_32,
-        ),
-      });
+      return sealSenderBundle(secret, { outputSeed });
     } finally {
       outputSeed.fill(0);
       secret.fill(0);
@@ -785,7 +783,7 @@ function framedLengths(
   const framedBody =
     index < 0 ? undefined : ringBodyOutput(published[index]?.data ?? new Uint8Array());
   if (index >= 0 && framedBody === undefined) throw framingError(index);
-  const payload = (framedBody?.body.length ?? OUTPUT_RECORD_LEN) - OUTPUT_RECORD_LEN;
+  const payload = (framedBody?.body.length ?? RING_RECORD_LEN) - RING_RECORD_LEN;
   return Object.freeze({
     payloadLength: payload === 0 ? undefined : payload,
     replyLength: undefined,
