@@ -236,19 +236,18 @@ impl KnownUtxo {
 }
 
 impl KnownUtxo {
-    /// Keys a ring note under its owner's registered key, the payload's hashes stay only when the
-    /// commitment rebuilds under them.
+    /// Keys a ring note under `nullifier_pk` only when the commitment rebuilds under it and the
+    /// payload's hashes, `None` otherwise.
     ///
-    /// A spend proves its key equal to the owner's immutable registered key, so that key stands
-    /// without the rebuild and a note sealed under another key never spends.
+    /// A note under another key never spends, so an unrebuilt key never derives a nullifier.
     pub fn resolve(
         self,
         nullifier_pk: [u8; 32],
         ring: Address,
         commitment: &[u8; 32],
-    ) -> Result<Self, AuditError> {
+    ) -> Result<Option<Self>, AuditError> {
         let UtxoOwner::Unresolved { claimed } = self.owner else {
-            return Ok(self);
+            return Ok(Some(self));
         };
         let keyed = Self {
             owner: UtxoOwner::Keyed { nullifier_pk },
@@ -256,14 +255,17 @@ impl KnownUtxo {
             ring_data_hash: claimed.map(|claimed| claimed.ring_data_hash),
             ..self
         };
-        Ok(match keyed.commitment(Some(ring))? == Some(*commitment) {
-            true => keyed,
-            false => Self {
-                data_hash: None,
-                ring_data_hash: None,
-                ..keyed
-            },
-        })
+        Ok((keyed.commitment(Some(ring))? == Some(*commitment)).then_some(keyed))
+    }
+
+    /// The proven record a resolution refused, its claims dropped so no later key rebuilds it.
+    pub fn unrebuilt(self) -> Self {
+        Self {
+            owner: UtxoOwner::Unresolved { claimed: None },
+            data_hash: None,
+            ring_data_hash: None,
+            ..self
+        }
     }
 
     fn audited(self) -> AuditedUtxo {
@@ -316,14 +318,14 @@ impl AuditedTransaction {
             let Some(nullifier_pk) = registered(&utxo.owner_key) else {
                 continue;
             };
-            let resolved = KnownUtxo::opened(*utxo, output.context.tree_id).resolve(
-                nullifier_pk,
-                ring,
-                &output.context.hash,
-            )?;
-            if resolved.data_hash.is_none() {
-                failed.push(output.slot_index);
-            }
+            let opened = KnownUtxo::opened(*utxo, output.context.tree_id);
+            let resolved = match opened.resolve(nullifier_pk, ring, &output.context.hash)? {
+                Some(resolved) => resolved,
+                None => {
+                    failed.push(output.slot_index);
+                    opened.unrebuilt()
+                }
+            };
             *utxo = resolved.audited();
         }
         // Decryption reports no payload error for an unresolved output, the slot gains its first here.
