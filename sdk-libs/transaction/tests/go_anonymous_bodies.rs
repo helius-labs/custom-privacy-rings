@@ -1,7 +1,7 @@
 //! Reads `test-vectors/audit/anonymous_bodies.json`, the ciphertexts of a witness the anonymous key solves.
 
 use custom_ring_interface::{
-    stream::SlotSecret, BundleLayout, OutputRecord, RecordKind, SenderBundle, OUTPUT_RECORD_LEN,
+    stream::SlotSecret, OutputRecord, RecordKey, RecordKind, SenderBundle, RING_RECORD_LEN,
 };
 use serde::Deserialize;
 use spr_keypair::{ViewingKey, X25519Pubkey};
@@ -16,7 +16,6 @@ struct Vector {
     output_seed: String,
     recipient_keys: Vec<String>,
     body_owner_key: String,
-    body_nullifier_pk: String,
     body_blinding: String,
     body_amount: u64,
     body_mint: String,
@@ -50,13 +49,13 @@ fn sealers_and_readers_agree_with_the_proven_ciphertexts() {
         amount: vector.body_amount,
         owner_key: array(&vector.body_owner_key),
         mint: array(&vector.body_mint),
-        nullifier_pk: array(&vector.body_nullifier_pk),
         blinding: array(&vector.body_blinding),
+        key: RecordKey::Unpublished,
     };
     let secret = SlotSecret::new(array(&vector.body_slot_secret)).unwrap();
     let sealed = seal_recipient_body(&record, None, &secret).unwrap();
     assert_eq!(hex::encode(sealed), vector.body);
-    let ciphertext: [u8; OUTPUT_RECORD_LEN] = array(&vector.body);
+    let ciphertext: [u8; RING_RECORD_LEN] = array(&vector.body);
     let opened = open_recipient_body(&ciphertext, &secret).unwrap();
     assert_eq!(
         (opened.record, opened.payload),
@@ -65,28 +64,13 @@ fn sealers_and_readers_agree_with_the_proven_ciphertexts() {
 
     let bundle = SenderBundle {
         output_seed: array(&vector.output_seed),
-        recipient_keys: vector
-            .recipient_keys
-            .iter()
-            .map(|key| match key.is_empty() {
-                true => [0; 32],
-                false => array(key),
-            })
-            .collect(),
     };
     let secret = SlotSecret::new(array(&vector.bundle_slot_secret)).unwrap();
     assert_eq!(
         hex::encode(seal_sender_bundle(&bundle, &secret).unwrap()),
         vector.bundle
     );
-    let opened = open_sender_bundle(
-        &hex::decode(&vector.bundle).unwrap(),
-        &secret,
-        BundleLayout {
-            outputs: vector.output_count,
-        },
-    )
-    .unwrap();
+    let opened = open_sender_bundle(&hex::decode(&vector.bundle).unwrap(), &secret).unwrap();
     assert_eq!(opened, bundle);
 }
 

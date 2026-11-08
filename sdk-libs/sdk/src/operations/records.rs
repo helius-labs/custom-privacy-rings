@@ -241,7 +241,11 @@ impl SaltedOwnerCheck<'_> {
         match resolved.list_tag {
             Some(_) => Ok(resolved),
             None => Err(RingError::SaltedOwnerUnregistered {
-                member: self.address.recipient.signing_pubkey.owner_proof_input_hash()?,
+                member: self
+                    .address
+                    .recipient
+                    .signing_pubkey
+                    .owner_proof_input_hash()?,
             }),
         }
     }

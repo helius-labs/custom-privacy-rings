@@ -164,15 +164,6 @@ impl AnonymousSlot {
     pub const fn is_change(&self) -> bool {
         matches!(self, Self::Change)
     }
-
-    /// The bundle's key of the slot, the sender's own on change, zero on exit and dummy.
-    fn recipient_key(&self, sender: &ShieldedAddress) -> [u8; 32] {
-        match self {
-            Self::Payment { recipient } => recipient.u(),
-            Self::Change => sender.viewing_pubkey.u(),
-            Self::Exit | Self::Dummy { .. } => [0; 32],
-        }
-    }
 }
 
 /// Moves the sender's change to the front and rederives every blinding at its slot.
@@ -244,7 +235,8 @@ impl AnonymousSeal<'_> {
     }
 
     /// The bundle at index `m` opens under a retained or reproducible sender viewing key and
-    /// published values alone, its keys name each slot's recipient.
+    /// published values alone. The sender recovers its outputs through the auditor stream, the
+    /// bundle names no recipient.
     pub fn sender_bundle(
         &self,
         blindings: &OutputBlindings,
@@ -252,11 +244,6 @@ impl AnonymousSeal<'_> {
     ) -> Result<Vec<u8>, RingRailError> {
         let bundle = SenderBundle {
             output_seed: *blindings.output_seed(),
-            recipient_keys: self
-                .slots
-                .iter()
-                .map(|slot| slot.recipient_key(sender))
-                .collect(),
         };
         let published =
             u32::try_from(self.slots.len()).map_err(|_| TransactionError::TooManyOutputs)?;

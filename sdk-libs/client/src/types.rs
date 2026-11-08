@@ -91,9 +91,13 @@ pub struct KnownUtxo {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UtxoOwner {
-    Keyed { nullifier_pk: [u8; 32] },
+    Keyed {
+        nullifier_pk: [u8; 32],
+    },
     /// A ring record publishes no nonzero key, the owner's registered key resolves it.
-    Unresolved { claimed: Option<ClaimedData> },
+    Unresolved {
+        claimed: Option<ClaimedData>,
+    },
 }
 
 /// A payload's data hashes, held apart until the commitment rebuilds under them.

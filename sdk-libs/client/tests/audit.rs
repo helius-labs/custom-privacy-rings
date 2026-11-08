@@ -16,7 +16,9 @@ use std::{
     },
 };
 
-use custom_ring_interface::{AuditStreamLayout, MergeRecord, OutputRecord, RecordKind, RingMode};
+use custom_ring_interface::{
+    AuditStreamLayout, MergeRecord, OutputRecord, RecordKey, RecordKind, RingMode,
+};
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{
@@ -130,6 +132,26 @@ fn audit(
     TransactionAudit::new(transaction, layout).run(&auditor())
 }
 
+/// The audit with each ring owner's key read as its authorization names it.
+fn audit_registered(
+    built: &Built,
+    transaction: &ShieldedTransaction,
+) -> Result<AuditedTransaction, AuditError> {
+    let registered: HashMap<[u8; 32], [u8; 32]> = built
+        .outputs
+        .iter()
+        .filter_map(|output| match output {
+            Output::Ring { utxo, .. } => Some((utxo.owner_key, utxo.nullifier_pk)),
+            Output::Exit(_) | Output::Dummy => None,
+        })
+        .collect();
+    let mut audited = audit(transaction, built.layout)?;
+    audited.resolve_owners(Transfer::fixture().ring, |owner| {
+        registered.get(owner).copied()
+    })?;
+    Ok(audited)
+}
+
 fn slot_error(slot_index: u32, kind: OutputPayloadErrorKind) -> OutputPayloadError {
     OutputPayloadError { slot_index, kind }
 }
@@ -236,9 +258,10 @@ fn a_data_bearing_note_rebuilds_from_its_payload() {
         })
         .collect();
     assert_eq!(body_lengths[0], body_lengths[1]);
-    assert!(body_lengths[0] > custom_ring_interface::OUTPUT_RECORD_LEN);
+    assert!(body_lengths[0] > custom_ring_interface::RING_RECORD_LEN);
     let audited = audit(&built.transaction, built.layout).unwrap();
     expect_every_slot(&built, &audited);
+    let audited = audit_registered(&built, &built.transaction).unwrap();
     let opened = audited.outputs[0].opening.utxo().unwrap();
     assert_eq!(opened.data_hash, Some(field(0x71)));
     assert_eq!(opened.ring_data_hash, Some(field(0x72)));
@@ -251,7 +274,7 @@ fn a_data_bearing_note_rebuilds_from_its_payload() {
         auditor: &auditor().pubkey(),
         rail: built.rail,
     });
-    let audited = audit(&forged, built.layout).unwrap();
+    let audited = audit_registered(&built, &forged).unwrap();
     assert_eq!(
         audited.payload_errors,
         [slot_error(0, OutputPayloadErrorKind::Payload)]
@@ -267,14 +290,20 @@ fn each_record_field_changed_fails_the_rebuild() {
     let transfer = Transfer::fixture();
     let built = build(&transfer, Rail::Delivered, delivered_outputs());
     type Spoil = fn(&mut OutputRecord);
-    let spoils: [(&str, Spoil); 4] = [
+    let fields: [(&str, Spoil); 3] = [
         ("amount", |record| record.amount += 1),
         ("owner_key", |record| record.owner_key[0] ^= 1),
         ("mint", |record| record.mint[0] ^= 1),
-        ("nullifier_pk", |record| record.nullifier_pk[31] ^= 1),
     ];
+    // Only an exit's record carries its key, a ring output's resolves from its owner.
+    let exit_key: (&str, Spoil) = ("key", |record| {
+        if let RecordKey::Carried(key) = &mut record.key {
+            key[31] ^= 1;
+        }
+    });
     for slot in [0usize, 5] {
-        for (name, spoil) in spoils {
+        let exit = (slot == 5).then_some(exit_key);
+        for (name, spoil) in fields.into_iter().chain(exit) {
             let mut spoiled = built.disclosure.clone();
             spoil(&mut spoiled.records[slot]);
             let forged = transfer.publish(Publish {
@@ -283,7 +312,7 @@ fn each_record_field_changed_fails_the_rebuild() {
                 auditor: &auditor().pubkey(),
                 rail: built.rail,
             });
-            let audited = audit(&forged, built.layout).unwrap();
+            let audited = audit_registered(&built, &forged).unwrap();
             assert_eq!(
                 audited.payload_errors,
                 [slot_error(slot as u32, OutputPayloadErrorKind::Payload)],
@@ -300,13 +329,16 @@ fn a_noncanonical_nullifier_key_or_blinding_refuses_the_transaction() {
     let transfer = Transfer::fixture();
     let built = build(&transfer, Rail::Delivered, delivered_outputs());
     type Spoil = fn(&mut OutputRecord);
-    let spoils: [(&str, Spoil); 2] = [
-        ("nullifier_pk", |record| record.nullifier_pk = [0xff; 32]),
-        ("blinding", |record| record.blinding = [0xff; 32]),
+    // The exit at slot 5 carries its key, the ring output at slot 0 publishes none.
+    let spoils: [(&str, usize, Spoil); 2] = [
+        ("key", 5, |record| {
+            record.key = RecordKey::Carried([0xff; 32])
+        }),
+        ("blinding", 0, |record| record.blinding = [0xff; 32]),
     ];
-    for (name, spoil) in spoils {
+    for (name, slot, spoil) in spoils {
         let mut spoiled = built.disclosure.clone();
-        spoil(&mut spoiled.records[0]);
+        spoil(&mut spoiled.records[slot]);
         let forged = transfer.publish(Publish {
             slots: built.transaction.output_slots.clone(),
             disclosure: &spoiled,
@@ -558,8 +590,8 @@ fn merged(transfer: &Transfer, spend: &Spend) -> Confirmed {
                 amount: spend.utxo.amount,
                 owner_key: spend.utxo.owner_key,
                 mint: spend.utxo.asset_address.to_bytes(),
-                nullifier_pk: spend.utxo.nullifier_pk,
                 blinding,
+                key: zolana_ring_transaction::carried_key(spend.utxo.nullifier_pk),
             },
             seed: MERGE_SEED,
         },

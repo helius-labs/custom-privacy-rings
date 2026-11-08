@@ -289,7 +289,9 @@ fn an_unresolved_note_keys_once_when_its_owner_enrolls_late() {
     assert_eq!(balance(&read), created.utxo.amount);
 
     let nullifier = nullifier_of(&created, &secret(7));
-    apply(&store, &keys, |work| work.observe(real(nullifier, frame(12), 0)));
+    apply(&store, &keys, |work| {
+        work.observe(real(nullifier, frame(12), 0))
+    });
     assert_eq!(
         store.row_state(&nullifier),
         Some(SpendState::Resolved {
@@ -792,12 +794,15 @@ async fn a_note_row_opens_only_under_the_auditor_key_and_holds_no_plaintext() {
 }
 
 fn indexed_store(store: &Store) -> AuditStore {
-    AuditStore::new(RING, Backing::Database {
-        store: store.clone(),
-        ring: RING,
-        seal: Box::new(seal()),
-        capacity: MAX_CACHED_ENTRIES,
-    })
+    AuditStore::new(
+        RING,
+        Backing::Database {
+            store: store.clone(),
+            ring: RING,
+            seal: Box::new(seal()),
+            capacity: MAX_CACHED_ENTRIES,
+        },
+    )
 }
 
 fn terminal(work: &mut PageWork<'_>, slot: u64) {
@@ -963,12 +968,15 @@ async fn a_spend_leaves_the_owner_index_in_the_transaction_of_its_row() {
 }
 
 fn cached_store(store: &Store, capacity: usize) -> AuditStore {
-    AuditStore::new(RING, Backing::Database {
-        store: store.clone(),
-        ring: RING,
-        seal: Box::new(seal()),
-        capacity,
-    })
+    AuditStore::new(
+        RING,
+        Backing::Database {
+            store: store.clone(),
+            ring: RING,
+            seal: Box::new(seal()),
+            capacity,
+        },
+    )
 }
 
 #[tokio::test]

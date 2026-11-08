@@ -31,7 +31,7 @@ use zolana_ring_client::{
     AuditEnvelope, OpenedAudit,
 };
 use zolana_ring_policy::{ApprovalTotals, Member, OutputTotals, OwnerDebit, PublicTotals};
-use zolana_ring_transaction::open_recipient_body;
+use zolana_ring_transaction::{open_recipient_body, record_key};
 
 use crate::{
     pipeline::delegate_rail, AllowedNullifiers, CustomRing, CustomRingConfig, PendingSignature,
@@ -1186,8 +1186,10 @@ impl ExpectedOwner {
         })
     }
 
+    /// A ring output's nonzero key stays unpublished, its record binds the zero key bit alone.
     fn owns(&self, record: &OutputRecord) -> bool {
-        record.owner_key == self.owner_key && record.nullifier_pk == self.nullifier_pk
+        record.owner_key == self.owner_key
+            && record.key == record_key(record.kind, self.nullifier_pk)
     }
 }
 

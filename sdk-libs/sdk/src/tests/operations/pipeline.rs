@@ -1,8 +1,8 @@
 //! A child of `pipeline`, every rail stages and assembles through its private items.
 
 use custom_ring_interface::{
-    ring_body_output, ring_sender_bundle_output_body, BundleLayout, CustomRingError, RingMode,
-    RingRail, RingTransactData, SenderBundle,
+    ring_body_output, ring_sender_bundle_output_body, CustomRingError, RingMode, RingRail,
+    RingTransactData, SenderBundle,
 };
 use solana_address::Address;
 use spl_token_2022_interface::pod::{PodAccount, PodCOption};
@@ -373,13 +373,10 @@ fn bundle(staged: &Staged<'_>, sender: &ShieldedKeypair) -> SenderBundle {
     let external = &staged.proof_inputs.external_data;
     let message = &external.messages[0];
     let body = ring_sender_bundle_output_body(&message.data).expect("a sender bundle");
-    let layout = BundleLayout {
-        outputs: external.outputs.len(),
-    };
-    open_sender_bundle(body, &slot_secret(staged, sender, layout.outputs), layout).unwrap()
+    open_sender_bundle(body, &slot_secret(staged, sender, external.outputs.len())).unwrap()
 }
 
-/// Change leads under a zero tag, the bundle names the sender's key at each change output.
+/// Change leads under a zero tag, each slot opens under its party's key and the bundle carries the seed.
 #[tokio::test]
 async fn an_anonymous_transfer_publishes_each_payment_and_the_sender_bundle() {
     use crate::tests::support::keypair;
@@ -429,22 +426,15 @@ async fn an_anonymous_transfer_publishes_each_payment_and_the_sender_bundle() {
     for (tag, _) in &slots[2..] {
         assert!(is_canonical_bn254_scalar_be(tag), "a tag is a field value");
     }
-    let sent = bundle(&staged, sender);
-    assert_eq!(sent.recipient_keys.len(), slots.len());
-    assert_eq!(sent.recipient_keys[0], sender.viewing_pubkey().u());
-    assert_eq!(sent.recipient_keys[1], sender.viewing_pubkey().u());
-    assert_eq!(sent.recipient_keys[2], bootstrap.viewing_pubkey().u());
-    assert_eq!(sent.recipient_keys[3], requester.viewing_pubkey().u());
-    let change = payment_at(&staged, sender, 0);
-    assert_eq!(
-        (change.record.mint, change.record.amount),
-        (usdc.asset.to_bytes(), 7)
-    );
-    let paid = payment_at(&staged, &bootstrap, 2);
-    assert_eq!(
-        (paid.record.mint, paid.record.amount),
-        (usdc.asset.to_bytes(), 3)
-    );
+    bundle(&staged, sender);
+    let opened = |reader, position| {
+        let record = payment_at(&staged, reader, position).record;
+        (record.mint, record.amount)
+    };
+    assert_eq!(opened(sender, 0), (usdc.asset.to_bytes(), 7));
+    assert_eq!(opened(sender, 1), (Mint::SOL.asset.to_bytes(), 8));
+    assert_eq!(opened(&bootstrap, 2), (usdc.asset.to_bytes(), 3));
+    assert_eq!(opened(&requester, 3), (Mint::SOL.asset.to_bytes(), 2));
 }
 
 #[tokio::test]
@@ -467,16 +457,9 @@ async fn a_transfer_returning_nothing_leads_with_a_zero_sol_change() {
         (leading.owner_address, leading.asset, leading.amount),
         (Some(sender.shielded_address().unwrap()), Mint::SOL, 0)
     );
-    let sent = bundle(&staged, sender);
-    assert_eq!(sent.recipient_keys[0], sender.viewing_pubkey().u());
+    bundle(&staged, sender);
     assert_eq!(payment_at(&staged, sender, 0).record.amount, 0);
-    assert_eq!(
-        sent.recipient_keys
-            .iter()
-            .filter(|key| **key != [0; 32])
-            .count(),
-        2
-    );
+    assert_eq!(payment_at(&staged, &keypair(2), 1).record.amount, 10);
 }
 
 /// Two payments to one recipient share no tag, the slot secret binds each frame.
@@ -3768,7 +3751,7 @@ async fn a_public_spend_on_an_anonymous_ring_publishes_its_owners_alone() {
 #[test]
 fn a_record_names_its_kind_owner_and_raw_mint() {
     use crate::tests::support::{keypair, program};
-    use custom_ring_interface::{OutputRecord, RecordKind};
+    use custom_ring_interface::{OutputRecord, RecordKey, RecordKind};
     use zolana_ring_transaction::RingOutputRail;
     let owner = keypair(1).shielded_address().unwrap();
     let exit = SppProofOutputUtxo::new(Mint::SOL, 3, owner).unwrap();
@@ -3776,7 +3759,7 @@ fn a_record_names_its_kind_owner_and_raw_mint() {
     assert_eq!(record.kind, RecordKind::Exit);
     assert_eq!(record.amount, 3);
     assert_eq!(record.mint, Mint::SOL.asset.to_bytes());
-    assert_eq!(record.nullifier_pk, owner.nullifier_pubkey);
+    assert_eq!(record.key, RecordKey::Carried(owner.nullifier_pubkey));
     let ring_slot = exit.clone().with_ring_program_id(program());
     assert_eq!(
         RingOutputRail::output_record(&ring_slot).unwrap().kind,

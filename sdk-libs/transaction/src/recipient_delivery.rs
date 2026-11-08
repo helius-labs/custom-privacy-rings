@@ -6,7 +6,8 @@
 use custom_ring_interface::{
     domain::{RECIPIENT_BODY_LABEL, REPLY_LABEL, SENDER_BUNDLE_LABEL},
     stream::SlotSecret,
-    BundleLayout, OutputRecord, RecipientPayload, RecordKind, SenderBundle, OUTPUT_RECORD_LEN,
+    OutputRecord, RecipientPayload, RecordKey, RecordKind, SenderBundle, EXIT_RECORD_LEN,
+    RECORD_ZERO_KEY_BIT, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
 };
 use solana_address::Address;
 use spr_hasher::primitives::is_canonical_x25519_public_key;
@@ -111,17 +112,32 @@ pub enum PayloadRead {
     Malformed,
 }
 
+/// The key a record of `kind` names for `nullifier_pk`, a ring output's nonzero key stays unpublished.
+pub fn record_key(kind: RecordKind, nullifier_pk: [u8; 32]) -> RecordKey {
+    match kind {
+        RecordKind::Exit => carried_key(nullifier_pk),
+        _ if nullifier_pk == ZERO_NULLIFIER_PUBKEY => RecordKey::Zero,
+        RecordKind::Ring | RecordKind::Dummy => RecordKey::Unpublished,
+    }
+}
+
+/// The key of an exit or merge record, the zero key named by its bit alone.
+pub fn carried_key(nullifier_pk: [u8; 32]) -> RecordKey {
+    match nullifier_pk == ZERO_NULLIFIER_PUBKEY {
+        true => RecordKey::Zero,
+        false => RecordKey::Carried(nullifier_pk),
+    }
+}
+
 /// The nullifier key a reader rebuilds `record` under, `None` on a ring output under a nonzero key.
 ///
-/// A ring row names the spending key, so readers take a ring output's nonzero key from the
-/// recipient's own address or the owner's authorization, never from the record.
+/// Readers take a ring output's nonzero key from the recipient's own address or the owner's
+/// authorization, never from the record.
 pub fn published_nullifier_pk(record: &OutputRecord) -> Option<[u8; 32]> {
-    match record.kind {
-        RecordKind::Exit => Some(record.nullifier_pk),
-        RecordKind::Ring if record.nullifier_pk == ZERO_NULLIFIER_PUBKEY => {
-            Some(ZERO_NULLIFIER_PUBKEY)
-        }
-        RecordKind::Ring | RecordKind::Dummy => None,
+    match record.key {
+        RecordKey::Zero => Some(ZERO_NULLIFIER_PUBKEY),
+        RecordKey::Carried(key) => Some(key),
+        RecordKey::Unpublished => None,
     }
 }
 
@@ -131,7 +147,7 @@ pub fn seal_recipient_body(
     payload: Option<(&RecipientPayload, usize)>,
     slot_secret: &SlotSecret,
 ) -> Result<Vec<u8>, RingRailError> {
-    let mut plaintext = Zeroizing::new(record.encode().to_vec());
+    let mut plaintext = Zeroizing::new(record.encode()[..record.published_len()].to_vec());
     if let Some((payload, width)) = payload {
         plaintext.extend_from_slice(&payload.encode_padded(width)?);
     }
@@ -145,8 +161,13 @@ pub fn open_recipient_body(
 ) -> Result<OpenedRecipientBody, RingRailError> {
     let mut plaintext = Zeroizing::new(ciphertext.to_vec());
     symmetric_apply_audit(slot_secret.as_bytes(), RECIPIENT_BODY_LABEL, &mut plaintext)?;
+    // Only an exit's record carries its key, every other record is the published prefix.
+    let record_len = match plaintext.first() {
+        Some(kind) if kind & !RECORD_ZERO_KEY_BIT == RecordKind::Exit as u8 => EXIT_RECORD_LEN,
+        _ => RING_RECORD_LEN,
+    };
     let (record, payload) = plaintext
-        .split_at_checked(OUTPUT_RECORD_LEN)
+        .split_at_checked(record_len)
         .ok_or(custom_ring_interface::CustomRingError::RingTransactLength)?;
     Ok(OpenedRecipientBody {
         record: OutputRecord::decode(record)?,
@@ -175,25 +196,23 @@ pub fn seal_sender_bundle(
     bundle: &SenderBundle,
     slot_secret: &SlotSecret,
 ) -> Result<Vec<u8>, RingRailError> {
-    let mut ciphertext = bundle.encode();
+    let mut ciphertext = bundle.encode().to_vec();
     symmetric_apply_audit(slot_secret.as_bytes(), SENDER_BUNDLE_LABEL, &mut ciphertext)?;
     Ok(ciphertext)
 }
 
-/// `layout` holds the frame's published counts, never counts a reader inferred from the ciphertext.
 pub fn open_sender_bundle(
     ciphertext: &[u8],
     slot_secret: &SlotSecret,
-    layout: BundleLayout,
 ) -> Result<SenderBundle, RingRailError> {
-    if ciphertext.len() != layout.byte_len() {
+    if ciphertext.len() != SENDER_BUNDLE_LEN {
         return Err(RingRailError::SenderBundleLength {
             len: ciphertext.len(),
         });
     }
     let mut plaintext = Zeroizing::new(ciphertext.to_vec());
     symmetric_apply_audit(slot_secret.as_bytes(), SENDER_BUNDLE_LABEL, &mut plaintext)?;
-    Ok(SenderBundle::decode(&plaintext, layout)?)
+    Ok(SenderBundle::decode(&plaintext)?)
 }
 
 /// Shares slot `i`'s secret, its own label keeps the body's counter from restarting.
@@ -270,8 +289,7 @@ impl AnonymousOutput<'_> {
             PayloadRead::Malformed => return Ok(None),
         };
         // No registry lookup, an owner not yet registered reads its note at once.
-        let nullifier_pk =
-            published_nullifier_pk(record).unwrap_or(self.owner.nullifier_pubkey);
+        let nullifier_pk = published_nullifier_pk(record).unwrap_or(self.owner.nullifier_pubkey);
         let mint = Address::new_from_array(record.mint);
         let asset = self.assets.by_mint(&mint);
         let (data_hash, app_data) = match payload.data.split_first_chunk::<32>() {

@@ -104,8 +104,9 @@ pub use crate::{
     },
     scan::{AuditedPage, RingScan, RingScanPage, ScanPage, SkippedRow},
     types::{
-        AuditedEntryInput, AuditedOutput, AuditedTransaction, AuditedUtxo, ClaimedData, CreatedUtxo,
-        KnownUtxo, OutputOpening, OutputPayloadError, OutputPayloadErrorKind, RingOwnerTag, UtxoOwner,
+        AuditedEntryInput, AuditedOutput, AuditedTransaction, AuditedUtxo, ClaimedData,
+        CreatedUtxo, KnownUtxo, OutputOpening, OutputPayloadError, OutputPayloadErrorKind,
+        RingOwnerTag, UtxoOwner,
     },
 };
 pub use program_data::{program_data, ProgramData, PROGRAM_DATA_METADATA_LEN};

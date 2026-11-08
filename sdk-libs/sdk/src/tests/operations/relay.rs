@@ -3831,16 +3831,13 @@ mod request_fixtures {
     ) -> custom_ring_interface::SenderBundle {
         let inputs = &assembled.frame.proof_inputs;
         let external = &inputs.external_data;
-        let layout = custom_ring_interface::BundleLayout {
-            outputs: external.outputs.len(),
-        };
         let tx_viewing_pk = X25519Pubkey::from_bytes(external.tx_viewing_pk).unwrap();
         let secret = DeliveredSlot {
             agreement: &sender.viewing_key.ecdh(&tx_viewing_pk).unwrap(),
             tx_viewing_pk: tx_viewing_pk.as_bytes(),
             recipient_viewing_pk: sender.viewing_pubkey().as_bytes(),
             salt: &external.salt,
-            output_index: layout.outputs as u32,
+            output_index: external.outputs.len() as u32,
             first_nullifier: &inputs.input_utxos[0].nullifier(),
         }
         .secret()
@@ -3848,7 +3845,7 @@ mod request_fixtures {
         let body =
             custom_ring_interface::ring_sender_bundle_output_body(&external.messages[0].data)
                 .unwrap();
-        zolana_ring_transaction::open_sender_bundle(body, &secret, layout).unwrap()
+        zolana_ring_transaction::open_sender_bundle(body, &secret).unwrap()
     }
 
     fn assert_opens(built: &serde_json::Value, opening: &ApprovalOpening) {
@@ -3936,9 +3933,8 @@ mod request_fixtures {
                     (payee.shielded_address().ok(), Some(ring_id), 25),
                 ]
             );
-            let bundle = sender_bundle(assembled, &sender);
-            assert_eq!(bundle.recipient_keys[0], sender.viewing_pubkey().u());
-            assert_eq!(bundle.recipient_keys[1], payee.viewing_pubkey().u());
+            // The bundle opens to the sender, the recipient keys travel in the auditor stream.
+            sender_bundle(assembled, &sender);
         };
         let direct = build().assemble(&client).await.unwrap();
         let (_, circuit) = pinned("anonymous-entry", &direct);

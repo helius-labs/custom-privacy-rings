@@ -5,7 +5,7 @@ mod origin_fixture;
 #[path = "common/transfer.rs"]
 pub mod transfer;
 
-use custom_ring_interface::{MergeRecord, OutputRecord, RecordKind, RingMode};
+use custom_ring_interface::{MergeRecord, OutputRecord, RecordKey, RecordKind, RingMode};
 use std::{cell::Cell, sync::Mutex};
 
 use solana_address::Address;
@@ -29,7 +29,7 @@ use zolana_ring_client::{
     AuditError, ConfirmedMergeDisclosure, MemberRecovery, MergeRecordSeal, RecoveredNotes,
     RecoveryStep, RingOrigin, RingRecovery, SourceMember, TransactionOrigin,
 };
-use zolana_ring_transaction::RingAssets;
+use zolana_ring_transaction::{record_key, RingAssets};
 
 use history_page::EventsPage;
 use transfer::{field, x25519_u, Frame, Output, Publish, Rail, Transfer, UtxoFields};
@@ -347,7 +347,7 @@ impl Fixture {
         let sealed = MergeRecordSeal {
             record: MergeRecord {
                 record: OutputRecord {
-                    nullifier_pk: ZERO_NULLIFIER_PUBKEY,
+                    key: RecordKey::Zero,
                     ..self.record(&utxo)
                 },
                 seed,
@@ -410,8 +410,8 @@ impl Fixture {
             amount: utxo.amount,
             owner_key: self.owner_key(),
             mint: utxo.asset.asset.to_bytes(),
-            nullifier_pk: self.address.nullifier_pubkey,
             blinding: utxo.blinding,
+            key: record_key(RecordKind::Ring, self.address.nullifier_pubkey),
         }
     }
 

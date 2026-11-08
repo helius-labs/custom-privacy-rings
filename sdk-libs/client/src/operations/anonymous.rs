@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use custom_ring_interface::{
     ring_body_output, ring_sender_bundle_output_body, stream::SlotSecret, AuditStreamLayout,
-    BundleLayout, RingMode,
+    RingMode, SENDER_BUNDLE_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -34,13 +34,13 @@ use zolana_ring_transaction::{
 use crate::history::HistoryPosition;
 use crate::{
     anonymous_wallet::{AnonymousWallet, PendingNote, WalletRevision},
-    decrypt::SealedRecipientKeys,
-    error::RowDisposition,
-    origin::TransactionOrigin,
     confidential::is_ring_merge,
+    decrypt::SealedRecipientKeys,
     delivered::{self, RingDeliveryContext},
+    error::RowDisposition,
     exactly_one, exactly_one_each,
     merge_audit::RingMergeBody,
+    origin::TransactionOrigin,
     tags::IndexerReads,
     viewing_history::{ViewingHistory, ViewingKeyEntry},
     AnonymousError, AuditError,
@@ -444,7 +444,7 @@ impl<'t> Body<'t> {
         }
     }
 
-    /// `None` on a site of another scheme, a bundle's length must match the row's published counts.
+    /// `None` on a site of another scheme or a bundle of another length.
     fn of(tx: &'t ShieldedTransaction, site: Site, found: AnonymousStream) -> Option<Self> {
         let slot_index = match site {
             Site::Output(position) => {
@@ -453,10 +453,7 @@ impl<'t> Body<'t> {
             }
             Site::Message(message) => {
                 let bundle = ring_sender_bundle_output_body(&tx.messages[message].data)?;
-                let layout = BundleLayout {
-                    outputs: tx.output_slots.len(),
-                };
-                (bundle.len() == layout.byte_len()).then_some(layout.outputs)?
+                (bundle.len() == SENDER_BUNDLE_LEN).then_some(tx.output_slots.len())?
             }
         };
         Some(Self {
@@ -714,10 +711,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
         else {
             return Ok(());
         };
-        let layout = BundleLayout {
-            outputs: body.tx.output_slots.len(),
-        };
-        if open_sender_bundle(ciphertext, secret, layout).is_err() {
+        if open_sender_bundle(ciphertext, secret).is_err() {
             return Ok(());
         }
         // 2. Every ring body not yet found is a change candidate, `open_body` accepts a rebuilt

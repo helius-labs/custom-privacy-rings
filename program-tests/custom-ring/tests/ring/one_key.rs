@@ -642,7 +642,7 @@ pub(super) fn with_altered_record(
     let mut data = frame(instruction, rail)?;
     let output = data.outputs.first_mut().context("a published output")?;
     // A recipient body leads with its record, both change together.
-    let mut record = *output.record;
+    let mut record = output.record.to_vec();
     record[0] ^= 1;
     let body = match output.body {
         SlotBody::Recipient(body) => [&record[..], &body[record.len()..]].concat(),

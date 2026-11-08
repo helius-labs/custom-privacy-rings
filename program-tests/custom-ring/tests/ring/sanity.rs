@@ -146,7 +146,8 @@ fn a_zero_key_payment_settles_for_a_registered_and_an_unregistered_owner_without
             .outputs
             .iter()
             .filter_map(|output| output.opening.utxo())
-            .any(|output| output.amount == 1 && output.nullifier_pk == ZERO_NULLIFIER_PUBKEY));
+            .any(|output| output.amount == 1
+                && output.owner.nullifier_pk() == Some(ZERO_NULLIFIER_PUBKEY)));
     }
     Ok(())
 }

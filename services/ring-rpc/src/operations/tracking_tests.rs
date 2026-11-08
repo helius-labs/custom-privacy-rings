@@ -194,12 +194,15 @@ async fn a_row_sealed_to_another_auditor_is_refused() {
 
 /// A bounded mirror over `database`, as a ring served with a store holds one.
 fn cached_store(database: &Store, auditor: &X25519Keypair, capacity: usize) -> AuditStore {
-    AuditStore::new(RING, Backing::Database {
-        store: database.clone(),
-        ring: RING,
-        seal: Box::new(NoteSeal::derive(auditor, RING).expect("seal")),
-        capacity,
-    })
+    AuditStore::new(
+        RING,
+        Backing::Database {
+            store: database.clone(),
+            ring: RING,
+            seal: Box::new(NoteSeal::derive(auditor, RING).expect("seal")),
+            capacity,
+        },
+    )
 }
 
 async fn writer<'a>(database: &'a Store, seal: &'a NoteSeal) -> ProjectionWriter<'a> {
@@ -282,12 +285,15 @@ async fn cached_scan_rows_are_persisted_before_the_durable_cursor() {
     let (source, held) = served(&auditor, &[1, 2, 3]);
     let database = Store::open("sqlite::memory:", 1).await.expect("store");
     let seal = NoteSeal::derive(&auditor, RING).expect("seal");
-    let store = AuditStore::new(RING, Backing::Database {
-        store: database.clone(),
-        ring: RING,
-        seal: Box::new(NoteSeal::derive(&auditor, RING).expect("seal")),
-        capacity: 4,
-    });
+    let store = AuditStore::new(
+        RING,
+        Backing::Database {
+            store: database.clone(),
+            ring: RING,
+            seal: Box::new(NoteSeal::derive(&auditor, RING).expect("seal")),
+            capacity: 4,
+        },
+    );
     scan(&source, &auditor, &store, &mut TrackingCursor::default())
         .await
         .expect("temporary scan");
@@ -319,12 +325,15 @@ async fn cached_scan_rows_are_persisted_before_the_durable_cursor() {
     .await
     .expect("durable scan");
     drop(store);
-    let restarted = AuditStore::new(RING, Backing::Database {
-        store: database.clone(),
-        ring: RING,
-        seal: Box::new(NoteSeal::derive(&auditor, RING).expect("seal")),
-        capacity: 1,
-    });
+    let restarted = AuditStore::new(
+        RING,
+        Backing::Database {
+            store: database.clone(),
+            ring: RING,
+            seal: Box::new(NoteSeal::derive(&auditor, RING).expect("seal")),
+            capacity: 1,
+        },
+    );
     for row in held {
         assert_eq!(enrollment(&restarted, &row.member).await, Some(row));
     }

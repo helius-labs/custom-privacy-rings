@@ -911,8 +911,11 @@ mod tests {
                     amount: AMOUNT,
                     owner_key: address.signing_pubkey.confidential_view_tag().unwrap(),
                     mint: self.mint.asset.to_bytes(),
-                    nullifier_pk: address.nullifier_pubkey,
                     blinding,
+                    key: zolana_ring_transaction::record_key(
+                        RecordKind::Ring,
+                        address.nullifier_pubkey,
+                    ),
                 },
                 None,
                 &secret,

@@ -18,6 +18,7 @@ use spr_indexer_api::Context;
 use spr_interface::instruction::instruction_data::merge_transact::merge_circuit_width;
 use spr_keypair::{X25519Keypair, X25519Pubkey};
 use spr_transaction::{instructions::merge::MergeSeed, OutputSlot};
+use zolana_ring_transaction::published_nullifier_pk;
 
 use crate::{
     encryption::{open_merge_record, SealedMergeCiphertexts},
@@ -315,15 +316,14 @@ impl MergeOutput {
             record,
             seed: secret,
         } = opened;
-        if record.kind != RecordKind::Ring || !is_canonical_bn254_scalar_be(&record.nullifier_pk) {
-            return Err(AuditError::DisclosureField);
-        }
+        // A merge record carries its key, zero or nonzero.
+        let nullifier_pk = published_nullifier_pk(&record)
+            .filter(|key| record.kind == RecordKind::Ring && is_canonical_bn254_scalar_be(key))
+            .ok_or(AuditError::DisclosureField)?;
         let seed = MergeSeed::from_bytes(secret).map_err(|_| AuditError::DisclosureField)?;
         let rebuilt = KnownUtxo {
             owner_key: record.owner_key,
-            owner: UtxoOwner::Keyed {
-                nullifier_pk: record.nullifier_pk,
-            },
+            owner: UtxoOwner::Keyed { nullifier_pk },
             asset: hash_bytes(&record.mint)?,
             mint: Some(Address::new_from_array(record.mint)),
             amount: record.amount,
@@ -343,7 +343,7 @@ impl MergeOutput {
         }
         Ok(MergeRecordOutput {
             owner_key: record.owner_key,
-            nullifier_pk: record.nullifier_pk,
+            nullifier_pk,
             mint: Address::new_from_array(record.mint),
             amount: record.amount,
             seed: *seed.as_bytes(),
@@ -371,7 +371,7 @@ fn remember_merge(
 
 #[cfg(test)]
 mod tests {
-    use custom_ring_interface::OutputRecord;
+    use custom_ring_interface::{OutputRecord, RecordKey};
     use spr_client::rpc::PaginationToken;
     use spr_event::{encode_merge_output_data, MergeOutputDataRef};
     use spr_interface::ZERO_NULLIFIER_PUBKEY;
@@ -439,8 +439,8 @@ mod tests {
                 amount: 12,
                 owner_key: OWNER,
                 mint: MINT,
-                nullifier_pk,
                 blinding,
+                key: zolana_ring_transaction::carried_key(nullifier_pk),
             },
             seed,
         };
@@ -539,7 +539,11 @@ mod tests {
             |opened| opened.record.amount += 1,
             |opened| opened.record.owner_key[0] ^= 1,
             |opened| opened.record.mint[0] ^= 1,
-            |opened| opened.record.nullifier_pk[31] ^= 1,
+            |opened| {
+                if let RecordKey::Carried(key) = &mut opened.record.key {
+                    key[31] ^= 1;
+                }
+            },
             |opened| opened.seed[31] ^= 1,
         ];
         for spoil in spoils {

@@ -260,7 +260,8 @@ impl Replay<'_> {
                 else {
                     return;
                 };
-                let Ok(resolved) = note.utxo.resolve(registered, self.store.ring, commitment) else {
+                let Ok(resolved) = note.utxo.resolve(registered, self.store.ring, commitment)
+                else {
                     return;
                 };
                 note.utxo = resolved;
