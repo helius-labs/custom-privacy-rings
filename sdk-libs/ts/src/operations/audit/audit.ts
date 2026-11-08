@@ -46,10 +46,12 @@ import {
   type AuditorMessage,
 } from "../../crypto/audit/audit.js";
 import {
+  ABSENT_PAYLOAD,
   canonicalViewingKey,
   openExitRecord,
   openOutputSlot,
   type OpenedOutput,
+  type PayloadRead,
 } from "../../crypto/audit/ring-disclosure.js";
 import { ringIdField, txKeySlotSecret } from "../../crypto/derivation/ring-stream.js";
 import { x25519FromU } from "../../crypto/keys/x25519.js";
@@ -228,6 +230,8 @@ export interface KnownUtxos {
 /** An enrolled key's secret, right aligned, read to derive and never held. */
 export interface NullifierSecrets {
   secret(nullifierPk: Bytes32): Bytes32 | undefined;
+  /** The held enrollment's secret of a ring output owner whose record names no key. */
+  ownerSecret?(ownerKey: Bytes32): Bytes32 | undefined;
 }
 
 export interface KnownUtxoIndexOptions {
@@ -282,7 +286,14 @@ export class KnownUtxoIndex implements KnownUtxos {
   /** False while the owner's key or secret is unknown, a `deposited` owner names no key and stays out. */
   #indexNote(note: KnownNote): boolean {
     const { commitment, utxo } = note;
-    if (utxo.owner.kind === "unresolved") return false;
+    if (utxo.owner.kind === "unresolved") {
+      // The held secret derives the nullifier from the published commitment and the proven
+      // blinding rebuilt or not, a note under another key derives one no spend publishes.
+      const secret = this.#secrets?.ownerSecret?.(utxo.ownerKey);
+      if (secret === undefined) return false;
+      this.#notes.set(bytesKey(poseidon([commitment, utxo.blinding, secret])), note);
+      return true;
+    }
     if (utxo.owner.kind !== "keyed") return true;
     const { nullifierPk } = utxo.owner;
     if (equalBytes(nullifierPk, ZERO_NULLIFIER_PK)) {
@@ -815,7 +826,7 @@ function openedSlot(
       firstNullifier: input.firstNullifier,
     });
     return input.exit
-      ? Object.freeze({ record: openExitRecord(secret, input.body) })
+      ? Object.freeze({ record: openExitRecord(secret, input.body), payload: ABSENT_PAYLOAD })
       : openOutputSlot(secret, input.body);
   } catch {
     return undefined;
@@ -868,11 +879,7 @@ function openSlot(
   const ringNote = record.kind === RecordKind.ring;
   // 4. The payload is unproven, its hashes join only when they rebuild the commitment. An exit's
   // data sits in its scheme 3 body, sealed to its owner alone.
-  const data = payload?.data ?? EMPTY;
-  // Rust `first_chunk`, data shorter than a hash reads a zero hash.
-  const dataHash = data.length < 32 ? ZERO_32 : (data.slice(0, 32) as Bytes32);
-  const ringDataHash = payload?.ringDataHash ?? ZERO_32;
-  const canonical = isCanonicalField(dataHash) && isCanonicalField(ringDataHash);
+  const claimed = claimedData(payload);
   // 5. The rebuild waits for the owner's registered key, no payload error before it.
   if (nullifierPk === undefined)
     return Object.freeze({
@@ -881,13 +888,13 @@ function openSlot(
       opening: ringOpening(
         reader,
         output,
-        Object.freeze({ ...fields, ...(canonical ? { claimed: { dataHash, ringDataHash } } : {}) }),
+        Object.freeze({ ...fields, ...(claimed === undefined ? {} : { claimed }) }),
       ),
     });
   const recorded: AuditedUtxo = Object.freeze({ ...fields, nullifierPk });
-  const withData = Object.freeze({ ...recorded, dataHash, ringDataHash });
+  const withData = claimed === undefined ? undefined : Object.freeze({ ...recorded, ...claimed });
   const rebuilds =
-    canonical &&
+    withData !== undefined &&
     equalBytes(
       knownUtxoHash(openedUtxo(withData, treeId), ringNote ? reader.ringId : ZERO_32) ?? EMPTY,
       context.hash,
@@ -898,6 +905,18 @@ function openSlot(
     payload: rebuilds,
     opening: ringNote ? ringOpening(reader, output, utxo) : Object.freeze({ kind: "exit", utxo }),
   });
+}
+
+/** Rust `first_chunk`, data shorter than a hash reads a zero hash, a malformed payload claims none. */
+function claimedData(payload: PayloadRead): ClaimedData | undefined {
+  if (payload.kind === "malformed") return undefined;
+  const opened = payload.kind === "opened" ? payload.payload : undefined;
+  const data = opened?.data ?? EMPTY;
+  const dataHash = data.length < 32 ? ZERO_32 : (data.slice(0, 32) as Bytes32);
+  const ringDataHash = opened?.ringDataHash ?? ZERO_32;
+  return isCanonicalField(dataHash) && isCanonicalField(ringDataHash)
+    ? Object.freeze({ dataHash, ringDataHash })
+    : undefined;
 }
 
 function ringOpening(

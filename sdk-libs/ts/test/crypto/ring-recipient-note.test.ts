@@ -68,8 +68,11 @@ describe("openRecipientNote", () => {
       ...record,
     },
     payload: {
-      ...(body.ringDataHash === undefined ? {} : { ringDataHash: body.ringDataHash }),
-      data: body.data ?? new Uint8Array(),
+      kind: "opened",
+      payload: {
+        ...(body.ringDataHash === undefined ? {} : { ringDataHash: body.ringDataHash }),
+        data: body.data ?? new Uint8Array(),
+      },
     },
   });
 

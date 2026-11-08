@@ -15,6 +15,7 @@ import {
   encodeMergeOutputData,
   encryptMergeOutput,
   clampViewingSecret,
+  equalBytes,
 } from "@heliuslabs/spr/internal";
 import { seededMergeOutputBlinding } from "../../../src/crypto/derivation/merge-seed.js";
 import { initializePoseidon } from "@heliuslabs/spr";
@@ -54,6 +55,7 @@ import {
 import {
   CONFIDENTIAL_DATA_FREE_BODY_LEN,
   encodeRingBodyOutput,
+  ringBodyOutput,
   encodeRingOutput,
   RingScheme,
 } from "../../../src/protocol/transaction/output.js";
@@ -69,6 +71,7 @@ import {
   openedUtxo,
   type AuditedRingTransaction,
   type KnownUtxos,
+  type NullifierSecrets,
 } from "../../../src/operations/audit/audit.js";
 import {
   type ConfirmedRingTransaction,
@@ -428,6 +431,7 @@ describe("auditRing", () => {
       auditor: X25519Keypair;
       knownUtxos?: KnownUtxos;
       accounts?: ReadonlyMap<Address, RpcAccount>;
+      secrets?: NullifierSecrets;
     }>,
   ) {
     return auditRing({
@@ -439,6 +443,7 @@ describe("auditRing", () => {
       ringProgramId: ring,
       origin,
       ...(extra.knownUtxos === undefined ? {} : { knownUtxos: extra.knownUtxos }),
+      ...(extra.secrets === undefined ? {} : { secrets: extra.secrets }),
     });
   }
 
@@ -595,6 +600,86 @@ describe("auditRing", () => {
     // One entry per commitment, a later unresolved read never takes the key back.
     absorb(early);
     expect(index.utxo(commitment)?.owner.kind).toBe("keyed");
+  });
+
+  /** A spend of slot 0 of `created` under the nullifier `secret` derives. */
+  function spendOf(
+    auditor: X25519Keypair,
+    created: ReturnType<typeof sealedTransfer>,
+    secret: Bytes32,
+  ) {
+    const slot = created.transaction.outputSlots[0]!;
+    const nullifier = poseidon([slot.outputContext.hash, created.blindings[0]!, secret]) as Bytes32;
+    const { transaction } = sealedTransfer({
+      auditor: auditor.publicKey(),
+      nullifiers: [nullifier],
+      txSignature: "8".repeat(64) as Signature,
+    });
+    return { transaction, nullifier, commitment: slot.outputContext.hash };
+  }
+
+  const OWNER_SECRET = field(`${"00".repeat(31)}31`);
+  const ownerSecrets: NullifierSecrets = {
+    secret: () => undefined,
+    ownerSecret: (ownerKey) => (equalBytes(ownerKey, OTHER_OWNER) ? OWNER_SECRET : undefined),
+  };
+
+  it("traces a spend of a data-bearing output under the held secret when its payload is malformed", async () => {
+    const auditor = X25519Keypair.generate();
+    const created = sealedTransfer({
+      auditor: auditor.publicKey(),
+      ringDataHash: field(`${"00".repeat(31)}77`),
+    });
+    // A payload byte past the record reads a length it cannot hold, the proven record stands.
+    const malformed = withSlot(0, (slot) => {
+      const body = ringBodyOutput(slot.payload)!.body;
+      return {
+        ...slot,
+        payload: encodeRingBodyOutput(Uint8Array.of(...body, 0), new Uint8Array()),
+      };
+    })(created.transaction);
+    const spend = spendOf(auditor, { ...created, transaction: malformed }, OWNER_SECRET);
+    const page = await scan([malformed, spend.transaction], TRANSFERS, {
+      auditor,
+      secrets: ownerSecrets,
+    });
+    const [audited, spent] = page.transactions;
+    // The ring data hash binds every slot, the exit's empty payload misses it too.
+    expect(audited?.payloadErrors).toEqual([
+      { slotIndex: 0, kind: "payload" },
+      { slotIndex: 1, kind: "payload" },
+    ]);
+    expect(audited?.outputs[0]?.opening).toMatchObject({ kind: "ring" });
+    if (audited?.outputs[0]?.opening.kind !== "ring") throw new Error("ring output");
+    expect(audited.outputs[0].opening.utxo).not.toHaveProperty("nullifierPk");
+    expect(spent?.inputs[0]?.hash).toEqual(spend.commitment);
+    expect(spent?.inputs[0]?.opening).toMatchObject({
+      kind: "opened",
+      blinding: created.blindings[0],
+    });
+  });
+
+  it("keeps a note under a foreign key unkeyed and its spend unresolved", async () => {
+    const auditor = X25519Keypair.generate();
+    const foreign = field(`${"00".repeat(31)}41`);
+    const created = sealedTransfer({
+      auditor: auditor.publicKey(),
+      records: [
+        { ...otherRecords[0]!, nullifierPk: poseidon([foreign]) as Bytes32 },
+        otherRecords[1]!,
+      ],
+    });
+    // The spend publishes the foreign key's nullifier, the owner's held secret derives another.
+    const spend = spendOf(auditor, created, foreign);
+    const page = await scan([created.transaction, spend.transaction], TRANSFERS, {
+      auditor,
+      secrets: ownerSecrets,
+    });
+    const [audited, spent] = page.transactions;
+    expect(audited?.payloadErrors).toEqual([{ slotIndex: 0, kind: "payload" }]);
+    if (audited?.outputs[0]?.opening.kind !== "ring") throw new Error("ring output");
+    expect(audited.outputs[0].opening.utxo).not.toHaveProperty("nullifierPk");
+    expect(spent?.inputs[0]?.opening).toEqual({ kind: "unresolved" });
   });
 
   it("names the zero key from the bit and reads no account", async () => {

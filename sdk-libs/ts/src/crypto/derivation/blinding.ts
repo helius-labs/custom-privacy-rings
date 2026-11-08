@@ -134,7 +134,10 @@ export function openRecipientNote(
 ): OpenedRingNote | undefined {
   const { record } = opened;
   if (record.kind !== RecordKind.ring) return undefined;
-  const { data, ringDataHash } = opened.payload ?? { data: new Uint8Array() };
+  // A malformed payload leaves the data hashes the commitment reads unknown.
+  if (opened.payload.kind === "malformed") return undefined;
+  const { data, ringDataHash } =
+    opened.payload.kind === "opened" ? opened.payload.payload : { data: new Uint8Array() };
   // A nonempty data field leads with the hash the commitment reads.
   if (data.length > 0 && data.length < 32) return undefined;
   if (!isCanonicalField(record.blinding)) return undefined;

@@ -94,6 +94,7 @@ export {
 } from "../crypto/audit/ring-disclosure.js";
 export type {
   OpenedOutput,
+  PayloadRead,
   PublishedAudit,
   RingDisclosure,
 } from "../crypto/audit/ring-disclosure.js";
