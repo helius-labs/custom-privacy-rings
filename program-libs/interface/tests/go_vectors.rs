@@ -3,7 +3,7 @@
 use custom_ring_interface::{
     cosign::ApprovalMask, domain, key_catalog::RING_KEYS, AuditHead, AuditLayout,
     ConfidentialSender, MergePublicInput, MergeRecord, RecordKind, RingOutput, SignerSet, SlotBody,
-    TransferFamily, TransferRoots, TransferStatement, ANONYMOUS_PARTIES, OUTPUT_RECORD_LEN,
+    TransferFamily, TransferRoots, TransferStatement, ANONYMOUS_PARTIES, EXIT_RECORD_LEN,
 };
 use serde::Deserialize;
 use spr_hasher::{hash_chain::create_hash_chain_4_from_slice, primitives::right_align};
@@ -118,15 +118,18 @@ fn transfer_statements_reach_the_go_public_inputs() {
     let vector: Vector = vector("audit/transfer_statement.json");
     assert!(!vector.cases.is_empty());
     for case in &vector.cases {
-        let records: Vec<[u8; OUTPUT_RECORD_LEN]> =
-            case.outputs.iter().map(|o| array(&o.record)).collect();
+        let records: Vec<Vec<u8>> = case.outputs.iter().map(|o| bytes(&o.record)).collect();
         let (zero_tag, zero_hash) = ([0u8; 32], [0u8; 32]);
+        // Only an exit publishes its key, the record length tells the two bodies apart.
         let outputs: Vec<RingOutput<'_>> = records
             .iter()
             .map(|record| RingOutput {
                 hash: &zero_hash,
                 owner_tag: zero_tag,
-                body: SlotBody::Recipient(record),
+                body: match record.len() {
+                    EXIT_RECORD_LEN => SlotBody::Exit(&[]),
+                    _ => SlotBody::Recipient(record),
+                },
                 record,
             })
             .collect();

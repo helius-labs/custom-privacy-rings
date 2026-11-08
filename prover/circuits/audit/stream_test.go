@@ -283,7 +283,7 @@ func TestStreamVector(t *testing.T) {
 		}
 		for i := range s.OutputCount() {
 			v.RecipientKeys = append(v.RecipientKeys, hex.EncodeToString(p.RecipientKeys[i][:]))
-			v.Records = append(v.Records, hex.EncodeToString(p.Records[i]))
+			v.Records = append(v.Records, hex.EncodeToString(p.Records[i][:s.Outputs[i].PublishedLen()]))
 			v.RecordCts = append(v.RecordCts, hex.EncodeToString(stream.Record(i)))
 			v.OutputHashes = append(v.OutputHashes, ringtest.FieldHex(s.Outputs[i].Utxo.Hash(t)))
 			v.Blindings = append(v.Blindings, ringtest.FieldHex(s.Blinding(t, i)))
@@ -292,7 +292,7 @@ func TestStreamVector(t *testing.T) {
 	}
 	txViewingSk, auditorSk := sections[0].section.Keys.TxViewingSk(), ringaudit.AuditorSk()
 	ringtest.PinVector(t, "audit/audit-stream.json", map[string]any{
-		"description":     "Auditor streams under CRING/adt and output records under CRING/rcp and each slot's delivered secret, from solved witnesses.",
+		"description":     "Auditor streams under CRING/adt and output records under CRING/rcp and each slot's delivered secret, from solved witnesses. Records and record_ciphertexts hold the published bytes, 137 on an exit and 105 otherwise.",
 		"tx_viewing_sk":   hex.EncodeToString(txViewingSk[:]),
 		"auditor_sk":      hex.EncodeToString(auditorSk[:]),
 		"salt":            hex.EncodeToString(sections[0].section.Salt[:]),

@@ -137,7 +137,7 @@ impl<'a> AuditorMessage<'a> {
         let (envelope, rest) = rest.split_at_checked(layout.envelope().len)?;
         let (recipient_keys, exit_records) = rest.split_at_checked(layout.keys_len())?;
         (eph_pk[0] == VIEWING_PUBKEY_TAG
-            && exit_records.len() == exits.checked_mul(OUTPUT_RECORD_LEN)?)
+            && exit_records.len() == exits.checked_mul(EXIT_RECORD_LEN)?)
         .then_some(Self {
             eph_pk,
             envelope,
@@ -147,7 +147,7 @@ impl<'a> AuditorMessage<'a> {
     }
 
     /// Indexed among the exits, not the slots.
-    pub fn exit_record(&self, exit: usize) -> Option<&'a [u8; OUTPUT_RECORD_LEN]> {
+    pub fn exit_record(&self, exit: usize) -> Option<&'a [u8; EXIT_RECORD_LEN]> {
         self.exit_records.as_chunks().0.get(exit)
     }
 

@@ -78,11 +78,20 @@ func TestMergeRecordOffItsOpening(t *testing.T) {
 			ringtest.RequireRefused(t, solved(t, s), "audit.MergeRecord.Encode")
 		})
 	}
-	for name, offset := range map[string]int{"a sealed seed off the opening": audit.RecordLen, "a sealed blinding off the opening": audit.RecordLen - 1} {
+	type flip struct {
+		offset int
+		mask   byte
+	}
+	for name, flip := range map[string]flip{
+		"a sealed seed off the opening":     {audit.RecordLen, 1},
+		"a sealed blinding off the opening": {audit.RingRecordLen - 1, 1},
+		"a sealed key off the opening":      {audit.RecordLen - 1, 1},
+		"a forged zero key bit":             {0, audit.KindZeroKey},
+	} {
 		t.Run(name, func(t *testing.T) {
 			s := ringmerge.Build(t)
 			s.Record = slices.Clone(s.Record)
-			s.Record[offset] ^= 1
+			s.Record[flip.offset] ^= flip.mask
 			s.Rebind(t)
 			ringtest.RequireRefused(t, solved(t, s), "circuits.(*MergeCircuit).Define")
 		})

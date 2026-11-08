@@ -9,6 +9,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/audit"
+	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana/prover/server/prover-test/spp/protocol"
 	"github.com/helius-labs/zolana/prover/server/prover-test/spp/spptest"
@@ -43,13 +44,24 @@ func (s Slot) Record(t testing.TB) []byte {
 	if s.Utxo.isExit() {
 		record[0] = audit.KindExit
 	}
+	if s.Utxo.NullifierPk.Cmp(shared.ZeroNullifierPk) == 0 {
+		record[0] |= audit.KindZeroKey
+	}
 	binary.BigEndian.PutUint64(record[1:9], s.Utxo.Amount)
 	copy(record[9:41], s.OwnerKey[:])
 	copy(record[41:73], s.Mint[:])
-	nullifierPk, blinding := spptest.MustFieldBytes(t, s.Utxo.NullifierPk), spptest.MustFieldBytes(t, s.Utxo.Blinding)
-	copy(record[73:105], nullifierPk[:])
-	copy(record[105:], blinding[:])
+	blinding, nullifierPk := spptest.MustFieldBytes(t, s.Utxo.Blinding), spptest.MustFieldBytes(t, s.Utxo.NullifierPk)
+	copy(record[73:audit.RingRecordLen], blinding[:])
+	copy(record[audit.RingRecordLen:], nullifierPk[:])
 	return record
+}
+
+// PublishedLen is the record bytes the slot carries, the full record on an exit alone.
+func (s Slot) PublishedLen() int {
+	if s.Utxo.isExit() {
+		return audit.RecordLen
+	}
+	return audit.RingRecordLen
 }
 
 // Input is one spent slot with the preimages its entry evidence names, the host twin of audit.EntryWires.

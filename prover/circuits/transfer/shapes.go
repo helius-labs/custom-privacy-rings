@@ -30,6 +30,8 @@ var Shapes = [...]Shape{
 	{Inputs: 24, Outputs: 2, Withdrawals: 4, Owners: 4, Tracking: 6, Records: 12},
 	{Inputs: 24, Outputs: 4, Withdrawals: 4, Owners: 4, Tracking: 8, Records: 16},
 	{Inputs: 16, Outputs: 8, Withdrawals: 4, Owners: 4, Tracking: 12, Records: 24},
+	// Sixteen outputs have no wide row, so each owner row, output and leg owner takes a salted read beside its public records.
+	{Inputs: 4, Outputs: 16, Withdrawals: 4, Owners: 4, Tracking: 24, Records: 64},
 	{Inputs: 24, Outputs: 8, Withdrawals: 32, Owners: 13, Wide: true, Tracking: 42, Records: 88},
 	{Inputs: 40, Outputs: 2, Withdrawals: 4, Owners: 8, Wide: true, Tracking: 11, Records: 24},
 	{Inputs: 8, Outputs: 4, Withdrawals: 4, Owners: 8, Entry: true, Wide: true, Tracking: 14, Records: 32},

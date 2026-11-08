@@ -6,7 +6,7 @@
 
 use spr_event::{OutputDataEncoding, CONFIDENTIAL_ENCRYPTED_SCHEME_TAG};
 
-use crate::{audit_stream::OUTPUT_RECORD_LEN, CustomRingError};
+use crate::{audit_stream::RING_RECORD_LEN, CustomRingError};
 
 pub const RING_SENDER_BUNDLE_SCHEME_TAG: u8 = 9;
 /// `u16le(body_len) || record || payload || reply`, one form on every rail, the reply absent without reply metadata.
@@ -45,7 +45,7 @@ impl<'a> OutputPayload<'a> {
             Self::Recipient { body, reply } => {
                 let len =
                     u16::try_from(body.len()).map_err(|_| CustomRingError::OutputBodyLength)?;
-                if body.len() < OUTPUT_RECORD_LEN {
+                if body.len() < RING_RECORD_LEN {
                     return Err(CustomRingError::OutputBodyLength);
                 }
                 (RING_BODY_SCHEME_TAG, body, reply, Some(len.to_le_bytes()))
@@ -106,11 +106,11 @@ pub fn ring_body_output(data: &[u8]) -> Option<(&[u8], &[u8])> {
     let payload = encrypted_output_body(data, RING_BODY_SCHEME_TAG)?;
     let (body_len, rest) = payload.split_first_chunk()?;
     rest.split_at_checked(usize::from(u16::from_le_bytes(*body_len)))
-        .filter(|(body, _)| body.len() >= OUTPUT_RECORD_LEN)
+        .filter(|(body, _)| body.len() >= RING_RECORD_LEN)
 }
 
-/// The record ciphertext a ring body opens with, the bytes the statement's record chain binds.
-pub fn ring_body_record(body: &[u8]) -> Option<&[u8; OUTPUT_RECORD_LEN]> {
+/// The published record ciphertext a ring body opens with, the bytes the statement's record chain binds.
+pub fn ring_body_record(body: &[u8]) -> Option<&[u8; RING_RECORD_LEN]> {
     body.first_chunk()
 }
 

@@ -109,10 +109,12 @@ const fn entry(
 }
 
 /// Ascending outputs, a frame takes the first that holds its SPP width.
-const NARROW_SHAPES: [TransferShape; 3] = [
+const NARROW_SHAPES: [TransferShape; 4] = [
     narrow(2, 24, 4, 4, [6, 12]),
     narrow(4, 24, 4, 4, [8, 16]),
     narrow(8, 16, 4, 4, [12, 24]),
+    // No wide row holds 16 outputs, each owner row, output and leg owner takes a salted read beside its public records.
+    narrow(16, 4, 4, 4, [24, 64]),
 ];
 /// The wide flag takes the first row holding the frame, the last only past 24 inputs.
 const WIDE_SHAPES: [TransferShape; 2] =
@@ -125,10 +127,11 @@ const ENTRY_SHAPES: [TransferShape; 3] = [
 ];
 const WIDE_ENTRY_SHAPE: TransferShape = entry(8, 8, 32, 8, [38, 80]);
 
-pub const TRANSFER_SHAPES: [TransferShape; 9] = [
+pub const TRANSFER_SHAPES: [TransferShape; 10] = [
     NARROW_SHAPES[0],
     NARROW_SHAPES[1],
     NARROW_SHAPES[2],
+    NARROW_SHAPES[3],
     WIDE_SHAPES[0],
     WIDE_SHAPES[1],
     ENTRY_SHAPES[0],

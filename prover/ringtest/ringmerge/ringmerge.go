@@ -138,11 +138,14 @@ func (s *Statement) outputHash(t testing.TB, blinding *big.Int) *big.Int {
 func (s *Statement) PlainRecord(t testing.TB) []byte {
 	t.Helper()
 	record := make([]byte, 9, circuits.MergeRecordLen)
-	record[0] = 1
+	record[0] = audit.KindRing
+	if s.NullifierPk.Cmp(shared.ZeroNullifierPk) == 0 {
+		record[0] |= audit.KindZeroKey
+	}
 	binary.BigEndian.PutUint64(record[1:], s.Amount.Uint64())
 	record = append(append(record, s.OwnerKey[:]...), s.Mint[:]...)
 	nullifierPk, blinding, seed := spptest.MustFieldBytes(t, s.NullifierPk), spptest.MustFieldBytes(t, s.OutputBlinding), spptest.MustFieldBytes(t, s.Seed)
-	return slices.Concat(record, nullifierPk[:], blinding[:], seed[:])
+	return slices.Concat(record, blinding[:], nullifierPk[:], seed[:])
 }
 
 // PlainEnvelope is eph_sk and the recipient key, what the auditor reads first.
@@ -201,8 +204,8 @@ func Open(t testing.TB, s *Statement) Opened {
 		Amount:      binary.BigEndian.Uint64(plain[1:9]),
 		OwnerKey:    [32]byte(plain[9:41]),
 		Mint:        [32]byte(plain[41:73]),
-		NullifierPk: new(big.Int).SetBytes(plain[73:105]),
-		Blinding:    new(big.Int).SetBytes(plain[105:audit.RecordLen]),
+		Blinding:    new(big.Int).SetBytes(plain[73:audit.RingRecordLen]),
+		NullifierPk: new(big.Int).SetBytes(plain[audit.RingRecordLen:audit.RecordLen]),
 		Seed:        new(big.Int).SetBytes(plain[audit.RecordLen:circuits.MergeRecordLen]),
 	}
 }

@@ -13,6 +13,8 @@
 //! Read after `program-libs/interface/src/proof/domain.rs`. Read before `program-libs/interface/src/proof/disclosure.rs`,
 //! `prover/circuits/audit/audit.go`.
 
+use spr_interface::ZERO_NULLIFIER_PUBKEY;
+
 use crate::{bytes::Bytes, error::CustomRingError};
 
 pub const STREAM_BLOCK_LEN: usize = 16;
@@ -24,10 +26,14 @@ pub const REAL_INPUT_COUNT_LEN: usize = 1;
 pub const ENVELOPE_HEAD_LEN: usize = ENVELOPE_KEY_LEN + REAL_INPUT_COUNT_LEN;
 /// Keys with entry capacity alone, bit `k` set when note `k` is a default-ring note.
 pub const DEFAULT_INPUT_BITS_LEN: usize = 8;
-/// `u8(kind) || u64be(amount) || owner_key || mint || fe32(nullifier_pk) || fe32(blinding)`.
-pub const OUTPUT_RECORD_LEN: usize = 137;
+/// `u8(kind) || u64be(amount) || owner_key || mint || fe32(blinding)`, what a non-exit slot publishes.
+pub const RING_RECORD_LEN: usize = 105;
+/// The ring record then `fe32(nullifier_pk)`, what an exit publishes and every slot seals.
+pub const EXIT_RECORD_LEN: usize = RING_RECORD_LEN + FIELD_LEN;
 pub const ENTRY_RECORD_LEN: usize = 136;
-pub const MERGE_RECORD_LEN: usize = OUTPUT_RECORD_LEN + FIELD_LEN;
+pub const MERGE_RECORD_LEN: usize = EXIT_RECORD_LEN + FIELD_LEN;
+/// Set in the kind byte exactly when a live record's key is `ZERO_NULLIFIER_PUBKEY`.
+pub const RECORD_ZERO_KEY_BIT: u8 = 4;
 /// `eph_sk || recipient_u`, sealed to the auditor beside a merge record.
 pub const MERGE_ENVELOPE_LEN: usize = 2 * FIELD_LEN;
 /// One sealed recipient key, its region holds no padding.
@@ -40,7 +46,7 @@ pub const MIN_REPLY_LEN: usize = 97;
 const FIELD_LEN: usize = 32;
 const AMOUNT_LEN: usize = 8;
 
-const _: () = assert!(1 + AMOUNT_LEN + 4 * FIELD_LEN == OUTPUT_RECORD_LEN);
+const _: () = assert!(1 + AMOUNT_LEN + 3 * FIELD_LEN == RING_RECORD_LEN);
 const _: () = assert!(AMOUNT_LEN + 4 * FIELD_LEN == ENTRY_RECORD_LEN);
 const _: () = assert!(SEALED_KEY_LEN.is_multiple_of(STREAM_BLOCK_LEN));
 const _: () = assert!(3 * FIELD_LEN + 1 == MIN_REPLY_LEN);
@@ -168,20 +174,7 @@ impl AuditStreamLayout {
     }
 }
 
-/// The frame publishes the count, the bundle spends no byte on it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BundleLayout {
-    /// The frame's `m`.
-    pub outputs: usize,
-}
-
-impl BundleLayout {
-    pub const fn byte_len(self) -> usize {
-        FIELD_LEN + FIELD_LEN * self.outputs
-    }
-}
-
-/// A record's first byte, the circuit derives it from the slot's domain and ring id.
+/// The circuit derives the kind from the slot's domain and ring id.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RecordKind {
@@ -191,53 +184,142 @@ pub enum RecordKind {
     Exit = 2,
 }
 
-/// One published slot's record, the proof holds a dummy's plaintext to zero.
+impl RecordKind {
+    pub const fn published_len(self) -> usize {
+        match self {
+            Self::Exit => EXIT_RECORD_LEN,
+            Self::Dummy | Self::Ring => RING_RECORD_LEN,
+        }
+    }
+}
+
+/// A non-exit record names its key by the zero key bit alone, the proof derives the bit from the committed key.
+/// A ring note spends under a nonzero key only as its owner's registered tracking key, so an accepted
+/// nonzero-key spend matches the owner's immutable registered key, the one a reader takes from the owner's row.
+/// An exit publishes its key, the default ring registers nobody.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecordKey {
+    /// `ZERO_NULLIFIER_PUBKEY`, named by [`RECORD_ZERO_KEY_BIT`].
+    Zero,
+    /// A ring output's nonzero key, its owner's registered key, or a dummy's.
+    #[default]
+    Unpublished,
+    /// A nonzero key the record carries, an exit's or a merge output's.
+    Carried([u8; 32]),
+}
+
+impl RecordKey {
+    const fn sealed_bytes(self) -> [u8; 32] {
+        match self {
+            Self::Zero => ZERO_NULLIFIER_PUBKEY,
+            Self::Unpublished => [0; 32],
+            Self::Carried(key) => key,
+        }
+    }
+
+    fn read(zero_key: bool, carried: Option<[u8; 32]>) -> Result<Self, CustomRingError> {
+        let key = match carried {
+            None if zero_key => Self::Zero,
+            None => Self::Unpublished,
+            Some(key) if zero_key == (key == ZERO_NULLIFIER_PUBKEY) => match zero_key {
+                true => Self::Zero,
+                false => Self::Carried(key),
+            },
+            Some(_) => return Err(CustomRingError::RingTransactLength),
+        };
+        Ok(key)
+    }
+}
+
+/// One slot's record, the proof holds a dummy's plaintext to zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputRecord {
     pub kind: RecordKind,
     pub amount: u64,
     pub owner_key: [u8; 32],
     pub mint: [u8; 32],
-    pub nullifier_pk: [u8; 32],
     /// SPP's derived blinding, the recipient holds no viewing secret to derive it.
     pub blinding: [u8; 32],
+    pub key: RecordKey,
 }
 
 impl OutputRecord {
-    pub fn encode(&self) -> [u8; OUTPUT_RECORD_LEN] {
-        let mut out = [0; OUTPUT_RECORD_LEN];
-        out[0] = self.kind as u8;
+    /// The sealed plaintext through [`Self::published_len`], an unpublished key encodes as zero past it.
+    pub fn encode(&self) -> [u8; EXIT_RECORD_LEN] {
+        let mut out = [0; EXIT_RECORD_LEN];
+        if self.kind == RecordKind::Dummy {
+            return out;
+        }
+        let key = self.key.sealed_bytes();
+        out[0] = self.kind as u8 | (u8::from(key == ZERO_NULLIFIER_PUBKEY) * RECORD_ZERO_KEY_BIT);
         out[1..9].copy_from_slice(&self.amount.to_be_bytes());
         out[9..41].copy_from_slice(&self.owner_key);
         out[41..73].copy_from_slice(&self.mint);
-        out[73..105].copy_from_slice(&self.nullifier_pk);
-        out[105..].copy_from_slice(&self.blinding);
+        out[73..RING_RECORD_LEN].copy_from_slice(&self.blinding);
+        out[RING_RECORD_LEN..].copy_from_slice(&key);
         out
     }
 
-    pub fn decode(plaintext: &[u8]) -> Result<Self, CustomRingError> {
-        read_all(plaintext, Self::read)
+    pub const fn published_len(&self) -> usize {
+        self.kind.published_len()
     }
 
+    /// Refuses bytes off the kind's published length.
+    pub fn decode(published: &[u8]) -> Result<Self, CustomRingError> {
+        read_all(published, |bytes| {
+            let head = RecordHead::read(bytes)?;
+            let carried = match head.record.kind {
+                RecordKind::Exit => Some(*bytes.array()?),
+                RecordKind::Dummy | RecordKind::Ring => None,
+            };
+            head.with_key(carried)
+        })
+    }
+}
+
+/// The published prefix of a record, before its key.
+struct RecordHead {
+    record: OutputRecord,
+    zero_key: bool,
+}
+
+impl RecordHead {
     fn read(bytes: &mut Bytes<'_>) -> Result<Self, CustomRingError> {
-        let kind = match bytes.byte()? {
+        let kind_byte = bytes.byte()?;
+        let kind = match kind_byte & !RECORD_ZERO_KEY_BIT {
             0 => RecordKind::Dummy,
             1 => RecordKind::Ring,
             2 => RecordKind::Exit,
             _ => return Err(CustomRingError::RingTransactLength),
         };
-        let record = Self {
-            kind,
-            amount: read_amount(bytes)?,
-            owner_key: *bytes.array()?,
-            mint: *bytes.array()?,
-            nullifier_pk: *bytes.array()?,
-            blinding: *bytes.array()?,
-        };
-        match kind == RecordKind::Dummy && record != Self::default() {
-            true => Err(CustomRingError::RingTransactLength),
-            false => Ok(record),
+        Ok(Self {
+            record: OutputRecord {
+                kind,
+                amount: read_amount(bytes)?,
+                owner_key: *bytes.array()?,
+                mint: *bytes.array()?,
+                blinding: *bytes.array()?,
+                key: RecordKey::Unpublished,
+            },
+            zero_key: kind_byte & RECORD_ZERO_KEY_BIT != 0,
+        })
+    }
+
+    /// A dummy carries no byte and no key, every other key follows the zero key bit.
+    fn with_key(self, carried: Option<[u8; 32]>) -> Result<OutputRecord, CustomRingError> {
+        if self.record.kind == RecordKind::Dummy {
+            return match self.record == OutputRecord::default()
+                && !self.zero_key
+                && carried.is_none_or(|key| key == [0; 32])
+            {
+                true => Ok(self.record),
+                false => Err(CustomRingError::RingTransactLength),
+            };
         }
+        Ok(OutputRecord {
+            key: RecordKey::read(self.zero_key, carried)?,
+            ..self.record
+        })
     }
 }
 
@@ -249,17 +331,20 @@ pub struct MergeRecord {
 }
 
 impl MergeRecord {
+    /// The full record form, the merge output's key travels with its seed.
     pub fn encode(&self) -> [u8; MERGE_RECORD_LEN] {
         let mut out = [0; MERGE_RECORD_LEN];
-        out[..OUTPUT_RECORD_LEN].copy_from_slice(&self.record.encode());
-        out[OUTPUT_RECORD_LEN..].copy_from_slice(&self.seed);
+        out[..EXIT_RECORD_LEN].copy_from_slice(&self.record.encode());
+        out[EXIT_RECORD_LEN..].copy_from_slice(&self.seed);
         out
     }
 
     pub fn decode(plaintext: &[u8]) -> Result<Self, CustomRingError> {
         read_all(plaintext, |bytes| {
+            let head = RecordHead::read(bytes)?;
+            let carried = *bytes.array()?;
             Ok(Self {
-                record: OutputRecord::read(bytes)?,
+                record: head.with_key(Some(carried))?,
                 seed: *bytes.array()?,
             })
         })
@@ -482,36 +567,26 @@ impl RecipientPayload {
     }
 }
 
-/// `output_seed || recipient_u * m` outside the proof, key `k` names slot `k`, zero on an exit or a dummy.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// One length at every `m`.
+pub const SENDER_BUNDLE_LEN: usize = FIELD_LEN;
+
+/// `output_seed` outside the proof, the sender reads each recipient key from the auditor stream it opens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SenderBundle {
     pub output_seed: [u8; 32],
-    pub recipient_keys: Vec<[u8; 32]>,
 }
 
 impl SenderBundle {
-    pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.layout().byte_len());
-        out.extend_from_slice(&self.output_seed);
-        self.recipient_keys
-            .iter()
-            .for_each(|key| out.extend_from_slice(key));
-        out
+    pub const fn encode(&self) -> [u8; SENDER_BUNDLE_LEN] {
+        self.output_seed
     }
 
-    pub fn decode(plaintext: &[u8], layout: BundleLayout) -> Result<Self, CustomRingError> {
+    pub fn decode(plaintext: &[u8]) -> Result<Self, CustomRingError> {
         read_all(plaintext, |bytes| {
             Ok(Self {
                 output_seed: *bytes.array()?,
-                recipient_keys: bytes.fields(layout.outputs)?.to_vec(),
             })
         })
-    }
-
-    pub fn layout(&self) -> BundleLayout {
-        BundleLayout {
-            outputs: self.recipient_keys.len(),
-        }
     }
 }
 

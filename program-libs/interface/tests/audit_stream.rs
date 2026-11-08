@@ -1,10 +1,12 @@
 //! Pins the audit vectors the Go circuits read.
 
+use custom_ring_interface::tracking::ZERO_NULLIFIER_PUBKEY;
 use custom_ring_interface::{
     ciphertext_digest, decode_recipient_keys, encode_recipient_keys, key_catalog::TRANSFER_SHAPES,
-    AuditEnvelope, AuditEvidence, AuditKey, AuditStreamLayout, AuditorMessage, BundleLayout,
-    CustomRingError, EntryRecord, OutputRecord, RecipientPayload, RecordKind, SenderBundle,
-    ENTRY_RECORD_LEN, OUTPUT_RECORD_LEN, SEALED_KEY_LEN, STREAM_BLOCK_LEN,
+    AuditEnvelope, AuditEvidence, AuditKey, AuditStreamLayout, AuditorMessage, CustomRingError,
+    EntryRecord, OutputRecord, RecipientPayload, RecordKey, RecordKind, SenderBundle,
+    ENTRY_RECORD_LEN, EXIT_RECORD_LEN, RECORD_ZERO_KEY_BIT, RING_RECORD_LEN, SEALED_KEY_LEN,
+    SENDER_BUNDLE_LEN, STREAM_BLOCK_LEN,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -156,38 +158,95 @@ fn record() -> OutputRecord {
         amount: 0x0102_0304_0506_0708,
         owner_key: [0xa1; 32],
         mint: [0xa2; 32],
-        nullifier_pk: [0xa3; 32],
         blinding: [0xa4; 32],
+        key: RecordKey::Unpublished,
     }
+}
+
+fn exit_record(key: RecordKey) -> OutputRecord {
+    OutputRecord {
+        kind: RecordKind::Exit,
+        key,
+        ..record()
+    }
+}
+
+fn published(record: &OutputRecord) -> Vec<u8> {
+    record.encode()[..record.published_len()].to_vec()
 }
 
 #[test]
 fn the_record_lays_out_its_contract_bytes() {
-    let encoded = record().encode();
-    assert_eq!(encoded.len(), OUTPUT_RECORD_LEN);
-    assert_eq!(encoded[0], 1);
+    let encoded = exit_record(RecordKey::Carried([0xa3; 32])).encode();
+    assert_eq!(encoded.len(), EXIT_RECORD_LEN);
+    assert_eq!(encoded[0], 2);
     assert_eq!(encoded[1..9], 0x0102_0304_0506_0708u64.to_be_bytes());
     assert_eq!(encoded[9..41], [0xa1; 32]);
     assert_eq!(encoded[41..73], [0xa2; 32]);
-    assert_eq!(encoded[73..105], [0xa3; 32]);
-    assert_eq!(encoded[105..], [0xa4; 32]);
-    assert_eq!(OutputRecord::decode(&encoded).unwrap(), record());
+    assert_eq!(encoded[73..RING_RECORD_LEN], [0xa4; 32]);
+    assert_eq!(encoded[RING_RECORD_LEN..], [0xa3; 32]);
+    assert_eq!(record().published_len(), RING_RECORD_LEN);
+    for read in [
+        record(),
+        exit_record(RecordKey::Carried([0xa3; 32])),
+        exit_record(RecordKey::Zero),
+        OutputRecord {
+            key: RecordKey::Zero,
+            ..record()
+        },
+        OutputRecord::default(),
+    ] {
+        assert_eq!(OutputRecord::decode(&published(&read)).unwrap(), read);
+    }
+}
+
+/// The kind names a zero key, every other key of a non-exit slot stays unpublished.
+#[test]
+fn the_zero_key_bit_names_the_zero_key() {
+    let zero = OutputRecord {
+        key: RecordKey::Zero,
+        ..record()
+    };
+    let encoded = zero.encode();
+    assert_eq!(encoded[0], RecordKind::Ring as u8 | RECORD_ZERO_KEY_BIT);
+    assert_eq!(encoded[RING_RECORD_LEN..], ZERO_NULLIFIER_PUBKEY);
+    assert_eq!(
+        exit_record(RecordKey::Carried(ZERO_NULLIFIER_PUBKEY)).encode(),
+        exit_record(RecordKey::Zero).encode()
+    );
+    assert_eq!(record().encode()[0], RecordKind::Ring as u8);
 }
 
 #[test]
 fn a_record_off_its_form_is_refused() {
-    let mut unknown = record().encode();
+    let mut unknown = published(&record());
     unknown[0] = 3;
-    let mut dummy = [0; OUTPUT_RECORD_LEN];
+    let mut dummy = [0; RING_RECORD_LEN];
     assert_eq!(
         OutputRecord::decode(&dummy).unwrap(),
         OutputRecord::default()
     );
-    dummy[105] = 1;
-    for refused in [&unknown[..], &dummy[..], &record().encode()[..136]] {
+    dummy[73] = 1;
+    let mut zero_dummy = [0; RING_RECORD_LEN];
+    zero_dummy[0] = RECORD_ZERO_KEY_BIT;
+    let exit = exit_record(RecordKey::Carried([0xa3; 32])).encode();
+    let mut forged_bit = exit;
+    forged_bit[0] |= RECORD_ZERO_KEY_BIT;
+    let mut dropped_bit = exit_record(RecordKey::Zero).encode();
+    dropped_bit[0] &= !RECORD_ZERO_KEY_BIT;
+    for (name, refused) in [
+        ("an unknown kind", &unknown[..]),
+        ("a dummy carrying a byte", &dummy[..]),
+        ("a dummy naming the zero key", &zero_dummy[..]),
+        ("a 105 byte exit record", &exit[..RING_RECORD_LEN]),
+        ("a 137 byte non-exit record", &record().encode()[..]),
+        ("a zero key bit on a carried key", &forged_bit[..]),
+        ("a carried zero key without its bit", &dropped_bit[..]),
+    ] {
         assert_eq!(
             OutputRecord::decode(refused),
-            Err(CustomRingError::RingTransactLength)
+            Err(CustomRingError::RingTransactLength),
+            "{name}"
         );
     }
 }
@@ -316,11 +375,11 @@ fn the_auditor_message_cuts_by_the_layout_and_the_exits() {
     let mut data = vec![4; 33];
     data.extend([0x11; 33]);
     data.extend([0x22; 2 * SEALED_KEY_LEN]);
-    data.extend([0x33; OUTPUT_RECORD_LEN]);
+    data.extend([0x33; EXIT_RECORD_LEN]);
     let message = AuditorMessage::parse(&data, stream, 1).unwrap();
     assert_eq!(message.envelope, &[0x11; 33]);
     assert_eq!(message.recipient_keys, &[0x22; 64]);
-    assert_eq!(message.exit_record(0), Some(&[0x33; OUTPUT_RECORD_LEN]));
+    assert_eq!(message.exit_record(0), Some(&[0x33; EXIT_RECORD_LEN]));
     assert_eq!(message.exit_record(1), None);
     assert!(AuditorMessage::parse(&data, stream, 0).is_none());
     assert!(AuditorMessage::parse(&data, stream, 2).is_none());
@@ -357,18 +416,14 @@ fn the_recipient_payload_reads_back_at_one_width() {
 }
 
 #[test]
-fn the_sender_bundle_holds_one_key_per_slot() {
+fn the_sender_bundle_holds_the_output_seed_alone() {
     let bundle = SenderBundle {
         output_seed: [1; 32],
-        recipient_keys: vec![[2; 32], [0; 32], [3; 32]],
     };
     let encoded = bundle.encode();
-    assert_eq!(encoded.len(), BundleLayout { outputs: 3 }.byte_len());
-    assert_eq!(
-        SenderBundle::decode(&encoded, BundleLayout { outputs: 3 }).unwrap(),
-        bundle
-    );
-    assert!(SenderBundle::decode(&encoded, BundleLayout { outputs: 2 }).is_err());
+    assert_eq!(encoded.len(), SENDER_BUNDLE_LEN);
+    assert_eq!(SenderBundle::decode(&encoded).unwrap(), bundle);
+    assert!(SenderBundle::decode(&[encoded.as_slice(), &[0; 32]].concat()).is_err());
 }
 
 #[derive(Deserialize)]
@@ -470,8 +525,12 @@ fn the_solved_go_stream_reads_back_under_the_rust_layout() {
         }
         let mut hashes = vec![[0; 32]; case.outputs];
         for (hash, ciphertext) in hashes.iter_mut().zip(&case.record_ciphertexts) {
-            let bytes: [u8; OUTPUT_RECORD_LEN] = unhex(ciphertext).try_into().unwrap();
-            *hash = hash_bytes(&bytes).unwrap();
+            let bytes = unhex(ciphertext);
+            *hash = match bytes.len() {
+                EXIT_RECORD_LEN => hash_bytes(&<[u8; EXIT_RECORD_LEN]>::try_from(bytes).unwrap()),
+                _ => hash_bytes(&<[u8; RING_RECORD_LEN]>::try_from(bytes).unwrap()),
+            }
+            .unwrap();
         }
         assert_eq!(
             hex::encode(create_hash_chain_4_from_slice(&hashes).unwrap()),
@@ -485,14 +544,17 @@ fn the_solved_go_stream_reads_back_under_the_rust_layout() {
 #[test]
 fn a_ring_body_opens_with_its_record() {
     use custom_ring_interface::{encode_ring_body_output, ring_body_output, ring_body_record};
-    let body = [record().encode().to_vec(), vec![0x55; 5]].concat();
+    let body = [published(&record()), vec![0x55; 5]].concat();
     let data = encode_ring_body_output(&body, &[0x66; 97]).unwrap();
     let (read, reply) = ring_body_output(&data).unwrap();
     assert_eq!(read, &body[..]);
     assert_eq!(reply, &[0x66; 97]);
-    assert_eq!(ring_body_record(read), Some(&record().encode()));
     assert_eq!(
-        encode_ring_body_output(&body[..OUTPUT_RECORD_LEN - 1], &[]),
+        ring_body_record(read).map(|record| &record[..]),
+        Some(&published(&record())[..])
+    );
+    assert_eq!(
+        encode_ring_body_output(&body[..RING_RECORD_LEN - 1], &[]),
         Err(CustomRingError::OutputBodyLength)
     );
 }

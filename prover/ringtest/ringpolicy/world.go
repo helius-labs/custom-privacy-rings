@@ -61,7 +61,7 @@ type World struct {
 }
 
 // OutputCapacities are the output counts of the transfer keys.
-var OutputCapacities = []int{2, 4, 8}
+var OutputCapacities = []int{2, 4, 8, 16}
 
 // Table is a policy table of ringregistry list bits, a list reads the curator registry when Curator holds its bit.
 type Table struct {

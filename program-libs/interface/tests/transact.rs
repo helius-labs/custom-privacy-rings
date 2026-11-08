@@ -15,8 +15,9 @@ use custom_ring_interface::{
 };
 use custom_ring_interface::{
     encode_ring_body_output, encode_ring_sender_bundle_output, ring_body_output,
-    ring_sender_bundle_output_body, BundleLayout, CONFIDENTIAL_DATA_FREE_BODY_LEN, MIN_REPLY_LEN,
-    OUTPUT_COUNT_BYTE, OUTPUT_RECORD_LEN, RING_BODY_SCHEME_TAG, RING_SENDER_BUNDLE_SCHEME_TAG,
+    ring_sender_bundle_output_body, CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN,
+    MIN_REPLY_LEN, OUTPUT_COUNT_BYTE, RING_BODY_SCHEME_TAG, RING_RECORD_LEN,
+    RING_SENDER_BUNDLE_SCHEME_TAG, SENDER_BUNDLE_LEN,
 };
 use serde::{Deserialize, Serialize};
 use spr_event::{
@@ -300,7 +301,7 @@ fn recipient_and_exit_slots_keep_the_borsh_framing_at_exact_capacity() {
         .unwrap();
     assert_eq!(
         ring_body_output(&framed),
-        Some((&fixture.records[1][..], &reply[..]))
+        Some((&fixture.records[1][..RING_RECORD_LEN], &reply[..]))
     );
     let bundle = encode_ring_sender_bundle_output(&fixture.sender_body).unwrap();
     assert_eq!(
@@ -308,7 +309,7 @@ fn recipient_and_exit_slots_keep_the_borsh_framing_at_exact_capacity() {
         Some(&fixture.sender_body[..])
     );
     assert_eq!(ring_body_output(&bundle), None);
-    let short_body = &fixture.records[1][..OUTPUT_RECORD_LEN - 1];
+    let short_body = &fixture.records[1][..RING_RECORD_LEN - 1];
     assert_eq!(
         encode_ring_body_output(short_body, &[]),
         Err(CustomRingError::OutputBodyLength)
@@ -438,16 +439,50 @@ fn every_non_exit_slot_forwards_its_record() {
     let spp = parsed.expand(&config()).unwrap();
     for slot in [0, 1, 3] {
         let (body, _) = ring_body_output(spp.outputs[slot].data.as_deref().unwrap()).unwrap();
-        assert_eq!(body, &fixture.records[slot][..], "slot {slot}");
+        assert_eq!(
+            body,
+            &fixture.records[slot][..RING_RECORD_LEN],
+            "slot {slot}"
+        );
     }
-    assert_eq!(
-        parsed.sender.unwrap().body.len(),
-        BundleLayout { outputs: 4 }.byte_len()
-    );
+    assert_eq!(parsed.sender.unwrap().body.len(), SENDER_BUNDLE_LEN);
     // A body whose head is not the slot's record names a record the statement does not bind.
     let mut moved = data.clone();
-    moved.outputs[1].record = &fixture.records[0];
+    moved.outputs[1].record = &fixture.records[0][..RING_RECORD_LEN];
     assert_eq!(moved.encode(), Err(CustomRingError::RingTransactLength));
+}
+
+/// The record chain hashes each slot's published length, a frame naming another length is refused.
+#[test]
+fn a_record_off_its_slot_length_is_refused() {
+    let fixture = Fixture::new();
+    let data = fixture.anonymous();
+    let exit = data
+        .outputs
+        .iter()
+        .position(|output| output.is_exit())
+        .unwrap();
+    let recipient = data
+        .outputs
+        .iter()
+        .position(|output| !output.is_exit())
+        .unwrap();
+    let mut short_exit = data.clone();
+    short_exit.outputs[exit].record = &fixture.records[exit][..RING_RECORD_LEN];
+    let mut keyed_recipient = data.clone();
+    keyed_recipient.outputs[recipient].record = &fixture.records[recipient];
+    keyed_recipient.outputs[recipient].body = SlotBody::Recipient(&fixture.records[recipient]);
+    for (name, refused) in [
+        ("a 105 byte exit record", short_exit),
+        ("a 137 byte non-exit record", keyed_recipient),
+    ] {
+        assert_eq!(
+            refused.encode(),
+            Err(CustomRingError::RingTransactLength),
+            "{name}"
+        );
+    }
+    assert_eq!(data.outputs[exit].record.len(), EXIT_RECORD_LEN);
 }
 
 /// SPP binds an exit's tag to its owner, any other tag is cut to what the frame carries.
@@ -749,7 +784,10 @@ fn a_data_frame_carries_each_length_and_one_payload_width() {
         parsed.outputs[0].body,
         SlotBody::Recipient(&fixture.extended_bodies[0])
     );
-    assert_eq!(parsed.outputs[0].record, &fixture.records[0]);
+    assert_eq!(
+        parsed.outputs[0].record,
+        &fixture.records[0][..RING_RECORD_LEN]
+    );
     // An exit's record reaches the auditor message, its scheme 3 body stays whole.
     let stream = data.audit_stream().unwrap();
     let message = data.auditor_message();
@@ -758,8 +796,8 @@ fn a_data_frame_carries_each_length_and_one_payload_width() {
     // Two payload widths would mark a slot.
     let mut uneven = fixture.confidential_data();
     uneven.outputs.push(custom_ring_interface::RingOutput {
-        body: SlotBody::Recipient(&fixture.extended_bodies[2][..OUTPUT_RECORD_LEN + 2]),
-        record: &fixture.records[2],
+        body: SlotBody::Recipient(&fixture.extended_bodies[2][..RING_RECORD_LEN + 2]),
+        record: &fixture.records[2][..RING_RECORD_LEN],
         ..fixture.recipient(2)
     });
     uneven.n_out = 4;
@@ -877,7 +915,7 @@ fn the_external_data_hash_binds_every_delivery_byte() {
     let fixture = Fixture::new();
     let config = config();
     let hash = |data: &RingTransactData<'_>| data.external_data_hash(&config, &[]).unwrap();
-    let garbage = [0xee; OUTPUT_RECORD_LEN];
+    let garbage = [0xee; RING_RECORD_LEN];
     let other_payload = [0xee; CONFIDENTIAL_DATA_FREE_BODY_LEN];
     for (name, honest) in [
         ("confidential", fixture.confidential_delivered()),
@@ -918,7 +956,7 @@ fn the_external_data_hash_binds_every_delivery_byte() {
     let tag = bundle.sender.unwrap().tag;
     bundle.sender = Some(FramedSenderBundle {
         tag,
-        body: &fixture.envelope[..BundleLayout { outputs: 4 }.byte_len()],
+        body: &fixture.envelope[..SENDER_BUNDLE_LEN],
     });
     assert_ne!(hash(&bundle), hash(&honest), "bundle body");
     let replied = fixture.anonymous_replies(MIN_REPLY_LEN as u16);
@@ -1087,17 +1125,18 @@ fn a_mixed_anonymous_output_set_round_trips_and_frames_each_body() {
 }
 
 #[test]
-fn the_sender_bundle_length_follows_the_output_count() {
+fn the_sender_bundle_has_one_length() {
     let fixture = Fixture::new();
     let mut data = fixture.anonymous();
-    for len in [
-        0,
-        BundleLayout { outputs: 3 }.byte_len(),
-        BundleLayout { outputs: 5 }.byte_len(),
+    let longer = [&fixture.sender_body[..], &[0; 32]].concat();
+    for body in [
+        &fixture.sender_body[..0],
+        &fixture.sender_body[..31],
+        &longer[..],
     ] {
         data.sender = Some(FramedSenderBundle {
             tag: &fixture.tags[0],
-            body: &fixture.sender_body[..len],
+            body,
         });
         assert_eq!(data.encode(), Err(CustomRingError::RingTransactLength));
     }
@@ -1110,7 +1149,7 @@ fn the_sender_bundle_is_present_exactly_on_the_anonymous_frame() {
     anonymous.sender = None;
     assert_eq!(anonymous.encode(), Err(CustomRingError::RingTransactLength));
     let mut confidential = fixture.confidential_policy();
-    confidential.sender = fixture.sender(2);
+    confidential.sender = fixture.sender();
     assert_eq!(
         confidential.encode(),
         Err(CustomRingError::RingTransactLength)
@@ -1251,7 +1290,11 @@ fn a_truncated_or_appended_ciphertext_is_refused() {
         assert_eq!(parsed.envelope, data.envelope, "{name}");
         assert_eq!(parsed.recipient_keys, data.recipient_keys, "{name}");
         for (exit, output) in exits.iter().enumerate() {
-            assert_eq!(parsed.exit_record(exit), Some(output.record), "{name}");
+            assert_eq!(
+                parsed.exit_record(exit).map(|record| &record[..]),
+                Some(output.record),
+                "{name}"
+            );
         }
         assert_eq!(
             AuditorMessage::parse(&message[..message.len() - 1], stream, exits.len()),

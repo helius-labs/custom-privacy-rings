@@ -7,13 +7,14 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/helius-labs/zolana-custom-rings/prover/circuits/audit"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana/prover/server/prover-test/spp/spptest"
 )
 
 const anonymousBodiesDescription = "One recipient record and one sender bundle of an honest 4 slot frame, change in slot 0, payments in slots 1 and 3, an exit in slot 2. " +
-	"body is the slot 1 record u8(1) || u64be(body_amount) || body_owner_key || body_mint || be32(body_nullifier_pk) || be32(body_blinding), 137 bytes, under label CRING/rcp and body_slot_secret, the CRDS slot secret of recipient_keys[body_index] and body_index, with no payload. " +
-	"Bundle plaintext output_seed || recipient_u per published slot under label CRING/snd and bundle_slot_secret, the CRDS slot secret of sender_viewing_key and index m. recipient_keys[0] is the sender's own key for its change, recipient_u is zero on exit and dummy. " +
+	"body is the first 105 ciphertext bytes of the slot 1 record u8(1) || u64be(body_amount) || body_owner_key || body_mint || be32(body_blinding) || be32(body_nullifier_pk) under label CRING/rcp and body_slot_secret, the CRDS slot secret of recipient_keys[body_index] and body_index, with no payload. " +
+	"Bundle plaintext output_seed under label CRING/snd and bundle_slot_secret, the CRDS slot secret of sender_viewing_key and index m. recipient_keys[0] is the sender's own key for its change, the sender reads every recipient_u from the auditor stream. " +
 	"bundle_digest = ciphertext_digest(bundle). body_tag = Poseidon(CRRT, body_slot_secret), bundle_tag = Poseidon(CRST, bundle_slot_secret), dummy_tag = Poseidon(CRRT, dummy_tag_preimage). " +
 	"body, bundle, bundle_digest, recipient_keys and the record fields are produced by prover/ringtest/ringprotocol/anonymous_bodies_vector_test.go with WRITE_AUDIT_VECTORS=1, the keys, slot secrets and tags stay pinned in the file."
 
@@ -57,13 +58,10 @@ func TestAnonymousBodiesVector(t *testing.T) {
 	blinding := key(bodyBlinding)
 	amount := uint64(31)
 	nullifierBytes := spptest.MustFieldBytes(t, nullifierPk)
-	record := slices.Concat([]byte{1}, binary.BigEndian.AppendUint64(nil, amount), ownerKey[:], mint[:], nullifierBytes[:], blinding[:])
+	record := slices.Concat([]byte{1}, binary.BigEndian.AppendUint64(nil, amount), ownerKey[:], mint[:], blinding[:], nullifierBytes[:])
 	recordKey, nonce := AuditStreamKeys(t, field("body_slot_secret"), "CRING/rcp")
-	body := CTREncrypt(t, recordKey, nonce, record)
-	bundle := SenderBundle{
-		OutputSeed:    field("output_seed"),
-		RecipientKeys: keys,
-	}.Seal(t, field("bundle_slot_secret"))
+	body := CTREncrypt(t, recordKey, nonce, record)[:audit.RingRecordLen]
+	bundle := SenderBundle{OutputSeed: field("output_seed")}.Seal(t, field("bundle_slot_secret"))
 	recipientKeys := make([]string, len(keys))
 	for slot, recipient := range keys {
 		if recipient != [32]byte{} {

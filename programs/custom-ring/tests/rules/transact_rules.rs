@@ -5,11 +5,11 @@ use custom_ring_interface::{
     cosign::ApprovalMask,
     funder_account_position, input_flag,
     key_catalog::{FrameKey, RingCircuit},
-    shape_flag, spl_withdrawal_count, tag, transact_flag, AnonymousProofData, BundleLayout,
-    CoSignScope, CustomRingError, CustomRingProof, FramedSenderBundle, InputTrees,
-    PlainGroth16Proof, PolicyProof, RingOutput, RingPolicy, RingRail, RingRole, RingTransactData,
-    RootRead, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN, OUTPUT_RECORD_LEN,
-    RING_TRANSACT_RING_CONFIG_INDEX, TRANSACT_PAYER_INDEX,
+    shape_flag, spl_withdrawal_count, tag, transact_flag, AnonymousProofData, CoSignScope,
+    CustomRingError, CustomRingProof, FramedSenderBundle, InputTrees, PlainGroth16Proof,
+    PolicyProof, RingOutput, RingPolicy, RingRail, RingRole, RingTransactData, RootRead, SlotBody,
+    CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN,
+    RING_TRANSACT_RING_CONFIG_INDEX, SENDER_BUNDLE_LEN, TRANSACT_PAYER_INDEX,
 };
 use solana_address::Address;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
@@ -43,7 +43,7 @@ pub struct Fixture {
     fields: Vec<[u8; 32]>,
     keys: [[u8; 32]; 16],
     /// Slot `i`'s record, a body with no payload.
-    records: [[u8; OUTPUT_RECORD_LEN]; 16],
+    records: [[u8; EXIT_RECORD_LEN]; 16],
     /// Cut to the frame's output count.
     bundle: Vec<u8>,
     /// Cut to the stream layout's envelope length.
@@ -75,8 +75,8 @@ impl Fixture {
             },
             fields: (1..=120u8).map(field).collect(),
             keys: core::array::from_fn(|i| [0x40 + i as u8; 32]),
-            records: core::array::from_fn(|i| [0x80 + i as u8; OUTPUT_RECORD_LEN]),
-            bundle: vec![0x3c; BundleLayout { outputs: 16 }.byte_len()],
+            records: core::array::from_fn(|i| [0x80 + i as u8; EXIT_RECORD_LEN]),
+            bundle: vec![0x3c; SENDER_BUNDLE_LEN],
             envelope: (0..5000u32).map(|byte| byte as u8 ^ 0x93).collect(),
             recipient_keys: (0..512u32).map(|byte| byte as u8 ^ 0x71).collect(),
             tags: core::array::from_fn(|i| field(0xa0 + i as u8)),
@@ -165,8 +165,8 @@ impl Fixture {
             .map(|slot| RingOutput {
                 hash: &self.fields[10 + slot],
                 owner_tag: custom_ring_interface::stream::slot_tag(self.tags[slot]),
-                body: SlotBody::Recipient(&self.records[slot]),
-                record: &self.records[slot],
+                body: SlotBody::Recipient(&self.records[slot][..RING_RECORD_LEN]),
+                record: &self.records[slot][..RING_RECORD_LEN],
             })
             .collect();
         self.fit_stream(&mut data);
@@ -206,9 +206,8 @@ impl Fixture {
     }
 
     pub fn fit_bundle<'a>(&'a self, data: &mut RingTransactData<'a>) {
-        let len = data.bundle_layout().byte_len();
         if let Some(sender) = &mut data.sender {
-            sender.body = &self.bundle[..len];
+            sender.body = &self.bundle;
         }
     }
 }
@@ -1529,6 +1528,7 @@ fn a_delegate_exit_selects_the_exit_circuit_and_reaches_its_key() {
     assert!(matches!(kept, CircuitId::RingAuthority(2, 2, _)));
     let payload = [0x77; CONFIDENTIAL_DATA_FREE_BODY_LEN];
     data.outputs[1].body = SlotBody::Exit(&payload);
+    data.outputs[1].record = &fixture.records[1];
     assert!(matches!(
         data.circuit(),
         CircuitId::RingAuthorityExit(2, 2, _)
