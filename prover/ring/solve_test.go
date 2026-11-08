@@ -25,7 +25,7 @@ const (
 	transfer4Key common.CircuitType = "custom-ring-transfer-4-in24-w4-s4"
 	transfer8Key common.CircuitType = "custom-ring-transfer-8-in16-w4-s4"
 	wideKey      common.CircuitType = "custom-ring-transfer-wide-8-in24-w32-s13"
-	wide40Key    common.CircuitType = "custom-ring-transfer-wide-2-in40-w4-s8"
+	wide40Key    common.CircuitType = "custom-ring-transfer-wide-2-in40-w4-s9"
 	entryKey     common.CircuitType = "custom-ring-transfer-entry-4-in8-w4-s8"
 	entryWideKey common.CircuitType = "custom-ring-transfer-entry-8-in8-w32-s8"
 	entry8Key    common.CircuitType = "custom-ring-transfer-entry-8-in2-w4-s2"

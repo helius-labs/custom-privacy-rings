@@ -21,8 +21,8 @@
     },
     {
       "key": "custom_ring_transfer_16_in4_w4_s2",
-      "own": 65,
-      "curator": 65,
+      "own": 63,
+      "curator": 63,
       "tracking": 21
     },
     {
@@ -32,16 +32,16 @@
       "tracking": 42
     },
     {
-      "key": "custom_ring_transfer_wide_2_in40_w4_s8",
-      "own": 67,
-      "curator": 67,
-      "tracking": 11
+      "key": "custom_ring_transfer_wide_2_in40_w4_s9",
+      "own": 61,
+      "curator": 61,
+      "tracking": 12
     },
     {
       "key": "custom_ring_transfer_entry_4_in8_w4_s8",
-      "own": 43,
-      "curator": 43,
-      "tracking": 14
+      "own": 47,
+      "curator": 47,
+      "tracking": 16
     },
     {
       "key": "custom_ring_transfer_entry_8_in2_w4_s2",
@@ -51,15 +51,15 @@
     },
     {
       "key": "custom_ring_transfer_entry_8_in5_w4_s4",
-      "own": 46,
-      "curator": 46,
-      "tracking": 15
+      "own": 48,
+      "curator": 48,
+      "tracking": 16
     },
     {
       "key": "custom_ring_transfer_entry_8_in8_w32_s8",
-      "own": 91,
-      "curator": 91,
-      "tracking": 38
+      "own": 94,
+      "curator": 94,
+      "tracking": 41
     }
   ]
 }

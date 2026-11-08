@@ -114,18 +114,18 @@ const NARROW_SHAPES: [TransferShape; 4] = [
     narrow(4, 24, 4, 4, [8, 16]),
     narrow(8, 16, 4, 4, [12, 24]),
     // No wide row holds 16 outputs, each owner row, output and leg owner takes a salted read beside its public records.
-    narrow(16, 4, 4, 2, [21, 58]),
+    narrow(16, 4, 4, 2, [21, 56]),
 ];
 /// The wide flag takes the first row holding the frame, the last only past 24 inputs.
 const WIDE_SHAPES: [TransferShape; 2] =
-    [wide(8, 24, 32, 13, [42, 88]), wide(2, 40, 4, 8, [11, 24])];
+    [wide(8, 24, 32, 13, [42, 88]), wide(2, 40, 4, 9, [12, 18])];
 /// A frame takes the first row holding its width.
 const ENTRY_SHAPES: [TransferShape; 3] = [
-    entry(4, 8, 4, 8, [14, 32]),
+    entry(4, 8, 4, 8, [16, 36]),
     entry(8, 2, 4, 2, [14, 36]),
-    entry(8, 5, 4, 4, [15, 38]),
+    entry(8, 5, 4, 4, [16, 40]),
 ];
-const WIDE_ENTRY_SHAPE: TransferShape = entry(8, 8, 32, 8, [38, 80]);
+const WIDE_ENTRY_SHAPE: TransferShape = entry(8, 8, 32, 8, [41, 83]);
 
 pub const TRANSFER_SHAPES: [TransferShape; 10] = [
     NARROW_SHAPES[0],

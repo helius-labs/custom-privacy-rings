@@ -73,8 +73,8 @@ func TestTheWidestPayoutOpensEveryTrackingRow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if keyed.Tracking != 21 || keyed.Records != 58 {
-				t.Fatalf("pools [%d, %d], want [21, 58]", keyed.Tracking, keyed.Records)
+			if keyed.Tracking != 21 || keyed.Records != 56 {
+				t.Fatalf("pools [%d, %d], want [21, 56]", keyed.Tracking, keyed.Records)
 			}
 			live := 0
 			for _, subject := range built.Circuit.TrackingSubjects {
