@@ -251,8 +251,9 @@ impl Replay<'_> {
             return;
         };
         if note.ring_note && note.nullifier.is_none() {
-            // 1. A record without a key takes the held enrollment's key once, the note keeps its
-            // commitment and owner rows, so a late resolution adds no second entry.
+            // 1. A record without a key takes the held enrollment's key once the commitment
+            // rebuilds under it. The note keeps its commitment and owner rows, so a late
+            // resolution adds no second entry.
             if note.utxo.owner.nullifier_pk().is_none() {
                 let Some(registered) = self
                     .enrolled_key(&note.utxo.owner_key)
@@ -260,14 +261,21 @@ impl Replay<'_> {
                 else {
                     return;
                 };
-                let Ok(resolved) = note.utxo.resolve(registered, self.store.ring, commitment)
-                else {
+                let resolved = note.utxo.resolve(registered, self.store.ring, commitment);
+                // 2. Another key or a payload that does not rebuild keeps the proven record with no
+                // nullifier, so the note never counts as spendable.
+                let Ok(Some(resolved)) = resolved else {
+                    let unrebuilt = note.utxo.unrebuilt();
+                    if unrebuilt != note.utxo {
+                        note.utxo = unrebuilt;
+                        self.delta.notes.insert(*commitment, note);
+                    }
                     return;
                 };
                 note.utxo = resolved;
                 self.delta.notes.insert(*commitment, note);
             }
-            // 2. The registered key derives the nullifier whether or not the payload rebuilt.
+            // 3. Only a key the commitment rebuilt under derives the nullifier.
             let blinding = note.utxo.blinding;
             note.nullifier = self
                 .key_of(&note.utxo)
