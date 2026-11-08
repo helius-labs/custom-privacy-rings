@@ -778,7 +778,9 @@ async fn a_wrong_tag_hides_a_note_from_the_tag_scan_and_never_from_recovery() {
     for slot in &mut wrong.output_slots {
         slot.view_tag = [0x7e; 32];
     }
-    for message in &mut wrong.messages {
+    // The program writes the auditor message tag.
+    let auditor = wrong.messages.len() - 1;
+    for message in &mut wrong.messages[..auditor] {
         message.view_tag = [0x7f; 32];
     }
     indexer.publish(wrong.clone());

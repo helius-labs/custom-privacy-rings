@@ -37,7 +37,7 @@ use zolana_ring_client::{
     AuditError, AuditStreamSeal, AuditedEntryInput, AuditedTransaction, ConfirmedMerge,
     ConfirmedMergeDisclosure, MergeAudit, MergeLedger, MergeRecordSeal, OutputOpening,
     OutputPayloadError, OutputPayloadErrorKind, RingOrigin, RingOwnerTag, RingScan,
-    TransactionAudit, TransactionOrigin,
+    TransactionAudit, TransactionOrigin, UtxoOwner,
 };
 
 use history_page::{position, EventsPage};
@@ -313,6 +313,13 @@ fn each_record_field_changed_fails_the_rebuild() {
                 rail: built.rail,
             });
             let audited = audit_registered(&built, &forged).unwrap();
+            // An unauthorized owner key leaves the output unresolved with no payload error.
+            if (name, slot) == ("owner_key", 0) {
+                assert!(audited.payload_errors.is_empty(), "{name} of slot {slot}");
+                let kept = audited.outputs[slot].opening.utxo().unwrap();
+                assert!(matches!(kept.owner, UtxoOwner::Unresolved { .. }));
+                continue;
+            }
             assert_eq!(
                 audited.payload_errors,
                 [slot_error(slot as u32, OutputPayloadErrorKind::Payload)],
@@ -367,7 +374,7 @@ fn a_record_of_one_slot_at_another_drops_its_data_hashes() {
         auditor: &auditor().pubkey(),
         rail: built.rail,
     });
-    let audited = audit(&forged, built.layout).unwrap();
+    let audited = audit_registered(&built, &forged).unwrap();
     assert_eq!(
         audited.payload_errors,
         [
@@ -456,7 +463,7 @@ fn an_exit_opens_with_its_published_owner_tag() {
         panic!("an exit")
     };
     assert_eq!(opened.owner_key, exit.owner_key);
-    // A ring id off the record's kind hashes to another note.
+    // A record off the exit's kind publishes the ring length, the stream no longer parses.
     let mut swapped = built.disclosure.clone();
     swapped.records[0].kind = RecordKind::Ring;
     let transfer = Transfer::fixture();
@@ -466,10 +473,10 @@ fn an_exit_opens_with_its_published_owner_tag() {
         auditor: &auditor().pubkey(),
         rail: built.rail,
     });
-    assert_eq!(
-        audit(&forged, built.layout).unwrap().payload_errors,
-        [slot_error(0, OutputPayloadErrorKind::Payload)]
-    );
+    assert!(matches!(
+        audit(&forged, built.layout),
+        Err(AuditError::AuditorMessageLength(_))
+    ));
 }
 
 /// An exit's data sits in its scheme 3 body, the auditor opens its record without the data hashes.
@@ -514,7 +521,7 @@ fn an_opened_note_reads_as_its_known_form() {
             Output::Dummy,
         ],
     );
-    let audited = audit(&built.transaction, built.layout).unwrap();
+    let audited = audit_registered(&built, &built.transaction).unwrap();
     let created: Vec<_> = audited.utxos().collect();
     assert_eq!(
         created[0].utxo,

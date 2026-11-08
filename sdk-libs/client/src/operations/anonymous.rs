@@ -820,7 +820,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
         }
     }
 
-    /// `None` when the body at `position` fails to open under the recipient's key.
+    /// `None` unless the tag at `position` matches and the body opens under the recipient's key.
     fn sent_payment(
         &self,
         body: &Body<'_>,
@@ -842,6 +842,10 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
         }
         .secret()
         .ok()?;
+        // A dummy publishes a tag from a random preimage, never from the listed key.
+        if secret.anonymous_slot_tag().ok()? != slot.view_tag {
+            return None;
+        }
         let plain = open_recipient_body(ciphertext, &secret).ok()?;
         let verified = self
             .sync

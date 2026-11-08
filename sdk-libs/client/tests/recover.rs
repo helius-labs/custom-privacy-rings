@@ -29,7 +29,7 @@ use zolana_ring_client::{
     AuditError, ConfirmedMergeDisclosure, MemberRecovery, MergeRecordSeal, RecoveredNotes,
     RecoveryStep, RingOrigin, RingRecovery, SourceMember, TransactionOrigin,
 };
-use zolana_ring_transaction::{record_key, RingAssets};
+use zolana_ring_transaction::{carried_key, record_key, RingAssets};
 
 use history_page::EventsPage;
 use transfer::{field, x25519_u, Frame, Output, Publish, Rail, Transfer, UtxoFields};
@@ -304,7 +304,10 @@ impl Fixture {
         let (held, mut transaction) = self.merge(inputs, tree_id);
         let sealed = MergeRecordSeal {
             record: MergeRecord {
-                record: self.record(&held.utxo),
+                record: OutputRecord {
+                    key: carried_key(self.address.nullifier_pubkey),
+                    ..self.record(&held.utxo)
+                },
                 seed: right_align(&self.member.nullifier_key.secret()),
             },
             recipient: self.address.viewing_pubkey,

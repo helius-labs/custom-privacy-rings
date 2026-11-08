@@ -1,6 +1,6 @@
 use custom_ring_interface::{
     encode_confidential_output, encode_ring_body_output, AuditKey, AuditStreamLayout,
-    AuditorMessage, CONFIDENTIAL_DATA_FREE_BODY_LEN,
+    AuditorMessage, CONFIDENTIAL_DATA_FREE_BODY_LEN, RECORD_ZERO_KEY_BIT,
 };
 use serde_json::Value;
 use solana_address::Address;
@@ -9,9 +9,7 @@ use spr_event::MessageData;
 use spr_hasher::primitives::hash_bytes;
 use spr_keypair::{ViewingKey, X25519Keypair};
 use spr_transaction::{OutputContext, OutputSlot, ShieldedTransaction};
-use zolana_ring_client::{
-    OutputOpening, OutputPayloadError, OutputPayloadErrorKind, TransactionAudit,
-};
+use zolana_ring_client::{OutputOpening, TransactionAudit};
 
 const STREAM: &str = include_str!("../../../test-vectors/audit/audit-stream.json");
 const RING: Address = Address::new_from_array([0x90; 32]);
@@ -109,21 +107,14 @@ fn every_stream_rebuilds_its_published_hashes_with_no_mint_registry() {
             ring_program_id: Some(RING),
         };
         let audited = TransactionAudit::new(&tx, layout).run(&auditor()).unwrap();
-        // The data case's payload holds its data hashes, the vector omits it.
-        let lost: &[OutputPayloadError] = match name {
-            "data" => &[OutputPayloadError {
-                slot_index: 0,
-                kind: OutputPayloadErrorKind::Payload,
-            }],
-            _ => &[],
-        };
-        assert_eq!(audited.payload_errors, lost, "{name}");
+        // With no registry the data case's ring slot stays unresolved and reports no error.
+        assert_eq!(audited.payload_errors, [], "{name}");
         assert_eq!(audited.outputs.len(), hashes.len(), "{name}");
         let plaintext = bytes(&case["envelope_plaintext"]);
         assert_eq!(audited.real_inputs, plaintext[32], "{name}");
         let blindings = list(&case["blindings"]);
         for (index, output) in audited.outputs.iter().enumerate() {
-            match plain_records[index][0] {
+            match plain_records[index][0] & !RECORD_ZERO_KEY_BIT {
                 0 => assert_eq!(output.opening, OutputOpening::Dummy, "{name} slot {index}"),
                 1 => assert!(matches!(output.opening, OutputOpening::Ring { .. })),
                 _ => assert!(matches!(output.opening, OutputOpening::Exit(_))),
