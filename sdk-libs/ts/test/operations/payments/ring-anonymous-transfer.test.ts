@@ -1163,7 +1163,7 @@ describe("anonymous ring exits and entries", () => {
     noProofs(fixture);
   });
 
-  it("refuses an unkeyed sixteen output frame before any proof", async () => {
+  it("proves a sixteen output frame, change and fifteen payments, on the sixteen output key", async () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const payments = await Promise.all(
@@ -1173,10 +1173,9 @@ describe("anonymous ring exits and entries", () => {
       (transfer, to) => transfer.withPayment({ to, asset: SOL_MINT, amount: 1n, reply: null }),
       rail({ fixture, sender, transfer: spend(fixture, sender) }),
     );
-    await expect(paying.prove(fixture.client)).rejects.toThrow(
-      ringError("RING_CATALOG_KEY_MISSING"),
-    );
-    noProofs(fixture);
+    const { data } = await expanded(fixture, await paying.prove(fixture.client), "anonymous");
+    expect([data.nOut, data.outputs.length]).toEqual([16, 16]);
+    expect(anonymousTransfer(fixture).circuit).toBe("custom-ring-transfer-16-in4-w4-s4");
   });
 
   describe("a payment carrying data", () => {

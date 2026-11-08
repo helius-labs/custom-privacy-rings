@@ -1033,8 +1033,8 @@ describe("anonymous ring merge", () => {
         amount: 8n,
         ownerKey: owner.signingPublicKey().ed25519(),
         mint: SOL_MINT,
-        nullifierPk: owner.nullifierPublicKey(),
         blinding: seededMergeOutputBlinding(seed, spp.nullifiers[0]!),
+        key: { kind: "carried", nullifierPk: owner.nullifierPublicKey() },
       });
       expect(opened.seed).toEqual(seed);
     } finally {

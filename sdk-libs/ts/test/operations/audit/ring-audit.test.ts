@@ -14,6 +14,7 @@ import {
   poseidon,
   encodeMergeOutputData,
   encryptMergeOutput,
+  clampViewingSecret,
 } from "@heliuslabs/spr/internal";
 import { seededMergeOutputBlinding } from "../../../src/crypto/derivation/merge-seed.js";
 import { initializePoseidon } from "@heliuslabs/spr";
@@ -240,6 +241,11 @@ const otherRecords: readonly RecordFields[] = [
   },
 ];
 
+/** A fixed viewing key secret of `byte`. */
+function clampedSecret(byte: number): Bytes32 {
+  return clampViewingSecret(new Uint8Array(32).fill(byte) as Bytes32) as Bytes32;
+}
+
 function streamLayout(inputs: number, outputs: number): StreamLayout {
   const shape = frameKeyShape({
     rail: "confidential",
@@ -305,8 +311,10 @@ function sealedTransfer(
   const blindings = records.map((_, outputIndex) =>
     ringOutputBlinding({ firstNullifier, blindingSeed, outputIndex }),
   );
-  const keys = records.map((record) =>
-    record.kind === RecordKind.exit ? input.auditor : ViewingKey.generate().publicKey(),
+  const keys = records.map((record, slot) =>
+    record.kind === RecordKind.exit
+      ? input.auditor
+      : ViewingKey.fromBytes(clampedSecret(0x40 + slot)).publicKey(),
   );
   const txKey = ViewingKey.fromBytes(TX_SECRET.slice() as Bytes32);
   const sealedRecords = records.map((record, slot) =>
@@ -509,7 +517,8 @@ describe("auditRing", () => {
     // The record decrypts to noise under another key and rebuilds no published commitment.
     const { transaction: substituted } = sealedTransfer({
       auditor: auditor.publicKey(),
-      disclosed: (keys) => [ViewingKey.generate().publicKey(), ...keys.slice(1)],
+      // Fixed keys, noise under random ones decodes a ring record about once in 128 runs.
+      disclosed: (keys) => [ViewingKey.fromBytes(clampedSecret(0x5a)).publicKey(), ...keys.slice(1)],
     });
     const refused = await scan([substituted], TRANSFERS, { auditor });
     expect(refused.transactions[0]?.outputs.map((output) => output.slotIndex)).toEqual([1]);
@@ -570,7 +579,7 @@ describe("auditRing", () => {
       for (const created of auditedUtxos(audited)) index.insert(created.commitment, created.utxo);
     };
     absorb(early);
-    expect(index.utxo(commitment)?.owner).toEqual({ kind: "unresolved" });
+    expect(index.utxo(commitment)?.owner).toMatchObject({ kind: "unresolved" });
     const late = (await scan([transaction], TRANSFERS, { auditor })).transactions[0]!;
     absorb(late);
     expect(index.utxo(commitment)?.owner).toEqual({

@@ -395,6 +395,9 @@ export {
   openRingTransfer,
   openedUtxo,
   recoverTransactionViewingKey,
+  resolveKnownUtxo,
+  resolveRingOwners,
+  unresolvedOwners,
 } from "../operations/audit/audit.js";
 export type {
   AuditedEntryInput,
@@ -404,6 +407,7 @@ export type {
   AuditedRingTransaction,
   AuditedSender,
   AuditedUtxo,
+  ClaimedData,
   CreatedRingUtxo,
   InputOpening,
   KnownNote,
@@ -421,8 +425,8 @@ export type {
   TransactionAuditInput,
   UtxoOwner,
 } from "../operations/audit/audit.js";
-export { TrackingOwnerKeys } from "../operations/audit/owner-keys.js";
-export type { OwnerNullifierKeys } from "../operations/audit/owner-keys.js";
+export { readRegisteredKeys } from "../operations/audit/owner-keys.js";
+export type { OwnerNullifierKey } from "../operations/audit/owner-keys.js";
 export {
   auditRingMerges,
   classifyMergeNullifier,

@@ -17,6 +17,7 @@ import {
   hashBytes,
   poseidon,
   treeAddress,
+  clampViewingSecret,
 } from "@heliuslabs/spr/internal";
 import {
   seededMergeDummyNullifier,
@@ -52,7 +53,6 @@ import {
   type KnownUtxo,
   type TransactionAuditInput,
 } from "../../../src/operations/audit/audit.js";
-import type { OwnerNullifierKeys } from "../../../src/operations/audit/owner-keys.js";
 import {
   decodeAuditEnvelope,
   EMPTY_ENTRY_RECORD,
@@ -118,17 +118,9 @@ function layoutOf(entry: Case): AuditStreamLayout {
   };
 }
 
-/** Each vector owner's key as its tracking authorization would name it. */
-function vectorOwnerKeys(entry: Case): OwnerNullifierKeys {
-  const keys = new Map(
-    entry.records.flatMap((plaintext) => {
-      const { record, nullifierPk } = vectorRecord(hex(plaintext));
-      return nullifierPk === undefined
-        ? []
-        : [[encodeBase58(record.ownerKey), nullifierPk] as const];
-    }),
-  );
-  return { nullifierKey: (ownerKey) => keys.get(encodeBase58(ownerKey)) };
+/** A fixed viewing key secret of `byte`. */
+function clampedSecret(byte: number): Bytes32 {
+  return clampViewingSecret(new Uint8Array(32).fill(byte) as Bytes32) as Bytes32;
 }
 
 interface StreamEdits {
@@ -221,7 +213,6 @@ function audited(entry: Case, edits: StreamEdits = {}, rest: Partial<Transaction
     rail: "confidential",
     noSpend:
       rest.noSpend ?? decodeAuditEnvelope(hex(entry.envelope_plaintext), layout).realInputs === 0,
-    ownerKeys: vectorOwnerKeys(entry),
     ...rest,
   });
 }
@@ -276,7 +267,8 @@ describe("the transfer reader", () => {
 
   it("reads a record under a substituted recipient key as a disclosure or commitment error", () => {
     const entry = caseNamed("plain_with_exit_and_dummy");
-    const substitute = ViewingKey.generate().publicKey().u();
+    // A fixed key, noise under a random one decodes a ring record about once in 128 runs.
+    const substitute = ViewingKey.fromBytes(clampedSecret(0x5a)).publicKey().u();
     const { audited: row } = audited(entry, { keys: new Map([[0, substitute]]) });
     expect(row.payloadErrors.map(({ slotIndex }) => slotIndex)).toEqual([0]);
     expect(row.outputs.map(({ slotIndex }) => slotIndex)).not.toContain(0);
@@ -286,11 +278,14 @@ describe("the transfer reader", () => {
     const entry = caseNamed("plain_with_exit_and_dummy");
     const blinding = hex(entry.records[0] as string);
     blinding.fill(0xff, 73, RING_RECORD_LEN);
-    const exitKey = hex(entry.records[1] as string);
+    const exitSlot = entry.records.findIndex(
+      (record) => vectorRecord(hex(record)).record.kind === RecordKind.exit,
+    );
+    const exitKey = hex(entry.records[exitSlot] as string);
     exitKey.fill(0xff, RING_RECORD_LEN, EXIT_RECORD_LEN);
     for (const [slot, record] of [
       [0, blinding],
-      [1, exitKey],
+      [exitSlot, exitKey],
     ] as const)
       expect(() => audited(entry, { records: new Map([[slot, record]]) })).toThrow(
         expect.objectContaining({

@@ -10,7 +10,12 @@ import {
 } from "../../../src/crypto/audit/ring-disclosure.js";
 import { txKeySlotSecret } from "../../../src/crypto/derivation/ring-stream.js";
 import { x25519FromU } from "../../../src/crypto/keys/x25519.js";
-import { RecordKind, type OutputRecord } from "../../../src/protocol/codec/audit-stream.js";
+import {
+  RecordKind,
+  carriedRecordKey,
+  type OutputRecord,
+} from "../../../src/protocol/codec/audit-stream.js";
+import { CONFIDENTIAL_DATA_FREE_BODY_LEN } from "../../../src/protocol/transaction/output.js";
 import {
   PAYLOAD_LENGTH_LEN,
   RECIPIENT_KEY_LEN,
@@ -372,9 +377,20 @@ describe("relay message check", () => {
           firstNullifier: RingTransactData.firstNullifier(frame),
         });
         const { record } = openOutputSlot(secret, output.record);
-        return equalBytes(record.ownerKey, paid)
-          ? { ...output, record: sealOutputSlot(secret, { record: change(record) }) }
-          : output;
+        if (!equalBytes(record.ownerKey, paid)) return output;
+        const changed = change(record);
+        const resealed = { ...output, record: sealOutputSlot(secret, { record: changed }) };
+        // An exit publishes its full record under its owner's tag and a scheme 3 body.
+        return changed.kind === RecordKind.exit
+          ? {
+              ...resealed,
+              ownerTag: changed.ownerKey,
+              body: {
+                kind: "exit" as const,
+                payload: new Uint8Array(CONFIDENTIAL_DATA_FREE_BODY_LEN),
+              },
+            }
+          : resealed;
       });
       txKey.destroy();
       return { ...frame, outputs };
@@ -405,9 +421,15 @@ describe("relay message check", () => {
     });
 
     it("refuses an exit in place of a payment", async () => {
-      expect(await verdictOf(rewritten((record) => ({ ...record, kind: RecordKind.exit })))).toBe(
-        "Recipients",
+      const payee = ShieldedAddress.fromBytes(
+        new Uint8Array(base58.encode(delegates.request.prepare.transfer.payments[0]!.recipient)),
       );
+      const exit = rewritten((record) => ({
+        ...record,
+        kind: RecordKind.exit,
+        key: carriedRecordKey(payee.nullifierPublicKey),
+      }));
+      expect(await verdictOf(exit)).toBe("Recipients");
     });
 
     it("refuses an interface transfer the request does not name", async () => {

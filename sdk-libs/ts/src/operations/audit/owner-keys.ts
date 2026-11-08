@@ -16,45 +16,35 @@ import {
   type AuthorizationReader,
 } from "../../rpc/tracking-resolver.js";
 
-/** The nullifier key a ring output's record omits, named by its owner. */
-export interface OwnerNullifierKeys {
-  /** `undefined` while no key is known for the owner. */
-  nullifierKey(ownerKey: Bytes32): Bytes32 | undefined;
-}
+/** Names the nullifier key a ring output's record omits, `undefined` while unknown. */
+export type OwnerNullifierKey = (ownerKey: Bytes32) => Bytes32 | undefined;
 
-/** The authorization fixes its key at creation, a lookup miss reads again at the next `refresh`. */
-export class TrackingOwnerKeys implements OwnerNullifierKeys {
-  readonly #keys = new Map<Address, Bytes32>();
-  readonly #missing = new Set<Address>();
-
-  nullifierKey(ownerKey: Bytes32): Bytes32 | undefined {
-    const owner = encodeBase58(ownerKey);
-    const key = this.#keys.get(owner);
-    if (key === undefined) this.#missing.add(owner);
-    return key;
-  }
-
-  /** True when an owner missed since the last call now has an authorization. */
-  async refresh(
-    input: Readonly<{ client: AuthorizationReader; ringProgramId: Address }>,
-    context?: RequestContext,
-  ): Promise<boolean> {
-    if (this.#missing.size === 0) return false;
-    const owners = [...this.#missing];
-    this.#missing.clear();
+/**
+ * One read per owner for a page, Rust `RegisteredKeys::read`. The authorization fixes its key at
+ * creation, an owner with no account yet stays unresolved for a later scan.
+ */
+export async function readRegisteredKeys(
+  input: Readonly<{
+    client: AuthorizationReader;
+    ringProgramId: Address;
+    owners: readonly Bytes32[];
+  }>,
+  context?: RequestContext,
+): Promise<OwnerNullifierKey> {
+  const owners = [...new Set(input.owners.map((owner) => encodeBase58(owner)))];
+  const keys = new Map<Address, Bytes32>();
+  if (owners.length > 0) {
     const trackingRegistry = await pinnedTrackingRegistry(input, context);
-    let found = false;
     for (const owner of owners) {
+      // The reader checks the storage program, the registry and the owner the account holds.
       const authorization = await readTrackingAuthorization(
         { client: input.client, trackingRegistry, owner },
         context,
       );
-      if (authorization === undefined) continue;
-      this.#keys.set(owner, authorization.nullifierPk);
-      found = true;
+      if (authorization !== undefined) keys.set(owner, authorization.nullifierPk);
     }
-    return found;
   }
+  return (ownerKey) => keys.get(encodeBase58(ownerKey));
 }
 
 /** The policy account's tracking registry, an account the ring program does not own is refused. */
