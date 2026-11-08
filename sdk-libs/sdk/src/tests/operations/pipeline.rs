@@ -3860,7 +3860,8 @@ async fn a_salted_owner_passes_under_its_rows_tag_alone() {
     let unenrolled = ring_address(&keypair(2));
     assert!(matches!(
         read(&unenrolled).await,
-        Err(RingError::Resolve(ResolveError::NotEnrolled))
+        Err(RingError::SaltedOwnerUnregistered { member })
+            if member == unenrolled.recipient.signing_pubkey.owner_proof_input_hash().unwrap()
     ));
 }
 

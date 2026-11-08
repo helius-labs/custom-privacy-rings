@@ -230,13 +230,20 @@ impl SaltedOwnerCheck<'_> {
     ) -> Result<ResolvedRecipient, RingError> {
         let policy = self.ring.require_policy(rpc).await?;
         let tracking = BoundRoot::tracking(&policy, rpc).await?;
-        Ok(RecipientResolver {
+        let resolved = RecipientResolver {
             address: self.address,
             registry: tracking.registry,
             root: tracking.root,
         }
         .resolve(rpc)
-        .await?)
+        .await?;
+        // A payment reaches an owner with no row, a salted entry does not.
+        match resolved.list_tag {
+            Some(_) => Ok(resolved),
+            None => Err(RingError::SaltedOwnerUnregistered {
+                member: self.address.recipient.signing_pubkey.owner_proof_input_hash()?,
+            }),
+        }
     }
 }
 

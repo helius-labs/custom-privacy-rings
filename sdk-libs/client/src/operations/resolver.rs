@@ -24,8 +24,8 @@ pub struct ResolvedRecipient {
     pub nullifier_pk: [u8; 32],
     /// The authorization's, a rotation moves it past the address.
     pub viewing_pubkey: X25519Pubkey,
-    /// Zero under the zero key.
-    pub list_tag: [u8; 32],
+    /// `None` with no row, off every private list. Zero under the zero key.
+    pub list_tag: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Error)]
@@ -50,8 +50,6 @@ pub enum ResolveError {
     ListTagMismatch,
     #[error("the tracking leaf holds another nullifier key than the address")]
     NullifierKeyMismatch,
-    #[error("the owner holds no tracking row under the root, a pending enrollment grants nothing")]
-    NotEnrolled,
     #[error("the owner's tracking authorization is absent")]
     AuthorizationMissing,
     #[error("the tracking authorization is not a storage program account")]
@@ -135,11 +133,11 @@ impl RecipientResolver<'_> {
         Ok(ResolvedRecipient {
             nullifier_pk,
             viewing_pubkey: X25519Pubkey::from_u(viewing_u)?,
-            list_tag,
+            list_tag: Some(list_tag),
         })
     }
 
-    /// Zero key resolution defers enrollment checks to payment validation.
+    /// An owner with no row resolves to the address keys, only a later registration of the same key spends.
     fn verify(
         &self,
         member: &[u8; 32],
@@ -162,16 +160,15 @@ impl RecipientResolver<'_> {
         .map_err(ResolveError::Opening)?;
         let nullifier_pk = address.recipient.nullifier_pubkey;
         match (row, nullifier_pk == ZERO_NULLIFIER_PUBKEY) {
-            (None, true) => Ok(Opened::Resolved(ResolvedRecipient {
+            (None, _) => Ok(Opened::Resolved(ResolvedRecipient {
                 nullifier_pk,
                 viewing_pubkey: address.recipient.viewing_pubkey,
-                list_tag: [0; 32],
+                list_tag: None,
             })),
             (Some(_), true) => Ok(Opened::Enrolled {
                 nullifier_pk,
                 list_tag: [0; 32],
             }),
-            (None, false) => Err(ResolveError::NotEnrolled),
             (Some(row), false) if row.nullifier_pk != nullifier_pk => {
                 Err(ResolveError::NullifierKeyMismatch)
             }
@@ -427,7 +424,7 @@ mod tests {
             ResolvedRecipient {
                 nullifier_pk: leaf.nullifier_pk,
                 viewing_pubkey: rotated,
-                list_tag: leaf.list_tag,
+                list_tag: Some(leaf.list_tag),
             }
         );
     }
@@ -487,15 +484,22 @@ mod tests {
         ));
     }
 
+    /// The absence opening still verifies, a forged absence never reaches the address keys.
     #[tokio::test]
-    async fn a_keyed_address_with_no_row_is_refused_as_pending_grants_nothing() {
+    async fn a_keyed_address_with_no_row_resolves_to_its_own_keys_off_every_list() {
         let owner = wallet(3);
-        assert!(matches!(
+        let address = enrolled(&owner);
+        assert_eq!(
             Served::new(&[entry(&wallet(4))], None)
-                .resolve(&enrolled(&owner))
-                .await,
-            Err(ResolveError::NotEnrolled)
-        ));
+                .resolve(&address)
+                .await
+                .unwrap(),
+            ResolvedRecipient {
+                nullifier_pk: address.recipient.nullifier_pubkey,
+                viewing_pubkey: address.recipient.viewing_pubkey,
+                list_tag: None,
+            }
+        );
     }
 
     /// Payment validation refuses an enrolled recipient under the zero key.
@@ -510,7 +514,7 @@ mod tests {
             ResolvedRecipient {
                 nullifier_pk: ZERO_NULLIFIER_PUBKEY,
                 viewing_pubkey: address.recipient.viewing_pubkey,
-                list_tag: [0; 32],
+                list_tag: None,
             }
         );
         let rotated = ViewingKey::new().pubkey();
@@ -523,7 +527,7 @@ mod tests {
             ResolvedRecipient {
                 nullifier_pk: ZERO_NULLIFIER_PUBKEY,
                 viewing_pubkey: rotated,
-                list_tag: [0; 32],
+                list_tag: Some([0; 32]),
             }
         );
         assert!(matches!(
