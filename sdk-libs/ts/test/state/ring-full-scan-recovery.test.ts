@@ -44,8 +44,8 @@ function randomTag(): ViewTag {
 }
 
 /** A sender chooses its tags. */
-/** The program writes the auditor message tag, it stays the auditor's. */
 function underWrongTags(tx: IndexedShieldedTransaction): IndexedShieldedTransaction {
+  // The program writes the auditor message tag, it stays the auditor's.
   const auditor = tx.messages.length - 1;
   return {
     ...tx,

@@ -241,7 +241,6 @@ const otherRecords: readonly RecordFields[] = [
   },
 ];
 
-/** A fixed viewing key secret of `byte`. */
 function clampedSecret(byte: number): Bytes32 {
   return clampViewingSecret(new Uint8Array(32).fill(byte) as Bytes32) as Bytes32;
 }
@@ -517,7 +516,7 @@ describe("auditRing", () => {
     // The record decrypts to noise under another key and rebuilds no published commitment.
     const { transaction: substituted } = sealedTransfer({
       auditor: auditor.publicKey(),
-      // Fixed keys, noise under random ones decodes a ring record about once in 128 runs.
+      // Fixed keys, noise under a random key can decode as a ring record.
       disclosed: (keys) => [
         ViewingKey.fromBytes(clampedSecret(0x5a)).publicKey(),
         ...keys.slice(1),
@@ -543,12 +542,15 @@ describe("auditRing", () => {
       { slotIndex: 0, kind: "payload" },
       { slotIndex: 1, kind: "payload" },
     ]);
-    const [ringOutput] = audited?.outputs ?? [];
-    if (ringOutput?.opening.kind !== "ring") throw new Error("ring output");
+    const [ringOutput, exitOutput] = audited?.outputs ?? [];
+    if (ringOutput?.opening.kind !== "ring" || exitOutput?.opening.kind !== "exit")
+      throw new Error("ring and exit outputs");
     expect(ringOutput.opening.utxo.blinding).toEqual(blindings[0]);
     expect(ringOutput.opening.utxo.dataHash).toBeUndefined();
     expect(ringOutput.opening.utxo.ringDataHash).toBeUndefined();
-    // A spend traces from the published commitment, the record's blinding and the owner's secret.
+    // A ring output whose payload rebuilds no commitment stays unkeyed, its spend untraced.
+    expect(ringOutput.opening.utxo).not.toHaveProperty("nullifierPk");
+    // An exit carries its key, its spend traces from the commitment, the blinding and the secret.
     const secret = field("0000000000000000000000000000000000000000000000000000000000000009");
     const index = new KnownUtxoIndex(
       auditedUtxos(audited as AuditedRingTransaction).map(({ commitment, utxo }) => ({
@@ -557,10 +559,11 @@ describe("auditRing", () => {
       })),
       { secrets: { secret: () => secret } },
     );
-    const commitment = ringOutput.outputContext.hash;
-    expect(
-      index.byNullifier(poseidon([commitment, blindings[0]!, secret]) as Bytes32)?.commitment,
-    ).toEqual(commitment);
+    const traced = (output: typeof ringOutput, blinding: Bytes32) =>
+      index.byNullifier(poseidon([output.outputContext.hash, blinding, secret]) as Bytes32)
+        ?.commitment;
+    expect(traced(exitOutput, blindings[1]!)).toEqual(exitOutput.outputContext.hash);
+    expect(traced(ringOutput, blindings[0]!)).toBeUndefined();
   });
 
   it("keeps a ring output unresolved before its owner's authorization and resolves it once after", async () => {

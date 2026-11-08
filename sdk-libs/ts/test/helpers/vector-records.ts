@@ -13,7 +13,7 @@ export interface VectorRecord {
   readonly nullifierPk: Bytes32 | undefined;
 }
 
-/** A vector record is the published plaintext, 105 bytes off an exit and 137 on one. */
+/** The published plaintext, `RING_RECORD_LEN` bytes off an exit and `EXIT_RECORD_LEN` on one. */
 export function vectorRecord(plaintext: Uint8Array): VectorRecord {
   const record = decodeOutputRecord(plaintext);
   return {

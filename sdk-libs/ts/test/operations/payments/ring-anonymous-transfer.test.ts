@@ -1175,7 +1175,7 @@ describe("anonymous ring exits and entries", () => {
     );
     const { data } = await expanded(fixture, await paying.prove(fixture.client), "anonymous");
     expect([data.nOut, data.outputs.length]).toEqual([16, 16]);
-    expect(anonymousTransfer(fixture).circuit).toBe("custom-ring-transfer-16-in4-w4-s4");
+    expect(anonymousTransfer(fixture).circuit).toBe("custom-ring-transfer-16-in4-w4-s2");
   });
 
   describe("a payment carrying data", () => {

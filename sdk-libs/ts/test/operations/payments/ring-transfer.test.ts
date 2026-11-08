@@ -203,7 +203,7 @@ describe("confidential rail", () => {
     const { data } = await expanded(fixture, proven, "confidential");
     expect([data.nIn, data.nOut, data.outputs.length]).toEqual([1, 16, 16]);
     const request = checkTransferProof(fixture, data);
-    expect(ringCircuitType(ringProofCircuit(request))).toBe("custom-ring-transfer-16-in4-w4-s4");
+    expect(ringCircuitType(ringProofCircuit(request))).toBe("custom-ring-transfer-16-in4-w4-s2");
   });
 
   it("delivers two outputs as proven bodies each owner opens to the committed note", async () => {

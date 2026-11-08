@@ -78,9 +78,9 @@ import { readRegisteredKeys, type OwnerNullifierKey } from "./owner-keys.js";
 export interface AuditedUtxo {
   /** The raw Solana key whose owner identity the commitment binds. */
   readonly ownerKey: Bytes32;
-  /** Absent while a ring output's owner has no tracking authorization. */
+  /** Absent on a ring output until its owner's tracking key rebuilds the commitment. */
   readonly nullifierPk?: Bytes32;
-  /** Present while `nullifierPk` is absent, the payload's hashes before any key rebuilds them. */
+  /** Set only while `nullifierPk` is absent, unproven until a key rebuilds the commitment. */
   readonly claimed?: ClaimedData;
   /** `hashBytes(mint)`. */
   readonly asset: Bytes32;
@@ -195,7 +195,7 @@ export type UtxoOwner =
   | Readonly<{ kind: "keyed"; nullifierPk: Bytes32 }>
   /** A deposit capsule discloses the owner hash alone. */
   | Readonly<{ kind: "deposited"; ownerHash: Bytes32 }>
-  /** A ring output whose owner has no tracking authorization yet, `resolveKnownUtxo` names the key. */
+  /** A ring record publishes no nonzero key, `resolveKnownUtxo` keys it under the owner's registered key. */
   | Readonly<{ kind: "unresolved"; claimed?: ClaimedData }>;
 
 /** A UTXO an earlier audit opened, a later disclosure names it by its hash. */
@@ -507,9 +507,8 @@ function auditedUtxo(utxo: KnownUtxo): AuditedUtxo {
 }
 
 /**
- * Rust `KnownUtxo::resolve`, keys an unresolved owner under `nullifierPk` only when the commitment
- * rebuilds under it and the claimed hashes, `undefined` otherwise. A note under another key never
- * spends, so an unrebuilt key derives no nullifier.
+ * Rust `KnownUtxo::resolve`, `undefined` unless the commitment rebuilds under `nullifierPk` and the
+ * claimed hashes, a note under another key never spends.
  */
 export function resolveKnownUtxo(
   input: Readonly<{ utxo: KnownUtxo; nullifierPk: Bytes32; ringId: Bytes32; commitment: Bytes32 }>,
@@ -542,8 +541,8 @@ export function unresolvedOwners(transaction: AuditedRingTransaction): readonly 
 }
 
 /**
- * Rust `AuditedTransaction::resolve_owners`. Decryption reports no payload error for an unresolved
- * output, a key whose commitment does not rebuild gives the slot its first one here.
+ * Rust `AuditedTransaction::resolve_owners`, a key that rebuilds no commitment gives its slot the
+ * first `payload` error, decryption reports none for an unresolved output.
  */
 export function resolveRingOwners(
   transaction: AuditedRingTransaction,
@@ -673,7 +672,6 @@ export async function auditRing(
     rows,
     known,
   });
-  // One read for the page, an owner with no account yet stays unresolved for a later scan.
   const registered = await readRegisteredKeys(
     {
       client: input.client,
@@ -850,8 +848,8 @@ function openSlot(
     return equalBytes(dummyUtxoHash(treeId, reader.dummyBlinding(slot)), context.hash)
       ? Object.freeze({ ok: true, opening: DUMMY, payload: true })
       : COMMITMENT;
-  // 2. An exit carries its key and a ring output's bit names the zero key. Any other key waits for
-  // the owner's tracking authorization, `resolveRingOwners` reads it after decryption.
+  // 2. An exit carries its key and a ring output's bit names the zero key. `resolveRingOwners`
+  // applies any other key after decryption.
   const { key } = record;
   const nullifierPk = namedNullifierPk(key);
   // 3. The proof holds the blinding and a carried key canonical.

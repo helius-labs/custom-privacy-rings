@@ -118,7 +118,6 @@ function layoutOf(entry: Case): AuditStreamLayout {
   };
 }
 
-/** A fixed viewing key secret of `byte`. */
 function clampedSecret(byte: number): Bytes32 {
   return clampViewingSecret(new Uint8Array(32).fill(byte) as Bytes32) as Bytes32;
 }
@@ -267,7 +266,7 @@ describe("the transfer reader", () => {
 
   it("reads a record under a substituted recipient key as a disclosure or commitment error", () => {
     const entry = caseNamed("plain_with_exit_and_dummy");
-    // A fixed key, noise under a random one decodes a ring record about once in 128 runs.
+    // A fixed key, noise under a random key can decode as a ring record.
     const substitute = ViewingKey.fromBytes(clampedSecret(0x5a)).publicKey().u();
     const { audited: row } = audited(entry, { keys: new Map([[0, substitute]]) });
     expect(row.payloadErrors.map(({ slotIndex }) => slotIndex)).toEqual([0]);

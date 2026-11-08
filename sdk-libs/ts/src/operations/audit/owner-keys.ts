@@ -20,8 +20,8 @@ import {
 export type OwnerNullifierKey = (ownerKey: Bytes32) => Bytes32 | undefined;
 
 /**
- * One read per owner for a page, Rust `RegisteredKeys::read`. The authorization fixes its key at
- * creation, an owner with no account yet stays unresolved for a later scan.
+ * Rust `RegisteredKeys::read`, the authorization fixes its key at creation and an owner with no
+ * account yet stays unresolved for a later scan.
  */
 export async function readRegisteredKeys(
   input: Readonly<{
@@ -36,7 +36,6 @@ export async function readRegisteredKeys(
   if (owners.length > 0) {
     const trackingRegistry = await pinnedTrackingRegistry(input, context);
     for (const owner of owners) {
-      // The reader checks the storage program, the registry and the owner the account holds.
       const authorization = await readTrackingAuthorization(
         { client: input.client, trackingRegistry, owner },
         context,

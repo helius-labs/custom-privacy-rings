@@ -403,8 +403,8 @@ function keepSourceNote(
 }
 
 /**
- * Rust `SourceMember::nullifier_pk_of_output`. A ring record publishes no nonzero key, the
- * source's own key stands for its unresolved notes and the rebuilt commitment decides.
+ * Rust `SourceMember::nullifier_pk_of_output`, an unresolved note takes the source's key by its
+ * owner key alone and the rebuilt commitment decides.
  */
 function sourceKeyOf(source: ShieldedAddress, utxo: KnownUtxo): Bytes32 | undefined {
   if (utxo.owner.kind === "unresolved")
