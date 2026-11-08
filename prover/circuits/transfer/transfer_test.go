@@ -765,7 +765,18 @@ func TestNarrowKeysFitTheWideKey(t *testing.T) {
 		}
 	}
 	for _, shape := range transfer.Shapes {
-		if !shape.Wide && shape.Withdrawals == 4 && (shape.Inputs > wide.Inputs || shape.Outputs > wide.Outputs || shape.Owners > wide.Owners) {
+		if shape.Wide || shape.Withdrawals != 4 {
+			continue
+		}
+		// A row past the wide outputs holds its own pools for every subject and output asset.
+		if shape.Outputs > wide.Outputs {
+			subjects := shape.Owners + shape.Outputs + shape.Withdrawals
+			if shape.Tracking != subjects || shape.Records != 2*subjects+shape.Outputs {
+				t.Errorf("%s does not hold every subject, the wide key %s holds %d outputs", shape, wide, wide.Outputs)
+			}
+			continue
+		}
+		if shape.Inputs > wide.Inputs || shape.Owners > wide.Owners {
 			t.Errorf("%s does not fit the wide key %s", shape, wide)
 		}
 	}

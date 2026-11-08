@@ -169,7 +169,7 @@ func TestRecordsAreSealedToTheSealedRecipientKey(t *testing.T) {
 	t.Run("the recipient opens its record", func(t *testing.T) {
 		stream := s.Stream(t)
 		record := ringprotocol.SealRecord(t, s.Keys.TxViewingSk(), ringaudit.ViewingKey(t, 0), s.Salt, 0, s.FirstNullifier, shared.OutputRecordInfo, stream.Record(0))
-		if string(record) != string(s.Outputs[0].Record(t)) {
+		if string(record) != string(s.Outputs[0].Record(t)[:s.Outputs[0].PublishedLen()]) {
 			t.Fatal("the record differs from the slot's opening")
 		}
 	})

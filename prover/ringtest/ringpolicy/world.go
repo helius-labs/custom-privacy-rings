@@ -159,8 +159,15 @@ func Wide8() World {
 	return w
 }
 
+func Wide16() World {
+	w := Wide8()
+	w.Outputs = 16
+	w.Slots = append(w.Slots, w.Slots...)
+	return w
+}
+
 // MemberWorlds is the honest world of every member key capacity.
-var MemberWorlds = map[int]func() World{2: Confidential, 4: Four, 8: Wide8}
+var MemberWorlds = map[int]func() World{2: Confidential, 4: Four, 8: Wide8, 16: Wide16}
 
 // Delegate is a move on the authority rail, no rule or cap binds it.
 func Delegate(outputs int) World {
