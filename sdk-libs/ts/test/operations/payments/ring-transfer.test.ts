@@ -77,6 +77,8 @@ import {
 import { BLOCKHASH, kitReads } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 
 import type { FixtureRecord } from "../../helpers/member-registry.js";
+import { ringProofCircuit } from "../../../src/rpc/prover/ring.js";
+import { ringCircuitType } from "../../../src/protocol/proof/proving-keys.js";
 import {
   bindingSigners,
   screenedMembers,
@@ -189,18 +191,19 @@ import type { WalletUtxo } from "@heliuslabs/spr/transaction";
 const ownNullifier = (): Bytes32 => new Uint8Array(32).fill(0x12) as Bytes32;
 
 describe("confidential rail", () => {
-  it("refuses sixteen recipients before any proof, no general key reaches sixteen outputs", async () => {
+  it("pays sixteen recipients in one transfer on the sixteen output key", async () => {
     const fixture = await ringFixture();
     const sender = ShieldedKeypair.generate();
     const recipients = Array.from({ length: 16 }, () => ShieldedKeypair.generate());
-    await expect(
-      prove(
-        fixture,
-        sender,
-        transferTo(fixture, sender, recipients, { amount: 6_400n, each: 400n }),
-      ),
-    ).rejects.toThrow(ringError("RING_CATALOG_KEY_MISSING"));
-    expect(fixture.ringRequests).toHaveLength(0);
+    const proven = await prove(
+      fixture,
+      sender,
+      transferTo(fixture, sender, recipients, { amount: 6_400n, each: 400n }),
+    );
+    const { data } = await expanded(fixture, proven, "confidential");
+    expect([data.nIn, data.nOut, data.outputs.length]).toEqual([1, 16, 16]);
+    const request = checkTransferProof(fixture, data);
+    expect(ringCircuitType(ringProofCircuit(request))).toBe("custom-ring-transfer-16-in4-w4-s2");
   });
 
   it("delivers two outputs as proven bodies each owner opens to the committed note", async () => {

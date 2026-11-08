@@ -459,14 +459,20 @@ describe("transfer key selection", () => {
     ).toBeUndefined();
   });
 
-  it("keys no sixteen output payout once the general keys serve every rail", () => {
+  it("keys a sixteen output payout on the general key, no payout key", () => {
     const payout = {
       ...spend,
       inputs: 1,
       outputs: 16,
       pools: { own: 35, curator: 35, tracking: 17 },
     };
-    expect(ringTransferCircuit(fittedSpend(payout))).toBeUndefined();
+    const circuit = ringTransferCircuit(fittedSpend(payout));
+    expect(circuit && transferCircuitType(circuit)).toBe("custom-ring-transfer-16-in4-w4-s2");
+    // Past the key's 22 tracking rows or its 2 owners no row serves sixteen outputs.
+    expect(
+      ringTransferCircuit(fittedSpend({ ...payout, pools: { ...payout.pools, tracking: 23 } })),
+    ).toBeUndefined();
+    expect(ringTransferCircuit(fittedSpend({ ...payout, owners: 3 }))).toBeUndefined();
     expect(transferKeys().some((circuit) => transferCircuitType(circuit).includes("payout"))).toBe(
       false,
     );

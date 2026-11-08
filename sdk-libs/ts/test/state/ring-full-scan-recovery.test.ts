@@ -45,10 +45,14 @@ function randomTag(): ViewTag {
 
 /** A sender chooses its tags. */
 function underWrongTags(tx: IndexedShieldedTransaction): IndexedShieldedTransaction {
+  // The program writes the auditor message tag, it stays the auditor's.
+  const auditor = tx.messages.length - 1;
   return {
     ...tx,
     outputSlots: tx.outputSlots.map((slot) => ({ ...slot, viewTag: randomTag() })),
-    messages: tx.messages.map((message) => ({ ...message, viewTag: randomTag() })),
+    messages: tx.messages.map((message, index) =>
+      index === auditor ? message : { ...message, viewTag: randomTag() },
+    ),
   };
 }
 
@@ -124,10 +128,8 @@ describe("full scan recovery", () => {
       [hex(output(tx, 0)), { kind: "fullScan" }],
     ]);
     expect(sender.utxos.map((note) => note.utxo.amount)).toEqual([50n]);
-    expect(sender.sent.map((row) => [row.position, row.amount, row.check])).toEqual([
-      [1, 30n, { kind: "unverified" }],
-      [2, 20n, { kind: "unverified" }],
-    ]);
+    // The slot tag binds a listed key, a wrong tag lists no sent payment.
+    expect(sender.sent).toEqual([]);
 
     const holder = LocalRingKeys.fromKeys({
       address: bob.shieldedAddress(),

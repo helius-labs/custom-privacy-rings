@@ -146,6 +146,7 @@ describe("the ring frame", () => {
         slot === 1
           ? {
               ...tagged(output),
+              record: new Uint8Array(EXIT_RECORD_LEN).fill(slot + 1),
               body: {
                 kind: "exit" as const,
                 payload: new Uint8Array(CONFIDENTIAL_DATA_FREE_BODY_LEN),
@@ -156,8 +157,14 @@ describe("the ring frame", () => {
     };
     const bytes = RingTransactData.encode(exit);
     expect(RingTransactData.parse(bytes, "confidential")).toEqual(exit);
+    // The exit's tag and its record's key widen the slot.
     expect(bytes.length).toBe(
-      RingTransactData.encode(frame).length + 32 - 8 + CONFIDENTIAL_DATA_FREE_BODY_LEN,
+      RingTransactData.encode(frame).length +
+        32 -
+        8 +
+        EXIT_RECORD_LEN -
+        RING_RECORD_LEN +
+        CONFIDENTIAL_DATA_FREE_BODY_LEN,
     );
   });
 

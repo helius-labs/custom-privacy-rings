@@ -71,7 +71,7 @@ describe("the entry keys", () => {
 });
 
 describe("the 16-output key", () => {
-  it("serves SPP 1x16, 2x16 and 4x16 and no wider input", () => {
+  it("serves SPP 1x16, 2x16 and 4x16 at two owners and no wider input", () => {
     const sixteen = loaded(row(16, 4, false));
     for (const inputs of [1, 2, 4]) {
       const circuit = ringTransferCircuit(fittedSpend({ ...sixteen, inputs }));
@@ -79,12 +79,12 @@ describe("the 16-output key", () => {
         outputs: 16,
         class: 4,
         withdrawals: 4,
-        owners: 4,
+        owners: 2,
         entry: false,
         wide: false,
       });
-      expect(transferCircuitType(circuit!)).toBe("custom-ring-transfer-16-in4-w4-s4");
-      expect(transferPoolCapacity(circuit!).tracking).toBe(24);
+      expect(transferCircuitType(circuit!)).toBe("custom-ring-transfer-16-in4-w4-s2");
+      expect(transferPoolCapacity(circuit!).tracking).toBe(22);
     }
     expect(ringTransferCircuit(fittedSpend({ ...sixteen, inputs: 5 }))).toBeUndefined();
   });

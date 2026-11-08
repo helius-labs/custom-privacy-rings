@@ -14,6 +14,7 @@ import {
   poseidon,
   encodeMergeOutputData,
   encryptMergeOutput,
+  clampViewingSecret,
 } from "@heliuslabs/spr/internal";
 import { seededMergeOutputBlinding } from "../../../src/crypto/derivation/merge-seed.js";
 import { initializePoseidon } from "@heliuslabs/spr";
@@ -240,6 +241,10 @@ const otherRecords: readonly RecordFields[] = [
   },
 ];
 
+function clampedSecret(byte: number): Bytes32 {
+  return clampViewingSecret(new Uint8Array(32).fill(byte) as Bytes32) as Bytes32;
+}
+
 function streamLayout(inputs: number, outputs: number): StreamLayout {
   const shape = frameKeyShape({
     rail: "confidential",
@@ -305,8 +310,10 @@ function sealedTransfer(
   const blindings = records.map((_, outputIndex) =>
     ringOutputBlinding({ firstNullifier, blindingSeed, outputIndex }),
   );
-  const keys = records.map((record) =>
-    record.kind === RecordKind.exit ? input.auditor : ViewingKey.generate().publicKey(),
+  const keys = records.map((record, slot) =>
+    record.kind === RecordKind.exit
+      ? input.auditor
+      : ViewingKey.fromBytes(clampedSecret(0x40 + slot)).publicKey(),
   );
   const txKey = ViewingKey.fromBytes(TX_SECRET.slice() as Bytes32);
   const sealedRecords = records.map((record, slot) =>
@@ -509,7 +516,11 @@ describe("auditRing", () => {
     // The record decrypts to noise under another key and rebuilds no published commitment.
     const { transaction: substituted } = sealedTransfer({
       auditor: auditor.publicKey(),
-      disclosed: (keys) => [ViewingKey.generate().publicKey(), ...keys.slice(1)],
+      // Fixed keys, noise under a random key can decode as a ring record.
+      disclosed: (keys) => [
+        ViewingKey.fromBytes(clampedSecret(0x5a)).publicKey(),
+        ...keys.slice(1),
+      ],
     });
     const refused = await scan([substituted], TRANSFERS, { auditor });
     expect(refused.transactions[0]?.outputs.map((output) => output.slotIndex)).toEqual([1]);
@@ -531,12 +542,15 @@ describe("auditRing", () => {
       { slotIndex: 0, kind: "payload" },
       { slotIndex: 1, kind: "payload" },
     ]);
-    const [ringOutput] = audited?.outputs ?? [];
-    if (ringOutput?.opening.kind !== "ring") throw new Error("ring output");
+    const [ringOutput, exitOutput] = audited?.outputs ?? [];
+    if (ringOutput?.opening.kind !== "ring" || exitOutput?.opening.kind !== "exit")
+      throw new Error("ring and exit outputs");
     expect(ringOutput.opening.utxo.blinding).toEqual(blindings[0]);
     expect(ringOutput.opening.utxo.dataHash).toBeUndefined();
     expect(ringOutput.opening.utxo.ringDataHash).toBeUndefined();
-    // A spend traces from the published commitment, the record's blinding and the owner's secret.
+    // A ring output whose payload rebuilds no commitment stays unkeyed, its spend untraced.
+    expect(ringOutput.opening.utxo).not.toHaveProperty("nullifierPk");
+    // An exit carries its key, its spend traces from the commitment, the blinding and the secret.
     const secret = field("0000000000000000000000000000000000000000000000000000000000000009");
     const index = new KnownUtxoIndex(
       auditedUtxos(audited as AuditedRingTransaction).map(({ commitment, utxo }) => ({
@@ -545,10 +559,11 @@ describe("auditRing", () => {
       })),
       { secrets: { secret: () => secret } },
     );
-    const commitment = ringOutput.outputContext.hash;
-    expect(
-      index.byNullifier(poseidon([commitment, blindings[0]!, secret]) as Bytes32)?.commitment,
-    ).toEqual(commitment);
+    const traced = (output: typeof ringOutput, blinding: Bytes32) =>
+      index.byNullifier(poseidon([output.outputContext.hash, blinding, secret]) as Bytes32)
+        ?.commitment;
+    expect(traced(exitOutput, blindings[1]!)).toEqual(exitOutput.outputContext.hash);
+    expect(traced(ringOutput, blindings[0]!)).toBeUndefined();
   });
 
   it("keeps a ring output unresolved before its owner's authorization and resolves it once after", async () => {
@@ -570,7 +585,7 @@ describe("auditRing", () => {
       for (const created of auditedUtxos(audited)) index.insert(created.commitment, created.utxo);
     };
     absorb(early);
-    expect(index.utxo(commitment)?.owner).toEqual({ kind: "unresolved" });
+    expect(index.utxo(commitment)?.owner).toMatchObject({ kind: "unresolved" });
     const late = (await scan([transaction], TRANSFERS, { auditor })).transactions[0]!;
     absorb(late);
     expect(index.utxo(commitment)?.owner).toEqual({
@@ -608,7 +623,12 @@ describe("auditRing", () => {
       })
     ).transactions[0]!;
     expect(audited.payloadErrors).toEqual([{ slotIndex: 0, kind: "payload" }]);
-    expect(audited.outputs[0]?.opening).toMatchObject({ kind: "ring" });
+    // An unrebuilt key names no owner and derives no nullifier, its claims drop with it.
+    const [ringOutput] = audited.outputs;
+    if (ringOutput?.opening.kind !== "ring") throw new Error("ring output");
+    expect(ringOutput.opening.utxo).not.toHaveProperty("nullifierPk");
+    expect(ringOutput.opening.utxo).not.toHaveProperty("claimed");
+    expect(ringOutput.opening.utxo).not.toHaveProperty("dataHash");
   });
 
   it("refuses an authorization of another program, registry or owner at the owner's address", async () => {

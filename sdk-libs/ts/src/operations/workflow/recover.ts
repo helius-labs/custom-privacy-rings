@@ -20,6 +20,7 @@ import {
   auditConfirmedRingHistory,
   knownUtxoOwnerHash,
   openedUtxo,
+  resolveKnownUtxo,
   type KnownUtxo,
   type RingAuditReader,
 } from "../audit/audit.js";
@@ -33,6 +34,7 @@ import {
   type TransactionOrigin,
 } from "../../protocol/transaction/origin.js";
 import { outputTreeId } from "../../protocol/membership/trees.js";
+import { ringIdField } from "../../crypto/derivation/ring-stream.js";
 import { zeroKeyNullifier } from "../../state/exposed-notes.js";
 
 export type RingRecoveryClient = RingAuditReader;
@@ -232,20 +234,13 @@ function applyRows(
   rows: RowOrigins,
 ): BatchNotes {
   const found = new BatchNotes(before);
-  // 1. Every row is a transfer or a merge, a deposit lands as a transfer output. A source record
-  // omits its key, the source's own key resolves it and the rebuilt commitment decides, so a note
-  // paid before registration recovers.
-  const sourceOwner = input.source.signingPublicKey.confidentialViewTag();
+  // 1. Every row is a transfer or a merge, a deposit lands as a transfer output.
   const audited = auditConfirmedRingHistory({
     auditor: input.auditor,
     ringProgramId: input.ringProgramId,
     history: batch,
     rows,
     known: found.openings,
-    ownerKeys: {
-      nullifierKey: (ownerKey) =>
-        equalBytes(ownerKey, sourceOwner) ? input.source.nullifierPublicKey : undefined,
-    },
   });
   refuseSkipped(rows.skipped);
   // 2. Outputs before spends, the batch's merges and inputs need the notes they consume.
@@ -358,12 +353,25 @@ function united<T>(before: ReadonlySet<T>, added: ReadonlySet<T>): ReadonlySet<T
 function keepSourceNote(
   input: Pick<RingRecoveryParams, "source" | "nullifierKey" | "assets" | "ringProgramId">,
   found: BatchNotes,
-  opening: KnownUtxo,
+  audited: KnownUtxo,
   outputContext: OutputContext,
 ): void {
-  const owner = knownUtxoOwnerHash(opening);
-  const nullifierPk = owner === undefined ? undefined : sourceNullifierPk(input.source, owner);
+  const nullifierPk = sourceKeyOf(input.source, audited);
   if (nullifierPk === undefined || !found.claim(outputContext.hash)) return;
+  const opening = resolveKnownUtxo({
+    utxo: audited,
+    nullifierPk,
+    ringId: ringIdField(input.ringProgramId),
+    commitment: outputContext.hash,
+  });
+  // A record the member's key does not rebuild stays unresolved, never a candidate.
+  if (opening === undefined) {
+    found.unresolve(
+      outputContext.hash,
+      sourceNullifier(input, nullifierPk, outputContext.hash, audited.blinding),
+    );
+    return;
+  }
   const nullifier = sourceNullifier(input, nullifierPk, outputContext.hash, opening.blinding);
   const mint = registeredMint(input.assets, opening.mint);
   if (mint === undefined) {
@@ -392,6 +400,19 @@ function keepSourceNote(
   });
   if (opened.opens) found.candidates.push(opened.utxo);
   else found.unresolve(outputContext.hash, opened.utxo.nullifier);
+}
+
+/**
+ * Rust `SourceMember::nullifier_pk_of_output`, an unresolved note takes the source's key by its
+ * owner key alone and the rebuilt commitment decides.
+ */
+function sourceKeyOf(source: ShieldedAddress, utxo: KnownUtxo): Bytes32 | undefined {
+  if (utxo.owner.kind === "unresolved")
+    return equalBytes(utxo.ownerKey, source.signingPublicKey.confidentialViewTag())
+      ? source.nullifierPublicKey
+      : undefined;
+  const owner = knownUtxoOwnerHash(utxo);
+  return owner === undefined ? undefined : sourceNullifierPk(source, owner);
 }
 
 /** The key a source note sits under, `undefined` for another owner. */

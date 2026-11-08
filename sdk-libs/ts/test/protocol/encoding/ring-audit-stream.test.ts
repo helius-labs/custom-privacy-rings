@@ -248,6 +248,8 @@ describe("the stream vector", () => {
         });
         expect(bytesToHex(blinding)).toBe(testCase.blindings[slot]);
         if (record.kind !== RecordKind.dummy) expect(record.blinding).toEqual(blinding);
+        // A nonzero-key ring record names no key, the auditor's tracking read supplies it.
+        if (record.kind === RecordKind.ring && nullifierPk === undefined) return;
         const hash =
           record.kind === RecordKind.dummy
             ? dummyUtxoHash(vector.output_tree_id, blinding)
@@ -419,12 +421,14 @@ describe("the stream codecs", () => {
     secret[0] = 0;
     const payload = { data: new Uint8Array(40).fill(6) };
     const body = sealOutputSlot(secret, { record, payload, payloadLength: 50 });
-    expect(body).toHaveLength(187);
-    expect(openOutputSlot(secret, body)).toEqual({ record, payload });
+    // A ring slot publishes the record without its key, the payload follows at its end.
+    expect(body).toHaveLength(RING_RECORD_LEN + 50);
+    const published = { ...record, key: UNPUBLISHED_RECORD_KEY };
+    expect(openOutputSlot(secret, body)).toEqual({ record: published, payload });
     const bare = sealOutputSlot(secret, { record });
     // One keystream from counter 2, the record bytes seal alike with or without a payload.
-    expect(bare).toEqual(body.subarray(0, 137));
-    expect(openOutputSlot(secret, bare)).toEqual({ record });
+    expect(bare).toEqual(body.subarray(0, RING_RECORD_LEN));
+    expect(openOutputSlot(secret, bare)).toEqual({ record: published });
     expect(() => openOutputSlot(secret, bare.subarray(1))).toThrow();
   });
 });
