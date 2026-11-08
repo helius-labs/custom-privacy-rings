@@ -99,7 +99,7 @@
     "readPools": {
       "own": 0,
       "curator": 0,
-      "tracking": 15
+      "tracking": 17
     },
     "sealed": {
       "outputs": 4,
