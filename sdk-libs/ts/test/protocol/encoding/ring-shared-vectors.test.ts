@@ -468,9 +468,9 @@ describe("transfer key selection", () => {
     };
     const circuit = ringTransferCircuit(fittedSpend(payout));
     expect(circuit && transferCircuitType(circuit)).toBe("custom-ring-transfer-16-in4-w4-s2");
-    // Past the key's 22 tracking rows or its 2 owners no row serves sixteen outputs.
+    // Past the key's 21 tracking rows or its 2 owners no row serves sixteen outputs.
     expect(
-      ringTransferCircuit(fittedSpend({ ...payout, pools: { ...payout.pools, tracking: 23 } })),
+      ringTransferCircuit(fittedSpend({ ...payout, pools: { ...payout.pools, tracking: 22 } })),
     ).toBeUndefined();
     expect(ringTransferCircuit(fittedSpend({ ...payout, owners: 3 }))).toBeUndefined();
     expect(transferKeys().some((circuit) => transferCircuitType(circuit).includes("payout"))).toBe(

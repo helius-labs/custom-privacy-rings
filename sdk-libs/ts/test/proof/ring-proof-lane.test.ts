@@ -120,14 +120,14 @@ describe("selectTransferKey", () => {
       class: 40,
       outputs: 2,
       withdrawals: 4,
-      owners: 8,
+      owners: 9,
       wide: true,
     });
     expect(widest.wideOwners).toBe(true);
-    expect(transferPoolCapacity(widest.circuit)).toEqual({ own: 67, curator: 67, tracking: 11 });
-    expect(select(40, 4, 8).circuit).toEqual(widest.circuit);
+    expect(transferPoolCapacity(widest.circuit)).toEqual({ own: 61, curator: 61, tracking: 12 });
+    expect(select(40, 4, 9).circuit).toEqual(widest.circuit);
     expect(refusal(() => select(25, 5)).code).toBe("RING_CATALOG_KEY_MISSING");
-    expect(refusal(() => select(25, 0, 9)).code).toBe("RING_TOO_MANY_OWNERS");
+    expect(refusal(() => select(25, 0, 10)).code).toBe("RING_TOO_MANY_OWNERS");
     expect(refusal(() => select(41)).code).toBe("RING_CATALOG_KEY_MISSING");
   });
 

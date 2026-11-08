@@ -84,7 +84,7 @@ describe("the 16-output key", () => {
         wide: false,
       });
       expect(transferCircuitType(circuit!)).toBe("custom-ring-transfer-16-in4-w4-s2");
-      expect(transferPoolCapacity(circuit!).tracking).toBe(22);
+      expect(transferPoolCapacity(circuit!).tracking).toBe(21);
     }
     expect(ringTransferCircuit(fittedSpend({ ...sixteen, inputs: 5 }))).toBeUndefined();
   });
