@@ -9,6 +9,7 @@ import { X25519Keypair } from "@heliuslabs/spr/keypair";
 import { Data } from "@heliuslabs/spr/transaction";
 
 import {
+  ABSENT_PAYLOAD,
   openExitRecord,
   openOutputSlot,
   sealOutputSlot,
@@ -176,7 +177,7 @@ describe("output slot body", () => {
   it("publishes a ring record without its key and an exit with it", () => {
     const sealed = sealOutputSlot(SECRET, { record: RECORD });
     expect(sealed).toHaveLength(RING_RECORD_LEN);
-    expect(openOutputSlot(SECRET, sealed)).toEqual({ record: RECORD });
+    expect(openOutputSlot(SECRET, sealed)).toEqual({ record: RECORD, payload: ABSENT_PAYLOAD });
     expect(() => openOutputSlot(OTHER_SECRET, sealed)).toThrow();
     const exit = sealOutputSlot(SECRET, { record: EXIT });
     expect(exit).toHaveLength(EXIT_RECORD_LEN);
@@ -192,16 +193,23 @@ describe("output slot body", () => {
     });
     expect(sealed).toHaveLength(RING_RECORD_LEN + payloadLength);
     expect(sealed.subarray(0, RING_RECORD_LEN)).toEqual(sealOutputSlot(SECRET, { record: RECORD }));
-    expect(openOutputSlot(SECRET, sealed)).toEqual({ record: RECORD, payload: EMPTY_PAYLOAD });
+    expect(openOutputSlot(SECRET, sealed)).toEqual({
+      record: RECORD,
+      payload: { kind: "opened", payload: EMPTY_PAYLOAD },
+    });
   });
 
-  it("refuses a body shorter than a record, an exit in a ring body and a ring record as an exit", () => {
+  it("refuses a body shorter than a record, an exit in a ring body and a ring record as an exit, and keeps a record past a malformed payload", () => {
     const sealed = sealOutputSlot(SECRET, { record: RECORD });
     expect(() => openOutputSlot(SECRET, sealed.subarray(1))).toThrow();
-    // A payload byte past a record without one reads a two byte length it cannot hold.
-    expect(() => openOutputSlot(SECRET, Uint8Array.of(...sealed, 0))).toThrow();
+    // A payload byte past a record reads a length it cannot hold, the record stands without it.
+    expect(openOutputSlot(SECRET, Uint8Array.of(...sealed, 0))).toEqual({
+      record: RECORD,
+      payload: { kind: "malformed" },
+    });
     expect(openOutputSlot(SECRET, sealOutputSlot(SECRET, { record: DUMMY_RECORD }))).toEqual({
       record: DUMMY_RECORD,
+      payload: ABSENT_PAYLOAD,
     });
     expect(() => openOutputSlot(SECRET, sealOutputSlot(SECRET, { record: EXIT }))).toThrow();
     expect(() =>

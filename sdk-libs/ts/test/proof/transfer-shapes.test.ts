@@ -49,7 +49,7 @@ describe("the entry keys", () => {
       owners: 4,
       entry: true,
     });
-    expect(transferPoolCapacity(five!)).toEqual({ own: 46, curator: 46, tracking: 15 });
+    expect(transferPoolCapacity(five!)).toEqual({ own: 48, curator: 48, tracking: 16 });
     const wide = ringTransferCircuit(fittedSpend(loaded(row(8, 8, true))));
     expect(wide).toMatchObject({
       outputs: 8,
@@ -59,7 +59,7 @@ describe("the entry keys", () => {
       entry: true,
       wide: true,
     });
-    expect(transferPoolCapacity(wide!)).toEqual({ own: 91, curator: 91, tracking: 38 });
+    expect(transferPoolCapacity(wide!)).toEqual({ own: 94, curator: 94, tracking: 41 });
     // No single-asset payout key, a general key covers the payout.
     expect(transferKeys()).toHaveLength(10);
   });
@@ -84,7 +84,7 @@ describe("the 16-output key", () => {
         wide: false,
       });
       expect(transferCircuitType(circuit!)).toBe("custom-ring-transfer-16-in4-w4-s2");
-      expect(transferPoolCapacity(circuit!).tracking).toBe(22);
+      expect(transferPoolCapacity(circuit!).tracking).toBe(21);
     }
     expect(ringTransferCircuit(fittedSpend({ ...sixteen, inputs: 5 }))).toBeUndefined();
   });

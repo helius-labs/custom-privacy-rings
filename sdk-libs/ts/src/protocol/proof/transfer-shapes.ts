@@ -48,20 +48,20 @@ const NARROW_SHAPES: readonly TransferShape[] = Object.freeze([
   shape(2, 24, 4, 4, NARROW, [6, 12]),
   shape(4, 24, 4, 4, NARROW, [8, 16]),
   shape(8, 16, 4, 4, NARROW, [12, 24]),
-  shape(16, 4, 4, 2, NARROW, [22, 60]),
+  shape(16, 4, 4, 2, NARROW, [21, 56]),
 ]);
 /** The wide flag takes the first row holding the frame, the last only past 24 inputs. */
 const WIDE_SHAPES: readonly TransferShape[] = Object.freeze([
   shape(8, 24, 32, 13, WIDE, [42, 88]),
-  shape(2, 40, 4, 8, WIDE, [11, 24]),
+  shape(2, 40, 4, 9, WIDE, [12, 18]),
 ]);
 /** A frame takes the first row holding its width. */
 const ENTRY_SHAPES: readonly TransferShape[] = Object.freeze([
-  shape(4, 8, 4, 8, ENTRY, [14, 32]),
+  shape(4, 8, 4, 8, ENTRY, [16, 36]),
   shape(8, 2, 4, 2, ENTRY, [14, 36]),
-  shape(8, 5, 4, 4, ENTRY, [15, 38]),
+  shape(8, 5, 4, 4, ENTRY, [16, 40]),
 ]);
-const WIDE_ENTRY_SHAPE = shape(8, 8, 32, 8, ENTRY, [38, 80]);
+const WIDE_ENTRY_SHAPE = shape(8, 8, 32, 8, ENTRY, [41, 83]);
 
 export const TRANSFER_SHAPES: readonly TransferShape[] = Object.freeze([
   ...NARROW_SHAPES,

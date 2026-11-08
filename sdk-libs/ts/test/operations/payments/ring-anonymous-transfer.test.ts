@@ -296,7 +296,8 @@ function openedBody(
     slotSecretOf(reader, data, call, slotIndex),
     concatBytes(output.record, output.body.payload),
   );
-  return { ...opened.record, data: opened.payload?.data ?? new Uint8Array() };
+  const payload = opened.payload.kind === "opened" ? opened.payload.payload.data : undefined;
+  return { ...opened.record, data: payload ?? new Uint8Array() };
 }
 
 /** The amounts of the sender's change, each record sealed to its own key under a zero tag. */

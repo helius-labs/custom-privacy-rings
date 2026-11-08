@@ -63,10 +63,16 @@ export interface PublishedAudit {
   readonly salt: Bytes16;
 }
 
-/** One opened slot body, `payload` absent off a data frame. */
+/** Rust `PayloadRead`, a malformed payload loses its data hashes and keeps the proven record. */
+export type PayloadRead =
+  /** A frame without data. */
+  | Readonly<{ kind: "absent" }>
+  | Readonly<{ kind: "opened"; payload: RecipientPayload }>
+  | Readonly<{ kind: "malformed" }>;
+
 export interface OpenedOutput {
   readonly record: OutputRecord;
-  readonly payload?: RecipientPayload;
+  readonly payload: PayloadRead;
 }
 
 /** Refuses a disclosure off its layout before sealing. */
@@ -159,9 +165,10 @@ export function openOutputSlot(slotSecret: Bytes32, body: Uint8Array): OpenedOut
     const record = decodeOutputRecord(plaintext.subarray(0, RING_RECORD_LEN));
     return Object.freeze({
       record,
-      ...(body.length > RING_RECORD_LEN
-        ? { payload: decodeRecipientPayload(plaintext.subarray(RING_RECORD_LEN)) }
-        : {}),
+      payload:
+        body.length > RING_RECORD_LEN
+          ? payloadRead(plaintext.subarray(RING_RECORD_LEN))
+          : ABSENT_PAYLOAD,
     });
   } finally {
     plaintext.fill(0);
@@ -226,6 +233,17 @@ function readDisclosure(schedule: AuditSchedule, published: PublishedAudit): Rin
     opened.forEach((bytes) => bytes.fill(0));
   }
 }
+
+function payloadRead(plaintext: Uint8Array): PayloadRead {
+  try {
+    return Object.freeze({ kind: "opened", payload: decodeRecipientPayload(plaintext) });
+  } catch {
+    return MALFORMED_PAYLOAD;
+  }
+}
+
+export const ABSENT_PAYLOAD: PayloadRead = Object.freeze({ kind: "absent" });
+const MALFORMED_PAYLOAD: PayloadRead = Object.freeze({ kind: "malformed" });
 
 function recordPosition() {
   return Object.freeze({ label: OUTPUT_RECORD_ENC_INFO, counter: STREAM_FIRST_COUNTER });

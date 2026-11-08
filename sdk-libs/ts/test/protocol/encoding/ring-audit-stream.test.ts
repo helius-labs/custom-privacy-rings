@@ -11,6 +11,7 @@ import rangesJson from "../../../../../test-vectors/audit/ring-disclosure-ranges
 import vectorJson from "../../../../../test-vectors/audit/audit-stream.json" with { type: "json" };
 import { parseAuditorMessage, sealSaltedAuditorStream } from "../../../src/crypto/audit/audit.js";
 import {
+  ABSENT_PAYLOAD,
   openOutputSlot,
   openRingDisclosure,
   sealOutputSlot,
@@ -424,11 +425,14 @@ describe("the stream codecs", () => {
     // A ring slot publishes the record without its key, the payload follows at its end.
     expect(body).toHaveLength(RING_RECORD_LEN + 50);
     const published = { ...record, key: UNPUBLISHED_RECORD_KEY };
-    expect(openOutputSlot(secret, body)).toEqual({ record: published, payload });
+    expect(openOutputSlot(secret, body)).toEqual({
+      record: published,
+      payload: { kind: "opened", payload },
+    });
     const bare = sealOutputSlot(secret, { record });
     // One keystream from counter 2, the record bytes seal alike with or without a payload.
     expect(bare).toEqual(body.subarray(0, RING_RECORD_LEN));
-    expect(openOutputSlot(secret, bare)).toEqual({ record: published });
+    expect(openOutputSlot(secret, bare)).toEqual({ record: published, payload: ABSENT_PAYLOAD });
     expect(() => openOutputSlot(secret, bare.subarray(1))).toThrow();
   });
 });
