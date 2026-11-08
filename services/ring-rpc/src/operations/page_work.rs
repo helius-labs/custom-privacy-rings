@@ -251,35 +251,30 @@ impl Replay<'_> {
             return;
         };
         if note.ring_note && note.nullifier.is_none() {
-            // 1. A record without a key takes the held enrollment's key once the commitment
-            // rebuilds under it. The note keeps its commitment and owner rows, so a late
-            // resolution adds no second entry.
-            if note.utxo.owner.nullifier_pk().is_none() {
-                let Some(registered) = self
-                    .enrolled_key(&note.utxo.owner_key)
-                    .and_then(|key| key.pubkey().ok())
-                else {
-                    return;
-                };
-                let resolved = note.utxo.resolve(registered, self.store.ring, commitment);
-                // 2. Another key or a payload that does not rebuild keeps the proven record with no
-                // nullifier, so the note never counts as spendable.
-                let Ok(Some(resolved)) = resolved else {
-                    let unrebuilt = note.utxo.unrebuilt();
-                    if unrebuilt != note.utxo {
-                        note.utxo = unrebuilt;
-                        self.delta.notes.insert(*commitment, note);
-                    }
-                    return;
-                };
-                note.utxo = resolved;
-                self.delta.notes.insert(*commitment, note);
-            }
-            // 3. Only a key the commitment rebuilt under derives the nullifier.
             let blinding = note.utxo.blinding;
-            note.nullifier = self
-                .key_of(&note.utxo)
-                .and_then(|key| key.nullifier(commitment, &blinding).ok());
+            note.nullifier = match note.utxo.owner.nullifier_pk() {
+                Some(_) => self
+                    .key_of(&note.utxo)
+                    .and_then(|key| key.nullifier(commitment, &blinding).ok()),
+                None => {
+                    // 1. The held enrollment's secret derives the nullifier from the published
+                    // commitment and the proven blinding, rebuilt or not. A note under another key
+                    // derives one no spend publishes.
+                    let Some(registered) = self.enrolled_key(&note.utxo.owner_key).cloned() else {
+                        return;
+                    };
+                    // 2. The key, the data hashes and the spendable status need the commitment to
+                    // rebuild, the note keeps its commitment and owner rows either way.
+                    let resolved = registered.pubkey().ok().and_then(|key| {
+                        note.utxo
+                            .resolve(key, self.store.ring, commitment)
+                            .ok()
+                            .flatten()
+                    });
+                    note.utxo = resolved.unwrap_or_else(|| note.utxo.unrebuilt());
+                    registered.nullifier(commitment, &blinding).ok()
+                }
+            };
             if note.nullifier.is_some() {
                 self.delta.notes.insert(*commitment, note);
             }

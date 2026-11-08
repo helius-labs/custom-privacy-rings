@@ -301,7 +301,7 @@ fn an_unresolved_note_keys_once_when_its_owner_enrolls_late() {
 }
 
 /// A resolved key counts only when the commitment rebuilds, the proven record stays and never
-/// counts as spendable balance.
+/// counts as spendable balance. The registered secret still traces the note's spend.
 #[test]
 fn an_unresolved_note_that_does_not_rebuild_under_the_registered_key_stays_unknown() {
     let owner = wallet(1);
@@ -312,6 +312,8 @@ fn an_unresolved_note_that_does_not_rebuild_under_the_registered_key_stays_unkno
         (
             "another key",
             unresolved(&under_another_key, ClaimedData::default()),
+            nullifier_of(&under_another_key, &secret(8)),
+            SpendState::Unclassified,
         ),
         (
             "another payload",
@@ -322,13 +324,15 @@ fn an_unresolved_note_that_does_not_rebuild_under_the_registered_key_stays_unkno
                     ring_data_hash: [0; 32],
                 },
             ),
+            nullifier_of(&under_the_key, &secret(7)),
+            SpendState::Resolved {
+                note: under_the_key.commitment,
+            },
         ),
     ];
-    for (name, created) in cases {
+    for (name, created, spend, traced) in cases {
         let store = AuditStore::new(RING, Backing::Memory);
         apply(&store, &keys, |work| work.open(frame(5), [created]));
-        store.queue_late_owners([owner.to_bytes()]);
-        apply(&store, &keys, |work| work.late_keys());
         through(&store, &keys, 10);
         let read = status_of(&store, owner);
         assert_eq!(statuses(&read), [WalletNoteStatus::Unknown], "{name}");
@@ -336,6 +340,11 @@ fn an_unresolved_note_that_does_not_rebuild_under_the_registered_key_stays_unkno
         assert_eq!(read.notes[0].nullifier_pk, None, "{name}");
         assert_eq!(read.notes[0].data_hash, None, "{name}");
         assert_eq!(balance(&read), 0, "{name}");
+        // Only the registered secret's nullifier matches, a note under another key never resolves.
+        apply(&store, &keys, |work| {
+            work.observe(real(spend, frame(11), 0))
+        });
+        assert_eq!(store.row_state(&spend), Some(traced), "{name}");
     }
 }
 

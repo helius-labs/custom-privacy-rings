@@ -113,6 +113,8 @@ impl SpendRow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NoteRead {
     pub nullifier_known: bool,
+    /// The commitment rebuilt under the owner's key, an unrebuilt note never counts as spendable.
+    pub opened: bool,
     /// The published row of the note's nullifier.
     pub spent_at: Option<u64>,
     pub zero_key_wallet: bool,
@@ -128,8 +130,8 @@ impl NoteRead {
         match (spent, self.nullifier_known, self.zero_key_wallet) {
             (true, _, _) => WalletNoteStatus::Spent,
             (false, _, true) => WalletNoteStatus::ExposedIfSpent,
-            (false, false, false) => WalletNoteStatus::Unknown,
-            (false, true, false) => WalletNoteStatus::Unspent,
+            (false, true, false) if self.opened => WalletNoteStatus::Unspent,
+            (false, _, false) => WalletNoteStatus::Unknown,
         }
     }
 }
@@ -270,6 +272,7 @@ mod tests {
     fn spent_comes_before_every_other_status() {
         let read = NoteRead {
             nullifier_known: true,
+            opened: true,
             spent_at: None,
             zero_key_wallet: false,
             history_through: 10,
@@ -282,6 +285,15 @@ mod tests {
             }
             .status(),
             WalletNoteStatus::Unknown
+        );
+        assert_eq!(
+            NoteRead {
+                opened: false,
+                ..read
+            }
+            .status(),
+            WalletNoteStatus::Unknown,
+            "a known nullifier of an unrebuilt note never counts"
         );
         let exposed = NoteRead {
             zero_key_wallet: true,
@@ -302,6 +314,7 @@ mod tests {
     fn a_spend_past_the_history_slot_stays_unspent_so_a_note_and_its_change_never_both_count() {
         let read = NoteRead {
             nullifier_known: true,
+            opened: true,
             spent_at: Some(11),
             zero_key_wallet: false,
             history_through: 10,

@@ -439,6 +439,7 @@ impl IndexedNote {
         let utxo = &self.note.utxo;
         NoteRead {
             nullifier_known: self.note.nullifier.is_some(),
+            opened: utxo.owner.nullifier_pk().is_some(),
             spent_at: self.spent_at,
             zero_key_wallet: utxo.owner.nullifier_pk() == Some(ZERO_NULLIFIER_PUBKEY)
                 && Address::new_from_array(utxo.owner_key).is_on_curve(),
