@@ -46,7 +46,7 @@ func TestTheWidestInlineSpendOpensEveryTrackingRow(t *testing.T) {
 
 var payout16 = transfer.Shape{Inputs: 4, Outputs: 16, Withdrawals: 4, Owners: 2}
 
-// Two owner rows, sixteen distinct recipients and four leg owners under a salted list fill the 16 output key's tracking pool.
+// One owner row, sixteen distinct recipients and four leg owners under a salted list fill the 16 output key's tracking pool, the widest inline 1x16 spend.
 func TestTheWidestPayoutOpensEveryTrackingRow(t *testing.T) {
 	for name, recipientKey := range map[string]func(i int) *big.Int{
 		"zero key recipients, an absence query each": func(int) *big.Int { return shared.ZeroNullifierPk },
@@ -55,13 +55,7 @@ func TestTheWidestPayoutOpensEveryTrackingRow(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			w := ringtransfer.Signed(payout16)
 			w.SaltedBlock, w.Exits = []*big.Int{}, []int{}
-			ring := ringID(t)
-			coOwner := big.NewInt(0x1000)
-			w.CoOwners = []*big.Int{coOwner}
-			w.Inputs = []ringaudit.Input{senderNote(t, 51), senderNote(t, 52)}
-			for k := range 2 {
-				w.Inputs = append(w.Inputs, ringaudit.Input{Utxo: ringaudit.SpentUtxo(t, coOwner, ringtransfer.CoOwnerKey(t, coOwner), ring, 1, 53+int64(k))})
-			}
+			w.Inputs = []ringaudit.Input{senderNote(t, 51)}
 			w.Outputs = map[int]func(*ringaudit.Slot){}
 			for i := range payout16.Outputs {
 				owner, key := ringtest.Repeat(byte(0x30+i)), recipientKey(i)
@@ -79,8 +73,8 @@ func TestTheWidestPayoutOpensEveryTrackingRow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if keyed.Tracking != 22 || keyed.Records != 60 {
-				t.Fatalf("pools [%d, %d], want [22, 60]", keyed.Tracking, keyed.Records)
+			if keyed.Tracking != 21 || keyed.Records != 58 {
+				t.Fatalf("pools [%d, %d], want [21, 58]", keyed.Tracking, keyed.Records)
 			}
 			live := 0
 			for _, subject := range built.Circuit.TrackingSubjects {

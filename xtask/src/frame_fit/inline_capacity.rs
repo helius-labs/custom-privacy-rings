@@ -170,12 +170,13 @@ pub(super) fn key_reaches(reaches: &[Reach]) -> Result<Vec<(RingKey, Option<KeyR
             keyed.push((key, None));
             continue;
         }
-        // A narrow key reads no salted record, so its tracking rows are input owners and outputs alone.
-        let subjects = |reach: &Reach| match shape.wide {
+        // A narrow key's salted spends move to the wide key of their frame, a frame with no wide key reads them on the narrow one.
+        let salted = |reach: &Reach| shape.wide || reach.frame_key(true).shape().is_none();
+        let subjects = |reach: &Reach| match salted(reach) {
             false => reach.rows + reach.outputs,
             true => reach.subjects(),
         };
-        let records = |reach: &Reach| match shape.wide {
+        let records = |reach: &Reach| match salted(reach) {
             false => reach.rows + 2 * reach.outputs + reach.leg_owners() + reach.inputs,
             true => 2 * reach.subjects() + reach.outputs + reach.inputs,
         };

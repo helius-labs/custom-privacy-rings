@@ -768,10 +768,10 @@ func TestNarrowKeysFitTheWideKey(t *testing.T) {
 		if shape.Wide || shape.Withdrawals != 4 {
 			continue
 		}
-		// A row past the wide outputs holds its own pools for every subject and output asset.
+		// A row past the wide outputs reads its own salted records, a public and a salted record per tracked subject beside each output asset.
+		// ring-xtask inline-capacity pins Tracking to the subjects one inline transaction reaches.
 		if shape.Outputs > wide.Outputs {
-			subjects := shape.Owners + shape.Outputs + shape.Withdrawals
-			if shape.Tracking != subjects || shape.Records != 2*subjects+shape.Outputs {
+			if shape.Tracking < shape.Owners+shape.Outputs || shape.Records != 2*shape.Tracking+shape.Outputs {
 				t.Errorf("%s does not hold every subject, the wide key %s holds %d outputs", shape, wide, wide.Outputs)
 			}
 			continue
