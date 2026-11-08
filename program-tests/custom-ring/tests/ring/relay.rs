@@ -234,6 +234,7 @@ fn a_relayed_authority_transfer_moves_the_enrolled_members_note() -> Result<()> 
             quote: &quote,
             config: &config,
             allowed: allowed.clone(),
+            output_tree_id: env.tree_id(env.tree)?,
         }
         .prepare()?;
         Ok(match env.run(prepared.send(&ring_rpc.relay)) {

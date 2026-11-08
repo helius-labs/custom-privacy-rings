@@ -55,6 +55,8 @@ pub struct RequestedAuthorityTransfer<'a> {
     pub config: &'a CustomRingConfig,
     /// Every note of each requested source, a note Ring RPC selects outside it is refused.
     pub allowed: AllowedNullifiers,
+    /// The tree SPP appends the outputs to, each output's commitment rebuilds in it.
+    pub output_tree_id: u16,
 }
 
 /// Ring RPC selects the source's notes and proves, the delegate signs the message it returns.

@@ -4,7 +4,7 @@ use custom_ring_interface::cosign::ApprovalMask;
 use custom_ring_interface::{
     compute_unit_limit, funder_account_position,
     stream::{confidential_slot_tag, DeliveredSlot},
-    tag, InstructionTag, OutputRecord, ParsedTransact, RecordKind, RingMode, RingRail,
+    tag, InstructionTag, OutputRecord, ParsedTransact, RecordKind, RingMode, RingOutput, RingRail,
     RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX, STORAGE_PROGRAM_ID,
 };
 use serde::{Deserialize, Serialize};
@@ -288,6 +288,7 @@ pub(crate) struct ExpectedDelegate {
     pub withdrawals: Vec<ExpectedWithdrawal>,
     /// Admitted from the delegate's own openings of exactly the requested sources.
     pub allowed: AllowedNullifiers,
+    pub output_tree_id: u16,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -511,6 +512,7 @@ impl ExpectedDelegate {
             quote,
             config,
             allowed,
+            output_tree_id,
         } = requested;
         let transfer = &request.transfer;
         allowed.check_sources(transfer.sources.iter().map(|source| &source.0))?;
@@ -551,11 +553,33 @@ impl ExpectedDelegate {
                 .map(ExpectedWithdrawal::new)
                 .collect::<Result<_, _>>()?,
             allowed: allowed.clone(),
+            output_tree_id: *output_tree_id,
         })
     }
 
     pub fn check(&self, message: &[u8]) -> Result<VerifiedMessage, MessageMismatch> {
         check_message(self, message, self.delegate)
+    }
+
+    /// A ring output's record publishes no nonzero key, the commitment alone binds the output to
+    /// `owner`'s key. The rail carries no data, so both data hashes are zero.
+    fn rebuilds(
+        &self,
+        output: &RingOutput<'_>,
+        record: &OutputRecord,
+        owner: &ExpectedOwner,
+    ) -> bool {
+        let ring = (record.kind == RecordKind::Ring).then_some(self.ring.program_id());
+        Utxo {
+            owner: PublicKey::from_ed25519(&record.owner_key),
+            asset: Mint::new(Address::new_from_array(record.mint), 0),
+            amount: record.amount,
+            blinding: record.blinding,
+            ring_program_id: ring,
+            data: Default::default(),
+        }
+        .hash(&owner.nullifier_pk, &[0; 32], &[0; 32], self.output_tree_id)
+        .is_ok_and(|hash| hash == *output.hash)
     }
 
     fn check_moved(
@@ -583,7 +607,8 @@ impl ExpectedDelegate {
                 continue;
             }
             let sealed_to = |owner: &ExpectedOwner| {
-                record.kind == RecordKind::Exit || key.u() == owner.viewing_u
+                (record.kind == RecordKind::Exit || key.u() == owner.viewing_u)
+                    && self.rebuilds(output, &record, owner)
             };
             let paid = unpaid
                 .iter()

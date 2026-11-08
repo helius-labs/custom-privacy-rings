@@ -1073,6 +1073,7 @@ mod delegate_message {
             ExpectedDelegate::new(&RequestedAuthorityTransfer {
                 request: asked.clone(),
                 quote: &quote(),
+                output_tree_id: crate::tests::support::TREE_ID,
                 config,
                 allowed: self.allowed(&asked.transfer).await,
             })
@@ -1218,6 +1219,7 @@ mod delegate_message {
             allowed: relay.allowed(&asked.transfer).await,
             request: asked,
             quote: &quote(),
+            output_tree_id: crate::tests::support::TREE_ID,
             config: &config,
         }
         .prepare()
@@ -1642,6 +1644,7 @@ mod delegate_message {
             allowed: relay.allowed(&other).await,
             request: asked,
             quote: &quote(),
+            output_tree_id: crate::tests::support::TREE_ID,
             config: &config,
         }
         .prepare();
@@ -1872,6 +1875,7 @@ mod delegate_message {
         let expected = ExpectedDelegate::new(&RequestedAuthorityTransfer {
             request: vector.request.prepare,
             quote: &quote(),
+            output_tree_id: crate::tests::support::TREE_ID,
             config: &config,
             allowed: allowed_as_pinned(&sources, spends),
         })
@@ -1963,6 +1967,7 @@ mod delegate_message {
         let expected = ExpectedDelegate::new(&RequestedAuthorityTransfer {
             request: vector.request.prepare.clone(),
             quote: &quote,
+            output_tree_id: crate::tests::support::TREE_ID,
             config: &config,
             allowed: allowed_as_pinned(&sources, honest_nullifiers),
         })
