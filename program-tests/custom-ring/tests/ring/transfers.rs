@@ -276,11 +276,11 @@ fn auditor_sees_every_ring_transfer() -> Result<()> {
     let client = env.client.as_async();
     let audited = env
         .client
-        .block_on(RingScan::new(ring_program, auditor.pubkey()).audit(
-            &auditor,
-            client.indexer(),
-            client.rpc(),
-        ))?
+        .block_on(
+            RingScan::new(ring_program, auditor.pubkey())
+                .with_tracking_registry(CustomRing::new(ring_program).tracking_registry()?)
+                .audit(&auditor, client.indexer(), client.rpc()),
+        )?
         .transactions;
     assert_eq!(
         audited.len(),
@@ -580,7 +580,8 @@ fn ring_value_leaves_and_enters_through_audited_transfers() -> Result<()> {
     let sender = &env.sender.keypair;
     let recipient = &env.recipient.keypair;
     let recipient_address = recipient.shielded_address()?;
-    let scan = || RingScan::new(ring_program, auditor.pubkey());
+    let registry = CustomRing::new(ring_program).tracking_registry()?;
+    let scan = || RingScan::new(ring_program, auditor.pubkey()).with_tracking_registry(registry);
 
     // 1. Entry, a default-ring deposit is spent into ring-bound notes.
     let deposited = DefaultRingDeposit {
@@ -789,7 +790,8 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
     let recipient = &env.recipient.keypair;
     let sender_address = sender.shielded_address()?;
     let recipient_address = recipient.shielded_address()?;
-    let scan = || RingScan::new(ring_program, auditor.pubkey());
+    let registry = CustomRing::new(ring_program).tracking_registry()?;
+    let scan = || RingScan::new(ring_program, auditor.pubkey()).with_tracking_registry(registry);
     let ring_utxo = |owner, amount, blinding| Note {
         owner,
         asset: usdc,

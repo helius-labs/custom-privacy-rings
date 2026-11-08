@@ -230,6 +230,10 @@ impl RingScan {
         }
     }
 
+    pub fn ring_program_id(&self) -> Address {
+        self.ring_program_id
+    }
+
     /// The ring's pinned tracking registry, its authorizations key the outputs whose record publishes
     /// no key. Without it those outputs stay unresolved.
     pub fn with_tracking_registry(mut self, registry: Address) -> Self {
