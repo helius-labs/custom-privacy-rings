@@ -194,7 +194,7 @@ async fn a_row_sealed_to_another_auditor_is_refused() {
 
 /// A bounded mirror over `database`, as a ring served with a store holds one.
 fn cached_store(database: &Store, auditor: &X25519Keypair, capacity: usize) -> AuditStore {
-    AuditStore::new(Backing::Database {
+    AuditStore::new(RING, Backing::Database {
         store: database.clone(),
         ring: RING,
         seal: Box::new(NoteSeal::derive(auditor, RING).expect("seal")),
@@ -282,7 +282,7 @@ async fn cached_scan_rows_are_persisted_before_the_durable_cursor() {
     let (source, held) = served(&auditor, &[1, 2, 3]);
     let database = Store::open("sqlite::memory:", 1).await.expect("store");
     let seal = NoteSeal::derive(&auditor, RING).expect("seal");
-    let store = AuditStore::new(Backing::Database {
+    let store = AuditStore::new(RING, Backing::Database {
         store: database.clone(),
         ring: RING,
         seal: Box::new(NoteSeal::derive(&auditor, RING).expect("seal")),
@@ -319,7 +319,7 @@ async fn cached_scan_rows_are_persisted_before_the_durable_cursor() {
     .await
     .expect("durable scan");
     drop(store);
-    let restarted = AuditStore::new(Backing::Database {
+    let restarted = AuditStore::new(RING, Backing::Database {
         store: database.clone(),
         ring: RING,
         seal: Box::new(NoteSeal::derive(&auditor, RING).expect("seal")),

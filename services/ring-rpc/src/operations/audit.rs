@@ -970,9 +970,17 @@ impl<S: TransactionSource> AuditService<S> {
         .await
     }
 
-    fn audit(&self, bound: BoundTransaction<'_>) -> Result<AuditedTransaction, AuditError> {
-        TransactionAudit::new(bound.transaction, bound.origin.audit_frame(bound.mode)?)
-            .run(&self.auditor)
+    /// An output whose owner holds no enrollment yet is served unresolved, the index keys it later.
+    fn audit(
+        &self,
+        bound: BoundTransaction<'_>,
+        store: &AuditStore,
+    ) -> Result<AuditedTransaction, AuditError> {
+        let mut audited =
+            TransactionAudit::new(bound.transaction, bound.origin.audit_frame(bound.mode)?)
+                .run(&self.auditor)?;
+        audited.resolve_owners(self.ring, |owner| store.registered_key(owner))?;
+        Ok(audited)
     }
 
     /// A page read writes nothing, only the backfill's checkpoint feeds the index.
@@ -1185,11 +1193,14 @@ impl<S: TransactionSource> AuditService<S> {
                 continue;
             }
             let opened = bound.and_then(|()| {
-                self.audit(BoundTransaction {
-                    transaction: &tx,
-                    origin: &origin,
-                    mode,
-                })
+                self.audit(
+                    BoundTransaction {
+                        transaction: &tx,
+                        origin: &origin,
+                        mode,
+                    },
+                    work.store(),
+                )
             });
             if let Ok(opened) = &opened {
                 work.open(created_in, opened.utxos());

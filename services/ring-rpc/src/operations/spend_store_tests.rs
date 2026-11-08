@@ -701,7 +701,7 @@ async fn a_note_row_opens_only_under_the_auditor_key_and_holds_no_plaintext() {
 }
 
 fn indexed_store(store: &Store) -> AuditStore {
-    AuditStore::new(Backing::Database {
+    AuditStore::new(RING, Backing::Database {
         store: store.clone(),
         ring: RING,
         seal: Box::new(seal()),
@@ -872,7 +872,7 @@ async fn a_spend_leaves_the_owner_index_in_the_transaction_of_its_row() {
 }
 
 fn cached_store(store: &Store, capacity: usize) -> AuditStore {
-    AuditStore::new(Backing::Database {
+    AuditStore::new(RING, Backing::Database {
         store: store.clone(),
         ring: RING,
         seal: Box::new(seal()),

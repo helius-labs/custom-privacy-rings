@@ -185,7 +185,7 @@ impl<S> Shared<S> {
             .entry(ring)
             .or_insert_with(|| {
                 Arc::new(
-                    AuditStore::new(self.backing(ring))
+                    AuditStore::new(ring, self.backing(ring))
                         .with_wallet_snapshots(self.wallet_snapshots.clone(), self.snapshot_limits),
                 )
             })
