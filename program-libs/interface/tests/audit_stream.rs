@@ -521,7 +521,8 @@ fn the_solved_go_stream_reads_back_under_the_rust_layout() {
         assert_eq!(hex::encode(digest), case.envelope_digest, "{}", case.name);
         for record in &case.records {
             let bytes = unhex(record);
-            assert_eq!(OutputRecord::decode(&bytes).unwrap().encode()[..], bytes);
+            let decoded = OutputRecord::decode(&bytes).unwrap();
+            assert_eq!(decoded.encode()[..decoded.kind.published_len()], bytes);
         }
         let mut hashes = vec![[0; 32]; case.outputs];
         for (hash, ciphertext) in hashes.iter_mut().zip(&case.record_ciphertexts) {

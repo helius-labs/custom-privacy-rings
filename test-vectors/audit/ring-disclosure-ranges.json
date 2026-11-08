@@ -116,6 +116,38 @@
       "outputs": 8
     },
     {
+      "capacity_blocks": 35,
+      "class": 4,
+      "entry": false,
+      "envelope_blocks": 3,
+      "envelope_len_by_input_count": [
+        33,
+        33,
+        33,
+        33
+      ],
+      "first_key_counter": 5,
+      "key_start_counters": [
+        5,
+        7,
+        9,
+        11,
+        13,
+        15,
+        17,
+        19,
+        21,
+        23,
+        25,
+        27,
+        29,
+        31,
+        33,
+        35
+      ],
+      "outputs": 16
+    },
+    {
       "capacity_blocks": 19,
       "class": 24,
       "entry": false,

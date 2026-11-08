@@ -470,6 +470,7 @@ mod tests {
     const TWO: RingCircuit = NARROW_SHAPES[0].circuit();
     const FOUR: RingCircuit = NARROW_SHAPES[1].circuit();
     const EIGHT: RingCircuit = NARROW_SHAPES[2].circuit();
+    const SIXTEEN: RingCircuit = NARROW_SHAPES[3].circuit();
     const WIDE: RingCircuit = WIDE_SHAPES[0].circuit();
     const WIDE_INPUTS: RingCircuit = WIDE_SHAPES[1].circuit();
     const ENTRY_FOUR: RingCircuit = ENTRY_SHAPES[0].circuit();
@@ -489,7 +490,7 @@ mod tests {
             assert_eq!(key(2), Some(TWO));
             assert_eq!(key(4), Some(FOUR));
             assert_eq!(key(8), Some(EIGHT));
-            assert_eq!(key(16), None);
+            assert_eq!(key(16), Some(SIXTEEN));
         }
     }
 
@@ -746,7 +747,7 @@ mod tests {
     }
 
     #[test]
-    fn the_payout_widths_have_no_key() {
+    fn a_sixteen_output_payout_has_only_the_narrow_key() {
         for spends_default_ring in [false, true] {
             for wide in [false, true] {
                 let key = FrameKey {
@@ -756,7 +757,8 @@ mod tests {
                     spends_default_ring,
                     wide,
                 };
-                assert_eq!(key.shape(), None, "{key:?}");
+                let narrow = !spends_default_ring && !wide;
+                assert_eq!(key.shape(), narrow.then_some(NARROW_SHAPES[3]), "{key:?}");
             }
         }
     }

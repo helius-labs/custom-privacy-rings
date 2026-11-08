@@ -250,8 +250,9 @@ fn recipient_and_exit_slots_keep_the_borsh_framing_at_exact_capacity() {
         .unwrap()
     };
     let reply = [0x77; MIN_REPLY_LEN];
-    let len = (fixture.records[1].len() as u16).to_le_bytes();
-    let body = [&len[..], &fixture.records[1]].concat();
+    let record = &fixture.records[1][..RING_RECORD_LEN];
+    let len = (record.len() as u16).to_le_bytes();
+    let body = [&len[..], record].concat();
     let body_and_reply = [&body[..], &reply].concat();
     for (data, scheme, payload) in [
         (
@@ -542,7 +543,7 @@ fn reply_metadata_is_one_length_on_the_anonymous_frame_alone() {
     for slot in [0, 1, 3] {
         assert_eq!(
             ring_body_output(spp.outputs[slot].data.as_deref().unwrap()),
-            Some((&fixture.records[slot][..], replies[slot]))
+            Some((&fixture.records[slot][..RING_RECORD_LEN], replies[slot]))
         );
     }
     assert_eq!(
@@ -1096,8 +1097,8 @@ fn a_mixed_anonymous_output_set_round_trips_and_frames_each_body() {
     };
     let body = |slot: usize| {
         [
-            &(fixture.records[slot].len() as u16).to_le_bytes()[..],
-            &fixture.records[slot],
+            &(RING_RECORD_LEN as u16).to_le_bytes()[..],
+            &fixture.records[slot][..RING_RECORD_LEN],
         ]
         .concat()
     };

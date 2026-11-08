@@ -433,9 +433,13 @@ fn host_codec_allocations_cover_frames_up_to_the_transaction_ceiling() {
     };
     let mut report = Vec::new();
     let committed = fixture.cases();
+    // A frame past the v1 ceiling never reaches the program.
     let widest: Vec<(String, RingTransactData<'_>)> = cases()
         .into_iter()
         .filter_map(|case| Some((case.name(), frame(&fixture, &pool, case)?)))
+        .filter(|(_, data)| {
+            data.encode().unwrap().len() <= solana_message::v1::MAX_TRANSACTION_SIZE
+        })
         .collect();
     for (name, data) in committed
         .iter()
