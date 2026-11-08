@@ -358,13 +358,20 @@ function keepSourceNote(
 ): void {
   const nullifierPk = sourceKeyOf(input.source, audited);
   if (nullifierPk === undefined || !found.claim(outputContext.hash)) return;
-  // An unopened rebuild drops the payload's hashes and the note joins `unresolved` below.
   const opening = resolveKnownUtxo({
     utxo: audited,
     nullifierPk,
     ringId: ringIdField(input.ringProgramId),
     commitment: outputContext.hash,
   });
+  // A record the member's key does not rebuild stays unresolved, never a candidate.
+  if (opening === undefined) {
+    found.unresolve(
+      outputContext.hash,
+      sourceNullifier(input, nullifierPk, outputContext.hash, audited.blinding),
+    );
+    return;
+  }
   const nullifier = sourceNullifier(input, nullifierPk, outputContext.hash, opening.blinding);
   const mint = registeredMint(input.assets, opening.mint);
   if (mint === undefined) {

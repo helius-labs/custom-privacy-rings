@@ -507,24 +507,29 @@ function auditedUtxo(utxo: KnownUtxo): AuditedUtxo {
 }
 
 /**
- * Rust `KnownUtxo::resolve`, an unresolved owner under `nullifierPk`. The claimed hashes join only
- * when the commitment rebuilds under the key, else the key stands without them.
+ * Rust `KnownUtxo::resolve`, keys an unresolved owner under `nullifierPk` only when the commitment
+ * rebuilds under it and the claimed hashes, `undefined` otherwise. A note under another key never
+ * spends, so an unrebuilt key derives no nullifier.
  */
 export function resolveKnownUtxo(
   input: Readonly<{ utxo: KnownUtxo; nullifierPk: Bytes32; ringId: Bytes32; commitment: Bytes32 }>,
-): KnownUtxo {
+): KnownUtxo | undefined {
   const { utxo, nullifierPk } = input;
   if (utxo.owner.kind !== "unresolved") return utxo;
   const { claimed } = utxo.owner;
-  const { dataHash: _dataHash, ringDataHash: _ringDataHash, ...fields } = utxo;
   const keyed: KnownUtxo = Object.freeze({
-    ...fields,
+    ...unrebuiltUtxo(utxo),
     owner: Object.freeze({ kind: "keyed", nullifierPk }),
+    ...(claimed === undefined ? {} : claimed),
   });
-  const withClaimed: KnownUtxo =
-    claimed === undefined ? keyed : Object.freeze({ ...keyed, ...claimed });
-  const rebuilt = knownUtxoHash(withClaimed, input.ringId);
-  return rebuilt !== undefined && equalBytes(rebuilt, input.commitment) ? withClaimed : keyed;
+  const rebuilt = knownUtxoHash(keyed, input.ringId);
+  return rebuilt !== undefined && equalBytes(rebuilt, input.commitment) ? keyed : undefined;
+}
+
+/** Rust `KnownUtxo::unrebuilt`, the proven record a resolution refused, its claims dropped so no later key rebuilds it. */
+export function unrebuiltUtxo(utxo: KnownUtxo): KnownUtxo {
+  const { dataHash: _dataHash, ringDataHash: _ringDataHash, ...fields } = utxo;
+  return Object.freeze({ ...fields, owner: Object.freeze({ kind: "unresolved" }) });
 }
 
 /** Rust `AuditedTransaction::unresolved_owners`, each owner once. */
@@ -552,13 +557,17 @@ export function resolveRingOwners(
     if (opening.kind !== "ring" || opening.utxo.nullifierPk !== undefined) return output;
     const nullifierPk = registered(opening.utxo.ownerKey);
     if (nullifierPk === undefined) return output;
-    const resolved = resolveKnownUtxo({
-      utxo: openedUtxo(opening.utxo, outputTreeId(output.outputContext)),
+    const opened = openedUtxo(opening.utxo, outputTreeId(output.outputContext));
+    let resolved = resolveKnownUtxo({
+      utxo: opened,
       nullifierPk,
       ringId,
       commitment: output.outputContext.hash,
     });
-    if (resolved.dataHash === undefined) failed.push(output.slotIndex);
+    if (resolved === undefined) {
+      failed.push(output.slotIndex);
+      resolved = unrebuiltUtxo(opened);
+    }
     changed = true;
     return Object.freeze({
       ...output,

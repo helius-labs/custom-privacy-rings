@@ -518,7 +518,10 @@ describe("auditRing", () => {
     const { transaction: substituted } = sealedTransfer({
       auditor: auditor.publicKey(),
       // Fixed keys, noise under random ones decodes a ring record about once in 128 runs.
-      disclosed: (keys) => [ViewingKey.fromBytes(clampedSecret(0x5a)).publicKey(), ...keys.slice(1)],
+      disclosed: (keys) => [
+        ViewingKey.fromBytes(clampedSecret(0x5a)).publicKey(),
+        ...keys.slice(1),
+      ],
     });
     const refused = await scan([substituted], TRANSFERS, { auditor });
     expect(refused.transactions[0]?.outputs.map((output) => output.slotIndex)).toEqual([1]);
@@ -617,7 +620,12 @@ describe("auditRing", () => {
       })
     ).transactions[0]!;
     expect(audited.payloadErrors).toEqual([{ slotIndex: 0, kind: "payload" }]);
-    expect(audited.outputs[0]?.opening).toMatchObject({ kind: "ring" });
+    // An unrebuilt key names no owner and derives no nullifier, its claims drop with it.
+    const [ringOutput] = audited.outputs;
+    if (ringOutput?.opening.kind !== "ring") throw new Error("ring output");
+    expect(ringOutput.opening.utxo).not.toHaveProperty("nullifierPk");
+    expect(ringOutput.opening.utxo).not.toHaveProperty("claimed");
+    expect(ringOutput.opening.utxo).not.toHaveProperty("dataHash");
   });
 
   it("refuses an authorization of another program, registry or owner at the owner's address", async () => {

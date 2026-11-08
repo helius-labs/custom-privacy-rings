@@ -398,6 +398,7 @@ export {
   resolveKnownUtxo,
   resolveRingOwners,
   unresolvedOwners,
+  unrebuiltUtxo,
 } from "../operations/audit/audit.js";
 export type {
   AuditedEntryInput,
