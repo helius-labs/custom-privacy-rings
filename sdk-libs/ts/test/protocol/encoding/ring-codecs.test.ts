@@ -1099,7 +1099,15 @@ describe("audited UTXO read", () => {
           ownerHash(solanaOwnerIdentity(filled(3, 32)), filled(4, 32)),
         )),
     ],
-    ["neither a nullifier key nor an owner hash", (utxo) => delete utxo["nullifierPk"]],
+    ["no nullifier key beside its data hashes", (utxo) => delete utxo["nullifierPk"]],
+    [
+      "an unresolved owner, no key rebuilds the hash",
+      (utxo) => {
+        delete utxo["nullifierPk"];
+        delete utxo["dataHash"];
+        delete utxo["ringDataHash"];
+      },
+    ],
     ["a tree id past u16", (utxo) => (utxo["treeId"] = 65_536)],
     ["a blinding outside the field", (utxo) => (utxo["blinding"] = addressOf(0xff))],
     ["a mint its asset field does not derive", (utxo) => (utxo["mint"] = addressOf(9))],

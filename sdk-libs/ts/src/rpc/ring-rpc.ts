@@ -1199,7 +1199,7 @@ export type RingWalletNoteStatus = "spent" | "unspent" | "unknown" | "exposedIfS
 export interface RingWalletNote {
   readonly utxoHash: Bytes32;
   readonly status: RingWalletNoteStatus;
-  /** Absent on a deposit whose capsule discloses the owner hash alone. */
+  /** Absent on a deposit whose capsule discloses the owner hash alone, and on a ring note whose owner's registered key the auditor has not read yet. */
   readonly nullifierPk?: Bytes32;
   readonly asset: Bytes32;
   readonly mint?: Address;
@@ -2560,33 +2560,40 @@ function decodeOutput(wire: Record<string, unknown>, path: string): DecryptedRin
   });
 }
 
+/** Rust `DecryptedUtxo`, `nullifierPk` absent until the auditor reads the owner's registered key. */
 function decodeDecryptedUtxo(wire: Record<string, unknown>, path: string): AuditedUtxo {
+  const nullifierPk = wire["nullifierPk"];
   return Object.freeze({
     ...utxoFields(wire, path, hash),
-    nullifierPk: hash(wire["nullifierPk"], `${path}.nullifierPk`),
+    ...(absent(nullifierPk) ? {} : { nullifierPk: hash(nullifierPk, `${path}.nullifierPk`) }),
   });
 }
 
-/** Rust `DecryptedKnownUtxo`, exactly one of `nullifierPk` and `ownerHash`, the latter for a deposited UTXO. */
+/** Rust `DecryptedKnownUtxo`, `ownerHash` for a deposited UTXO, neither for an unresolved owner with no data hash. */
 function decodeKnownUtxo(wire: Record<string, unknown>, path: string): KnownUtxo {
   const nullifierPk = wire["nullifierPk"];
   const ownerHash = wire["ownerHash"];
-  if (absent(nullifierPk) === absent(ownerHash)) throw invalid(`${path}.ownerHash`);
+  if (!absent(nullifierPk) && !absent(ownerHash)) throw invalid(`${path}.ownerHash`);
   const fields = utxoFields(wire, path, canonicalHash);
   // The commitment binds the asset field alone, a named mint must derive it.
   if (fields.mint !== undefined && !equalBytes(assetField(fields.mint), fields.asset))
     throw invalid(`${path}.mint`);
+  const unresolved = absent(nullifierPk) && absent(ownerHash);
+  if (unresolved && (fields.dataHash !== undefined || fields.ringDataHash !== undefined))
+    throw invalid(`${path}.dataHash`);
   return Object.freeze({
     ...fields,
-    owner: absent(ownerHash)
-      ? Object.freeze({
-          kind: "keyed",
-          nullifierPk: canonicalHash(nullifierPk, `${path}.nullifierPk`),
-        })
-      : Object.freeze({
-          kind: "deposited",
-          ownerHash: canonicalHash(ownerHash, `${path}.ownerHash`),
-        }),
+    owner: unresolved
+      ? Object.freeze({ kind: "unresolved" })
+      : absent(ownerHash)
+        ? Object.freeze({
+            kind: "keyed",
+            nullifierPk: canonicalHash(nullifierPk, `${path}.nullifierPk`),
+          })
+        : Object.freeze({
+            kind: "deposited",
+            ownerHash: canonicalHash(ownerHash, `${path}.ownerHash`),
+          }),
     treeId: u16(wire["treeId"], `${path}.treeId`),
   });
 }

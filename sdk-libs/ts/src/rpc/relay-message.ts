@@ -38,6 +38,7 @@ import {
   U64_MAX,
   LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
   splInterfaceWithBump,
+  ZERO_32,
   ZERO_NULLIFIER_PK,
 } from "@heliuslabs/spr/internal";
 import {
@@ -223,6 +224,7 @@ export interface ExpectedDelegate {
   readonly withdrawals: readonly ExpectedWithdrawal[];
   /** Every note of each requested source, a note Ring RPC selects outside it is refused. */
   readonly allowed: AllowedNullifiers;
+  readonly outputTreeId: number;
 }
 
 /** Holds no transaction key, the signer reads every published slot before it signs. */
@@ -400,6 +402,8 @@ export interface RequestedAuthorityTransfer {
   /** The auditor key and the rail come from the ring account. */
   readonly config: DelegateRingConfig;
   readonly allowed: AllowedNullifiers;
+  /** The tree SPP appends the outputs to, each output's commitment rebuilds in it. */
+  readonly outputTreeId: number;
 }
 
 export async function expectedDelegate({
@@ -407,9 +411,12 @@ export async function expectedDelegate({
   quote,
   config,
   allowed,
+  outputTreeId,
 }: RequestedAuthorityTransfer): Promise<ExpectedDelegate> {
   const { transfer } = request;
   allowed.checkSources(transfer.sources);
+  if (!Number.isInteger(outputTreeId) || outputTreeId < 0 || outputTreeId > 0xffff)
+    throw new RingError("RING_DELEGATE_INVALID", { details: { reason: "outputTreeId" } });
   return Object.freeze({
     kind: "delegate",
     ring: request.ring,
@@ -435,6 +442,7 @@ export async function expectedDelegate({
     ),
     withdrawals: Object.freeze(await Promise.all(transfer.withdrawals.map(expectedWithdrawal))),
     allowed,
+    outputTreeId,
   });
 }
 
@@ -878,8 +886,8 @@ function checkMoved(
   if (!expected.allowed.countsSpends(envelope.realInputs, frame.nullifiers))
     throw mismatch("SpendsUnrequestedNote");
   // 3. Each live record pays one requested payment or returns change to a requested source,
-  // sealed to that owner's viewing key so the owner can open it. An exit carries its key, a ring
-  // output's proven bit tells the zero key from any other and its record names no other.
+  // sealed to that owner's viewing key so the owner can open it. A ring output's record names no
+  // nonzero key, the rebuilt commitment alone binds the output to the owner's nullifier key.
   const owns = (owner: ExpectedOwner, record: OutputRecord): boolean => {
     if (!equalBytes(record.ownerKey, owner.ownerKey)) return false;
     const zero = equalBytes(owner.nullifierPk, ZERO_NULLIFIER_PK);
@@ -895,9 +903,12 @@ function checkMoved(
   const unpaid = [...expected.payments];
   records.forEach((record, slot) => {
     if (record.kind === RecordKind.dummy) return;
+    const published = frame.outputs[slot];
     const sealedTo = (owner: ExpectedOwner): boolean =>
-      record.kind === RecordKind.exit ||
-      (recipientKeys[slot] !== undefined && equalBytes(recipientKeys[slot], owner.viewingU));
+      (record.kind === RecordKind.exit ||
+        (recipientKeys[slot] !== undefined && equalBytes(recipientKeys[slot], owner.viewingU))) &&
+      published !== undefined &&
+      rebuilds(expected, published.hash, record, owner);
     const paid = unpaid.findIndex(
       (payment) =>
         record.kind === payment.kind &&
@@ -929,6 +940,34 @@ function checkMoved(
       throw mismatch("Recipients");
   });
   if (unpaid.length !== 0) throw mismatch("Recipients");
+}
+
+/** The rail carries no data, so both data hashes are zero, Rust `ExpectedDelegate::rebuilds`. */
+function rebuilds(
+  expected: ExpectedDelegate,
+  hash: Bytes32,
+  record: OutputRecord,
+  owner: ExpectedOwner,
+): boolean {
+  const opening: SlotOpening = {
+    slot: 0,
+    owner: encodeBase58(record.ownerKey) as Address,
+    nullifierPk: owner.nullifierPk,
+    mint: record.mint,
+    amount: record.amount,
+    blinding: record.blinding,
+    treeId: expected.outputTreeId,
+    dataHash: ZERO_32,
+    ringDataHash: ZERO_32,
+  };
+  try {
+    return equalBytes(
+      openingHash(opening, record.kind === RecordKind.ring ? expected.ring : undefined),
+      hash,
+    );
+  } catch {
+    return false;
+  }
 }
 
 function checkWithdrawals(

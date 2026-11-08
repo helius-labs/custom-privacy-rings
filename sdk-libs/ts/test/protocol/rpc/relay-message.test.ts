@@ -165,6 +165,8 @@ function delegate(
     quote: { feePayer: request.feePayer, validUntilSlot: 0n },
     config: { mode: "confidential", auditorPublicKey: auditorOf(request) },
     allowed: pinnedAllowed(pinned),
+    // The vector's frames append to Rust `support::TREE_ID`.
+    outputTreeId: 0,
   });
 }
 

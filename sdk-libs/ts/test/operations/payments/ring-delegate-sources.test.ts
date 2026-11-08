@@ -14,7 +14,12 @@ import {
   indexerScalars,
   treeAddress,
 } from "@heliuslabs/spr/internal";
-import { randomBlinding, ShieldedKeypair, ViewingKey } from "@heliuslabs/spr/keypair";
+import {
+  randomBlinding,
+  ShieldedAddress,
+  ShieldedKeypair,
+  ViewingKey,
+} from "@heliuslabs/spr/keypair";
 import {
   AssetRegistry,
   Data,
@@ -207,10 +212,50 @@ describe("delegate sources", () => {
         request: requestFor(fixture, delegate, sources, payee, amount),
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
         config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+        outputTreeId: fixture.client.treeId,
         allowed: allowedOf(sources.map((owner, at) => ({ owner, notes: notes.slice(at, at + 1) }))),
       });
       const message = messageOf(fixture, instruction);
       expect(checkRelayMessage(expected, message, delegate as never).signer).toBe(delegate);
+
+      // A ring record publishes no nonzero key, the rebuilt commitment binds the payee's nullifier key.
+      const request = requestFor(fixture, delegate, sources, payee, amount);
+      const honest = payee.shieldedAddress();
+      const bytes = honest.toBytes().slice();
+      const keyAt = bytes.findIndex((_, at) =>
+        honest.nullifierPublicKey.every((byte, index) => bytes[at + index] === byte),
+      );
+      bytes.set(
+        Uint8Array.from({ length: 32 }, (_, index) => (index === 31 ? 21 : 0)),
+        keyAt,
+      );
+      const rekeyed: PrepareAuthorityTransferRequest = {
+        ...request,
+        transfer: {
+          ...request.transfer,
+          payments: request.transfer.payments.map((payment) => ({
+            ...payment,
+            recipient: ShieldedAddress.fromBytes(bytes),
+          })),
+        },
+      };
+      for (const [asked, outputTreeId] of [
+        [rekeyed, fixture.client.treeId],
+        [request, fixture.client.treeId + 1],
+      ] as const) {
+        const refused = await expectedDelegate({
+          request: asked,
+          quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+          config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+          outputTreeId,
+          allowed: allowedOf(
+            sources.map((owner, at) => ({ owner, notes: notes.slice(at, at + 1) })),
+          ),
+        });
+        expect(() => checkRelayMessage(refused, message, delegate as never)).toThrow(
+          expect.objectContaining({ details: { mismatch: "Recipients" } }),
+        );
+      }
 
       const live = liveRecords(
         fixture,
@@ -239,6 +284,7 @@ describe("delegate sources", () => {
         request: requestFor(fixture, delegate, [member], payee, 15n),
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
         config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+        outputTreeId: fixture.client.treeId,
         allowed: allowedOf([{ owner: member, notes: notes.slice(0, 1) }]),
       });
       expect(() =>
@@ -279,6 +325,7 @@ describe("delegate sources", () => {
         request: requestFor(fixture, delegate, [member], payee, 4n),
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
         config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+        outputTreeId: fixture.client.treeId,
       };
 
       const unchecked = {
@@ -568,6 +615,7 @@ describe("delegate sources", () => {
           ),
           quote: { feePayer: fixture.authority, validUntilSlot: 100n },
           config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+          outputTreeId: fixture.client.treeId,
           allowed: allowedOf(recovered),
         });
         expect(checkRelayMessage(expected, message, delegate as never).signer).toBe(delegate);
