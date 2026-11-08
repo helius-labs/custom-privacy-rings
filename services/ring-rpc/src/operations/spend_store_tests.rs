@@ -300,28 +300,43 @@ fn an_unresolved_note_keys_once_when_its_owner_enrolls_late() {
     );
 }
 
-/// The registered key stands without the payload's hashes, the only key a spend opens under.
+/// A resolved key counts only when the commitment rebuilds, the proven record stays and never
+/// counts as spendable balance.
 #[test]
-fn an_unresolved_note_whose_payload_does_not_rebuild_keeps_the_key_and_drops_the_hashes() {
-    let store = AuditStore::new(RING, Backing::Memory);
+fn an_unresolved_note_that_does_not_rebuild_under_the_registered_key_stays_unknown() {
     let owner = wallet(1);
     let keys = Keys::with(owner, 7);
-    let created = rebuilt(owner, &secret(7));
-    let claimed = ClaimedData {
-        data_hash: [9; 32],
-        ring_data_hash: [0; 32],
-    };
-    apply(&store, &keys, |work| {
-        work.open(frame(5), [unresolved(&created, claimed)]);
-    });
-    through(&store, &keys, 10);
-    let read = status_of(&store, owner);
-    assert_eq!(read.notes.len(), 1);
-    assert_eq!(
-        read.notes[0].nullifier_pk,
-        Some(Hash(secret(7).pubkey().expect("key")))
-    );
-    assert_eq!(read.notes[0].data_hash, None);
+    let under_another_key = rebuilt(owner, &secret(8));
+    let under_the_key = rebuilt(owner, &secret(7));
+    let cases = [
+        (
+            "another key",
+            unresolved(&under_another_key, ClaimedData::default()),
+        ),
+        (
+            "another payload",
+            unresolved(
+                &under_the_key,
+                ClaimedData {
+                    data_hash: [9; 32],
+                    ring_data_hash: [0; 32],
+                },
+            ),
+        ),
+    ];
+    for (name, created) in cases {
+        let store = AuditStore::new(RING, Backing::Memory);
+        apply(&store, &keys, |work| work.open(frame(5), [created]));
+        store.queue_late_owners([owner.to_bytes()]);
+        apply(&store, &keys, |work| work.late_keys());
+        through(&store, &keys, 10);
+        let read = status_of(&store, owner);
+        assert_eq!(statuses(&read), [WalletNoteStatus::Unknown], "{name}");
+        assert_eq!(read.notes[0].utxo_hash, Hash(created.commitment), "{name}");
+        assert_eq!(read.notes[0].nullifier_pk, None, "{name}");
+        assert_eq!(read.notes[0].data_hash, None, "{name}");
+        assert_eq!(balance(&read), 0, "{name}");
+    }
 }
 
 #[test]

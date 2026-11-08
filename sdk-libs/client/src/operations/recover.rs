@@ -486,12 +486,20 @@ impl<'a> MemberRecovery<'a> {
             if !found.seen.insert(context.hash) {
                 continue;
             }
-            // An unopened rebuild drops the payload's hashes and the note joins `unresolved` below.
-            let opened = KnownUtxo::opened(*opened, context.tree_id).resolve(
+            // A record the member's key does not rebuild stays unresolved, never a candidate.
+            let Some(opened) = KnownUtxo::opened(*opened, context.tree_id).resolve(
                 nullifier_pk,
                 self.recovery.ring_program_id,
                 &context.hash,
-            )?;
+            )?
+            else {
+                found.unresolved.push((
+                    context.hash,
+                    self.source
+                        .nullifier(&nullifier_pk, &context.hash, &opened.blinding)?,
+                ));
+                continue;
+            };
             let mint = match opened
                 .mint
                 .map(|mint| assets.registry().mint(&mint))
