@@ -15,26 +15,19 @@ import (
 // senderBundleEncInfo mirrors SENDER_BUNDLE_LABEL.
 const senderBundleEncInfo = "CRING/snd"
 
-// SenderBundle is the sender bundle plaintext, one key per published slot.
+// SenderBundle is the sender bundle plaintext, the recipient keys travel in the auditor stream alone.
 type SenderBundle struct {
-	OutputSeed    *big.Int
-	RecipientKeys [][32]byte
+	OutputSeed *big.Int
 }
 
-// SenderBundleLen mirrors BundleLayout::byte_len.
-func SenderBundleLen(outputs int) int {
-	return 32 + 32*outputs
-}
+// SenderBundleLen mirrors BundleLayout::byte_len, the same for every m.
+const SenderBundleLen = 32
 
 func (b SenderBundle) Seal(t testing.TB, slotSecret *big.Int) []byte {
 	t.Helper()
 	seed := spptest.MustFieldBytes(t, b.OutputSeed)
-	plaintext := seed[:]
-	for _, key := range b.RecipientKeys {
-		plaintext = append(plaintext, key[:]...)
-	}
 	key, nonce := AuditStreamKeys(t, slotSecret, senderBundleEncInfo)
-	return CTREncrypt(t, key, nonce, plaintext)
+	return CTREncrypt(t, key, nonce, seed[:])
 }
 
 // Clamped is the RFC 7748 clamping of secret, the one encoding the circuit accepts as plaintext.

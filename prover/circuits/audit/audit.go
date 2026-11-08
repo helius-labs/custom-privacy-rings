@@ -37,7 +37,7 @@
 //  6. A slot's kind derives from the domain and ring id its hash commits, no prover bit passes a note
 //     as a dummy.
 //  7. Every transmitted ciphertext byte is bound, the envelope and keys through their counted digests and
-//     each record through the record chain.
+//     each record's published prefix through the record chain, the full record on an exit.
 //
 // It proves nothing about the key a sender supplies for a recipient, as SPP proved nothing about a
 // body. A record sealed to another key credits nobody, since a reader accepts a note only when the
@@ -153,9 +153,24 @@ func (w AuditWires) RecordChain(api frontend.API, e Envelope, opened Opened) fro
 			Salt: e.salt, Index: i, FirstNullifier: w.FirstNullifier, Info: shared.OutputRecordInfo,
 		}.Seal(api)
 		// A slot past m publishes nothing.
-		hashes[i] = api.Mul(opened.Count.Active[i], gadget.HashBoundedBytes(api, ciphertext))
+		hashes[i] = api.Mul(opened.Count.Active[i], publishedRecordHash(api, ciphertext, opened.Slots[i].Exit))
 	}
 	return gadget.HashChain4(api, hashes)
+}
+
+// publishedRecordHash is hash_bytes of the bytes the slot publishes, RecordLen on an exit and RingRecordLen otherwise.
+// The program rebuilds the chain from each slot's published length, so a non-exit slot carrying the key tail, or an exit
+// without it, hashes apart. Both lengths share their first three 31 byte chunks, one chain head serves both.
+func publishedRecordHash(api frontend.API, ciphertext []frontend.Variable, exit frontend.Variable) frontend.Variable {
+	const chunk = gadget.HashBytesChunkSize
+	head := gadget.HashBoundedBytes(api, ciphertext[:3*chunk])
+	pack := func(bytes []frontend.Variable) frontend.Variable {
+		return gadget.BytesToFieldWith(api, ringgadget.BoundedBytes{}, bytes)
+	}
+	ring := gadget.PoseidonHash(api, []frontend.Variable{head, pack(ciphertext[3*chunk : RingRecordLen])})
+	full := gadget.PoseidonHash(api, []frontend.Variable{head, pack(ciphertext[3*chunk : 4*chunk])})
+	full = gadget.PoseidonHash(api, []frontend.Variable{full, pack(ciphertext[4*chunk : RecordLen])})
+	return api.Select(exit, full, ring)
 }
 
 type Stream struct {

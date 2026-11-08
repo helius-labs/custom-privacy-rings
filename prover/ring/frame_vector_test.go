@@ -128,19 +128,19 @@ func walkTransferFrame(t *testing.T, line []byte, rail frameRail) {
 		case exit:
 			extra = frameExitBodyLen
 		}
-		tag := frameSlotTagLen
+		tag, record := frameSlotTagLen, audit.RingRecordLen
 		if exit {
-			tag = 32
+			tag, record = 32, audit.RecordLen
 		} else {
 			bodies++
 		}
-		c.take(32 + tag + audit.RecordLen + extra)
+		c.take(32 + tag + record + extra)
 	}
 	if flags&replyFlag != 0 {
 		c.take(int(binary.LittleEndian.Uint16(c.take(2))) * bodies)
 	}
 	if anonymousFrame {
-		c.take(32 + ringprotocol.SenderBundleLen(m))
+		c.take(32 + ringprotocol.SenderBundleLen)
 	}
 	stream := audit.StreamShape{InputClass: n, Outputs: m, Entry: inputByte&entry != 0}.Ranges()
 	c.take(stream.EnvelopeLen(n) + m*audit.KeyLen)

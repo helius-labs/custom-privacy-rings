@@ -159,7 +159,7 @@ func (a Audit) Seal(t testing.TB, p Plaintexts) Stream {
 	}
 	stream := Stream{Ranges: ranges, Salt: a.Salt, Ciphertext: a.Keys.TransferCiphertext(t, plaintext, a.Salt), Records: make([][]byte, len(p.Records))}
 	for i, record := range p.Records {
-		stream.Records[i] = a.Keys.SealRecord(t, p.SealedTo[i], a.Salt, i, a.FirstNullifier, record)
+		stream.Records[i] = a.Keys.SealRecord(t, p.SealedTo[i], a.Salt, i, a.FirstNullifier, record)[:a.Outputs[i].PublishedLen()]
 	}
 	return stream
 }
@@ -245,10 +245,19 @@ type AuditReader struct {
 	Shape      audit.StreamShape
 	InputCount int
 	TreeID     uint16
+	// Registered stands in for the tracking rows, owner key to registered nullifier key.
+	Registered map[[32]byte]*big.Int
 }
 
+// Reader registers each ring output's nonzero key under its owner.
 func (a Audit) Reader() AuditReader {
-	return AuditReader{Transfer: a.Transfer, Shape: a.Shape, InputCount: a.InputCount, TreeID: OutputTreeID}
+	registered := map[[32]byte]*big.Int{}
+	for _, slot := range a.Outputs {
+		if slot.Utxo.isUtxo() && !slot.Utxo.isExit() && slot.Utxo.NullifierPk.Cmp(shared.ZeroNullifierPk) != 0 {
+			registered[slot.OwnerKey] = slot.Utxo.NullifierPk
+		}
+	}
+	return AuditReader{Transfer: a.Transfer, Shape: a.Shape, InputCount: a.InputCount, TreeID: OutputTreeID, Registered: registered}
 }
 
 func (r AuditReader) Envelope(t testing.TB, stream Stream) (realInputs int, defaultBits uint64) {
@@ -270,18 +279,31 @@ func (r AuditReader) Read(t testing.TB, stream Stream, i int, published *big.Int
 	u := [32]byte(plaintext[offset : offset+audit.KeyLen])
 	// CTR is its own inverse.
 	record := ringprotocol.SealRecord(t, txViewingSk, u, r.Salt, i, r.FirstNullifier, shared.OutputRecordInfo, stream.Record(i))
-	kind := record[0]
-	if kind == audit.KindDummy {
-		if slices.ContainsFunc(record, func(b byte) bool { return b != 0 }) {
+	kind, zeroKey := record[0]&^audit.KindZeroKey, record[0]&audit.KindZeroKey != 0
+	if record[0] == audit.KindDummy {
+		if len(record) != audit.RingRecordLen || slices.ContainsFunc(record, func(b byte) bool { return b != 0 }) {
 			return nil, fmt.Errorf("slot %d: a dummy carries a value", i)
 		}
 		return nil, nil
 	}
-	if kind != audit.KindRing && kind != audit.KindExit {
+	lengths := map[byte]int{audit.KindRing: audit.RingRecordLen, audit.KindExit: audit.RecordLen}
+	if want, ok := lengths[kind]; !ok || len(record) != want {
 		return nil, fmt.Errorf("slot %d: not a record", i)
 	}
-	note := Note{Kind: kind, OwnerKey: [32]byte(record[9:41]), Mint: [32]byte(record[41:73]), Amount: binary.BigEndian.Uint64(record[1:9]), NullifierPk: new(big.Int).SetBytes(record[73:105]), Blinding: new(big.Int).SetBytes(record[105:])}
+	note := Note{Kind: kind, OwnerKey: [32]byte(record[9:41]), Mint: [32]byte(record[41:73]), Amount: binary.BigEndian.Uint64(record[1:9]), Blinding: new(big.Int).SetBytes(record[73:audit.RingRecordLen])}
 	ringID := big.NewInt(0)
+	switch {
+	case kind == audit.KindExit:
+		note.NullifierPk = new(big.Int).SetBytes(record[audit.RingRecordLen:])
+	case zeroKey:
+		note.NullifierPk = shared.ZeroNullifierPk
+	default:
+		registered, ok := r.Registered[note.OwnerKey]
+		if !ok {
+			return nil, fmt.Errorf("slot %d: the owner has no registered key yet", i)
+		}
+		note.NullifierPk = registered
+	}
 	if kind == audit.KindRing {
 		ringID = r.RingProgramID
 	}
