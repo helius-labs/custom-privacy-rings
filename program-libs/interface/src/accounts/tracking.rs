@@ -124,7 +124,8 @@ impl TrackingRegistry {
         Address::find_program_address(&Self::seeds(creator, ring_id), &STORAGE_PROGRAM_ID)
     }
 
-    /// Holds only the sentinel root at revision zero.
+    /// Holds only the sentinel root at revision zero, host only as the value overflows the SBF stack frame.
+    #[cfg(not(target_os = "solana"))]
     pub fn new(ix: &InitializeTrackingIxData) -> Self {
         let mut registry = Self::zeroed();
         registry.init(ix);
@@ -152,6 +153,8 @@ impl TrackingRegistry {
             .filter(|registry| registry.valid())
     }
 
+    /// Host only, the copy overflows the 4 KB SBF stack frame.
+    #[cfg(not(target_os = "solana"))]
     pub fn decode(owner: &Address, data: &[u8]) -> Option<Self> {
         (*owner == STORAGE_PROGRAM_ID)
             .then(|| Self::from_data(data).copied())
@@ -209,6 +212,8 @@ impl EnrollmentQueue {
         Address::find_program_address(&Self::seeds(registry), &STORAGE_PROGRAM_ID)
     }
 
+    /// Host only, the value overflows the 4 KB SBF stack frame.
+    #[cfg(not(target_os = "solana"))]
     pub fn new(registry: Address) -> Self {
         let mut queue = Self::zeroed();
         queue.init(registry);
@@ -233,6 +238,8 @@ impl EnrollmentQueue {
             .filter(|queue| queue.valid())
     }
 
+    /// Host only, the copy overflows the 4 KB SBF stack frame.
+    #[cfg(not(target_os = "solana"))]
     pub fn decode(owner: &Address, data: &[u8]) -> Option<Self> {
         (*owner == STORAGE_PROGRAM_ID)
             .then(|| Self::from_data(data).copied())

@@ -12,19 +12,26 @@
 //! 2. An entry with a proof verifies `RegisterKey` with the ring id, member and auditor key the program supplies, a proof for another ring, member or auditor fails. Only such an entry inserts a row at apply.
 //! 3. The program computes the entry from the signer and the data it checked, and the queue stores its hash at the next sequence.
 //! 4. The registry loads read only and the queue is its own account, so enrollment takes no write lock a transfer meets.
+//! 5. The tree and every sealed secret rebuild from the `Enrolled` and `EnrollmentsApplied` events alone.
 //!
 //! Relies on:
 //! 1. The ring pins the registry by address. The registry's ring id and auditor key are its creator's word.
 //! 2. An entry grants nothing until an apply places it under a root, because every check reads the root.
-//! 3. The indexer and the auditor read the record from the instruction data of a successful transaction.
 
 use custom_ring_interface::{
-    storage::StorageError, storage_instruction::EnrollRequest, tracking::TrackingEntry,
+    storage::StorageError,
+    storage_instruction::{EnrollRequest, EnrolledEvent, StorageEvent},
+    tracking::TrackingEntry,
     RegisterKeyCheck,
 };
 use pinocchio::{AccountView, Address, ProgramResult};
 
-use crate::loader::{check_signer, load_enrollment_queue_mut, load_tracking_registry};
+use crate::{
+    emit_event,
+    loader::{
+        check_signer, check_storage_program, load_enrollment_queue_mut, load_tracking_registry,
+    },
+};
 
 pub fn process_enroll_ix(
     program_id: &Address,
@@ -32,11 +39,12 @@ pub fn process_enroll_ix(
     data: &[u8],
 ) -> ProgramResult {
     let EnrollRequest { ix, proof } = EnrollRequest::parse(data)?;
-    let [owner_account, registry_account, queue_account, ..] = accounts else {
+    let [owner_account, registry_account, queue_account, program_account, ..] = accounts else {
         return Err(StorageError::MissingAccounts.into());
     };
     // 1. The owner's signature authorizes the entry and names its member.
     check_signer(owner_account)?;
+    check_storage_program(program_id, program_account)?;
     ix.check()?;
     // 2. The queue must name the registry, an entry in another registry's queue would apply there.
     let registry = load_tracking_registry(program_id, registry_account)?;
@@ -55,7 +63,18 @@ pub fn process_enroll_ix(
         .verify()?;
     }
     // 4. A full queue refuses with nothing written.
-    let entry = TrackingEntry::from_enroll(owner_account.address(), ix, proof.is_some())?;
-    queue.push(entry.hash().map_err(|_| StorageError::HashingFailed)?)?;
-    Ok(())
+    let proven = proof.is_some();
+    let entry = TrackingEntry::from_enroll(owner_account.address(), ix, proven)?;
+    let sequence = queue.push(entry.hash().map_err(|_| StorageError::HashingFailed)?)?;
+    // 5. The event repeats the values the queued hash binds, after every check passed.
+    emit_event(
+        program_id,
+        &StorageEvent::Enrolled(EnrolledEvent {
+            registry: *registry_account.address(),
+            owner: *owner_account.address(),
+            sequence: sequence.to_le_bytes(),
+            proven: u8::from(proven),
+            record: *ix,
+        }),
+    )
 }

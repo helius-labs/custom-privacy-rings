@@ -270,6 +270,18 @@ pub fn check_authority(registry: &StorageRegistry, authority: &AccountView) -> P
     Ok(())
 }
 
+/// The event self invocation resolves the program from the instruction's accounts.
+#[inline(always)]
+pub fn check_storage_program(
+    program_id: &Address,
+    account: &AccountView,
+) -> Result<(), StorageError> {
+    match account.address() == program_id {
+        true => Ok(()),
+        false => Err(StorageError::InvalidStorageProgram),
+    }
+}
+
 #[inline(always)]
 pub fn check_signer(account: &AccountView) -> Result<(), StorageError> {
     match account.is_signer() {

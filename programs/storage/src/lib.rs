@@ -22,8 +22,11 @@
 //! 2. The apply circuits in `prover/circuits/registry` keep each tree sorted and move only what the chained writes name.
 
 use bytemuck::Pod;
-use custom_ring_interface::{storage::StorageError, storage_instruction::tag};
-use pinocchio::{AccountView, Address, ProgramResult};
+use custom_ring_interface::{
+    storage::StorageError,
+    storage_instruction::{tag, StorageEvent},
+};
+use pinocchio::{cpi::invoke, instruction::InstructionView, AccountView, Address, ProgramResult};
 
 use instructions::{
     process_apply_enrollments_ix, process_enroll_ix, process_initialize_ix,
@@ -55,8 +58,25 @@ pub fn process_instruction(
         tag::APPLY_ENROLLMENTS => process_apply_enrollments_ix(program_id, accounts, data),
         tag::OWNER_GRANT => process_owner_grant_ix(program_id, accounts, data),
         tag::INITIALIZE_TRACKING => process_initialize_tracking_ix(program_id, accounts, data),
+        // Forged events pass here, `StorageEvent` names the trusted parents.
+        tag::EMIT_EVENT => Ok(()),
         _ => Err(StorageError::InvalidInstructionData.into()),
     }
+}
+
+/// Records `event` as an inner instruction, the last fallible step of its processor.
+#[inline(never)]
+pub(crate) fn emit_event(program_id: &Address, event: &StorageEvent) -> ProgramResult {
+    let data = event.encode();
+    let accounts: [&AccountView; 0] = [];
+    invoke(
+        &InstructionView {
+            program_id,
+            accounts: &[],
+            data: &data,
+        },
+        &accounts,
+    )
 }
 
 pub(crate) fn parse<T: Pod>(data: &[u8]) -> Result<&T, StorageError> {

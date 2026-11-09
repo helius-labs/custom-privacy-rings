@@ -146,7 +146,7 @@ fn write_error_vectors() {
     }
 }
 
-fn storage_pins() -> [(StorageError, u32); 30] {
+fn storage_pins() -> [(StorageError, u32); 31] {
     use StorageError as Error;
     [
         (Error::InvalidRegistry, 9000),
@@ -179,6 +179,7 @@ fn storage_pins() -> [(StorageError, u32); 30] {
         (Error::InvalidEnrollmentQueue, 9038),
         (Error::EnrollmentQueueFull, 9039),
         (Error::EnrollmentQueueShort, 9040),
+        (Error::InvalidStorageProgram, 9041),
     ]
 }
 

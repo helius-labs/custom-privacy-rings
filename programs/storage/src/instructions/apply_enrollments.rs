@@ -11,6 +11,7 @@
 //! 1. The new root and next index follow from the current ones by exactly the next `count` queued entries in sequence order, and the next index stays within `QUAD_CAPACITY`.
 //! 2. Each entry applies once, `head` moves past every entry the chain absorbed.
 //! 3. The outgoing root keeps its full grace. An apply that would evict an unexpired root refuses, and the entries stay queued.
+//! 4. An `EnrollmentsApplied` event follows only a verified proof.
 //!
 //! Relies on:
 //! 1. `ApplyEnrollmentsCircuit` keeps the tree sorted, inserts only proven entries of absent owners and moves only the viewing hash of a present owner.
@@ -20,7 +21,7 @@ use custom_ring_interface::{
     chain_link,
     key_catalog::RingCircuit,
     storage::StorageError,
-    storage_instruction::ApplyEnrollmentsIxData,
+    storage_instruction::{ApplyEnrollmentsIxData, EnrollmentsAppliedEvent, StorageEvent},
     tracking::{tracking_chain_start, TrackingRootUpdate},
     verifying_key, ApplyEnrollmentsStatement, RingProof,
 };
@@ -30,7 +31,8 @@ use pinocchio::{
 };
 
 use crate::{
-    loader::{load_enrollment_queue_mut, load_tracking_registry_mut},
+    emit_event,
+    loader::{check_storage_program, load_enrollment_queue_mut, load_tracking_registry_mut},
     parse,
 };
 
@@ -40,9 +42,10 @@ pub fn process_apply_enrollments_ix(
     data: &[u8],
 ) -> ProgramResult {
     let ix: &ApplyEnrollmentsIxData = parse(data)?;
-    let [registry_account, queue_account, ..] = accounts else {
+    let [registry_account, queue_account, program_account, ..] = accounts else {
         return Err(StorageError::MissingAccounts.into());
     };
+    check_storage_program(program_id, program_account)?;
     // 1. One to `APPLY_BATCH` entries, and the chain starts from the registry and revision the proof names.
     ApplyEnrollmentsIxData::check_count(ix.count)?;
     let count = u64::from(ix.count);
@@ -50,6 +53,7 @@ pub fn process_apply_enrollments_ix(
     let chain_start = tracking_chain_start(&registry_address, ix.revision)?;
     // 2. The chain folds the stored hashes from `head`, so the applier cannot skip, reorder or substitute an entry.
     let mut queue = load_enrollment_queue_mut(program_id, &registry_address, queue_account)?;
+    let first_sequence = queue.head();
     let chain_end = queue
         .take(count)?
         .try_fold(chain_start, |chain, entry_hash| {
@@ -82,5 +86,16 @@ pub fn process_apply_enrollments_ix(
     }
     .verify()
     .map_err(|_| StorageError::ProofVerificationFailed)?;
-    Ok(())
+    // 5. The event follows the verified proof and repeats the parsed range and the registry it moved.
+    emit_event(
+        program_id,
+        &StorageEvent::EnrollmentsApplied(EnrollmentsAppliedEvent {
+            registry: registry_address,
+            first_sequence: first_sequence.to_le_bytes(),
+            count: ix.count,
+            revision: registry.newest().revision,
+            new_root: ix.new_root,
+            new_next_index: ix.new_next_index,
+        }),
+    )
 }

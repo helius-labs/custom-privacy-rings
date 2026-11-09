@@ -4,8 +4,9 @@ use custom_ring_interface::{
     owner_grant::OwnerGrant,
     storage::{RegistryId, Revision, RootUpdate, StorageError, StorageRegistry},
     storage_instruction::{
-        ApplyEnrollmentsIxData, AssetWrite, EnrollIxData, EnrollRequest, InitializeIxData,
-        InitializeTrackingIxData, OwnerGrantIxData, StorageUpdateIxData,
+        event_kind, tag, ApplyEnrollmentsIxData, AssetWrite, EnrollIxData, EnrollRequest,
+        EnrollmentsAppliedEvent, InitializeIxData, InitializeTrackingIxData, OwnerGrantIxData,
+        StorageEvent, StorageUpdateIxData,
     },
     tracking::{
         tracking_chain_start, EnrollmentQueue, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
@@ -321,6 +322,34 @@ fn a_queue_decodes_only_its_own_layout_and_names_its_registry() {
     }));
     let (address, _) = EnrollmentQueue::find_address(&registry);
     assert_ne!(address, EnrollmentQueue::find_address(&key(0x13)).0);
+}
+
+#[test]
+fn an_event_decodes_only_under_its_tag_kind_and_exact_length() {
+    let applied = StorageEvent::EnrollmentsApplied(EnrollmentsAppliedEvent {
+        registry: key(0x11),
+        first_sequence: 3u64.to_le_bytes(),
+        count: 2,
+        revision: Revision::from(4),
+        new_root: [5; 32],
+        new_next_index: 6u64.to_le_bytes(),
+    });
+    let data = applied.encode();
+    assert_eq!(
+        data[..2],
+        [tag::EMIT_EVENT, event_kind::ENROLLMENTS_APPLIED]
+    );
+    assert_eq!(StorageEvent::decode(&data), Some(applied));
+    let edited = |edit: fn(&mut Vec<u8>)| {
+        let mut data = data.clone();
+        edit(&mut data);
+        StorageEvent::decode(&data)
+    };
+    assert_eq!(edited(|data| data[0] = tag::ENROLL), None);
+    assert_eq!(edited(|data| data[1] = event_kind::ENROLLED), None);
+    assert_eq!(edited(|data| data[1] = 3), None);
+    assert_eq!(edited(|data| data.push(0)), None);
+    assert_eq!(edited(|data| data.truncate(data.len() - 1)), None);
 }
 
 #[test]

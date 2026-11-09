@@ -32,6 +32,14 @@ pub mod tag {
     pub const OWNER_GRANT: u8 = 8;
     /// The ring program signs its ring PDA as creator through CPI.
     pub const INITIALIZE_TRACKING: u8 = 9;
+    /// A no-op the program invokes on itself to record a `StorageEvent`.
+    pub const EMIT_EVENT: u8 = 10;
+}
+
+/// The byte after `tag::EMIT_EVENT`.
+pub mod event_kind {
+    pub const ENROLLED: u8 = 1;
+    pub const ENROLLMENTS_APPLIED: u8 = 2;
 }
 
 /// The creator signs and becomes the authority.
@@ -56,7 +64,7 @@ pub struct InitializeTrackingIxData {
     pub auditor_pubkey: [u8; TAGGED_X25519_KEY_LEN],
 }
 
-/// Tag 6 ahead of a first enrollment's proof, accounts `owner, tracking_registry, enrollment_queue`.
+/// Tag 6 ahead of a first enrollment's proof, accounts `owner, tracking_registry, enrollment_queue, storage_program`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct EnrollIxData {
@@ -76,7 +84,7 @@ pub struct EnrollRequest<'a> {
     pub proof: Option<&'a CustomRingProof>,
 }
 
-/// Tag 7, accounts `tracking_registry, enrollment_queue`, both writable.
+/// Tag 7, accounts `tracking_registry, enrollment_queue, storage_program`, the first two writable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct ApplyEnrollmentsIxData {
@@ -87,6 +95,40 @@ pub struct ApplyEnrollmentsIxData {
     pub new_next_index: [u8; 8],
     /// Queued entries the proof applies from `head`.
     pub count: u8,
+}
+
+/// The full record behind one queued entry hash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+#[repr(C)]
+pub struct EnrolledEvent {
+    pub registry: Address,
+    pub owner: Address,
+    /// Little endian, the queue position the entry hash took.
+    pub sequence: [u8; 8],
+    /// One when the `Enroll` verified `RegisterKey`.
+    pub proven: u8,
+    pub record: EnrollIxData,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+#[repr(C)]
+pub struct EnrollmentsAppliedEvent {
+    pub registry: Address,
+    /// Little endian, the queue head before the apply.
+    pub first_sequence: [u8; 8],
+    pub count: u8,
+    /// The revision `new_root` holds.
+    pub revision: Revision,
+    pub new_root: [u8; 32],
+    /// Little endian.
+    pub new_next_index: [u8; 8],
+}
+
+/// `tag::EMIT_EVENT || kind || body`, trusted only as the inner instruction of a successful `Enroll` or `ApplyEnrollments` of the storage program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageEvent {
+    Enrolled(EnrolledEvent),
+    EnrollmentsApplied(EnrollmentsAppliedEvent),
 }
 
 /// Tag 8, accounts `payer, owner, tracking_registry, grant, system_program`.
@@ -183,6 +225,34 @@ impl ApplyEnrollmentsIxData {
 
 impl OwnerGrantIxData {
     pub const SIZE: usize = core::mem::size_of::<Self>();
+}
+
+impl StorageEvent {
+    pub fn encode(&self) -> Vec<u8> {
+        let (kind, body) = match self {
+            Self::Enrolled(event) => (event_kind::ENROLLED, bytemuck::bytes_of(event)),
+            Self::EnrollmentsApplied(event) => {
+                (event_kind::ENROLLMENTS_APPLIED, bytemuck::bytes_of(event))
+            }
+        };
+        [&[tag::EMIT_EVENT, kind][..], body].concat()
+    }
+
+    /// `None` unless the tag, the kind and the exact body length match.
+    pub fn decode(data: &[u8]) -> Option<Self> {
+        let ([tag::EMIT_EVENT, kind], body) = data.split_first_chunk::<2>()? else {
+            return None;
+        };
+        match *kind {
+            event_kind::ENROLLED => bytemuck::try_pod_read_unaligned(body)
+                .ok()
+                .map(Self::Enrolled),
+            event_kind::ENROLLMENTS_APPLIED => bytemuck::try_pod_read_unaligned(body)
+                .ok()
+                .map(Self::EnrollmentsApplied),
+            _ => None,
+        }
+    }
 }
 
 impl<I> RecordWriteClassification<'_, I>
@@ -356,5 +426,9 @@ const _: () = assert!(core::mem::align_of::<EnrollIxData>() == 1);
 const _: () = assert!(EnrollIxData::SIZE == 192);
 const _: () = assert!(core::mem::align_of::<ApplyEnrollmentsIxData>() == 1);
 const _: () = assert!(ApplyEnrollmentsIxData::SIZE == 241);
+const _: () = assert!(core::mem::align_of::<EnrolledEvent>() == 1);
+const _: () = assert!(core::mem::size_of::<EnrolledEvent>() == 265);
+const _: () = assert!(core::mem::align_of::<EnrollmentsAppliedEvent>() == 1);
+const _: () = assert!(core::mem::size_of::<EnrollmentsAppliedEvent>() == 89);
 const _: () = assert!(core::mem::align_of::<OwnerGrantIxData>() == 1);
 const _: () = assert!(OwnerGrantIxData::SIZE == 35);

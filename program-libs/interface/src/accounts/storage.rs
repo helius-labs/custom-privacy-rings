@@ -340,6 +340,8 @@ pub enum StorageError {
     EnrollmentQueueFull = 9039,
     #[error("the apply names more entries than the queue holds")]
     EnrollmentQueueShort = 9040,
+    #[error("the event self invocation needs the storage program account")]
+    InvalidStorageProgram = 9041,
 }
 
 impl From<StorageError> for ProgramError {

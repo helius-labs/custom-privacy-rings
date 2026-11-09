@@ -5,8 +5,8 @@ use custom_ring_interface::{
     owner_grant::OwnerGrant,
     storage::{RegistryId, Revision, RootUpdate, StorageError, StorageRegistry},
     storage_instruction::{
-        tag, ApplyEnrollmentsIxData, EnrollIxData, EnrollRequest, InitializeIxData,
-        InitializeTrackingIxData, OwnerGrantIxData, StorageUpdateIxData,
+        tag, ApplyEnrollmentsIxData, EnrollIxData, EnrollRequest, EnrolledEvent, InitializeIxData,
+        InitializeTrackingIxData, OwnerGrantIxData, StorageEvent, StorageUpdateIxData,
     },
     tagged_x25519,
     tracking::{
@@ -184,6 +184,7 @@ impl Store {
                 AccountMeta::new_readonly(*owner, true),
                 AccountMeta::new_readonly(self.tracking, false),
                 AccountMeta::new(self.queue, false),
+                AccountMeta::new_readonly(PROGRAM, false),
             ],
             data: [&[tag::ENROLL][..], &EnrollRequest { ix, proof }.encode()].concat(),
         }
@@ -224,6 +225,7 @@ impl Store {
             accounts: vec![
                 AccountMeta::new(self.tracking, false),
                 AccountMeta::new(self.queue, false),
+                AccountMeta::new_readonly(PROGRAM, false),
             ],
             data: [&[tag::APPLY_ENROLLMENTS], bytemuck::bytes_of(&data)].concat(),
         }
@@ -368,6 +370,14 @@ impl Store {
         instruction: Instruction,
         signers: &[&Keypair],
     ) -> Result<(), TransactionError> {
+        self.send_for_events(instruction, signers).map(|_| ())
+    }
+
+    fn send_for_events(
+        &mut self,
+        instruction: Instruction,
+        signers: &[&Keypair],
+    ) -> Result<Vec<StorageEvent>, TransactionError> {
         self.svm.expire_blockhash();
         let signers = [&self.payer]
             .into_iter()
@@ -384,7 +394,13 @@ impl Store {
         let transaction = sign_transaction(message, &signers).unwrap();
         self.svm
             .send_transaction(transaction)
-            .map(|_| ())
+            .map(|meta| {
+                meta.inner_instructions
+                    .iter()
+                    .flatten()
+                    .filter_map(|inner| StorageEvent::decode(&inner.instruction.data))
+                    .collect()
+            })
             .map_err(|failed| failed.err)
     }
 
@@ -676,16 +692,26 @@ fn an_enrollment_needs_the_owner_and_a_proof_the_pairing_accepts() {
 
 /// A rotation carries no proof, it queues an unproven entry and moves no root.
 #[test]
-fn a_rotation_queues_an_unproven_entry_in_enroll_order() {
+fn a_rotation_queues_an_unproven_entry_and_emits_its_record() {
     let mut store = Store::new();
     store.initialize_tracking();
     let owner = Keypair::new();
     let tracking = store.tracking_registry();
     let rotations = [enroll_ix([9; 32]), enroll_ix([7; 32])];
-    for ix in &rotations {
-        store
-            .send(store.enroll(&owner.pubkey(), ix, None), &[&owner])
+    for (sequence, ix) in (0u64..).zip(&rotations) {
+        let events = store
+            .send_for_events(store.enroll(&owner.pubkey(), ix, None), &[&owner])
             .unwrap();
+        assert_eq!(
+            events,
+            [StorageEvent::Enrolled(EnrolledEvent {
+                registry: store.tracking,
+                owner: owner.pubkey(),
+                sequence: sequence.to_le_bytes(),
+                proven: 0,
+                record: *ix,
+            })]
+        );
     }
     let mut expected = EnrollmentQueue::new(store.tracking);
     for ix in &rotations {
@@ -697,7 +723,7 @@ fn a_rotation_queues_an_unproven_entry_in_enroll_order() {
 }
 
 #[test]
-fn an_enrollment_refuses_another_registry_and_another_registry_s_queue() {
+fn an_enrollment_refuses_another_registry_its_queue_and_another_program() {
     let mut store = Store::new();
     store.initialize(GRACE);
     store.initialize_tracking();
@@ -715,6 +741,12 @@ fn an_enrollment_refuses_another_registry_and_another_registry_s_queue() {
     assert_eq!(
         store.send(foreign, &[&owner]),
         refusal(StorageError::InvalidEnrollmentQueue)
+    );
+    let mut no_program = store.enroll(&owner.pubkey(), &ix, None);
+    no_program.accounts[3].pubkey = SYSTEM;
+    assert_eq!(
+        store.send(no_program, &[&owner]),
+        refusal(StorageError::InvalidStorageProgram)
     );
     let mut read_only = store.enroll(&owner.pubkey(), &ix, None);
     read_only.accounts[2].is_writable = false;
@@ -797,6 +829,12 @@ fn an_apply_refuses_what_it_cannot_chain() {
     assert_eq!(
         store.send(store.apply_enrollments(1, 1), &[]),
         refusal(StorageError::RevisionChanged)
+    );
+    let mut no_program = store.apply_enrollments(0, 1);
+    no_program.accounts[2].pubkey = SYSTEM;
+    assert_eq!(
+        store.send(no_program, &[]),
+        refusal(StorageError::InvalidStorageProgram)
     );
     let mut read_only = store.apply_enrollments(0, 1);
     read_only.accounts[1].is_writable = false;
