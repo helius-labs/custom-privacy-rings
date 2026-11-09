@@ -43,7 +43,8 @@ interface AnonymousRing extends ReadableRing {
 
 interface Member extends Actor {
   readonly keys: Actor["keys"] & RingKeys;
-  history: ViewingHistory;
+  /** The one document that owns `wallet`, a second one refuses it. */
+  readonly document: AnonymousWallet;
 }
 
 type Payment = (ring: AnonymousRing, sender: Member, to: RingAddress) => Promise<string>;
@@ -59,12 +60,14 @@ async function anonymousRing(
 
 async function member(ring: AnonymousRing): Promise<Member> {
   const actor = await freshActor(ring.client);
+  const history = ViewingHistory.create(
+    actor.keypair.shieldedAddress().viewingPublicKey,
+    0n,
+  ).withRing(ring.ringProgramId);
   return {
     ...actor,
     keys: ringKeys(actor),
-    history: ViewingHistory.create(actor.keypair.shieldedAddress().viewingPublicKey, 0n).withRing(
-      ring.ringProgramId,
-    ),
+    document: AnonymousWallet.create(actor.wallet, history),
   };
 }
 
@@ -88,10 +91,8 @@ async function syncRing(ring: AnonymousRing, actor: Member): Promise<void> {
       requireSlot: await currentSlot(ring.client),
     })
     .withHeldNotes(actor.wallet.utxos())
-    .fetch(ring.client, actor.history);
-  const document = AnonymousWallet.create(actor.wallet, actor.history);
-  await document.absorb(scan);
-  actor.history = document.history();
+    .fetch(ring.client, actor.document.history());
+  await actor.document.absorb(scan);
 }
 
 /** A member whose own deposit funds its hidden identity on the ring. */
