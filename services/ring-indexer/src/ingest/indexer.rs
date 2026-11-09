@@ -91,6 +91,10 @@ impl Indexer {
 
     pub fn spawn(self) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
+            // A restarted index serves again only after its first catch up.
+            if let Err(error) = self.suspend().await {
+                log::error!("cannot mark ring lookups unavailable ({error:#})");
+            }
             let mut delay = 1;
             loop {
                 match self.synchronize().await {
@@ -129,7 +133,6 @@ impl Indexer {
         cursor.scanned_slot = cursor.tip_slot();
         let target = self.rpc.get_slot().await?;
         if cursor.scanned_slot < target {
-            cursor.suspend(db).await?;
             let batch = block_batch(
                 &self.rpc,
                 cursor.scanned_slot + 1..=target,
@@ -251,7 +254,8 @@ impl Indexer {
         .await?;
         cursor.tip = Some(block.metadata.clone());
         cursor.scanned_slot = block.metadata.slot;
-        cursor.suspend(tx).await
+        // Each block commits its rows with the cursor, and every read confirms its root at the tip.
+        storage::save_cursor(tx, cursor).await
     }
 }
 

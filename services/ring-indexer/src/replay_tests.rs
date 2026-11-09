@@ -554,3 +554,31 @@ async fn a_private_write_naming_another_tracking_registry_stops_the_projection()
     handle.stop().unwrap();
     handle.stopped().await;
 }
+
+#[tokio::test]
+async fn a_ready_index_stays_ready_behind_the_tip_until_a_rewind() {
+    let chain = Arc::new(Mutex::new(Chain {
+        blocks: (1..=40).map(|slot| (slot, block(slot, vec![]))).collect(),
+        ..Default::default()
+    }));
+    let (rpc, _handle) = rpc(chain.clone()).await;
+    let indexer = replay_indexer(Arc::new(database().await), rpc);
+    while indexer.synchronize().await.unwrap() == Progress::Behind {}
+    let stored = || async {
+        crate::storage::cursor(indexer.db.as_ref())
+            .await
+            .unwrap()
+            .unwrap()
+    };
+    assert!(stored().await.is_ready());
+    chain
+        .lock()
+        .unwrap()
+        .blocks
+        .extend((41..=80).map(|slot| (slot, block(slot, vec![]))));
+    assert!(indexer.synchronize().await.unwrap() == Progress::Behind);
+    assert!(stored().await.is_ready());
+    let mut cursor = stored().await;
+    indexer.rewind_tip(&mut cursor).await.unwrap();
+    assert!(!stored().await.is_ready());
+}
