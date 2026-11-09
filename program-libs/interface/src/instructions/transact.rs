@@ -145,13 +145,25 @@ impl RingRail {
     }
 
     pub fn of(tag: InstructionTag, mode: RingMode) -> Result<Self, CustomRingError> {
-        use InstructionTag::{AuthorityTransfer, Transfer};
-        match (tag, mode) {
-            (Transfer, RingMode::Anonymous) => Ok(Self::Anonymous),
-            (Transfer, RingMode::Confidential) => Ok(Self::Confidential),
-            (AuthorityTransfer, RingMode::Anonymous) => Ok(Self::AnonymousDelegate),
-            (AuthorityTransfer, RingMode::Confidential) => Ok(Self::Delegate),
+        match tag {
+            InstructionTag::Transfer => Ok(Self::transfer(mode)),
+            InstructionTag::AuthorityTransfer => Ok(Self::delegate(mode)),
             _ => Err(CustomRingError::InvalidInstructionData),
+        }
+    }
+
+    pub const fn transfer(mode: RingMode) -> Self {
+        match mode {
+            RingMode::Anonymous => Self::Anonymous,
+            RingMode::Confidential => Self::Confidential,
+        }
+    }
+
+    /// An anonymous ring keeps the victim and recipients hidden.
+    pub const fn delegate(mode: RingMode) -> Self {
+        match mode {
+            RingMode::Anonymous => Self::AnonymousDelegate,
+            RingMode::Confidential => Self::Delegate,
         }
     }
 
