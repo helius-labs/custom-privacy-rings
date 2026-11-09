@@ -163,7 +163,7 @@ fn the_cli_pins_the_released_rows_and_governs_its_demo_transfers() -> Result<()>
     for line in ["allow       sender added", "allow       recipient added"] {
         assert!(output.contains(line), "{line} in\n{output}");
     }
-    let transactions = demo.audited()?;
+    let transactions = demo.audited_transfers()?;
     let [transfer] = transactions.as_slice() else {
         return Err(anyhow!(
             "expected one audited transfer, got {}",
@@ -198,7 +198,7 @@ fn the_cli_pins_the_released_rows_and_governs_its_demo_transfers() -> Result<()>
     demo.project.write_list(frozen(false))?;
     demo.project.run(&["transact", "--enrol-allow"])?;
     assert_eq!(
-        demo.audited()?.len(),
+        demo.audited_transfers()?.len(),
         2,
         "the released sender transacts again"
     );
@@ -287,15 +287,18 @@ impl<'a> DemoRing<'a> {
         Ok(())
     }
 
-    fn audited(&self) -> Result<Vec<AuditedTransaction>> {
+    /// Each demo deposit is an audited transfer of dummies, only spends count here.
+    fn audited_transfers(&self) -> Result<Vec<AuditedTransaction>> {
         let client = self.env.client.as_async();
         let scan = RingScan::new(self.ring.program_id(), self.auditor.pubkey())
             .with_tracking_registry(self.ring.tracking_registry()?);
-        Ok(self
+        let mut transactions = self
             .env
             .client
             .block_on(scan.audit(&self.auditor, client.indexer(), client.rpc()))?
-            .transactions)
+            .transactions;
+        transactions.retain(|transaction| transaction.real_inputs > 0);
+        Ok(transactions)
     }
 
     fn refused_transact(&self) -> Result<()> {
@@ -325,7 +328,7 @@ impl<'a> DemoRing<'a> {
                 .collect())
         };
         let before = unspent()?;
-        let audited_before = self.audited()?.len();
+        let audited_before = self.audited_transfers()?.len();
         let refused = self.project.output(&["transact", "--enrol-allow"])?;
         assert!(
             !refused.status.success(),
@@ -340,7 +343,7 @@ impl<'a> DemoRing<'a> {
             before.len() + 2,
             "the refused demo keeps its two deposits"
         );
-        assert_eq!(self.audited()?.len(), audited_before);
+        assert_eq!(self.audited_transfers()?.len(), audited_before);
         Ok(())
     }
 }
