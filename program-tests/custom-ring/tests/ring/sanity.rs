@@ -125,9 +125,8 @@ fn a_zero_key_payment_settles_for_a_registered_and_an_unregistered_owner_without
         prepared.transfer_sol(&recipient, 1)?;
         Ok(prepared)
     };
-    // No rule reads a salted list on the payee, so a registered owner may take the zero key too.
-    for owner in [sender, &env.recipient.keypair] {
-        let receipt = OwnerTransfer {
+    let pay_at_zero = |owner: &ShieldedKeypair| -> Result<TransferReceipt> {
+        OwnerTransfer {
             ring,
             sender,
             prepared: at_zero(owner)?,
@@ -135,20 +134,33 @@ fn a_zero_key_payment_settles_for_a_registered_and_an_unregistered_owner_without
             auditor_tag: auditor_view_tag(&auditor.pubkey()),
             cosigner: None,
         }
-        .send(&env)?;
-        let audited = AuditLookup {
-            scan: RingScan::new(ring_program, auditor.pubkey()).with_mode(RingMode::Confidential),
-            auditor: &auditor,
-            signature: receipt.signature,
-        }
-        .run(&env)?;
-        ensure!(audited
-            .outputs
-            .iter()
-            .filter_map(|output| output.opening.utxo())
-            .any(|output| output.amount == 1
-                && output.owner.nullifier_pk() == Some(ZERO_NULLIFIER_PUBKEY)));
+        .send(&env)
+    };
+    // 1. An enrolled owner holds a key, the zero key paying it is refused before proving.
+    let refused = pay_at_zero(sender)
+        .err()
+        .context("the zero key paid an enrolled owner")?;
+    ensure!(
+        matches!(
+            refused.downcast_ref::<RingError>(),
+            Some(RingError::EnrolledRecipientAtZeroKey { .. })
+        ),
+        "refused by {refused:#}"
+    );
+    // 2. No rule reads a salted list on the payee, so an owner with no row takes the zero key.
+    let receipt = pay_at_zero(&env.recipient.keypair)?;
+    let audited = AuditLookup {
+        scan: RingScan::new(ring_program, auditor.pubkey()).with_mode(RingMode::Confidential),
+        auditor: &auditor,
+        signature: receipt.signature,
     }
+    .run(&env)?;
+    ensure!(audited
+        .outputs
+        .iter()
+        .filter_map(|output| output.opening.utxo())
+        .any(|output| output.amount == 1
+            && output.owner.nullifier_pk() == Some(ZERO_NULLIFIER_PUBKEY)));
     Ok(())
 }
 

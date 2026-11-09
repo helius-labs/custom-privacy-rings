@@ -371,13 +371,15 @@ fn the_key_enrollment_lifecycle_ends_in_a_delegate_move() -> Result<()> {
         }
         other => bail!("expected RecipientLiteralZeroKey, got {other}"),
     }
-    // No rule reads a salted list on the payee, the zero key passes every key check and stops at the prover.
+    // An enrolled owner holds a key, the zero key never pays it.
     match refused(&ShieldedAddress {
         nullifier_pubkey: ZERO_NULLIFIER_PUBKEY,
         ..member_address
     })? {
-        RingError::Client(_) => {}
-        other => bail!("expected the unreachable prover, got {other}"),
+        RingError::EnrolledRecipientAtZeroKey { slot_index } => {
+            assert_eq!(slot_index, recipient_slot)
+        }
+        other => bail!("expected EnrolledRecipientAtZeroKey, got {other}"),
     }
     let mismatched = ShieldedAddress {
         nullifier_pubkey: unregistered.nullifier_pubkey,
