@@ -14,7 +14,6 @@ import {
   poseidon,
   encodeMergeOutputData,
   encryptMergeOutput,
-  clampViewingSecret,
   equalBytes,
 } from "@heliuslabs/spr/internal";
 import { seededMergeOutputBlinding } from "../../../src/crypto/derivation/merge-seed.js";
@@ -84,6 +83,7 @@ import {
   type RingRecoveryStep,
 } from "../../../src/operations/workflow/recover.js";
 import { confirmedAccountReads, ringAuditReader } from "../../helpers/clients.js";
+import { clampedSecret } from "../../helpers/ring-frame.js";
 import {
   ownedAccount,
   ringPolicyData,
@@ -243,10 +243,6 @@ const otherRecords: readonly RecordFields[] = [
     nullifierPk: OTHER_NULLIFIER_PK,
   },
 ];
-
-function clampedSecret(byte: number): Bytes32 {
-  return clampViewingSecret(new Uint8Array(32).fill(byte) as Bytes32) as Bytes32;
-}
 
 function streamLayout(inputs: number, outputs: number): StreamLayout {
   const shape = frameKeyShape({

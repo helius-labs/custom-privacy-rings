@@ -17,7 +17,6 @@ import {
   hashBytes,
   poseidon,
   treeAddress,
-  clampViewingSecret,
 } from "@heliuslabs/spr/internal";
 import {
   seededMergeDummyNullifier,
@@ -62,6 +61,7 @@ import {
   ZERO_RECORD_KEY,
 } from "../../../src/protocol/codec/audit-stream.js";
 import { vectorRecord } from "../../helpers/vector-records.js";
+import { clampedSecret } from "../../helpers/ring-frame.js";
 import {
   EXIT_RECORD_LEN,
   RING_RECORD_LEN,
@@ -116,10 +116,6 @@ function layoutOf(entry: Case): AuditStreamLayout {
     outputs: entry.output_count,
     capacity: entry.outputs,
   };
-}
-
-function clampedSecret(byte: number): Bytes32 {
-  return clampViewingSecret(new Uint8Array(32).fill(byte) as Bytes32) as Bytes32;
 }
 
 interface StreamEdits {

@@ -1,5 +1,6 @@
 import { SPP_SUPPORTED_SHAPES } from "@heliuslabs/spr/interface";
 import type { Bytes16, Bytes32 } from "@heliuslabs/spr/interface";
+import { clampViewingSecret } from "@heliuslabs/spr/internal";
 
 import { CUSTOM_RING_PROOF_LENGTH } from "../../src/protocol/proof/custom-ring-proof.js";
 import {
@@ -25,6 +26,10 @@ export function field(byte: number): Bytes32 {
   const value = new Uint8Array(32);
   value[31] = byte;
   return value as Bytes32;
+}
+
+export function clampedSecret(byte: number): Bytes32 {
+  return clampViewingSecret(new Uint8Array(32).fill(byte) as Bytes32) as Bytes32;
 }
 
 /** A frame of `inputs` and `outputs` the rail's audit key serves, no proof valid. */
