@@ -22,7 +22,7 @@ import {
 } from "../membership/tracking.js";
 import { MAX_RING_MEMBER_BATCH } from "./indexer-limits.js";
 
-const { array, context, object, toWireInteger, wireInteger } = indexerCodec;
+const { array, context, object, wireInteger } = indexerCodec;
 const { checkedAddress, checkedBase64, checkedHash, hash, hashBytes, schemaFailure } =
   indexerScalars;
 
@@ -50,35 +50,6 @@ export interface TrackingOpenings {
   readonly root: Bytes32;
   readonly revision: bigint;
   readonly openings: readonly ServedTrackingOpening[];
-}
-
-export interface EnrollmentQueueRequest {
-  readonly registry: Address;
-  /** Exclusive, the page starts at `head` when absent. */
-  readonly after?: bigint;
-  readonly limit: number;
-}
-
-/** One `Enroll` no apply consumed, it grants nothing and resolves nothing. */
-export interface QueuedEnrollment {
-  readonly sequence: bigint;
-  readonly owner: Address;
-  readonly member: Bytes32;
-  /** The `Enroll` verified `RegisterKey`, unset on a rotation. */
-  readonly proven: boolean;
-  readonly nullifierPk: Bytes32;
-  readonly listTag: Bytes32;
-  readonly viewingU: Bytes32;
-  readonly ephPk: Uint8Array;
-  readonly ciphertext: Uint8Array;
-}
-
-/** `head` and `tail` as the queue account held them at `slot`. */
-export interface EnrollmentQueuePage {
-  readonly slot: bigint;
-  readonly head: bigint;
-  readonly tail: bigint;
-  readonly entries: readonly QueuedEnrollment[];
 }
 
 /** The seal's viewing key, refused unless its hash is the verified leaf's `viewingHash`. */
@@ -150,33 +121,6 @@ export const getTrackingRecordPoolMethod: MethodDescriptor<
           Number(wireInteger(entry, path, 0n, 0xffff_ffffn)),
         ),
       ),
-    });
-  },
-};
-
-export const getEnrollmentQueueMethod: MethodDescriptor<
-  EnrollmentQueueRequest,
-  EnrollmentQueuePage
-> = {
-  name: "getEnrollmentQueue",
-  encodeRequest: (request) => ({
-    registry: checkedAddress(request.registry, "registry"),
-    ...(request.after === undefined
-      ? {}
-      : { after: toWireInteger(request.after, "after", 0n, U64_MAX) }),
-    limit: toWireInteger(BigInt(request.limit), "limit", 1n, BigInt(MAX_RING_MEMBER_BATCH)),
-  }),
-  decodeResponse: (value) => {
-    const row = object(value, "$", ["context", "head", "tail", "entries"]);
-    const head = u64(row["head"], "head");
-    const tail = u64(row["tail"], "tail");
-    if (tail < head)
-      schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", "$.tail", "at least head", row["tail"]);
-    return Object.freeze({
-      slot: context(row["context"], "context").slot,
-      head,
-      tail,
-      entries: Object.freeze(array(row["entries"], "entries", queuedEnrollment)),
     });
   },
 };
@@ -256,34 +200,6 @@ function poolPath(value: unknown, path: string): QuadPath {
   return Object.freeze({
     index: Number(wireInteger(row["index"], `${path}.index`, 0n, QUAD_CAPACITY - 1n)),
     siblings: Object.freeze(siblings),
-  });
-}
-
-function queuedEnrollment(value: unknown, path: string): QueuedEnrollment {
-  const row = object(value, path, [
-    "sequence",
-    "owner",
-    "member",
-    "proven",
-    "nullifierPk",
-    "listTag",
-    "viewingU",
-    "ephPk",
-    "ciphertext",
-  ]);
-  const proven = row["proven"];
-  if (typeof proven !== "boolean")
-    return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", `${path}.proven`, "a boolean", proven);
-  return Object.freeze({
-    sequence: u64(row["sequence"], `${path}.sequence`),
-    owner: checkedAddress(row["owner"], `${path}.owner`),
-    member: field(row["member"], `${path}.member`),
-    proven,
-    nullifierPk: field(row["nullifierPk"], `${path}.nullifierPk`),
-    listTag: field(row["listTag"], `${path}.listTag`),
-    viewingU: viewingKey(row["viewingU"], `${path}.viewingU`),
-    ephPk: bytes(row["ephPk"], `${path}.ephPk`),
-    ciphertext: bytes(row["ciphertext"], `${path}.ciphertext`),
   });
 }
 

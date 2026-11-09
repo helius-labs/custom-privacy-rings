@@ -22,7 +22,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { SPL_TOKEN_PROGRAM_ID } from "@heliuslabs/spr/interface";
-import type { Address, Bytes32, Bytes33, Signature } from "@heliuslabs/spr/interface";
+import type { Address, Bytes32, Bytes33, Bytes64, Signature } from "@heliuslabs/spr/interface";
 import { addressBytes, type indexerTypes } from "@heliuslabs/spr/internal";
 import { SOL_MINT } from "@heliuslabs/spr/transaction";
 import { ShieldedKeypair, SigningKey, ViewingKey } from "@heliuslabs/spr/keypair";
@@ -89,11 +89,19 @@ describe("relay_enroll_inputs.json", () => {
   ) as Readonly<Record<string, string>>;
   const bytes = (name: string) => Uint8Array.from(Buffer.from(vector[name] ?? "", "hex"));
   const hex = (value: Uint8Array) => Buffer.from(value).toString("hex");
+  const record = bytes("record");
   const inputs = {
     ringProgramId: filled(1, 32) as Address,
     owner: filled(2, 32) as Address,
     trackingRegistry: filled(3, 32) as Address,
-    instructionData: bytes("instruction_data"),
+    record: {
+      nullifierPk: record.slice(0, 32) as Bytes32,
+      listTag: record.slice(32, 64) as Bytes32,
+      viewingU: record.slice(64, 96) as Bytes32,
+      ephU: record.slice(96, 128) as Bytes32,
+      ciphertext: record.slice(128, 192) as Bytes64,
+    },
+    proof: bytes("proof"),
   };
   const request = (intent: RelayIntent) => ({
     ring: filled(1, 32) as Address,
@@ -110,7 +118,12 @@ describe("relay_enroll_inputs.json", () => {
 
   it("moves the digest with a changed field", () => {
     expect(
-      hex(enrollRequestDigest({ ...inputs, instructionData: Uint8Array.of(6, 7, 9) })),
+      hex(
+        enrollRequestDigest({
+          ...inputs,
+          record: { ...inputs.record, listTag: new Uint8Array(32).fill(9) as Bytes32 },
+        }),
+      ),
     ).not.toBe(vector["request_digest"]);
   });
 

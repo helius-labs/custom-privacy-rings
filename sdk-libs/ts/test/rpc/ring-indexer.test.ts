@@ -4,7 +4,6 @@ import type { Bytes32 } from "@heliuslabs/spr";
 import { SprApi, indexerScalars } from "@heliuslabs/spr/internal";
 
 import { QUAD_HEIGHT } from "../../src/protocol/membership/member-registry.js";
-import { getEnrollmentQueueMethod } from "../../src/protocol/indexer/tracking-codec.js";
 import { RingIndexer } from "../../src/rpc/indexer.js";
 
 const { hash } = indexerScalars;
@@ -104,39 +103,5 @@ describe("ring member registry wire", () => {
     const decoded = await indexerFor({ result: page }).getStorageMemberRecords(request);
     expect(decoded.records.map((entry) => entry.path.index)).toEqual([1, 2]);
     expect(decoded.nextLeafIndex).toBeUndefined();
-  });
-});
-
-describe("tracking queue wire", () => {
-  const base64 = (fill: number, length: number) =>
-    Buffer.from(new Uint8Array(length).fill(fill)).toString("base64");
-  const entry = (viewingU: string) => ({
-    sequence: 7,
-    owner: REGISTRY,
-    member: TAG,
-    proven: true,
-    nullifierPk: TAG,
-    listTag: TAG,
-    viewingU,
-    ephPk: base64(4, 33),
-    ciphertext: base64(3, 64),
-  });
-  const page = (head: number, tail: number, viewingU = base64(0xff, 32)) => ({
-    context: { slot: 1, blockTime: 2 },
-    head,
-    tail,
-    entries: [entry(viewingU)],
-  });
-
-  it("reads a viewing key past the field from base64 and the queue bounds", () => {
-    const decoded = getEnrollmentQueueMethod.decodeResponse(page(7, 9));
-    expect(decoded).toMatchObject({ slot: 1n, head: 7n, tail: 9n });
-    expect(decoded.entries[0]).toMatchObject({ sequence: 7n, proven: true });
-    expect(decoded.entries[0]?.viewingU).toEqual(new Uint8Array(32).fill(0xff));
-  });
-
-  it("refuses a tail below the head and a viewing key off 32 bytes", () => {
-    expect(() => getEnrollmentQueueMethod.decodeResponse(page(9, 7))).toThrow();
-    expect(() => getEnrollmentQueueMethod.decodeResponse(page(7, 9, base64(1, 31)))).toThrow();
   });
 });

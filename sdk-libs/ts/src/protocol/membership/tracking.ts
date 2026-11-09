@@ -1,11 +1,9 @@
 /** The per-ring tracking registry, Rust `custom_ring_interface::tracking`. */
 import { hexToBytes } from "@noble/hashes/utils.js";
-import type { Address } from "@solana/kit";
 
 import {
   bigIntBytes,
   checkedBytes,
-  encodeBase58,
   equalBytes,
   hashBytes,
   poseidon,
@@ -29,18 +27,14 @@ import { FIELD_MAX } from "./member-opening.js";
 export const TRACKING_GRACE_SLOTS = 750n;
 /** Rust `TRACKING_ROOT_HISTORY`, the roots a tracking registry keeps. */
 export const TRACKING_ROOT_HISTORY = 128;
-/** Rust `ENROLLMENT_QUEUE_CAPACITY`, the entries a queue holds before `Enroll` refuses. */
-export const ENROLLMENT_QUEUE_CAPACITY = 256;
 /** The sentinel at leaf 0 under zero subtrees. */
 export const TRACKING_EMPTY_ROOT = hexToBytes(
   "197ce7e4cc6e23ed6f4d5b32303dd91e032f9afdc7f8dd424ab2638d245e4559",
 ) as Bytes32;
 
 const REGISTRY_DISCRIMINATOR = 3;
-const QUEUE_DISCRIMINATOR = 4;
 const OWNER_GRANT_DISCRIMINATOR = 5;
 const REGISTRY_SIZE = 74 + 48 * TRACKING_ROOT_HISTORY;
-const QUEUE_SIZE = 49 + 32 * ENROLLMENT_QUEUE_CAPACITY;
 const OWNER_GRANT_SIZE = 2;
 
 export interface TrackingRegistry {
@@ -50,16 +44,6 @@ export interface TrackingRegistry {
   readonly nextIndex: bigint;
   /** Newest first. */
   readonly roots: readonly (StorageRegistryRoot | undefined)[];
-}
-
-/** Rust `EnrollmentQueue`, sequence `s` holds its entry hash at `s % ENROLLMENT_QUEUE_CAPACITY`. */
-export interface EnrollmentQueue {
-  readonly registry: Address;
-  /** The oldest sequence no apply consumed. */
-  readonly head: bigint;
-  /** The sequence the next `Enroll` takes. */
-  readonly tail: bigint;
-  readonly entries: readonly Bytes32[];
 }
 
 /** The address names the registry, the owner and the reader. */
@@ -76,9 +60,9 @@ export interface TrackingFields {
   readonly viewingHash: Bytes32;
 }
 
-/** One queued `Enroll`, Rust `TrackingEntry`. */
+/** One enrollment an apply chains, Rust `TrackingEntry`. */
 export interface TrackingEntry extends TrackingFields {
-  /** Set when the `Enroll` verified `RegisterKey`, a rotation carries none. */
+  /** Set when the request carried a verified `RegisterKey` proof, a rotation carries none. */
   readonly proven: boolean;
 }
 
@@ -122,48 +106,6 @@ export function decodeTrackingRegistry(data: Uint8Array): TrackingRegistry {
   });
 }
 
-/** Mirrors Rust `EnrollmentQueue::from_data`, at most `ENROLLMENT_QUEUE_CAPACITY` entries pending. */
-export function decodeEnrollmentQueue(data: Uint8Array): EnrollmentQueue {
-  const reader = account(data, QUEUE_DISCRIMINATOR, QUEUE_SIZE);
-  const registry = encodeBase58(reader.bytes(32, "registry"));
-  const head = reader.u64("head");
-  const tail = reader.u64("tail");
-  const entries = Array.from(
-    { length: ENROLLMENT_QUEUE_CAPACITY },
-    () => reader.bytes(32, "entry") as Bytes32,
-  );
-  reader.done();
-  if (tail < head || tail - head > BigInt(ENROLLMENT_QUEUE_CAPACITY))
-    throw new RingError("RING_TRACKING_INVALID", {
-      details: { reason: "queue", head: head.toString(), tail: tail.toString() },
-    });
-  return Object.freeze({ registry, head, tail, entries: Object.freeze(entries) });
-}
-
-/** Rust `EnrollmentQueue::push` refuses a full queue with nothing written. */
-export function checkEnrollmentQueueOpen(queue: EnrollmentQueue): void {
-  if (queue.tail - queue.head >= BigInt(ENROLLMENT_QUEUE_CAPACITY))
-    throw new RingError("RING_ENROLLMENT_QUEUE_FULL");
-}
-
-/** The hashes of sequences `head .. head + count`, Rust `EnrollmentQueue::take`. */
-export function queuedEntryHashes(queue: EnrollmentQueue, count: number): readonly Bytes32[] {
-  if (count < 1) throw new RingError("RING_ENROLLMENT_NONE_NAMED");
-  if (BigInt(count) > queue.tail - queue.head)
-    throw new RingError("RING_ENROLLMENT_QUEUE_SHORT", {
-      details: { count, pending: (queue.tail - queue.head).toString() },
-    });
-  return Object.freeze(
-    Array.from(
-      { length: count },
-      (_, offset) =>
-        queue.entries[
-          Number((queue.head + BigInt(offset)) % BigInt(ENROLLMENT_QUEUE_CAPACITY))
-        ] as Bytes32,
-    ),
-  );
-}
-
 export function decodeOwnerGrant(data: Uint8Array): OwnerGrant {
   const reader = account(data, OWNER_GRANT_DISCRIMINATOR, OWNER_GRANT_SIZE);
   const grant = Object.freeze({
@@ -173,7 +115,7 @@ export function decodeOwnerGrant(data: Uint8Array): OwnerGrant {
   return grant;
 }
 
-/** Rust `TrackingEntry::from_enroll`, the entry an `Enroll` of `member` queues. */
+/** Rust `TrackingEntry::from_enroll`, the entry an enrollment of `member` chains. */
 export function trackingEntryOf(
   input: Readonly<{
     member: Bytes32;

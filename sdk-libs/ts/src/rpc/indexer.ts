@@ -28,11 +28,8 @@ import {
   type RecordOpening,
 } from "../protocol/membership/member-registry.js";
 import {
-  getEnrollmentQueueMethod,
   getTrackingOpeningsMethod,
   getTrackingRecordPoolMethod,
-  type EnrollmentQueuePage,
-  type EnrollmentQueueRequest,
   type TrackingOpenings,
   type TrackingOpeningsRequest,
   type TrackingRecordPoolRequest,
@@ -115,18 +112,6 @@ export class RingIndexer implements RingRecordReader, TrackingReader {
     const method = "getTrackingRecordPool";
     try {
       return await this.#api.call(getTrackingRecordPoolMethod, request, context);
-    } catch (cause) {
-      throw ringIndexerError(cause, method);
-    }
-  }
-
-  async getEnrollmentQueue(
-    request: EnrollmentQueueRequest,
-    context?: RequestContext,
-  ): Promise<EnrollmentQueuePage> {
-    const method = "getEnrollmentQueue";
-    try {
-      return await this.#api.call(getEnrollmentQueueMethod, request, context);
     } catch (cause) {
       throw ringIndexerError(cause, method);
     }

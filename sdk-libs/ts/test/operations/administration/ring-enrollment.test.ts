@@ -17,29 +17,27 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { listTagOf } from "../../../src/crypto/keys/list-salt.js";
 import {
-  applyEnrollmentsInstruction,
   checkEnrollment,
-  enrollInstruction,
+  enrollmentRequest,
   enrollmentState,
   ownerGrantInstruction,
   proveEnrollment,
-  type EnrollmentReadClient,
   type EnrollmentSeal,
   type EnrollmentState,
 } from "../../../src/operations/management/enrollment.js";
-import type { QueuedEnrollment } from "../../../src/protocol/indexer/tracking-codec.js";
+import {
+  encodeEnrollmentRecord,
+  encodeRelayEnrollInputs,
+  enrollRequestDigest,
+} from "../../../src/protocol/ring-rpc/relay-enroll-inputs.js";
 import { QUAD_CAPACITY, QUAD_HEIGHT } from "../../../src/protocol/membership/member-registry.js";
 import { memberOfTag } from "../../../src/protocol/membership/policy.js";
 import {
-  ENROLLMENT_QUEUE_CAPACITY,
   TRACKING_EMPTY_ROOT,
   TRACKING_ROOT_HISTORY,
   TRACKING_SENTINEL,
-  checkEnrollmentQueueOpen,
-  decodeEnrollmentQueue,
   decodeOwnerGrant,
   decodeTrackingRegistry,
-  queuedEntryHashes,
   trackingEntryHash,
   trackingEntryOf,
   trackingRecordHash,
@@ -47,19 +45,16 @@ import {
   viewingKeyHash,
   type TrackingRecord,
 } from "../../../src/protocol/membership/tracking.js";
-import {
-  enrollmentQueuePda,
-  ownerGrantPda,
-  STORAGE_PROGRAM_ID,
-} from "../../../src/protocol/pda/index.js";
+import { ownerGrantPda } from "../../../src/protocol/pda/index.js";
 import { registerKeyStatementHash } from "../../../src/protocol/proof/statement.js";
 import type { RegisterKeyProofRequest } from "../../../src/rpc/prover/ring.js";
 import { poseidon } from "@heliuslabs/spr/internal";
 import type { FixtureTrackingEntry } from "../../helpers/member-registry.js";
-import { trackingClient } from "../../helpers/tracking-client.js";
+import { ringTrackingClient, trackingClient } from "../../helpers/tracking-client.js";
 
 const REGISTRY = address("Stor111111111111111111111111111111111111111");
 const OWNER = address("Cura111111111111111111111111111111111111111");
+const RING = address("9vyTbYGyh3cwxkAQpjjFQGXmdJP6p9B6YcQ5pNuXPNbh");
 const field = (value: number): Bytes32 => new Uint8Array(32).fill(value) as Bytes32;
 const PROOF = new Uint8Array(192).fill(5);
 const VIEWING_U = field(0x15);
@@ -72,7 +67,7 @@ const SEAL: EnrollmentSeal = Object.freeze({
 });
 
 function stored(): EnrollmentState {
-  return { kind: "queued", sequence: 0n, seal: SEAL, viewingU: VIEWING_U };
+  return { root: field(0x01), record: TRACKING_SENTINEL, seal: SEAL, viewingU: VIEWING_U };
 }
 
 /** `owner`'s leaf as an applied `SEAL` enrollment would insert it. */
@@ -87,44 +82,9 @@ function sealedEntry(owner: Address, viewingU: Bytes32 = VIEWING_U): FixtureTrac
   };
 }
 
-function queued(owner: Address, sequence: bigint, proven: boolean): QueuedEnrollment {
-  return {
-    sequence,
-    owner,
-    member: memberOfTag(addressBytes(owner, "owner")),
-    proven,
-    nullifierPk: SEAL.nullifierPk,
-    listTag: SEAL.listTag,
-    viewingU: VIEWING_U,
-    ephPk: Uint8Array.of(4, ...SEAL.ephU),
-    ciphertext: SEAL.ciphertext,
-  };
-}
-
-function enrollmentClient(
-  input: Readonly<{
-    applied?: readonly FixtureTrackingEntry[];
-    pending?: readonly QueuedEnrollment[];
-    queued?: number;
-  }> = {},
-): EnrollmentReadClient {
-  return trackingClient(REGISTRY, {
-    applied: [...(input.applied ?? [])],
-    pending: [...(input.pending ?? [])],
-    ...(input.queued === undefined ? {} : { queued: input.queued }),
-  });
-}
-
-function queueBytes(head: bigint, tail: bigint, registry: Address = REGISTRY): Uint8Array {
-  const data = new Uint8Array(49 + 32 * ENROLLMENT_QUEUE_CAPACITY);
-  data[0] = 4;
-  data.set(addressBytes(registry, "registry"), 1);
-  const view = new DataView(data.buffer);
-  view.setBigUint64(33, head, true);
-  view.setBigUint64(41, tail, true);
-  for (let sequence = head; sequence < tail; sequence += 1n)
-    data.set(field(Number(sequence % 256n)), 49 + 32 * Number(sequence % 256n));
-  return data;
+/** The ring pinning `REGISTRY`, its tree holding `applied`. */
+function ringClient(applied: readonly FixtureTrackingEntry[] = []) {
+  return ringTrackingClient(RING, REGISTRY, [...applied]);
 }
 
 beforeAll(initializePoseidon);
@@ -182,30 +142,6 @@ describe("tracking accounts", () => {
     nextIndex(0n);
     expect(() => decodeTrackingRegistry(data)).toThrow("RING_TRACKING_INVALID");
     expect(() => decodeTrackingRegistry(data.subarray(0, 1610))).toThrow("RING_TRACKING_INVALID");
-  });
-
-  it("decodes a queue, sequence s at s % 256, and takes the entries from head", () => {
-    const queue = decodeEnrollmentQueue(queueBytes(250n, 260n));
-    expect(queue).toMatchObject({ registry: REGISTRY, head: 250n, tail: 260n });
-    expect(queuedEntryHashes(queue, 10)).toEqual(
-      [250, 251, 252, 253, 254, 255, 0, 1, 2, 3].map(field),
-    );
-    expect(() => queuedEntryHashes(queue, 11)).toThrow("RING_ENROLLMENT_QUEUE_SHORT");
-    expect(() => queuedEntryHashes(queue, 0)).toThrow("RING_ENROLLMENT_NONE_NAMED");
-    expect(() => checkEnrollmentQueueOpen(queue)).not.toThrow();
-  });
-
-  it("refuses a full queue push and a queue off its layout", () => {
-    const full = decodeEnrollmentQueue(queueBytes(3n, 3n + 256n));
-    expect(() => checkEnrollmentQueueOpen(full)).toThrow("RING_ENROLLMENT_QUEUE_FULL");
-    expect(() => decodeEnrollmentQueue(queueBytes(3n, 3n + 257n))).toThrow("RING_TRACKING_INVALID");
-    expect(() => decodeEnrollmentQueue(queueBytes(5n, 4n))).toThrow("RING_TRACKING_INVALID");
-    expect(() => decodeEnrollmentQueue(queueBytes(0n, 0n).subarray(1))).toThrow(
-      "RING_TRACKING_INVALID",
-    );
-    const other = queueBytes(0n, 0n);
-    other[0] = 3;
-    expect(() => decodeEnrollmentQueue(other)).toThrow("RING_TRACKING_INVALID");
   });
 
   it("binds the proven bit and the viewing key in the entry hash", () => {
@@ -286,95 +222,80 @@ describe("tracking openings", () => {
   });
 });
 
-describe("enrollment instructions", () => {
-  it("lays out tag 6, the fields then the proof on a first enrollment, none on a rotation", async () => {
-    const owner = await generateKeyPairSigner();
-    const client = enrollmentClient();
-    const first = await enrollInstruction(
-      { owner, trackingRegistry: REGISTRY, seal: SEAL, viewingU: VIEWING_U, proof: PROOF },
+describe("enrollment requests", () => {
+  it("names the ring's registry, the record, then the proof on a first enrollment, none on a rotation", async () => {
+    const client = await ringClient();
+    const first = await enrollmentRequest(
+      { ringProgramId: RING, owner: OWNER, seal: SEAL, viewingU: VIEWING_U, proof: PROOF },
       client,
     );
-    const data = new Reader(new Uint8Array(first.data ?? []));
-    expect(data.u8("tag")).toBe(6);
+    expect(first).toMatchObject({ ringProgramId: RING, owner: OWNER, trackingRegistry: REGISTRY });
+    const record = encodeEnrollmentRecord(first.record);
+    const data = new Reader(record);
     expect(data.bytes(32, "nullifierPk")).toEqual(SEAL.nullifierPk);
     expect(data.bytes(32, "listTag")).toEqual(SEAL.listTag);
     expect(data.bytes(32, "viewingU")).toEqual(VIEWING_U);
     expect(data.bytes(32, "ephU")).toEqual(SEAL.ephU);
     expect(data.bytes(64, "ciphertext")).toEqual(SEAL.ciphertext);
-    expect(data.bytes(192, "proof")).toEqual(PROOF);
     data.done();
-    expect(first.programAddress).toBe(STORAGE_PROGRAM_ID);
-    // No payer and no system program, an Enroll moves no lamports and writes the queue alone.
-    const [queue] = await enrollmentQueuePda(REGISTRY);
-    expect(first.accounts?.map(({ address: key, role }) => [key, role])).toEqual([
-      [owner.address, 2],
-      [REGISTRY, 0],
-      [queue, 1],
-    ]);
-    const rotation = await enrollInstruction(
-      { owner, trackingRegistry: REGISTRY, seal: SEAL, viewingU: VIEWING_U },
+    const wire = encodeRelayEnrollInputs(first);
+    expect(wire).toHaveLength(96 + 192 + 1 + 192);
+    expect(wire.subarray(96, 288)).toEqual(record);
+    const rotation = await enrollmentRequest(
+      { ringProgramId: RING, owner: OWNER, seal: SEAL, viewingU: VIEWING_U },
       client,
     );
-    expect(rotation.data).toHaveLength(1 + 192);
+    expect(encodeRelayEnrollInputs(rotation)).toHaveLength(96 + 192 + 1);
+    // The owner's signature binds the proof, a request without it signs another digest.
+    expect(enrollRequestDigest(rotation)).not.toEqual(enrollRequestDigest(first));
   });
 
-  it("checks the owner's leaf under the newest root before it builds", async () => {
-    const owner = await generateKeyPairSigner();
-    const client = enrollmentClient({ applied: [sealedEntry(owner.address)] });
-    const enroll = (seal: EnrollmentSeal) =>
-      enrollInstruction({ owner, trackingRegistry: REGISTRY, seal, viewingU: field(0x16) }, client);
-    await expect(enroll(SEAL)).resolves.toBeDefined();
+  it("checks the owner's leaf under the newest root before the owner signs", async () => {
+    const client = await ringClient([sealedEntry(OWNER)]);
+    const request = (seal: EnrollmentSeal) =>
+      enrollmentRequest({ ringProgramId: RING, owner: OWNER, seal, viewingU: field(0x16) }, client);
+    await expect(request(SEAL)).resolves.toBeDefined();
     await expect(
-      enroll({ ...SEAL, ciphertext: new Uint8Array(64).fill(0x16) as Bytes64 }),
+      request({ ...SEAL, ciphertext: new Uint8Array(64).fill(0x16) as Bytes64 }),
     ).rejects.toMatchObject({ code: "RING_ENROLLMENT_KEY_MISMATCH" });
     await expect(
-      enrollInstruction(
+      enrollmentRequest(
         {
-          owner,
-          trackingRegistry: REGISTRY,
+          ringProgramId: RING,
+          owner: OWNER,
           seal: { ...SEAL, nullifierPk: ZERO_NULLIFIER_PK as Bytes32 },
           viewingU: VIEWING_U,
         },
-        enrollmentClient(),
+        await ringClient(),
       ),
     ).rejects.toMatchObject({ code: "RING_ENROLLMENT_ZERO_KEY" });
   });
 
-  it("refuses an enrollment the full queue cannot take", async () => {
-    const owner = await generateKeyPairSigner();
+  it("refuses a noncanonical viewing key and a proof off its length", async () => {
+    const client = await ringClient();
     await expect(
-      enrollInstruction(
-        { owner, trackingRegistry: REGISTRY, seal: SEAL, viewingU: VIEWING_U, proof: PROOF },
-        enrollmentClient({ queued: ENROLLMENT_QUEUE_CAPACITY }),
+      enrollmentRequest(
+        {
+          ringProgramId: RING,
+          owner: OWNER,
+          seal: SEAL,
+          viewingU: new Uint8Array(32).fill(0xff) as Bytes32,
+        },
+        client,
       ),
-    ).rejects.toMatchObject({ code: "RING_ENROLLMENT_QUEUE_FULL" });
-  });
-
-  it("names the registry and its queue, the count last, and refuses a count no key serves", async () => {
-    const apply = (count: number) =>
-      applyEnrollmentsInstruction({
-        trackingRegistry: REGISTRY,
-        revision: 9n,
-        proof: PROOF,
-        newRoot: field(0x31),
-        newNextIndex: 3n,
-        count,
-      });
-    const applied = await apply(3);
-    expect(applied.data).toHaveLength(1 + 8 + 192 + 32 + 8 + 1);
-    expect(applied.data?.subarray(1 + 8 + 192 + 32)).toEqual(
-      Uint8Array.of(3, 0, 0, 0, 0, 0, 0, 0, 3),
-    );
-    const [queue] = await enrollmentQueuePda(REGISTRY);
-    expect(applied.accounts?.map(({ address: key, role }) => [key, role])).toEqual([
-      [REGISTRY, 1],
-      [queue, 1],
-    ]);
-    await expect(apply(0)).rejects.toMatchObject({ code: "RING_ENROLLMENT_NONE_NAMED" });
-    await expect(apply(17)).rejects.toMatchObject({
-      code: "RING_STORAGE_WRITE_INVALID",
-      details: { reason: "UnsupportedBatch" },
-    });
+    ).rejects.toMatchObject({ code: "RING_NONCANONICAL_VIEWING_KEY" });
+    await expect(
+      enrollmentRequest(
+        {
+          ringProgramId: RING,
+          owner: OWNER,
+          seal: SEAL,
+          viewingU: VIEWING_U,
+          proof: PROOF.subarray(1),
+        },
+        client,
+      ),
+    ).rejects.toMatchObject({ code: "RING_PROOF_LENGTH" });
   });
 
   it("writes an owner grant under the split reader key", async () => {
@@ -472,23 +393,16 @@ describe("proveEnrollment", () => {
     expect(proveRing).not.toHaveBeenCalled();
   });
 
-  it("reads the applied leaf, else the first proven queued entry, a rotation alone nothing", async () => {
+  it("reads the applied leaf and nothing for an owner no root holds", async () => {
     const applied = await enrollmentState(
       { trackingRegistry: REGISTRY, owner: OWNER },
-      enrollmentClient({ applied: [sealedEntry(OWNER)] }),
+      trackingClient(REGISTRY, [sealedEntry(OWNER)]),
     );
-    expect(applied).toMatchObject({ kind: "applied", seal: SEAL, viewingU: VIEWING_U });
-    const pending = [queued(OWNER, 0n, false), queued(REGISTRY, 1n, true), queued(OWNER, 2n, true)];
+    expect(applied).toMatchObject({ seal: SEAL, viewingU: VIEWING_U });
     expect(
       await enrollmentState(
         { trackingRegistry: REGISTRY, owner: OWNER },
-        enrollmentClient({ pending }),
-      ),
-    ).toMatchObject({ kind: "queued", sequence: 2n, seal: SEAL });
-    expect(
-      await enrollmentState(
-        { trackingRegistry: REGISTRY, owner: OWNER },
-        enrollmentClient({ pending: [queued(OWNER, 0n, false)] }),
+        trackingClient(REGISTRY, []),
       ),
     ).toBeUndefined();
   });
@@ -499,7 +413,7 @@ describe("proveEnrollment", () => {
     await expect(
       enrollmentState(
         { trackingRegistry: REGISTRY, owner: OWNER },
-        enrollmentClient({ applied: [forged] }),
+        trackingClient(REGISTRY, [forged]),
       ),
     ).rejects.toMatchObject({ code: "RING_VIEWING_KEY_MISMATCH" });
   });

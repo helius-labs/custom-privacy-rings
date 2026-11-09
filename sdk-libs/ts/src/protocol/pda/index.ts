@@ -96,14 +96,6 @@ export async function trackingRegistryPda(ringProgramId: Address): Promise<Progr
   });
 }
 
-/** The tracking registry's one enrollment queue, Rust `EnrollmentQueue::seeds`. */
-export function enrollmentQueuePda(registry: Address): Promise<ProgramDerivedAddress> {
-  return getProgramDerivedAddress({
-    programAddress: STORAGE_PROGRAM_ID,
-    seeds: [encoder.encode("enrollment_queue"), getAddressEncoder().encode(registry)],
-  });
-}
-
 /** One account per owner per reader, the key splits because a seed holds 32 bytes. */
 export function ownerGrantPda(
   registry: Address,

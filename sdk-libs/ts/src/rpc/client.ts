@@ -14,8 +14,6 @@ import {
 import { SprClient, type ProvingKeyReport } from "@heliuslabs/spr/client";
 
 import type {
-  EnrollmentQueuePage,
-  EnrollmentQueueRequest,
   TrackingOpenings,
   TrackingOpeningsRequest,
   TrackingRecordPoolRequest,
@@ -116,13 +114,6 @@ export class CustomRingClient extends SprClient implements RingProver, RingRecor
     context?: RequestContext,
   ): Promise<ServedTrackingPool> {
     return this.#ringIndexer.getTrackingRecordPool(request, context);
-  }
-
-  getEnrollmentQueue(
-    request: EnrollmentQueueRequest,
-    context?: RequestContext,
-  ): Promise<EnrollmentQueuePage> {
-    return this.#ringIndexer.getEnrollmentQueue(request, context);
   }
 
   /** One ring proof, the 192-byte `CustomRingProof` the ring program verifies. */

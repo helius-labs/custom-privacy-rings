@@ -1,20 +1,18 @@
 import { getBase58Decoder, getBase64Decoder, type MessagePartialSigner } from "@solana/kit";
 import type { RequestContext, Signature } from "@heliuslabs/spr/interface";
-import { signerAddress } from "@heliuslabs/spr/internal";
 
-import { fetchRingPolicy } from "../../protocol/membership/config.js";
 import {
   encodeRelayEnrollInputs,
   enrollRequestDigest,
   type RelayEnrollInputs,
 } from "../../protocol/ring-rpc/relay-enroll-inputs.js";
 import type { RelayIntent, RelayQuote } from "../../protocol/ring-rpc/ring-rpc-types.js";
-import { expectedEnroll, mismatch } from "../../rpc/relay-message.js";
+import { mismatch } from "../../rpc/relay-message.js";
 import { PreparedRelay } from "../../rpc/relay.js";
 import { signMessage } from "../../rpc/ring-rpc.js";
-import { enrollInstruction, type Enroll, type EnrollmentReadClient } from "./enrollment.js";
+import { enrollmentRequest, type Enroll, type EnrollmentReadClient } from "./enrollment.js";
 
-/** A PDA holds no key to sign here, its program enrolls through CPI. */
+/** The owner signs the request alone, Ring RPC writes the enrollment and asks no second signature. */
 export async function prepareEnrollRelay(
   input: Readonly<{
     inputs: RelayEnrollInputs;
@@ -30,15 +28,12 @@ export async function prepareEnrollRelay(
     proofInputs: getBase64Decoder().decode(encodeRelayEnrollInputs(inputs)) as never,
     ownerSignature: getBase58Decoder().decode(signature) as Signature,
   };
-  return new PreparedRelay(
-    { ring: inputs.ringProgramId, quote, intent },
-    await expectedEnroll(inputs, quote.feePayer),
-  );
+  return new PreparedRelay({ ring: inputs.ringProgramId, quote, intent });
 }
 
+/** A first enrollment or a rotation, checked against the owner's leaf before the owner signs. */
 export async function prepareEnrollmentRelay(
   input: Readonly<{
-    ringProgramId: RelayEnrollInputs["ringProgramId"];
     enroll: Enroll;
     owner: MessagePartialSigner;
     quote: RelayQuote;
@@ -46,21 +41,9 @@ export async function prepareEnrollmentRelay(
   client: EnrollmentReadClient,
   context?: RequestContext,
 ): Promise<PreparedRelay> {
-  const { ringProgramId, enroll, owner, quote } = input;
-  const { tracking } = await fetchRingPolicy(client, ringProgramId, context);
-  const proved = await enrollInstruction(
-    { ...enroll, trackingRegistry: tracking },
-    client,
-    context,
-  );
   return prepareEnrollRelay({
-    inputs: {
-      ringProgramId,
-      owner: signerAddress(enroll.owner),
-      trackingRegistry: tracking,
-      instructionData: new Uint8Array(proved.data ?? []),
-    },
-    owner,
-    quote,
+    inputs: await enrollmentRequest(input.enroll, client, context),
+    owner: input.owner,
+    quote: input.quote,
   });
 }

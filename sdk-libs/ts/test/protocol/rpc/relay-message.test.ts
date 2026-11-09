@@ -57,7 +57,6 @@ import {
   checkRelayMessage,
   decodeRelayTransferTerms,
   expectedDelegate,
-  expectedEnroll,
   expectedPublicOwner,
   openingHash,
   ZERO_ADDRESS,
@@ -108,14 +107,6 @@ interface DelegateRequest {
       }[];
     };
   };
-  readonly feePayer: Address;
-}
-
-interface EnrollRequest {
-  readonly ringProgramId: Address;
-  readonly owner: Address;
-  readonly trackingRegistry: Address;
-  readonly instructionData: string;
   readonly feePayer: Address;
 }
 
@@ -282,7 +273,6 @@ const delegates = vector<DelegateRequest>("relay_delegate_messages.json");
 const settlements = vector<DelegateRequest>("relay_delegate_settlement_messages.json");
 const DELEGATE = delegates.request.prepare.delegate;
 const owners = fixture<{ readonly cases: readonly OwnerCase[] }>("relay_transfer_messages.json");
-const enrolls = vector<EnrollRequest>("relay_enroll_messages.json");
 
 describe("relay message check", () => {
   it.each(delegates.cases)("reaches the Rust verdict on delegate message $name", async (entry) => {
@@ -304,15 +294,6 @@ describe("relay message check", () => {
       })),
     });
     expect(verdict(expected, entry.message, entry.terms.signer)).toBe(entry.verdict);
-  });
-
-  it.each(enrolls.cases)("reaches the Rust verdict on enroll message $name", async (entry) => {
-    const { feePayer, instructionData, ...named } = enrolls.request;
-    const expected = await expectedEnroll(
-      { ...named, instructionData: new Uint8Array(base64.encode(instructionData)) },
-      feePayer,
-    );
-    expect(verdict(expected, entry.message)).toBe(entry.verdict);
   });
 
   it("refuses a delegate message with a swapped recipient before signing", async () => {
@@ -601,15 +582,9 @@ describe("relay message check", () => {
     });
   });
 
-  it("signs the checked inline and enroll bytes after the caller overwrites its array", async () => {
-    const { feePayer, instructionData, ...named } = enrolls.request;
-    const enroll = await expectedEnroll(
-      { ...named, instructionData: new Uint8Array(base64.encode(instructionData)) },
-      feePayer,
-    );
+  it("signs the checked inline bytes after the caller overwrites its array", async () => {
     for (const [expected, cases, address] of [
       [await delegate(delegates.request), delegates.cases, DELEGATE],
-      [enroll, enrolls.cases, enrolls.request.owner],
     ] as const) {
       const caller = message(cases, "honest");
       const checked = caller.slice();

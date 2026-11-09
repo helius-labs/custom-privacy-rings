@@ -115,7 +115,6 @@ import {
   ringPolicyData,
   sppRingRegistration,
   storageRegistryAccount,
-  enrollmentQueueAccount,
   trackingRegistryAccount,
 } from "./ring-accounts.js";
 import { settlementAccounts } from "../../src/protocol/transaction/spp.js";
@@ -253,7 +252,6 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
     );
   };
   publishTracking();
-  accounts.set(...(await enrollmentQueueAccount({ registry: trackingRegistry })));
   const trees = new Map<
     Address,
     Readonly<{ tree: ReturnType<typeof recordTree>; revision: bigint }>
@@ -353,7 +351,7 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
   };
   const reader: Pick<ChainReader, "getAccount"> &
     Pick<RingRecordReader, "getStorageMemberOpenings" | "getStorageRecordPool"> &
-    Pick<TrackingReader, "getTrackingOpenings" | "getTrackingRecordPool" | "getEnrollmentQueue"> = {
+    Pick<TrackingReader, "getTrackingOpenings" | "getTrackingRecordPool"> = {
     getAccount: async (address) => accounts.get(address),
     getStorageMemberOpenings: async (request): Promise<StorageMemberOpenings> => {
       const { tree, revision } = treeAt(request.registry, request.expectedRoot);
@@ -386,7 +384,6 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
         throw new Error("tracking pool under an unknown root");
       return tracked.pool(request.members, request.openings);
     },
-    getEnrollmentQueue: async () => ({ slot, head: 0n, tail: 0n, entries: [] }),
   };
   const spp = (
     proofInputs: SppProofInputs,

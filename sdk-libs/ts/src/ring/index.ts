@@ -582,16 +582,12 @@ export {
 export type { ReaderKey } from "../operations/management/reader-access.js";
 export { createPasskey, passkeyReader, type Passkey } from "../crypto/keys/passkey.js";
 export {
-  APPLY_ENROLLMENTS_TAG,
-  ENROLL_TAG,
   OWNER_GRANT_TAG,
-  applyEnrollmentsInstruction,
-  enrollInstruction,
+  enrollRequestOf,
+  enrollmentRequest,
   enrollmentState,
   ownerGrantInstruction,
   proveEnrollment,
-  readEnrollmentQueue,
-  type ApplyEnrollments,
   type Enroll,
   type EnrollmentReadClient,
   type EnrollmentSeal,
@@ -609,21 +605,16 @@ export {
   type ViewingRotation,
 } from "../operations/management/viewing-rotation.js";
 export {
-  ENROLLMENT_QUEUE_CAPACITY,
   TRACKING_EMPTY_ROOT,
   TRACKING_GRACE_SLOTS,
   TRACKING_ROOT_HISTORY,
-  checkEnrollmentQueueOpen,
-  decodeEnrollmentQueue,
   decodeOwnerGrant,
   decodeTrackingRegistry,
-  queuedEntryHashes,
   trackingEntryHash,
   trackingEntryOf,
   trackingRecordHash,
   verifyTrackingOpening,
   viewingKeyHash,
-  type EnrollmentQueue,
   type OwnerGrant,
   type ServedTrackingPool,
   type ServedTrackingRecord,
@@ -636,8 +627,10 @@ export {
 export { privateListKey, publicListKey } from "../protocol/membership/private-list.js";
 export { listSaltOf, listTagOf } from "../crypto/keys/list-salt.js";
 export {
+  encodeEnrollmentRecord,
   encodeRelayEnrollInputs,
   enrollRequestDigest,
+  type EnrollmentRecord,
   type RelayEnrollInputs,
 } from "../protocol/ring-rpc/relay-enroll-inputs.js";
 export type { TransactionSize } from "../operations/workflow/compile.js";
@@ -675,16 +668,13 @@ export {
 } from "../rpc/tracking-resolver.js";
 export { sealViewingKey } from "../protocol/indexer/tracking-codec.js";
 export type {
-  EnrollmentQueuePage,
-  EnrollmentQueueRequest,
-  QueuedEnrollment,
   ServedTrackingOpening,
   TrackingOpenings,
   TrackingOpeningsRequest,
   TrackingRecordPoolRequest,
   TrackingSeal,
 } from "../protocol/indexer/tracking-codec.js";
-export { enrollmentQueuePda, ownerGrantPda } from "../protocol/pda/index.js";
+export { ownerGrantPda } from "../protocol/pda/index.js";
 export type { ReplyMetadata } from "../protocol/codec/anonymous-delivery.js";
 export {
   checkCoOwnerKeys,

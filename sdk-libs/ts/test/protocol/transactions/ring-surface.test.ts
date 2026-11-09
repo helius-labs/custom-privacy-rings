@@ -151,8 +151,7 @@ describe("public package surface", () => {
       "recoverRingMemberNotes",
       "createCustomRingClient",
       "buildRingDepositTransaction",
-      "enrollInstruction",
-      "decodeEnrollmentQueue",
+      "enrollmentRequest",
     ] as const) {
       expect(root[name]).toBeTypeOf("function");
     }

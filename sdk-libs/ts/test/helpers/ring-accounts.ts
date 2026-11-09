@@ -7,13 +7,9 @@ import type { Bytes32 } from "@heliuslabs/spr/interface";
 import {
   ringAuthAddress,
   ringCoSignerPda,
-  enrollmentQueuePda,
   STORAGE_PROGRAM_ID,
 } from "../../src/protocol/pda/index.js";
-import {
-  ENROLLMENT_QUEUE_CAPACITY,
-  TRACKING_ROOT_HISTORY,
-} from "../../src/protocol/membership/tracking.js";
+import { TRACKING_ROOT_HISTORY } from "../../src/protocol/membership/tracking.js";
 import { ROOT_HISTORY } from "../../src/protocol/membership/member-registry.js";
 import type {
   RingCoSigner,
@@ -106,29 +102,6 @@ export function trackingRegistryAccount(
       .u64(slot === 0 ? input.revision : 0n, "revision")
       .u64(0n, "expiresAt");
   return ownedAccount(STORAGE_PROGRAM_ID, writer.finish());
-}
-
-/** Rust `EnrollmentQueue` of `registry` at its PDA, `entries` from sequence `head`. */
-export async function enrollmentQueueAccount(
-  input: Readonly<{ registry: Address; head?: bigint; entries?: readonly Uint8Array[] }>,
-): Promise<readonly [Address, RpcAccount]> {
-  const head = input.head ?? 0n;
-  const entries = input.entries ?? [];
-  const slots: Uint8Array[] = Array.from(
-    { length: ENROLLMENT_QUEUE_CAPACITY },
-    () => new Uint8Array(32),
-  );
-  entries.forEach((entry, offset) => {
-    slots[Number((head + BigInt(offset)) % BigInt(ENROLLMENT_QUEUE_CAPACITY))] = entry;
-  });
-  const writer = new Writer()
-    .u8(4, "discriminator")
-    .bytes(addressBytes(input.registry))
-    .u64(head, "head")
-    .u64(head + BigInt(entries.length), "tail");
-  for (const slot of slots) writer.bytes(slot, 32, "entry");
-  const [address] = await enrollmentQueuePda(input.registry);
-  return [address, ownedAccount(STORAGE_PROGRAM_ID, writer.finish())];
 }
 
 /** Rust `StorageRegistry` owned by the storage program, `roots` newest first. */

@@ -217,8 +217,6 @@ export const RING_ERROR_CODES = [
   "RING_EXIT_PROOF_UNAVAILABLE",
   "RING_RECIPIENT_LITERAL_ZERO_KEY",
   "RING_DEPOSIT_PROOF_DATA_SOURCE",
-  "RING_ENROLLMENT_QUEUE_FULL",
-  "RING_ENROLLMENT_QUEUE_SHORT",
   "RING_VIEWING_KEY_MISMATCH",
 ] as const;
 import { extractCauseCodes, hideCause, sanitizeDetails } from "@heliuslabs/spr/internal";
@@ -343,9 +341,6 @@ export const StorageProgramError = Object.freeze({
   privateWriteWithoutTracking: 9035,
   trackingTreeFull: 9036,
   rootHistoryRetained: 9037,
-  invalidEnrollmentQueue: 9038,
-  enrollmentQueueFull: 9039,
-  enrollmentQueueShort: 9040,
 } as const);
 
 export class RingError extends Error {

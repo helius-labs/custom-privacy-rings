@@ -8,7 +8,6 @@ import { initializePoseidon } from "@heliuslabs/spr";
 import { encodeBase58, poseidon, solanaOwnerIdentity } from "@heliuslabs/spr/internal";
 import type { Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 
-import { enrollInstruction } from "../../../src/operations/management/enrollment.js";
 import {
   MEMBER_REGISTRY_EMPTY_ROOT,
   SENTINEL_RECORD,
@@ -23,9 +22,11 @@ import {
   trackingEntryOf,
   trackingRecordHash,
 } from "../../../src/protocol/membership/tracking.js";
-import { enrollmentQueuePda, STORAGE_PROGRAM_ID } from "../../../src/protocol/pda/index.js";
+import {
+  encodeEnrollmentRecord,
+  encodeRelayEnrollInputs,
+} from "../../../src/protocol/ring-rpc/relay-enroll-inputs.js";
 import { recordTree } from "../../helpers/member-registry.js";
-import { trackingClient } from "../../helpers/tracking-client.js";
 
 function field(value: string): Bytes32 {
   const decoded = Uint8Array.from(Buffer.from(value, "hex"));
@@ -50,7 +51,6 @@ const enroll = JSON.parse(
   Record<
     | "registry"
     | "owner"
-    | "queue"
     | "member"
     | "ct_hash"
     | "viewing_hash"
@@ -59,7 +59,7 @@ const enroll = JSON.parse(
     | "chain_start"
     | "chain_end",
     string
-  > & { queue_bump: number; proven: boolean }
+  > & { proven: boolean }
 >;
 
 const REGISTRY = address(encodeBase58(field(enroll.registry)));
@@ -83,8 +83,6 @@ const entry = () =>
     ciphertext: SEAL.ciphertext,
     proven: enroll.proven,
   });
-
-const UNENROLLED = trackingClient(REGISTRY, { applied: [], pending: [] });
 
 beforeAll(initializePoseidon);
 
@@ -121,36 +119,11 @@ describe("empty_root.json", () => {
 });
 
 describe("tracking_enroll.json", () => {
-  it("builds the enrollment byte for byte with the program's account order", async () => {
-    const instruction = await enrollInstruction(
-      { owner: OWNER, trackingRegistry: REGISTRY, seal: SEAL, viewingU: VIEWING_U },
-      UNENROLLED,
-    );
-    expect(hex(instruction.data)).toBe(`06${enroll.enroll_data}`);
-    expect(instruction.programAddress).toBe(STORAGE_PROGRAM_ID);
-    expect(instruction.accounts?.map(({ address: account }) => account)).toEqual([
-      OWNER,
-      REGISTRY,
-      encodeBase58(field(enroll.queue)),
-    ]);
-  });
-
-  it("appends a first enrollment's proof and refuses another length", async () => {
-    const proof = new Uint8Array(192).fill(5);
-    const input = { owner: OWNER, trackingRegistry: REGISTRY, seal: SEAL, viewingU: VIEWING_U };
-    const first = await enrollInstruction({ ...input, proof }, UNENROLLED);
-    expect(hex(first.data)).toBe(`06${enroll.enroll_data}${hex(proof)}`);
-    await expect(
-      enrollInstruction({ ...input, proof: proof.subarray(1) }, UNENROLLED),
-    ).rejects.toMatchObject({
-      code: "RING_PROOF_LENGTH",
-    });
-  });
-
-  it("derives the queue PDA from the registry", async () => {
-    const [queue, bump] = await enrollmentQueuePda(REGISTRY);
-    expect(queue).toBe(encodeBase58(field(enroll.queue)));
-    expect(bump).toBe(enroll.queue_bump);
+  it("encodes the record byte for byte as the request Ring RPC writes", () => {
+    const record = { ...SEAL, viewingU: VIEWING_U };
+    expect(hex(encodeEnrollmentRecord(record))).toBe(enroll.enroll_data);
+    const inputs = { ringProgramId: REGISTRY, owner: OWNER, trackingRegistry: REGISTRY, record };
+    expect(hex(encodeRelayEnrollInputs(inputs).subarray(96, 288))).toBe(enroll.enroll_data);
   });
 
   it("derives the owner's member from its address", () => {

@@ -2,38 +2,28 @@ import type { Address } from "@solana/kit";
 import { X25519Keypair } from "@heliuslabs/spr/keypair";
 
 import type { EnrollmentReadClient } from "../../src/operations/management/enrollment.js";
-import type { QueuedEnrollment } from "../../src/protocol/indexer/tracking-codec.js";
 import { trackingTree, type FixtureTrackingEntry } from "./member-registry.js";
-import { enrollmentQueueAccount, trackingRegistryAccount } from "./ring-accounts.js";
+import { ringPolicyPda } from "../../src/protocol/pda/index.js";
+import { ownedAccount, ringPolicyData, trackingRegistryAccount } from "./ring-accounts.js";
 
-/** Read on every call, a test moves the tree by editing the arrays. */
-export interface TrackingFixture {
-  readonly applied: FixtureTrackingEntry[];
-  readonly pending: QueuedEnrollment[];
-  /** Queue entries the account holds, `pending.length` when absent. */
-  readonly queued?: number;
-}
-
-/** The registry, its queue and the indexer over the fixture's leaves and queued entries. */
-export function trackingClient(registry: Address, fixture: TrackingFixture): EnrollmentReadClient {
+/** The registry and the indexer over `applied`, read on every call, so a test moves the tree by editing it. */
+export function trackingClient(
+  registry: Address,
+  applied: FixtureTrackingEntry[],
+  accounts: ReadonlyMap<
+    Address,
+    Awaited<ReturnType<EnrollmentReadClient["getAccount"]>>
+  > = new Map(),
+): EnrollmentReadClient {
   const auditor = X25519Keypair.generate().publicKey().toBytes();
-  const tree = () => trackingTree(fixture.applied);
   return {
     getAccount: async (key: Address) => {
-      const [queue, account] = await enrollmentQueueAccount({
-        registry,
-        entries: Array.from(
-          { length: fixture.queued ?? fixture.pending.length },
-          () => new Uint8Array(32),
-        ),
-      });
-      if (key === queue) return account;
-      if (key !== registry) return undefined;
-      const { root, nextIndex } = tree();
+      if (key !== registry) return accounts.get(key);
+      const { root, nextIndex } = trackingTree(applied);
       return trackingRegistryAccount({ root, revision: 1n, nextIndex, auditorPubkey: auditor });
     },
     getTrackingOpenings: async (request) => {
-      const tracked = tree();
+      const tracked = trackingTree(applied);
       return {
         slot: 1n,
         root: tracked.root,
@@ -41,13 +31,16 @@ export function trackingClient(registry: Address, fixture: TrackingFixture): Enr
         openings: request.members.map((member) => tracked.opening(member)),
       };
     },
-    getEnrollmentQueue: async (request) => ({
-      slot: 1n,
-      head: 0n,
-      tail: BigInt(fixture.pending.length),
-      entries: fixture.pending
-        .filter(({ sequence }) => request.after === undefined || sequence > request.after)
-        .slice(0, request.limit),
-    }),
   };
+}
+
+/** `trackingClient` beside the policy of `ringProgramId` pinning `registry`. */
+export async function ringTrackingClient(
+  ringProgramId: Address,
+  registry: Address,
+  applied: FixtureTrackingEntry[],
+): Promise<EnrollmentReadClient> {
+  const [policy, bump] = await ringPolicyPda(ringProgramId);
+  const account = ownedAccount(ringProgramId, ringPolicyData({ bump, tracking: registry }));
+  return trackingClient(registry, applied, new Map([[policy, account]]));
 }

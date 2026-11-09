@@ -20,8 +20,6 @@ import type {
 import type { RingTransactInstructionData } from "../protocol/proof/circuit.js";
 import type { RingMergeDisclosureRequest } from "../crypto/audit/merge-disclosure.js";
 import type {
-  EnrollmentQueuePage,
-  EnrollmentQueueRequest,
   TrackingOpenings,
   TrackingOpeningsRequest,
   TrackingRecordPoolRequest,
@@ -120,10 +118,6 @@ export interface TrackingReader {
     request: TrackingOpeningsRequest,
     context?: RequestContext,
   ): Promise<TrackingOpenings>;
-  getEnrollmentQueue(
-    request: EnrollmentQueueRequest,
-    context?: RequestContext,
-  ): Promise<EnrollmentQueuePage>;
   getTrackingRecordPool(
     request: TrackingRecordPoolRequest,
     context?: RequestContext,

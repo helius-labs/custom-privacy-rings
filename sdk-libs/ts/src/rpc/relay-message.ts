@@ -59,13 +59,7 @@ import {
 } from "../protocol/membership/approval-totals.js";
 import type { OwnerDebit } from "../protocol/membership/owner-debits.js";
 import { memberOfAsset } from "../protocol/membership/policy.js";
-import { ringAuthAddress, ringPolicyAddress, STORAGE_PROGRAM_ID } from "../protocol/pda/index.js";
-import {
-  ENROLL_COMPUTE_UNITS,
-  enrollRequestDigest,
-  relayEnrollInstruction,
-  type RelayEnrollInputs,
-} from "../protocol/ring-rpc/relay-enroll-inputs.js";
+import { ringAuthAddress, ringPolicyAddress } from "../protocol/pda/index.js";
 import type {
   AuthorityWithdrawal,
   PrepareAuthorityTransferRequest,
@@ -347,21 +341,12 @@ export interface ExpectedCoSigner {
   readonly rule: CoSignerRule;
 }
 
-export interface ExpectedEnroll {
-  readonly kind: "enroll";
-  readonly feePayer: Address;
-  readonly policy: Address;
-  readonly inputs: RelayEnrollInputs;
-  readonly accounts: readonly AccountMeta[];
-}
-
 export type ExpectedRelayMessage =
   | ExpectedDelegate
   | ExpectedSealed
   | ExpectedPublicOwner
   | ExpectedFunder
-  | ExpectedCoSigner
-  | ExpectedEnroll;
+  | ExpectedCoSigner;
 
 type ExpectedFrame = ExpectedDelegate | ExpectedPublicOwner | ExpectedFunder | ExpectedCoSigner;
 
@@ -753,45 +738,11 @@ export function checkRelayMessage(
   signer: Address,
 ): VerifiedRelayMessage {
   const snapshot = message.slice();
-  if (expected.kind === "enroll") return checkEnrollSnapshot(expected, snapshot);
   if (expected.kind === "sealed") throw mismatch("Unrequested");
   const envelope = frameEnvelope(expected, signer, frameTag(expected));
   const { data, accounts } = open(envelope, snapshot);
   checkFrame(expected, signer, data, accounts);
   return new VerifiedRelayMessage(VERIFIED, envelope.signer, snapshot);
-}
-
-export async function expectedEnroll(
-  inputs: RelayEnrollInputs,
-  feePayer: Address,
-): Promise<ExpectedEnroll> {
-  const [policy, proved] = await Promise.all([
-    ringPolicyAddress(inputs.ringProgramId),
-    relayEnrollInstruction(inputs),
-  ]);
-  return Object.freeze({
-    kind: "enroll",
-    feePayer,
-    policy,
-    inputs,
-    accounts: proved.accounts ?? [],
-  });
-}
-
-function checkEnrollSnapshot(expected: ExpectedEnroll, message: Uint8Array): VerifiedRelayMessage {
-  const envelope: Envelope = {
-    program: STORAGE_PROGRAM_ID,
-    policy: expected.policy,
-    units: ENROLL_COMPUTE_UNITS,
-    feePayer: expected.feePayer,
-    signer: expected.inputs.owner,
-    setup: [],
-  };
-  const { data, accounts } = open(envelope, message);
-  if (!sameAccounts(accounts, expected.accounts)) throw mismatch("Accounts");
-  const signed = enrollRequestDigest({ ...expected.inputs, instructionData: data });
-  if (!equalBytes(signed, enrollRequestDigest(expected.inputs))) throw mismatch("Data");
-  return new VerifiedRelayMessage(VERIFIED, envelope.signer, message);
 }
 
 function frameTag(expected: ExpectedFrame): RingInstructionTag {
@@ -1385,16 +1336,6 @@ function readsOnly(
     rest.every(
       (meta) =>
         (!isWritableRole(meta.role) || forwardedWrite(meta)) && meta.address !== envelope.signer,
-    )
-  );
-}
-
-function sameAccounts(found: readonly AccountMeta[], expected: readonly AccountMeta[]): boolean {
-  return (
-    found.length === expected.length &&
-    found.every(
-      (meta, index) =>
-        meta.address === expected[index]?.address && meta.role === expected[index]?.role,
     )
   );
 }
