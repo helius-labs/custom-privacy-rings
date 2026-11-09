@@ -16,6 +16,7 @@ use solana_instruction::Instruction;
 use solana_message::VersionedMessage;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
+use spr_hasher::primitives::hash_bytes;
 use spr_keypair::X25519Keypair;
 use zolana_ring_client::{SealedNullifierKey, TrackingLeaf};
 use zolana_ring_indexer::rpc::{
@@ -272,9 +273,9 @@ fn rotation(seed: u8) -> SubmitEnrollmentRequest {
     enrollment(&owner, change).sign(&owner).expect("signed")
 }
 
-/// The viewing hash the owner's leaf holds before the rotation.
+/// The viewing hash the owner's leaf holds before the rotation, a field element as every leaf hash is.
 fn prior_viewing_hash(seed: u8) -> [u8; 32] {
-    [seed; 32]
+    hash_bytes(&[seed; 32]).expect("viewing hash")
 }
 
 fn refusal(result: Result<SubmitEnrollmentResponse, RingRpcError>) -> EnrollmentRefusal {

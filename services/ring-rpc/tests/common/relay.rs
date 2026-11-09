@@ -39,6 +39,7 @@ use zolana_ring_transaction::AnonymousPlan;
 pub const SLOT: u64 = 1_000;
 pub const RENT_LAMPORTS: u64 = 1_000;
 pub const LAST_VALID_BLOCK_HEIGHT: u64 = 500;
+const START_HEIGHT: u64 = 400;
 /// An input tree and an output tree, each under the default schedule.
 pub const TREE_FEES: u64 = 2 * spr_interface::state::DEFAULT_FEE_PER_TREE_LAMPORTS;
 const OWNER_SEED: [u8; 32] = [5; 32];
@@ -105,7 +106,7 @@ impl RelayProver for RecordingProver {
     }
 }
 
-/// Every sent transaction lands, a send past `LAST_VALID_BLOCK_HEIGHT` is refused.
+/// Every sent transaction lands, a send past its own blockhash's last valid height is refused.
 pub struct RecordingChain {
     pub sent: Mutex<Vec<VersionedTransaction>>,
     pub height: AtomicU64,
@@ -124,7 +125,7 @@ impl Default for RecordingChain {
     fn default() -> Self {
         Self {
             sent: Mutex::default(),
-            height: AtomicU64::new(400),
+            height: AtomicU64::new(START_HEIGHT),
             reply_lost: AtomicBool::new(false),
             refuse_next: AtomicBool::new(false),
             outcome: Mutex::new(None),
@@ -172,8 +173,13 @@ impl ChainSubmit for RecordingChain {
         Ok(RENT_LAMPORTS)
     }
 
+    /// Its first eight bytes name its last valid height, the window the start height's blockhash spans.
     async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
-        Ok((Hash::new_from_array([8; 32]), LAST_VALID_BLOCK_HEIGHT).into())
+        let height = self.height.load(Ordering::Relaxed);
+        let last_valid = height + LAST_VALID_BLOCK_HEIGHT - START_HEIGHT;
+        let mut blockhash = [0; 32];
+        blockhash[..8].copy_from_slice(&last_valid.to_le_bytes());
+        Ok((Hash::new_from_array(blockhash), last_valid).into())
     }
 
     async fn block_height(&self) -> Result<u64, RingRpcError> {
@@ -187,7 +193,9 @@ impl ChainSubmit for RecordingChain {
             }
             .into());
         }
-        if self.height.load(Ordering::Relaxed) > LAST_VALID_BLOCK_HEIGHT {
+        let blockhash = transaction.message.recent_blockhash().to_bytes();
+        let last_valid = u64::from_le_bytes(blockhash[..8].try_into().expect("eight bytes"));
+        if self.height.load(Ordering::Relaxed) > last_valid {
             return Err(RelayError::SendRefused {
                 reason: "Blockhash not found".to_owned(),
             }
