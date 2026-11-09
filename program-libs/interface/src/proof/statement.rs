@@ -317,8 +317,8 @@ fn published_record_hash(output: &RingOutput<'_>) -> Result<[u8; 32], HasherErro
 pub struct ApplyRecordsStatement {
     pub old_root: [u8; 32],
     pub new_root: [u8; 32],
-    pub old_next_index: u32,
-    pub new_next_index: u32,
+    pub old_next_index: u64,
+    pub new_next_index: u64,
     /// `chain_start` of the registry and revision.
     pub chain_start: [u8; 32],
     /// The chain past the last write.

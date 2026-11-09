@@ -15,7 +15,7 @@ use zolana_ring_policy::{ListSet, Member};
 use crate::{
     error::CustomRingError,
     instruction::{list_and_mint_entry, write_count},
-    member_registry::RecordWrite,
+    member_registry::{RecordWrite, APPLY_BATCH},
     storage::{RegistryId, Revision, StorageError},
     ApplyRecordsIxData, CustomRingProof, ReaderKeyBytes, RecordWriteData,
     REGISTER_KEY_CIPHERTEXT_LEN, TAGGED_X25519_KEY_LEN,
@@ -27,7 +27,7 @@ pub mod tag {
     /// No data, the authority and the new authority both sign.
     pub const UPDATE_AUTHORITY: u8 = 4;
     pub const ENROLL: u8 = 6;
-    /// Permissionless, the applier names the authorization accounts.
+    /// Permissionless, the applier names only the count of queued entries.
     pub const APPLY_ENROLLMENTS: u8 = 7;
     pub const OWNER_GRANT: u8 = 8;
     /// The ring program signs its ring PDA as creator through CPI.
@@ -47,7 +47,7 @@ pub struct InitializeIxData {
     pub tracking_registry: Address,
 }
 
-/// Tag 9, accounts `payer, creator, tracking_registry, system_program`.
+/// Tag 9, accounts `payer, creator, tracking_registry, enrollment_queue, system_program`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct InitializeTrackingIxData {
@@ -56,11 +56,11 @@ pub struct InitializeTrackingIxData {
     pub auditor_pubkey: [u8; TAGGED_X25519_KEY_LEN],
 }
 
-/// Tag 6 ahead of a first enrollment's proof, accounts `payer, owner, tracking_registry, authorization, system_program`.
+/// Tag 6 ahead of a first enrollment's proof, accounts `owner, tracking_registry, enrollment_queue`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct EnrollIxData {
-    /// Final after the first enrollment, with `list_tag`, `eph_u` and `ciphertext`.
+    /// Final once a proven entry inserts the owner's row, with `list_tag` and the ciphertext hash.
     pub nullifier_pk: [u8; 32],
     pub list_tag: [u8; 32],
     /// Canonical and nonzero, the owner's signature alone authorizes it.
@@ -76,15 +76,17 @@ pub struct EnrollRequest<'a> {
     pub proof: Option<&'a CustomRingProof>,
 }
 
-/// Tag 7, accounts `tracking_registry` then one to `APPLY_BATCH` authorizations in chain order.
+/// Tag 7, accounts `tracking_registry, enrollment_queue`, both writable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct ApplyEnrollmentsIxData {
     pub revision: Revision,
     pub proof: CustomRingProof,
     pub new_root: [u8; 32],
-    /// Little endian, a tracking tree outgrows the policy tree's u32 index.
+    /// Little endian.
     pub new_next_index: [u8; 8],
+    /// Queued entries the proof applies from `head`.
+    pub count: u8,
 }
 
 /// Tag 8, accounts `payer, owner, tracking_registry, grant, system_program`.
@@ -169,11 +171,12 @@ impl ApplyEnrollmentsIxData {
         u64::from_le_bytes(self.new_next_index)
     }
 
-    /// One account per chained entry, an apply key serves up to `APPLY_BATCH`.
-    pub fn check_count(authorizations: usize) -> Result<(), StorageError> {
-        match authorizations {
+    /// An apply key serves one to `APPLY_BATCH` entries.
+    pub fn check_count(count: u8) -> Result<(), StorageError> {
+        match usize::from(count) {
             0 => Err(StorageError::NoEnrollmentsNamed),
-            count => storage_write_count(count).map(|_| ()),
+            1..=APPLY_BATCH => Ok(()),
+            _ => Err(StorageError::UnsupportedBatch),
         }
     }
 }
@@ -352,6 +355,6 @@ const _: () = assert!(InitializeTrackingIxData::SIZE == 65);
 const _: () = assert!(core::mem::align_of::<EnrollIxData>() == 1);
 const _: () = assert!(EnrollIxData::SIZE == 192);
 const _: () = assert!(core::mem::align_of::<ApplyEnrollmentsIxData>() == 1);
-const _: () = assert!(ApplyEnrollmentsIxData::SIZE == 240);
+const _: () = assert!(ApplyEnrollmentsIxData::SIZE == 241);
 const _: () = assert!(core::mem::align_of::<OwnerGrantIxData>() == 1);
 const _: () = assert!(OwnerGrantIxData::SIZE == 35);

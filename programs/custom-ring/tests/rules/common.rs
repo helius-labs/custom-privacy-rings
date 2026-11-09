@@ -4,7 +4,7 @@ use custom_ring_interface::{
     storage::{Revision, Root, StorageRegistry},
     storage_instruction::InitializeIxData as StorageInitialize,
     tag,
-    tracking::TrackingRegistry,
+    tracking::{EnrollmentQueue, TrackingRegistry},
     CustomRingError, InitializeIxData, InstructionTag, PolicyBindingIxData, PolicyTableIxData,
     RingKind, RingPolicy, RingRole, RingRoles, RootRead, SetCoSignerRecordIxData, SourceSpec,
     UpdateAuthorityIxData, UpdatePolicyIxData, CO_SIGNER_PDA_SEED, RING_POLICY_PDA_SEED,
@@ -56,6 +56,10 @@ pub fn ring_auth() -> Address {
 pub fn tracking_registry() -> Address {
     let ring_id = ring_id_field(PROGRAM.as_array()).expect("ring id");
     TrackingRegistry::find_address(&ring_auth(), &ring_id).0
+}
+
+pub fn enrollment_queue() -> Address {
+    EnrollmentQueue::find_address(&tracking_registry()).0
 }
 
 pub fn program_data() -> Address {
@@ -551,6 +555,7 @@ impl InitializeIx<'_> {
             AccountMeta::new(ring_auth(), false),
             AccountMeta::new_readonly(SHIELDED_POOL, false),
             AccountMeta::new(tracking_registry(), false),
+            AccountMeta::new(enrollment_queue(), false),
             AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),
         ];
         if self.data.policy.is_some() {

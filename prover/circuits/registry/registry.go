@@ -30,9 +30,9 @@ import (
 // 2. A path puts one leaf at one index, Index is bound below Capacity and the node takes the child position its two index bits name at each level.
 // 3. A node hashes four children and a leaf eight fields, Poseidon's constants differ per width and no node opens as a leaf.
 
-// The tree shape mirrors program-libs/interface/src/accounts/member_registry.rs.
+// The tree shape mirrors QUAD_HEIGHT in program-libs/interface/src/accounts/member_registry.rs, the policy and tracking trees share it.
 const (
-	Height    = 10
+	Height    = 16
 	Arity     = 4
 	IndexBits = 2 * Height
 	Capacity  = 1 << IndexBits

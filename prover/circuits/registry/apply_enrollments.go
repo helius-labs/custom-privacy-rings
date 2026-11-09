@@ -1,9 +1,9 @@
-// Proves that a batch of enrollments the program read from authorization accounts
-// was applied to the tracking tree. Anyone may apply, the program computes each
-// entry from its account, so the proof only moves the tree. An enrollment grants
-// nothing until its leaf sits under a root, and transfers, deposits and merges read
-// an owner's key or list tag from that root. A tree out of order would let an
-// enrolled owner prove itself unenrolled and skip its private lists.
+// Proves that a batch of queued enrollments was applied to the tracking tree in
+// queue order. Anyone may apply, the program folds the chain from the queue's entry
+// hashes, so the proof only moves the tree. An enrollment grants nothing until its
+// leaf sits under a root, and transfers, deposits and merges read an owner's key or
+// list tag from that root. A tree out of order would let an enrolled owner prove
+// itself unenrolled and skip its private lists.
 //
 // Read after registry/tracking.go, registry/register_key.go, registry/apply_records.go.
 // Read before policy/tracking.go, prover/ring/ring.go.
@@ -22,28 +22,33 @@ import (
 )
 
 // Properties:
-// 1. NewRoot, NewNextIndex and ChainEnd follow from applying, in the named order, exactly the Count entries whose chain runs from ChainStart to ChainEnd.
-// 2. Every active write inserts an absent owner after its low record at exactly the next index, below capacity. A later insert moves only a leaf's Next, its member, nullifier key, ciphertext hash and list tag never change, a viewing key rotation touches only the owner's account.
-// 3. An owner holds one leaf, an owner already in the tree falls inside no link and cannot insert again.
-// 4. The statement binds both roots, both next indexes, both chain ends and the count.
+// 1. NewRoot, NewNextIndex and ChainEnd follow from applying, in queue order, exactly the Count entries whose chain runs from ChainStart to ChainEnd.
+// 2. A proven entry of an absent owner inserts after its low record at exactly the next index, below capacity. An unproven entry of an absent owner changes nothing.
+// 3. An entry of a present owner moves only that owner's ViewingHash. Its nullifier key, ciphertext hash and list tag stay as first inserted, and a full tree still applies it.
+// 4. Present is forced. A present owner falls inside no link, and an absent owner opens no leaf naming it, so an owner holds one leaf.
+// 5. The statement binds both roots, both next indexes, both chain ends and the count.
 //
-// The program holds what the circuit takes as given. tracking_chain_start in program-libs/interface/src/accounts/tracking.rs names one registry at one revision in ChainStart, and TrackingAuthorization::apply refuses an applied account.
+// The program holds what the circuit takes as given. tracking_chain_start in program-libs/interface/src/accounts/tracking.rs names one registry at one revision in ChainStart, and Enroll sets Proven only after RegisterKey verifies.
 
-// TrackingEntry mirrors the entry the program computes from an authorization account.
+// TrackingEntry mirrors TrackingEntry::hash in program-libs/interface/src/accounts/tracking.rs.
 type TrackingEntry struct {
-	Member, NullifierPk, CtHash, ListTag frontend.Variable
+	Member, NullifierPk, CtHash, ListTag, ViewingHash frontend.Variable
+	// Proven is one when Enroll verified RegisterKey, the one bit that lets an entry insert.
+	Proven frontend.Variable
 }
 
 func (e TrackingEntry) Hash(api frontend.API) frontend.Variable {
-	return gadget.PoseidonHash(api, []frontend.Variable{shared.TrackingEntryDomain, e.Member, e.NullifierPk, e.CtHash, e.ListTag})
+	return gadget.PoseidonHash(api, []frontend.Variable{shared.TrackingEntryDomain, e.Member, e.NullifierPk, e.CtHash, e.ListTag, e.ViewingHash, e.Proven})
 }
 
-// EnrollmentWrite's Slot opens the empty leaf the insert takes.
 type EnrollmentWrite struct {
 	Entry   TrackingEntry
-	Slot    TrackingPath
+	Present frontend.Variable
+	// The owner's own leaf when Present, else the leaf bracketing it.
 	Low     TrackingRecord
-	LowSlot TrackingPath
+	LowSlot QuadPath
+	// The empty leaf an insert takes, any other write binds only its index range.
+	Slot QuadPath
 }
 
 // ApplyEnrollmentsCircuit only moves the tree, the program computes each entry and anyone may apply.
@@ -89,26 +94,36 @@ func (c *ApplyEnrollmentsCircuit) Define(api frontend.API) error {
 }
 
 func (w EnrollmentWrite) apply(api frontend.API, active frontend.Variable, s registryState) registryState {
-	// 1. The owner lies strictly inside its low record's link under the running root, a link no present owner falls inside.
-	// The sort argument of registry/apply_records.go applies, the links descend from the sentinel's (0, q-1) by one split per insert. A present owner has no such link, so a second enrollment of one owner never proves.
-	ringgadget.AssertOrderedWhen(api, active, w.Low.Member, w.Entry.Member, w.Low.Next)
-	relinked := w.Low
-	relinked.Next = w.Entry.Member
-	lowRoot, linked := w.LowSlot.Update(api, w.Low.Hash(api), relinked.Hash(api))
+	// 1. Present and Proven are bits, a fraction would blend an insert with an update.
+	api.AssertIsBoolean(w.Present)
+	api.AssertIsBoolean(w.Entry.Proven)
+	update := api.Mul(active, w.Present)
+	absent := api.Sub(active, update)
+	insert := api.Mul(absent, w.Entry.Proven)
+	// 2. A present owner's own leaf names it, an absent owner lies strictly inside its low record's link.
+	// The sort argument of registry/apply_records.go applies, the links descend from the sentinel's (0, q-1) by one split per insert. A present owner falls inside no link and an absent owner opens no leaf naming it, so Present cannot lie.
+	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: update, A: w.Low.Member, B: w.Entry.Member})
+	ringgadget.AssertOrderedWhen(api, absent, w.Low.Member, w.Entry.Member, w.Low.Next)
+	// 3. Low opens under the running root and its replacement relinks on an insert or takes the new viewing hash on an update.
+	// The nullifier key, ciphertext hash and list tag of Low carry over, an update never moves the sealed fields.
+	replaced := w.Low
+	replaced.Next = api.Select(insert, w.Entry.Member, w.Low.Next)
+	replaced.ViewingHash = api.Select(update, w.Entry.ViewingHash, w.Low.ViewingHash)
+	lowRoot, linked := w.LowSlot.Update(api, w.Low.Hash(api), replaced.Hash(api))
 	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: active, A: lowRoot, B: s.root})
-	// 2. The insert takes the empty leaf 0 at the next index under the relinked root, linking on to the low record's old next.
-	// At next = TrackingCapacity the index fails TrackingPath.digits, a full tree takes no new owner.
-	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: active, A: w.Slot.Index, B: s.next})
+	// 4. An insert takes the empty leaf 0 at the next index under the relinked root, linking on to the low record's old next.
+	// At next = Capacity the index fails QuadPath.digits, a full tree takes no new owner. Any other write binds Slot only to an index in range, so a full tree still applies updates.
+	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: insert, A: w.Slot.Index, B: s.next})
 	after := TrackingRecord{
-		Member: w.Entry.Member, Next: w.Low.Next, NullifierPk: w.Entry.NullifierPk, CtHash: w.Entry.CtHash, ListTag: w.Entry.ListTag,
+		Member: w.Entry.Member, Next: w.Low.Next, NullifierPk: w.Entry.NullifierPk, CtHash: w.Entry.CtHash, ListTag: w.Entry.ListTag, ViewingHash: w.Entry.ViewingHash,
 	}.Hash(api)
 	opened, written := w.Slot.Update(api, 0, after)
-	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: active, A: opened, B: linked})
-	// 3. The chain absorbs every active entry, the program computed each from its account.
+	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: insert, A: opened, B: linked})
+	// 5. The chain absorbs every active entry, a skipped one included, so the program consumes exactly the queue prefix it hashed.
 	chain := gadget.PoseidonHash(api, []frontend.Variable{s.chain, w.Entry.Hash(api)})
 	return registryState{
-		root:  api.Select(active, written, s.root),
-		next:  api.Add(s.next, active),
+		root:  api.Select(insert, written, api.Select(active, linked, s.root)),
+		next:  api.Add(s.next, insert),
 		chain: api.Select(active, chain, s.chain),
 	}
 }

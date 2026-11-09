@@ -1,4 +1,4 @@
-//! The tracking registry, one sorted tree per ring naming each enrolled owner's nullifier key, ciphertext hash and list tag.
+//! The tracking registry, one sorted tree per ring naming each enrolled owner's nullifier key, ciphertext hash, list tag and viewing key hash, and the queue its enrollments wait in.
 //!
 //! An SPP sender names any nullifier key on an output, and SPP never sees the secret behind it. A
 //! ring's auditor must compute each nullifier, so each owner enrolls once with a proof that seals the
@@ -7,6 +7,10 @@
 //! root, and a transfer or deposit output under that key to an absent row. Without the row a sender could
 //! pay a key the auditor cannot open, and a wallet could skip its salted lists.
 //!
+//! No account exists per owner. `Enroll` appends one entry hash to the registry's `EnrollmentQueue`, and
+//! `ApplyEnrollments` consumes the queue in order. The instruction data of each successful `Enroll` is the
+//! record an indexer and the auditor read.
+//!
 //! A ring pins its tracking registry's address, `ring_id` and the seeds authenticate nothing.
 //!
 //! Read after `docs/design/records-and-roots.md`, `program-libs/interface/src/accounts/storage.rs`.
@@ -14,11 +18,11 @@
 //! `prover/circuits/registry/tracking.go`, `prover/circuits/policy/tracking.go`.
 //!
 //! Invariants:
-//! 1. An authorization's nullifier key, list tag, ephemeral key and ciphertext never move after creation, `rotate` refuses a change. A row holds the owner, the nullifier key, the list tag and the ciphertext hash, so only its successor link moves after insert and an owner holds one row.
+//! 1. A row's nullifier key, ciphertext hash and list tag never move after insert. A later entry of its owner moves only `viewing_hash`, and an owner holds one row.
 //! 2. Enrollment refuses `ZERO_NULLIFIER_PUBKEY` and proves every key a Poseidon output, so a present row's key is nonzero, and the policy circuit reads presence from the literal zero an absent query returns.
-//! 3. A pending authorization grants nothing, because every check reads the root. Only a first enrollment is pending, and each applies once.
-//! 4. The viewing key lives only on the authorization. A rotation writes that account alone, so it moves no root and leaves no tracking work. A sender authenticates the key from the account, no proof reads it.
-//! 5. A retired tracking root serves its whole grace, an apply that would evict an unexpired root refuses and its accounts stay pending. A source's `tracking_floor` is the one exception, and only on a salted read.
+//! 3. A queued entry grants nothing, because every check reads the root. Only an entry whose `Enroll` verified `RegisterKey` inserts, a rotation of an absent owner changes nothing.
+//! 4. The program stores each entry hash at its sequence and an apply chains the hashes from `head` in sequence order, so an applier picks only the count and no entry is skipped or applied twice.
+//! 5. A retired tracking root serves its whole grace, an apply that would evict an unexpired root refuses and the queue stays. A source's `tracking_floor` is the one exception, and only on a salted read.
 
 use bytemuck::{Pod, Zeroable};
 use solana_address::Address;
@@ -36,23 +40,23 @@ use zolana_ring_policy::registry_field;
 use crate::{
     auditor_key::is_auditor_key,
     domain,
-    member_registry::GRACE_SLOTS,
-    state::ROOT_HISTORY,
+    member_registry::{GRACE_SLOTS, QUAD_CAPACITY},
     storage::{advance_roots, root_at, Retirement, Revision, Root, StorageError},
     storage_instruction::{EnrollIxData, InitializeTrackingIxData},
-    REGISTER_KEY_CIPHERTEXT_LEN, STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN,
+    STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN,
 };
 
-/// Taller than a policy tree, anyone can pay to fill it and no tree replaces a full one.
-pub const TRACKING_QUAD_HEIGHT: usize = 16;
-pub const TRACKING_CAPACITY: u64 = 1 << (2 * TRACKING_QUAD_HEIGHT);
 /// Fixed by the program, every retired tracking root serves it in full.
 pub const TRACKING_GRACE_SLOTS: u64 = GRACE_SLOTS;
+/// Every apply retires one root for `TRACKING_GRACE_SLOTS`, the history bounds applies per grace.
+pub const TRACKING_ROOT_HISTORY: usize = 128;
+/// Entries waiting at once, the queue account stays under the 10,240 byte growth limit of one CPI.
+pub const ENROLLMENT_QUEUE_CAPACITY: usize = 256;
 
 /// Root of the tree holding only the sentinel.
 pub const TRACKING_EMPTY_ROOT: [u8; 32] = [
-    0x24, 0x25, 0xfb, 0x18, 0x96, 0x30, 0xd5, 0xf8, 0x4b, 0xcc, 0x34, 0xf4, 0x28, 0x04, 0x37, 0x7d,
-    0x85, 0x64, 0xa5, 0x59, 0x59, 0xc9, 0x2a, 0xd1, 0xfa, 0x6f, 0xee, 0x86, 0xa5, 0x90, 0x61, 0x4e,
+    0x19, 0x7c, 0xe7, 0xe4, 0xcc, 0x6e, 0x23, 0xed, 0x6f, 0x4d, 0x5b, 0x32, 0x30, 0x3d, 0xd9, 0x1e,
+    0x03, 0x2f, 0x9a, 0xfd, 0xc7, 0xf8, 0xdd, 0x42, 0x4a, 0xb2, 0x63, 0x8d, 0x24, 0x5e, 0x45, 0x59,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
@@ -63,50 +67,40 @@ pub struct TrackingRegistry {
     pub ring_id: [u8; 32],
     /// Immutable, enrollment proofs seal to it.
     pub auditor_pubkey: [u8; TAGGED_X25519_KEY_LEN],
-    /// Little endian, the leaf the next new owner takes, at most `TRACKING_CAPACITY`.
+    /// Little endian, the leaf the next new owner takes, at most `QUAD_CAPACITY`.
     pub next_index: [u8; 8],
     /// Newest first, only retired roots have an expiry.
-    pub roots: [Root; ROOT_HISTORY],
+    pub roots: [Root; TRACKING_ROOT_HISTORY],
 }
 
-/// One owner's enrollment, retained so an auditor recovers every secret from accounts.
+/// The entries of one tracking registry in `Enroll` order, at `[enrollment_queue, tracking_registry]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
-pub struct TrackingAuthorization {
+pub struct EnrollmentQueue {
     pub discriminator: u8,
+    /// Immutable, every load compares it.
     pub registry: Address,
-    pub owner: Address,
-    /// Final after creation, with `list_tag` and the ciphertext.
-    pub nullifier_pk: [u8; 32],
-    /// `Poseidon(CRPT, list_salt)`, a policy proof opens the owner's salted key through it.
-    pub list_tag: [u8; 32],
-    /// Moves at each rotation, no leaf or proof reads it.
-    pub viewing_u: [u8; 32],
-    pub eph_u: [u8; 32],
-    /// The nullifier secret and the list salt sealed to the registry's auditor key.
-    pub ciphertext: [u8; REGISTER_KEY_CIPHERTEXT_LEN],
-    /// Zero until an apply inserts the owner's row, one after.
-    pub applied: u8,
+    /// Little endian, the sequence of the oldest entry no apply consumed.
+    pub head: [u8; 8],
+    /// Little endian, the sequence the next `Enroll` takes.
+    pub tail: [u8; 8],
+    /// `TrackingEntry::hash` of sequence `s` at `s % ENROLLMENT_QUEUE_CAPACITY`.
+    pub entries: [[u8; 32]; ENROLLMENT_QUEUE_CAPACITY],
 }
 
-/// The write an apply proof chains, computed from the owner's account and never from data.
+/// The write an apply proof chains, computed by the program from the `Enroll` it checked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrackingEntry {
     pub member: [u8; 32],
     pub nullifier_pk: [u8; 32],
     pub ct_hash: [u8; 32],
     pub list_tag: [u8; 32],
+    pub viewing_hash: [u8; 32],
+    /// The `Enroll` verified `RegisterKey`, only a proven entry inserts a row.
+    pub proven: bool,
 }
 
-/// The account state of a first enrollment, nothing applied.
-#[must_use]
-pub struct FirstEnrollment<'a> {
-    pub registry: Address,
-    pub owner: Address,
-    pub ix: &'a EnrollIxData,
-}
-
-/// A proven application of pending authorizations.
+/// A proven application of queued entries.
 #[must_use]
 pub struct TrackingRootUpdate {
     /// The revision the proof was made against.
@@ -133,12 +127,17 @@ impl TrackingRegistry {
     /// Holds only the sentinel root at revision zero.
     pub fn new(ix: &InitializeTrackingIxData) -> Self {
         let mut registry = Self::zeroed();
-        registry.discriminator = Self::DISCRIMINATOR;
-        registry.ring_id = ix.ring_id;
-        registry.auditor_pubkey = ix.auditor_pubkey;
-        registry.next_index = 1u64.to_le_bytes();
-        registry.roots[0].hash = TRACKING_EMPTY_ROOT;
+        registry.init(ix);
         registry
+    }
+
+    /// `new` written into zeroed account data, the program builds no copy on its 4 KB stack frame.
+    pub fn init(&mut self, ix: &InitializeTrackingIxData) {
+        self.discriminator = Self::DISCRIMINATOR;
+        self.ring_id = ix.ring_id;
+        self.auditor_pubkey = ix.auditor_pubkey;
+        self.next_index = 1u64.to_le_bytes();
+        self.roots[0].hash = TRACKING_EMPTY_ROOT;
     }
 
     pub fn from_data(data: &[u8]) -> Option<&Self> {
@@ -174,7 +173,7 @@ impl TrackingRegistry {
     /// Writes nothing on a refusal, a retired root stays served for its whole grace.
     pub fn update(&mut self, update: TrackingRootUpdate) -> Result<(), StorageError> {
         // The circuit opens no leaf past the capacity, a larger index would name a leaf no path reaches.
-        if !(1..=TRACKING_CAPACITY).contains(&update.new_next_index) {
+        if !(1..=QUAD_CAPACITY).contains(&update.new_next_index) {
             return Err(StorageError::TrackingTreeFull);
         }
         advance_roots(
@@ -192,34 +191,46 @@ impl TrackingRegistry {
 
     fn valid(&self) -> bool {
         self.discriminator == Self::DISCRIMINATOR
-            && (1..=TRACKING_CAPACITY).contains(&self.next_index())
+            && (1..=QUAD_CAPACITY).contains(&self.next_index())
     }
 }
 
-impl TrackingAuthorization {
+impl EnrollmentQueue {
     pub const DISCRIMINATOR: u8 = 4;
-    pub const SEED: &'static [u8] = b"tracking";
+    pub const SEED: &'static [u8] = b"enrollment_queue";
     pub const SIZE: usize = core::mem::size_of::<Self>();
 
-    /// One enrollment per owner per registry.
-    pub fn seeds<'a>(registry: &'a Address, owner: &'a Address) -> [&'a [u8]; 3] {
-        [Self::SEED, registry.as_ref(), owner.as_ref()]
+    /// One queue per registry, its address names the registry.
+    pub fn seeds(registry: &Address) -> [&[u8]; 2] {
+        [Self::SEED, registry.as_ref()]
     }
 
-    pub fn find_address(registry: &Address, owner: &Address) -> (Address, u8) {
-        Address::find_program_address(&Self::seeds(registry, owner), &STORAGE_PROGRAM_ID)
+    pub fn find_address(registry: &Address) -> (Address, u8) {
+        Address::find_program_address(&Self::seeds(registry), &STORAGE_PROGRAM_ID)
+    }
+
+    pub fn new(registry: Address) -> Self {
+        let mut queue = Self::zeroed();
+        queue.init(registry);
+        queue
+    }
+
+    /// `new` written into zeroed account data, the program builds no copy on its 4 KB stack frame.
+    pub fn init(&mut self, registry: Address) {
+        self.discriminator = Self::DISCRIMINATOR;
+        self.registry = registry;
     }
 
     pub fn from_data(data: &[u8]) -> Option<&Self> {
         bytemuck::try_from_bytes::<Self>(data)
             .ok()
-            .filter(|account| account.discriminator == Self::DISCRIMINATOR)
+            .filter(|queue| queue.valid())
     }
 
     pub fn from_data_mut(data: &mut [u8]) -> Option<&mut Self> {
         bytemuck::try_from_bytes_mut::<Self>(data)
             .ok()
-            .filter(|account| account.discriminator == Self::DISCRIMINATOR)
+            .filter(|queue| queue.valid())
     }
 
     pub fn decode(owner: &Address, data: &[u8]) -> Option<Self> {
@@ -228,63 +239,70 @@ impl TrackingAuthorization {
             .flatten()
     }
 
-    /// Its row has not reached a root yet.
-    pub const fn is_pending(&self) -> bool {
-        self.applied == 0
+    pub const fn head(&self) -> u64 {
+        u64::from_le_bytes(self.head)
     }
 
-    /// Writes nothing on a refusal, the owner's signature alone authorizes it so no sealed field
-    /// moves.
-    pub fn rotate(&mut self, ix: &EnrollIxData) -> Result<(), StorageError> {
-        if ix.nullifier_pk != self.nullifier_pk
-            || ix.list_tag != self.list_tag
-            || ix.eph_u != self.eph_u
-            || ix.ciphertext != self.ciphertext
-        {
-            return Err(StorageError::EnrollmentKeyFinal);
+    pub const fn tail(&self) -> u64 {
+        u64::from_le_bytes(self.tail)
+    }
+
+    /// Entries no apply consumed, `valid` holds it at most `ENROLLMENT_QUEUE_CAPACITY`.
+    pub const fn pending(&self) -> u64 {
+        self.tail() - self.head()
+    }
+
+    /// Writes nothing on a refusal, returns the entry's sequence.
+    pub fn push(&mut self, entry_hash: [u8; 32]) -> Result<u64, StorageError> {
+        // A full queue would overwrite the slot of its oldest unconsumed entry.
+        if self.pending() == ENROLLMENT_QUEUE_CAPACITY as u64 {
+            return Err(StorageError::EnrollmentQueueFull);
         }
-        self.viewing_u = ix.viewing_u;
-        Ok(())
+        let sequence = self.tail();
+        self.entries[slot(sequence)] = entry_hash;
+        self.tail = (sequence + 1).to_le_bytes();
+        Ok(sequence)
     }
 
-    pub fn entry(&self) -> Result<TrackingEntry, StorageError> {
-        Ok(TrackingEntry {
-            member: owner_member(&self.owner)?,
-            nullifier_pk: self.nullifier_pk,
-            ct_hash: hash_bytes(&self.ciphertext).map_err(|_| StorageError::HashingFailed)?,
-            list_tag: self.list_tag,
-        })
-    }
-
-    /// The entry the apply proof chains, an applied account refused so one owner never chains twice.
-    pub fn apply(&mut self) -> Result<TrackingEntry, StorageError> {
-        if !self.is_pending() {
-            return Err(StorageError::EnrollmentAlreadyApplied);
+    /// The hashes of sequences `head .. head + count` in order, `head` advanced past them.
+    pub fn take(&mut self, count: u64) -> Result<impl Iterator<Item = &[u8; 32]>, StorageError> {
+        if count > self.pending() {
+            return Err(StorageError::EnrollmentQueueShort);
         }
-        let entry = self.entry()?;
-        self.applied = 1;
-        Ok(entry)
+        let head = self.head();
+        self.head = (head + count).to_le_bytes();
+        // Advancing `head` frees the slots for later pushes, none happens before the iterator drops.
+        let entries = &self.entries;
+        Ok((head..head + count).map(move |sequence| &entries[slot(sequence)]))
     }
-}
 
-impl FirstEnrollment<'_> {
-    pub fn account(self) -> TrackingAuthorization {
-        TrackingAuthorization {
-            discriminator: TrackingAuthorization::DISCRIMINATOR,
-            registry: self.registry,
-            owner: self.owner,
-            nullifier_pk: self.ix.nullifier_pk,
-            list_tag: self.ix.list_tag,
-            viewing_u: self.ix.viewing_u,
-            eph_u: self.ix.eph_u,
-            ciphertext: self.ix.ciphertext,
-            applied: 0,
-        }
+    fn valid(&self) -> bool {
+        self.discriminator == Self::DISCRIMINATOR
+            && self
+                .tail()
+                .checked_sub(self.head())
+                .is_some_and(|pending| pending <= ENROLLMENT_QUEUE_CAPACITY as u64)
     }
 }
 
 impl TrackingEntry {
-    /// `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag)`, mirror
+    /// The entry of `owner`'s `Enroll`, a rotation when no `RegisterKey` proof verified.
+    pub fn from_enroll(
+        owner: &Address,
+        ix: &EnrollIxData,
+        proven: bool,
+    ) -> Result<Self, StorageError> {
+        Ok(Self {
+            member: owner_member(owner)?,
+            nullifier_pk: ix.nullifier_pk,
+            ct_hash: hash_bytes(&ix.ciphertext).map_err(|_| StorageError::HashingFailed)?,
+            list_tag: ix.list_tag,
+            viewing_hash: hash_bytes(&ix.viewing_u).map_err(|_| StorageError::HashingFailed)?,
+            proven,
+        })
+    }
+
+    /// `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, proven)`, mirror
     /// `prover/circuits/registry/apply_enrollments.go`.
     pub fn hash(&self) -> Result<[u8; 32], HasherError> {
         Poseidon::hashv(&[
@@ -293,12 +311,9 @@ impl TrackingEntry {
             &self.nullifier_pk,
             &self.ct_hash,
             &self.list_tag,
+            &self.viewing_hash,
+            &right_align(&[u8::from(self.proven)]),
         ])
-    }
-
-    /// `Poseidon(previous, entry)`.
-    pub fn chained(&self, previous: &[u8; 32]) -> Result<[u8; 32], HasherError> {
-        Poseidon::hashv(&[previous, &self.hash()?])
     }
 }
 
@@ -352,11 +367,16 @@ pub fn tracking_chain_start(
     .map_err(|_| StorageError::HashingFailed)
 }
 
+/// Sequences grow by one per `Enroll`, a u64 never wraps.
+fn slot(sequence: u64) -> usize {
+    (sequence % ENROLLMENT_QUEUE_CAPACITY as u64) as usize
+}
+
 // Byte fields only, the `Pod` image is the account data with no padding.
 const _: () = assert!(core::mem::align_of::<TrackingRegistry>() == 1);
-const _: () = assert!(TrackingRegistry::SIZE == 1610);
-const _: () = assert!(core::mem::align_of::<TrackingAuthorization>() == 1);
-const _: () = assert!(TrackingAuthorization::SIZE == 258);
+const _: () = assert!(TrackingRegistry::SIZE == 6218);
+const _: () = assert!(core::mem::align_of::<EnrollmentQueue>() == 1);
+const _: () = assert!(EnrollmentQueue::SIZE == 8241);
 
 #[cfg(test)]
 mod tests {
@@ -371,10 +391,11 @@ mod tests {
             &[0; 32],
             &[0; 32],
             &[0; 32],
+            &[0; 32],
         ])
         .unwrap();
         let mut zero = [0u8; 32];
-        for _ in 0..TRACKING_QUAD_HEIGHT {
+        for _ in 0..crate::QUAD_HEIGHT {
             node = Poseidon::hashv(&[&node, &zero, &zero, &zero]).unwrap();
             zero = Poseidon::hashv(&[&zero, &zero, &zero, &zero]).unwrap();
         }

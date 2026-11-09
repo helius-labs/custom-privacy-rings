@@ -15,7 +15,7 @@ import (
 )
 
 func trackingEntry(member, key int64) ringregistry.TrackingEntry {
-	return ringregistry.TrackingEntry{Member: big.NewInt(member), NullifierPk: big.NewInt(key), CtHash: big.NewInt(key + 1), ListTag: big.NewInt(key + 2)}
+	return ringregistry.TrackingEntry{Member: big.NewInt(member), NullifierPk: big.NewInt(key), CtHash: big.NewInt(key + 1), ListTag: big.NewInt(key + 2), ViewingHash: big.NewInt(key + 3)}
 }
 
 // The tree holds alice (0x10) and carol (0x30), bob (0x20) is absent between them.
@@ -110,8 +110,8 @@ func TestTrackingOpeningRefusals(t *testing.T) {
 	}
 	t.Run("an index past the capacity", func(t *testing.T) {
 		c := trackingRow(tree, alice)
-		c.Opening.Path.Index = new(big.Int).Add(big.NewInt(1), big.NewInt(registry.TrackingCapacity))
-		ringtest.RequireRefused(t, solveTrackingRow(c), "[ToBinary]", "registry.TrackingPath.digits")
+		c.Opening.Path.Index = new(big.Int).Add(big.NewInt(1), big.NewInt(registry.Capacity))
+		ringtest.RequireRefused(t, solveTrackingRow(c), "[ToBinary]", "registry.QuadPath.digits")
 	})
 }
 
@@ -121,6 +121,8 @@ type trackingVector struct {
 	NullifierPk   string `json:"nullifier_pk"`
 	CtHash        string `json:"ct_hash"`
 	ListTag       string `json:"list_tag"`
+	ViewingHash   string `json:"viewing_hash"`
+	Proven        bool   `json:"proven"`
 	EntryHash     string `json:"entry_hash"`
 	ChainFromZero string `json:"chain_from_zero"`
 	ListSalt      string `json:"list_salt"`
@@ -139,7 +141,7 @@ func TestTrackingHashesMatchRustVector(t *testing.T) {
 	}
 	entry := ringregistry.TrackingEntry{
 		Member: ringtest.VectorField(t, v.Member), NullifierPk: ringtest.VectorField(t, v.NullifierPk), CtHash: ringtest.VectorField(t, v.CtHash),
-		ListTag: ringtest.VectorField(t, v.ListTag),
+		ListTag: ringtest.VectorField(t, v.ListTag), ViewingHash: ringtest.VectorField(t, v.ViewingHash), Unproven: !v.Proven,
 	}
 	hash := entry.Hash(t)
 	if hash.Cmp(ringtest.VectorField(t, v.EntryHash)) != 0 {
@@ -192,7 +194,7 @@ func (c *sharedTrackingCircuit) Define(api frontend.API) error {
 	return nil
 }
 
-// Both canopy branches fold at the tracking height.
+// Both canopy branches fold a tracking leaf at the one tree height.
 func TestSharedTrackingProofOpensLeaves(t *testing.T) {
 	tree := ringregistry.NewTracking(t)
 	for m := int64(1); m <= 20; m++ {
@@ -210,7 +212,7 @@ func TestSharedTrackingProofOpensLeaves(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		shape, err := registry.NewTrackingProof(openings)
+		shape, err := registry.NewSharedQuadProof(openings)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -226,21 +228,7 @@ func TestSharedTrackingProofOpensLeaves(t *testing.T) {
 			t.Fatalf("%d openings: a leaf outside the tree opened", openings)
 		}
 	}
-	if proof, err := registry.NewTrackingProof(1); err != nil || len(proof.Paths[0].Siblings) != registry.TrackingHeight {
+	if proof, err := registry.NewSharedQuadProof(1); err != nil || len(proof.Paths[0].Siblings) != registry.Height || proof.Validate(1) != nil {
 		t.Fatalf("tracking proof height %v, %v", proof, err)
-	}
-	if proof, err := registry.NewSharedQuadProof(1); err != nil || len(proof.Paths[0].Siblings) != registry.Height {
-		t.Fatalf("policy proof height %v, %v", proof, err)
-	}
-	if proof, err := registry.NewTrackingProof(1); err != nil || proof.Validate(1) != nil {
-		t.Fatalf("a tracking proof fails its own shape: %v", err)
-	}
-	policyShape, err := registry.NewSharedQuadProof(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	policyShape.TreeHeight = registry.TrackingHeight
-	if policyShape.Validate(1) == nil {
-		t.Fatal("a path of the policy height passes at the tracking height")
 	}
 }

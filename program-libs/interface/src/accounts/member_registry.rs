@@ -18,8 +18,9 @@ use zolana_ring_policy::MintPolicy;
 use crate::{domain, error::CustomRingError};
 
 pub const QUAD_ARITY: usize = 4;
-pub const QUAD_HEIGHT: usize = 10;
-pub const MEMBER_REGISTRY_CAPACITY: u64 = 1 << (2 * QUAD_HEIGHT);
+/// The height of both trees, a policy registry and a tracking registry.
+pub const QUAD_HEIGHT: usize = 16;
+pub const QUAD_CAPACITY: u64 = 1 << (2 * QUAD_HEIGHT);
 /// Writes the larger apply key proves.
 pub const APPLY_BATCH: usize = 16;
 /// Default slot allowance for a retired policy record root.
@@ -34,8 +35,8 @@ pub const FIELD_MAX: [u8; 32] = {
 
 /// Root of the tree holding only the sentinel, the first history entry of a registry.
 pub const MEMBER_REGISTRY_EMPTY_ROOT: [u8; 32] = [
-    0x05, 0x3b, 0x21, 0x36, 0xce, 0x0e, 0x6c, 0xff, 0xb8, 0x9c, 0xb7, 0x6c, 0x7a, 0x81, 0xb6, 0xd7,
-    0xe1, 0xbd, 0x42, 0x41, 0x59, 0xff, 0x45, 0x79, 0xf2, 0x84, 0xa7, 0xe5, 0xf1, 0x98, 0x95, 0x6d,
+    0x29, 0x5e, 0xc1, 0x6f, 0x1f, 0xf5, 0x87, 0xf0, 0x26, 0x9e, 0xb2, 0x1d, 0xdf, 0x07, 0x9a, 0x2b,
+    0x44, 0xcb, 0x3e, 0x0c, 0x68, 0x52, 0xf3, 0x54, 0x31, 0xab, 0x02, 0xf7, 0x65, 0x1a, 0xc9, 0x67,
 ];
 
 /// The sentinel `(0, q - 1)` brackets every member in `[1, q - 2]` strictly.
@@ -92,7 +93,12 @@ impl RecordWrite {
 
 /// `chain(p) = Poseidon(chain(p - 1), entry_p)` from `chain_start` of the registry and revision.
 pub fn write_chain(previous: &[u8; 32], entry: &RecordWrite) -> Result<[u8; 32], HasherError> {
-    Poseidon::hashv(&[previous, &entry.hash()?])
+    chain_link(previous, &entry.hash()?)
+}
+
+/// One link of an apply chain, both trees' circuits fold `Poseidon(previous, entry_hash)`.
+pub fn chain_link(previous: &[u8; 32], entry_hash: &[u8; 32]) -> Result<[u8; 32], HasherError> {
+    Poseidon::hashv(&[previous, entry_hash])
 }
 
 #[cfg(test)]

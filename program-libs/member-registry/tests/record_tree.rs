@@ -7,7 +7,7 @@ use custom_ring_interface::{
     storage::{RegistryId, RootUpdate, StorageError, StorageRegistry},
     storage_instruction::{AssetWrite, InitializeIxData, StorageUpdateIxData},
     ApplyRecordsIxData, PrivateWrites, RecordWrite, RecordWriteData, WriteRecordsIxData, FIELD_MAX,
-    MEMBER_REGISTRY_CAPACITY, MEMBER_REGISTRY_EMPTY_ROOT,
+    MEMBER_REGISTRY_EMPTY_ROOT, QUAD_CAPACITY,
 };
 use solana_address::Address;
 use spr_hasher::primitives::right_align;
@@ -141,7 +141,7 @@ fn the_tree_refuses_writes_the_program_never_chains() {
     );
     assert_eq!(tree, before);
     assert_eq!(
-        QuadPath::sibling_positions(MEMBER_REGISTRY_CAPACITY),
+        QuadPath::sibling_positions(QUAD_CAPACITY),
         Err(RecordTreeError::IndexOutOfRange)
     );
 }
@@ -364,7 +364,7 @@ fn a_full_tree_applies_updates_and_no_ops_but_no_insert() {
         },
     };
     let mut full = PreloadedStore {
-        next_index: MEMBER_REGISTRY_CAPACITY,
+        next_index: QUAD_CAPACITY,
         ..PreloadedStore::default()
     };
     full.nodes.insert(NodePosition::ROOT, [2; 32]);
@@ -385,7 +385,7 @@ fn a_full_tree_applies_updates_and_no_ops_but_no_insert() {
     let noop = inputs.writes[1];
     assert!(!noop.exists);
     assert_eq!(noop.slot, noop.low_path);
-    assert_eq!(inputs.new_next_index, MEMBER_REGISTRY_CAPACITY);
+    assert_eq!(inputs.new_next_index, QUAD_CAPACITY);
     assert_eq!(
         full.apply([0; 32], &[write(7, frozen, frozen)])
             .map(|applied| applied.proof),
@@ -687,7 +687,7 @@ fn statements_refuse_a_different_registry_root_or_allocation_cursor() {
     let mut wrong_root = registry();
     wrong_root.roots[0].hash = proof.new_root;
     let mut wrong_index = registry();
-    wrong_index.next_index = 2u32.to_le_bytes();
+    wrong_index.next_index = 2u64.to_le_bytes();
     for state in [wrong_root, wrong_index] {
         assert!(matches!(
             proof.statement(RecordStatementContext {

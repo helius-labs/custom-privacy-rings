@@ -1,24 +1,48 @@
-use custom_ring_interface::{
-    tracking::{TrackingEntry, TRACKING_CAPACITY, TRACKING_QUAD_HEIGHT},
-    FIELD_MAX,
-};
+use custom_ring_interface::{chain_link, tracking::TrackingEntry, FIELD_MAX, QUAD_CAPACITY};
 use spr_hasher::primitives::right_align;
 use zolana_ring_member_registry::{
-    AppliedTree, ApplyProofInputs, Canopy, IndexedRecord, NodePosition, OpeningCheck,
-    RecordOpening, RecordStore, RecordTree, RecordTreeError, TrackingPath, TrackingRecord,
-    TrackingTree, TrackingWriteProofInput,
+    AppliedTree, ApplyProofInputs, Canopy, IndexedRecord, NodePosition, OpeningCheck, QuadPath,
+    RecordOpening, RecordStore, RecordTree, RecordTreeError, TrackingRecord, TrackingTree,
+    TrackingWriteProofInput,
 };
 
 fn member(byte: u8) -> [u8; 32] {
     right_align(&[byte])
 }
 
+/// A first enrollment, its `Enroll` verified `RegisterKey`.
 fn entry(byte: u8) -> TrackingEntry {
     TrackingEntry {
         member: member(byte),
         nullifier_pk: member(byte ^ 0x40),
         ct_hash: member(byte ^ 0x50),
         list_tag: member(byte ^ 0x70),
+        viewing_hash: member(byte ^ 0x60),
+        proven: true,
+    }
+}
+
+/// A viewing key rotation, its sealed fields differ from the first enrollment's.
+fn rotation(byte: u8, viewing: u8) -> TrackingEntry {
+    TrackingEntry {
+        nullifier_pk: member(viewing),
+        ct_hash: member(viewing),
+        list_tag: member(viewing),
+        viewing_hash: member(viewing),
+        proven: false,
+        ..entry(byte)
+    }
+}
+
+fn inserted(byte: u8, next: [u8; 32]) -> TrackingRecord {
+    let entry = entry(byte);
+    TrackingRecord {
+        member: entry.member,
+        next,
+        nullifier_pk: entry.nullifier_pk,
+        ct_hash: entry.ct_hash,
+        list_tag: entry.list_tag,
+        viewing_hash: entry.viewing_hash,
     }
 }
 
@@ -33,6 +57,10 @@ fn apply(
     Ok(proof)
 }
 
+fn presence(inputs: &ApplyProofInputs<TrackingWriteProofInput>) -> Vec<bool> {
+    inputs.writes.iter().map(|write| write.present).collect()
+}
+
 fn record(tree: &TrackingTree, byte: u8) -> Option<TrackingRecord> {
     tree.record(&member(byte))
         .unwrap()
@@ -40,29 +68,24 @@ fn record(tree: &TrackingTree, byte: u8) -> Option<TrackingRecord> {
 }
 
 #[test]
-fn an_insert_relinks_the_low_record_and_holds_the_entry() {
+fn a_proven_insert_relinks_the_low_record_and_holds_the_entry() {
     let mut tree = TrackingTree::new().unwrap();
     let first = apply(&mut tree, [1; 32], &[entry(9)]).unwrap();
-    assert_eq!(first.chain_end, entry(9).chained(&[1; 32]).unwrap());
+    assert_eq!(
+        first.chain_end,
+        chain_link(&[1; 32], &entry(9).hash().unwrap()).unwrap()
+    );
     let relinked = tree.root().unwrap();
     let inputs = apply(&mut tree, first.chain_end, &[entry(4)]).unwrap();
     let insert = inputs.writes[0];
+    assert!(!insert.present);
     assert_eq!(insert.slot.index, 2);
     assert_eq!(insert.low.next, member(9));
     assert_eq!(
         insert.low_path.root(insert.low.hash().unwrap()),
         Ok(relinked)
     );
-    assert_eq!(
-        record(&tree, 4),
-        Some(TrackingRecord {
-            member: member(4),
-            next: member(9),
-            nullifier_pk: entry(4).nullifier_pk,
-            ct_hash: entry(4).ct_hash,
-            list_tag: entry(4).list_tag,
-        })
-    );
+    assert_eq!(record(&tree, 4), Some(inserted(4, member(9))));
     assert_eq!(tree.records()[0].next, member(4));
     let statement = inputs.statement();
     assert_eq!((statement.old_next_index, statement.new_next_index), (2, 3));
@@ -71,19 +94,67 @@ fn an_insert_relinks_the_low_record_and_holds_the_entry() {
 }
 
 #[test]
-fn a_present_owner_refuses_a_second_write_and_keeps_the_root() {
+fn a_present_owner_moves_only_its_viewing_hash() {
     let mut tree = TrackingTree::new().unwrap();
     apply(&mut tree, [0; 32], &[entry(5)]).unwrap();
-    let root = tree.root().unwrap();
+    let before = tree.root().unwrap();
+    // A proven re-enrollment and a rotation alike leave the sealed fields as first inserted.
+    for update in [
+        rotation(5, 0x21),
+        TrackingEntry {
+            proven: true,
+            ..rotation(5, 0x22)
+        },
+    ] {
+        let inputs = apply(&mut tree, [0; 32], &[update]).unwrap();
+        let write = inputs.writes[0];
+        assert!(write.present);
+        assert_eq!(write.low.member, member(5));
+        assert_eq!(
+            write.low_path.root(write.low.hash().unwrap()),
+            Ok(inputs.old_root)
+        );
+        assert_eq!(write.slot, QuadPath::default());
+        assert_eq!(inputs.new_next_index, inputs.old_next_index);
+        assert_eq!(
+            record(&tree, 5),
+            Some(TrackingRecord {
+                viewing_hash: update.viewing_hash,
+                ..inserted(5, FIELD_MAX)
+            })
+        );
+    }
+    assert_ne!(tree.root().unwrap(), before);
+}
+
+#[test]
+fn an_unproven_entry_of_an_absent_owner_changes_nothing_and_still_chains() {
+    let mut tree = TrackingTree::new().unwrap();
+    let before = tree.clone();
+    let inputs = apply(&mut tree, [2; 32], &[rotation(6, 0x23)]).unwrap();
+    let write = inputs.writes[0];
+    assert!(!write.present);
+    assert_eq!(write.slot, QuadPath::default());
+    assert_eq!(tree, before);
+    assert_eq!(inputs.new_root, inputs.old_root);
+    assert_eq!(inputs.new_next_index, inputs.old_next_index);
     assert_eq!(
-        apply(&mut tree, [0; 32], &[entry(5)]),
-        Err(RecordTreeError::TrackingOwnerPresent)
+        inputs.chain_end,
+        chain_link(&[2; 32], &rotation(6, 0x23).hash().unwrap()).unwrap()
     );
+}
+
+#[test]
+fn a_duplicate_in_one_batch_inserts_then_updates() {
+    let mut tree = TrackingTree::new().unwrap();
+    let inputs = apply(&mut tree, [0; 32], &[entry(6), rotation(6, 0x24)]).unwrap();
+    assert_eq!(presence(&inputs), [false, true]);
+    assert_eq!(inputs.writes[1].low, inserted(6, FIELD_MAX));
+    assert_eq!((inputs.old_next_index, inputs.new_next_index), (1, 2));
     assert_eq!(
-        apply(&mut tree, [0; 32], &[entry(6), entry(6)]),
-        Err(RecordTreeError::TrackingOwnerPresent)
+        record(&tree, 6).map(|record| record.viewing_hash),
+        Some(member(0x24))
     );
-    assert_eq!(tree.root().unwrap(), root);
 }
 
 #[test]
@@ -109,16 +180,6 @@ fn the_tree_refuses_entries_the_program_never_chains() {
         assert_eq!(apply(&mut tree, [0; 32], &[outside]), Err(refusal));
     }
     assert_eq!(tree, before);
-}
-
-#[test]
-fn the_tree_opens_leaf_two_to_the_thirty_two_minus_one_and_refuses_the_next() {
-    assert_eq!(TRACKING_CAPACITY, 1 << 32);
-    assert!(TrackingPath::sibling_positions(TRACKING_CAPACITY - 1).is_ok());
-    assert_eq!(
-        TrackingPath::sibling_positions(TRACKING_CAPACITY),
-        Err(RecordTreeError::IndexOutOfRange)
-    );
 }
 
 #[test]
@@ -153,35 +214,36 @@ fn openings_prove_presence_and_absence_under_the_root() {
 }
 
 #[test]
-fn a_record_pool_opens_the_taller_tree_and_refuses_the_policy_canopy() {
+fn a_record_pool_opens_the_tracking_tree_under_the_shared_canopy() {
     let mut tree = TrackingTree::new().unwrap();
     apply(&mut tree, [0; 32], &[entry(4), entry(9)]).unwrap();
     let root = tree.root().unwrap();
     let members = [9, 6, 4, 9].map(member);
     let pool = tree
-        .record_pool(&members, Canopy::covering_tracking(4).unwrap())
+        .record_pool(&members, Canopy::covering(4).unwrap())
         .unwrap();
     assert_eq!(pool.records.len(), 2);
     assert_eq!(pool.verify(&root), Ok(()));
     assert_eq!(pool.clone().padded(4).unwrap().verify(&root), Ok(()));
     let mut forged = pool;
-    forged.records[1].ct_hash = member(9);
+    forged.records[1].viewing_hash = member(9);
     assert_eq!(forged.verify(&root), Err(RecordTreeError::RootMismatch));
-    assert_eq!(
-        tree.record_pool(&members, Canopy::covering(4).unwrap()),
-        Err(RecordTreeError::PoolShape)
-    );
 }
 
 #[test]
-fn a_full_tree_refuses_an_insert() {
+fn a_full_tree_refuses_an_insert_and_still_applies_an_update_and_a_no_op() {
     assert!(matches!(
         FullStore::with_present(member(10)).apply([0; 32], &[entry(7)]),
         Err(RecordTreeError::Full)
     ));
+    let AppliedTree { proof, .. } = FullStore::with_present(member(10))
+        .apply([0; 32], &[rotation(10, 0x25), rotation(7, 0x26)])
+        .unwrap();
+    assert_eq!(presence(&proof), [true, false]);
+    assert_eq!(proof.new_next_index, QUAD_CAPACITY);
 }
 
-/// `TRACKING_CAPACITY` leaves written, only what these writes read is stored.
+/// `QUAD_CAPACITY` leaves written, only what these writes read is stored.
 struct FullStore {
     records: Vec<IndexedRecord<TrackingRecord>>,
 }
@@ -192,13 +254,9 @@ impl FullStore {
             next: present,
             ..TrackingRecord::SENTINEL
         };
-        let enrolled = entry(10);
         let written = TrackingRecord {
             member: present,
-            next: FIELD_MAX,
-            nullifier_pk: enrolled.nullifier_pk,
-            ct_hash: enrolled.ct_hash,
-            list_tag: enrolled.list_tag,
+            ..inserted(10, FIELD_MAX)
         };
         Self {
             records: vec![
@@ -215,11 +273,11 @@ impl FullStore {
     }
 }
 
-impl RecordStore<TrackingRecord, TRACKING_QUAD_HEIGHT> for FullStore {
+impl RecordStore<TrackingRecord> for FullStore {
     type Error = RecordTreeError;
 
     fn next_index(&self) -> Result<u64, RecordTreeError> {
-        Ok(TRACKING_CAPACITY)
+        Ok(QUAD_CAPACITY)
     }
 
     fn node(&self, _at: NodePosition) -> Result<[u8; 32], RecordTreeError> {

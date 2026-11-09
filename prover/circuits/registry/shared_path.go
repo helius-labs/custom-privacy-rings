@@ -20,7 +20,7 @@ import (
 
 // Properties:
 // 1. While active is set every leaf sits at its own Index under root, its path folds to the canopy node its index's high digits name and the canopy folds to root.
-// 2. Index is bound to the tree's index width, one index per leaf.
+// 2. Index is bound to IndexBits, one index per leaf.
 // 3. While active is clear root binds nothing, every read of the pool's leaves must carry its own gate, pooledTable.lookup in policy/record_pool.go holds it.
 // 4. The proof authenticates leaves only, member matching and absence stay with the caller.
 
@@ -32,32 +32,21 @@ type SharedQuadPath struct {
 
 // SharedQuadProof's Canopy is one whole level of the tree, every node in index order.
 type SharedQuadProof struct {
-	// TreeHeight is zero for a policy registry of Height.
-	TreeHeight int `gnark:"-"`
-	Canopy     []frontend.Variable
-	Paths      []SharedQuadPath
+	Canopy []frontend.Variable
+	Paths  []SharedQuadPath
 }
 
 // A canopy up to the limit reads through a mux and adds no commitment, a wider one through one log derivative table, both read the same node.
 const muxCanopyLimit = 16
 
 func NewSharedQuadProof(openings int) (SharedQuadProof, error) {
-	return newSharedProof(openings, 0)
-}
-
-func NewTrackingProof(openings int) (SharedQuadProof, error) {
-	return newSharedProof(openings, TrackingHeight)
-}
-
-func newSharedProof(openings, treeHeight int) (SharedQuadProof, error) {
-	proof := SharedQuadProof{TreeHeight: treeHeight}
-	if openings < 1 || openings > 1<<(2*proof.height()) {
+	if openings < 1 || openings > Capacity {
 		return SharedQuadProof{}, fmt.Errorf("registry opening count outside capacity")
 	}
 	width, levels := canopyShape(openings)
-	proof.Canopy, proof.Paths = make([]frontend.Variable, width), make([]SharedQuadPath, openings)
+	proof := SharedQuadProof{Canopy: make([]frontend.Variable, width), Paths: make([]SharedQuadPath, openings)}
 	for i := range proof.Paths {
-		proof.Paths[i].Siblings = make([][Arity - 1]frontend.Variable, proof.height()-levels)
+		proof.Paths[i].Siblings = make([][Arity - 1]frontend.Variable, Height-levels)
 	}
 	return proof, nil
 }
@@ -70,13 +59,6 @@ func canopyShape(openings int) (width, levels int) {
 		levels++
 	}
 	return width, levels
-}
-
-func (p SharedQuadProof) height() int {
-	if p.TreeHeight == 0 {
-		return Height
-	}
-	return p.TreeHeight
 }
 
 func (p SharedQuadProof) AssertLeaves(api frontend.API, root frontend.Variable, leaves []frontend.Variable) {
@@ -94,7 +76,7 @@ func (p SharedQuadProof) AssertLeavesWhen(api frontend.API, active, root fronten
 	// 2. Each leaf folds to the canopy node at its index's high digits, the two steps together are a full path.
 	if len(p.Canopy) <= muxCanopyLimit {
 		for i, path := range p.Paths {
-			node := path.root(api, leaves[i], p.height())
+			node := path.root(api, leaves[i])
 			// Ungated, an inactive pool's canopy is prover-chosen and always admits its paths.
 			api.AssertIsEqual(selector.BinaryMux(api, node.bits, p.Canopy), node.value)
 		}
@@ -106,7 +88,7 @@ func (p SharedQuadProof) AssertLeavesWhen(api frontend.API, active, root fronten
 		table.Insert(node)
 	}
 	for i, path := range p.Paths {
-		node := path.root(api, leaves[i], p.height())
+		node := path.root(api, leaves[i])
 		api.AssertIsEqual(table.Lookup(api.FromBinary(node.bits...))[0], node.value)
 	}
 }
@@ -120,7 +102,7 @@ func (p SharedQuadProof) Validate(count int) error {
 		return fmt.Errorf("registry canopy width is not a supported power of four")
 	}
 	for _, path := range p.Paths {
-		if len(path.Siblings) != p.height()-levels {
+		if len(path.Siblings) != Height-levels {
 			return fmt.Errorf("registry shared path height mismatch")
 		}
 	}
@@ -144,8 +126,8 @@ type canopyNode struct {
 	value frontend.Variable
 }
 
-func (p SharedQuadPath) root(api frontend.API, leaf frontend.Variable, height int) canopyNode {
-	// The tree's index width bounds Index, one index per leaf.
-	bits := api.ToBinary(p.Index, 2*height)
+func (p SharedQuadPath) root(api frontend.API, leaf frontend.Variable) canopyNode {
+	// IndexBits bound Index, one index per leaf.
+	bits := api.ToBinary(p.Index, IndexBits)
 	return canopyNode{bits: bits[2*len(p.Siblings):], value: foldQuadPath(api, p.Siblings, bits, leaf)}
 }

@@ -5,7 +5,7 @@
 //! `programs/storage/src/instructions/update.rs`, `programs/storage/src/instructions/enroll.rs`.
 //!
 //! Guarantees:
-//! 1. A registry, authorization or grant loads only when the program owns it, at its exact size and under its discriminator.
+//! 1. A registry, enrollment queue or grant loads only when the program owns it, at its exact size and under its discriminator, and a queue only beside its own registry.
 //! 2. A created account takes its canonical bump from the derivation, never from instruction data.
 //!
 //! Relies on:
@@ -14,10 +14,8 @@
 use custom_ring_interface::{
     owner_grant::OwnerGrant,
     storage::{Revision, StorageError, StorageRegistry},
-    storage_instruction::{
-        EnrollIxData, InitializeIxData, InitializeTrackingIxData, OwnerGrantIxData,
-    },
-    tracking::{FirstEnrollment, TrackingAuthorization, TrackingRegistry},
+    storage_instruction::{InitializeIxData, InitializeTrackingIxData, OwnerGrantIxData},
+    tracking::{EnrollmentQueue, TrackingRegistry},
 };
 use pinocchio::{
     account::{Ref, RefMut},
@@ -97,49 +95,44 @@ impl TrackingRegistryInit<'_> {
             size: TrackingRegistry::SIZE,
         }
         .create(account)?;
-        account
-            .try_borrow_mut()?
-            .copy_from_slice(bytemuck::bytes_of(&TrackingRegistry::new(self.ix)));
+        bytemuck::try_from_bytes_mut::<TrackingRegistry>(&mut account.try_borrow_mut()?)
+            .map_err(|_| StorageError::InvalidTrackingRegistry)?
+            .init(self.ix);
         Ok(())
     }
 }
 
-/// A first enrollment, whose owner signature and proof the processor checked.
+/// The queue of a registry created in the same instruction, its address names the registry.
 #[must_use]
-pub struct TrackingAuthorizationInit<'a> {
+pub struct EnrollmentQueueInit<'a> {
     pub program_id: &'a Address,
     pub payer: &'a AccountView,
-    pub owner: &'a Address,
     pub registry: &'a Address,
-    pub ix: &'a EnrollIxData,
 }
 
-impl TrackingAuthorizationInit<'_> {
+impl EnrollmentQueueInit<'_> {
     #[inline(always)]
     pub fn init(self, account: &mut AccountView) -> ProgramResult {
-        let seeds = TrackingAuthorization::seeds(self.registry, self.owner);
+        let seeds = EnrollmentQueue::seeds(self.registry);
         let (address, bump) = Address::derive_program_address(&seeds, self.program_id)
-            .ok_or(StorageError::InvalidTrackingAuthorization)?;
+            .ok_or(StorageError::InvalidEnrollmentQueue)?;
         if account.address() != &address || !account.is_writable() {
-            return Err(StorageError::InvalidTrackingAuthorization.into());
+            return Err(StorageError::InvalidEnrollmentQueue.into());
+        }
+        if account.data_len() != 0 {
+            return Err(StorageError::AlreadyInitialized.into());
         }
         CanonicalPda {
             program_id: self.program_id,
             payer: self.payer,
             seeds: &seeds,
             bump,
-            size: TrackingAuthorization::SIZE,
+            size: EnrollmentQueue::SIZE,
         }
         .create(account)?;
-        let first = FirstEnrollment {
-            registry: *self.registry,
-            owner: *self.owner,
-            ix: self.ix,
-        }
-        .account();
-        account
-            .try_borrow_mut()?
-            .copy_from_slice(bytemuck::bytes_of(&first));
+        bytemuck::try_from_bytes_mut::<EnrollmentQueue>(&mut account.try_borrow_mut()?)
+            .map_err(|_| StorageError::InvalidEnrollmentQueue)?
+            .init(*self.registry);
         Ok(())
     }
 }
@@ -238,25 +231,22 @@ pub fn load_tracking_registry_mut<'a>(
         .map_err(|_| StorageError::InvalidTrackingRegistry.into())
 }
 
-/// An authorization of `registry`, its stored field binds it because it is created only at its PDA.
+/// The queue of `registry`, its stored field binds it because it is created only at its PDA.
 #[inline(always)]
-pub fn load_owned_tracking_authorization_mut<'a>(
+pub fn load_enrollment_queue_mut<'a>(
     program_id: &Address,
     registry: &Address,
     account: &'a mut AccountView,
-) -> Result<RefMut<'a, TrackingAuthorization>, ProgramError> {
+) -> Result<RefMut<'a, EnrollmentQueue>, ProgramError> {
     if !account.owned_by(program_id) || !account.is_writable() {
-        return Err(StorageError::InvalidTrackingAuthorization.into());
+        return Err(StorageError::InvalidEnrollmentQueue.into());
     }
-    let authorization = RefMut::filter_map(
-        account.try_borrow_mut()?,
-        TrackingAuthorization::from_data_mut,
-    )
-    .map_err(|_| StorageError::InvalidTrackingAuthorization)?;
-    if &authorization.registry != registry {
-        return Err(StorageError::InvalidTrackingAuthorization.into());
+    let queue = RefMut::filter_map(account.try_borrow_mut()?, EnrollmentQueue::from_data_mut)
+        .map_err(|_| StorageError::InvalidEnrollmentQueue)?;
+    if &queue.registry != registry {
+        return Err(StorageError::InvalidEnrollmentQueue.into());
     }
-    Ok(authorization)
+    Ok(queue)
 }
 
 #[inline(always)]
