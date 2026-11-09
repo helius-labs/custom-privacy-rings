@@ -1,0 +1,33 @@
+name: Install pinned tools
+description: Install exact tool versions against the sha256 the install-action manifest pins, retried with backoff.
+inputs:
+  tool:
+    description: Comma separated tool@version list, each version in the install-action manifest.
+    required: true
+runs:
+  using: composite
+  steps:
+    - id: first
+      continue-on-error: true
+      uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+      with:
+        tool: ${{ inputs.tool }}
+        fallback: none
+    - if: steps.first.outcome == 'failure'
+      shell: bash
+      run: sleep 30
+    - id: second
+      if: steps.first.outcome == 'failure'
+      continue-on-error: true
+      uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+      with:
+        tool: ${{ inputs.tool }}
+        fallback: none
+    - if: steps.second.outcome == 'failure'
+      shell: bash
+      run: sleep 120
+    - if: steps.second.outcome == 'failure'
+      uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+      with:
+        tool: ${{ inputs.tool }}
+        fallback: none

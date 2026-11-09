@@ -1,0 +1,25 @@
+name: Proving keys
+description: Restore the cached proving keys, download only a key missing or off its lockfile digest.
+inputs:
+  save:
+    description: Fill and save a missing cache entry, a hit skips the restore.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - id: keys
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: zolana/prover/server/proving-keys
+        key: proving-keys-${{ hashFiles('prover/ring/proving-keys.lock', 'zolana/prover/server/prover/provingkeys/proving-keys.lock') }}
+        lookup-only: ${{ inputs.save }}
+    - if: steps.keys.outputs.cache-hit != 'true' || inputs.save != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: just fetch-custom-ring-keys
+    - if: steps.keys.outputs.cache-hit != 'true' && inputs.save == 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: zolana/prover/server/proving-keys
+        key: ${{ steps.keys.outputs.cache-primary-key }}

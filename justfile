@@ -252,33 +252,69 @@ fetch-custom-ring-keys:
     temp_dir="$(mktemp -d)"
     trap 'rm -rf "$temp_dir"' EXIT
     pinned() {
-        python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["keys"][sys.argv[2]]["sha256"])' "$1" "$2"
+        python3 -c 'import json, sys; key = json.load(open(sys.argv[1]))["keys"][sys.argv[2]]; print(key["sha256"], key["size"])' "$1" "$2"
     }
     digest() {
         shasum -a 256 "$1" | awk '{ print $1 }'
     }
+    retry() {
+        local delay=5 attempt
+        for attempt in 1 2 3 4 5 6; do
+            "$@" && return
+            ((attempt < 6)) || return 1
+            echo "attempt $attempt failed, retrying in ${delay}s" >&2
+            sleep "$delay"
+            delay=$((delay * 2))
+        done
+    }
+    curl_get() {
+        curl -fsSL --connect-timeout 10 --max-time 900 "$1" -o "$2"
+    }
+    release_url="${ZOLANA_RING_KEYS_URL:-$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["release"])' "{{ring-keys-lock}}")}"
+    release_repo="" release_tag=""
+    # A token reads the release through the authenticated asset API, a mirror or no token takes plain HTTPS.
+    if [[ -n "${GH_TOKEN:-}" && "$release_url" =~ ^https://github\.com/([^/]+/[^/]+)/releases/download/([^/]+)$ ]]; then
+        release_repo="${BASH_REMATCH[1]}" release_tag="${BASH_REMATCH[2]}"
+    fi
+    ring_get() {
+        if [[ -n "$release_repo" ]]; then
+            gh release download "$release_tag" --repo "$release_repo" --pattern "$1" --output "$2" --clobber
+        else
+            curl_get "$release_url/$1" "$2"
+        fi
+    }
+    spp_lock="zolana/prover/server/prover/provingkeys/proving-keys.lock"
+    spp_url="${ZOLANA_PROVING_KEYS_URL:-https://d3gbdb0egjwcw9.cloudfront.net}/$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["prefix"])' "$spp_lock")"
+    spp_get() {
+        curl_get "$spp_url/$1" "$2"
+    }
+    # A body of another size retries, the pinned size with another digest fails at once.
+    sized_get() {
+        local get="$1" name="$2" size="$3"
+        "$get" "$name" "$temp_dir/$name" && [[ "$(wc -c < "$temp_dir/$name" | tr -d ' ')" == "$size" ]]
+    }
     fetch() {
-        lock="$1" name="$2" url="$3"
-        want="$(pinned "$lock" "$name")"
+        local get="$1" lock="$2" name="$3" want size got
+        read -r want size < <(pinned "$lock" "$name")
         [[ -f "$keys_dir/$name" && "$(digest "$keys_dir/$name")" == "$want" ]] && return
         echo "Downloading $name" >&2
-        curl -fsSL --retry 3 --retry-max-time 60 --connect-timeout 10 --max-time 300 \
-            "$url" -o "$temp_dir/$name"
+        if ! retry sized_get "$get" "$name" "$size"; then
+            echo "$name did not download at the $size bytes $lock pins" >&2
+            exit 1
+        fi
         got="$(digest "$temp_dir/$name")"
         if [[ "$got" != "$want" ]]; then
-            echo "$url hashes to $got, $lock pins $want" >&2
+            echo "$name hashes to $got, $lock pins $want" >&2
             exit 1
         fi
         install -m 0644 "$temp_dir/$name" "$keys_dir/$name"
+        rm -f "$temp_dir/$name"
     }
-    release_url="${ZOLANA_RING_KEYS_URL:-$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["release"])' "{{ring-keys-lock}}")}"
     for name in {{custom-ring-keys}}; do
-        fetch "{{ring-keys-lock}}" "$name" "$release_url/$name"
+        fetch ring_get "{{ring-keys-lock}}" "$name"
     done
-    spp_lock="zolana/prover/server/prover/provingkeys/proving-keys.lock"
-    spp_url="${ZOLANA_PROVING_KEYS_URL:-https://d3gbdb0egjwcw9.cloudfront.net}/$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["prefix"])' "$spp_lock")"
     for name in transfer_ring_1_2.key transfer_ring_2_2.key ${RING_EXTRA_SPP_KEY:-}; do
-        fetch "$spp_lock" "$name" "$spp_url/$name"
+        fetch spp_get "$spp_lock" "$name"
     done
 
 # The committed verifying keys must be the export of the pinned proving keys.

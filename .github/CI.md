@@ -8,6 +8,14 @@ Set `validation=sanity` to run `just test-custom-ring-sanity` as the localnet su
 That mode omits TypeScript live tests and keeps the build, lint, unit, package and documentation checks.
 It reports `ci sanity result`, which does not replace the required `ci result` check.
 
+The TypeScript suites seed `crypto.getRandomValues` from `ZOLANA_RANDOM_SEED`, fixed in the workflow env, and a Rust test that seeds its draws reads it through `spr_test_utils::seed::random_seed`.
+Dispatch with `random_seed` to run them under another seed.
+A failing TypeScript test prints its seed and the replay command, a seeded Rust test prints its seed.
+
+The `keys` job downloads every ring proving key and the SPP ring transfer keys once and saves them under the hash of both lockfiles.
+The localnet and e2e jobs restore that entry and download only a key it lacks.
+A pull request that changes a lockfile saves its own entry, the jobs of that pull request read it.
+
 The localnet matrix runs each shape and full capacity sweep of `program-tests/custom-ring/tests/ring_shapes.rs` as its own job.
 Those sweeps prove every catalog key.
 
