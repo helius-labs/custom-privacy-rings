@@ -9159,7 +9159,6 @@ dependencies = [
  "solana-address 2.6.1",
  "solana-commitment-config",
  "solana-hash",
- "solana-instruction",
  "solana-keypair",
  "solana-rpc-client-api",
  "solana-signature",
