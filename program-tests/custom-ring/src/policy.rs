@@ -343,18 +343,23 @@ pub fn owner_enrollment(
 
 /// The owner's leaf under the registry's newest root, its key and seal checked.
 pub fn owner_leaf(env: &TestEnv, ring: CustomRing, owner: Address) -> Result<Option<TrackingLeaf>> {
+    Ok(env.run(read_leaf(env, ring, owner))?)
+}
+
+async fn read_leaf(
+    env: &TestEnv,
+    ring: CustomRing,
+    owner: Address,
+) -> Result<Option<TrackingLeaf>, RingError> {
     let chain = env.client.as_async();
-    let tracking = env.run(ring.require_policy(chain))?.tracking;
+    let tracking = ring.require_policy(chain).await?.tracking;
     let owner = owner.to_bytes();
-    let mut leaves = env.run(async {
-        let leaves = RegisteredKeys {
-            registry: tracking,
-            owners: &[owner],
-        }
-        .leaves(chain, chain)
-        .await?;
-        Ok(leaves)
-    })?;
+    let mut leaves = RegisteredKeys {
+        registry: tracking,
+        owners: &[owner],
+    }
+    .leaves(chain, chain)
+    .await?;
     Ok(leaves.remove(&owner))
 }
 
@@ -422,11 +427,18 @@ impl EnrollOwners<'_> {
             })?;
             send(env.client.rpc(), &env.payer, &proven.instructions)?;
         }
-        // The indexer serves every leaf at the owner's viewing key on return.
+        // The indexer serves every leaf at the owner's viewing key on return, a lagging read answers later.
         wait_for("the applied enrollments", || {
             for owner in self.owners {
-                let current = owner_leaf(env, self.ring, owner.pubkey())?
-                    .is_some_and(|leaf| leaf.viewing_u == owner.viewing_pubkey().u());
+                let current = match env.run(read_leaf(env, self.ring, owner.pubkey())) {
+                    Ok(leaf) => {
+                        leaf.is_some_and(|leaf| leaf.viewing_u == owner.viewing_pubkey().u())
+                    }
+                    Err(error) if error.is_projection_lag() => {
+                        return Ok(Probe::Retry(error.into()))
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 if !current {
                     return Ok(Probe::NotYet);
                 }

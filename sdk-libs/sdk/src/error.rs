@@ -158,7 +158,7 @@ pub enum RingError {
     #[error(transparent)]
     AddressCeiling(#[from] crate::AddressCeilingError),
     #[error(transparent)]
-    Resolve(#[from] zolana_ring_client::ResolveError),
+    Resolve(zolana_ring_client::ResolveError),
     #[error(transparent)]
     DelegateSource(#[from] crate::DelegateSourceError),
     #[error("a deposit frame proves once")]
@@ -356,6 +356,17 @@ impl From<RingIndexerError> for RingError {
         match error {
             RingIndexerError::Refused(refused) => Self::Indexer(refused),
             RingIndexerError::Client(error) => Self::Client(error),
+        }
+    }
+}
+
+/// An indexer or RPC failure under a key read stays the variant every other read raises, so lag classifies alike.
+impl From<zolana_ring_client::ResolveError> for RingError {
+    fn from(error: zolana_ring_client::ResolveError) -> Self {
+        match error {
+            zolana_ring_client::ResolveError::Indexer(error) => error.into(),
+            zolana_ring_client::ResolveError::Rpc(error) => Self::Client(*error),
+            refused => Self::Resolve(refused),
         }
     }
 }
