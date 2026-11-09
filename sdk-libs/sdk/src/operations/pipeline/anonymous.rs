@@ -183,7 +183,14 @@ pub enum OwnerExposure {
 }
 
 impl OwnerExposure {
-    fn guard(self, owner: HiddenOwner) -> Option<HiddenOwner> {
+    pub(super) const fn of(owner_exposed: bool) -> Self {
+        match owner_exposed {
+            true => Self::Accepted,
+            false => Self::Refused,
+        }
+    }
+
+    pub(super) fn guard(self, owner: HiddenOwner) -> Option<HiddenOwner> {
         match self {
             Self::Refused => Some(owner),
             Self::Accepted => None,
@@ -195,7 +202,7 @@ impl OwnerExposure {
 pub struct Anonymous<'a> {
     pub(super) owner: Owner<'a>,
     pub(super) signer: &'a SigningKey,
-    exposure: OwnerExposure,
+    pub(super) exposure: OwnerExposure,
     /// In declared order, the order of their ring outputs.
     payments: Vec<AnonymousPayment>,
     pub(super) exit_token_owner: Option<Address>,

@@ -922,6 +922,7 @@ fn relay_proof_inputs() -> RelayProofInputs {
                 [[25; 32]; MAX_OUTPUTS],
             )),
             exit_token_owner: None,
+            owner_exposed: false,
         },
         ring_program_id: ring,
         nullifier_key: NullifierKey::from_secret(*owner.nullifier_key.secret()),

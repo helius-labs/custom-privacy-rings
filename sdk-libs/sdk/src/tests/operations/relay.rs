@@ -2564,6 +2564,90 @@ mod public_signers {
         ));
     }
 
+    #[tokio::test]
+    async fn a_relay_admits_an_exit_to_the_hidden_owner_only_under_its_accepted_exposure() {
+        use spr_program::instruction::{
+            TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
+        };
+        let (sender, payee) = (keypair(1), keypair(2));
+        let hidden = sender.shielded_address().unwrap().solana_address().unwrap();
+        let client = chain(RingMode::Anonymous, None, &[&sender, &payee]).client();
+        let exiting = || {
+            let mut transaction = ConfidentialTransaction::new_with_ring(
+                vec![ring_utxo(&sender, Mint::SOL, 10, 0)],
+                FEE_PAYER,
+                ring().program_id(),
+            )
+            .unwrap();
+            transaction.withdraw_sol(4, hidden).unwrap();
+            CustomRingTransfer::new(CustomRingTransferInput {
+                ring: ring(),
+                sender: &sender,
+                nullifier_key: Some(&sender.nullifier_key),
+                transaction,
+            })
+            .with_interface_transfer_accounts(vec![TransactInterfaceTransferAccounts::Sol(
+                TransactSolTransferAccounts { recipient: hidden },
+            )])
+            .with_anonymous_signer(&sender.signing_key)
+        };
+        assert!(matches!(
+            exiting()
+                .prepare_relay(client.zolana(), quote())
+                .await
+                .map(drop),
+            Err(RingError::AnonymousExitLinksOwner(exit)) if exit == hidden
+        ));
+        let asked = sent(
+            exiting()
+                .with_owner_exposure(crate::OwnerExposure::Accepted)
+                .prepare_relay(client.zolana(), quote())
+                .await
+                .unwrap()
+                .sign()
+                .unwrap(),
+        )
+        .await;
+        let RelayIntent::Anonymous {
+            proof_inputs,
+            owner_signature,
+            ..
+        } = &asked.request.intent
+        else {
+            panic!("a wallet relay");
+        };
+        let mut inputs = RelayProofInputs::decode(proof_inputs.as_bytes()).unwrap();
+        let signature = <[u8; 64]>::from(owner_signature.0);
+        let relayed = RelayedTransferInput {
+            ring: ring(),
+            proof_inputs: &inputs,
+            fee_payer: FEE_PAYER,
+        };
+        RingTransfer::relayed(relayed)
+            .with_owner_signature(signature)
+            .assemble(&client)
+            .await
+            .unwrap();
+        let zolana_ring_client::rpc::RelayRail::Anonymous { owner_exposed, .. } = &mut inputs.rail
+        else {
+            panic!("the anonymous rail");
+        };
+        assert!(*owner_exposed);
+        *owner_exposed = false;
+        let refused = RelayedTransferInput {
+            ring: ring(),
+            proof_inputs: &inputs,
+            fee_payer: FEE_PAYER,
+        };
+        assert!(matches!(
+            RingTransfer::relayed(refused)
+                .with_owner_signature(signature)
+                .assemble(&client)
+                .await,
+            Err(RingError::AnonymousExitLinksOwner(exit)) if exit == hidden
+        ));
+    }
+
     /// The TypeScript check reads the same frames and reaches the same verdicts, `UPDATE_RELAY_MESSAGES=1` rewrites them.
     #[tokio::test]
     async fn the_shared_owner_messages_keep_their_verdicts() {
