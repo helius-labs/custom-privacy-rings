@@ -1357,12 +1357,7 @@ class BodyRead {
     this.#note(body, position, opening, claimOf(body.reply, secret));
   }
 
-  /**
-   * The bundle names the sender's transaction and no slot. Change publishes a zero tag no tag scan
-   * reaches, each zero-tag body opens by trial under the secret `changeSecrets` derives for the
-   * sender's own key and counts only when its commitment rebuilds. The payments come from the
-   * auditor stream the wallet's own transaction key sealed.
-   */
+  /** Rust `SenderBundle` and `Scan::open_bundle`, change candidates are the zero-tag bodies alone. */
   async senderBundle(
     body: Body,
     secret: Bytes32,
