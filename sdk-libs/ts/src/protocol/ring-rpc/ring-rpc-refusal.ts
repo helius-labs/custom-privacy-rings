@@ -41,6 +41,7 @@ export const RingRpcRefusal = Object.freeze({
   invalidEnrollmentWrite: -32182,
   registerKeyProof: -32183,
   enrollmentsFull: -32184,
+  enrollmentBudget: -32185,
   wrongCluster: -32190,
   // -32193, -32243 and -32275 never reach clients as codes, only as refused status text.
   tokenAccountSetup: -32200,
