@@ -104,9 +104,8 @@ pub use statement::*;
 pub use transact::*;
 pub use verification::{RegisterKeyCheck, RingProof};
 
-/// Not a deployable key, no keypair exists for it.
 pub const STORAGE_PROGRAM_ID: solana_address::Address =
-    solana_address::Address::new_from_array([0x53; 32]);
+    solana_address::Address::from_str_const("rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL");
 
 /// One-byte `0x04` scheme tag followed by a canonical X25519 u-coordinate.
 pub use output::RECIPIENT_KEY_LEN as TAGGED_X25519_KEY_LEN;

@@ -7,7 +7,7 @@ import { RingRpc, signCreateRecordsRegistryRequest } from "../../src/rpc/ring-rp
 const RING = "US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx" as Address;
 const STORAGE_AUTHORITY = "8qbHbw2BbbTHBW1sbeqakYXVKRQM8Ne7pLK7m6CVfeR" as Address;
 // `solana find-program-derived-address` over the storage program seeds of RING under STORAGE_AUTHORITY.
-const RECORDS = "EYDriRqQxnFgroPabnS1CcnQQGaKF6zWSrxqV76n9tE6" as Address;
+const RECORDS = "6e8wKXGefEfFUE4JbZXFeVZEasRKUU5Ag4a9mq919Er8" as Address;
 
 function answering(registry: Address): RingRpc {
   const fetch: typeof globalThis.fetch = () =>
