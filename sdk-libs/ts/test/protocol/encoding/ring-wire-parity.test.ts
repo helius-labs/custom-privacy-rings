@@ -26,6 +26,7 @@ import {
   ringTransferCircuit,
 } from "../../../src/protocol/proof/transfer-shapes.js";
 import { chainLink } from "../../../src/protocol/membership/member-registry.js";
+import { policyWithdrawalHash } from "../../../src/proof/withdrawals.js";
 import {
   trackingEntryHash,
   trackingRecordHash,
@@ -196,6 +197,12 @@ describe("transfer_statement.json", () => {
       withdrawalHash: field(vector.withdrawal_hash),
     };
     expect(hex(statement.signers.chain)).toBe(vector.signer_chain);
+    const withdrawals = vector.withdrawals.map((leg) => ({
+      owner: field(leg.owner),
+      asset: field(leg.asset),
+      amount: BigInt(leg.amount),
+    }));
+    expect(hex(policyWithdrawalHash(withdrawals))).toBe(vector.withdrawal_hash);
     expect(transferStatementElements(statement).map(hex)).toEqual(vector.elements);
     expect(hex(transferStatementHash(statement))).toBe(vector.public_input_hash);
   });

@@ -88,11 +88,13 @@ import { dummyUtxoHash } from "../protocol/membership/utxo-hash.js";
 import { x25519FromU } from "../crypto/keys/x25519.js";
 import { rawJson } from "../protocol/codec/raw-json.js";
 import { N_PUBLIC_SLOTS } from "../protocol/transaction/spp.js";
+import {
+  MAX_TRANSACTION_INSTRUCTIONS,
+  MAX_TRANSACTION_SIGNATURES,
+} from "../protocol/transaction/v1-limits.js";
 
 const base58 = getBase58Decoder();
 const VERIFIED = Symbol("verified relay message");
-const MAX_SIGNATURES = 12;
-const MAX_INSTRUCTIONS = 64;
 /** Rust `RING_TRANSACT_RING_CONFIG_INDEX`, the ring auth PDA's place in SPP's account list. */
 const RING_TRANSACT_RING_CONFIG_INDEX = 4;
 
@@ -1265,9 +1267,9 @@ function open(envelope: Envelope, bytes: Uint8Array): RingInstruction {
   if (
     !equalBytes(canonical, bytes) ||
     new Set(staticAccounts).size !== staticAccounts.length ||
-    header.numSignerAccounts > MAX_SIGNATURES ||
+    header.numSignerAccounts > MAX_TRANSACTION_SIGNATURES ||
     header.numReadonlySignerAccounts >= header.numSignerAccounts ||
-    instructionHeaders.length > MAX_INSTRUCTIONS ||
+    instructionHeaders.length > MAX_TRANSACTION_INSTRUCTIONS ||
     instructionHeaders.some((instruction) => instruction.programAccountIndex === 0)
   )
     throw mismatch("Undecodable");
