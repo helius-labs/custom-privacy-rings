@@ -72,7 +72,7 @@ pub enum RecordTreeError {
     PoolCapacity,
     #[error("the record pool proof has the wrong shape")]
     PoolShape,
-    #[error("a tracking entry names a zero key")]
+    #[error("a proven tracking entry names a zero key")]
     TrackingKeyChanged,
 }
 

@@ -68,6 +68,8 @@ instruction_tags! {
     /// Signed by the upgrade authority, one budget for the ring account, its policy, the tracking and SPP CPIs.
     Initialize = INITIALIZE: 53 => 3 * ACCOUNT_UNITS + POLICY_UNITS,
     UpdatePolicy = UPDATE_POLICY: 54 => POLICY_UNITS,
+    /// Signed by the enrollment writer, one storage CPI checks every owner signature and proof.
+    EnrollBatch = ENROLL_BATCH: 66 => PROOF_UNITS,
 }
 
 /// Fixed for the ring's life.

@@ -7809,6 +7809,7 @@ dependencies = [
  "solana-clock",
  "solana-instruction",
  "solana-keypair",
+ "solana-sdk-ids",
  "solana-transaction-error",
  "spr-client",
  "zolana-ring-policy",

@@ -146,7 +146,7 @@ fn write_error_vectors() {
     }
 }
 
-fn storage_pins() -> [(StorageError, u32); 31] {
+fn storage_pins() -> [(StorageError, u32); 30] {
     use StorageError as Error;
     [
         (Error::InvalidRegistry, 9000),
@@ -176,10 +176,9 @@ fn storage_pins() -> [(StorageError, u32); 31] {
         (Error::PrivateWriteWithoutTracking, 9035),
         (Error::TrackingTreeFull, 9036),
         (Error::RootHistoryRetained, 9037),
-        (Error::InvalidEnrollmentQueue, 9038),
-        (Error::EnrollmentQueueFull, 9039),
-        (Error::EnrollmentQueueShort, 9040),
         (Error::InvalidStorageProgram, 9041),
+        (Error::InvalidSignatureInstruction, 9042),
+        (Error::OwnerSignatureMismatch, 9043),
     ]
 }
 

@@ -4,7 +4,7 @@ use custom_ring_interface::{
     storage::{Revision, Root, StorageRegistry},
     storage_instruction::InitializeIxData as StorageInitialize,
     tag,
-    tracking::{EnrollmentQueue, TrackingRegistry},
+    tracking::TrackingRegistry,
     CustomRingError, InitializeIxData, InstructionTag, PolicyBindingIxData, PolicyTableIxData,
     RingKind, RingPolicy, RingRole, RingRoles, RootRead, SetCoSignerRecordIxData, SourceSpec,
     UpdateAuthorityIxData, UpdatePolicyIxData, CO_SIGNER_PDA_SEED, RING_POLICY_PDA_SEED,
@@ -58,10 +58,6 @@ pub fn tracking_registry() -> Address {
     TrackingRegistry::find_address(&ring_auth(), &ring_id).0
 }
 
-pub fn enrollment_queue() -> Address {
-    EnrollmentQueue::find_address(&tracking_registry()).0
-}
-
 pub fn program_data() -> Address {
     program_data_of(&PROGRAM)
 }
@@ -102,6 +98,7 @@ pub struct RoleKeys {
     pub policy: Keypair,
     pub pauser: Keypair,
     pub cosign_admin: Keypair,
+    pub enrollment_writer: Keypair,
 }
 
 impl RoleKeys {
@@ -111,6 +108,7 @@ impl RoleKeys {
             policy: Keypair::new(),
             pauser: Keypair::new(),
             cosign_admin: Keypair::new(),
+            enrollment_writer: Keypair::new(),
         }
     }
 
@@ -120,6 +118,7 @@ impl RoleKeys {
             RingRole::Policy => &self.policy,
             RingRole::Pauser => &self.pauser,
             RingRole::CosignAdmin => &self.cosign_admin,
+            RingRole::EnrollmentWriter => &self.enrollment_writer,
         }
     }
 
@@ -129,6 +128,7 @@ impl RoleKeys {
             policy: self.policy.pubkey(),
             pauser: self.pauser.pubkey(),
             cosign_admin: self.cosign_admin.pubkey(),
+            enrollment_writer: self.enrollment_writer.pubkey(),
         }
     }
 }
@@ -555,7 +555,6 @@ impl InitializeIx<'_> {
             AccountMeta::new(ring_auth(), false),
             AccountMeta::new_readonly(SHIELDED_POOL, false),
             AccountMeta::new(tracking_registry(), false),
-            AccountMeta::new(enrollment_queue(), false),
             AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),
         ];
         if self.data.policy.is_some() {

@@ -13,10 +13,12 @@ use solana_address::Address;
 use zolana_ring_policy::{ListSet, Member};
 
 use crate::{
+    domain,
     error::CustomRingError,
     instruction::{list_and_mint_entry, write_count},
-    member_registry::{RecordWrite, APPLY_BATCH},
+    member_registry::RecordWrite,
     storage::{RegistryId, Revision, StorageError},
+    tracking::{check_viewing_key, TrackingEntry},
     ApplyRecordsIxData, CustomRingProof, ReaderKeyBytes, RecordWriteData,
     REGISTER_KEY_CIPHERTEXT_LEN, TAGGED_X25519_KEY_LEN,
 };
@@ -26,8 +28,7 @@ pub mod tag {
     pub const UPDATE: u8 = 1;
     /// No data, the authority and the new authority both sign.
     pub const UPDATE_AUTHORITY: u8 = 4;
-    pub const ENROLL: u8 = 6;
-    /// Permissionless, the applier names only the count of queued entries.
+    /// Signed by the registry's authority, the ring's `ring_auth` for its `EnrollmentWriter`.
     pub const APPLY_ENROLLMENTS: u8 = 7;
     pub const OWNER_GRANT: u8 = 8;
     /// The ring program signs its ring PDA as creator through CPI.
@@ -38,9 +39,19 @@ pub mod tag {
 
 /// The byte after `tag::EMIT_EVENT`.
 pub mod event_kind {
-    pub const ENROLLED: u8 = 1;
-    pub const ENROLLMENTS_APPLIED: u8 = 2;
+    pub const ENROLLMENTS_APPLIED: u8 = 1;
 }
+
+/// The byte after a write's owner.
+pub mod enrollment_kind {
+    pub const ENROLL: u8 = 0;
+    pub const ROTATE: u8 = 1;
+}
+
+/// Most writes per `ApplyEnrollments`, as many first enrollments and their signatures as one transaction holds.
+pub const ENROLLMENT_BATCH: usize = 5;
+/// `ENROLLMENT_SIGNATURE_LABEL || registry || owner || TrackingEntry::hash`.
+pub const SIGNED_MESSAGE_LEN: usize = 105;
 
 /// The creator signs and becomes the authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
@@ -55,7 +66,7 @@ pub struct InitializeIxData {
     pub tracking_registry: Address,
 }
 
-/// Tag 9, accounts `payer, creator, tracking_registry, enrollment_queue, system_program`.
+/// Tag 9, accounts `payer, creator, tracking_registry, system_program`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct InitializeTrackingIxData {
@@ -64,7 +75,7 @@ pub struct InitializeTrackingIxData {
     pub auditor_pubkey: [u8; TAGGED_X25519_KEY_LEN],
 }
 
-/// Tag 6 ahead of a first enrollment's proof, accounts `owner, tracking_registry, enrollment_queue, storage_program`.
+/// A first enrollment's record, verified by its `RegisterKey` proof and signed by its owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct EnrollIxData {
@@ -77,14 +88,7 @@ pub struct EnrollIxData {
     pub ciphertext: [u8; REGISTER_KEY_CIPHERTEXT_LEN],
 }
 
-/// Tag 6 data, a first enrollment holds the `RegisterKey` proof and a rotation none.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EnrollRequest<'a> {
-    pub ix: &'a EnrollIxData,
-    pub proof: Option<&'a CustomRingProof>,
-}
-
-/// Tag 7, accounts `tracking_registry, enrollment_queue, storage_program`, the first two writable.
+/// Tag 7 header, accounts `authority, tracking_registry, instructions_sysvar, storage_program`, `count` writes follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct ApplyEnrollmentsIxData {
@@ -93,42 +97,61 @@ pub struct ApplyEnrollmentsIxData {
     pub new_root: [u8; 32],
     /// Little endian.
     pub new_next_index: [u8; 8],
-    /// Queued entries the proof applies from `head`.
     pub count: u8,
 }
 
-/// The full record behind one queued entry hash.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
-#[repr(C)]
-pub struct EnrolledEvent {
-    pub registry: Address,
-    pub owner: Address,
-    /// Little endian, the queue position the entry hash took.
-    pub sequence: [u8; 8],
-    /// One when the `Enroll` verified `RegisterKey`.
-    pub proven: u8,
-    pub record: EnrollIxData,
+/// `owner || kind || body`, one owner-signed change to the tracking tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnrollmentWrite<'a> {
+    pub owner: &'a Address,
+    pub change: EnrollmentChange<'a>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnrollmentChange<'a> {
+    /// Inserts an absent owner's row, a present owner's row takes only the viewing key.
+    Enroll {
+        ix: &'a EnrollIxData,
+        proof: &'a CustomRingProof,
+    },
+    /// Moves a present owner's viewing key, an absent owner stays absent.
+    Rotate { viewing_u: &'a [u8; 32] },
+}
+
+/// The chain and the signature check read the same entry hash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SignedWrite {
+    pub entry_hash: [u8; 32],
+    pub message: [u8; SIGNED_MESSAGE_LEN],
+}
+
+/// Tag 7 data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplyEnrollmentsRequest<'a> {
+    pub ix: &'a ApplyEnrollmentsIxData,
+    pub writes: Vec<EnrollmentWrite<'a>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
 #[repr(C)]
 pub struct EnrollmentsAppliedEvent {
     pub registry: Address,
-    /// Little endian, the queue head before the apply.
-    pub first_sequence: [u8; 8],
-    pub count: u8,
     /// The revision `new_root` holds.
     pub revision: Revision,
     pub new_root: [u8; 32],
     /// Little endian.
     pub new_next_index: [u8; 8],
+    pub count: u8,
 }
 
-/// `tag::EMIT_EVENT || kind || body`, trusted only as the inner instruction of a successful `Enroll` or `ApplyEnrollments` of the storage program.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StorageEvent {
-    Enrolled(EnrolledEvent),
-    EnrollmentsApplied(EnrollmentsAppliedEvent),
+/// `tag::EMIT_EVENT || kind || body`, trusted only as the inner instruction of a successful `ApplyEnrollments` of the storage program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StorageEvent<'a> {
+    /// The header, then the batch's writes as the instruction carried them, proofs included.
+    EnrollmentsApplied {
+        header: EnrollmentsAppliedEvent,
+        writes: Vec<EnrollmentWrite<'a>>,
+    },
 }
 
 /// Tag 8, accounts `payer, owner, tracking_registry, grant, system_program`.
@@ -182,27 +205,112 @@ impl EnrollIxData {
     pub const SIZE: usize = core::mem::size_of::<Self>();
 }
 
-impl<'a> EnrollRequest<'a> {
-    /// Exactly the fields, or the fields and one proof.
+impl<'a> EnrollmentWrite<'a> {
+    /// One write and the bytes after it.
+    pub fn parse(data: &'a [u8]) -> Result<(Self, &'a [u8]), StorageError> {
+        let invalid = StorageError::InvalidInstructionData;
+        let (owner, rest) = data.split_first_chunk::<32>().ok_or(invalid)?;
+        let (kind, rest) = rest.split_first().ok_or(invalid)?;
+        let (change, rest) = match *kind {
+            enrollment_kind::ENROLL => {
+                let (ix, rest) = rest.split_at_checked(EnrollIxData::SIZE).ok_or(invalid)?;
+                let (proof, rest) = rest
+                    .split_at_checked(CustomRingProof::SIZE)
+                    .ok_or(invalid)?;
+                let change = EnrollmentChange::Enroll {
+                    ix: bytemuck::try_from_bytes(ix).map_err(|_| invalid)?,
+                    proof: bytemuck::try_from_bytes(proof).map_err(|_| invalid)?,
+                };
+                (change, rest)
+            }
+            enrollment_kind::ROTATE => {
+                let (viewing_u, rest) = rest.split_first_chunk::<32>().ok_or(invalid)?;
+                (EnrollmentChange::Rotate { viewing_u }, rest)
+            }
+            _ => return Err(invalid),
+        };
+        let owner = bytemuck::try_from_bytes(owner).map_err(|_| invalid)?;
+        Ok((Self { owner, change }, rest))
+    }
+
+    pub fn encode_into(&self, data: &mut Vec<u8>) {
+        data.extend_from_slice(self.owner.as_ref());
+        match self.change {
+            EnrollmentChange::Enroll { ix, proof } => {
+                data.push(enrollment_kind::ENROLL);
+                data.extend_from_slice(bytemuck::bytes_of(ix));
+                data.extend_from_slice(bytemuck::bytes_of(proof));
+            }
+            EnrollmentChange::Rotate { viewing_u } => {
+                data.push(enrollment_kind::ROTATE);
+                data.extend_from_slice(viewing_u);
+            }
+        }
+    }
+
+    /// What no proof binds, a `RegisterKey` proof covers the rest of an Enroll.
+    pub fn check(&self) -> Result<(), StorageError> {
+        match self.change {
+            EnrollmentChange::Enroll { ix, .. } => ix.check(),
+            EnrollmentChange::Rotate { viewing_u } => check_viewing_key(viewing_u),
+        }
+    }
+
+    pub fn entry(&self) -> Result<TrackingEntry, StorageError> {
+        match self.change {
+            EnrollmentChange::Enroll { ix, .. } => TrackingEntry::from_enroll(self.owner, ix),
+            EnrollmentChange::Rotate { viewing_u } => {
+                TrackingEntry::from_rotation(self.owner, viewing_u)
+            }
+        }
+    }
+
+    /// The entry hash the apply chains, and the owner's message binding it to the registry so no other ring applies the signature.
+    pub fn signed(&self, registry: &Address) -> Result<SignedWrite, StorageError> {
+        let entry_hash = self
+            .entry()?
+            .hash()
+            .map_err(|_| StorageError::HashingFailed)?;
+        let mut message = [0; SIGNED_MESSAGE_LEN];
+        let parts: [&[u8]; 4] = [
+            domain::ENROLLMENT_SIGNATURE_LABEL,
+            registry.as_ref(),
+            self.owner.as_ref(),
+            &entry_hash,
+        ];
+        let mut at = 0;
+        for part in parts {
+            message[at..at + part.len()].copy_from_slice(part);
+            at += part.len();
+        }
+        Ok(SignedWrite {
+            entry_hash,
+            message,
+        })
+    }
+}
+
+impl<'a> ApplyEnrollmentsRequest<'a> {
+    /// The header and exactly `count` writes.
     pub fn parse(data: &'a [u8]) -> Result<Self, StorageError> {
-        let (ix, proof) = data
-            .split_at_checked(EnrollIxData::SIZE)
+        let (ix, writes) = data
+            .split_at_checked(ApplyEnrollmentsIxData::SIZE)
             .ok_or(StorageError::InvalidInstructionData)?;
+        let ix: &ApplyEnrollmentsIxData =
+            bytemuck::try_from_bytes(ix).map_err(|_| StorageError::InvalidInstructionData)?;
+        ApplyEnrollmentsIxData::check_count(ix.count)?;
         Ok(Self {
-            ix: bytemuck::try_from_bytes(ix).map_err(|_| StorageError::InvalidInstructionData)?,
-            proof: match proof.is_empty() {
-                true => None,
-                false => Some(
-                    bytemuck::try_from_bytes(proof)
-                        .map_err(|_| StorageError::InvalidInstructionData)?,
-                ),
-            },
+            ix,
+            writes: parse_writes(ix.count, writes)?,
         })
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let proof = self.proof.map_or(&[][..], bytemuck::bytes_of);
-        [bytemuck::bytes_of(self.ix), proof].concat()
+        let mut data = bytemuck::bytes_of(self.ix).to_vec();
+        self.writes
+            .iter()
+            .for_each(|write| write.encode_into(&mut data));
+        data
     }
 }
 
@@ -213,12 +321,12 @@ impl ApplyEnrollmentsIxData {
         u64::from_le_bytes(self.new_next_index)
     }
 
-    /// An apply key serves one to `APPLY_BATCH` entries.
+    /// One to `ENROLLMENT_BATCH` writes.
     pub fn check_count(count: u8) -> Result<(), StorageError> {
         match usize::from(count) {
             0 => Err(StorageError::NoEnrollmentsNamed),
-            1..=APPLY_BATCH => Ok(()),
-            _ => Err(StorageError::UnsupportedBatch),
+            1..=ENROLLMENT_BATCH => Ok(()),
+            _ => Err(StorageError::BatchTooLarge),
         }
     }
 }
@@ -227,31 +335,29 @@ impl OwnerGrantIxData {
     pub const SIZE: usize = core::mem::size_of::<Self>();
 }
 
-impl StorageEvent {
+impl<'a> StorageEvent<'a> {
     pub fn encode(&self) -> Vec<u8> {
-        let (kind, body) = match self {
-            Self::Enrolled(event) => (event_kind::ENROLLED, bytemuck::bytes_of(event)),
-            Self::EnrollmentsApplied(event) => {
-                (event_kind::ENROLLMENTS_APPLIED, bytemuck::bytes_of(event))
-            }
-        };
-        [&[tag::EMIT_EVENT, kind][..], body].concat()
+        let Self::EnrollmentsApplied { header, writes } = self;
+        let mut data = vec![tag::EMIT_EVENT, event_kind::ENROLLMENTS_APPLIED];
+        data.extend_from_slice(bytemuck::bytes_of(header));
+        writes.iter().for_each(|write| write.encode_into(&mut data));
+        data
     }
 
-    /// `None` unless the tag, the kind and the exact body length match.
-    pub fn decode(data: &[u8]) -> Option<Self> {
-        let ([tag::EMIT_EVENT, kind], body) = data.split_first_chunk::<2>()? else {
+    /// `None` unless the tag, the kind, the header and exactly its `count` writes match.
+    pub fn decode(data: &'a [u8]) -> Option<Self> {
+        let ([tag::EMIT_EVENT, event_kind::ENROLLMENTS_APPLIED], body) =
+            data.split_first_chunk::<2>()?
+        else {
             return None;
         };
-        match *kind {
-            event_kind::ENROLLED => bytemuck::try_pod_read_unaligned(body)
-                .ok()
-                .map(Self::Enrolled),
-            event_kind::ENROLLMENTS_APPLIED => bytemuck::try_pod_read_unaligned(body)
-                .ok()
-                .map(Self::EnrollmentsApplied),
-            _ => None,
-        }
+        let (header, writes) =
+            body.split_at_checked(core::mem::size_of::<EnrollmentsAppliedEvent>())?;
+        let header: EnrollmentsAppliedEvent = bytemuck::try_pod_read_unaligned(header).ok()?;
+        Some(Self::EnrollmentsApplied {
+            header,
+            writes: parse_writes(header.count, writes).ok()?,
+        })
     }
 }
 
@@ -409,6 +515,21 @@ impl RecordWriteData {
     }
 }
 
+/// Exactly `count` writes and no byte after them.
+fn parse_writes(count: u8, mut data: &[u8]) -> Result<Vec<EnrollmentWrite<'_>>, StorageError> {
+    let writes = (0..count)
+        .map(|_| {
+            let (write, rest) = EnrollmentWrite::parse(data)?;
+            data = rest;
+            Ok(write)
+        })
+        .collect::<Result<Vec<_>, StorageError>>()?;
+    match data.is_empty() {
+        true => Ok(writes),
+        false => Err(StorageError::InvalidInstructionData),
+    }
+}
+
 fn storage_write_count(count: usize) -> Result<u8, StorageError> {
     write_count(count).map_err(|error| match error {
         CustomRingError::AuthorityBatchTooLarge => StorageError::BatchTooLarge,
@@ -426,9 +547,8 @@ const _: () = assert!(core::mem::align_of::<EnrollIxData>() == 1);
 const _: () = assert!(EnrollIxData::SIZE == 192);
 const _: () = assert!(core::mem::align_of::<ApplyEnrollmentsIxData>() == 1);
 const _: () = assert!(ApplyEnrollmentsIxData::SIZE == 241);
-const _: () = assert!(core::mem::align_of::<EnrolledEvent>() == 1);
-const _: () = assert!(core::mem::size_of::<EnrolledEvent>() == 265);
 const _: () = assert!(core::mem::align_of::<EnrollmentsAppliedEvent>() == 1);
-const _: () = assert!(core::mem::size_of::<EnrollmentsAppliedEvent>() == 89);
+const _: () = assert!(core::mem::size_of::<EnrollmentsAppliedEvent>() == 81);
+const _: () = assert!(SIGNED_MESSAGE_LEN == 9 + 32 + 32 + 32);
 const _: () = assert!(core::mem::align_of::<OwnerGrantIxData>() == 1);
 const _: () = assert!(OwnerGrantIxData::SIZE == 35);
