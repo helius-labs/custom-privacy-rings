@@ -80,20 +80,21 @@ impl HiddenSenders {
         let mut keys = HashMap::new();
         let mut spent = HashMap::new();
         for (hash, utxo) in created_notes(ctx, auditor, mode, tracking)? {
-            // An owner with no authorization yet spends nothing.
-            let Some(nullifier_pk) = utxo.owner.nullifier_pk() else {
-                continue;
-            };
             let owner = Address::new_from_array(utxo.owner_key);
             let key = match keys.entry(owner) {
                 Entry::Occupied(held) => held.into_mut(),
                 Entry::Vacant(open) => open.insert(enrolled_key(ctx, auditor, tracking, &owner)?),
             };
-            let key = match nullifier_pk == ZERO_NULLIFIER_PUBKEY {
-                true => Some(&zero),
-                false => key.as_ref(),
+            // A note no key rebuilds still traces under the enrolled secret, a note under another
+            // key derives a nullifier no spend publishes.
+            let key = match utxo.owner.nullifier_pk() {
+                Some(ZERO_NULLIFIER_PUBKEY) => Some(&zero),
+                Some(nullifier_pk) => key
+                    .as_ref()
+                    .filter(|key| key.pubkey().ok() == Some(nullifier_pk)),
+                None => key.as_ref(),
             };
-            if let Some(key) = key.filter(|key| key.pubkey().ok() == Some(nullifier_pk)) {
+            if let Some(key) = key {
                 spent.insert(key.nullifier(&hash, &utxo.blinding)?, owner);
             }
         }
