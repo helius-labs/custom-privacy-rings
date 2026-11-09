@@ -633,7 +633,7 @@ impl AsyncRingIndexer for Chain {
             .tree
             .record_pool(
                 &members,
-                Canopy::covering(request.openings as usize).unwrap(),
+                Canopy::covering_tracking(request.openings as usize).unwrap(),
             )
             .unwrap();
         Ok(GetTrackingRecordPoolResponse {

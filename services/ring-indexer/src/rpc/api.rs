@@ -33,7 +33,7 @@ use zolana_ring_indexer::{
     },
     tree::{
         Canopy, IndexedLeaf, MemberRecord, OpeningCheck, RecordOpening, RecordPoolOf, RecordTree,
-        RecordWriteProofInput,
+        RecordWriteProofInput, TreePath,
     },
 };
 
@@ -610,7 +610,7 @@ impl<L: IndexedLeaf + Default> LoadedRegistry<L> {
         Ok(OpenedLeaf {
             present,
             record,
-            path: path_view(path.index, &path.siblings),
+            path: path_view(path.index(), path.siblings()),
         })
     }
 }

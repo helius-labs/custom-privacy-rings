@@ -112,7 +112,7 @@ pub(crate) async fn tracking_record_pool(
 ) -> Result<GetTrackingRecordPoolResponse, RingApiError> {
     check_members(&request.members)?;
     check_openings(&request.members, request.openings, |pools| pools.tracking)?;
-    let canopy = Canopy::covering(request.openings as usize).map_err(validation)?;
+    let canopy = Canopy::covering_tracking(request.openings as usize).map_err(validation)?;
     let read = TrackingSnapshot::registry(db, &request.registry)
         .await?
         .at_root(&request.expected_root.0)

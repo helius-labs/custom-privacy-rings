@@ -338,7 +338,7 @@ mod tests {
         tracking::{GetTrackingOpeningsResponse, RingTrackingSealView},
     };
     use zolana_ring_keys::ListSaltHolder;
-    use zolana_ring_member_registry::{QuadPath, RecordOpening, RecordTree, TrackingTree};
+    use zolana_ring_member_registry::{RecordOpening, RecordTree, TrackingTree, TreePath};
 
     use super::*;
 
@@ -382,10 +382,14 @@ mod tests {
         }
     }
 
-    fn view_path(path: &QuadPath) -> RingRecordPathView {
+    fn view_path(path: &impl TreePath) -> RingRecordPathView {
         RingRecordPathView {
-            index: path.index,
-            siblings: path.siblings.iter().map(|level| level.map(Hash)).collect(),
+            index: path.index(),
+            siblings: path
+                .siblings()
+                .iter()
+                .map(|level| level.map(Hash))
+                .collect(),
         }
     }
 

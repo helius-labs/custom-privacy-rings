@@ -1,6 +1,6 @@
 //! Member record views as record tree types, every opening checked against its root.
 
-use custom_ring_interface::{storage::StorageRegistry, RecordWrite, QUAD_ARITY, QUAD_HEIGHT};
+use custom_ring_interface::{storage::StorageRegistry, RecordWrite, QUAD_ARITY};
 use solana_address::Address;
 use spr_indexer_api::Hash;
 use zolana_ring_indexer::rpc::{
@@ -10,7 +10,7 @@ use zolana_ring_indexer::rpc::{
     RingRecordWriteView, MAX_RING_MEMBER_PAGE_LIMIT,
 };
 use zolana_ring_member_registry::{
-    ApplyProofInputs, Canopy, MemberRecord, OpeningCheck, PoolSubject, QuadPath, RecordOpening,
+    ApplyProofInputs, Canopy, MemberRecord, OpeningCheck, PoolSubject, QuadPathOf, RecordOpening,
     RecordPool, RecordWriteProofInput, SharedPath, SharedProof,
 };
 use zolana_ring_policy::{ListId, Member, MemberError};
@@ -221,15 +221,15 @@ impl MemberOpeningRead {
 }
 
 /// Leaf level first.
-pub fn path_of(view: &RingRecordPathView) -> Result<QuadPath, AuditError> {
-    let levels: [[_; QUAD_ARITY - 1]; QUAD_HEIGHT] = view
+pub fn path_of<const H: usize>(view: &RingRecordPathView) -> Result<QuadPathOf<H>, AuditError> {
+    let levels: [[_; QUAD_ARITY - 1]; H] = view
         .siblings
         .iter()
         .map(|level| level.clone().map(|sibling| sibling.0))
         .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| AuditError::InvalidMemberRegistry)?;
-    Ok(QuadPath {
+    Ok(QuadPathOf {
         index: view.index,
         siblings: levels,
     })

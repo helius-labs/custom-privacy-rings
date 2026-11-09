@@ -1,11 +1,10 @@
 use std::collections::BTreeSet;
 
-use custom_ring_interface::QUAD_CAPACITY;
 use sea_orm::ConnectionTrait;
 use spr_indexer_api::Hash;
 use zolana_ring_indexer::tree::{
     node_keys, ApplyProofInputs, Canopy, IndexedRecord, LoadedTree, MemberRead, MemberRecord,
-    ReadRows, WritableLeaf, WrittenRows,
+    ReadRows, TreePath, WritableLeaf, WrittenRows,
 };
 
 use crate::{
@@ -82,8 +81,9 @@ impl<L: StoredLeaf> TreeRead<L> {
             }
         }
         let next_index = self.at.next_index;
-        let appended = next_index..(next_index + self.inserts).min(QUAD_CAPACITY);
-        let mut keys = node_keys(leaves.into_iter().chain(appended))?;
+        let capacity = 1u64 << (2 * <L::Path as TreePath>::HEIGHT);
+        let appended = next_index..(next_index + self.inserts).min(capacity);
+        let mut keys = node_keys::<L::Path>(leaves.into_iter().chain(appended))?;
         keys.extend(self.canopy.into_iter().flat_map(Canopy::positions));
         let nodes = store.nodes(&keys, applied).await?;
         let rows = ReadRows {

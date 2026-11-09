@@ -152,7 +152,7 @@ impl TrackingRead<'_> {
                 openings: self.openings as u64,
             })
             .await?;
-        let canopy = Canopy::covering(self.openings)?;
+        let canopy = Canopy::covering_tracking(self.openings)?;
         if response.root.root.0 != root
             || response.canopy.len() != canopy.width()
             || response.subjects.len() != self.members.len()

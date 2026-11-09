@@ -1,13 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use custom_ring_interface::QUAD_HEIGHT;
 use thiserror::Error;
 use zolana_ring_member_registry::MemoryTree;
 pub use zolana_ring_member_registry::{
     ApplyProofInputs, Canopy, IndexedLeaf, IndexedRecord, MemberRecord, NodePosition, OpeningCheck,
     PoolSubject, QuadPath, RecordOpening, RecordPool, RecordPoolOf, RecordStore, RecordTree,
-    RecordTreeError, RecordWriteProofInput, SharedPath, SharedProof, TrackingOpening, TrackingPool,
-    TrackingRecord, TrackingWriteProofInput, WritableLeaf,
+    RecordTreeError, RecordWriteProofInput, SharedPath, SharedProof, TrackingOpening, TrackingPath,
+    TrackingPool, TrackingRecord, TrackingWriteProofInput, TreePath, WritableLeaf,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,7 +69,7 @@ impl<L: IndexedLeaf> WrittenRows<L> {
         let tree = MemoryTree::<L>::new()?;
         let next_index = RecordStore::<L>::next_index(&tree)?;
         let mut nodes = BTreeMap::new();
-        for level in 0..=QUAD_HEIGHT {
+        for level in 0..=<L::Path as TreePath>::HEIGHT {
             let populated = (0..)
                 .map(|position| NodePosition { level, position })
                 .take_while(|at| !at.is_empty(next_index));
@@ -180,12 +179,15 @@ impl<L: IndexedLeaf> RecordStore<L> for LoadedTree<L> {
 }
 
 /// The root and every node the openings of `leaves` read.
-pub fn node_keys(
+pub fn node_keys<P: TreePath>(
     leaves: impl IntoIterator<Item = u64>,
 ) -> Result<BTreeSet<NodePosition>, RecordTreeError> {
-    let mut keys = BTreeSet::from([NodePosition::ROOT]);
+    let mut keys = BTreeSet::from([NodePosition::root(P::HEIGHT)]);
     for leaf in leaves {
-        keys.extend(QuadPath::sibling_positions(leaf)?.into_iter().flatten());
+        P::read::<RecordTreeError>(leaf, |at| {
+            keys.insert(at);
+            Ok([0; 32])
+        })?;
     }
     Ok(keys)
 }
