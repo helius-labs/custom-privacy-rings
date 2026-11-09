@@ -259,8 +259,7 @@ impl RingTransfer<Delegated<'_>> {
 }
 
 impl<P: Planned> Sealed<'_, P> {
-    /// One per key funding a deposit leg, the payer and an owner of the run left out. The payer pays
-    /// the message it builds, and an owner's check refuses a key named beside its run entry.
+    /// One per key funding a deposit leg, a leg the fee payer or a signing owner funds is refused.
     fn funder_terms(
         &self,
         fee_payer: Address,
@@ -276,7 +275,7 @@ impl<P: Planned> Sealed<'_, P> {
                 continue;
             };
             if funder == fee_payer || staged.owner_signers.contains(&funder) {
-                continue;
+                return Err(RingError::RelayFeePayerFundsDeposit);
             }
             let leg = FundedLeg {
                 mint: match transfer {

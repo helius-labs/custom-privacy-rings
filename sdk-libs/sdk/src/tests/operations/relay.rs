@@ -2501,31 +2501,41 @@ mod public_signers {
         use spr_program::instruction::{
             TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
         };
+        const FUNDER: Address = Address::new_from_array([0x55; 32]);
         let (sender, payee) = (keypair(1), keypair(2));
         let client = chain(RingMode::Anonymous, None, &[&sender, &payee]).client();
-        let mut transaction = ConfidentialTransaction::new_with_ring(
-            vec![ring_utxo(&sender, Mint::SOL, 10, 0)],
-            FEE_PAYER,
-            ring().program_id(),
-        )
-        .unwrap();
-        transaction.deposit_sol(5, FEE_PAYER).unwrap();
-        let paying = CustomRingTransfer::new(CustomRingTransferInput {
-            ring: ring(),
-            sender: &sender,
-            nullifier_key: Some(&sender.nullifier_key),
-            transaction,
-        })
-        .with_interface_transfer_accounts(vec![TransactInterfaceTransferAccounts::Sol(
-            TransactSolTransferAccounts {
-                recipient: FEE_PAYER,
-            },
-        )])
-        .with_anonymous_signer(&sender.signing_key)
-        .with_payment(pay(&payee, 4))
-        .unwrap();
+        let paying = |funder: Address| {
+            let mut transaction = ConfidentialTransaction::new_with_ring(
+                vec![ring_utxo(&sender, Mint::SOL, 10, 0)],
+                FEE_PAYER,
+                ring().program_id(),
+            )
+            .unwrap();
+            transaction.deposit_sol(5, funder).unwrap();
+            CustomRingTransfer::new(CustomRingTransferInput {
+                ring: ring(),
+                sender: &sender,
+                nullifier_key: Some(&sender.nullifier_key),
+                transaction,
+            })
+            .with_interface_transfer_accounts(vec![TransactInterfaceTransferAccounts::Sol(
+                TransactSolTransferAccounts { recipient: funder },
+            )])
+            .with_anonymous_signer(&sender.signing_key)
+            .with_payment(pay(&payee, 4))
+            .unwrap()
+        };
+        // 1. The wallet refuses before any secret leaves it.
+        assert!(matches!(
+            paying(FEE_PAYER)
+                .prepare_relay(client.zolana(), quote())
+                .await
+                .map(drop),
+            Err(RingError::RelayFeePayerFundsDeposit)
+        ));
+        // 2. A third party funder passes the wallet, the relay refuses it as its quote's fee payer.
         let asked = sent(
-            paying
+            paying(FUNDER)
                 .prepare_relay(client.zolana(), quote())
                 .await
                 .unwrap()
@@ -2545,7 +2555,7 @@ mod public_signers {
         let relayed = RingTransfer::relayed(crate::RelayedTransferInput {
             ring: ring(),
             proof_inputs: &inputs,
-            fee_payer: FEE_PAYER,
+            fee_payer: FUNDER,
         })
         .with_owner_signature(<[u8; 64]>::from(owner_signature.0));
         assert!(matches!(
