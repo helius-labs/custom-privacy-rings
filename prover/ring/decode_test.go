@@ -58,8 +58,8 @@ func TestDecodeRejectsMalformedRequests(t *testing.T) {
 		{"an owner key one byte short", transferKey, func(m map[string]any) { output(m)["ownerKey"] = output(m)["ownerKey"].(string)[:64] }, "OwnerKey: expected 32 values"},
 		{"another key's request", transferKey, func(m map[string]any) { m["circuitType"] = "custom-ring-transfer-4-in24-w4-s4" }, "custom-ring-transfer-4-in24-w4-s4 request on the custom-ring-transfer-2-in24-w4-s4 key"},
 		{"a write past the capacity", batchKey, func(m map[string]any) { m["writes"] = append(m["writes"].([]any), write(m)) }, "Writes: expected 16 values"},
-		{"a path one sibling short", batchKey, func(m map[string]any) { write(m)["path"] = write(m)["path"].([]any)[1:] }, "Writes[0].Slot.Siblings[9]: expected 3 values"},
-		{"a path one sibling long", batchKey, func(m map[string]any) { write(m)["lowPath"] = append(write(m)["lowPath"].([]any), m["oldRoot"]) }, "Writes[0].LowSlot.Siblings: expected 10 values"},
+		{"a path one sibling short", batchKey, func(m map[string]any) { write(m)["path"] = write(m)["path"].([]any)[1:] }, "Writes[0].Slot.Siblings[12]: expected 3 values"},
+		{"a path one sibling long", batchKey, func(m map[string]any) { write(m)["lowPath"] = append(write(m)["lowPath"].([]any), m["oldRoot"]) }, "Writes[0].LowSlot.Siblings: expected 13 values"},
 		{"lists as a string", batchKey, func(m map[string]any) { write(m)["oldLists"] = "1" }, "oldLists of type uint64"},
 		{"exists as a number", batchKey, func(m map[string]any) { write(m)["exists"] = 1 }, "exists of type bool"},
 	} {
