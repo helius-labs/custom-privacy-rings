@@ -153,7 +153,7 @@ pub struct ServeArgs {
     /// Serves the ring keys the record writer and the relay prove with.
     #[arg(long, env = "RING_RPC_PROVER_URL", requires = "proves")]
     pub prover_url: Option<String>,
-    /// Lowercase hex Ed25519 seed, set to apply enrollments and pay their fees, holds no ring role.
+    /// Lowercase hex Ed25519 seed of the ring's `EnrollmentWriter` role key, the batch signer and fee payer.
     #[arg(
         long,
         env = "RING_RPC_ENROLLMENT_APPLIER_KEY_FILE",
