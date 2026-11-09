@@ -100,10 +100,11 @@ build-ring-indexer:
     [[ -z "${ZOLANA_PREBUILT:-}" ]] || exit 0
     cargo build --locked -p ring-indexer --features surfpool-fixture --target-dir target
 
+# Surfpool reads `minContextSlot` as an entry slot floor.
 build-ring-rpc:
     #!/usr/bin/env bash
     [[ -z "${ZOLANA_PREBUILT:-}" ]] || exit 0
-    cargo build --locked -p zolana-ring-rpc --target-dir target
+    cargo build --locked -p zolana-ring-rpc --features surfpool-fixture --target-dir target
 
 build-zolana-tools: zolana::build-cli
     cargo build --manifest-path zolana/Cargo.toml -p xtask --target-dir zolana/target

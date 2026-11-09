@@ -938,10 +938,17 @@ mod tests {
             if self.held == Some(read.signature) {
                 self.release.notified().await;
             }
-            let transactions = &self.transactions[&read.signature];
+            let slot = self
+                .signatures
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|entry| entry.signature == read.signature)
+                .unwrap()
+                .slot;
             Ok(CanonicalOrigins {
-                slot: transactions[0].slot,
-                origins: transactions
+                slot,
+                origins: self.transactions[&read.signature]
                     .iter()
                     .map(|transaction| {
                         (
@@ -1127,6 +1134,36 @@ mod tests {
         assert_eq!(old.data[0].slot, 2);
         assert_eq!(old.context.slot, 4);
         assert_eq!(source.walks.load(Ordering::SeqCst), 2);
+    }
+
+    /// An `EnrollBatch` emits storage events alone.
+    #[tokio::test]
+    async fn an_enrollment_batch_reads_without_events_across_a_refetched_run() {
+        let history = FinalizedHistory::default();
+        let mut source = Source::new(&[entry(1), entry(2), entry(3), entry(4)]);
+        let enrollment = entry(2).signature;
+        source.transactions.insert(enrollment, Vec::new());
+        source.indexed.lock().unwrap().remove(&enrollment);
+        let newest = source.signatures.lock().unwrap().remove(0);
+        source.through.store(3, Ordering::SeqCst);
+        history
+            .read(sized(HistoryPosition::default(), 4), &source)
+            .await
+            .unwrap();
+        source.signatures.lock().unwrap().insert(0, newest);
+        source.through.store(4, Ordering::SeqCst);
+        let page = history
+            .read(sized(HistoryPosition::default(), 4), &source)
+            .await
+            .unwrap();
+        let events: Vec<_> = page
+            .data
+            .iter()
+            .map(|row| (row.slot, row.events.len()))
+            .collect();
+        assert_eq!(events, [(1, 1), (2, 0), (3, 1), (4, 1)]);
+        // Two walks and the refetch of the run the refresh anchored.
+        assert_eq!(source.fetched().0, 3);
     }
 
     #[tokio::test]
