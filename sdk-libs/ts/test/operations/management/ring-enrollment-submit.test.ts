@@ -29,7 +29,10 @@ function rotationOf(owner: Address): SignedEnrollment {
   return {
     ring: RING,
     registry: REGISTRY,
-    write: { owner, change: { kind: "rotate", viewingU: filled(5), priorViewingHash: filled(6) } },
+    write: {
+      owner,
+      change: { kind: "rotate", viewingU: filled(5), priorViewingU: filled(6), priorSeq: 1n },
+    },
   };
 }
 

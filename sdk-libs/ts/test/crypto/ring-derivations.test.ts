@@ -44,6 +44,7 @@ describe("ring domains", () => {
       walletGrant: ascii("CRWG"),
       trackingLeaf: ascii("CRTK"),
       trackingEntry: ascii("CRTQ"),
+      viewingHash: ascii("CRVH"),
       applyEnrollments: ascii("CRTA"),
       listTag: ascii("CRPT"),
       listPosition: ascii("CRPL"),

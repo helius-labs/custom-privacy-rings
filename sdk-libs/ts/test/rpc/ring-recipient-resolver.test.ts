@@ -76,11 +76,12 @@ function enrolledLeaf(to: RingAddress, viewingU: Bytes32 = to.recipient.viewingP
     member: to.recipient.signingPublicKey.ownerProofInputHash(),
     nullifierPk: to.recipient.nullifierPublicKey,
     listTag: listTagOf(to.listSalt),
-    viewingHash: viewingKeyHash(viewingU),
+    viewingHash: viewingKeyHash(viewingU, 0n),
   };
   const seal: TrackingSeal = {
     owner: to.recipient.solanaAddress(),
     viewingU,
+    seq: 0n,
     ephPk: new Uint8Array(33),
     ciphertext: new Uint8Array(64),
   };
@@ -168,6 +169,13 @@ describe("resolveRingRecipient", () => {
       }),
     ).rejects.toMatchObject({ code: "RING_VIEWING_KEY_MISMATCH" });
     await expect(
+      resolveRingRecipient({
+        client: chain(row, "present", { ...seal, seq: 1n }),
+        trackingRegistry: REGISTRY,
+        to,
+      }),
+    ).rejects.toMatchObject({ code: "RING_VIEWING_KEY_MISMATCH" });
+    await expect(
       resolveRingRecipient({ client: chain(row, "present"), trackingRegistry: REGISTRY, to }),
     ).rejects.toMatchObject({ code: "RING_TRACKING_INVALID", details: { reason: "seal" } });
   });
@@ -242,6 +250,7 @@ describe("resolveRingRecipient", () => {
             } as ProofOutputUtxo,
           ],
           rowOf: () => row,
+          seqOf: () => 0n,
           spenders: [],
         });
       expect(() => paying(old.recipient.viewingPublicKey)).toThrow(

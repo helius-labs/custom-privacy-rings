@@ -9,12 +9,14 @@ import {
   encodeBase58,
   equalBytes,
   hashBytes,
+  U64_MAX,
   poseidon,
   Reader,
   ZERO_32,
 } from "@heliuslabs/spr/internal";
 import type { Bytes32, Bytes33, Bytes64 } from "@heliuslabs/spr/interface";
 
+import { packBytesBe } from "../../crypto/derivation/hasher.js";
 import { domainField, RingDomain } from "../../crypto/derivation/ring-domain.js";
 import { RingError } from "../error.js";
 import type { StorageRegistryRoot } from "../codec/ring-codecs.js";
@@ -59,7 +61,7 @@ export interface TrackingFields {
   readonly nullifierPk: Bytes32;
   readonly ctHash: Bytes32;
   readonly listTag: Bytes32;
-  /** `hash_bytes(viewing_u)`, an X25519 `u` can exceed the field. */
+  /** `viewingKeyHash` of the key and its rotation counter. */
   readonly viewingHash: Bytes32;
 }
 
@@ -137,30 +139,43 @@ export function trackingEntryOf(
     nullifierPk: input.nullifierPk,
     ctHash: hashBytes(checkedBytes<Bytes64>(input.ciphertext, 64, "ciphertext")) as Bytes32,
     listTag: input.listTag,
-    viewingHash: viewingKeyHash(input.viewingU),
+    viewingHash: viewingKeyHash(input.viewingU, 0n),
     priorViewingHash: ZERO_32,
     proven: true,
   });
 }
 
-/** Rust `TrackingEntry::from_rotation`, moves a present leaf's viewing hash only from `priorViewingHash`. */
+/** Rust `TrackingEntry::from_rotation`, moves a present leaf's viewing hash only from `priorViewingU` at `priorSeq`. */
 export function trackingRotationOf(
-  input: Readonly<{ member: Bytes32; viewingU: Bytes32; priorViewingHash: Bytes32 }>,
+  input: Readonly<{
+    member: Bytes32;
+    viewingU: Bytes32;
+    priorViewingU: Bytes32;
+    priorSeq: bigint;
+  }>,
 ): TrackingEntry {
+  if (input.priorSeq < 0n || input.priorSeq >= U64_MAX)
+    throw new RingError("RING_TRACKING_INVALID", {
+      details: { reason: "priorSeq", priorSeq: input.priorSeq.toString() },
+    });
   return Object.freeze({
     member: input.member,
     nullifierPk: ZERO_32,
     ctHash: ZERO_32,
     listTag: ZERO_32,
-    viewingHash: viewingKeyHash(input.viewingU),
-    priorViewingHash: checkedBytes<Bytes32>(input.priorViewingHash, 32, "prior viewing hash"),
+    viewingHash: viewingKeyHash(input.viewingU, input.priorSeq + 1n),
+    priorViewingHash: viewingKeyHash(input.priorViewingU, input.priorSeq),
     proven: false,
   });
 }
 
-/** `hash_bytes(viewing_u)`, the leaf field a sender checks a served viewing key against. */
-export function viewingKeyHash(viewingU: Bytes32): Bytes32 {
-  return hashBytes(checkedBytes<Bytes32>(viewingU, 32, "viewing key")) as Bytes32;
+/** Rust `viewing_hash`, two limbs as an X25519 `u` can exceed the field, `seq` sets a returning key's hash apart. */
+export function viewingKeyHash(viewingU: Bytes32, seq: bigint): Bytes32 {
+  return poseidon([
+    domainField(RingDomain.viewingHash),
+    ...packBytesBe(checkedBytes<Bytes32>(viewingU, 32, "viewing key")),
+    bigIntBytes(seq) as Bytes32,
+  ]) as Bytes32;
 }
 
 /** `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven)`. */
@@ -210,6 +225,8 @@ export function verifyTrackingOpening(
 export interface ServedTrackingRecord {
   readonly record: TrackingRecord;
   readonly path: QuadPath;
+  /** Absent without a seal, unauthenticated until it rebuilds the leaf's `viewingHash`. */
+  readonly seq?: bigint;
 }
 
 /** Rust `GetTrackingRecordPoolResponse`, unverified until `verifyTrackingPool` checks it. */
@@ -229,6 +246,8 @@ export interface VerifiedTrackingPool {
   readonly subjects: readonly PoolSubject[];
   /** Each member's row in member order, `undefined` proves it unenrolled under the root. */
   readonly rows: readonly (TrackingRecord | undefined)[];
+  /** Each member's served counter, unauthenticated until it rebuilds the row's `viewingHash`. */
+  readonly seqs: readonly (bigint | undefined)[];
 }
 
 /** Every member's read under `root`, each pool path folding through the canopy into `root`. */
@@ -282,6 +301,14 @@ export function verifyTrackingPool(
       ),
     ),
     rows: Object.freeze(rows),
+    seqs: Object.freeze(
+      members.map((member, subject) => {
+        const served = pool.records[pool.subjects[subject] ?? -1];
+        return served !== undefined && equalBytes(served.record.member, member)
+          ? served.seq
+          : undefined;
+      }),
+    ),
   });
 }
 

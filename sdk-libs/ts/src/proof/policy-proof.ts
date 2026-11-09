@@ -629,7 +629,9 @@ async function readTracking(
     pool.rows[position.get(bytesKey(member)) ?? -1];
   checkInputKeys({ inputs: publishedNotes(proofInputs), rowOf });
   const spenders = publishedNotes(proofInputs).map((note) => note.utxo.owner);
-  checkOutputKeys({ outputs: ringOutputs, rowOf, spenders });
+  const seqOf = (member: Bytes32): bigint | undefined =>
+    pool.seqs[position.get(bytesKey(member)) ?? -1];
+  checkOutputKeys({ outputs: ringOutputs, rowOf, seqOf, spenders });
   const trackingEntry = (member: Bytes32 | undefined): number =>
     member === undefined || isZero(member) ? 0 : (position.get(bytesKey(member)) ?? 0);
   return {
@@ -687,6 +689,7 @@ export function checkOutputKeys(
   input: Readonly<{
     outputs: readonly (ProofOutputUtxo | undefined)[];
     rowOf: (member: Bytes32) => TrackingRecord | undefined;
+    seqOf: (member: Bytes32) => bigint | undefined;
     /** A spending owner holds every key it ever enrolled. */
     spenders: readonly ShieldedPublicKey[];
   }>,
@@ -706,7 +709,10 @@ export function checkOutputKeys(
       input.spenders.some((spender) => owner.signingPublicKey.equals(spender))
     )
       continue;
-    if (!equalBytes(viewingKeyHash(owner.viewingPublicKey.u()), row.viewingHash))
+    const seq = input.seqOf(member);
+    if (seq === undefined)
+      throw new RingError("RING_TRACKING_INVALID", { details: { reason: "seq" } });
+    if (!equalBytes(viewingKeyHash(owner.viewingPublicKey.u(), seq), row.viewingHash))
       throw staleViewingKey(member);
   }
 }

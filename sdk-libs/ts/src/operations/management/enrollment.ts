@@ -71,6 +71,8 @@ export interface EnrollmentState {
   readonly record: TrackingRecord;
   readonly seal: EnrollmentSeal;
   readonly viewingU: Bytes32;
+  /** Rotation counter in the leaf's `viewingHash`. */
+  readonly seq: bigint;
 }
 
 export type EnrollmentReadClient = Pick<ChainReader, "getAccount"> &
@@ -119,6 +121,7 @@ export async function enrollmentState(
     record,
     seal: storedSeal(seal, record),
     viewingU: sealViewingKey(seal, record),
+    seq: seal.seq,
   });
 }
 
