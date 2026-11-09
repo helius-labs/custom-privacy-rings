@@ -680,3 +680,68 @@ async fn an_enrolled_key_names_a_note_and_another_key_names_none() {
     let read = status(forged).await;
     assert_eq!(read.notes[0].status, WalletNoteStatus::Unknown);
 }
+
+/// A deposit spends only dummies, its keyed output is the enrolled owner's spendable balance.
+#[tokio::test]
+async fn a_deposit_of_dummy_inputs_becomes_the_enrolled_owners_balance() {
+    let fixture = Fixture::new();
+    let owner = [0xb0; 32];
+    let key = NullifierKey::from_secret([7; 31]);
+    let transfer = ring_transfer(0x65);
+    let outputs = [
+        paid(
+            UtxoFields {
+                nullifier_pk: key.pubkey().expect("key"),
+                ..sol(0xb0, 500)
+            },
+            fixture.recipient_u,
+        ),
+        Output::Dummy,
+    ];
+    let mut disclosure = transfer.disclosure(Rail::Delivered, &outputs);
+    disclosure.real_inputs = 0;
+    let row = Indexed {
+        transfer: &transfer,
+        outputs: &outputs,
+        auditor: &fixture.auditor.pubkey(),
+        signature: 0x65,
+        frames: &fixture.frames,
+    }
+    .publish(Rail::Delivered, &outputs, &disclosure);
+    let deposit = spr_interface::instruction::InterfaceTransfer::SolDeposit { amount: 500 };
+    {
+        let mut frames = fixture.frames.lock().unwrap();
+        let frame = frames.get_mut(&row.tx_signature).expect("frame");
+        let mut data = custom_ring_interface::RingTransactData::parse(
+            &frame[1..],
+            custom_ring_interface::RingRail::Confidential,
+        )
+        .expect("frame")
+        .into_data();
+        data.interface_transfers = vec![deposit];
+        *frame = [vec![frame[0]], data.encode().expect("frame")].concat();
+    }
+    let mut source = fixture.source().with_transactions(vec![row.clone()]);
+    source.next_cursor = None;
+    let settlement = vec![Address::default(); deposit.settlement_account_count()];
+    source.owner_signers.insert(
+        row.tx_signature,
+        [vec![Address::new_from_array(owner)], settlement].concat(),
+    );
+    source
+        .tracking
+        .enroll(&owner, &key, &fixture.auditor.pubkey());
+    let service = fixture.hub(source).service(None).expect("service");
+    service.backfill_utxos().await.expect("backfill");
+    let request = WalletStatusRequest::new(target(RING), Address::new_from_array(owner))
+        .sign(&delegate())
+        .expect("signed");
+    let read = service.wallet_status(&request).await.expect("status");
+    assert_eq!(read.notes.len(), 1);
+    assert_eq!(read.notes[0].status, WalletNoteStatus::Unspent);
+    assert_eq!(
+        read.notes[0].utxo_hash,
+        Hash(row.output_slots[0].output_context.hash)
+    );
+    assert_eq!(read.balances[0].amount, 500);
+}
