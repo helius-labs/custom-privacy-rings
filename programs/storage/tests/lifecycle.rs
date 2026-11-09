@@ -1075,7 +1075,6 @@ fn a_curator_initializes_without_a_ring() {
 }
 
 #[test]
-#[ignore = "missing artifact, proofs.json needs the rotated apply keys"]
 fn record_writes_apply_with_a_real_proof() {
     let mut store = Store::new();
     store.initialize(GRACE);
@@ -1089,7 +1088,6 @@ fn record_writes_apply_with_a_real_proof() {
 }
 
 #[test]
-#[ignore = "missing artifact, proofs.json needs the rotated apply keys"]
 fn a_block_list_addition_claimed_permissive_fails_the_real_proof() {
     let mut store = Store::new();
     store.initialize(GRACE);
@@ -1103,7 +1101,6 @@ fn a_block_list_addition_claimed_permissive_fails_the_real_proof() {
 }
 
 #[test]
-#[ignore = "missing artifact, proofs.json needs the rotated apply keys"]
 fn a_forged_root_fails_the_real_proof() {
     let mut store = Store::new();
     store.initialize(GRACE);
@@ -1123,7 +1120,6 @@ fn a_forged_root_fails_the_real_proof() {
 
 /// The indexer projects every update through `StorageRegistry::update`.
 #[test]
-#[ignore = "missing artifact, proofs.json needs the rotated apply keys"]
 fn the_program_rotates_roots_as_the_indexer_projects_them() {
     let mut store = Store::new();
     store.initialize(GRACE);

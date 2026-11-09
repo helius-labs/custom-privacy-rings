@@ -57,7 +57,7 @@ just build-storage-program
 cargo test --locked -p storage-program --test lifecycle
 ```
 
-Tests that settle a real proof read [proofs.json](tests/proofs.json) and are ignored until it is regenerated against the rotated keys. The others seed accounts and stop at the proof check, so they show the checks ahead of the pairing and never that a proof settles. To replace the fixtures, install the pinned ring proving keys and run the generator from `prover/`. The proofs bind the registry address, and the test refuses a fixture made for another address.
+Tests that settle a real proof read [proofs.json](tests/proofs.json), a key rotation regenerates it. The others seed accounts and stop at the proof check, so they show the checks ahead of the pairing and never that a proof settles. To replace the fixtures, install the pinned ring proving keys and run the generator from `prover/`. The proofs bind the registry address, and the test refuses a fixture made for another address.
 
 ```sh
 STORAGE_REGISTRY="$(jq -r .registry ../programs/storage/tests/proofs.json)" \
