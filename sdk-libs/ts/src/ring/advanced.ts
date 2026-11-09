@@ -270,10 +270,12 @@ export {
   decodeMergeSettings,
   encodeMergeSettings,
   encodeSetMergeSettingsRequest,
+  encodeSubmitEnrollmentRequest,
 } from "../protocol/ring-rpc/ring-rpc-codec.js";
 export type {
   MergeSettings,
   SetMergeSettingsRequest,
+  SubmitEnrollmentRequest,
 } from "../protocol/ring-rpc/ring-rpc-types.js";
 export { RingMergeSettingsRequest, mergeSettingsAttestation } from "../rpc/ring-rpc.js";
 export {

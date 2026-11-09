@@ -10,5 +10,6 @@ export const RingInstructionTag = Object.freeze({
   authorityTransfer: 56,
   initialize: 53,
   updatePolicy: 54,
+  enrollBatch: 66,
 } as const);
 export type RingInstructionTag = (typeof RingInstructionTag)[keyof typeof RingInstructionTag];

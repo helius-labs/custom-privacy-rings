@@ -23,17 +23,12 @@ export const RingRpcMethod = Object.freeze({
   refuseListApproval: "refuseListApproval",
   createRecordsRegistry: "createRecordsRegistry",
   setReaderGrant: "setReaderGrant",
+  submitEnrollment: "submitEnrollment",
 } as const);
 export type RingRpcMethod = (typeof RingRpcMethod)[keyof typeof RingRpcMethod];
 
 /** Rust `RelayOperation`. */
-export type RelayOperation =
-  | "anonymous"
-  | "confidential"
-  | "delegate"
-  | "deposit"
-  | "merge"
-  | "enroll";
+export type RelayOperation = "anonymous" | "confidential" | "delegate" | "deposit" | "merge";
 
 /** Rust `GetRelayQuoteRequest`. */
 export interface RelayQuoteRequest {
@@ -72,9 +67,16 @@ export type RelayIntent =
   /** `proofInputs` is a Rust `RelayProofInputs` on the deposit rail, the depositor signs its digest here and its legs later. */
   | Readonly<{ operation: "deposit"; proofInputs: Base64String; depositorSignature: Signature }>
   /** `proofInputs` is a Rust `RelayMergeInputs`, the owner signs its digest here. */
-  | Readonly<{ operation: "merge"; proofInputs: Base64String; ownerSignature: Signature }>
-  /** `proofInputs` is a Rust `RelayEnrollInputs`, the owner signs its write's `signedWrite` message and nothing later. */
-  | Readonly<{ operation: "enroll"; proofInputs: Base64String; ownerSignature: Signature }>;
+  | Readonly<{ operation: "merge"; proofInputs: Base64String; ownerSignature: Signature }>;
+
+/** Rust `SubmitEnrollmentRequest`. */
+export interface SubmitEnrollmentRequest {
+  readonly ring: Address;
+  /** Rust `EnrollmentWrite::encode_into`. */
+  readonly write: Base64String;
+  /** The owner's raw Ed25519 over the write's `signedWrite` message. */
+  readonly signature: Signature;
+}
 
 /** Rust `PrepareRelayRequest`. */
 export interface PrepareRelayRequest {

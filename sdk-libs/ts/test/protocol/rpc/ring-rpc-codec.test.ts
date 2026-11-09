@@ -7,10 +7,6 @@ import {
 import { encodeGetListSaltRequest } from "../../../src/protocol/ring-rpc/ring-rpc-codec.js";
 import { ringRpcRefusalName } from "../../../src/protocol/ring-rpc/ring-rpc-refusal.js";
 import type { RelayIntent } from "../../../src/protocol/ring-rpc/ring-rpc-types.js";
-import {
-  encodeRelayEnrollInputs,
-  signedWrite,
-} from "../../../src/protocol/ring-rpc/relay-enroll-inputs.js";
 import { readFileSync } from "node:fs";
 
 import {
@@ -22,7 +18,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { SPL_TOKEN_PROGRAM_ID } from "@heliuslabs/spr/interface";
-import type { Address, Bytes32, Bytes33, Bytes64, Signature } from "@heliuslabs/spr/interface";
+import type { Address, Bytes32, Bytes33, Signature } from "@heliuslabs/spr/interface";
 import { addressBytes, type indexerTypes } from "@heliuslabs/spr/internal";
 import { SOL_MINT } from "@heliuslabs/spr/transaction";
 import { ShieldedKeypair, SigningKey, ViewingKey } from "@heliuslabs/spr/keypair";
@@ -87,27 +83,7 @@ describe("relay_enroll_inputs.json", () => {
       "utf8",
     ),
   ) as Readonly<Record<string, string>>;
-  const bytes = (name: string) => Uint8Array.from(Buffer.from(vector[name] ?? "", "hex"));
   const hex = (value: Uint8Array) => Buffer.from(value).toString("hex");
-  const record = bytes("record");
-  const inputs = {
-    ringProgramId: filled(1, 32) as Address,
-    trackingRegistry: filled(3, 32) as Address,
-    write: {
-      owner: filled(2, 32) as Address,
-      change: {
-        kind: "enroll",
-        record: {
-          nullifierPk: record.slice(0, 32) as Bytes32,
-          listTag: record.slice(32, 64) as Bytes32,
-          viewingU: record.slice(64, 96) as Bytes32,
-          ephU: record.slice(96, 128) as Bytes32,
-          ciphertext: record.slice(128, 192) as Bytes64,
-        },
-        proof: bytes("proof"),
-      },
-    },
-  } as const;
   const request = (intent: RelayIntent) => ({
     ring: filled(1, 32) as Address,
     quote: { feePayer: filled(2, 32) as Address, validUntilSlot: 4242n },
@@ -116,21 +92,7 @@ describe("relay_enroll_inputs.json", () => {
   const proofInputs = "AwQF" as indexerTypes.Base64String;
   const signature = filled(7, 64) as Signature;
 
-  it("encodes the inputs and the signed message Rust writes", () => {
-    expect(hex(encodeRelayEnrollInputs(inputs))).toBe(vector["encoded"]);
-    expect(hex(signedWrite(inputs.write, inputs.trackingRegistry).message)).toBe(
-      vector["signed_message"],
-    );
-  });
-
   it("carries each signature byte for byte as Rust", () => {
-    expect(
-      JSON.stringify(
-        encodePrepareRelayRequest(
-          request({ operation: "enroll", proofInputs, ownerSignature: signature }),
-        ),
-      ),
-    ).toBe(vector["enroll_wire"]);
     expect(
       JSON.stringify(
         encodePrepareRelayRequest(
@@ -163,7 +125,6 @@ describe("relay_enroll_inputs.json", () => {
   it("refuses an intent with no signature", () => {
     const missing = undefined as unknown as Signature;
     for (const intent of [
-      { operation: "enroll", proofInputs, ownerSignature: missing },
       { operation: "delegate", proofInputs, delegateSignature: missing },
       { operation: "deposit", proofInputs, depositorSignature: missing },
       { operation: "merge", proofInputs, ownerSignature: missing },
@@ -582,11 +543,16 @@ describe("ring rpc refusals", () => {
     expect(ringRpcRefusalName(-32216)).toBe("oversized");
   });
 
-  it("names -32213 to -32215 as the relayed enrollment refusals", () => {
-    expect([-32213, -32214, -32215].map(ringRpcRefusalName)).toEqual([
-      "alreadyEnrolled",
+  it("names -32180 to -32184 as the enrollment refusals and frees the relayed enrollment codes", () => {
+    expect([-32180, -32181, -32182, -32183, -32184].map(ringRpcRefusalName)).toEqual([
+      "enrollmentNotServed",
+      "enrollmentRingMissing",
+      "invalidEnrollmentWrite",
       "registerKeyProof",
-      "enrollmentRefused",
+      "enrollmentsFull",
     ]);
+    expect(
+      [-32202, -32205, -32213, -32214, -32215].map(ringRpcRefusalName).filter(Boolean),
+    ).toEqual([]);
   });
 });

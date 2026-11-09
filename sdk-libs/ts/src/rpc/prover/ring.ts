@@ -48,7 +48,7 @@ import {
 import { auditLayoutValue, type AuditLayout } from "../../protocol/codec/ring-disclosure-layout.js";
 import { ANONYMOUS_PARTIES } from "../../protocol/transaction/transact.js";
 import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "./types.js";
-import { ENROLLMENT_BATCH } from "../../protocol/ring-rpc/relay-enroll-inputs.js";
+import { ENROLLMENT_BATCH } from "../../protocol/ring-rpc/enrollment-write.js";
 import { N_PUBLIC_SLOTS } from "../../protocol/transaction/spp.js";
 
 /** Go `Opening`, one transaction slot as the ring circuits open it. */

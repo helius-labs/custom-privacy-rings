@@ -21,7 +21,7 @@ import type { ViewingKey } from "@heliuslabs/spr/keypair";
 
 import { RingError } from "../../protocol/error.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
-import type { RelayEnrollInputs } from "../../protocol/ring-rpc/relay-enroll-inputs.js";
+import type { SignedEnrollment } from "../../protocol/ring-rpc/enrollment-write.js";
 import type { LocalRingKeys, RingKeys } from "../../state/ring-keys.js";
 import type { ViewingHistory } from "../../state/viewing-history.js";
 import { enrollmentState, type EnrollmentReadClient, type EnrollmentState } from "./enrollment.js";
@@ -50,7 +50,7 @@ export async function updateViewingKey(
     history: ViewingHistory;
   }>,
   context?: RequestContext,
-): Promise<RelayEnrollInputs | undefined> {
+): Promise<SignedEnrollment | undefined> {
   // 1. No sync reads a key the history lacks. Publishing one routes payments
   // to notes the wallet never finds.
   const viewingU = input.keys.address().viewingPublicKey.u();
@@ -65,8 +65,8 @@ export async function updateViewingKey(
   if (equalBytes(stored.viewingU, viewingU)) return undefined;
   // 3. The Rotate binds the leaf's current viewing hash, an apply refuses it once the leaf moves.
   return Object.freeze({
-    ringProgramId: input.ringProgramId,
-    trackingRegistry: tracking,
+    ring: input.ringProgramId,
+    registry: tracking,
     write: Object.freeze({
       owner: input.owner,
       change: Object.freeze({

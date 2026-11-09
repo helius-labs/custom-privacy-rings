@@ -65,6 +65,7 @@ import {
 import { verifyRecordUpdate } from "../protocol/ring-rpc/record-update.js";
 import {
   decodeMergeSettings,
+  decodeSubmitEnrollmentResponse,
   decodePendingListApprovalsPage,
   decodeRecordsRegistry,
   decodeRecordUpdateStatus,
@@ -84,6 +85,7 @@ import {
   encodeRelayQuoteRequest,
   encodeRelayStatusRequest,
   encodeSetMergeSettingsRequest,
+  encodeSubmitEnrollmentRequest,
   encodeSetReaderGrantRequest,
   encodeSubmitRecordUpdateRequest,
   encodeSubmitRelayRequest,
@@ -109,6 +111,7 @@ import {
   type RelayStatus,
   type RelayStep,
   type SetMergeSettingsRequest,
+  type SubmitEnrollmentRequest,
   type SetReaderGrantRequest,
   type SubmitRecordUpdateRequest,
   type SubmitRelayRequest,
@@ -1222,7 +1225,7 @@ export interface RingWalletBalance {
   readonly amount: bigint;
 }
 
-export type RingWalletEnrollment = "notEnrolled" | "pending" | "pendingPastCapacity" | "applied";
+export type RingWalletEnrollment = "notEnrolled" | "applied";
 
 export interface RingWalletStatusQuery {
   readonly target: RingReadTarget;
@@ -2068,6 +2071,20 @@ export class RingRpc {
     );
   }
 
+  /** Ring RPC holds the write until its next `EnrollBatch`, the leaf enters a root only once that batch lands. */
+  async submitEnrollment(
+    request: SubmitEnrollmentRequest,
+    context?: RequestContext,
+  ): Promise<void> {
+    decodeSubmitEnrollmentResponse(
+      await this.#call(
+        RingRpcMethod.submitEnrollment,
+        encodeSubmitEnrollmentRequest(request),
+        context,
+      ),
+    );
+  }
+
   // `params` is the request object, not a positional list.
   async #walletSnapshotCall({
     input,
@@ -2368,14 +2385,7 @@ const WALLET_NOTE_STATUSES: readonly RingWalletNoteStatus[] = [
 function decodeWalletStatus(wire: Record<string, unknown>): RingWalletStatusPage {
   const cursor = wire["cursor"];
   const enrollment = wire["enrollment"];
-  if (
-    enrollment !== "notEnrolled" &&
-    enrollment !== "pending" &&
-    enrollment !== "pendingPastCapacity" &&
-    enrollment !== "applied"
-  ) {
-    throw invalid("enrollment");
-  }
+  if (enrollment !== "notEnrolled" && enrollment !== "applied") throw invalid("enrollment");
   return Object.freeze({
     enrollment,
     ...(wire["snapshotExpiresAt"] == null

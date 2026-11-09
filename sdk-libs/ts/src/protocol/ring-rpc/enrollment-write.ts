@@ -1,4 +1,4 @@
-/** Rust `EnrollmentWrite` and the `RelayEnrollInputs` an owner hands Ring RPC, the sole enrollment writer. */
+/** Rust `EnrollmentWrite` and `SignedEnrollment`, the write an owner signs for Ring RPC, the sole enrollment writer. */
 import { addressBytes, concatBytes, Writer } from "@heliuslabs/spr/internal";
 import type { Address, Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 
@@ -42,19 +42,11 @@ export interface EnrollmentWrite {
   readonly change: EnrollmentChange;
 }
 
-export interface RelayEnrollInputs {
-  readonly ringProgramId: Address;
-  readonly trackingRegistry: Address;
+/** Rust `SignedEnrollment`, a write for the tracking registry `ring` pins. */
+export interface SignedEnrollment {
+  readonly ring: Address;
+  readonly registry: Address;
   readonly write: EnrollmentWrite;
-}
-
-/** `ring || registry || write`, the write as `ApplyEnrollments` carries it. */
-export function encodeRelayEnrollInputs(value: RelayEnrollInputs): Uint8Array {
-  return concatBytes(
-    addressBytes(value.ringProgramId, "ringProgramId"),
-    addressBytes(value.trackingRegistry, "trackingRegistry"),
-    encodeEnrollmentWrite(value.write),
-  );
 }
 
 /** Rust `EnrollmentWrite::encode_into`, `owner || kind || body`. */

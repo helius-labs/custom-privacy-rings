@@ -78,7 +78,7 @@ describe("viewing key rotation through the tracking row", () => {
     // 1. A Rotate carries the new key and the viewing hash the leaf held when the owner read it.
     const request = await update();
     if (request === undefined) throw new Error("a rotation");
-    expect(request.trackingRegistry).toBe(REGISTRY);
+    expect(request.registry).toBe(REGISTRY);
     expect(request.write).toEqual({
       owner,
       change: {

@@ -35,6 +35,7 @@ import type {
   SubmitRecordUpdateRequest,
   SubmitRelayRequest,
   TokenAccountSetup,
+  SubmitEnrollmentRequest,
 } from "./ring-rpc-types.js";
 
 const { object, toWireInteger, wireInteger } = indexerCodec;
@@ -46,14 +47,7 @@ type Hash = indexerTypes.Hash;
 
 const base58 = getBase58Decoder();
 
-const RELAY_OPERATIONS = [
-  "anonymous",
-  "confidential",
-  "delegate",
-  "deposit",
-  "merge",
-  "enroll",
-] as const;
+const RELAY_OPERATIONS = ["anonymous", "confidential", "delegate", "deposit", "merge"] as const;
 
 function toU64(value: bigint, path: string): number {
   return toWireInteger(value, path, 0n, U64_MAX);
@@ -120,7 +114,6 @@ function encodeRelayIntent(intent: RelayIntent): WireObject {
         ownerSignature: checkedSignature(intent.ownerSignature, "intent.ownerSignature"),
         ...encodeTokenAccountSetup(intent.tokenAccountSetup),
       };
-    case "enroll":
     case "merge":
       return {
         operation: intent.operation,
@@ -318,6 +311,20 @@ export function encodeSetMergeSettingsRequest(value: SetMergeSettingsRequest): W
     nonce: checkedBase64(value.nonce, "nonce"),
     signature: checkedSignature(value.signature, "signature"),
   };
+}
+
+/** Rust `SubmitEnrollmentRequest`. */
+export function encodeSubmitEnrollmentRequest(value: SubmitEnrollmentRequest): WireObject {
+  return {
+    ring: checkedAddress(value.ring, "ring"),
+    write: checkedBase64(value.write, "write"),
+    signature: checkedSignature(value.signature, "signature"),
+  };
+}
+
+/** Rust `SubmitEnrollmentResponse`, empty. */
+export function decodeSubmitEnrollmentResponse(value: unknown): void {
+  object(value, "$", []);
 }
 
 /** Rust `MergeSettings`. */

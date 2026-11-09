@@ -26,7 +26,7 @@ import {
   encodeEnrollmentWrite,
   signedWrite,
   enrollmentWriteEntry,
-} from "../../../src/protocol/ring-rpc/relay-enroll-inputs.js";
+} from "../../../src/protocol/ring-rpc/enrollment-write.js";
 import { recordTree } from "../../helpers/member-registry.js";
 
 function field(value: string): Bytes32 {

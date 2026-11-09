@@ -157,7 +157,7 @@ export const RING_ERROR_CODES = [
   // Reserved, nothing raises it and the snapshot keeps later codes in place.
   "RING_ENROLLMENT_CREDENTIAL_MISMATCH",
   "RING_ALREADY_ENROLLED",
-  // Reserved, nothing raises these and the snapshot keeps later codes in place.
+  // Reserved, nothing raises these three and the snapshot keeps later codes in place.
   "RING_ENROLLMENT_STATUS_UNKNOWN",
   "RING_RELAY_NEEDS_USER_RECORD",
   "RING_ENROLLMENT_ADDRESS_PROOF",

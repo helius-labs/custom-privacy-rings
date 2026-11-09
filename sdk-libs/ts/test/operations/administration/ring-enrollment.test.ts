@@ -27,10 +27,9 @@ import {
 } from "../../../src/operations/management/enrollment.js";
 import {
   encodeEnrollmentWrite,
-  encodeRelayEnrollInputs,
   signedWrite,
   enrollmentWriteEntry,
-} from "../../../src/protocol/ring-rpc/relay-enroll-inputs.js";
+} from "../../../src/protocol/ring-rpc/enrollment-write.js";
 import { QUAD_CAPACITY, QUAD_HEIGHT } from "../../../src/protocol/membership/member-registry.js";
 import { memberOfTag } from "../../../src/protocol/membership/policy.js";
 import {
@@ -222,7 +221,7 @@ describe("enrollment requests", () => {
       { ringProgramId: RING, owner: OWNER, seal: SEAL, viewingU: VIEWING_U, proof: PROOF },
       await ringClient(),
     );
-    expect(first).toMatchObject({ ringProgramId: RING, trackingRegistry: REGISTRY });
+    expect(first).toMatchObject({ ring: RING, registry: REGISTRY });
     const write = encodeEnrollmentWrite(first.write);
     expect(write).toHaveLength(417);
     const data = new Reader(write);
@@ -235,7 +234,6 @@ describe("enrollment requests", () => {
     expect(data.bytes(64, "ciphertext")).toEqual(SEAL.ciphertext);
     expect(data.bytes(192, "proof")).toEqual(PROOF);
     data.done();
-    expect(encodeRelayEnrollInputs(first).subarray(64)).toEqual(write);
   });
 
   it("signs a 105-byte message over the registry, the owner and the proven entry hash", () => {

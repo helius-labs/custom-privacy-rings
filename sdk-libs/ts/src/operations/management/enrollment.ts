@@ -36,7 +36,7 @@ import { memberOfTag } from "../../protocol/membership/policy.js";
 import { verifyTrackingOpening, type TrackingRecord } from "../../protocol/membership/tracking.js";
 import { ownerGrantPda, STORAGE_PROGRAM_ID } from "../../protocol/pda/index.js";
 import { registerKeyStatementHash } from "../../protocol/proof/statement.js";
-import type { RelayEnrollInputs } from "../../protocol/ring-rpc/relay-enroll-inputs.js";
+import type { SignedEnrollment } from "../../protocol/ring-rpc/enrollment-write.js";
 import type { RingProver, TrackingReader } from "../../rpc/ports.js";
 import { currentTrackingRoot, fetchTrackingRegistry } from "../../rpc/tracking-resolver.js";
 import { readerKeyBytes, type ReaderKey } from "./reader-access.js";
@@ -76,7 +76,7 @@ export async function enrollmentRequest(
   input: Enroll,
   client: EnrollmentReadClient,
   context?: RequestContext,
-): Promise<RelayEnrollInputs> {
+): Promise<SignedEnrollment> {
   const { ringProgramId, owner, seal } = input;
   // 1. The ring pins its tracking registry, the request names no other.
   const { tracking } = await fetchRingPolicy(client, ringProgramId, context);
@@ -88,8 +88,8 @@ export async function enrollmentRequest(
   const record = Object.freeze({ ...seal, viewingU: checkedViewingU(input.viewingU) });
   const proof = checkedCustomRingProof(input.proof);
   return Object.freeze({
-    ringProgramId,
-    trackingRegistry: tracking,
+    ring: ringProgramId,
+    registry: tracking,
     write: Object.freeze({ owner, change: Object.freeze({ kind: "enroll", record, proof }) }),
   });
 }

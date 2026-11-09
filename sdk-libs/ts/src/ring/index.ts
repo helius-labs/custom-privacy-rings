@@ -593,10 +593,7 @@ export {
   type EnrollmentState,
   type WriteOwnerGrant,
 } from "../operations/management/enrollment.js";
-export {
-  prepareEnrollRelay,
-  prepareEnrollmentRelay,
-} from "../operations/management/enroll-relay.js";
+export { signEnrollment } from "../operations/management/enrollment-submit.js";
 export {
   confirmViewingKey,
   rotateViewingKey,
@@ -633,15 +630,14 @@ export {
   SIGNED_MESSAGE_LEN,
   encodeEnrollmentRecord,
   encodeEnrollmentWrite,
-  encodeRelayEnrollInputs,
   signedWrite,
   enrollmentWriteEntry,
   type EnrollmentChange,
   type EnrollmentRecord,
   type EnrollmentWrite,
-  type RelayEnrollInputs,
+  type SignedEnrollment,
   type SignedWrite,
-} from "../protocol/ring-rpc/relay-enroll-inputs.js";
+} from "../protocol/ring-rpc/enrollment-write.js";
 export type { TransactionSize } from "../operations/workflow/compile.js";
 export {
   decideAddressCeiling,
