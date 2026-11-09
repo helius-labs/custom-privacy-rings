@@ -557,8 +557,21 @@ enum Proven {
 
 enum Settlement {
     Settled,
-    /// The encoded size when the frame passed the byte ceiling, `None` for any other ceiling.
-    TooLarge(Option<usize>),
+    TooLarge(Option<Excess>),
+}
+
+/// A measured size past its limit, two of one ceiling price a leg.
+#[derive(Clone, Copy, Debug)]
+struct Excess {
+    ceiling: Ceiling,
+    size: usize,
+    limit: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ceiling {
+    Bytes,
+    SettlementAccounts,
 }
 
 #[must_use]
@@ -966,9 +979,9 @@ impl ShapeRing<'_> {
         Ok(())
     }
 
-    /// The most legs from `most` down to `fewest` one frame settles. A byte refusal reports the
-    /// frame's size, so the next try drops every leg the measured cost per leg puts past the
-    /// ceiling. Rounding the cost up never skips a leg count that fits.
+    /// The most legs from `most` down to `fewest` one frame settles. A refusal reports its size
+    /// against the ceiling, so two of one ceiling price a leg and the next try drops every leg
+    /// past it. Rounding the price up never skips a leg count that fits.
     fn widest_load(
         &self,
         load: impl Fn(usize) -> ShapeTransfer,
@@ -977,7 +990,7 @@ impl ShapeRing<'_> {
         coverage: &mut Coverage,
     ) -> Result<Option<usize>> {
         let mut legs = most;
-        let mut wider: Option<(usize, usize)> = None;
+        let mut wider: Option<(usize, Excess)> = None;
         loop {
             let settlement = match self.settle(load(legs), coverage) {
                 // The catalog keys no frame at the load, a load with fewer legs may select one.
@@ -992,21 +1005,23 @@ impl ShapeRing<'_> {
                 }
                 other => other?,
             };
-            let bytes = match settlement {
+            let excess = match settlement {
                 Settlement::Settled => return Ok(Some(legs)),
                 Settlement::TooLarge(_) if legs == fewest => return Ok(None),
-                Settlement::TooLarge(bytes) => bytes,
+                Settlement::TooLarge(excess) => excess,
             };
-            let next = match (wider, bytes) {
-                (Some((wider_legs, wider_bytes)), Some(bytes)) if wider_bytes > bytes => {
-                    let per_leg = (wider_bytes - bytes).div_ceil(wider_legs - legs);
-                    let over = bytes.saturating_sub(MAX_TRANSACTION_SIZE);
+            let next = match (wider, excess) {
+                (Some((wider_legs, wider)), Some(excess))
+                    if wider.ceiling == excess.ceiling && wider.size > excess.size =>
+                {
+                    let per_leg = (wider.size - excess.size).div_ceil(wider_legs - legs);
+                    let over = excess.size.saturating_sub(excess.limit);
                     legs.saturating_sub(over.div_ceil(per_leg).max(1))
                 }
                 _ => legs - 1,
             };
-            if let Some(bytes) = bytes {
-                wider = Some((legs, bytes));
+            if let Some(excess) = excess {
+                wider = Some((legs, excess));
             }
             legs = next.clamp(fewest, legs - 1);
         }
@@ -1228,17 +1243,26 @@ impl ShapeRing<'_> {
             Proven::Transfer(proven) => proven,
             Proven::Unfit(reason) => {
                 println!("RING_TOO_LARGE {label} {reason}");
-                let bytes = match reason {
-                    RingError::TransferTooWide { bytes, .. } => Some(bytes),
+                let excess = match reason {
+                    RingError::TransferTooWide { bytes, limit, .. } => {
+                        assert!(
+                            pinned.is_none_or(|pinned| pinned == bytes),
+                            "{label} takes {bytes}, its pin {pinned:?}"
+                        );
+                        Some(Excess {
+                            ceiling: Ceiling::Bytes,
+                            size: bytes,
+                            limit,
+                        })
+                    }
+                    RingError::TooManySettlementAccounts { accounts, limit } => Some(Excess {
+                        ceiling: Ceiling::SettlementAccounts,
+                        size: accounts,
+                        limit,
+                    }),
                     _ => None,
                 };
-                if let Some(bytes) = bytes {
-                    assert!(
-                        pinned.is_none_or(|pinned| pinned == bytes),
-                        "{label} takes {bytes}, its pin {pinned:?}"
-                    );
-                }
-                return Ok(Settlement::TooLarge(bytes));
+                return Ok(Settlement::TooLarge(excess));
             }
         };
         let instruction = proven.instruction()?;
