@@ -135,6 +135,17 @@ describe("viewing key rotation through the tracking row", () => {
     await expect(currentOnly.decrypt([request])).rejects.toThrow();
   });
 
+  it("refuses to move a leaf another wallet copy rotated to a key it never held", async () => {
+    const holder = wallet(6);
+    const { owner, client, apply } = await enrolled(holder);
+    apply(ViewingKey.generate().publicKey().u());
+    const rotated = rotation(holder, ViewingKey.generate());
+    const input = { client, owner, ringProgramId: RING };
+    await expect(
+      updateViewingKey({ ...input, keys: rotated.keys, history: rotated.history }),
+    ).rejects.toMatchObject({ code: "RING_VIEWING_KEY_NOT_HELD" });
+  });
+
   it("refuses a holder of another nullifier key and one ahead of its history", async () => {
     const holder = wallet(3);
     const { owner, client } = await enrolled(holder);

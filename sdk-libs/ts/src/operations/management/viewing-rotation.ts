@@ -63,7 +63,10 @@ export async function updateViewingKey(
   if (!equalBytes(stored.seal.nullifierPk, input.keys.address().nullifierPublicKey))
     throw new RingError("RING_ENROLLMENT_KEY_MISMATCH");
   if (equalBytes(stored.viewingU, viewingU)) return undefined;
-  // 3. The Rotate binds the leaf's key and counter, so a saved rotation never applies again.
+  // 3. A rotation from a key the wallet never held strands payments sent under it.
+  if (!input.keys.viewingPublicKeys().some((key) => equalBytes(key.u(), stored.viewingU)))
+    throw new RingError("RING_VIEWING_KEY_NOT_HELD");
+  // 4. The Rotate binds the leaf's key and counter, so a saved rotation never applies again.
   return Object.freeze({
     ring: input.ringProgramId,
     registry: tracking,
