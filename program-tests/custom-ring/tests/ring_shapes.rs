@@ -375,6 +375,11 @@ fn the_wide_key() -> Result<TransferShape> {
 }
 
 /// One leg past the narrow key of the same outputs selects the wide key.
+/// The input cap of an anonymous sixteen output payout.
+fn sixteen_output_payouts(spend: Spend, shape: TransferShape) -> Option<usize> {
+    (spend.rail() == RingRail::Anonymous && shape.outputs == 16).then_some(2)
+}
+
 fn past_narrow_legs(wide: TransferShape) -> Result<usize> {
     let narrow = narrow_key(wide.outputs).context("a narrow key of its width")?;
     Ok(usize::from(narrow.withdrawals) + 1)
@@ -539,7 +544,8 @@ enum Proven {
 
 enum Settlement {
     Settled,
-    TooLarge,
+    /// The encoded size when the frame passed the byte ceiling, `None` for any other ceiling.
+    TooLarge(Option<usize>),
 }
 
 #[must_use]
@@ -653,7 +659,7 @@ impl ShapeRing<'_> {
             };
             match self.settle(transfer, coverage)? {
                 Settlement::Settled => settled.push(shape),
-                Settlement::TooLarge => too_large.push(shape),
+                Settlement::TooLarge(_) => too_large.push(shape),
             }
         }
         println!("RING_SHAPES {:?} too_large={too_large:?}", self.column);
@@ -877,26 +883,26 @@ impl ShapeRing<'_> {
                 false => 0,
             };
             restart_prover()?;
+            // Anonymous sixteen output payouts stop at 2x16, the user's limit on the 4x16 key.
+            let payout_cap = sixteen_output_payouts(spend, shape);
             for kind in [LegKind::Sol, LegKind::Spl] {
                 let mut settled_legs = 0;
-                for count in [1, usize::from(shape.inputs)] {
+                let counts = match payout_cap {
+                    Some(cap) => [1, cap],
+                    None => [1, usize::from(shape.inputs)],
+                };
+                for count in counts {
                     let notes = match unspent.remove(&(kind, count)) {
                         Some(notes) => notes,
                         None => self.spendable(family, kind, count)?,
                     };
-                    let mut settled = None;
-                    for legs in (fewest..=most).rev() {
-                        let transfer = ShapeTransfer {
-                            shape: Shape::new(count, shape.outputs.into()),
-                            inputs: notes.clone(),
-                            spend,
-                            legs: targets.legs(kind, legs),
-                        };
-                        if let Settlement::Settled = self.settle(transfer, coverage)? {
-                            settled = Some(legs);
-                            break;
-                        }
-                    }
+                    let load = |legs| ShapeTransfer {
+                        shape: Shape::new(count, shape.outputs.into()),
+                        inputs: notes.clone(),
+                        spend,
+                        legs: targets.legs(kind, legs),
+                    };
+                    let settled = self.widest_load(load, fewest, most, coverage)?;
                     println!(
                         "RING_WIDEST {family:?} {kind:?} {count}x{} capacity={most} legs={settled:?}",
                         shape.outputs
@@ -906,6 +912,30 @@ impl ShapeRing<'_> {
                         None => {
                             unspent.insert((kind, count), notes);
                         }
+                    }
+                }
+                if payout_cap.is_some() {
+                    // 1. One more input past the cap is refused before proving at no leg.
+                    let past = usize::from(shape.inputs);
+                    let notes = self.spendable(family, kind, past)?;
+                    let refused = self.settle(
+                        ShapeTransfer {
+                            shape: Shape::new(past, shape.outputs.into()),
+                            inputs: notes.clone(),
+                            spend,
+                            legs: Vec::new(),
+                        },
+                        coverage,
+                    )?;
+                    ensure!(
+                        matches!(refused, Settlement::TooLarge(_)),
+                        "{family:?} {kind:?} {past}x{} must be refused",
+                        shape.outputs
+                    );
+                    unspent.insert((kind, past), notes);
+                    // 2. An SPL leg's accounts carry a sixteen output frame past the byte ceiling.
+                    if kind == LegKind::Spl {
+                        continue;
                     }
                 }
                 ensure!(
@@ -921,6 +951,52 @@ impl ShapeRing<'_> {
                     .is_some_and(|shape| family.keys(shape) && widens_legs(shape))
         });
         Ok(())
+    }
+
+    /// The most legs from `most` down to `fewest` one frame settles. A byte refusal reports the
+    /// frame's size, so the next try drops every leg the measured cost per leg puts past the
+    /// ceiling. Rounding the cost up never skips a leg count that fits.
+    fn widest_load(
+        &self,
+        load: impl Fn(usize) -> ShapeTransfer,
+        fewest: usize,
+        most: usize,
+        coverage: &mut Coverage,
+    ) -> Result<Option<usize>> {
+        let mut legs = most;
+        let mut wider: Option<(usize, usize)> = None;
+        loop {
+            let settlement = match self.settle(load(legs), coverage) {
+                // The catalog keys no frame at this load, a load with fewer legs may select one.
+                Err(error)
+                    if matches!(
+                        error.downcast_ref::<RingError>(),
+                        Some(RingError::ShapeUnkeyed { .. })
+                    ) =>
+                {
+                    println!("RING_UNKEYED legs={legs} {error:#}");
+                    Settlement::TooLarge(None)
+                }
+                other => other?,
+            };
+            let bytes = match settlement {
+                Settlement::Settled => return Ok(Some(legs)),
+                Settlement::TooLarge(_) if legs == fewest => return Ok(None),
+                Settlement::TooLarge(bytes) => bytes,
+            };
+            let next = match (wider, bytes) {
+                (Some((wider_legs, wider_bytes)), Some(bytes)) if wider_bytes > bytes => {
+                    let per_leg = (wider_bytes - bytes).div_ceil(wider_legs - legs);
+                    let over = bytes.saturating_sub(MAX_TRANSACTION_SIZE);
+                    legs.saturating_sub(over.div_ceil(per_leg).max(1))
+                }
+                _ => legs - 1,
+            };
+            if let Some(bytes) = bytes {
+                wider = Some((legs, bytes));
+            }
+            legs = next.clamp(fewest, legs - 1);
+        }
     }
 
     /// Each delivered capacity holds the in-proof owner's spent note once.
@@ -1084,7 +1160,9 @@ impl ShapeRing<'_> {
         let spend = transfer.spend;
         match self.settle(transfer, coverage)? {
             Settlement::Settled => Ok(()),
-            Settlement::TooLarge => Err(anyhow!("{:?} {spend:?} {shape:?} must fit", self.column)),
+            Settlement::TooLarge(_) => {
+                Err(anyhow!("{:?} {spend:?} {shape:?} must fit", self.column))
+            }
         }
     }
 
@@ -1137,13 +1215,17 @@ impl ShapeRing<'_> {
             Proven::Transfer(proven) => proven,
             Proven::Unfit(reason) => {
                 println!("RING_TOO_LARGE {label} {reason}");
-                if let RingError::TransferTooWide { bytes, .. } = reason {
+                let bytes = match reason {
+                    RingError::TransferTooWide { bytes, .. } => Some(bytes),
+                    _ => None,
+                };
+                if let Some(bytes) = bytes {
                     assert!(
                         pinned.is_none_or(|pinned| pinned == bytes),
                         "{label} takes {bytes}, its pin {pinned:?}"
                     );
                 }
-                return Ok(Settlement::TooLarge);
+                return Ok(Settlement::TooLarge(bytes));
             }
         };
         let instruction = proven.instruction()?;
