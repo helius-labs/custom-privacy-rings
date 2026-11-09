@@ -83,3 +83,4 @@ spr-transaction = { workspace = true }
 zolana-ring-rpc = { path = ".", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
 spr-event-parser = { workspace = true }
+spr-test-utils = { workspace = true }

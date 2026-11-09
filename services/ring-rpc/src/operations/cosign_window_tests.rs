@@ -6,6 +6,7 @@ use std::{
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use sea_orm::{ConnectionTrait, Statement};
 use solana_message::Message;
+use spr_test_utils::seed::random_seed;
 use zolana_ring_policy::AssetLimits;
 
 use super::*;
@@ -786,7 +787,7 @@ async fn all_window_measures_match_an_immutable_ledger_after_out_of_order_refund
 
 #[tokio::test]
 async fn seeded_window_histories_match_direct_sums_through_refunds() {
-    let mut random = StdRng::seed_from_u64(0xd45a_67b0_8e31_29cf);
+    let mut random = StdRng::seed_from_u64(random_seed().expect("ZOLANA_RANDOM_SEED"));
     let mut window = Window::open("sqlite::memory:").await;
     window.co_signer.approval = CoSignerApproval::new([
         ApproveClass::Transfers,
