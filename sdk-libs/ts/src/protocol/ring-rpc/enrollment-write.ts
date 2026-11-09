@@ -34,7 +34,7 @@ export interface EnrollmentRecord {
 /** Rust `EnrollmentChange`. */
 export type EnrollmentChange =
   | Readonly<{ kind: "enroll"; record: EnrollmentRecord; proof: Uint8Array }>
-  | Readonly<{ kind: "rotate"; viewingU: Bytes32; priorViewingHash: Bytes32 }>;
+  | Readonly<{ kind: "rotate"; viewingU: Bytes32; priorViewingU: Bytes32; priorSeq: bigint }>;
 
 /** Rust `EnrollmentWrite`. */
 export interface EnrollmentWrite {
@@ -57,7 +57,8 @@ export function encodeEnrollmentWrite(write: EnrollmentWrite): Uint8Array {
     return writer
       .u8(EnrollmentKind.rotate, "kind")
       .bytes(checkedViewingU(change.viewingU), 32, "viewingU")
-      .bytes(change.priorViewingHash, 32, "priorViewingHash")
+      .bytes(change.priorViewingU, 32, "priorViewingU")
+      .u64(change.priorSeq, "priorSeq")
       .finish();
   return writer
     .u8(EnrollmentKind.enroll, "kind")
@@ -74,7 +75,8 @@ export function enrollmentWriteEntry(write: EnrollmentWrite): TrackingEntry {
     ? trackingRotationOf({
         member,
         viewingU: checkedViewingU(change.viewingU),
-        priorViewingHash: change.priorViewingHash,
+        priorViewingU: change.priorViewingU,
+        priorSeq: change.priorSeq,
       })
     : trackingEntryOf({ member, ...change.record });
 }

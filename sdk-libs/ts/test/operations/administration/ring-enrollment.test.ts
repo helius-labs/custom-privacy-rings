@@ -71,7 +71,7 @@ const SEAL: EnrollmentSeal = Object.freeze({
 });
 
 function stored(): EnrollmentState {
-  return { root: field(0x01), record: TRACKING_SENTINEL, seal: SEAL, viewingU: VIEWING_U };
+  return { root: field(0x01), record: TRACKING_SENTINEL, seal: SEAL, viewingU: VIEWING_U, seq: 0n };
 }
 
 /** `owner`'s leaf as an applied `SEAL` enrollment would insert it. */
@@ -81,8 +81,14 @@ function sealedEntry(owner: Address, viewingU: Bytes32 = VIEWING_U): FixtureTrac
     nullifierPk: SEAL.nullifierPk,
     ctHash: hashBytes(SEAL.ciphertext) as Bytes32,
     listTag: SEAL.listTag,
-    viewingHash: viewingKeyHash(viewingU),
-    seal: { owner, viewingU, ephPk: Uint8Array.of(4, ...SEAL.ephU), ciphertext: SEAL.ciphertext },
+    viewingHash: viewingKeyHash(viewingU, 0n),
+    seal: {
+      owner,
+      viewingU,
+      seq: 0n,
+      ephPk: Uint8Array.of(4, ...SEAL.ephU),
+      ciphertext: SEAL.ciphertext,
+    },
   };
 }
 
@@ -151,7 +157,7 @@ describe("tracking accounts", () => {
     });
     expect(entry.proven).toBe(true);
     expect(entry.ctHash).toEqual(hashBytes(SEAL.ciphertext));
-    expect(entry.viewingHash).toEqual(hashBytes(VIEWING_U));
+    expect(entry.viewingHash).toEqual(viewingKeyHash(VIEWING_U, 0n));
     expect(trackingEntryHash({ ...entry, proven: false })).not.toEqual(trackingEntryHash(entry));
     expect(trackingEntryHash({ ...entry, viewingHash: field(0x01) })).not.toEqual(
       trackingEntryHash(entry),
@@ -258,25 +264,34 @@ describe("enrollment requests", () => {
     // A write signed for one registry applies to no other.
     expect(signedWrite(enroll, RING).message).not.toEqual(message);
     expect(entry.priorViewingHash).toEqual(ZERO_32);
-    const prior = hashBytes(field(0x16)) as Bytes32;
+    expect(entry.viewingHash).toEqual(viewingKeyHash(VIEWING_U, 0n));
+    const priorU = field(0x16);
     const rotate = {
       owner: OWNER,
-      change: { kind: "rotate", viewingU: VIEWING_U, priorViewingHash: prior },
+      change: { kind: "rotate", viewingU: VIEWING_U, priorViewingU: priorU, priorSeq: 2n },
     } as const;
-    expect(encodeEnrollmentWrite(rotate)).toHaveLength(97);
-    expect(encodeEnrollmentWrite(rotate).subarray(65)).toEqual(prior);
+    const encoded = encodeEnrollmentWrite(rotate);
+    expect(encoded).toHaveLength(105);
+    expect(encoded.subarray(65, 97)).toEqual(priorU);
+    expect(encoded.subarray(97)).toEqual(Uint8Array.of(2, 0, 0, 0, 0, 0, 0, 0));
     expect(enrollmentWriteEntry(rotate)).toMatchObject({
       nullifierPk: ZERO_32,
       ctHash: ZERO_32,
       listTag: ZERO_32,
-      viewingHash: hashBytes(VIEWING_U),
-      priorViewingHash: prior,
+      viewingHash: viewingKeyHash(VIEWING_U, 3n),
+      priorViewingHash: viewingKeyHash(priorU, 2n),
       proven: false,
     });
     expect(signedWrite(rotate, REGISTRY).message).not.toEqual(message);
-    // A rotation signed against one prior key applies to no other.
-    const other = { ...rotate, change: { ...rotate.change, priorViewingHash: ZERO_32 } };
-    expect(signedWrite(other, REGISTRY).message).not.toEqual(signedWrite(rotate, REGISTRY).message);
+    // A key that returns takes a new hash, so a saved rotation names a hash the leaf left.
+    expect(viewingKeyHash(priorU, 0n)).not.toEqual(viewingKeyHash(priorU, 2n));
+    const replay = { ...rotate, change: { ...rotate.change, priorSeq: 0n } };
+    expect(signedWrite(replay, REGISTRY).message).not.toEqual(
+      signedWrite(rotate, REGISTRY).message,
+    );
+    expect(() =>
+      enrollmentWriteEntry({ ...rotate, change: { ...rotate.change, priorSeq: (1n << 64n) - 1n } }),
+    ).toThrow("RING_TRACKING_INVALID");
   });
 
   it("checks the owner's leaf under the newest root before the owner signs", async () => {

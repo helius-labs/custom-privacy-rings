@@ -35,6 +35,8 @@ export interface TrackingOpeningsRequest {
 export interface TrackingSeal {
   readonly owner: Address;
   readonly viewingU: Bytes32;
+  /** Rotation counter in the leaf's `viewingHash`, zero on a first enrollment. */
+  readonly seq: bigint;
   readonly ephPk: Uint8Array;
   readonly ciphertext: Uint8Array;
 }
@@ -51,7 +53,7 @@ export interface TrackingOpenings {
 
 /** The seal's viewing key, refused unless its hash is the verified leaf's `viewingHash`. */
 export function sealViewingKey(seal: TrackingSeal, record: TrackingRecord): Bytes32 {
-  if (!equalBytes(viewingKeyHash(seal.viewingU), record.viewingHash))
+  if (!equalBytes(viewingKeyHash(seal.viewingU, seal.seq), record.viewingHash))
     throw new RingError("RING_VIEWING_KEY_MISMATCH");
   return seal.viewingU;
 }
@@ -106,9 +108,11 @@ export const getTrackingRecordPoolMethod: MethodDescriptor<
       records: Object.freeze(
         array(row["records"], "records", (entry, path) => {
           const served = object(entry, path, ["record", "path"]);
+          const { record, seal } = servedRecord(served["record"], `${path}.record`);
           return Object.freeze({
-            record: servedRecord(served["record"], `${path}.record`).record,
+            record,
             path: poolPath(served["path"], `${path}.path`),
+            ...(seal === undefined ? {} : { seq: seal.seq }),
           });
         }),
       ),
@@ -164,10 +168,11 @@ function servedRecord(
 }
 
 function sealOf(value: unknown, path: string): TrackingSeal {
-  const row = object(value, path, ["owner", "viewingU", "ephPk", "ciphertext"]);
+  const row = object(value, path, ["owner", "viewingU", "seq", "ephPk", "ciphertext"]);
   return Object.freeze({
     owner: checkedAddress(row["owner"], `${path}.owner`),
     viewingU: viewingKey(row["viewingU"], `${path}.viewingU`),
+    seq: u64(row["seq"], `${path}.seq`),
     ephPk: bytes(row["ephPk"], `${path}.ephPk`),
     ciphertext: bytes(row["ciphertext"], `${path}.ciphertext`),
   });

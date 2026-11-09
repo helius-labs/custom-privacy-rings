@@ -86,14 +86,16 @@ const WRITE = {
     proof: data(192, 192),
   },
 } as const;
-const ROTATE = {
-  owner: OWNER,
-  change: {
-    kind: "rotate",
-    viewingU: bytesOf(enroll.rotate_write, 33, 32) as Bytes32,
-    priorViewingHash: bytesOf(enroll.rotate_write, 65, 32) as Bytes32,
-  },
-} as const;
+const rotate = () =>
+  ({
+    owner: OWNER,
+    change: {
+      kind: "rotate",
+      viewingU: bytesOf(enroll.rotate_write, 33, 32) as Bytes32,
+      priorViewingU: bytesOf(enroll.rotate_write, 65, 32) as Bytes32,
+      priorSeq: new DataView(bytesOf(enroll.rotate_write, 97, 8).buffer).getBigUint64(0, true),
+    },
+  }) as const;
 /** Hashed after `initializePoseidon`. */
 const entry = () => enrollmentWriteEntry(WRITE);
 
@@ -137,17 +139,17 @@ describe("tracking_enroll.json", () => {
     expect(hex(encodeEnrollmentRecord(WRITE.change.record))).toBe(
       enroll.enroll_write.slice(2 * 33, 2 * 225),
     );
-    expect(hex(encodeEnrollmentWrite(ROTATE))).toBe(enroll.rotate_write);
+    expect(hex(encodeEnrollmentWrite(rotate()))).toBe(enroll.rotate_write);
   });
 
   it("signs each entry hash under the registry", () => {
     expect(hex(signedWrite(WRITE, REGISTRY).message)).toBe(enroll.enroll_message);
-    expect(hex(signedWrite(ROTATE, REGISTRY).message)).toBe(enroll.rotate_message);
+    expect(hex(signedWrite(rotate(), REGISTRY).message)).toBe(enroll.rotate_message);
   });
 
   it("hashes both entries and chains them from the apply's start", () => {
     const first = trackingEntryHash(entry());
-    const rotation = trackingEntryHash(enrollmentWriteEntry(ROTATE));
+    const rotation = trackingEntryHash(enrollmentWriteEntry(rotate()));
     expect(hex(first)).toBe(enroll.enroll_entry_hash);
     expect(hex(rotation)).toBe(enroll.rotate_entry_hash);
     expect(hex(chainLink(chainLink(field(enroll.chain_start), first), rotation))).toBe(

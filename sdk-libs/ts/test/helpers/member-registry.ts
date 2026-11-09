@@ -37,8 +37,8 @@ export function enrolledEntry(
     nullifierPk: owner.nullifierPublicKey,
     ctHash: hashBytes(ciphertext) as Bytes32,
     listTag,
-    viewingHash: viewingKeyHash(viewingU),
-    seal: { owner: owner.solanaAddress(), viewingU, ephPk: FIXTURE_EPH_PK, ciphertext },
+    viewingHash: viewingKeyHash(viewingU, 0n),
+    seal: { owner: owner.solanaAddress(), viewingU, seq: 0n, ephPk: FIXTURE_EPH_PK, ciphertext },
   };
 }
 
@@ -176,5 +176,15 @@ export function trackingTree(entries: readonly FixtureTrackingEntry[] = []) {
     const seal = read.kind === "present" ? seals.get(bytesToBigInt(member)) : undefined;
     return seal === undefined ? read : { ...read, seal };
   };
-  return { ...tree, opening };
+  const pool = (members: readonly Bytes32[], openings: number) => {
+    const served = tree.pool(members, openings);
+    return {
+      ...served,
+      records: served.records.map((entry) => {
+        const seq = seals.get(bytesToBigInt(entry.record.member))?.seq;
+        return seq === undefined ? entry : { ...entry, seq };
+      }),
+    };
+  };
+  return { ...tree, opening, pool };
 }

@@ -38,8 +38,8 @@ async function enrolled(holder: ShieldedKeypair, applied = true) {
     if (seal === undefined) throw new Error("no seal");
     leaves.splice(0, 1, {
       ...entry,
-      viewingHash: viewingKeyHash(viewingU),
-      seal: { ...seal, viewingU },
+      viewingHash: viewingKeyHash(viewingU, seal.seq + 1n),
+      seal: { ...seal, viewingU, seq: seal.seq + 1n },
     });
   };
   return {
@@ -84,7 +84,8 @@ describe("viewing key rotation through the tracking row", () => {
       change: {
         kind: "rotate",
         viewingU: current,
-        priorViewingHash: viewingKeyHash(holder.viewingPublicKey().u()),
+        priorViewingU: holder.viewingPublicKey().u(),
+        priorSeq: 0n,
       },
     });
 

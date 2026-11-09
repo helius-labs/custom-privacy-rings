@@ -167,6 +167,7 @@ function enrolled(seed: number) {
   const seal: TrackingSeal = {
     owner: who.signer,
     viewingU,
+    seq: 0n,
     ephPk: envelope.sealed.ephemeralPublicKey.toBytes(),
     ciphertext: envelope.sealed.ciphertext,
   };
@@ -176,7 +177,7 @@ function enrolled(seed: number) {
     nullifierPk: envelope.nullifierPublicKey,
     ctHash: hashBytes(envelope.sealed.ciphertext) as Bytes32,
     listTag: new Uint8Array(32).fill(3) as Bytes32,
-    viewingHash: viewingKeyHash(viewingU),
+    viewingHash: viewingKeyHash(viewingU, 0n),
   };
   return { ...who, seal, row, envelope };
 }

@@ -530,7 +530,7 @@ describe("tracking predicates", () => {
     next: fill(2),
     nullifierPk,
     ctHash: fill(3),
-    viewingHash: viewingKeyHash(fill(4)),
+    viewingHash: viewingKeyHash(fill(4), 0n),
     listTag: fill(5),
   });
   const zero = ZERO_NULLIFIER_PK as Bytes32;
@@ -569,6 +569,7 @@ describe("tracking predicates", () => {
       checkOutputKeys({
         outputs,
         rowOf: () => served,
+        seqOf: () => 0n,
         spenders: [],
       });
     checked([output(fill(9)), undefined], row(fill(9)));
@@ -598,15 +599,31 @@ describe("tracking predicates", () => {
     } as unknown as ProofOutputUtxo;
     const current = row(fill(9));
     const stale = refusal(() =>
-      checkOutputKeys({ outputs: [output], rowOf: () => current, spenders: [] }),
+      checkOutputKeys({ outputs: [output], rowOf: () => current, seqOf: () => 0n, spenders: [] }),
     );
     expect(stale.code).toBe("RING_RECIPIENT_VIEWING_KEY_STALE");
+    expect(
+      refusal(() =>
+        checkOutputKeys({
+          outputs: [output],
+          rowOf: () => current,
+          seqOf: () => undefined,
+          spenders: [],
+        }),
+      ).details,
+    ).toEqual({ reason: "seq" });
     checkOutputKeys({
       outputs: [output],
-      rowOf: () => ({ ...current, viewingHash: viewingKeyHash(fill(8)) }),
+      rowOf: () => ({ ...current, viewingHash: viewingKeyHash(fill(8), 0n) }),
+      seqOf: () => 0n,
       spenders: [],
     });
-    checkOutputKeys({ outputs: [output], rowOf: () => current, spenders: [spender] });
+    checkOutputKeys({
+      outputs: [output],
+      rowOf: () => current,
+      seqOf: () => 0n,
+      spenders: [spender],
+    });
   });
 });
 

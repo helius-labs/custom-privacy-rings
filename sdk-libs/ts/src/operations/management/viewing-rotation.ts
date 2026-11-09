@@ -63,7 +63,7 @@ export async function updateViewingKey(
   if (!equalBytes(stored.seal.nullifierPk, input.keys.address().nullifierPublicKey))
     throw new RingError("RING_ENROLLMENT_KEY_MISMATCH");
   if (equalBytes(stored.viewingU, viewingU)) return undefined;
-  // 3. The Rotate binds the leaf's current viewing hash, an apply refuses it once the leaf moves.
+  // 3. The Rotate binds the leaf's key and counter, so a saved rotation never applies again.
   return Object.freeze({
     ring: input.ringProgramId,
     registry: tracking,
@@ -72,7 +72,8 @@ export async function updateViewingKey(
       change: Object.freeze({
         kind: "rotate",
         viewingU,
-        priorViewingHash: stored.record.viewingHash,
+        priorViewingU: stored.viewingU,
+        priorSeq: stored.seq,
       }),
     }),
   });
