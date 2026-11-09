@@ -28,7 +28,7 @@ use zolana_ring_indexer::rpc::{
 use zolana_ring_member_registry::ApplyProofInputs;
 use zolana_ring_policy::{AssetLimits, ListId, Member, MintPolicy, Rule, RuleTable, Subject};
 use zolana_ring_rpc::{
-    ChainOutcome, ChainSubmit, LatestBlockhash, PrivateWrites, ProvedEnrollments, ReaderGrantStore,
+    ChainOutcome, ChainSubmit, LatestBlockhash, PrivateWrites, ReaderGrantStore,
     RecordUpdateRefusal, RecordWriter, SaltedOwner, StorageChain, Store, BATCH_WINDOW_SLOTS,
     MAX_LIMIT_WINDOW_SLOTS, MAX_LIST_APPROVAL_WINDOW_SLOTS,
 };
@@ -233,10 +233,18 @@ impl StorageChain for StubChain {
 
     async fn prove_enrollments(
         &self,
-        _registry: Address,
-        _count: u64,
-    ) -> Result<ProvedEnrollments, RingRpcError> {
+        _batch: custom_ring_sdk::EnrollBatch<'_>,
+    ) -> Result<custom_ring_sdk::ProvenEnrollBatch, RingRpcError> {
         unreachable!("the record writer applies no enrollment")
+    }
+
+    async fn tracking_leaves(
+        &self,
+        _registry: Address,
+        _owners: &[[u8; 32]],
+    ) -> Result<std::collections::HashMap<[u8; 32], zolana_ring_client::TrackingLeaf>, RingRpcError>
+    {
+        unreachable!("the record writer reads no tracking leaf")
     }
 }
 

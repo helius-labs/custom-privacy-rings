@@ -36,13 +36,13 @@ use zolana_ring_client::rpc::{
     GetRelayStatusRequest, GetSpendCoverageRequest, GetWalletActivityResponse,
     GetWalletStatusRequest, HealthResponse, PagedRead, PrepareAuthorityTransferRequest,
     PrepareRelayRequest, RefuseListApprovalRequest, RingState, RingStatusRequest,
-    RingStatusResponse, SetMergeSettingsRequest, SetReaderGrantRequest, SubmitRecordUpdateRequest,
-    SubmitRelayRequest, CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY, GET_AUDITED_UTXOS,
-    GET_DELEGATE_NOTES, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS,
-    GET_RELAY_QUOTE, GET_RELAY_STATUS, GET_SPEND_COVERAGE, GET_WALLET_STATUS, HEALTH,
-    PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY, REFUSE_LIST_APPROVAL, RELEASE_DELEGATE_SNAPSHOT,
-    RELEASE_WALLET_SNAPSHOT, RING_STATUS, SET_MERGE_SETTINGS, SET_READER_GRANT,
-    SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
+    RingStatusResponse, SetMergeSettingsRequest, SetReaderGrantRequest, SubmitEnrollmentRequest,
+    SubmitRecordUpdateRequest, SubmitRelayRequest, CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY,
+    GET_AUDITED_UTXOS, GET_DELEGATE_NOTES, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS,
+    GET_RECORD_UPDATE_STATUS, GET_RELAY_QUOTE, GET_RELAY_STATUS, GET_SPEND_COVERAGE,
+    GET_WALLET_STATUS, HEALTH, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY, REFUSE_LIST_APPROVAL,
+    RELEASE_DELEGATE_SNAPSHOT, RELEASE_WALLET_SNAPSHOT, RING_STATUS, SET_MERGE_SETTINGS,
+    SET_READER_GRANT, SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
 };
 
 use crate::{
@@ -304,6 +304,14 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: SubmitRecordUpdateRequest| async move {
             let _slot = hub.admit(Lane::Authentication)?;
             hub.record_writer()?.submit(request).await
+        },
+    )?;
+    method(
+        &mut module,
+        SUBMIT_ENROLLMENT,
+        |hub, request: SubmitEnrollmentRequest| async move {
+            let _slot = hub.admit(Lane::Authentication)?;
+            hub.enrollment_applier()?.submit(request).await
         },
     )?;
     method(

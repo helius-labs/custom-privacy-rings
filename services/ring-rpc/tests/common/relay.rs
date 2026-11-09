@@ -28,8 +28,7 @@ use spr_transaction::{
     Data, Mint, SppProofOutputUtxo, Utxo,
 };
 use zolana_ring_client::rpc::{
-    PrepareRelayRequest, ProofInputBytes, RelayEnrollInputs, RelayIntent, RelayProofInputs,
-    RelayQuote, RelayRail,
+    PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayProofInputs, RelayQuote, RelayRail,
 };
 use zolana_ring_rpc::{
     ChainOutcome, ChainSubmit, DelegateSeal, LatestBlockhash, ProvenRelay, RelayError,
@@ -51,7 +50,6 @@ pub struct RecordingProver {
     pub co_signers: Option<Vec<Address>>,
     /// The next proven transfer's data, a frame past one transaction.
     pub frame: Mutex<Option<Vec<u8>>>,
-    pub refuse_enrollment: AtomicBool,
 }
 
 #[async_trait]
@@ -71,7 +69,6 @@ impl RelayProver for RecordingProver {
             ),
             RelayPayload::Deposit(deposit) => (deposit.deposit_funders().collect(), vec![1, 2, 3]),
             RelayPayload::Merge(_) => (Vec::new(), vec![1, 2, 3]),
-            RelayPayload::Enroll(_) => panic!("the relay builds an enrollment itself"),
         };
         let co_signers = self
             .co_signers
@@ -105,13 +102,6 @@ impl RelayProver for RecordingProver {
         _parties: RelayParties,
     ) -> Result<RelayProofInputs, RingRpcError> {
         unreachable!("the wallet seals its own transfer")
-    }
-
-    async fn check_enrollment(&self, _enrollment: &RelayEnrollInputs) -> Result<(), RingRpcError> {
-        match self.refuse_enrollment.load(Ordering::Relaxed) {
-            true => Err(RelayError::InvalidEnrollment.into()),
-            false => Ok(()),
-        }
     }
 }
 

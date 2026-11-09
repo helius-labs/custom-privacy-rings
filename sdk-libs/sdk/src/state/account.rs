@@ -1,8 +1,7 @@
 //! The ring's accounts as the chain holds them, every read checked against its canonical address.
 
 use custom_ring_interface::{
-    tracking::{EnrollmentQueue, TrackingRegistry},
-    CoSignScope, CoSigner, RingAccount, RingMode, RingPolicy, RingRoles,
+    tracking::TrackingRegistry, CoSignScope, CoSigner, RingAccount, RingMode, RingPolicy, RingRoles,
 };
 use solana_account::Account;
 use solana_address::Address;
@@ -98,11 +97,6 @@ impl CustomRing {
     /// Seeded by the ring PDA and the ring id.
     pub fn tracking_registry(self) -> Result<Address, RingError> {
         Ok(TrackingRegistry::find_address(&self.ring_auth_pda(), &self.ring_id()?).0)
-    }
-
-    /// The queue `Enroll` appends to and `ApplyEnrollments` consumes, one per tracking registry.
-    pub fn enrollment_queue(self) -> Result<Address, RingError> {
-        Ok(EnrollmentQueue::find_address(&self.tracking_registry()?).0)
     }
 
     pub fn program_data_pda(self) -> Address {

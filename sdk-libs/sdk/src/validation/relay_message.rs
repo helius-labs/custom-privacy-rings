@@ -5,7 +5,7 @@ use custom_ring_interface::{
     compute_unit_limit, funder_account_position,
     stream::{confidential_slot_tag, DeliveredSlot},
     tag, InstructionTag, OutputRecord, ParsedTransact, RecordKind, RingMode, RingOutput, RingRail,
-    RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX, STORAGE_PROGRAM_ID,
+    RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX,
 };
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -27,7 +27,7 @@ use spr_program::instruction::CreateAssociatedTokenAccount;
 use spr_transaction::{utxo::DUMMY_DOMAIN, Mint, TransactionError, Utxo, WalletUtxo, SOL_MINT};
 use thiserror::Error;
 use zolana_ring_client::{
-    rpc::{AuthorityWithdrawal, RelayEnrollInputs, RelayId, TxViewingSecret, ENROLL_COMPUTE_UNITS},
+    rpc::{AuthorityWithdrawal, RelayId, TxViewingSecret},
     AuditEnvelope, OpenedAudit,
 };
 use zolana_ring_policy::{ApprovalTotals, Member, OutputTotals, OwnerDebit, PublicTotals};
@@ -97,14 +97,6 @@ pub(crate) enum ExpectedMessage {
     PublicOwner(ExpectedPublicOwner),
     Funder(ExpectedFunder),
     CoSigner(ExpectedCoSigner),
-    Enroll(ExpectedEnroll),
-}
-
-/// The enrollment the owner proved and signed, the message differs from it in nothing.
-#[derive(Clone, Debug)]
-pub(crate) struct ExpectedEnroll {
-    pub fee_payer: Address,
-    pub inputs: RelayEnrollInputs,
 }
 
 /// What one public owner agrees to, its own slots and notes alone, the sealing wallet hands it over.
@@ -342,7 +334,6 @@ impl ExpectedMessage {
             Self::PublicOwner(owner) => check_message(owner, message, signer),
             Self::Funder(funder) => check_message(funder, message, signer),
             Self::CoSigner(co_signer) => check_message(co_signer, message, signer),
-            Self::Enroll(enroll) => enroll.check(message),
         }
     }
 
@@ -350,7 +341,7 @@ impl ExpectedMessage {
         match self {
             Self::Sealed(sealed) => sealed.owners.iter().find(|terms| terms.signer.0 == signer),
             Self::PublicOwner(owner) => (owner.terms.signer.0 == signer).then_some(&owner.terms),
-            Self::Delegate(_) | Self::Enroll(_) | Self::Funder(_) | Self::CoSigner(_) => None,
+            Self::Delegate(_) | Self::Funder(_) | Self::CoSigner(_) => None,
         }
     }
 
@@ -476,33 +467,6 @@ fn check_signer(envelope: &Envelope, accounts: &[AccountMeta]) -> Result<(), Mes
         return Err(MessageMismatch::Accounts);
     }
     Ok(())
-}
-
-impl ExpectedEnroll {
-    /// A swapped registry or queue would queue the owner's key for another registry.
-    pub fn check(&self, message: &[u8]) -> Result<VerifiedMessage, MessageMismatch> {
-        let envelope = Envelope {
-            ring: CustomRing::new(self.inputs.ring_program_id),
-            program: STORAGE_PROGRAM_ID,
-            units: ENROLL_COMPUTE_UNITS,
-            fee_payer: self.fee_payer,
-            signer: self.inputs.owner,
-            setup: Vec::new(),
-        };
-        let instruction = envelope.open(message)?;
-        let expected = self.inputs.instruction();
-        if instruction.accounts != expected.accounts {
-            return Err(MessageMismatch::Accounts);
-        }
-        let signed = RelayEnrollInputs {
-            instruction_data: instruction.data,
-            ..self.inputs.clone()
-        };
-        if signed.request_digest() != self.inputs.request_digest() {
-            return Err(MessageMismatch::Data);
-        }
-        Ok(envelope.verified(message))
-    }
 }
 
 impl ExpectedDelegate {

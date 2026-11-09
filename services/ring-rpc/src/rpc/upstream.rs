@@ -3,7 +3,7 @@ use std::{future::Future, num::NonZeroU32, time::Duration};
 use async_trait::async_trait;
 use custom_ring_interface::{
     storage::StorageRegistry, tracking::TrackingRegistry, CoSignScope, OwnerGrant, ReaderKeyBytes,
-    RingAccount, RingMode, RingPolicy, RingRoles, QUAD_CAPACITY,
+    RingAccount, RingMode, RingPolicy, RingRoles,
 };
 use custom_ring_sdk::{CustomRing, RingError};
 use solana_account::Account;
@@ -28,8 +28,8 @@ use spr_keypair::X25519Pubkey;
 use spr_transaction::{AssetRegistry, Mint, ShieldedTransaction, SOL_MINT};
 use zolana_ring_client::{
     history::HistoryPosition, program_data, AsyncRingIndexer, AuditError, MemberOpeningRead,
-    MergeAudit, MergeAuditPage, QueuedEnrollments, ResolveError, RingIndexerError, RingOrigin,
-    StorageTip, TrackingLeafCheck, TransactionOrigin,
+    MergeAudit, MergeAuditPage, ResolveError, RingIndexerError, RingOrigin, StorageTip,
+    TrackingLeafCheck, TransactionOrigin,
 };
 use zolana_ring_indexer::rpc::{
     GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
@@ -159,7 +159,7 @@ pub trait TransactionSource: Send + Sync {
         async { Err(ClientError::Rpc("no tracking records".to_owned()).into()) }
     }
 
-    /// The owner's leaf under the ring's newest confirmed tracking root, else its queued first enrollment.
+    /// The owner's leaf under the ring's newest confirmed tracking root.
     fn tracking_enrollment(
         &self,
         _ring: Address,
@@ -652,7 +652,7 @@ impl TransactionSource for ChainSource {
         let Some(root) = self.tracking_root(ring, Finality::Confirmed).await? else {
             return Ok(WalletEnrollment::NotEnrolled);
         };
-        // 1. The leaf opens under the root the registry account names, the indexer cannot add one.
+        // The leaf opens under the root the registry account names, the indexer cannot add one.
         let member = solana_owner_identity(owner.as_array()).map_err(AuditError::from)?;
         let response = self
             .indexer
@@ -677,22 +677,9 @@ impl TransactionSource for ChainSource {
         .verify()
         .map_err(AuditError::from)?
         .is_some();
-        if applied {
-            return Ok(WalletEnrollment::Applied);
-        }
-        // 2. Unverified, a queued first enrollment only reports progress and grants nothing.
-        let queued = QueuedEnrollments {
-            registry: root.registry,
-        }
-        .read(&self.indexer)
-        .await
-        .map_err(AuditError::from)?
-        .iter()
-        .any(|entry| entry.owner == owner && entry.proven);
-        Ok(match queued {
+        Ok(match applied {
+            true => WalletEnrollment::Applied,
             false => WalletEnrollment::NotEnrolled,
-            true if root.next_index >= QUAD_CAPACITY => WalletEnrollment::PendingPastCapacity,
-            true => WalletEnrollment::Pending,
         })
     }
 

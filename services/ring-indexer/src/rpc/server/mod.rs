@@ -34,8 +34,7 @@ use zolana_ring_indexer::{
         GetStorageRecordPool,
     },
     tracking::method::{
-        GetEnrollmentQueue, GetTrackingApplyProofInputs, GetTrackingOpenings,
-        GetTrackingRecordPool, GetTrackingRecords,
+        GetTrackingApplyProofInputs, GetTrackingOpenings, GetTrackingRecordPool, GetTrackingRecords,
     },
 };
 
@@ -46,7 +45,7 @@ use crate::{
 };
 
 /// Served here, every other call goes to Photon untouched.
-pub const RING_METHODS: [&str; 9] = [
+pub const RING_METHODS: [&str; 8] = [
     GetStorageMemberOpenings::NAME,
     GetStorageMemberRecords::NAME,
     GetStorageRecordPool::NAME,
@@ -54,7 +53,6 @@ pub const RING_METHODS: [&str; 9] = [
     GetTrackingOpenings::NAME,
     GetTrackingRecords::NAME,
     GetTrackingRecordPool::NAME,
-    GetEnrollmentQueue::NAME,
     GetTrackingApplyProofInputs::NAME,
 ];
 
@@ -157,7 +155,6 @@ fn ring_methods(lookups: Lookups) -> Result<RpcModule<Lookups>> {
         GetTrackingOpenings => api::tracking_openings,
         GetTrackingRecords => api::tracking_records,
         GetTrackingRecordPool => api::tracking_record_pool,
-        GetEnrollmentQueue => api::enrollment_queue,
         GetTrackingApplyProofInputs => api::tracking_apply_proof_inputs,
     );
     Ok(module)

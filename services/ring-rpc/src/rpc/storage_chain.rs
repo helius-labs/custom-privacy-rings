@@ -1,23 +1,18 @@
-use std::future::Future;
+use std::{collections::HashMap, future::Future};
 
 use async_trait::async_trait;
-use custom_ring_interface::{
-    storage::{Revision, StorageRegistry},
-    ApplyRecordsIxData,
-};
-use custom_ring_sdk::{tracking_apply_inputs, ApplyEnrollments, RingClient, StorageApplyProof};
+use custom_ring_interface::{storage::StorageRegistry, ApplyRecordsIxData};
+use custom_ring_sdk::{EnrollBatch, ProvenEnrollBatch, RingClient, StorageApplyProof};
 use solana_account::Account;
 use solana_address::Address;
-use solana_instruction::Instruction;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use spr_client::{AsyncProverClient, AsyncRpc, AsyncSolanaRpc, AsyncSprClient, AsyncSprIndexer};
-use zolana_ring_client::AsyncRingIndexer;
+use zolana_ring_client::{AsyncRingIndexer, AuditError, RegisteredKeys, TrackingLeaf};
 use zolana_ring_indexer::rpc::{
     GetStorageApplyProofInputsRequest, GetStorageApplyProofInputsResponse,
     GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
 };
-use zolana_ring_indexer::tracking::GetTrackingApplyProofInputsRequest;
 use zolana_ring_member_registry::ApplyProofInputs;
 
 use crate::{
@@ -25,13 +20,6 @@ use crate::{
     landing::{ChainOutcome, ChainSubmit, LatestBlockhash, Simulation, SolanaChain},
     upstream::{ChainSource, OpeningFetch, RingConfiguration, TransactionSource, Upstreams},
 };
-
-#[must_use]
-pub struct ProvedEnrollments {
-    pub instruction: Instruction,
-    /// The registry revision the proof starts from.
-    pub revision: Revision,
-}
 
 #[async_trait]
 pub trait StorageChain: ChainSubmit {
@@ -55,12 +43,18 @@ pub trait StorageChain: ChainSubmit {
         registry: &StorageRegistry,
     ) -> Result<ApplyRecordsIxData, RingRpcError>;
 
-    /// The next `count` queued entries applied in sequence order from the current root.
+    /// The batch's writes applied in order from the current root.
     async fn prove_enrollments(
         &self,
+        batch: EnrollBatch<'_>,
+    ) -> Result<ProvenEnrollBatch, RingRpcError>;
+
+    /// Each present owner's leaf under the registry's newest root.
+    async fn tracking_leaves(
+        &self,
         registry: Address,
-        count: u64,
-    ) -> Result<ProvedEnrollments, RingRpcError>;
+        owners: &[[u8; 32]],
+    ) -> Result<HashMap<[u8; 32], TrackingLeaf>, RingRpcError>;
 }
 
 impl OpeningFetch for dyn StorageChain {
@@ -184,31 +178,23 @@ impl StorageChain for LiveStorageChain {
 
     async fn prove_enrollments(
         &self,
+        batch: EnrollBatch<'_>,
+    ) -> Result<ProvenEnrollBatch, RingRpcError> {
+        batch
+            .prove(&self.client)
+            .await
+            .map_err(|error| RingRpcError::StorageUpdate(error.into()))
+    }
+
+    async fn tracking_leaves(
+        &self,
         registry: Address,
-        count: u64,
-    ) -> Result<ProvedEnrollments, RingRpcError> {
-        let response = self
-            .client
-            .indexer()
-            .get_tracking_apply_proof_inputs(GetTrackingApplyProofInputsRequest {
-                registry: registry.into(),
-                count,
-            })
-            .await?;
-        let storage = |error: custom_ring_sdk::RingError| RingRpcError::StorageUpdate(error.into());
-        let inputs = tracking_apply_inputs(&response).map_err(storage)?;
-        let revision = Revision::from(response.revision);
-        let instruction = ApplyEnrollments {
-            tracking_registry: registry,
-            revision,
-            inputs: &inputs,
-        }
-        .prove(&self.client)
-        .await
-        .map_err(storage)?;
-        Ok(ProvedEnrollments {
-            instruction,
-            revision,
-        })
+        owners: &[[u8; 32]],
+    ) -> Result<HashMap<[u8; 32], TrackingLeaf>, RingRpcError> {
+        let client = self.client.zolana();
+        RegisteredKeys { registry, owners }
+            .leaves(client, client)
+            .await
+            .map_err(|error| AuditError::from(error).into())
     }
 }

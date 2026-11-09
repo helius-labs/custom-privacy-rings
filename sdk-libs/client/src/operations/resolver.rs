@@ -2,16 +2,12 @@
 //!
 //! A leaf commits to `viewing_hash`, never the viewing key, because an X25519 u can exceed the BN254
 //! modulus. The indexer serves the key beside the leaf, and a reader accepts it only once the leaf
-//! opens under the root and the key hashes to the leaf's `viewing_hash`. A queued enrollment grants
-//! nothing and resolves nothing.
+//! opens under the root and the key hashes to the leaf's `viewing_hash`. A write the enrollment
+//! writer still holds grants nothing and resolves nothing.
 
 use std::collections::HashMap;
 
-use custom_ring_interface::{
-    domain,
-    storage_instruction::EnrollIxData,
-    tracking::{TrackingRegistry, ENROLLMENT_QUEUE_CAPACITY},
-};
+use custom_ring_interface::{domain, tracking::TrackingRegistry};
 use solana_address::Address;
 use spr_client::{AsyncRpc, ClientError};
 use spr_hasher::{
@@ -24,10 +20,7 @@ use spr_keypair::{KeypairError, NullifierKey, X25519Keypair, X25519Pubkey};
 use thiserror::Error;
 use zolana_ring_indexer::{
     rpc::MAX_RING_MEMBER_PAGE_LIMIT,
-    tracking::{
-        GetEnrollmentQueueRequest, GetTrackingOpeningsRequest, RingQueuedEnrollmentView,
-        RingTrackingOpening, RingTrackingRecordView,
-    },
+    tracking::{GetTrackingOpeningsRequest, RingTrackingOpening, RingTrackingRecordView},
 };
 use zolana_ring_keys::{RingAddress, RingKeyError};
 use zolana_ring_member_registry::{OpeningCheck, RecordTreeError, TrackingOpening, TrackingRecord};
@@ -312,71 +305,6 @@ impl RegisteredKeys<'_> {
     }
 }
 
-/// Every queued entry of one registry in sequence order, unverified, a queued entry grants nothing.
-#[must_use]
-pub struct QueuedEnrollments {
-    pub registry: Address,
-}
-
-/// One queued entry as its `Enroll` named it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct QueuedEnrollment {
-    pub sequence: u64,
-    pub owner: Address,
-    pub proven: bool,
-    pub ix: EnrollIxData,
-}
-
-impl QueuedEnrollments {
-    /// The pages stay within the queue's capacity, a looping indexer cannot hold the read.
-    pub async fn read(
-        self,
-        indexer: &(impl AsyncRingIndexer + ?Sized),
-    ) -> Result<Vec<QueuedEnrollment>, ResolveError> {
-        let limit = MAX_RING_MEMBER_PAGE_LIMIT;
-        let mut entries = Vec::new();
-        let mut after = None;
-        for _ in 0..(ENROLLMENT_QUEUE_CAPACITY as u64).div_ceil(limit) {
-            let page = indexer
-                .get_enrollment_queue(GetEnrollmentQueueRequest {
-                    registry: self.registry.into(),
-                    after,
-                    limit,
-                })
-                .await?;
-            let next = page
-                .entries
-                .last()
-                .filter(|last| last.sequence + 1 < page.tail)
-                .map(|last| last.sequence);
-            for entry in &page.entries {
-                entries.push(queued(entry)?);
-            }
-            match next {
-                Some(sequence) => after = Some(sequence),
-                None => break,
-            }
-        }
-        Ok(entries)
-    }
-}
-
-fn queued(entry: &RingQueuedEnrollmentView) -> Result<QueuedEnrollment, ResolveError> {
-    let eph_pk = X25519Pubkey::from_bytes(fixed(&entry.eph_pk.0)?)?;
-    Ok(QueuedEnrollment {
-        sequence: entry.sequence,
-        owner: entry.owner.0,
-        proven: entry.proven,
-        ix: EnrollIxData {
-            nullifier_pk: entry.nullifier_pk.0,
-            list_tag: entry.list_tag.0,
-            viewing_u: fixed(&entry.viewing_u.0)?,
-            eph_u: eph_pk.u(),
-            ciphertext: fixed(&entry.ciphertext.0)?,
-        },
-    })
-}
-
 fn fixed<const N: usize>(bytes: &[u8]) -> Result<[u8; N], ResolveError> {
     bytes.try_into().map_err(|_| ResolveError::MalformedOpening)
 }
@@ -449,6 +377,7 @@ mod tests {
             ct_hash: hash_bytes(&CIPHERTEXT).unwrap(),
             list_tag: domain::list_tag(&owner.list_salt(&RING).unwrap()).unwrap(),
             viewing_hash: hash_bytes(&viewing.u()).unwrap(),
+            prior_viewing_hash: [0; 32],
             proven: true,
         }
     }
@@ -462,10 +391,13 @@ mod tests {
 
     /// The registry account holding `root` as its newest.
     fn registry_account(root: [u8; 32]) -> Account {
-        let mut registry = TrackingRegistry::new(&InitializeTrackingIxData {
-            ring_id: [1; 32],
-            auditor_pubkey: [2; 33],
-        });
+        let mut registry = TrackingRegistry::new(
+            Address::default(),
+            &InitializeTrackingIxData {
+                ring_id: [1; 32],
+                auditor_pubkey: [2; 33],
+            },
+        );
         registry.roots[0].hash = root;
         Account {
             lamports: 1,

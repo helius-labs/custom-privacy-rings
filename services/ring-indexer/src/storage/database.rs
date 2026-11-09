@@ -24,7 +24,7 @@ use crate::{block::BlockMetadata, indexer::Quarantine};
 
 mod tracking;
 
-pub(crate) use tracking::{LeafStamp, QueueBounds, QueuedEnrollment};
+pub(crate) use tracking::{LeafSeal, LeafStamp};
 
 /// A read takes each row's newest version at or below `version`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,7 +319,6 @@ pub(crate) async fn rollback(tx: &DatabaseTransaction, cursor: &mut RingCursor) 
         TrackingStore::new(tx, undo.registry).restore(undo).await?;
     }
     let slot = vec![int(journal.metadata.slot)?];
-    tracking::rollback_slot(tx, journal.metadata.slot).await?;
     exec(tx, "DELETE FROM ring_blocks WHERE slot=$1", slot).await?;
     cursor.tip = journal.previous_tip;
     cursor.scanned_slot = cursor.tip_slot();

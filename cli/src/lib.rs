@@ -135,6 +135,7 @@ pub const SENDER_KEYPAIR_FILE: &str = "keys/sender-keypair.json";
 pub const ADMIN_KEYPAIR_FILE: &str = "keys/admin.json";
 pub const PAUSER_KEYPAIR_FILE: &str = "keys/pauser.json";
 pub const COSIGN_ADMIN_KEYPAIR_FILE: &str = "keys/cosign-admin.json";
+pub const ENROLLMENT_WRITER_KEYPAIR_FILE: &str = "keys/enrollment-writer.json";
 pub const DEFAULT_TRANSACT_AMOUNT: u64 = 100_000_000;
 /// What localnet tops an account up to.
 const LOCALNET_BALANCE: u64 = 100_000_000_000;

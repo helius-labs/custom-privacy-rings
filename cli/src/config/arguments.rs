@@ -235,11 +235,9 @@ pub enum ListApprovalCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum KeyCommand {
-    /// Seal the member's nullifier key to the ring auditor and enroll it, `transfer` does it on first use.
+    /// Seal the member's nullifier key to the ring auditor and hand the signed enrollment to ring rpc, `transfer` does it on first use.
     Register,
-    /// Prove the pending enrollments into the tracking tree, anyone may.
-    Apply,
-    /// Replace the member's viewing key in its user record and tracking authorization, earlier keys stay held for old notes.
+    /// Replace the member's viewing key in its user record and tracking leaf, earlier keys stay held for old notes.
     Rotate,
 }
 

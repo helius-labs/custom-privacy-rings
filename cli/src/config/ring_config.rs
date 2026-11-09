@@ -47,6 +47,9 @@ pub struct RingConfig {
     /// `keys/cosign-admin.json` by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cosign_admin_keypair: Option<PathBuf>,
+    /// `keys/enrollment-writer.json` by default, the key ring rpc's enrollment writer signs batches with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrollment_writer_keypair: Option<PathBuf>,
     /// Fixed once `init` creates the config.
     #[serde(default, skip_serializing_if = "is_default")]
     pub mode: ModeName,
@@ -113,6 +116,7 @@ named_enum! {
         Policy = "policy",
         Pauser = "pauser",
         CosignAdmin = "cosign-admin",
+        EnrollmentWriter = "enrollment-writer",
     }
 }
 
@@ -172,6 +176,7 @@ impl RoleName {
             Self::Policy => RingRole::Policy,
             Self::Pauser => RingRole::Pauser,
             Self::CosignAdmin => RingRole::CosignAdmin,
+            Self::EnrollmentWriter => RingRole::EnrollmentWriter,
         }
     }
 
@@ -181,6 +186,7 @@ impl RoleName {
             Self::Policy => "policy_authority_keypair",
             Self::Pauser => "pauser_keypair",
             Self::CosignAdmin => "cosign_admin_keypair",
+            Self::EnrollmentWriter => "enrollment_writer_keypair",
         }
     }
 }
@@ -413,6 +419,7 @@ impl RingConfig {
             &mut self.admin_keypair,
             &mut self.pauser_keypair,
             &mut self.cosign_admin_keypair,
+            &mut self.enrollment_writer_keypair,
         ]
         .into_iter()
         .flatten()

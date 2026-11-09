@@ -618,6 +618,7 @@ pub mod fixture {
                         ct_hash: hash_bytes(&sealed.ciphertext).expect("ct hash"),
                         list_tag,
                         viewing_hash: hash_bytes(&VIEWING_U).expect("viewing hash"),
+                        prior_viewing_hash: [0; 32],
                         proven: true,
                     }],
                 )

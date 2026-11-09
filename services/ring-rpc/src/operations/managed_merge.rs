@@ -792,13 +792,6 @@ pub(crate) mod tests {
 
     #[async_trait]
     impl RelayProver for UnusedProver {
-        async fn check_enrollment(
-            &self,
-            _enrollment: &zolana_ring_client::rpc::RelayEnrollInputs,
-        ) -> Result<(), RingRpcError> {
-            Err(RingRpcError::StateUnavailable)
-        }
-
         async fn prove(
             &self,
             _request: RelayProofRequest<'_>,

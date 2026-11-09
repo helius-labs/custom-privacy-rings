@@ -30,6 +30,7 @@ use crate::{
     cosign::{CoSignPolicy, CoSignerApproval, RefusingCoSigner},
     cosign_limits::{LimitedCoSignerInit, RecordLimits},
     database::Store,
+    enrollment_applier::{EnrollmentApplier, EnrollmentRefusal},
     error::{redacted, RingRpcError},
     grant_rows::{GrantRowKey, GrantRows},
     grants::{GrantQuery, GrantSource, Grants, ReadScope, TreeGrants},
@@ -47,7 +48,7 @@ use crate::{
     replay::{LocalNonces, ReplayGuard},
     spent_index::NoteSeal,
     storage_chain::StorageChain,
-    upstream::{Finality, TransactionSource},
+    upstream::TransactionSource,
     utxos::{AuditStore, Backing, MAX_CACHED_ENTRIES, UTXO_BACKFILL_INTERVAL},
     wallet_snapshots::{SharedWalletSnapshots, WalletSnapshotCleanup, WalletSnapshotLimits},
 };
@@ -58,6 +59,7 @@ pub struct Hub<S> {
     signer: Keypair,
     shared: Arc<Shared<S>>,
     writer: Option<Arc<RecordWriter>>,
+    enrollments: Option<Arc<EnrollmentApplier>>,
     co_signer: Arc<dyn CoSignPolicy>,
     relay: Option<Arc<Relay>>,
     merge: Option<MergeParts>,
@@ -138,6 +140,7 @@ pub struct HubBuilder<S> {
     relay_budget: RelayBudget,
     relay: Option<RelayParts>,
     merge: Option<MergeParts>,
+    enrollments: Option<Arc<EnrollmentApplier>>,
 }
 
 pub(crate) struct Shared<S> {
@@ -292,15 +295,6 @@ impl<S: TransactionSource + 'static> ServedRings for HubRings<S> {
         }
     }
 
-    async fn tracking_registry(&self, ring: Address) -> Result<Address, RingRpcError> {
-        self.0
-            .source
-            .tracking_root(ring, Finality::Confirmed)
-            .await?
-            .map(|root| root.registry)
-            .ok_or_else(|| RelayError::RingNotServed.into())
-    }
-
     async fn delegate(&self, ring: Address) -> Result<Option<Address>, RingRpcError> {
         Ok(self
             .0
@@ -412,6 +406,7 @@ impl<S: TransactionSource> Hub<S> {
             relay_budget: RelayBudget::default(),
             relay: None,
             merge: None,
+            enrollments: None,
         }
     }
 
@@ -445,6 +440,12 @@ impl<S: TransactionSource> Hub<S> {
         self.writer
             .as_ref()
             .ok_or_else(|| RecordUpdateRefusal::Disabled.into())
+    }
+
+    pub fn enrollment_applier(&self) -> Result<&Arc<EnrollmentApplier>, RingRpcError> {
+        self.enrollments
+            .as_ref()
+            .ok_or_else(|| EnrollmentRefusal::NotServed.into())
     }
 
     /// Signs under the asset record limits, refuses every co-signature without a co-signer key.
@@ -757,6 +758,13 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
+    /// Serves `submitEnrollment` for the applier's rings.
+    #[must_use = "use the updated builder"]
+    pub fn with_enrollment_applier(mut self, applier: Arc<EnrollmentApplier>) -> Self {
+        self.enrollments = Some(applier);
+        self
+    }
+
     #[must_use = "use the updated builder"]
     pub fn with_relay(mut self, relay: RelayParts) -> Self {
         self.relay = Some(relay);
@@ -873,6 +881,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
             signer,
             shared,
             writer,
+            enrollments: self.enrollments,
             co_signer,
             relay,
             merge: self.merge,

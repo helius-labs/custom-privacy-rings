@@ -709,6 +709,8 @@ pub(crate) struct TrackingWrite {
     pub list_tag: [u8; 32],
     #[serde(with = "fe")]
     pub viewing_hash: [u8; 32],
+    #[serde(with = "fe")]
+    pub prior_viewing_hash: [u8; 32],
     pub proven: bool,
     pub present: bool,
     pub index: u64,
@@ -729,6 +731,7 @@ impl From<&TrackingWriteProofInput> for TrackingWrite {
             ct_hash: entry.ct_hash,
             list_tag: entry.list_tag,
             viewing_hash: entry.viewing_hash,
+            prior_viewing_hash: entry.prior_viewing_hash,
             proven: entry.proven,
             present: write.present,
             index: write.slot.index,

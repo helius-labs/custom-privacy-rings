@@ -9,7 +9,6 @@ pub mod method {
     pub struct GetTrackingOpenings;
     pub struct GetTrackingRecords;
     pub struct GetTrackingRecordPool;
-    pub struct GetEnrollmentQueue;
     pub struct GetTrackingApplyProofInputs;
 
     impl RpcMethod for GetTrackingOpenings {
@@ -28,12 +27,6 @@ pub mod method {
         const NAME: &'static str = "getTrackingRecordPool";
         type Request = GetTrackingRecordPoolRequest;
         type Response = GetTrackingRecordPoolResponse;
-    }
-
-    impl RpcMethod for GetEnrollmentQueue {
-        const NAME: &'static str = "getEnrollmentQueue";
-        type Request = GetEnrollmentQueueRequest;
-        type Response = GetEnrollmentQueueResponse;
     }
 
     impl RpcMethod for GetTrackingApplyProofInputs {
@@ -58,7 +51,7 @@ pub struct RingTrackingRecordView {
     pub seal: Option<RingTrackingSealView>,
 }
 
-/// `ciphertext` hashes to the leaf's `ct_hash`, `eph_pk` and `ciphertext` come from the entry that inserted the leaf.
+/// `ciphertext` hashes to the leaf's `ct_hash`, `eph_pk` and `ciphertext` come from the write that inserted the leaf.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RingTrackingSealView {
@@ -157,59 +150,33 @@ pub struct GetTrackingRecordPoolResponse {
     pub subjects: Vec<u32>,
 }
 
-/// Queued entries in sequence order from `head`, past `after` when it is set.
+/// One entry an `ApplyEnrollments` write hashes, `TrackingEntry` field for field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetEnrollmentQueueRequest {
-    /// A `TrackingRegistry` account.
-    pub registry: SerializablePubkey,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after: Option<u64>,
-    pub limit: u64,
-}
-
-/// One successful `Enroll` no apply has consumed, a queued entry grants nothing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct RingQueuedEnrollmentView {
-    pub sequence: u64,
-    pub owner: SerializablePubkey,
+pub struct RingTrackingEntryView {
     pub member: Hash,
-    /// The `Enroll` verified a `RegisterKey` proof, an unproven entry is a viewing key rotation.
-    pub proven: bool,
     pub nullifier_pk: Hash,
+    pub ct_hash: Hash,
     pub list_tag: Hash,
-    /// X25519, 32 bytes.
-    pub viewing_u: Base64String,
-    /// Tagged X25519, 33 bytes.
-    pub eph_pk: Base64String,
-    /// 64 bytes.
-    pub ciphertext: Base64String,
+    pub viewing_hash: Hash,
+    /// The viewing hash a Rotate replaces, zero on an Enroll.
+    pub prior_viewing_hash: Hash,
+    /// An Enroll write, a Rotate is unproven.
+    pub proven: bool,
 }
 
-/// `head` and `tail` agree with the queue account at the context slot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetEnrollmentQueueResponse {
-    pub context: Context,
-    pub head: u64,
-    pub tail: u64,
-    pub entries: Vec<RingQueuedEnrollmentView>,
-}
-
-/// The next `count` queued entries from `head`, as the next `ApplyEnrollments` consumes them.
+/// The writer's entries applied in order from the current root, as its next `ApplyEnrollments` writes them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GetTrackingApplyProofInputsRequest {
     pub registry: SerializablePubkey,
-    pub count: u64,
+    pub entries: Vec<RingTrackingEntryView>,
 }
 
 /// Paths are under the root the preceding writes reached.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RingTrackingWriteView {
-    pub sequence: u64,
     pub member: Hash,
     pub proven: bool,
     /// The owner holds a leaf under the running root, the write moves only its `viewing_hash`.
@@ -218,6 +185,7 @@ pub struct RingTrackingWriteView {
     pub ct_hash: Hash,
     pub list_tag: Hash,
     pub viewing_hash: Hash,
+    pub prior_viewing_hash: Hash,
     /// The append leaf after the low record relinks, leaf 0 unread when nothing inserts.
     pub slot: RingRecordPathView,
     pub low: RingTrackingRecordView,
@@ -236,6 +204,6 @@ pub struct GetTrackingApplyProofInputsResponse {
     pub new_next_index: u64,
     pub chain_start: Hash,
     pub chain_end: Hash,
-    /// In sequence order.
+    /// In request order.
     pub writes: Vec<RingTrackingWriteView>,
 }

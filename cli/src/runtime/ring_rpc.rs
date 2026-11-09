@@ -17,10 +17,10 @@ use zolana_ring_client::{
         GetPendingListApprovalsResponse, GetRecordUpdateStatusRequest, HealthResponse,
         ListApprovalScope, ListSaltAttestation, ListSaltRequest, PendingListApproval, ReadTarget,
         RecordUpdateStatus, RingState, RingStatusRequest, RingStatusResponse,
-        SubmitRecordUpdateRequest, SubmitRecordUpdateResponse, CREATE_AUDITOR_KEY,
-        CREATE_RECORDS_REGISTRY, GET_DECRYPTED_TRANSACTIONS, GET_LIST_SALT,
-        GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS, HEALTH, RING_STATUS,
-        SUBMIT_RECORD_UPDATE,
+        SubmitEnrollmentRequest, SubmitEnrollmentResponse, SubmitRecordUpdateRequest,
+        SubmitRecordUpdateResponse, CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY,
+        GET_DECRYPTED_TRANSACTIONS, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS,
+        GET_RECORD_UPDATE_STATUS, HEALTH, RING_STATUS, SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE,
     },
 };
 
@@ -208,6 +208,12 @@ impl RingRpcClient {
         .sign(writer)?;
         let response: GetListSaltResponse = self.call(GET_LIST_SALT, request)?;
         Ok(response.list_salt.map(|salt| salt.0))
+    }
+
+    /// Held by the ring's enrollment writer on return, its next batch lands it.
+    pub fn submit_enrollment(&self, request: SubmitEnrollmentRequest) -> Result<()> {
+        let _held: SubmitEnrollmentResponse = self.call(SUBMIT_ENROLLMENT, request)?;
+        Ok(())
     }
 
     /// Blocks until the writer applies the update, a refusal fails.

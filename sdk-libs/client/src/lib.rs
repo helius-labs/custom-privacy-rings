@@ -100,8 +100,8 @@ pub use crate::{
         MemberRecovery, RecoveredNotes, RecoveryProgress, RecoveryStep, RingRecovery, SourceMember,
     },
     resolver::{
-        QueuedEnrollment, QueuedEnrollments, RecipientResolver, RegisteredKeys, ResolveError,
-        ResolvedRecipient, TrackingLeaf, TrackingLeafCheck,
+        RecipientResolver, RegisteredKeys, ResolveError, ResolvedRecipient, TrackingLeaf,
+        TrackingLeafCheck,
     },
     scan::{AuditedPage, RingScan, RingScanPage, ScanPage, SkippedRow},
     types::{

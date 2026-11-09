@@ -241,6 +241,7 @@ impl ConfigCreation<'_> {
             policy: policy_key,
             pauser: role_key(RingRole::Pauser)?,
             cosign_admin: role_key(RingRole::CosignAdmin)?,
+            enrollment_writer: role_key(RingRole::EnrollmentWriter)?,
         };
         let kind = match (self.mode, self.policy.is_some()) {
             (ModeName::Confidential, false) => RingKind::AuditOnly,

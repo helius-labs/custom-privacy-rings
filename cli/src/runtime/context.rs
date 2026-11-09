@@ -186,6 +186,10 @@ impl Context {
             RingRole::Admin => (&self.config.admin_keypair, ADMIN_KEYPAIR_FILE),
             RingRole::Pauser => (&self.config.pauser_keypair, PAUSER_KEYPAIR_FILE),
             RingRole::CosignAdmin => (&self.config.cosign_admin_keypair, COSIGN_ADMIN_KEYPAIR_FILE),
+            RingRole::EnrollmentWriter => (
+                &self.config.enrollment_writer_keypair,
+                ENROLLMENT_WRITER_KEYPAIR_FILE,
+            ),
         };
         match configured {
             Some(path) => config::expand_tilde(path),

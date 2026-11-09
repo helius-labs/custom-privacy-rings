@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use custom_ring_interface::{storage::StorageError, STORAGE_PROGRAM_ID};
+use custom_ring_interface::{storage::StorageError, storage_instruction::tag, STORAGE_PROGRAM_ID};
 use futures::{stream, StreamExt};
 use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, TransactionTrait};
 use solana_address::Address;
@@ -18,7 +18,7 @@ use solana_transaction_status_client_types::TransactionDetails;
 use thiserror::Error;
 
 use crate::{
-    block::{BlockInfo, BlockMetadata, Instruction, TransactionInfo},
+    block::{BlockInfo, BlockMetadata, Instruction, InstructionGroup},
     rpc::{RpcError, SolanaRpc},
     storage::{
         self, BlockJournal, BlockUndo, ProjectedAccount, ProjectedStore, RegistryState,
@@ -360,14 +360,25 @@ impl BlockWork<'_> {
         let mut undo = BlockUndo::default();
         let block = self.block;
         for transaction in block.transactions.iter().filter(|tx| tx.error.is_none()) {
-            for instruction in instructions(transaction) {
-                if instruction.program_id != STORAGE_PROGRAM_ID {
-                    continue;
-                }
-                if let Some(decoded) = tracking_registry::decode(instruction) {
-                    self.project(decoded, &mut undo.tracking).await?;
-                } else if let Some(decoded) = storage_registry::decode(instruction) {
-                    self.project(decoded, &mut undo.storage).await?;
+            for group in &transaction.instruction_groups {
+                let group = flattened(group);
+                for (position, instruction) in group.iter().enumerate() {
+                    if instruction.program_id != STORAGE_PROGRAM_ID {
+                        continue;
+                    }
+                    if instruction.data.first() == Some(&tag::EMIT_EVENT) {
+                        let decoded =
+                            applying_parent(&group[..position], instruction).and_then(|parent| {
+                                tracking_registry::decode_event(parent, instruction)
+                            });
+                        if let Some(decoded) = decoded {
+                            self.project(decoded, &mut undo.tracking).await?;
+                        }
+                    } else if let Some(decoded) = tracking_registry::decode(instruction) {
+                        self.project(decoded, &mut undo.tracking).await?;
+                    } else if let Some(decoded) = storage_registry::decode(instruction) {
+                        self.project(decoded, &mut undo.storage).await?;
+                    }
                 }
             }
         }
@@ -423,14 +434,26 @@ impl BlockWork<'_> {
 }
 
 /// Collected, an iterator held across an await leaves the block future not `Send`.
-fn instructions(transaction: &TransactionInfo) -> Vec<&Instruction> {
-    transaction
-        .instruction_groups
-        .iter()
-        .flat_map(|group| {
-            std::iter::once(&group.outer_instruction).chain(group.inner_instructions.iter())
-        })
+fn flattened(group: &InstructionGroup) -> Vec<&Instruction> {
+    std::iter::once(&group.outer_instruction)
+        .chain(group.inner_instructions.iter())
         .collect()
+}
+
+/// The event's direct caller, trusted only as a storage `ApplyEnrollments` the transaction ran.
+fn applying_parent<'a>(
+    earlier: &[&'a Instruction],
+    event: &Instruction,
+) -> Option<&'a Instruction> {
+    let height = |instruction: &Instruction| instruction.stack_height.unwrap_or(1);
+    let parent = *earlier
+        .iter()
+        .rev()
+        .find(|instruction| height(instruction) < height(event))?;
+    (height(parent) + 1 == height(event)
+        && parent.program_id == STORAGE_PROGRAM_ID
+        && parent.data.first() == Some(&tag::APPLY_ENROLLMENTS))
+    .then_some(parent)
 }
 
 pub(crate) struct BlockBatch {

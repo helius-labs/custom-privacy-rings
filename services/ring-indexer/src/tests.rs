@@ -5,7 +5,7 @@ use std::sync::{
 
 use custom_ring_interface::{
     storage::{RegistryId, Revision, StorageRegistry},
-    storage_instruction::{tag, EnrollIxData, InitializeIxData, InitializeTrackingIxData},
+    storage_instruction::{tag, InitializeIxData, InitializeTrackingIxData},
     tracking::TrackingRegistry,
     MEMBER_REGISTRY_EMPTY_ROOT,
 };
@@ -24,8 +24,7 @@ use crate::{
     migration::Migrator,
     rpc::SolanaRpc,
     storage::{
-        self, QueueBounds, QueuedEnrollment, RingCursor, StorageRoot, StorageState, StorageStore,
-        TrackingState, TrackingStore,
+        self, RingCursor, StorageRoot, StorageState, StorageStore, TrackingState, TrackingStore,
     },
     storage_registry::StorageCall,
     tracking_registry::TrackingCall,
@@ -224,9 +223,9 @@ async fn storage_shaped_instructions_of_other_programs_cost_no_queries() {
         tag::INITIALIZE,
         tag::UPDATE,
         tag::UPDATE_AUTHORITY,
-        tag::ENROLL,
         tag::APPLY_ENROLLMENTS,
         tag::INITIALIZE_TRACKING,
+        tag::EMIT_EVENT,
     ];
     let shaped = storage_tags
         .into_iter()
@@ -307,7 +306,10 @@ async fn postgres_migrates_both_ways_and_serves_the_ring_queries() {
         &tracking,
         &TrackingState {
             registry: [12; 32],
-            account: Box::new(TrackingRegistry::new(&creator)),
+            account: Box::new(TrackingRegistry::new(
+                Address::new_from_array([3; 32]),
+                &creator,
+            )),
             fault: None,
         },
     )
@@ -316,24 +318,5 @@ async fn postgres_migrates_both_ways_and_serves_the_ring_queries() {
     assert!(tracking.state().await.unwrap().is_some());
     let low = tracking.tree().low_record(&field(4), 0).await.unwrap();
     assert_eq!(low.index, 0);
-    let queued = QueuedEnrollment {
-        sequence: 0,
-        owner: [1; 32],
-        proven: true,
-        ix: EnrollIxData {
-            nullifier_pk: field(5),
-            list_tag: field(7),
-            viewing_u: field(3),
-            eph_u: [8; 32],
-            ciphertext: [9; 64],
-        },
-    };
-    tracking.enqueue(&queued, 5).await.unwrap();
-    assert_eq!(tracking.queued(0, 8).await.unwrap(), [queued]);
-    tracking.mark_applied(0, 1, 6).await.unwrap();
-    assert_eq!(
-        tracking.queue_bounds().await.unwrap(),
-        QueueBounds { head: 1, tail: 1 }
-    );
     Migrator::reset(&db).await.unwrap();
 }

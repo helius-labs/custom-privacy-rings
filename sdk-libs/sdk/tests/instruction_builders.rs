@@ -2,9 +2,8 @@
 
 use curve25519_dalek::constants::{ED25519_BASEPOINT_POINT, EIGHT_TORSION};
 use custom_ring_interface::{
-    tracking::{EnrollmentQueue, TrackingRegistry},
-    CustomRingMergeIxData, CustomRingMergeIxDataRef, InitializeIxData, PolicyBindingIxData,
-    PolicySourceIxData, RingPolicy, RingRole, RingRoles, SealedMergeRecord,
+    tracking::TrackingRegistry, CustomRingMergeIxData, CustomRingMergeIxDataRef, InitializeIxData,
+    PolicyBindingIxData, PolicySourceIxData, RingPolicy, RingRole, RingRoles, SealedMergeRecord,
     SetCoSignerRecordIxData, SetPausedIxData, SourceSlot, SourceSpec, UpdateAuthorityIxData,
     UpdatePolicyIxData, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, RING_MERGE_OWNER_INDEX,
     STORAGE_PROGRAM_ID,
@@ -109,6 +108,7 @@ fn roles() -> RingRoles {
         policy: Address::new_from_array([22; 32]),
         pauser: Address::new_from_array([23; 32]),
         cosign_admin: Address::new_from_array([24; 32]),
+        enrollment_writer: Address::new_from_array([25; 32]),
     }
 }
 
@@ -138,7 +138,6 @@ fn initialize_runs_under_the_upgrade_authority_and_appends_the_records_only_with
         AccountMeta::new(ring_auth(), false),
         AccountMeta::new_readonly(pda::shielded_pool_program_id(), false),
         AccountMeta::new(tracking_registry, false),
-        AccountMeta::new(EnrollmentQueue::find_address(&tracking_registry).0, false),
         AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),
     ];
     let initialize = |kind, policy| {

@@ -35,9 +35,7 @@ use spr_interface::{
     RING_AUTH_PDA_SEED, SHIELDED_POOL_PROGRAM_ID,
 };
 use spr_keypair::ShieldedAddress;
-use spr_keypair::{
-    random_blinding, NullifierKey, ShieldedKeypair, SigningKey, X25519Keypair, X25519Pubkey,
-};
+use spr_keypair::{random_blinding, NullifierKey, ShieldedKeypair, SigningKey, X25519Keypair};
 use spr_transaction::{utxo::SppProofInputUtxo, Data, Mint, Utxo, WalletUtxo};
 use spr_tree::{TreeAccount, TreeFeeSchedule, UTXO_TREE_HEIGHT};
 use zolana_ring_client::{
@@ -50,9 +48,8 @@ use zolana_ring_indexer::{
         RingMemberOpening, RingMemberRecordView, RingRecordPathView, StorageRootView,
     },
     tracking::{
-        GetEnrollmentQueueRequest, GetEnrollmentQueueResponse, GetTrackingOpeningsRequest,
-        GetTrackingOpeningsResponse, GetTrackingRecordPoolRequest, GetTrackingRecordPoolResponse,
-        RingIndexedTrackingRecordView, RingQueuedEnrollmentView, RingTrackingOpening,
+        GetTrackingOpeningsRequest, GetTrackingOpeningsResponse, GetTrackingRecordPoolRequest,
+        GetTrackingRecordPoolResponse, RingIndexedTrackingRecordView, RingTrackingOpening,
         RingTrackingRecordView, RingTrackingSealView,
     },
 };
@@ -258,6 +255,7 @@ impl RingSettings {
                 policy: Address::new_from_array([0xa2; 32]),
                 pauser: Address::new_from_array([0xa3; 32]),
                 cosign_admin: Address::new_from_array([0xa4; 32]),
+                enrollment_writer: Address::new_from_array([0xa5; 32]),
             },
             auditor_pubkey: *auditor().pubkey().as_bytes(),
             created_slot: self.created_slot,
@@ -303,8 +301,6 @@ pub(crate) struct Chain {
     /// The ring of every record opening or pool request.
     pub record_requests: Arc<Mutex<Vec<SerializablePubkey>>>,
     tracking: Option<Arc<TrackingFixture>>,
-    /// Successful `Enroll` instructions no apply consumed, in sequence order.
-    queue: Arc<Vec<RingQueuedEnrollmentView>>,
 }
 
 impl Chain {
@@ -436,14 +432,6 @@ impl Chain {
     /// `leaves` alone hold tracking rows, each served beside its seal.
     pub(crate) fn with_tracking_leaves(self, leaves: &[ServedLeaf]) -> Self {
         self.with_tracking_fixture(Arc::new(TrackingFixture::new(leaves)))
-    }
-
-    /// The queue the indexer serves, sequences from zero.
-    pub(crate) fn with_queued(self, entries: Vec<RingQueuedEnrollmentView>) -> Self {
-        Self {
-            queue: Arc::new(entries),
-            ..self
-        }
     }
 
     /// The tree and a registry account holding its root as the newest.
@@ -674,29 +662,6 @@ impl AsyncRingIndexer for Chain {
                 .collect(),
         })
     }
-
-    async fn get_enrollment_queue(
-        &self,
-        request: GetEnrollmentQueueRequest,
-    ) -> Result<GetEnrollmentQueueResponse, RingIndexerError> {
-        assert_eq!(request.registry.0, TRACKING);
-        let after = request.after.map_or(0, |after| after + 1);
-        Ok(GetEnrollmentQueueResponse {
-            context: spr_indexer_api::Context {
-                block_time: 0,
-                slot: SLOT,
-            },
-            head: 0,
-            tail: self.queue.len() as u64,
-            entries: self
-                .queue
-                .iter()
-                .filter(|entry| entry.sequence >= after)
-                .take(request.limit as usize)
-                .cloned()
-                .collect(),
-        })
-    }
 }
 
 impl Chain {
@@ -771,26 +736,6 @@ impl ServedLeaf {
     }
 }
 
-/// The view of one successful `Enroll` at `sequence`.
-pub(crate) fn queued(
-    sequence: u64,
-    owner: Address,
-    ix: &EnrollIxData,
-    proven: bool,
-) -> RingQueuedEnrollmentView {
-    RingQueuedEnrollmentView {
-        sequence,
-        owner: owner.into(),
-        member: Hash(solana_owner_identity(owner.as_array()).unwrap()),
-        proven,
-        nullifier_pk: Hash(ix.nullifier_pk),
-        list_tag: Hash(ix.list_tag),
-        viewing_u: Base64String(ix.viewing_u.to_vec()),
-        eph_pk: Base64String(X25519Pubkey::from_u(ix.eph_u).unwrap().as_bytes().to_vec()),
-        ciphertext: Base64String(ix.ciphertext.to_vec()),
-    }
-}
-
 struct TrackingFixture {
     tree: TrackingTree,
     leaves: HashMap<[u8; 32], ServedLeaf>,
@@ -845,10 +790,13 @@ impl TrackingFixture {
     }
 
     fn account(&self) -> Account {
-        let mut registry = TrackingRegistry::new(&InitializeTrackingIxData {
-            ring_id: ring().ring_id().unwrap(),
-            auditor_pubkey: *auditor().pubkey().as_bytes(),
-        });
+        let mut registry = TrackingRegistry::new(
+            ring().ring_auth_pda(),
+            &InitializeTrackingIxData {
+                ring_id: ring().ring_id().unwrap(),
+                auditor_pubkey: *auditor().pubkey().as_bytes(),
+            },
+        );
         registry.roots[0].hash = self.tree.root().unwrap();
         registry.roots[0].revision = Revision::from(REVISION);
         account(STORAGE_PROGRAM_ID, &registry)

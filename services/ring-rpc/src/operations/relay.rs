@@ -1,7 +1,6 @@
 use std::{collections::HashSet, future::Future, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use custom_ring_interface::storage_instruction;
 use custom_ring_sdk::{FitError, FitSigners, RingError, SealRow, TransactionFit};
 use jsonrpsee::types::ErrorObjectOwned;
 use log::warn;
@@ -20,16 +19,16 @@ use spl_token_2022_interface::{
     extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions},
     state::{Account, Mint},
 };
-use spr_client::{compile_message, ComputeBudgetConfig};
+use spr_client::compile_message;
 use spr_instruction::instruction::CreateAssociatedTokenAccount;
 use spr_interface::{SPL_TOKEN_ACCOUNT_LEN, SPL_TOKEN_PROGRAM_ID};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
 use zolana_ring_client::rpc::{
-    GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, RelayEnrollInputs, RelayId,
-    RelayIntent, RelayMergeInputs, RelayProofInputs, RelayProofInputsError, RelayQuote, RelayRail,
-    RelayStatus, RelayStep, SubmitRelayRequest, TokenAccountSetupError, ENROLL_COMPUTE_UNITS,
+    GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, RelayId, RelayIntent,
+    RelayMergeInputs, RelayProofInputs, RelayProofInputsError, RelayQuote, RelayRail, RelayStatus,
+    RelayStep, SubmitRelayRequest, TokenAccountSetupError,
 };
 use zolana_ring_transaction::ClassifiedInput;
 
@@ -41,7 +40,7 @@ use crate::{
     },
     database::Store,
     error::{redacted, RingRpcError},
-    landing::{Attempt, ChainOutcome, ChainSubmit, Landing, LatestBlockhash, Simulation},
+    landing::{Attempt, ChainOutcome, ChainSubmit, Landing, LatestBlockhash},
     merge_inputs::{HoldInputs, MergeInputs},
     relay_prover::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver},
     relay_reservations::{
@@ -104,14 +103,10 @@ pub enum RelayError {
     TokenAccountSetup(#[from] TokenAccountSetupError),
     #[error("the depositor is the relay fee payer")]
     DepositorIsFeePayer,
-    #[error("the enrollment is no tag 6 of a ring's tracking registry under its own owner")]
-    InvalidEnrollment,
     #[error("the relay budget has no room for the request")]
     Budget,
     #[error("the signer holds its whole share of the relay budget")]
     SignerBudget,
-    #[error("the enrollment request does not carry the owner's signature")]
-    EnrollmentSignature,
     #[error("the request does not carry the ring delegate's signature")]
     DelegateSignature,
     #[error("the relay spent the allowance the request holds")]
@@ -120,15 +115,11 @@ pub enum RelayError {
     LiveAttempt,
     #[error("the request does not carry the depositor's signature")]
     DepositorSignature,
-    #[error("the relay budget is unset, the operator funds no enrollment or token account")]
+    #[error("the relay budget is unset, the operator funds no token account")]
     BudgetUnset,
     /// One code per row, a client reads the row from the code alone.
     #[error("the sealed auditor stream does not open under the key the records select, seal under the {row:?} row and sign again")]
     Reseal { row: SealRow },
-    #[error("the RegisterKey proof does not verify for the enrolled key")]
-    RegisterKeyProof,
-    #[error("the chain simulation refuses the enrollment before any signature because {reason}")]
-    EnrollmentRefused { reason: String },
     #[error("the message does not fit one v1 transaction because {reason}")]
     Oversized { reason: String },
 }
@@ -138,16 +129,12 @@ pub enum RelayPayload {
     /// A transfer frame of only dummies on the deposit rail.
     Deposit(RelayProofInputs),
     Merge(RelayMergeInputs),
-    Enroll(RelayEnrollInputs),
 }
 
 /// Admits a ring only while its config names an auditor key the service holds.
 #[async_trait]
 pub trait ServedRings: Send + Sync {
     async fn check(&self, ring: Address) -> Result<(), RingRpcError>;
-
-    /// The tracking registry the ring pins, the relay pays for no other enrollment.
-    async fn tracking_registry(&self, ring: Address) -> Result<Address, RingRpcError>;
 
     async fn delegate(&self, ring: Address) -> Result<Option<Address>, RingRpcError>;
 }
@@ -253,10 +240,8 @@ impl RelayError {
             Self::SendRefused { .. } => -32113,
             Self::TokenAccountSetup(_) => -32200,
             Self::DepositorIsFeePayer => -32201,
-            Self::InvalidEnrollment => -32202,
             Self::Budget => -32203,
             Self::SignerBudget => -32204,
-            Self::EnrollmentSignature => -32205,
             Self::DelegateSignature => -32206,
             Self::Allowance => -32207,
             Self::LiveAttempt => -32208,
@@ -266,8 +251,6 @@ impl RelayError {
                 row: SealRow::Narrow,
             } => -32211,
             Self::Reseal { row: SealRow::Wide } => -32212,
-            Self::RegisterKeyProof => -32214,
-            Self::EnrollmentRefused { .. } => -32215,
             Self::Oversized { .. } => -32216,
         }
     }
@@ -304,10 +287,6 @@ impl ServedRings for NoRings {
     async fn check(&self, _ring: Address) -> Result<(), RingRpcError> {
         Err(RelayError::RingNotServed.into())
     }
-
-    async fn tracking_registry(&self, _ring: Address) -> Result<Address, RingRpcError> {
-        Err(RelayError::RingNotServed.into())
-    }
 }
 
 impl Relay {
@@ -324,7 +303,7 @@ impl Relay {
         }
     }
 
-    /// Without it the relay funds no enrollment and no token account.
+    /// Without it the relay funds no token account.
     #[must_use = "use the updated relay"]
     pub const fn with_budget(mut self, budget: RelayBudget) -> Self {
         self.budget = budget;
@@ -377,14 +356,6 @@ impl Relay {
         let ring = request.ring.0;
         self.rings.check(ring).await?;
         let payload = RelayPayload::decode(&request.intent).map_err(RelayError::from)?;
-        if let RelayPayload::Enroll(enrollment) = &payload {
-            // Every enrollment spends the operator's lamports, a disabled budget refuses before the
-            // admission and the proof check.
-            self.require_budget()?;
-            if enrollment.tracking_registry != self.rings.tracking_registry(ring).await? {
-                return Err(RelayError::InvalidEnrollment.into());
-            }
-        }
         if let RelayPayload::Transfer(RelayProofInputs {
             rail: RelayRail::Delegate { delegate, .. },
             ..
@@ -421,28 +392,19 @@ impl Relay {
         };
         let lease = claim.as_ref().map(|claim| claim.lease);
         let staged = async {
-            let proven = match &payload {
-                // The wallet proved its seal, the relay only pays.
-                RelayPayload::Enroll(enrollment) => {
-                    self.prover.check_enrollment(enrollment).await?;
-                    let proven = enrollment_step(enrollment);
-                    self.preflight(&proven).await?;
-                    proven
-                }
-                _ => {
-                    let _proof = self
-                        .proofs
-                        .try_acquire()
-                        .map_err(|_| RingRpcError::RelayProverBusy)?;
-                    self.prover
-                        .prove(RelayProofRequest {
-                            ring,
-                            parties: parties.clone(),
-                            payload: &payload,
-                            owner_signature,
-                        })
-                        .await?
-                }
+            let proven = {
+                let _proof = self
+                    .proofs
+                    .try_acquire()
+                    .map_err(|_| RingRpcError::RelayProverBusy)?;
+                self.prover
+                    .prove(RelayProofRequest {
+                        ring,
+                        parties: parties.clone(),
+                        payload: &payload,
+                        owner_signature,
+                    })
+                    .await?
             };
             self.stage(ProvenStep {
                 relay_id,
@@ -627,13 +589,9 @@ impl Relay {
             mut instructions,
             rent: setup_rent,
         } = self.missing_setup(&setup).await?;
-        // `Enroll` creates no account, an enrollment reserves no rent.
-        let created_rent = matches!(payload, RelayPayload::Enroll(_)).then_some(0);
-        let landing_rent = match created_rent {
-            Some(created) => Some(setup_rent.saturating_add(created)),
-            None => (setup_rent > 0).then_some(setup_rent),
-        }
-        .map(|rent| rent.saturating_add(proven.tree_fees));
+        let landing_rent = (setup_rent > 0)
+            .then_some(setup_rent)
+            .map(|rent| rent.saturating_add(proven.tree_fees));
         self.reserve(RelaySpend {
             proven: &proven,
             lease,
@@ -793,22 +751,6 @@ impl Relay {
         })
         .await?;
         Ok(())
-    }
-
-    /// SPP verifies the creation proof only on chain, a simulation refuses a bad one before any
-    /// signature or charge.
-    async fn preflight(&self, proven: &ProvenRelay) -> Result<(), RingRpcError> {
-        let LatestBlockhash { blockhash, .. } = self.chain.latest_blockhash().await?;
-        let message = compile_message(
-            &self.fee_payer(),
-            core::slice::from_ref(&proven.instruction),
-            blockhash,
-            proven.budget,
-        )?;
-        match self.chain.simulate(&message).await? {
-            Simulation::Passed => Ok(()),
-            Simulation::Refused { reason } => Err(RelayError::EnrollmentRefused { reason }.into()),
-        }
     }
 
     /// Only a missing account takes a create, the row reserves its rent alone.
@@ -1611,25 +1553,6 @@ impl PrepareCheck<'_> {
                     ..unsigned
                 });
             }
-            RelayPayload::Enroll(enrollment) => {
-                check_enrollment(enrollment, fee_payer)?;
-                let RelayIntent::Enroll {
-                    owner_signature, ..
-                } = &request.intent
-                else {
-                    return Err(RelayError::EnrollmentSignature.into());
-                };
-                if !owner_signature
-                    .0
-                    .verify(enrollment.owner.as_ref(), &enrollment.request_digest())
-                {
-                    return Err(RelayError::EnrollmentSignature.into());
-                }
-                return Ok(Checked {
-                    signer: Some(enrollment.owner),
-                    ..unsigned
-                });
-            }
         };
         if proof_inputs.rail.operation() != request.intent.operation() {
             return Err(RelayError::RailMismatch.into());
@@ -1645,9 +1568,9 @@ impl PrepareCheck<'_> {
                 owner_signature, ..
             } => Some(<[u8; 64]>::from(owner_signature.0)),
             RelayIntent::Delegate { .. } => None,
-            RelayIntent::Deposit { .. }
-            | RelayIntent::Merge { .. }
-            | RelayIntent::Enroll { .. } => return Ok(Checked { setup, ..unsigned }),
+            RelayIntent::Deposit { .. } | RelayIntent::Merge { .. } => {
+                return Ok(Checked { setup, ..unsigned })
+            }
         };
         let digest = proof_inputs
             .spp_proof_inputs(fee_payer)
@@ -1699,7 +1622,6 @@ impl RelayPayload {
         Ok(match intent {
             RelayIntent::Deposit { .. } => Self::Deposit(RelayProofInputs::decode(bytes)?),
             RelayIntent::Merge { .. } => Self::Merge(RelayMergeInputs::decode(bytes)?),
-            RelayIntent::Enroll { .. } => Self::Enroll(RelayEnrollInputs::decode(bytes)?),
             RelayIntent::Anonymous { .. }
             | RelayIntent::Confidential { .. }
             | RelayIntent::Delegate { .. } => Self::Transfer(RelayProofInputs::decode(bytes)?),
@@ -1711,7 +1633,6 @@ impl RelayPayload {
             Self::Transfer(inputs) => inputs.ring_program_id,
             Self::Deposit(inputs) => inputs.ring_program_id,
             Self::Merge(inputs) => inputs.ring_program_id,
-            Self::Enroll(inputs) => inputs.ring_program_id,
         }
     }
 
@@ -1726,7 +1647,7 @@ impl RelayPayload {
                 )
                 .map_err(|error| RelayError::Proof(error.to_string()))?,
             ),
-            Self::Merge(_) | Self::Enroll(_) => CoSignFlows::Published(Vec::new()),
+            Self::Merge(_) => CoSignFlows::Published(Vec::new()),
         })
     }
 }
@@ -1786,27 +1707,6 @@ fn delegate_key(relay_id: &RelayId) -> [u8; 32] {
         .chain_update(relay_id.0 .0)
         .finalize()
         .into()
-}
-
-/// The relay pays the fee of the owner's own `Enroll` alone, and of no other storage instruction.
-fn check_enrollment(enrollment: &RelayEnrollInputs, fee_payer: Address) -> Result<(), RelayError> {
-    let refused = enrollment.owner == fee_payer
-        || enrollment.instruction_data.first() != Some(&storage_instruction::tag::ENROLL)
-        || enrollment.instruction_data.len() > solana_message::v1::MAX_TRANSACTION_SIZE;
-    match refused {
-        true => Err(RelayError::InvalidEnrollment),
-        false => Ok(()),
-    }
-}
-
-fn enrollment_step(enrollment: &RelayEnrollInputs) -> ProvenRelay {
-    ProvenRelay {
-        instruction: enrollment.instruction(),
-        budget: ComputeBudgetConfig::new(ENROLL_COMPUTE_UNITS),
-        co_signers: Vec::new(),
-        signers: vec![enrollment.owner],
-        tree_fees: 0,
-    }
 }
 
 fn refused_fit(error: FitError) -> RingRpcError {
@@ -1872,6 +1772,7 @@ fn relay_status(state: &RelayState) -> RelayStatus {
 #[cfg(test)]
 mod tests {
     use solana_instruction::AccountMeta;
+    use spr_client::ComputeBudgetConfig;
 
     use super::*;
 
@@ -1885,17 +1786,6 @@ mod tests {
         assert_eq!(code(SealRow::Wide), -32212);
         let other = RelayError::proof(RingError::RelayAuditorMessage);
         assert!(matches!(other, RingRpcError::Relay(RelayError::Proof(_))));
-    }
-
-    #[test]
-    fn enrollment_refusal_codes_are_stable() {
-        let refused = RelayError::EnrollmentRefused {
-            reason: String::new(),
-        };
-        assert_eq!(
-            [RelayError::RegisterKeyProof.code(), refused.code()],
-            [-32214, -32215]
-        );
     }
 
     #[test]

@@ -1,7 +1,6 @@
 use anyhow::Result;
 use custom_ring_interface::storage_instruction::EnrollIxData;
-use custom_ring_sdk::{CustomRing, Enroll, EnrollPending, EnrollmentRead};
-use solana_signature::Signature;
+use custom_ring_sdk::{CustomRing, Enroll, EnrollmentRead};
 use solana_signer::Signer;
 use spr_client::{BlockingIndexer, BlockingRpc};
 use spr_keypair::ShieldedKeypair;
@@ -9,7 +8,7 @@ use spr_transaction::ShieldedKeys;
 use zolana_ring_client::{RegisteredKeys, RingIndexer};
 use zolana_ring_keys::ListSaltHolder;
 
-use crate::{line, patiently, wait_for, Context, KeyCommand, Probe, Zolana};
+use crate::{line, wait_for, Context, KeyCommand, Probe, Zolana};
 
 const SEAL_PROMPT: &str = "seal the member key to the ring auditor and enroll it?";
 
@@ -28,7 +27,6 @@ pub(crate) struct KeyEnrollment<'a> {
 pub fn key(ctx: &Context, command: KeyCommand) -> Result<()> {
     match command {
         KeyCommand::Register => register_key(ctx),
-        KeyCommand::Apply => apply(ctx),
         KeyCommand::Rotate => crate::viewing_keys::rotate(ctx),
     }
 }
@@ -60,13 +58,10 @@ impl KeyEnrollment<'_> {
             };
             line("member key", format_args!("{} {outcome}", member.pubkey()));
         }
-        // The indexer can serve a registration after an apply read the queue.
+        // The writer lands held enrollments in its next batch.
         wait_for("every member key applied", || {
             for member in self.members {
                 if !applied(ctx.ring, &ctx.zolana, member)? {
-                    if let Some(signature) = apply_pending(ctx)? {
-                        line("enrollments", signature);
-                    }
                     return Ok(Probe::NotYet);
                 }
             }
@@ -75,30 +70,10 @@ impl KeyEnrollment<'_> {
     }
 }
 
-fn apply(ctx: &Context) -> Result<()> {
-    match apply_pending(ctx)? {
-        Some(signature) => line("enrollments", signature),
-        None => line("enrollments", "none pending"),
-    }
-    Ok(())
-}
-
-fn apply_pending(ctx: &Context) -> Result<Option<Signature>> {
-    let pending = patiently("the pending enrollments", || {
-        ctx.block(EnrollPending { ring: ctx.ring }.prove(ctx.ring_client()))
-    })?;
-    let Some(instruction) = pending else {
-        return Ok(None);
-    };
-    Ok(Some(ctx.send(&[ctx.funded_authority()?], &[instruction])?))
-}
-
 fn register(ctx: &Context, member: &ShieldedKeypair) -> Result<()> {
-    let payer = ctx.funded_authority()?;
-    let instruction = ctx.block(
+    let enrollment = ctx.block(
         Enroll {
             ring: ctx.ring,
-            payer: payer.pubkey(),
             owner: member.pubkey(),
             nullifier_key: &member.nullifier_key,
             viewing_pubkey: ctx.ring_keys(member)?.address()?.viewing_pubkey,
@@ -106,7 +81,7 @@ fn register(ctx: &Context, member: &ShieldedKeypair) -> Result<()> {
         }
         .prove(ctx.ring_client()),
     )?;
-    ctx.send(&[payer, member], &[instruction.instruction()])?;
+    ctx.ring_rpc().submit_enrollment(enrollment.sign(member)?)?;
     Ok(())
 }
 
@@ -118,7 +93,7 @@ fn plan(registered: bool, confirm: impl FnOnce() -> Result<bool>) -> Result<Plan
     })
 }
 
-/// The first key is final, a leaf or a queued first enrollment holds it.
+/// The first key is final, the member's leaf holds it.
 fn registered<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
     ring: CustomRing,
     zolana: &Zolana<R, I>,
@@ -147,7 +122,7 @@ pub(crate) fn applied<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
     })
 }
 
-/// The member's fields once the queue applies, `None` when it never enrolled.
+/// The member's leaf fields, `None` until the writer lands its enrollment.
 pub(crate) fn enrollment<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
     ring: CustomRing,
     zolana: &Zolana<R, I>,

@@ -1,34 +1,34 @@
 use std::ops::Range;
 
 use custom_ring_interface::{
+    check_member,
     storage_instruction::ApplyEnrollmentsIxData,
     tagged_x25519,
-    tracking::{tracking_chain_start, EnrollmentQueue, TrackingRegistry},
+    tracking::{owner_member, tracking_chain_start, TrackingEntry, TrackingRegistry},
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use solana_address::Address;
 use spr_hasher::primitives::hash_bytes;
-use spr_indexer_api::{Base64String, Context as ApiContext, Hash};
+use spr_indexer_api::{Base64String, Hash};
 use zolana_ring_indexer::{
     tracking::{
-        GetEnrollmentQueueRequest, GetEnrollmentQueueResponse, GetTrackingApplyProofInputsRequest,
-        GetTrackingApplyProofInputsResponse, GetTrackingOpeningsRequest,
-        GetTrackingOpeningsResponse, GetTrackingRecordPoolRequest, GetTrackingRecordPoolResponse,
-        GetTrackingRecordsRequest, GetTrackingRecordsResponse, RingIndexedTrackingRecordView,
-        RingQueuedEnrollmentView, RingTrackingOpening, RingTrackingRecordView,
-        RingTrackingSealView, RingTrackingWriteView,
+        GetTrackingApplyProofInputsRequest, GetTrackingApplyProofInputsResponse,
+        GetTrackingOpeningsRequest, GetTrackingOpeningsResponse, GetTrackingRecordPoolRequest,
+        GetTrackingRecordPoolResponse, GetTrackingRecordsRequest, GetTrackingRecordsResponse,
+        RingIndexedTrackingRecordView, RingTrackingEntryView, RingTrackingOpening,
+        RingTrackingRecordView, RingTrackingSealView, RingTrackingWriteView,
     },
     tree::{Canopy, TrackingRecord, TrackingWriteProofInput},
 };
 
 use super::{
     check_members, check_openings, check_page_limit, internal, path_view, storage_root_view,
-    validation, ChainSource, LeafPage, OpenedLeaf, Released, Served, Snapshot,
+    validation, ChainSource, LeafPage, OpenedLeaf, Served, Snapshot,
 };
 use crate::{
     error::RingApiError,
     member_registry::{LoadedRegistry, TreeRead},
-    storage::{QueueBounds, QueuedEnrollment, RegistryState, StorageRoot, TrackingStore},
+    storage::{RegistryState, StorageRoot, TrackingStore},
 };
 
 type TrackingSnapshot = Snapshot<RegistryState<TrackingRegistry>>;
@@ -131,51 +131,22 @@ pub(crate) async fn tracking_record_pool(
     })
 }
 
-/// Unverified entries in sequence order, a queued entry grants nothing.
-pub(crate) async fn enrollment_queue(
-    db: &DatabaseConnection,
-    chain: &impl ChainSource,
-    request: GetEnrollmentQueueRequest,
-) -> Result<GetEnrollmentQueueResponse, RingApiError> {
-    check_page_limit(request.limit)?;
-    let snapshot = TrackingSnapshot::registry(db, &request.registry).await?;
-    let store = snapshot.store();
-    let bounds = store.queue_bounds().await.map_err(internal)?;
-    let from = request.after.map_or(bounds.head, |after| {
-        after.saturating_add(1).max(bounds.head)
-    });
-    let rows = store.queued(from, request.limit).await.map_err(internal)?;
-    let context = snapshot.confirm_queue(chain, bounds).await?;
-    Ok(GetEnrollmentQueueResponse {
-        context,
-        head: bounds.head,
-        tail: bounds.tail,
-        entries: rows.iter().map(queued_view).collect::<Result<_, _>>()?,
-    })
-}
-
-/// The next `count` entries from `head` apply from the current root, as the next `ApplyEnrollments` consumes them.
+/// The writer's entries apply in request order from the current root, as its next `ApplyEnrollments` writes them.
 pub(crate) async fn tracking_apply_proof_inputs(
     db: &DatabaseConnection,
     chain: &impl ChainSource,
     request: GetTrackingApplyProofInputsRequest,
 ) -> Result<GetTrackingApplyProofInputsResponse, RingApiError> {
-    let count = u8::try_from(request.count).map_err(validation)?;
+    let count = u8::try_from(request.entries.len()).map_err(validation)?;
     ApplyEnrollmentsIxData::check_count(count).map_err(validation)?;
-    let count = usize::from(count);
+    let entries = request
+        .entries
+        .iter()
+        .map(entry_of)
+        .collect::<Result<Vec<_>, _>>()?;
     let snapshot = TrackingSnapshot::registry(db, &request.registry).await?;
     let root = StorageRoot::current(&*snapshot.state.account);
     let store = snapshot.store();
-    let head = store.queue_bounds().await.map_err(internal)?.head;
-    let rows = store.queued(head, request.count).await.map_err(internal)?;
-    if rows.len() != count {
-        return Err(validation("the queue holds fewer entries"));
-    }
-    let entries = rows
-        .iter()
-        .map(QueuedEnrollment::entry)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(internal)?;
     let chain_start =
         tracking_chain_start(&request.registry.0, root.revision.into()).map_err(internal)?;
     let loaded: LoadedTracking = TreeRead::batch(root.tree(), &entries)
@@ -185,7 +156,7 @@ pub(crate) async fn tracking_apply_proof_inputs(
     let inputs = loaded
         .tree
         .apply_batch(chain_start, &entries)
-        .map_err(internal)?
+        .map_err(validation)?
         .inputs;
     if inputs.old_root != root.root {
         return Err(internal("the loaded tree does not reach the current root"));
@@ -200,32 +171,8 @@ pub(crate) async fn tracking_apply_proof_inputs(
         new_next_index: inputs.new_next_index,
         chain_start: Hash(inputs.chain_start),
         chain_end: Hash(inputs.chain_end),
-        writes: rows
-            .iter()
-            .zip(&inputs.writes)
-            .map(|(row, write)| write_view(row.sequence, write))
-            .collect(),
+        writes: inputs.writes.iter().map(write_view).collect(),
     })
-}
-
-impl TrackingSnapshot {
-    /// The queue account at the tip holds the bounds the read served.
-    async fn confirm_queue(
-        self,
-        chain: &impl ChainSource,
-        bounds: QueueBounds,
-    ) -> Result<ApiContext, RingApiError> {
-        let Released { tip, state } = self.release().await?;
-        let (queue, _) = EnrollmentQueue::find_address(&Address::new_from_array(state.registry));
-        let confirmation = chain
-            .confirmation::<EnrollmentQueue>(&tip, &queue.to_bytes())
-            .await?;
-        let held = &*confirmation.chain;
-        if held.head() != bounds.head || held.tail() != bounds.tail {
-            return Err(RingApiError::RootChanged);
-        }
-        Ok(confirmation.context)
-    }
 }
 
 async fn indexed_views<C: ConnectionTrait>(
@@ -257,24 +204,20 @@ async fn sealed_view<C: ConnectionTrait>(
         .await
         .map_err(internal)?
         .ok_or_else(|| internal("a tracking leaf has no viewing key"))?;
-    if hash_bytes(&key.viewing_u).map_err(internal)? != record.viewing_hash {
-        return Err(internal("a stored viewing key disagrees with its leaf"));
-    }
-    let inserted = store
-        .queued_at(key.sequence)
-        .await
-        .map_err(internal)?
-        .ok_or_else(|| internal("a tracking leaf has no inserting entry"))?;
-    let entry = inserted.entry().map_err(internal)?;
-    if !inserted.proven || entry.member != record.member || entry.ct_hash != record.ct_hash {
-        return Err(internal("a stored seal disagrees with its leaf"));
+    let seal = &key.seal;
+    let owner = Address::new_from_array(seal.owner);
+    if hash_bytes(&key.viewing_u).map_err(internal)? != record.viewing_hash
+        || hash_bytes(&seal.ciphertext).map_err(internal)? != record.ct_hash
+        || owner_member(&owner).map_err(internal)? != record.member
+    {
+        return Err(internal("a stored key or seal disagrees with its leaf"));
     }
     Ok(RingTrackingRecordView {
         seal: Some(RingTrackingSealView {
-            owner: Address::new_from_array(inserted.owner).into(),
+            owner: owner.into(),
             viewing_u: Base64String(key.viewing_u.to_vec()),
-            eph_pk: Base64String(tagged_x25519(&inserted.ix.eph_u).to_vec()),
-            ciphertext: Base64String(inserted.ix.ciphertext.to_vec()),
+            eph_pk: Base64String(tagged_x25519(&seal.eph_u).to_vec()),
+            ciphertext: Base64String(seal.ciphertext.to_vec()),
         }),
         ..record_view(record)
     })
@@ -292,10 +235,9 @@ fn record_view(record: &TrackingRecord) -> RingTrackingRecordView {
     }
 }
 
-fn write_view(sequence: u64, write: &TrackingWriteProofInput) -> RingTrackingWriteView {
+fn write_view(write: &TrackingWriteProofInput) -> RingTrackingWriteView {
     let entry = &write.entry;
     RingTrackingWriteView {
-        sequence,
         member: Hash(entry.member),
         proven: entry.proven,
         present: write.present,
@@ -303,23 +245,22 @@ fn write_view(sequence: u64, write: &TrackingWriteProofInput) -> RingTrackingWri
         ct_hash: Hash(entry.ct_hash),
         list_tag: Hash(entry.list_tag),
         viewing_hash: Hash(entry.viewing_hash),
+        prior_viewing_hash: Hash(entry.prior_viewing_hash),
         slot: path_view(write.slot.index, &write.slot.siblings),
         low: record_view(&write.low),
         low_path: path_view(write.low_path.index, &write.low_path.siblings),
     }
 }
 
-fn queued_view(row: &QueuedEnrollment) -> Result<RingQueuedEnrollmentView, RingApiError> {
-    let ix = &row.ix;
-    Ok(RingQueuedEnrollmentView {
-        sequence: row.sequence,
-        owner: Address::new_from_array(row.owner).into(),
-        member: Hash(row.entry().map_err(internal)?.member),
-        proven: row.proven,
-        nullifier_pk: Hash(ix.nullifier_pk),
-        list_tag: Hash(ix.list_tag),
-        viewing_u: Base64String(ix.viewing_u.to_vec()),
-        eph_pk: Base64String(tagged_x25519(&ix.eph_u).to_vec()),
-        ciphertext: Base64String(ix.ciphertext.to_vec()),
+fn entry_of(view: &RingTrackingEntryView) -> Result<TrackingEntry, RingApiError> {
+    check_member(&view.member.0).map_err(validation)?;
+    Ok(TrackingEntry {
+        member: view.member.0,
+        nullifier_pk: view.nullifier_pk.0,
+        ct_hash: view.ct_hash.0,
+        list_tag: view.list_tag.0,
+        viewing_hash: view.viewing_hash.0,
+        prior_viewing_hash: view.prior_viewing_hash.0,
+        proven: view.proven,
     })
 }

@@ -1,5 +1,5 @@
 use std::sync::{
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
     Mutex,
 };
 
@@ -7,45 +7,46 @@ use async_trait::async_trait;
 use bytemuck::Zeroable;
 use custom_ring_interface::{
     storage::{Revision, StorageRegistry},
-    storage_instruction::tag,
-    ApplyRecordsIxData, RING_POLICY, STORAGE_PROGRAM_ID,
+    storage_instruction::EnrollIxData,
+    ApplyRecordsIxData, CustomRingProof, RING_POLICY, STORAGE_PROGRAM_ID,
 };
+use custom_ring_sdk::{OwnedChange, OwnerEnrollment};
 use solana_account::Account;
-use solana_instruction::{AccountMeta, Instruction};
+use solana_instruction::Instruction;
 use solana_message::VersionedMessage;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
-use tokio::sync::Notify;
+use spr_keypair::X25519Keypair;
+use zolana_ring_client::{SealedNullifierKey, TrackingLeaf};
 use zolana_ring_indexer::rpc::{
     GetStorageApplyProofInputsRequest, GetStorageApplyProofInputsResponse,
     GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
 };
-use zolana_ring_member_registry::ApplyProofInputs;
+use zolana_ring_member_registry::{ApplyProofInputs, TrackingRecord};
 
 use super::*;
 use crate::{
-    landing::{ChainOutcome, ChainSubmit, LatestBlockhash, Simulation},
+    landing::{ChainSubmit, LatestBlockhash, Simulation},
     upstream::RingConfiguration,
 };
 
 const RING: Address = Address::new_from_array([1; 32]);
 const REGISTRY: Address = Address::new_from_array([2; 32]);
-const OTHER_RING: Address = Address::new_from_array([11; 32]);
-const OTHER_REGISTRY: Address = Address::new_from_array([12; 32]);
+const UNINITIALIZED_RING: Address = Address::new_from_array([11; 32]);
 const SLOT: u64 = 1_000;
 
 #[derive(Default)]
 struct StubChain {
-    slot: AtomicU64,
+    slot: std::sync::atomic::AtomicU64,
     accounts: Mutex<HashMap<Address, Account>>,
     proofs: AtomicUsize,
-    /// Each proof's registry and entry count.
-    proved: Mutex<Vec<(Address, u64)>>,
+    /// Each proof's registry and write count.
+    proved: Mutex<Vec<(Address, usize)>>,
     sent: Mutex<Vec<VersionedTransaction>>,
     outcome: Mutex<Option<ChainOutcome>>,
     during_proof: Mutex<Option<DuringProof>>,
-    /// A proof for the named registry waits for the notify.
-    stalled: Mutex<Option<(Address, Arc<Notify>)>>,
+    /// Owner to the viewing hash its leaf holds.
+    leaves: Mutex<HashMap<[u8; 32], [u8; 32]>>,
 }
 
 type DuringProof = Box<dyn Fn(&StubChain) + Send + Sync>;
@@ -64,28 +65,20 @@ impl StubChain {
     fn new() -> Arc<Self> {
         let chain = Self::default();
         chain.slot.store(SLOT, Ordering::Relaxed);
-        chain.ring(RING, REGISTRY);
+        let mut policy = RingPolicy::zeroed();
+        policy.discriminator = RING_POLICY;
+        policy.tracking = REGISTRY;
+        chain.accounts.lock().unwrap().insert(
+            CustomRing::new(RING).policy_pda(),
+            stored(RING, bytemuck::bytes_of(&policy)),
+        );
+        chain.tracking(|_| {});
         Arc::new(chain)
     }
 
-    fn ring(&self, ring: Address, registry: Address) {
-        let mut policy = RingPolicy::zeroed();
-        policy.discriminator = RING_POLICY;
-        policy.tracking = registry;
-        self.accounts.lock().unwrap().insert(
-            CustomRing::new(ring).policy_pda(),
-            stored(ring, bytemuck::bytes_of(&policy)),
-        );
-        self.tracking_of(registry, |_| {});
-    }
-
     fn tracking(&self, write: impl FnOnce(&mut TrackingRegistry)) {
-        self.tracking_of(REGISTRY, write);
-    }
-
-    fn tracking_of(&self, registry: Address, write: impl FnOnce(&mut TrackingRegistry)) {
         let mut accounts = self.accounts.lock().unwrap();
-        let account = accounts.entry(registry).or_insert_with(|| {
+        let account = accounts.entry(REGISTRY).or_insert_with(|| {
             let mut registry = TrackingRegistry::zeroed();
             registry.discriminator = TrackingRegistry::DISCRIMINATOR;
             registry.next_index = 1u64.to_le_bytes();
@@ -94,18 +87,15 @@ impl StubChain {
         write(bytemuck::from_bytes_mut(&mut account.data));
     }
 
-    /// `pending` entries no apply consumed in `registry`'s queue.
-    fn queue(&self, registry: Address, pending: u64) {
-        let mut queue = EnrollmentQueue::new(registry);
-        queue.head = 5u64.to_le_bytes();
-        queue.tail = (5 + pending).to_le_bytes();
-        self.accounts.lock().unwrap().insert(
-            EnrollmentQueue::find_address(&registry).0,
-            stored(STORAGE_PROGRAM_ID, bytemuck::bytes_of(&queue)),
-        );
+    /// Each owner holds a leaf at the viewing hash its rotation replaces.
+    fn enrolled(&self, seeds: impl IntoIterator<Item = u8>) {
+        let mut leaves = self.leaves.lock().unwrap();
+        for seed in seeds {
+            leaves.insert(owner(seed).pubkey().to_bytes(), prior_viewing_hash(seed));
+        }
     }
 
-    fn proved(&self) -> Vec<(Address, u64)> {
+    fn proved(&self) -> Vec<(Address, usize)> {
         self.proved.lock().unwrap().clone()
     }
 
@@ -190,25 +180,18 @@ impl StorageChain for StubChain {
 
     async fn prove_enrollments(
         &self,
-        registry: Address,
-        count: u64,
-    ) -> Result<ProvedEnrollments, RingRpcError> {
-        let stall = self
-            .stalled
+        batch: EnrollBatch<'_>,
+    ) -> Result<ProvenEnrollBatch, RingRpcError> {
+        self.proofs.fetch_add(1, Ordering::Relaxed);
+        self.proved
             .lock()
             .unwrap()
-            .clone()
-            .filter(|(stalled, _)| *stalled == registry);
-        if let Some((_, notify)) = stall {
-            notify.notified().await;
-        }
-        self.proofs.fetch_add(1, Ordering::Relaxed);
-        self.proved.lock().unwrap().push((registry, count));
+            .push((batch.tracking_registry, batch.writes.len()));
         let revision = self
             .accounts
             .lock()
             .unwrap()
-            .get(&registry)
+            .get(&batch.tracking_registry)
             .and_then(|account| TrackingRegistry::decode(&account.owner, &account.data))
             .expect("registry")
             .newest()
@@ -216,14 +199,43 @@ impl StorageChain for StubChain {
         if let Some(act) = self.during_proof.lock().unwrap().take() {
             act(self);
         }
-        Ok(ProvedEnrollments {
-            instruction: Instruction {
-                program_id: STORAGE_PROGRAM_ID,
-                accounts: vec![AccountMeta::new(registry, false)],
-                data: vec![tag::APPLY_ENROLLMENTS],
-            },
+        let instruction = |program_id| Instruction {
+            program_id,
+            accounts: Vec::new(),
+            data: Vec::new(),
+        };
+        Ok(ProvenEnrollBatch {
+            instructions: [instruction(STORAGE_PROGRAM_ID), instruction(RING)],
             revision,
         })
+    }
+
+    async fn tracking_leaves(
+        &self,
+        registry: Address,
+        owners: &[[u8; 32]],
+    ) -> Result<HashMap<[u8; 32], TrackingLeaf>, RingRpcError> {
+        assert_eq!(registry, REGISTRY);
+        let leaves = self.leaves.lock().unwrap();
+        Ok(owners
+            .iter()
+            .filter_map(|owner| {
+                let viewing_hash = *leaves.get(owner)?;
+                let leaf = TrackingLeaf {
+                    record: TrackingRecord {
+                        viewing_hash,
+                        ..TrackingRecord::default()
+                    },
+                    owner: Address::new_from_array(*owner),
+                    viewing_u: [0; 32],
+                    seal: SealedNullifierKey {
+                        eph_pk: X25519Keypair::from_bytes(&[1; 32]).pubkey(),
+                        ciphertext: [0; 64],
+                    },
+                };
+                Some((*owner, leaf))
+            })
+            .collect())
     }
 }
 
@@ -231,12 +243,48 @@ fn applier(chain: &Arc<StubChain>) -> EnrollmentApplier {
     EnrollmentApplierParts {
         chain: chain.clone(),
         payer: Keypair::new_from_array([9; 32]),
-        rings: vec![RING],
+        rings: vec![RING, UNINITIALIZED_RING],
     }
     .applier()
 }
 
-/// Settles the sent apply as failed, its entries stay queued for the next pass.
+fn owner(seed: u8) -> Keypair {
+    Keypair::new_from_array([seed; 32])
+}
+
+fn enrollment(owner: &Keypair, change: OwnedChange) -> OwnerEnrollment {
+    OwnerEnrollment {
+        ring: CustomRing::new(RING),
+        tracking_registry: REGISTRY,
+        owner: owner.pubkey(),
+        change,
+    }
+}
+
+/// A rotation needs no proof, the owner's signature alone authorizes it.
+fn rotation(seed: u8) -> SubmitEnrollmentRequest {
+    let viewing_u = X25519Keypair::from_bytes(&[seed; 32]).pubkey().u();
+    let owner = owner(seed);
+    let change = OwnedChange::Rotate {
+        viewing_u,
+        prior_viewing_hash: prior_viewing_hash(seed),
+    };
+    enrollment(&owner, change).sign(&owner).expect("signed")
+}
+
+/// The viewing hash the owner's leaf holds before the rotation.
+fn prior_viewing_hash(seed: u8) -> [u8; 32] {
+    [seed; 32]
+}
+
+fn refusal(result: Result<SubmitEnrollmentResponse, RingRpcError>) -> EnrollmentRefusal {
+    match result {
+        Err(RingRpcError::Enrollment(refusal)) => refusal,
+        other => panic!("an enrollment refusal, not {other:?}"),
+    }
+}
+
+/// Settles the sent batch as failed, its writes requeue for the next pass.
 fn refused(chain: &StubChain) {
     chain.landed(ChainOutcome::Failed {
         reason: String::new(),
@@ -244,16 +292,89 @@ fn refused(chain: &StubChain) {
 }
 
 #[tokio::test]
-async fn an_apply_proves_the_queued_entries_under_the_payer_alone_and_waits_for_its_landing() {
+async fn a_write_the_program_would_refuse_is_never_held() {
     let chain = StubChain::new();
-    chain.queue(REGISTRY, 2);
     let applier = applier(&chain);
+    let unserved = SubmitEnrollmentRequest {
+        ring: Address::new_from_array([12; 32]).into(),
+        ..rotation(3)
+    };
+    assert_eq!(
+        refusal(applier.submit(unserved).await),
+        EnrollmentRefusal::NotServed
+    );
+    let uninitialized = SubmitEnrollmentRequest {
+        ring: UNINITIALIZED_RING.into(),
+        ..rotation(3)
+    };
+    assert_eq!(
+        refusal(applier.submit(uninitialized).await),
+        EnrollmentRefusal::RingMissing
+    );
+    let mut truncated = rotation(3);
+    truncated.write.0.pop();
+    assert_eq!(
+        refusal(applier.submit(truncated).await),
+        EnrollmentRefusal::InvalidWrite
+    );
+    let forged = SubmitEnrollmentRequest {
+        signature: rotation(4).signature,
+        ..rotation(3)
+    };
+    assert_eq!(
+        refusal(applier.submit(forged).await),
+        EnrollmentRefusal::InvalidWrite
+    );
+    let owner = owner(5);
+    let mut ix = EnrollIxData::zeroed();
+    ix.viewing_u[31] = 9;
+    ix.nullifier_pk[31] = 1;
+    let unproven = enrollment(
+        &owner,
+        OwnedChange::Enroll {
+            ix,
+            proof: Box::new(CustomRingProof::zeroed()),
+        },
+    )
+    .sign(&owner)
+    .expect("signed");
+    assert_eq!(
+        refusal(applier.submit(unproven).await),
+        EnrollmentRefusal::RegisterKeyProof
+    );
+    applier.flush().await;
+    assert!(chain.proved().is_empty());
+}
+
+#[tokio::test]
+async fn a_full_ring_refuses_and_a_resubmission_is_held_once() {
+    let chain = StubChain::new();
+    let applier = applier(&chain);
+    applier.submit(rotation(0)).await.expect("held");
+    applier.submit(rotation(0)).await.expect("held once");
+    for seed in 1..MAX_HELD_ENROLLMENTS as u8 {
+        applier.submit(rotation(seed)).await.expect("held");
+    }
+    assert_eq!(
+        refusal(applier.submit(rotation(MAX_HELD_ENROLLMENTS as u8)).await),
+        EnrollmentRefusal::Full
+    );
+}
+
+#[tokio::test]
+async fn a_pass_proves_one_batch_under_the_payer_alone_and_waits_for_its_landing() {
+    let chain = StubChain::new();
+    let applier = applier(&chain);
+    chain.enrolled(0..ENROLLMENT_BATCH as u8 + 2);
+    for seed in 0..ENROLLMENT_BATCH as u8 + 2 {
+        applier.submit(rotation(seed)).await.expect("held");
+    }
 
     applier.flush().await;
-    assert_eq!(chain.proved(), [(REGISTRY, 2)]);
+    assert_eq!(chain.proved(), [(REGISTRY, ENROLLMENT_BATCH)]);
     let sent = chain.sent.lock().unwrap().clone();
     let [transaction] = sent.as_slice() else {
-        panic!("one apply, {sent:?}");
+        panic!("one batch, {sent:?}");
     };
     assert_eq!(transaction.signatures.len(), 1);
     assert_eq!(
@@ -264,32 +385,56 @@ async fn an_apply_proves_the_queued_entries_under_the_payer_alone_and_waits_for_
     applier.flush().await;
     assert_eq!(chain.proofs.load(Ordering::Relaxed), 1);
 
+    chain.landed(ChainOutcome::Confirmed { slot: SLOT });
+    applier.flush().await;
+    assert_eq!(chain.proved()[1], (REGISTRY, 2));
+}
+
+#[tokio::test]
+async fn a_failed_batch_requeues_its_writes_until_their_attempts_run_out() {
+    let chain = StubChain::new();
+    chain.enrolled([3]);
+    let applier = applier(&chain);
+    applier.submit(rotation(3)).await.expect("held");
+    applier.flush().await;
+    for attempt in 1..MAX_ENROLLMENT_ATTEMPTS {
+        refused(&chain);
+        applier.flush().await;
+        assert_eq!(
+            chain.proofs.load(Ordering::Relaxed),
+            usize::from(attempt) + 1
+        );
+    }
     refused(&chain);
     applier.flush().await;
-    assert_eq!(chain.proofs.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        chain.proofs.load(Ordering::Relaxed),
+        usize::from(MAX_ENROLLMENT_ATTEMPTS)
+    );
 }
 
 #[tokio::test]
-async fn an_apply_takes_at_most_one_batch_and_an_empty_queue_proves_nothing() {
+async fn a_pass_waits_out_the_grace_of_the_oldest_root() {
     let chain = StubChain::new();
-    applier(&chain).flush().await;
-    chain.queue(REGISTRY, 0);
-    applier(&chain).flush().await;
+    chain.tracking(|registry| {
+        registry.roots[TRACKING_ROOT_HISTORY - 1].expires_at = (SLOT + 1).to_le_bytes()
+    });
+    chain.enrolled([3]);
+    let applier = applier(&chain);
+    applier.submit(rotation(3)).await.expect("held");
+    applier.flush().await;
     assert!(chain.proved().is_empty());
-
-    chain.queue(REGISTRY, APPLY_BATCH as u64 + 3);
-    applier(&chain).flush().await;
-    assert_eq!(chain.proved(), [(REGISTRY, APPLY_BATCH as u64)]);
 }
 
 #[tokio::test]
-async fn a_root_another_applier_moved_during_the_proof_sends_nothing() {
+async fn a_root_moved_during_the_proof_sends_nothing() {
     let chain = StubChain::new();
-    chain.queue(REGISTRY, 1);
     *chain.during_proof.lock().unwrap() = Some(Box::new(|chain: &StubChain| {
         chain.tracking(|registry| registry.roots[0].revision = Revision::from(1))
     }));
+    chain.enrolled([3]);
     let applier = applier(&chain);
+    applier.submit(rotation(3)).await.expect("held");
 
     applier.flush().await;
     assert!(chain.sent.lock().unwrap().is_empty());
@@ -298,73 +443,20 @@ async fn a_root_another_applier_moved_during_the_proof_sends_nothing() {
     assert_eq!(chain.sent.lock().unwrap().len(), 1);
 }
 
-/// The program refuses an apply that would evict a root inside its grace.
+/// A Rotate of an absent owner or from another viewing hash would fail the whole batch.
 #[tokio::test]
-async fn an_unexpired_oldest_root_waits_without_a_proof_and_applies_once_it_expires() {
+async fn a_pass_drops_a_rotation_the_running_leaves_refuse() {
     let chain = StubChain::new();
-    chain.queue(REGISTRY, 1);
-    chain.tracking(|registry| {
-        registry.roots[TRACKING_ROOT_HISTORY - 1].expires_at = (SLOT + 1).to_le_bytes()
-    });
+    chain.enrolled([3]);
+    chain
+        .leaves
+        .lock()
+        .unwrap()
+        .insert(owner(4).pubkey().to_bytes(), [0x44; 32]);
     let applier = applier(&chain);
-    applier.flush().await;
-    assert_eq!(chain.proofs.load(Ordering::Relaxed), 0);
-
-    chain.slot.store(SLOT + 1, Ordering::Relaxed);
-    applier.flush().await;
-    assert_eq!(chain.sent.lock().unwrap().len(), 1);
-}
-
-/// A second ring pinning the same registry finds its apply in flight and proves nothing.
-#[tokio::test]
-async fn rings_sharing_one_registry_share_one_apply() {
-    let chain = StubChain::new();
-    chain.ring(OTHER_RING, REGISTRY);
-    chain.queue(REGISTRY, 1);
-    EnrollmentApplierParts {
-        chain: chain.clone(),
-        payer: Keypair::new_from_array([9; 32]),
-        rings: vec![RING, OTHER_RING],
+    for seed in [3, 4, 5] {
+        applier.submit(rotation(seed)).await.expect("held");
     }
-    .applier()
-    .flush()
-    .await;
+    applier.flush().await;
     assert_eq!(chain.proved(), [(REGISTRY, 1)]);
-}
-
-/// The first ring's proof never returns, the second ring applies beside it on every tick.
-#[tokio::test]
-async fn a_stalled_ring_never_delays_another_rings_apply() {
-    let chain = StubChain::new();
-    chain.ring(OTHER_RING, OTHER_REGISTRY);
-    chain.queue(REGISTRY, 1);
-    chain.queue(OTHER_REGISTRY, 1);
-    let stall = Arc::new(Notify::new());
-    *chain.stalled.lock().unwrap() = Some((REGISTRY, stall.clone()));
-    let applier = EnrollmentApplierParts {
-        chain: chain.clone(),
-        payer: Keypair::new_from_array([9; 32]),
-        rings: vec![RING, OTHER_RING],
-    }
-    .applier();
-    let rings = KeyedTasks::new(2);
-    let settle = || async {
-        for _ in 0..16 {
-            tokio::task::yield_now().await;
-        }
-    };
-
-    applier.spawn_idle(&rings);
-    settle().await;
-    assert_eq!(chain.proved(), [(OTHER_REGISTRY, 1)]);
-
-    refused(&chain);
-    applier.spawn_idle(&rings);
-    settle().await;
-    assert_eq!(chain.proved(), [(OTHER_REGISTRY, 1), (OTHER_REGISTRY, 1)]);
-
-    stall.notify_one();
-    settle().await;
-    assert_eq!(chain.proved().last().unwrap(), &(REGISTRY, 1));
-    assert_eq!(chain.sent.lock().unwrap().len(), 3);
 }

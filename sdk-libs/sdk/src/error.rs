@@ -12,7 +12,10 @@ use spr_keypair::KeypairError;
 use spr_transaction::TransactionError;
 use spr_tree::TreeError;
 use thiserror::Error;
-use zolana_ring_client::{rpc::RecordUpdateError, AnonymousError, RingIndexerError, RingRpcError};
+use zolana_ring_client::{
+    rpc::{EnrollmentRequestError, RecordUpdateError},
+    AnonymousError, RingIndexerError, RingRpcError,
+};
 use zolana_ring_keys::RingKeyError;
 use zolana_ring_member_registry::RecordTreeError;
 use zolana_ring_policy::{
@@ -321,19 +324,20 @@ pub enum RingError {
     },
     #[error("{owner} is enrolled under another nullifier key, the first key is final")]
     AlreadyEnrolled { owner: Address },
-    #[error("the journal did not record the enrollment attempt, nothing was sent")]
-    AttemptNotRecorded(#[source] Box<dyn std::error::Error + Send + Sync>),
-    #[error("preflight refused the enrollment with {0}")]
-    EnrollmentRefused(solana_transaction_error::TransactionError),
-    #[error("the recorded enrollment attempt does not decode")]
-    AttemptUnreadable,
-    #[error("the enrollment attempt reconciles to {0:?}, only an expired attempt goes again")]
-    AttemptNotExpired(crate::enrollment::EnrollmentOutcome),
+    #[error(
+        "an enrollment batch takes one to {max} writes, not {writes}",
+        max = custom_ring_interface::storage_instruction::ENROLLMENT_BATCH
+    )]
+    EnrollmentBatchSize { writes: usize },
+    #[error("the enrollment of {owner} takes the owner's own signature")]
+    EnrollmentSigner { owner: Address },
+    #[error(transparent)]
+    EnrollmentRequest(#[from] EnrollmentRequestError),
     #[error("ring rpc failed the relay with {reason}")]
     RelayFailed { reason: String },
     #[error("the submission sends only an attempt its charged outflows were read from")]
     SubmissionUnproved,
-    #[error("{owner} holds no tracking leaf or queued enrollment, enroll before a rotation")]
+    #[error("{owner} holds no tracking leaf, enroll before a rotation")]
     RotationUnenrolled { owner: Address },
     #[error("the viewing history's current key differs from the key holder's")]
     ViewingHistoryNotCurrent,

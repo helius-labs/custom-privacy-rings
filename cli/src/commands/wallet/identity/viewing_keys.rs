@@ -1,4 +1,4 @@
-//! `key rotate`, a new viewing key queued for the member's tracking leaf, and the key holder every
+//! `key rotate`, a new viewing key handed to ring rpc for the member's tracking leaf, and the key holder every
 //! wallet command loads.
 //!
 //! Read before `wallet`. Read after `custom_ring_sdk::RotateViewingKey`.
@@ -34,7 +34,6 @@ impl Context {
 }
 
 pub fn rotate(ctx: &Context) -> Result<()> {
-    let config = ctx.ring_config()?;
     let owner = ctx.sender()?;
     let identity = ShieldedKeypair::from_keypair(&owner)?;
     let rotated = RotatedKeys::of(ctx, &identity);
@@ -82,20 +81,25 @@ pub fn rotate(ctx: &Context) -> Result<()> {
             })
         })?
     };
-    let sent = ctx.block(
+    let prepared = ctx.block(
         RotateViewingKey {
             ring: ctx.ring,
-            owner: &owner,
-            payer: ctx.member_payer(config.mode, owner.pubkey())?,
+            owner: owner.pubkey(),
             keys: &rotation.keys,
             history: &rotation.history,
         }
-        .send(ctx.ring_client()),
+        .prepare(ctx.ring_client()),
     )?;
-    line("viewing key", hex::encode(sent.viewing_pubkey.as_bytes()));
-    match sent.signature {
-        Some(signature) => line("tracking rotation", signature),
-        None => line("tracking enrollment", "already current"),
+    line(
+        "viewing key",
+        hex::encode(rotation.keys.address()?.viewing_pubkey.as_bytes()),
+    );
+    match prepared {
+        Some(rotation) => {
+            ctx.ring_rpc().submit_enrollment(rotation.sign(&owner)?)?;
+            line("tracking rotation", "held by ring rpc");
+        }
+        None => line("tracking leaf", "already current"),
     }
     Ok(())
 }
