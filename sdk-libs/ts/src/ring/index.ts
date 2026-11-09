@@ -601,8 +601,10 @@ export {
   type ViewingRotation,
 } from "../operations/management/viewing-rotation.js";
 export {
+  TRACKING_CAPACITY,
   TRACKING_EMPTY_ROOT,
   TRACKING_GRACE_SLOTS,
+  TRACKING_QUAD_HEIGHT,
   TRACKING_ROOT_HISTORY,
   decodeOwnerGrant,
   decodeTrackingRegistry,
