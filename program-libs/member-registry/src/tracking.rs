@@ -123,7 +123,8 @@ impl WritableLeaf for TrackingRecord {
 
     fn check_entry(entry: &TrackingEntry) -> Result<(), RecordTreeError> {
         check_member(&entry.member)?;
-        if entry.nullifier_pk == [0; 32] {
+        // A rotation carries no sealed fields, only a proven entry inserts them.
+        if entry.proven && entry.nullifier_pk == [0; 32] {
             return Err(RecordTreeError::TrackingKeyChanged);
         }
         Ok(())

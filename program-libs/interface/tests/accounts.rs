@@ -2,15 +2,17 @@ use bytemuck::Zeroable;
 use custom_ring_interface::{
     chain_link, domain,
     owner_grant::OwnerGrant,
+    owner_signature::{Ed25519Signatures, OwnerSignature},
     storage::{RegistryId, Revision, RootUpdate, StorageError, StorageRegistry},
     storage_instruction::{
-        ApplyEnrollmentsIxData, AssetWrite, EnrollIxData, EnrollRequest, InitializeIxData,
-        InitializeTrackingIxData, OwnerGrantIxData, StorageUpdateIxData,
+        event_kind, tag, ApplyEnrollmentsIxData, ApplyEnrollmentsRequest, AssetWrite, EnrollIxData,
+        EnrollmentChange, EnrollmentWrite, EnrollmentsAppliedEvent, InitializeIxData,
+        InitializeTrackingIxData, OwnerGrantIxData, StorageEvent, StorageUpdateIxData,
+        ENROLLMENT_BATCH,
     },
     tracking::{
-        tracking_chain_start, EnrollmentQueue, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
-        ENROLLMENT_QUEUE_CAPACITY, TRACKING_EMPTY_ROOT, TRACKING_GRACE_SLOTS,
-        TRACKING_ROOT_HISTORY,
+        tracking_chain_start, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
+        TRACKING_EMPTY_ROOT, TRACKING_GRACE_SLOTS, TRACKING_ROOT_HISTORY,
     },
     ApplyRecordsIxData, CustomRingError, CustomRingProof, NewRing, PolicyUpdate, RecordWriteData,
     RingAccount, RingMode, RingPolicy, RingRole, RingRoles, SourceSlot, WriteRecordsIxData,
@@ -40,6 +42,7 @@ fn roles() -> RingRoles {
         policy: key(2),
         pauser: key(3),
         cosign_admin: key(4),
+        enrollment_writer: key(5),
     }
 }
 
@@ -205,7 +208,7 @@ fn enroll_ix(viewing_u: [u8; 32]) -> EnrollIxData {
 #[test]
 fn the_entry_binds_every_field_and_comes_from_the_enroll() {
     let (owner, ix) = (key(0x12), enroll_ix([0x18; 32]));
-    let entry = TrackingEntry::from_enroll(&owner, &ix, true).unwrap();
+    let entry = TrackingEntry::from_enroll(&owner, &ix).unwrap();
     assert_eq!(
         entry.member,
         solana_owner_identity(owner.as_array()).unwrap()
@@ -255,86 +258,194 @@ fn the_entry_binds_every_field_and_comes_from_the_enroll() {
     for other in moved {
         assert_ne!(other.hash(), entry.hash());
     }
+    // A rotation carries only its viewing key, unproven.
+    assert_eq!(
+        TrackingEntry::from_rotation(&owner, &ix.viewing_u),
+        Ok(TrackingEntry {
+            nullifier_pk: [0; 32],
+            ct_hash: [0; 32],
+            list_tag: [0; 32],
+            proven: false,
+            ..entry
+        })
+    );
+}
+
+fn batch<'a>(
+    ix: &'a EnrollIxData,
+    proof: &'a CustomRingProof,
+    owners: &'a [Address; 2],
+) -> [EnrollmentWrite<'a>; 2] {
+    [
+        EnrollmentWrite {
+            owner: &owners[0],
+            change: EnrollmentChange::Enroll { ix, proof },
+        },
+        EnrollmentWrite {
+            owner: &owners[1],
+            change: EnrollmentChange::Rotate {
+                viewing_u: &ix.viewing_u,
+            },
+        },
+    ]
 }
 
 #[test]
-fn a_queue_hands_out_entries_in_sequence_order_across_its_wrap() {
-    let registry = key(0x11);
-    let mut queue = EnrollmentQueue::new(registry);
-    let hash = |sequence: u64| {
-        let mut hash = [0; 32];
-        hash[..8].copy_from_slice(&sequence.to_le_bytes());
-        hash
+fn a_request_parses_exactly_its_count_of_writes() {
+    let (ix, proof, owners) = (
+        enroll_ix([9; 32]),
+        CustomRingProof::zeroed(),
+        [key(1), key(2)],
+    );
+    let header = ApplyEnrollmentsIxData {
+        count: 2,
+        ..ApplyEnrollmentsIxData::zeroed()
     };
-    let capacity = ENROLLMENT_QUEUE_CAPACITY as u64;
-    for sequence in 0..capacity {
-        assert_eq!(queue.push(hash(sequence)), Ok(sequence));
-    }
-    // 1. A full queue refuses with nothing written, the oldest entry's slot stays.
-    let full = queue;
-    assert_eq!(
-        queue.push(hash(capacity)),
-        Err(StorageError::EnrollmentQueueFull)
-    );
-    assert_eq!(queue, full);
-    // 2. An apply naming more than the queue holds refuses and leaves `head`.
-    assert_eq!(
-        queue.take(capacity + 1).err(),
-        Some(StorageError::EnrollmentQueueShort)
-    );
-    assert_eq!(queue, full);
-    // 3. A take frees its slots, a later push reuses the first and the next take reads past the wrap.
-    let taken: Vec<_> = queue.take(3).unwrap().copied().collect();
-    assert_eq!(taken, [0, 1, 2].map(hash));
-    assert_eq!(
-        (queue.head(), queue.tail(), queue.pending()),
-        (3, capacity, capacity - 3)
-    );
-    assert_eq!(queue.push(hash(capacity)), Ok(capacity));
-    queue.take(capacity - 4).unwrap().for_each(drop);
-    let wrapped: Vec<_> = queue.take(2).unwrap().copied().collect();
-    assert_eq!(wrapped, [capacity - 1, capacity].map(hash));
-    assert_eq!(queue.pending(), 0);
-}
-
-#[test]
-fn a_queue_decodes_only_its_own_layout_and_names_its_registry() {
-    let registry = key(0x11);
-    let queue = EnrollmentQueue::new(registry);
-    let bytes = bytemuck::bytes_of(&queue);
-    assert_eq!(
-        EnrollmentQueue::decode(&STORAGE_PROGRAM_ID, bytes),
-        Some(queue)
-    );
-    assert_eq!(EnrollmentQueue::decode(&key(1), bytes), None);
-    let refused = |edit: fn(&mut EnrollmentQueue)| {
-        let mut queue = queue;
-        edit(&mut queue);
-        EnrollmentQueue::from_data(bytemuck::bytes_of(&queue)).is_none()
+    let request = ApplyEnrollmentsRequest {
+        ix: &header,
+        writes: batch(&ix, &proof, &owners).to_vec(),
     };
-    assert!(refused(
-        |queue| queue.discriminator = TrackingRegistry::DISCRIMINATOR
-    ));
-    assert!(refused(|queue| queue.head = 1u64.to_le_bytes()));
-    assert!(refused(|queue| {
-        queue.tail = (ENROLLMENT_QUEUE_CAPACITY as u64 + 1).to_le_bytes()
-    }));
-    let (address, _) = EnrollmentQueue::find_address(&registry);
-    assert_ne!(address, EnrollmentQueue::find_address(&key(0x13)).0);
+    let data = request.encode();
+    assert_eq!(data.len(), ApplyEnrollmentsIxData::SIZE + 417 + 65);
+    assert_eq!(ApplyEnrollmentsRequest::parse(&data), Ok(request));
+    let refused = Err(StorageError::InvalidInstructionData);
+    let edited = |edit: &dyn Fn(&mut Vec<u8>)| {
+        let mut data = data.clone();
+        edit(&mut data);
+        ApplyEnrollmentsRequest::parse(&data).map(drop)
+    };
+    assert_eq!(edited(&|data| data.push(0)), refused);
+    assert_eq!(edited(&|data| data.truncate(data.len() - 1)), refused);
+    // The first write's kind byte follows the header and its owner.
+    assert_eq!(
+        edited(&|data| data[ApplyEnrollmentsIxData::SIZE + 32] = 2),
+        refused
+    );
+    assert_eq!(
+        edited(&|data| data[ApplyEnrollmentsIxData::SIZE - 1] = 0),
+        Err(StorageError::NoEnrollmentsNamed)
+    );
+    assert_eq!(
+        edited(&|data| data[ApplyEnrollmentsIxData::SIZE - 1] = ENROLLMENT_BATCH as u8 + 1),
+        Err(StorageError::BatchTooLarge)
+    );
 }
 
 #[test]
-fn an_apply_names_one_to_a_full_batch_of_entries() {
+fn a_signed_message_names_the_registry_the_owner_and_the_entry() {
+    let (ix, proof, owners) = (
+        enroll_ix([9; 32]),
+        CustomRingProof::zeroed(),
+        [key(1), key(2)],
+    );
+    let [enroll, rotate] = batch(&ix, &proof, &owners);
+    let registry = key(0x11);
+    let signed = enroll.signed(&registry).unwrap();
+    assert_eq!(
+        signed.entry_hash,
+        TrackingEntry::from_enroll(&owners[0], &ix)
+            .unwrap()
+            .hash()
+            .unwrap()
+    );
+    assert_eq!(
+        signed.message.to_vec(),
+        [
+            &domain::ENROLLMENT_SIGNATURE_LABEL[..],
+            registry.as_ref(),
+            owners[0].as_ref(),
+            &signed.entry_hash,
+        ]
+        .concat()
+    );
+    // Another registry or another write gives another message.
+    assert_ne!(enroll.signed(&key(0x12)).unwrap().message, signed.message);
+    assert_ne!(rotate.signed(&registry).unwrap().message, signed.message);
+}
+
+#[test]
+fn a_signature_matches_only_its_own_owner_and_message_inside_the_precompile() {
+    let owners = [key(1), key(2)];
+    let messages = [[1u8; 105], [2u8; 105]];
+    let signature = [7u8; 64];
+    let signatures: Vec<_> = owners
+        .iter()
+        .zip(&messages)
+        .map(|(owner, message)| OwnerSignature {
+            owner,
+            signature: &signature,
+            message,
+        })
+        .collect();
+    let data = Ed25519Signatures::encode(&signatures).unwrap();
+    let parsed = Ed25519Signatures::parse(&data, 2).unwrap();
+    assert_eq!(parsed.check(0, &owners[0], &messages[0]), Ok(()));
+    assert_eq!(parsed.check(1, &owners[1], &messages[1]), Ok(()));
+    let mismatch = Err(StorageError::OwnerSignatureMismatch);
+    assert_eq!(parsed.check(0, &owners[1], &messages[0]), mismatch);
+    assert_eq!(parsed.check(0, &owners[0], &messages[1]), mismatch);
+    assert_eq!(parsed.check(2, &owners[0], &messages[0]), mismatch);
+    assert_eq!(
+        Ed25519Signatures::parse(&data, 1),
+        Err(StorageError::InvalidSignatureInstruction)
+    );
+    // A key read from another instruction escapes the byte comparison, the descriptor refuses it.
+    let mut foreign = data.clone();
+    foreign[2 + 6] = 0;
+    assert_eq!(
+        Ed25519Signatures::parse(&foreign, 2)
+            .unwrap()
+            .check(0, &owners[0], &messages[0]),
+        mismatch
+    );
+}
+
+#[test]
+fn an_event_decodes_only_under_its_tag_kind_and_exact_writes() {
+    let (ix, proof, owners) = (
+        enroll_ix([9; 32]),
+        CustomRingProof::zeroed(),
+        [key(1), key(2)],
+    );
+    let applied = StorageEvent::EnrollmentsApplied {
+        header: EnrollmentsAppliedEvent {
+            registry: key(0x11),
+            revision: Revision::from(4),
+            new_root: [5; 32],
+            new_next_index: 6u64.to_le_bytes(),
+            count: 2,
+        },
+        writes: batch(&ix, &proof, &owners).to_vec(),
+    };
+    let data = applied.encode();
+    assert_eq!(
+        data[..2],
+        [tag::EMIT_EVENT, event_kind::ENROLLMENTS_APPLIED]
+    );
+    assert_eq!(StorageEvent::decode(&data), Some(applied));
+    let decodes = |edit: fn(&mut Vec<u8>)| {
+        let mut data = data.clone();
+        edit(&mut data);
+        StorageEvent::decode(&data).is_some()
+    };
+    assert!(!decodes(|data| data[0] = tag::APPLY_ENROLLMENTS));
+    assert!(!decodes(|data| data[1] = 2));
+    assert!(!decodes(|data| data.push(0)));
+    assert!(!decodes(|data| data.truncate(data.len() - 1)));
+}
+
+#[test]
+fn an_apply_names_one_to_a_full_batch_of_writes() {
     assert_eq!(
         ApplyEnrollmentsIxData::check_count(0),
         Err(StorageError::NoEnrollmentsNamed)
     );
-    for count in [1, 3, 16] {
+    for count in 1..=ENROLLMENT_BATCH as u8 {
         assert_eq!(ApplyEnrollmentsIxData::check_count(count), Ok(()));
     }
     assert_eq!(
-        ApplyEnrollmentsIxData::check_count(17),
-        Err(StorageError::UnsupportedBatch)
+        ApplyEnrollmentsIxData::check_count(ENROLLMENT_BATCH as u8 + 1),
+        Err(StorageError::BatchTooLarge)
     );
 }
 
@@ -369,31 +480,6 @@ fn the_enrollment_checks_what_no_proof_binds_and_refuses_a_zero_key() {
     }
 }
 
-#[test]
-fn enroll_data_holds_the_fields_and_at_most_one_proof() {
-    let ix = enroll_ix([9; 32]);
-    let proof = CustomRingProof::zeroed();
-    let rotation = EnrollRequest {
-        ix: &ix,
-        proof: None,
-    };
-    let first = EnrollRequest {
-        ix: &ix,
-        proof: Some(&proof),
-    };
-    assert_eq!(EnrollRequest::parse(&rotation.encode()), Ok(rotation));
-    assert_eq!(EnrollRequest::parse(&first.encode()), Ok(first));
-    let refused = Err(StorageError::InvalidInstructionData);
-    assert_eq!(
-        EnrollRequest::parse(&rotation.encode()[..EnrollIxData::SIZE - 1]),
-        refused
-    );
-    assert_eq!(
-        EnrollRequest::parse(&first.encode()[..EnrollIxData::SIZE + 1]),
-        refused
-    );
-}
-
 fn tracking_ix() -> InitializeTrackingIxData {
     let mut auditor_pubkey = [9; TAGGED_X25519_KEY_LEN];
     auditor_pubkey[0] = VIEWING_PUBKEY_TAG;
@@ -407,7 +493,7 @@ fn tracking_ix() -> InitializeTrackingIxData {
 fn a_tracking_registry_starts_at_the_sentinel_and_pins_ring_and_auditor() {
     let ix = tracking_ix();
     assert_eq!(ix.check(), Ok(()));
-    let registry = TrackingRegistry::new(&ix);
+    let registry = TrackingRegistry::new(key(0x30), &ix);
     assert_eq!(registry.ring_id, ix.ring_id);
     assert_eq!(registry.auditor_pubkey, ix.auditor_pubkey);
     assert_eq!(registry.newest().hash, TRACKING_EMPTY_ROOT);
@@ -463,7 +549,7 @@ fn tracking_update(revision: u64, slot: u64, byte: u8) -> TrackingRootUpdate {
 
 #[test]
 fn a_tracking_update_serves_the_old_root_for_its_grace() {
-    let mut registry = TrackingRegistry::new(&tracking_ix());
+    let mut registry = TrackingRegistry::new(key(0x30), &tracking_ix());
     registry.update(tracking_update(0, 10, 1)).unwrap();
     let first_root = TRACKING_EMPTY_ROOT;
     assert_eq!(registry.root(0.into(), 10), Ok(first_root));
@@ -482,7 +568,7 @@ fn a_tracking_update_serves_the_old_root_for_its_grace() {
 /// The update that would evict the oldest unexpired root refuses and writes nothing, the same update applies once it lapses.
 #[test]
 fn a_tracking_update_waits_while_its_eviction_would_drop_an_unexpired_root() {
-    let mut filled = TrackingRegistry::new(&tracking_ix());
+    let mut filled = TrackingRegistry::new(key(0x30), &tracking_ix());
     let full = TRACKING_ROOT_HISTORY as u64 - 1;
     for revision in 0..full {
         filled.update(tracking_update(revision, 10, 3)).unwrap();
@@ -501,7 +587,7 @@ fn a_tracking_update_waits_while_its_eviction_would_drop_an_unexpired_root() {
 
 #[test]
 fn a_tracking_tree_stays_valid_at_capacity_and_not_past_it() {
-    let mut registry = TrackingRegistry::new(&tracking_ix());
+    let mut registry = TrackingRegistry::new(key(0x30), &tracking_ix());
     registry.next_index = QUAD_CAPACITY.to_le_bytes();
     assert!(TrackingRegistry::from_data(bytemuck::bytes_of(&registry)).is_some());
     registry.next_index = (QUAD_CAPACITY + 1).to_le_bytes();
@@ -510,7 +596,7 @@ fn a_tracking_tree_stays_valid_at_capacity_and_not_past_it() {
 
 #[test]
 fn an_apply_fills_the_last_leaf_and_refuses_an_index_past_it() {
-    let mut registry = TrackingRegistry::new(&tracking_ix());
+    let mut registry = TrackingRegistry::new(key(0x30), &tracking_ix());
     let past = TrackingRootUpdate {
         new_next_index: QUAD_CAPACITY + 1,
         ..tracking_update(0, 10, 1)
@@ -930,24 +1016,45 @@ fn enrollment_vector() -> Value {
         eph_u: [0x35; 32],
         ciphertext: [0x36; 64],
     };
-    let (queue, bump) = EnrollmentQueue::find_address(&registry);
-    let entry = TrackingEntry::from_enroll(&owner, &ix, true).unwrap();
-    let rotation = TrackingEntry::from_enroll(&owner, &ix, false).unwrap();
+    let proof = CustomRingProof::zeroed();
+    let enroll = EnrollmentWrite {
+        owner: &owner,
+        change: EnrollmentChange::Enroll {
+            ix: &ix,
+            proof: &proof,
+        },
+    };
+    let rotate = EnrollmentWrite {
+        owner: &owner,
+        change: EnrollmentChange::Rotate {
+            viewing_u: &[0x37; 32],
+        },
+    };
+    let [signed_enroll, signed_rotate] =
+        [enroll, rotate].map(|write| write.signed(&registry).unwrap());
     let chain_start = tracking_chain_start(&registry, Revision::from(0)).unwrap();
+    let encoded = |write: EnrollmentWrite<'_>| {
+        let mut data = Vec::new();
+        write.encode_into(&mut data);
+        hex::encode(data)
+    };
     json!({
-        "description": "One enrollment and its permissionless apply. enroll_data follows tag 6, nullifier_pk || list_tag || viewing_u || eph_u || ciphertext, and a first enrollment appends a RegisterKey proof. The queue PDA has seeds [enrollment_queue, registry]. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, proven), rotation_hash the same entry unproven. chain_start is the hash chain of [CRTA, registry field, revision], chain_end is Poseidon(chain_start, entry_hash). Produced by program-libs/interface/tests/accounts.rs.",
+        "description": "One first enrollment and one rotation of the same owner. A write is owner || kind || body, kind 0 an EnrollIxData and a RegisterKey proof, kind 1 a viewing key. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, proven), a rotation's sealed fields zero. message is CRING/enr || registry || owner || entry_hash, the bytes the owner signs. chain_start is the hash chain of [CRTA, registry field, revision], chain_end folds Poseidon(chain, entry_hash) over both writes. Produced by program-libs/interface/tests/accounts.rs.",
         "registry": hex::encode(registry),
         "owner": hex::encode(owner),
-        "member": hex::encode(entry.member),
-        "ct_hash": hex::encode(entry.ct_hash),
-        "viewing_hash": hex::encode(entry.viewing_hash),
-        "enroll_data": hex::encode(bytemuck::bytes_of(&ix)),
-        "enrollment_queue": hex::encode(queue),
-        "bump": bump,
-        "entry_hash": hex::encode(entry.hash().unwrap()),
-        "rotation_hash": hex::encode(rotation.hash().unwrap()),
+        "enroll_write": encoded(enroll),
+        "rotate_write": encoded(rotate),
+        "enroll_entry_hash": hex::encode(signed_enroll.entry_hash),
+        "enroll_message": hex::encode(signed_enroll.message),
+        "rotate_entry_hash": hex::encode(signed_rotate.entry_hash),
+        "rotate_message": hex::encode(signed_rotate.message),
         "chain_start": hex::encode(chain_start),
-        "chain_end": hex::encode(chain_link(&chain_start, &entry.hash().unwrap()).unwrap()),
+        "chain_end": hex::encode(
+            [signed_enroll, signed_rotate]
+                .iter()
+                .try_fold(chain_start, |chain, signed| chain_link(&chain, &signed.entry_hash))
+                .unwrap()
+        ),
     })
 }
 

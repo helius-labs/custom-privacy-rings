@@ -86,9 +86,12 @@ fn entry(owner: u8) -> TrackingEntry {
     }
 }
 
-/// An unproven entry, a rotation of a present owner or a no-op of an absent one.
+/// A rotation as the program computes it, a no-op of an absent owner.
 fn rotation(owner: u8, viewing: u8) -> TrackingEntry {
     TrackingEntry {
+        nullifier_pk: [0; 32],
+        ct_hash: [0; 32],
+        list_tag: [0; 32],
         viewing_hash: field(viewing),
         proven: false,
         ..entry(owner)

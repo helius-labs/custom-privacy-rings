@@ -2,10 +2,10 @@
 //!
 //! Read after `programs/storage/src/lib.rs`, `program-libs/interface/src/accounts/storage.rs`,
 //! `program-libs/interface/src/accounts/tracking.rs`. Read before
-//! `programs/storage/src/instructions/update.rs`, `programs/storage/src/instructions/enroll.rs`.
+//! `programs/storage/src/instructions/update.rs`, `programs/storage/src/instructions/apply_enrollments.rs`.
 //!
 //! Guarantees:
-//! 1. A registry, enrollment queue or grant loads only when the program owns it, at its exact size and under its discriminator, and a queue only beside its own registry.
+//! 1. A registry or grant loads only when the program owns it, at its exact size and under its discriminator.
 //! 2. A created account takes its canonical bump from the derivation, never from instruction data.
 //!
 //! Relies on:
@@ -13,14 +13,16 @@
 
 use custom_ring_interface::{
     owner_grant::OwnerGrant,
+    owner_signature::Ed25519Signatures,
     storage::{Revision, StorageError, StorageRegistry},
     storage_instruction::{InitializeIxData, InitializeTrackingIxData, OwnerGrantIxData},
-    tracking::{EnrollmentQueue, TrackingRegistry},
+    tracking::TrackingRegistry,
 };
 use pinocchio::{
     account::{Ref, RefMut},
     cpi::{Seed, Signer},
     error::ProgramError,
+    sysvars::instructions::Instructions,
     AccountView, Address, ProgramResult,
 };
 
@@ -97,42 +99,7 @@ impl TrackingRegistryInit<'_> {
         .create(account)?;
         bytemuck::try_from_bytes_mut::<TrackingRegistry>(&mut account.try_borrow_mut()?)
             .map_err(|_| StorageError::InvalidTrackingRegistry)?
-            .init(self.ix);
-        Ok(())
-    }
-}
-
-/// The queue of a registry created in the same instruction, its address names the registry.
-#[must_use]
-pub struct EnrollmentQueueInit<'a> {
-    pub program_id: &'a Address,
-    pub payer: &'a AccountView,
-    pub registry: &'a Address,
-}
-
-impl EnrollmentQueueInit<'_> {
-    #[inline(always)]
-    pub fn init(self, account: &mut AccountView) -> ProgramResult {
-        let seeds = EnrollmentQueue::seeds(self.registry);
-        let (address, bump) = Address::derive_program_address(&seeds, self.program_id)
-            .ok_or(StorageError::InvalidEnrollmentQueue)?;
-        if account.address() != &address || !account.is_writable() {
-            return Err(StorageError::InvalidEnrollmentQueue.into());
-        }
-        if account.data_len() != 0 {
-            return Err(StorageError::AlreadyInitialized.into());
-        }
-        CanonicalPda {
-            program_id: self.program_id,
-            payer: self.payer,
-            seeds: &seeds,
-            bump,
-            size: EnrollmentQueue::SIZE,
-        }
-        .create(account)?;
-        bytemuck::try_from_bytes_mut::<EnrollmentQueue>(&mut account.try_borrow_mut()?)
-            .map_err(|_| StorageError::InvalidEnrollmentQueue)?
-            .init(*self.registry);
+            .init(*self.creator, self.ix);
         Ok(())
     }
 }
@@ -231,24 +198,6 @@ pub fn load_tracking_registry_mut<'a>(
         .map_err(|_| StorageError::InvalidTrackingRegistry.into())
 }
 
-/// The queue of `registry`, its stored field binds it because it is created only at its PDA.
-#[inline(always)]
-pub fn load_enrollment_queue_mut<'a>(
-    program_id: &Address,
-    registry: &Address,
-    account: &'a mut AccountView,
-) -> Result<RefMut<'a, EnrollmentQueue>, ProgramError> {
-    if !account.owned_by(program_id) || !account.is_writable() {
-        return Err(StorageError::InvalidEnrollmentQueue.into());
-    }
-    let queue = RefMut::filter_map(account.try_borrow_mut()?, EnrollmentQueue::from_data_mut)
-        .map_err(|_| StorageError::InvalidEnrollmentQueue)?;
-    if &queue.registry != registry {
-        return Err(StorageError::InvalidEnrollmentQueue.into());
-    }
-    Ok(queue)
-}
-
 #[inline(always)]
 pub fn load_registry_mut<'a>(
     program_id: &Address,
@@ -268,6 +217,38 @@ pub fn check_authority(registry: &StorageRegistry, authority: &AccountView) -> P
         return Err(StorageError::Unauthorized.into());
     }
     Ok(())
+}
+
+/// `check` must match each signature to its write, the runtime verified them in the ed25519 instruction just before the current top-level one.
+#[inline(always)]
+pub fn with_owner_signatures<T>(
+    sysvar: &AccountView,
+    count: usize,
+    check: impl FnOnce(Ed25519Signatures<'_>) -> Result<T, ProgramError>,
+) -> Result<T, ProgramError> {
+    let instructions = Instructions::try_from(sysvar)?;
+    let precompile = instructions
+        .get_instruction_relative(-1)
+        .map_err(|_| StorageError::InvalidSignatureInstruction)?;
+    if precompile.get_program_id() != &solana_sdk_ids::ed25519_program::ID {
+        return Err(StorageError::InvalidSignatureInstruction.into());
+    }
+    check(Ed25519Signatures::parse(
+        precompile.get_instruction_data(),
+        count,
+    )?)
+}
+
+/// The event self invocation resolves the program from the instruction's accounts.
+#[inline(always)]
+pub fn check_storage_program(
+    program_id: &Address,
+    account: &AccountView,
+) -> Result<(), StorageError> {
+    match account.address() == program_id {
+        true => Ok(()),
+        false => Err(StorageError::InvalidStorageProgram),
+    }
 }
 
 #[inline(always)]

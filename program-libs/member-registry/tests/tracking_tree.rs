@@ -22,12 +22,12 @@ fn entry(byte: u8) -> TrackingEntry {
     }
 }
 
-/// A viewing key rotation, its sealed fields differ from the first enrollment's.
+/// A viewing key rotation as the program computes it, its sealed fields zero.
 fn rotation(byte: u8, viewing: u8) -> TrackingEntry {
     TrackingEntry {
-        nullifier_pk: member(viewing),
-        ct_hash: member(viewing),
-        list_tag: member(viewing),
+        nullifier_pk: [0; 32],
+        ct_hash: [0; 32],
+        list_tag: [0; 32],
         viewing_hash: member(viewing),
         proven: false,
         ..entry(byte)
@@ -102,8 +102,11 @@ fn a_present_owner_moves_only_its_viewing_hash() {
     for update in [
         rotation(5, 0x21),
         TrackingEntry {
-            proven: true,
-            ..rotation(5, 0x22)
+            nullifier_pk: member(0x22),
+            ct_hash: member(0x22),
+            list_tag: member(0x22),
+            viewing_hash: member(0x22),
+            ..entry(5)
         },
     ] {
         let inputs = apply(&mut tree, [0; 32], &[update]).unwrap();

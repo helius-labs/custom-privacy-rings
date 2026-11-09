@@ -3,7 +3,7 @@
 //! A ring proof has one public input, the statement hash the caller rebuilt, and a wrong element fails here.
 //!
 //! Read after `program-libs/interface/src/proof/key_catalog.rs`. Read before
-//! `programs/custom-ring/src/instructions/verification/verifier.rs`, `programs/storage/src/instructions/enroll.rs`.
+//! `programs/custom-ring/src/instructions/verification/verifier.rs`, `programs/storage/src/instructions/apply_enrollments.rs`.
 
 use groth16_solana::{
     decompression::{decompress_g1, decompress_g2},

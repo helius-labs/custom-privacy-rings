@@ -10,8 +10,8 @@ use solana_keypair::{Keypair, Signer};
 use zolana_ring_policy::{ListId, ListSet, Rule, Subject};
 
 use crate::common::{
-    auditor_pubkey, enrollment_queue, policy_pda, refused, ring_auth, root, tracking_registry,
-    InitializeIx, Ring, Sent, Setup, UpdatePolicyIx, RECORDS,
+    auditor_pubkey, policy_pda, refused, ring_auth, root, tracking_registry, InitializeIx, Ring,
+    Sent, Setup, UpdatePolicyIx, RECORDS,
 };
 
 const CURATOR: Address = Address::new_from_array([0x63; 32]);
@@ -73,12 +73,7 @@ fn salted_ring() -> Ring {
 }
 
 fn initialize(ring: &mut Ring, lists: &[(ListId, u8)], curators: &[Address]) -> Sent {
-    for account in [
-        policy_pda(),
-        ring_auth(),
-        tracking_registry(),
-        enrollment_queue(),
-    ] {
+    for account in [policy_pda(), ring_auth(), tracking_registry()] {
         ring.drain(&account);
     }
     let authority = ring.authority.insecure_clone();

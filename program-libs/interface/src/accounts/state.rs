@@ -537,6 +537,8 @@ pub struct RingRoles {
     pub pauser: Address,
     /// Signs `SetCoSigner` and `ClearCoSigner`.
     pub cosign_admin: Address,
+    /// Signs `EnrollBatch`, the one path into the tracking tree.
+    pub enrollment_writer: Address,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, SchemaRead, SchemaWrite)]
@@ -550,6 +552,8 @@ pub enum RingRole {
     Pauser,
     #[wincode(tag = 3)]
     CosignAdmin,
+    #[wincode(tag = 4)]
+    EnrollmentWriter,
 }
 
 impl RingRoles {
@@ -559,6 +563,7 @@ impl RingRoles {
             RingRole::Policy => &self.policy,
             RingRole::Pauser => &self.pauser,
             RingRole::CosignAdmin => &self.cosign_admin,
+            RingRole::EnrollmentWriter => &self.enrollment_writer,
         }
     }
 
@@ -568,12 +573,19 @@ impl RingRoles {
             RingRole::Policy => &mut self.policy,
             RingRole::Pauser => &mut self.pauser,
             RingRole::CosignAdmin => &mut self.cosign_admin,
+            RingRole::EnrollmentWriter => &mut self.enrollment_writer,
         }
     }
 
     /// `ZeroRoleKey` or `DuplicateRoleKey` unless every key is nonzero and the delegate holds no role.
     pub fn check(&self, delegate: Option<&Address>) -> Result<(), CustomRingError> {
-        let roles = [&self.admin, &self.policy, &self.pauser, &self.cosign_admin];
+        let roles = [
+            &self.admin,
+            &self.policy,
+            &self.pauser,
+            &self.cosign_admin,
+            &self.enrollment_writer,
+        ];
         if roles
             .into_iter()
             .chain(delegate)
@@ -724,10 +736,10 @@ fn source_map_of(sources: &[SourceSlot; N_SOURCE_SLOTS]) -> Result<SourceMap, Cu
 
 const _: () = assert!(core::mem::size_of::<SourceSlot>() == 33);
 const _: () = assert!(ROOT_HISTORY <= u8::MAX as usize);
-const _: () = assert!(RingPolicy::SIZE == 1125);
+const _: () = assert!(RingPolicy::SIZE == 1157);
 const _: () = assert!(core::mem::offset_of!(RingPolicy, roles) == 6);
-const _: () = assert!(core::mem::offset_of!(RingPolicy, delegate) == 134);
-const _: () = assert!(core::mem::offset_of!(RingPolicy, auditor_pubkey) == 166);
-const _: () = assert!(core::mem::offset_of!(RingPolicy, records) == 207);
-const _: () = assert!(core::mem::offset_of!(RingPolicy, tracking) == 239);
+const _: () = assert!(core::mem::offset_of!(RingPolicy, delegate) == 166);
+const _: () = assert!(core::mem::offset_of!(RingPolicy, auditor_pubkey) == 198);
+const _: () = assert!(core::mem::offset_of!(RingPolicy, records) == 239);
+const _: () = assert!(core::mem::offset_of!(RingPolicy, tracking) == 271);
 const _: () = assert!(CoSigner::SIZE == 35);

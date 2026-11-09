@@ -2,11 +2,14 @@
 
 use custom_ring_interface::{
     storage::StorageError,
+    storage_instruction::{
+        ApplyEnrollmentsIxData, ApplyEnrollmentsRequest, EnrollmentChange, EnrollmentWrite,
+    },
     tag,
-    tracking::{EnrollmentQueue, TrackingRegistry},
+    tracking::TrackingRegistry,
     CoSignScope, CoSigner, CustomRingError, InitializeIxData, InstructionTag, PolicyBindingIxData,
     PolicySourceIxData, PolicyTableIxData, RingKind, RingMode, RingPolicy, RingRole,
-    SetPausedIxData, SourceSpec, UpdatePolicyIxData, TAGGED_X25519_KEY_LEN,
+    SetPausedIxData, SourceSpec, UpdatePolicyIxData, STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{error::InstructionError, AccountMeta, Instruction};
@@ -17,18 +20,19 @@ use spr_interface::state::RingConfig;
 use zolana_ring_policy::{ring_id_field, ListId, ListSet, Rule, Subject, TableParts};
 
 use crate::common::{
-    allow_list_table, auditor_pubkey, co_signer_record, enrollment_queue, list_table, policy_pda,
-    program_data_of, refused, refused_with, ring_auth, root, rules_write, set_co_signer,
-    set_delegate, tracking_registry, within_budget, ClearCoSignerIx, InitializeIx, Ring, Sent,
-    SetCoSignerIx, Setup, UpdateAuthorityIx, UpdatePolicyIx, PROGRAM, RECORDS,
+    allow_list_table, auditor_pubkey, co_signer_record, list_table, policy_pda, program_data_of,
+    refused, refused_with, ring_auth, root, rules_write, set_co_signer, set_delegate,
+    tracking_registry, within_budget, ClearCoSignerIx, InitializeIx, Ring, Sent, SetCoSignerIx,
+    Setup, UpdateAuthorityIx, UpdatePolicyIx, PROGRAM, RECORDS,
 };
 use crate::transact_rules::SPP;
 
-const ROLES: [RingRole; 4] = [
+const ROLES: [RingRole; 5] = [
     RingRole::Admin,
     RingRole::Policy,
     RingRole::Pauser,
     RingRole::CosignAdmin,
+    RingRole::EnrollmentWriter,
 ];
 
 impl Ring {
@@ -46,12 +50,7 @@ fn upgrade_send(ring: &mut Ring, instruction: Instruction) -> Sent {
 /// The state before `Initialize`, the deployed program alone.
 fn uninitialized(setup: Setup) -> Ring {
     let mut ring = Ring::new(setup);
-    for account in [
-        policy_pda(),
-        ring_auth(),
-        tracking_registry(),
-        enrollment_queue(),
-    ] {
+    for account in [policy_pda(), ring_auth(), tracking_registry()] {
         ring.drain(&account);
     }
     ring
@@ -125,8 +124,7 @@ fn initialize_creates_the_ring_and_spp_registration_under_the_upgrade_authority(
     let tracking: TrackingRegistry = ring.read(&tracking_registry());
     assert_eq!(tracking.auditor_pubkey, auditor_pubkey());
     assert_eq!(tracking.ring_id, ring_id_field(PROGRAM.as_array()).unwrap());
-    let queue: EnrollmentQueue = ring.read(&enrollment_queue());
-    assert_eq!(queue, EnrollmentQueue::new(tracking_registry()));
+    assert_eq!(tracking.authority, ring_auth());
     assert!(account.written_policy_hash().is_some());
     let registration: RingConfig = ring.read(&ring_auth());
     assert_eq!(
@@ -151,26 +149,6 @@ fn initialize_refuses_a_tracking_account_off_its_seeds() {
     refused_with(
         upgrade_send(&mut ring, instruction),
         InstructionError::Custom(StorageError::InvalidTrackingRegistry as u32),
-    );
-    assert_eq!(ring.lamports(&policy_pda()), 0);
-}
-
-/// Storage fixes the queue's address from the registry, an apply reads no queue of the client's choosing.
-#[test]
-fn initialize_refuses_an_enrollment_queue_off_its_seeds() {
-    let mut ring = uninitialized(Setup::Policy);
-    let data = policy_config(&ring);
-    let authority = ring.authority.pubkey();
-    let mut instruction = initialize(&ring, &authority, data);
-    let position = instruction
-        .accounts
-        .iter()
-        .position(|meta| meta.pubkey == enrollment_queue())
-        .unwrap();
-    instruction.accounts[position].pubkey = Address::new_unique();
-    refused_with(
-        upgrade_send(&mut ring, instruction),
-        InstructionError::Custom(StorageError::InvalidEnrollmentQueue as u32),
     );
     assert_eq!(ring.lamports(&policy_pda()), 0);
 }
@@ -1055,6 +1033,62 @@ fn a_table_write_decodes_and_counts_its_generation_on_the_policy() {
             rules_write(&policy, allow_list_table(Vec::new())),
         ),
         CustomRingError::PolicyGenerationOverflow,
+    );
+}
+
+/// One rotation, storage reaches its signature check only past the ring's role and pin.
+fn enroll_batch(writer: &Address, tracking: Address) -> Instruction {
+    let header = ApplyEnrollmentsIxData {
+        count: 1,
+        ..bytemuck::Zeroable::zeroed()
+    };
+    let owner = Address::new_unique();
+    let request = ApplyEnrollmentsRequest {
+        ix: &header,
+        writes: vec![EnrollmentWrite {
+            owner: &owner,
+            change: EnrollmentChange::Rotate {
+                viewing_u: &[9; 32],
+            },
+        }],
+    };
+    Instruction {
+        program_id: PROGRAM,
+        accounts: vec![
+            AccountMeta::new_readonly(*writer, true),
+            AccountMeta::new_readonly(policy_pda(), false),
+            AccountMeta::new(ring_auth(), false),
+            AccountMeta::new(tracking, false),
+            AccountMeta::new_readonly(pinocchio::sysvars::instructions::INSTRUCTIONS_ID, false),
+            AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),
+        ],
+        data: [&[tag::ENROLL_BATCH][..], &request.encode()].concat(),
+    }
+}
+
+#[test]
+fn only_the_enrollment_writer_reaches_storage_through_the_ring_pda() {
+    let mut ring = Ring::new(Setup::AuditOnly);
+    let writer = ring.roles.enrollment_writer.pubkey();
+    let policy = ring.roles.policy.pubkey();
+    refused(
+        ring.role_send(RingRole::Policy, enroll_batch(&policy, tracking_registry())),
+        CustomRingError::UnauthorizedAuthority,
+    );
+    refused(
+        ring.role_send(
+            RingRole::EnrollmentWriter,
+            enroll_batch(&writer, Address::new_unique()),
+        ),
+        CustomRingError::InvalidTrackingRegistry,
+    );
+    // Storage accepts `ring_auth` as the registry's authority and stops at the missing owner signature.
+    refused_with(
+        ring.role_send(
+            RingRole::EnrollmentWriter,
+            enroll_batch(&writer, tracking_registry()),
+        ),
+        InstructionError::Custom(StorageError::InvalidSignatureInstruction as u32),
     );
 }
 

@@ -89,5 +89,6 @@ pub fn process_instruction(
         InstructionTag::SetCoSigner => process_set_cosigner_ix(program_id, accounts, ix_data),
         InstructionTag::ClearCoSigner => process_clear_cosigner_ix(program_id, accounts, ix_data),
         InstructionTag::SetDelegate => process_set_delegate_ix(program_id, accounts, ix_data),
+        InstructionTag::EnrollBatch => process_enroll_batch_ix(program_id, accounts, ix_data),
     }
 }

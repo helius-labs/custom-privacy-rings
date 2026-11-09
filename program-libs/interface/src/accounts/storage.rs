@@ -334,12 +334,12 @@ pub enum StorageError {
     TrackingTreeFull = 9036,
     #[error("the apply would evict a tracking root inside its grace")]
     RootHistoryRetained = 9037,
-    #[error("enrollment queue is invalid or serves another registry")]
-    InvalidEnrollmentQueue = 9038,
-    #[error("the enrollment queue is full")]
-    EnrollmentQueueFull = 9039,
-    #[error("the apply names more entries than the queue holds")]
-    EnrollmentQueueShort = 9040,
+    #[error("the event self invocation needs the storage program account")]
+    InvalidStorageProgram = 9041,
+    #[error("the instruction before is no ed25519 instruction with one signature per write")]
+    InvalidSignatureInstruction = 9042,
+    #[error("a signature names another owner or message than its write")]
+    OwnerSignatureMismatch = 9043,
 }
 
 impl From<StorageError> for ProgramError {
