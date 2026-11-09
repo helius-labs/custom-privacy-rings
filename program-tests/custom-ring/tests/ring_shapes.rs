@@ -31,7 +31,7 @@ const SALTED: RuleTable = RuleTable::builder()
     .rule(Rule::forbid(Subject::Sender, ListId::PrivateBlock))
     .build();
 /// One apply proof per batch, width one is the configured actors' own.
-const ENROLLMENT_BATCHES: [usize; 4] = [16, 8, 4, 2];
+const ENROLLMENT_BATCHES: [usize; 7] = [5, 5, 5, 5, 4, 4, 2];
 const RECORD_BATCHES: [usize; 5] = [1, 2, 4, 8, 16];
 /// Payees ahead of the legs' destinations, each owner its own tracking row.
 const SALTED_RECIPIENTS: usize = 15;
