@@ -942,6 +942,7 @@ fn an_apply_past_two_to_the_thirty_two_leaves_is_refused() {
 fn reader(byte: u8) -> [u8; 34] {
     let mut key = [byte; 34];
     key[0] = READER_KEY_ED25519;
+    key[33] = 0;
     key
 }
 

@@ -59,6 +59,9 @@ pub fn process_update_ix(
     ) {
         (0, None, []) => None,
         (private_writes, Some(revision), [tracking]) if private_writes != 0 => {
+            if !registry.is_private() {
+                return Err(StorageError::PrivateWriteWithoutTracking.into());
+            }
             Some(PrivateWrites {
                 private_writes,
                 tracking_root: PinnedTrackingRoot {
