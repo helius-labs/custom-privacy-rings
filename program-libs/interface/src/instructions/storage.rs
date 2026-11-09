@@ -153,6 +153,7 @@ pub enum StorageEvent<'a> {
     /// The header, then the batch's writes as the instruction carried them, proofs included.
     EnrollmentsApplied {
         header: EnrollmentsAppliedEvent,
+        /// The tracking leaf holds the `RegisterKey` seal as `ct_hash` alone, the auditor opens each enrolled secret from these writes.
         writes: Vec<EnrollmentWrite<'a>>,
     },
 }

@@ -513,6 +513,8 @@ pub fn decode_recipient_keys(
 }
 
 /// The unproven part of a recipient body, after the record under the same stream.
+/// It takes the keystream from [`RING_RECORD_LEN`], where the record's sealed key tail stays
+/// unpublished, so no keystream byte covers two published bytes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecipientPayload {
     /// The commitment covers it, a nonzero value travels with the note.
@@ -571,6 +573,7 @@ impl RecipientPayload {
 pub const SENDER_BUNDLE_LEN: usize = FIELD_LEN;
 
 /// `output_seed` outside the proof, the sender reads each recipient key from the auditor stream it opens.
+/// The proof seals record `i` to the stream's `V_i`, so the sender reads the keys the records are sealed to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SenderBundle {
     pub output_seed: [u8; 32],
