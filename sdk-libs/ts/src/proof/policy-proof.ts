@@ -14,7 +14,9 @@ import {
   bytesKey,
   equalBytes,
   isZero,
+  waitForProjection,
 } from "@heliuslabs/spr/internal";
+import { MEMBER_REGISTRY_PROJECTION_ERRORS } from "../rpc/projection.js";
 import { type RingRecordReader, type TrackingReader } from "../rpc/ports.js";
 import type { ChainReader } from "@heliuslabs/spr/client";
 import type { Address, Bytes32, RequestContext } from "@heliuslabs/spr/interface";
@@ -382,11 +384,6 @@ export async function readPolicy(
     chargedOutflows: Object.freeze([]) as readonly OwnerDebit[],
   };
   if (!readsPolicyRoot(config, rail)) return Object.freeze(base);
-  const own = await fetchBoundRoot({ client, ringProgramId, registry: config.records }, context);
-  const curatorRoot =
-    pinned?.curator === undefined
-      ? undefined
-      : await fetchBoundRoot({ client, ringProgramId, registry: pinned.curator }, context);
   const salts = saltsByOwner(input.listSalts);
   const anySalted = view !== undefined && view.salted !== 0;
   const saltOf = new Map(
@@ -404,22 +401,38 @@ export async function readPolicy(
   const members = poolMembers(subjects, [...keyOf.values()]);
   const capacity = transferPoolCapacity(circuit);
   const ownMembers = members.own.length === 0 ? [PADDING_SUBJECT] : members.own;
-  const ownPool = await readRecordPool(
-    { client, root: own, members: ownMembers, openings: capacity.own },
+  // A lagging pool answer holds only for its root, each attempt reads the roots again.
+  const { own, curatorRoot, ownPool, curatorPool } = await waitForProjection(
+    async (attempt) => {
+      const own = await fetchBoundRoot(
+        { client, ringProgramId, registry: config.records },
+        attempt,
+      );
+      const curatorRoot =
+        pinned?.curator === undefined
+          ? undefined
+          : await fetchBoundRoot({ client, ringProgramId, registry: pinned.curator }, attempt);
+      const ownPool = await readRecordPool(
+        { client, root: own, members: ownMembers, openings: capacity.own },
+        attempt,
+      );
+      const curatorPool =
+        curatorRoot === undefined
+          ? undefined
+          : await readRecordPool(
+              {
+                client,
+                root: curatorRoot,
+                members: members.curator.length === 0 ? [PADDING_SUBJECT] : members.curator,
+                openings: capacity.curator,
+              },
+              attempt,
+            );
+      return { own, curatorRoot, ownPool, curatorPool };
+    },
+    MEMBER_REGISTRY_PROJECTION_ERRORS,
     context,
   );
-  const curatorPool =
-    curatorRoot === undefined
-      ? undefined
-      : await readRecordPool(
-          {
-            client,
-            root: curatorRoot,
-            members: members.curator.length === 0 ? [PADDING_SUBJECT] : members.curator,
-            openings: capacity.curator,
-          },
-          context,
-        );
   const ownReads = subjectReads(ownMembers, ownPool.reads);
   const curatorReads =
     curatorPool === undefined ? undefined : subjectReads(members.curator, curatorPool.reads);
@@ -582,10 +595,6 @@ async function readTracking(
     }>
 > {
   const { client, config, circuit, proofInputs } = input;
-  const trackingBound = await newestTrackingRoot(
-    { client, trackingRegistry: config.tracking, ring: input.ringProgramId },
-    context,
-  );
   const ringOutputs = proofInputs.outputs.map((output) =>
     output.ringProgramId === undefined || output.ownerAddress === undefined ? undefined : output,
   );
@@ -595,11 +604,27 @@ async function readTracking(
   const members =
     subjects.trackingMembers.length === 0 ? [PADDING_SUBJECT] : subjects.trackingMembers;
   const openings = transferPoolCapacity(circuit).tracking;
-  const served = await client.getTrackingRecordPool(
-    { registry: config.tracking, members, expectedRoot: trackingBound.root, openings },
+  const { trackingBound, pool } = await waitForProjection(
+    async (attempt) => {
+      const trackingBound = await newestTrackingRoot(
+        { client, trackingRegistry: config.tracking, ring: input.ringProgramId },
+        attempt,
+      );
+      const served = await client.getTrackingRecordPool(
+        { registry: config.tracking, members, expectedRoot: trackingBound.root, openings },
+        attempt,
+      );
+      const pool = verifyTrackingPool({
+        pool: served,
+        root: trackingBound.root,
+        members,
+        openings,
+      });
+      return { trackingBound, pool };
+    },
+    MEMBER_REGISTRY_PROJECTION_ERRORS,
     context,
   );
-  const pool = verifyTrackingPool({ pool: served, root: trackingBound.root, members, openings });
   const position = new Map(members.map((member, index) => [bytesKey(member), index]));
   const rowOf = (member: Bytes32): TrackingRecord | undefined =>
     pool.rows[position.get(bytesKey(member)) ?? -1];
