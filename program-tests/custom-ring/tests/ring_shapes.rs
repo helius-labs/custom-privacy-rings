@@ -13,6 +13,7 @@ use custom_ring_interface::{
 use custom_ring_test_validator::{
     policy::{EnrollOwners, PrivateBlockWrites, RingNotes},
     shared::restart_prover,
+    RING_MERGES_SETTLE,
 };
 use spr_api::{ApiError, HttpClient, HttpFuture, HttpRequest};
 use spr_client::{Shape, SPP_SUPPORTED_SHAPES};
@@ -415,6 +416,7 @@ impl Coverage {
             .iter()
             .map(|key| key.circuit)
             .filter(|circuit| owned(*circuit))
+            .filter(|circuit| RING_MERGES_SETTLE || *circuit != RingCircuit::Merge)
             .filter(|circuit| !self.circuits.contains(circuit))
             .collect();
         assert!(missing.is_empty(), "no landed operation proved {missing:?}");
@@ -1044,6 +1046,9 @@ impl ShapeRing<'_> {
 
     /// Each merge takes one note more than the next narrower width holds.
     fn merges(&self, coverage: &mut Coverage) -> Result<()> {
+        if !RING_MERGES_SETTLE {
+            return Ok(());
+        }
         let env = self.env;
         let tree_id = env.tree_id(env.tree)?;
         let mut count = 2;

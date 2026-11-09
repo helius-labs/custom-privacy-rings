@@ -151,6 +151,7 @@ fn a_relayed_deposit_lands_the_note_the_auditor_recovers() -> Result<()> {
 }
 
 #[test]
+#[ignore = "zolana pins no ring merge keys"]
 fn a_relayed_user_merge_lands_one_note_of_the_merged_value() -> Result<()> {
     let relayed = RelayedRing::register(Tier::AuditOnly)?;
     let env = &relayed.env;
@@ -269,6 +270,7 @@ fn a_relayed_authority_transfer_moves_the_enrolled_members_note() -> Result<()> 
 }
 
 #[test]
+#[ignore = "zolana pins no ring merge keys"]
 fn a_managed_merge_pass_settles_the_wallet_toward_its_target() -> Result<()> {
     let relayed = RelayedRing::register(Tier::policy(&EMPTY))?;
     let env = &relayed.env;

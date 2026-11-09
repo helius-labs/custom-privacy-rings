@@ -408,6 +408,9 @@ fn an_anonymous_ring_hides_owners_and_preserves_auditor_access() -> Result<()> {
         );
     }
 
+    if !custom_ring_test_validator::RING_MERGES_SETTLE {
+        return Ok(());
+    }
     // 9. The recipient merges both notes, a fresh wallet finds the merge from
     //    its own spends and sees both inputs spent.
     let merged_inputs: Vec<WalletUtxo> = recipient_wallet.unspent().cloned().collect();
