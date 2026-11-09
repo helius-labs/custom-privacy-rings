@@ -135,11 +135,12 @@ pub(crate) fn enrollment<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
 ) -> Result<Option<EnrollIxData>> {
     let chain = zolana.as_async();
     let policy = zolana.block_on(ring.require_policy(chain.rpc()))?;
-    Ok(zolana.block_on(
+    let enrolled = zolana.block_on(
         EnrollmentRead {
             tracking_registry: policy.tracking,
             owner: keys.pubkey(),
         }
         .read(chain),
-    )?)
+    )?;
+    Ok(enrolled.map(|enrolled| enrolled.ix))
 }

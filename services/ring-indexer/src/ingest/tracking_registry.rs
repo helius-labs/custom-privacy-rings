@@ -155,7 +155,7 @@ impl<C: ConnectionTrait> Projection<'_, '_, C, TrackingRegistry> {
         .await?;
         // 4. Each written leaf version keeps the key its `viewing_hash` commits to and its seal.
         self.store
-            .stamp_leaves(revision, &leaf_stamps(&writes, &inputs.writes))
+            .stamp_leaves(revision, &leaf_stamps(&writes, &inputs.writes)?)
             .await
             .map_err(from_storage)?;
         *self.state.account = rotated;
@@ -170,14 +170,15 @@ impl<C: ConnectionTrait> Projection<'_, '_, C, TrackingRegistry> {
 fn leaf_stamps(
     writes: &[EnrollmentWrite<'_>],
     proofs: &[TrackingWriteProofInput],
-) -> Vec<LeafStamp> {
+) -> Result<Vec<LeafStamp>, ApplyError> {
     writes
         .iter()
         .zip(proofs)
         .filter_map(|(write, proof)| {
-            let (viewing_u, seal) = match write.change {
+            let (viewing_u, seq, seal) = match write.change {
                 EnrollmentChange::Enroll { ix, .. } => (
                     ix.viewing_u,
+                    0,
                     (!proof.present).then_some(LeafSeal {
                         owner: write.owner.to_bytes(),
                         eph_u: ix.eph_u,
@@ -185,13 +186,23 @@ fn leaf_stamps(
                     }),
                 ),
                 EnrollmentChange::Rotate { .. } if !proof.present => return None,
-                EnrollmentChange::Rotate { viewing_u, .. } => (*viewing_u, None),
+                EnrollmentChange::Rotate {
+                    viewing_u,
+                    prior_seq,
+                    ..
+                } => {
+                    let Some(seq) = u64::from_le_bytes(*prior_seq).checked_add(1) else {
+                        return Some(Err(fault("a rotation counter overflowed")));
+                    };
+                    (*viewing_u, seq, None)
+                }
             };
-            Some(LeafStamp {
+            Some(Ok(LeafStamp {
                 member: proof.entry.member,
                 viewing_u,
+                seq,
                 seal,
-            })
+            }))
         })
         .collect()
 }

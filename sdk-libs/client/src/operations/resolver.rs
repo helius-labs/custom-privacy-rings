@@ -7,7 +7,11 @@
 
 use std::collections::HashMap;
 
-use custom_ring_interface::{domain, tracking::TrackingRegistry};
+use custom_ring_interface::{
+    domain,
+    storage::StorageError,
+    tracking::{viewing_hash, TrackingRegistry},
+};
 use solana_address::Address;
 use spr_client::{AsyncRpc, ClientError};
 use spr_hasher::{
@@ -49,6 +53,8 @@ pub enum ResolveError {
     Keypair(#[from] KeypairError),
     #[error(transparent)]
     Hasher(#[from] HasherError),
+    #[error(transparent)]
+    Storage(#[from] StorageError),
     #[error(transparent)]
     Indexer(#[from] RingIndexerError),
     #[error(transparent)]
@@ -94,6 +100,8 @@ pub struct TrackingLeaf {
     /// The Solana owner the leaf's member commits to.
     pub owner: Address,
     pub viewing_u: [u8; 32],
+    /// Rotations the leaf has taken, `viewing_hash` binds it.
+    pub seq: u64,
     pub seal: SealedNullifierKey,
 }
 
@@ -193,7 +201,7 @@ impl TrackingLeafCheck<'_> {
             .as_ref()
             .ok_or(ResolveError::MalformedOpening)?;
         let viewing_u: [u8; 32] = fixed(&served.viewing_u.0)?;
-        if hash_bytes(&viewing_u)? != record.viewing_hash {
+        if viewing_hash(&viewing_u, served.seq)? != record.viewing_hash {
             return Err(ResolveError::ViewingKeyMismatch);
         }
         let seal = SealedNullifierKey {
@@ -210,6 +218,7 @@ impl TrackingLeafCheck<'_> {
             record,
             owner,
             viewing_u,
+            seq: served.seq,
             seal,
         }))
     }
@@ -376,7 +385,7 @@ mod tests {
             nullifier_pk: owner.nullifier_key.pubkey().unwrap(),
             ct_hash: hash_bytes(&CIPHERTEXT).unwrap(),
             list_tag: domain::list_tag(&owner.list_salt(&RING).unwrap()).unwrap(),
-            viewing_hash: hash_bytes(&viewing.u()).unwrap(),
+            viewing_hash: viewing_hash(&viewing.u(), 0).unwrap(),
             prior_viewing_hash: [0; 32],
             proven: true,
         }
@@ -417,6 +426,7 @@ mod tests {
         tree: TrackingTree,
         /// Member to the owner and viewing key the seal names.
         keys: HashMap<[u8; 32], (Address, [u8; 32])>,
+        seq: u64,
         /// Openings answered per member.
         openings: usize,
         registry: Option<Account>,
@@ -451,6 +461,7 @@ mod tests {
             Self {
                 tree,
                 keys,
+                seq: 0,
                 openings: 1,
                 registry,
                 requests: std::sync::Mutex::default(),
@@ -464,6 +475,7 @@ mod tests {
                     .map(|(owner, viewing_u)| RingTrackingSealView {
                         owner: (*owner).into(),
                         viewing_u: Base64String(viewing_u.to_vec()),
+                        seq: self.seq,
                         eph_pk: Base64String(ViewingKey::new().pubkey().as_bytes().to_vec()),
                         ciphertext: Base64String(CIPHERTEXT.to_vec()),
                     });
@@ -573,11 +585,17 @@ mod tests {
         );
     }
 
-    /// The leaf binds the hash alone, a served key of another hash or a missing one never reaches a sender.
+    /// The leaf binds the hash alone.
     #[tokio::test]
     async fn a_served_viewing_key_off_the_leaf_hash_or_missing_is_refused() {
         let owner = wallet(3);
         let mut served = Served::new(&[(&owner, ViewingKey::new().pubkey())]);
+        served.seq = 1;
+        assert!(matches!(
+            served.resolve(&enrolled(&owner)).await,
+            Err(ResolveError::ViewingKeyMismatch)
+        ));
+        served.seq = 0;
         let solana = Address::new_from_array(solana_owner(&owner));
         served
             .keys

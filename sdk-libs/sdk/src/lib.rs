@@ -85,7 +85,8 @@ pub use crate::{
         RingDepositBatch, RingDepositBatchReceipt, RingDepositReceipt,
     },
     enrollment::{
-        Enroll, EnrollmentRead, EnrollmentService, OwnedChange, OwnerEnrollment, WriteOwnerGrant,
+        Enroll, EnrolledLeaf, EnrollmentRead, EnrollmentService, OwnedChange, OwnerEnrollment,
+        WriteOwnerGrant,
     },
     error::RingError,
     merge::{

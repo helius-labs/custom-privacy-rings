@@ -44,7 +44,7 @@ pub struct RingTrackingRecordView {
     pub nullifier_pk: Hash,
     pub ct_hash: Hash,
     pub list_tag: Hash,
-    /// `hash_bytes` of the seal's `viewing_u`, a sender trusts the key only after checking it.
+    /// Binds the seal's `viewing_u` and `seq`, a sender trusts the key only after checking it.
     pub viewing_hash: Hash,
     /// Absent on the sentinel alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,6 +59,8 @@ pub struct RingTrackingSealView {
     pub owner: SerializablePubkey,
     /// The leaf's current X25519 viewing key, 32 bytes.
     pub viewing_u: Base64String,
+    /// Rotations the leaf has taken, zero on a first enrollment.
+    pub seq: u64,
     /// Tagged X25519, 33 bytes.
     pub eph_pk: Base64String,
     /// 64 bytes.

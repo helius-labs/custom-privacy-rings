@@ -4,14 +4,13 @@
 
 use solana_address::Address;
 use spr_client::AsyncRpc;
-use spr_hasher::primitives::hash_bytes;
 use spr_transaction::ShieldedKeys;
 use zolana_ring_client::ViewingHistory;
 use zolana_ring_keys::RotatingRingKeys;
 
 use crate::client::{RingClient, RingIndexerBackend};
 use crate::{
-    enrollment::{EnrollmentRead, OwnedChange, OwnerEnrollment},
+    enrollment::{EnrollmentRead, OwnerEnrollment},
     CustomRing, RingError,
 };
 
@@ -53,27 +52,24 @@ impl RotateViewingKey<'_> {
         .read(client.zolana())
         .await?
         .ok_or(RingError::RotationUnenrolled { owner })?;
-        if enrolled.nullifier_pk != address.nullifier_pubkey {
+        if enrolled.ix.nullifier_pk != address.nullifier_pubkey {
             return Err(RingError::AlreadyEnrolled { owner });
         }
         if !self
             .keys
             .viewing_public_keys()
             .iter()
-            .any(|key| key.u() == enrolled.viewing_u)
+            .any(|key| key.u() == enrolled.ix.viewing_u)
         {
             return Err(RingError::ViewingKeyNotHeld { owner });
         }
         let viewing_u = address.viewing_pubkey.u();
         Ok(
-            (enrolled.viewing_u != viewing_u).then_some(OwnerEnrollment {
+            (enrolled.ix.viewing_u != viewing_u).then(|| OwnerEnrollment {
                 ring: self.ring,
                 tracking_registry,
                 owner,
-                change: OwnedChange::Rotate {
-                    viewing_u,
-                    prior_viewing_hash: hash_bytes(&enrolled.viewing_u)?,
-                },
+                change: enrolled.rotation(viewing_u),
             }),
         )
     }

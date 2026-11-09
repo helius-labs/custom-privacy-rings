@@ -10,7 +10,7 @@ use bytemuck::{Pod, Zeroable};
 use custom_ring_interface::{
     storage::{RegistryId, Revision, StorageRegistry},
     storage_instruction::{EnrollIxData, InitializeIxData, InitializeTrackingIxData},
-    tracking::TrackingRegistry,
+    tracking::{viewing_hash, TrackingRegistry},
     CoSignScope, CoSigner, CoSignerCounts, NewRing, PolicyUpdate, RingMode, RingPolicy, RingRoles,
     SourceSlot, CO_SIGNER, N_SOURCE_SLOTS, RING_POLICY_PDA_SEED, STORAGE_PROGRAM_ID,
 };
@@ -679,6 +679,7 @@ pub(crate) struct ServedLeaf {
     pub nullifier_pk: [u8; 32],
     pub list_tag: [u8; 32],
     pub viewing_u: [u8; 32],
+    pub seq: u64,
     pub seal: SealedNullifierKey,
 }
 
@@ -690,6 +691,7 @@ impl ServedLeaf {
             nullifier_pk: address.nullifier_pubkey,
             list_tag,
             viewing_u: address.viewing_pubkey.u(),
+            seq: 0,
             seal: SealedNullifierKey {
                 eph_pk: auditor().pubkey(),
                 ciphertext: [0x05; 64],
@@ -705,6 +707,7 @@ impl ServedLeaf {
             nullifier_pk: envelope.nullifier_pk,
             list_tag: custom_ring_interface::domain::list_tag(list_salt).unwrap(),
             viewing_u: X25519Keypair::new().pubkey().u(),
+            seq: 0,
             seal: envelope.sealed,
         }
     }
@@ -731,7 +734,7 @@ impl ServedLeaf {
             nullifier_pk: self.nullifier_pk,
             ct_hash: hash_bytes(&self.seal.ciphertext).unwrap(),
             list_tag: self.list_tag,
-            viewing_hash: hash_bytes(&self.viewing_u).unwrap(),
+            viewing_hash: viewing_hash(&self.viewing_u, self.seq).unwrap(),
         }
     }
 }
@@ -840,6 +843,7 @@ impl TrackingFixture {
                 .map(|leaf| RingTrackingSealView {
                     owner: leaf.owner.into(),
                     viewing_u: Base64String(leaf.viewing_u.to_vec()),
+                    seq: leaf.seq,
                     eph_pk: Base64String(leaf.seal.eph_pk.as_bytes().to_vec()),
                     ciphertext: Base64String(leaf.seal.ciphertext.to_vec()),
                 }),

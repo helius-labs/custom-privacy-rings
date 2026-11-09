@@ -13,7 +13,7 @@ use custom_ring_interface::{
     key_catalog::{RingCircuit, RING_KEYS},
     policy_withdrawal_hash,
     storage::{Revision, Root, StorageRegistry},
-    tracking::TrackingRegistry,
+    tracking::{viewing_hash, TrackingRegistry},
     verifying_key, RingProof, SignerSet, SlotBody, TransferBinding, TransferRoots,
     ANONYMOUS_PARTIES, MAX_CPI_DATA_LEN, PROVING_KEY_SHA256S, TAGGED_X25519_KEY_LEN,
 };
@@ -28,7 +28,7 @@ use spr_client::{
     ClientError, ConfirmedInstructionGroups, GetMerkleProofsResponse, MerkleContext, MerkleProof,
     Proof, ProofDataSource, WitnessReader,
 };
-use spr_hasher::{primitives::hash_bytes, Hasher, HasherError, Poseidon};
+use spr_hasher::{Hasher, HasherError, Poseidon};
 use spr_indexer_api::Hash;
 use spr_interface::N_PUBLIC_SLOTS;
 use spr_keypair::NullifierKey;
@@ -442,7 +442,7 @@ pub(super) fn tracking_tree(rows: &[ShieldedAddress]) -> Result<TrackingTree> {
             nullifier_pk: address.nullifier_pubkey,
             ct_hash: [0x05; 32],
             list_tag: [0x06; 32],
-            viewing_hash: hash_bytes(&address.viewing_pubkey.u())?,
+            viewing_hash: viewing_hash(&address.viewing_pubkey.u(), 0)?,
         })
     }))
     .collect::<Result<_>>()?;

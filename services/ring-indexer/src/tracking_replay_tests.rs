@@ -5,7 +5,7 @@ use custom_ring_interface::{
         InitializeTrackingIxData, StorageEvent,
     },
     tracking::{
-        tracking_chain_start, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
+        tracking_chain_start, viewing_hash, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
         TRACKING_EMPTY_ROOT,
     },
     CustomRingProof, STORAGE_PROGRAM_ID, VIEWING_PUBKEY_TAG,
@@ -13,7 +13,6 @@ use custom_ring_interface::{
 use sea_orm::TransactionTrait;
 use solana_address::Address;
 use solana_signature::Signature;
-use spr_hasher::primitives::hash_bytes;
 use spr_indexer_api::Hash;
 use zolana_ring_indexer::tracking::{
     GetTrackingApplyProofInputsRequest, GetTrackingOpeningsRequest, GetTrackingRecordPoolRequest,
@@ -52,8 +51,12 @@ static PROOF: std::sync::LazyLock<CustomRingProof> =
 #[derive(Clone, Copy)]
 enum Write {
     Enroll(Address, EnrollIxData),
-    /// The new viewing key and the viewing hash it replaces.
-    Rotate(Address, [u8; 32], [u8; 32]),
+    Rotate {
+        owner: Address,
+        viewing_u: [u8; 32],
+        prior_viewing_u: [u8; 32],
+        prior_seq: [u8; 8],
+    },
 }
 
 /// Passes `EnrollIxData::check`, `seal` varies the ciphertext and `viewing` the key.
@@ -88,11 +91,17 @@ impl Write {
                 owner,
                 change: EnrollmentChange::Enroll { ix, proof: &PROOF },
             },
-            Self::Rotate(owner, viewing_u, prior_viewing_hash) => EnrollmentWrite {
+            Self::Rotate {
+                owner,
+                viewing_u,
+                prior_viewing_u,
+                prior_seq,
+            } => EnrollmentWrite {
                 owner,
                 change: EnrollmentChange::Rotate {
                     viewing_u,
-                    prior_viewing_hash,
+                    prior_viewing_u,
+                    prior_seq,
                 },
             },
         }
@@ -244,7 +253,14 @@ impl Ledger {
     /// The owner's opening under the newest root, served as a sender reads it.
     async fn opening(&mut self, slot: u64, owner: Address) -> RingTrackingOpening {
         self.serve(slot).await;
-        let member = Write::Rotate(owner, field(3), [0; 32]).entry().member;
+        let member = Write::Rotate {
+            owner,
+            viewing_u: field(3),
+            prior_viewing_u: [0; 32],
+            prior_seq: [0; 8],
+        }
+        .entry()
+        .member;
         let root = self.state().await.account.newest().hash;
         let response = api::tracking_openings(
             self.indexer.db.as_ref(),
@@ -295,7 +311,12 @@ async fn a_late_registration_inserts_once_and_later_rotations_move_only_the_view
     assert!(!ledger.opening(1, OWNER).await.present);
     let mut tree = TrackingTree::new().unwrap();
     let batch = [
-        Write::Rotate(OWNER, field(6), [0; 32]),
+        Write::Rotate {
+            owner: OWNER,
+            viewing_u: field(6),
+            prior_viewing_u: [0; 32],
+            prior_seq: [0; 8],
+        },
         Write::Enroll(OWNER, ix_data(5, 3)),
     ];
     let apply = ledger.apply(&mut tree, &batch).await;
@@ -308,17 +329,19 @@ async fn a_late_registration_inserts_once_and_later_rotations_move_only_the_view
     assert!(inserted.present);
     let seal = inserted.record.seal.clone().unwrap();
     assert_eq!(seal.viewing_u.0, field(3));
+    assert_eq!(seal.seq, 0);
     assert_eq!(seal.ciphertext.0, [5; 64]);
     assert_eq!(seal.eph_pk.0[1..], field(4));
     assert_eq!(seal.owner, OWNER.into());
     let apply = ledger
         .apply(
             &mut tree,
-            &[Write::Rotate(
-                OWNER,
-                field(7),
-                hash_bytes(&field(3)).unwrap(),
-            )],
+            &[Write::Rotate {
+                owner: OWNER,
+                viewing_u: field(7),
+                prior_viewing_u: field(3),
+                prior_seq: [0; 8],
+            }],
         )
         .await;
     ledger.land_apply(3, apply).await;
@@ -327,11 +350,33 @@ async fn a_late_registration_inserts_once_and_later_rotations_move_only_the_view
     assert_eq!(updated.record.ct_hash, inserted.record.ct_hash);
     assert_eq!(
         updated.record.viewing_hash,
-        Hash(hash_bytes(&field(7)).unwrap())
+        Hash(viewing_hash(&field(7), 1).unwrap())
     );
     let seal = updated.record.seal.unwrap();
     assert_eq!(seal.viewing_u.0, field(7));
+    assert_eq!(seal.seq, 1);
     assert_eq!(seal.ciphertext.0, [5; 64]);
+    // A returning key takes the next counter, its leaf hash differs from its first.
+    let apply = ledger
+        .apply(
+            &mut tree,
+            &[Write::Rotate {
+                owner: OWNER,
+                viewing_u: field(3),
+                prior_viewing_u: field(7),
+                prior_seq: 1u64.to_le_bytes(),
+            }],
+        )
+        .await;
+    ledger.land_apply(4, apply).await;
+    assert_eq!(ledger.state().await.fault, None);
+    let returned = ledger.opening(4, OWNER).await;
+    assert_eq!(
+        returned.record.viewing_hash,
+        Hash(viewing_hash(&field(3), 2).unwrap())
+    );
+    assert_ne!(returned.record.viewing_hash, inserted.record.viewing_hash);
+    assert_eq!(returned.record.seal.unwrap().seq, 2);
     ledger.stop().await;
 }
 
@@ -341,7 +386,12 @@ fn a_repeated_enrollment_and_a_stale_rotation_do_not_apply() {
     let first = Write::Enroll(OWNER, ix_data(5, 3)).entry();
     for second in [
         Write::Enroll(OWNER, ix_data(8, 7)),
-        Write::Rotate(OWNER, field(7), hash_bytes(&field(6)).unwrap()),
+        Write::Rotate {
+            owner: OWNER,
+            viewing_u: field(7),
+            prior_viewing_u: field(6),
+            prior_seq: [0; 8],
+        },
     ] {
         let applied = TrackingTree::new()
             .unwrap()

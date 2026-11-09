@@ -22,7 +22,7 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_signer::Signer;
 use spr_api::SprApi;
 use spr_client::{AsyncRpc, ClientError};
-use spr_hasher::primitives::{hash_bytes, right_align, solana_owner_identity};
+use spr_hasher::primitives::{right_align, solana_owner_identity};
 use spr_keypair::{NullifierKey, X25519Pubkey};
 use zeroize::Zeroizing;
 use zolana_ring_client::{
@@ -82,10 +82,12 @@ pub enum OwnedChange {
         ix: EnrollIxData,
         proof: Box<CustomRingProof>,
     },
-    /// Bound to the leaf's viewing hash it replaces, a stale one refuses the batch.
+    /// Bound to the leaf's key and counter it replaces, a stale pair refuses the batch.
     Rotate {
         viewing_u: [u8; 32],
-        prior_viewing_hash: [u8; 32],
+        prior_viewing_u: [u8; 32],
+        /// Little endian.
+        prior_seq: [u8; 8],
     },
 }
 
@@ -94,6 +96,13 @@ pub enum OwnedChange {
 pub trait EnrollmentService: Send + Sync {
     /// Refuses before sending a request whose signature does not verify.
     async fn submit_enrollment(&self, request: SubmitEnrollmentRequest) -> Result<(), RingError>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnrolledLeaf {
+    pub ix: EnrollIxData,
+    /// Rotations `viewing_hash` binds.
+    pub seq: u64,
 }
 
 /// The enrollment an owner holds, its leaf's fields under the registry's newest root.
@@ -126,13 +135,10 @@ impl Enroll<'_> {
         .await?;
         let viewing_u = self.viewing_pubkey.u();
         if let Some(enrolled) = enrolled {
-            if enrolled.nullifier_pk != self.nullifier_key.pubkey()? {
+            if enrolled.ix.nullifier_pk != self.nullifier_key.pubkey()? {
                 return Err(RingError::AlreadyEnrolled { owner: self.owner });
             }
-            return Ok(enrollment(OwnedChange::Rotate {
-                viewing_u,
-                prior_viewing_hash: hash_bytes(&enrolled.viewing_u)?,
-            }));
+            return Ok(enrollment(enrolled.rotation(viewing_u)));
         }
         // 2. RegisterKey proves the ciphertext opens to the nullifier secret and list salt under
         //    the auditor key the registry pins, so the auditor recovers both from the inserting write.
@@ -179,6 +185,16 @@ impl Enroll<'_> {
     }
 }
 
+impl EnrolledLeaf {
+    pub(crate) fn rotation(&self, viewing_u: [u8; 32]) -> OwnedChange {
+        OwnedChange::Rotate {
+            viewing_u,
+            prior_viewing_u: self.ix.viewing_u,
+            prior_seq: self.seq.to_le_bytes(),
+        }
+    }
+}
+
 impl OwnerEnrollment {
     /// The bytes storage parses and the entry it hashes.
     pub fn write(&self) -> EnrollmentWrite<'_> {
@@ -186,10 +202,12 @@ impl OwnerEnrollment {
             OwnedChange::Enroll { ix, proof } => EnrollmentChange::Enroll { ix, proof },
             OwnedChange::Rotate {
                 viewing_u,
-                prior_viewing_hash,
+                prior_viewing_u,
+                prior_seq,
             } => EnrollmentChange::Rotate {
                 viewing_u,
-                prior_viewing_hash,
+                prior_viewing_u,
+                prior_seq,
             },
         };
         EnrollmentWrite {
@@ -225,7 +243,7 @@ impl EnrollmentRead {
     pub async fn read(
         self,
         client: &(impl AsyncRpc + AsyncRingIndexer + ?Sized),
-    ) -> Result<Option<EnrollIxData>, RingError> {
+    ) -> Result<Option<EnrolledLeaf>, RingError> {
         let owner = self.owner.to_bytes();
         let leaf = RegisteredKeys {
             registry: self.tracking_registry,
@@ -234,12 +252,15 @@ impl EnrollmentRead {
         .leaves(client, client)
         .await?
         .remove(&owner);
-        Ok(leaf.map(|leaf| EnrollIxData {
-            nullifier_pk: leaf.record.nullifier_pk,
-            list_tag: leaf.record.list_tag,
-            viewing_u: leaf.viewing_u,
-            eph_u: leaf.seal.eph_pk.u(),
-            ciphertext: leaf.seal.ciphertext,
+        Ok(leaf.map(|leaf| EnrolledLeaf {
+            ix: EnrollIxData {
+                nullifier_pk: leaf.record.nullifier_pk,
+                list_tag: leaf.record.list_tag,
+                viewing_u: leaf.viewing_u,
+                eph_u: leaf.seal.eph_pk.u(),
+                ciphertext: leaf.seal.ciphertext,
+            },
+            seq: leaf.seq,
         }))
     }
 }

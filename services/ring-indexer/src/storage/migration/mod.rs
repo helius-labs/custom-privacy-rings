@@ -38,7 +38,7 @@ impl MigrationTrait for Schema {
             format!("CREATE TABLE ring_records (program {blob} NOT NULL, leaf_index BIGINT NOT NULL, applied BIGINT NOT NULL, member {blob} NOT NULL, next_member {blob} NOT NULL, lists BIGINT NOT NULL, mint_policy TEXT, PRIMARY KEY(program, leaf_index, applied))"),
             format!("CREATE TABLE storage_registries (registry {blob} PRIMARY KEY, state TEXT NOT NULL)"),
             format!("CREATE TABLE storage_roots (registry {blob} NOT NULL, revision BIGINT NOT NULL, root {blob} NOT NULL, next_index BIGINT NOT NULL, PRIMARY KEY(registry, revision))"),
-            format!("CREATE TABLE tracking_records (program {blob} NOT NULL, leaf_index BIGINT NOT NULL, applied BIGINT NOT NULL, member {blob} NOT NULL, next_member {blob} NOT NULL, nullifier_pk {blob} NOT NULL, ct_hash {blob} NOT NULL, list_tag {blob} NOT NULL, viewing_hash {blob} NOT NULL, viewing_u {blob}, owner {blob}, eph_u {blob}, ciphertext {blob}, PRIMARY KEY(program, leaf_index, applied))"),
+            format!("CREATE TABLE tracking_records (program {blob} NOT NULL, leaf_index BIGINT NOT NULL, applied BIGINT NOT NULL, member {blob} NOT NULL, next_member {blob} NOT NULL, nullifier_pk {blob} NOT NULL, ct_hash {blob} NOT NULL, list_tag {blob} NOT NULL, viewing_hash {blob} NOT NULL, viewing_u {blob}, seq BIGINT, owner {blob}, eph_u {blob}, ciphertext {blob}, PRIMARY KEY(program, leaf_index, applied))"),
             format!("CREATE TABLE tracking_registries (registry {blob} PRIMARY KEY, state TEXT NOT NULL)"),
             "CREATE INDEX ring_record_nodes_applied ON ring_record_nodes(program, applied)".to_owned(),
             "CREATE INDEX ring_records_applied ON ring_records(program, applied)".to_owned(),

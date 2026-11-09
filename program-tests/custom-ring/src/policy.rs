@@ -332,13 +332,14 @@ pub fn owner_enrollment(
     let tracking = env
         .run(ring.require_policy(env.client.as_async()))?
         .tracking;
-    Ok(env.run(
+    let enrolled = env.run(
         EnrollmentRead {
             tracking_registry: tracking,
             owner,
         }
         .read(env.client.as_async()),
-    )?)
+    )?;
+    Ok(enrolled.map(|enrolled| enrolled.ix))
 }
 
 /// The owner's leaf under the registry's newest root, its key and seal checked.

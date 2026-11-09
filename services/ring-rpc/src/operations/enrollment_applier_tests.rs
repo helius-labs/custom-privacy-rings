@@ -8,6 +8,7 @@ use bytemuck::Zeroable;
 use custom_ring_interface::{
     storage::{Revision, StorageRegistry},
     storage_instruction::EnrollIxData,
+    tracking::viewing_hash,
     ApplyRecordsIxData, CustomRingProof, RING_POLICY, STORAGE_PROGRAM_ID,
 };
 use custom_ring_sdk::{OwnedChange, OwnerEnrollment};
@@ -16,7 +17,6 @@ use solana_instruction::Instruction;
 use solana_message::VersionedMessage;
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
-use spr_hasher::primitives::hash_bytes;
 use spr_keypair::X25519Keypair;
 use zolana_ring_client::{SealedNullifierKey, TrackingLeaf};
 use zolana_ring_indexer::rpc::{
@@ -229,6 +229,7 @@ impl StorageChain for StubChain {
                     },
                     owner: Address::new_from_array(*owner),
                     viewing_u: [0; 32],
+                    seq: 0,
                     seal: SealedNullifierKey {
                         eph_pk: X25519Keypair::from_bytes(&[1; 32]).pubkey(),
                         ciphertext: [0; 64],
@@ -268,14 +269,15 @@ fn rotation(seed: u8) -> SubmitEnrollmentRequest {
     let owner = owner(seed);
     let change = OwnedChange::Rotate {
         viewing_u,
-        prior_viewing_hash: prior_viewing_hash(seed),
+        prior_viewing_u: [seed; 32],
+        prior_seq: [0; 8],
     };
     enrollment(&owner, change).sign(&owner).expect("signed")
 }
 
 /// The viewing hash the owner's leaf holds before the rotation, a field element as every leaf hash is.
 fn prior_viewing_hash(seed: u8) -> [u8; 32] {
-    hash_bytes(&[seed; 32]).expect("viewing hash")
+    viewing_hash(&[seed; 32], 0).expect("viewing hash")
 }
 
 fn refusal(result: Result<SubmitEnrollmentResponse, RingRpcError>) -> EnrollmentRefusal {

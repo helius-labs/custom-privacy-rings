@@ -4,7 +4,7 @@ use custom_ring_interface::{
     check_member,
     storage_instruction::ApplyEnrollmentsIxData,
     tagged_x25519,
-    tracking::{owner_member, tracking_chain_start, TrackingEntry, TrackingRegistry},
+    tracking::{owner_member, tracking_chain_start, viewing_hash, TrackingEntry, TrackingRegistry},
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use solana_address::Address;
@@ -206,7 +206,7 @@ async fn sealed_view<C: ConnectionTrait>(
         .ok_or_else(|| internal("a tracking leaf has no viewing key"))?;
     let seal = &key.seal;
     let owner = Address::new_from_array(seal.owner);
-    if hash_bytes(&key.viewing_u).map_err(internal)? != record.viewing_hash
+    if viewing_hash(&key.viewing_u, key.seq).map_err(internal)? != record.viewing_hash
         || hash_bytes(&seal.ciphertext).map_err(internal)? != record.ct_hash
         || owner_member(&owner).map_err(internal)? != record.member
     {
@@ -216,6 +216,7 @@ async fn sealed_view<C: ConnectionTrait>(
         seal: Some(RingTrackingSealView {
             owner: owner.into(),
             viewing_u: Base64String(key.viewing_u.to_vec()),
+            seq: key.seq,
             eph_pk: Base64String(tagged_x25519(&seal.eph_u).to_vec()),
             ciphertext: Base64String(seal.ciphertext.to_vec()),
         }),

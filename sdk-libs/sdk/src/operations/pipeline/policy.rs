@@ -3,11 +3,12 @@
 use custom_ring_interface::{
     cosign::ApprovalMask,
     key_catalog::{RecordPools as PoolWidths, RingCircuit},
+    tracking::viewing_hash,
     CustomRingError, PolicyWithdrawal, PublicSlots, RingRail, RootRead, TransferRoots,
 };
 use solana_address::Address;
 use spr_client::AsyncRpc;
-use spr_hasher::primitives::{hash_bytes, right_align};
+use spr_hasher::primitives::right_align;
 use spr_interface::{N_PUBLIC_SLOTS, ZERO_NULLIFIER_PUBKEY};
 use spr_transaction::instructions::transact::SppProofInputs;
 use zolana_ring_client::{records::RecordPoolRead, AsyncRingIndexer};
@@ -368,9 +369,13 @@ impl PolicyRead<'_> {
                 .iter()
                 .any(|input| input.is_note() && input.utxo.owner == address.signing_pubkey);
             // A rotation that lands after the frame's root leaves the payment sealed to the key read.
-            let viewing_hash = hash_bytes(&address.viewing_pubkey.u())?;
-            if row.is_some_and(|row| row.viewing_hash != viewing_hash) && !spends {
-                return Err(RingError::RecipientViewingKeyStale { slot_index });
+            if let Some(row) = row.filter(|_| !spends) {
+                let seq = pool
+                    .viewing_seq(member)
+                    .ok_or(RingError::InvalidRecordOpening)?;
+                if row.viewing_hash != viewing_hash(&address.viewing_pubkey.u(), seq)? {
+                    return Err(RingError::RecipientViewingKeyStale { slot_index });
+                }
             }
         }
         Ok(())

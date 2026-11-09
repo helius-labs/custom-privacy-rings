@@ -1,5 +1,4 @@
 use custom_ring_interface::RingMode;
-use spr_hasher::primitives::hash_bytes;
 use spr_keypair::{ShieldedKeypair, X25519Keypair};
 
 use super::*;
@@ -38,7 +37,7 @@ fn held(owner: &ShieldedKeypair) -> ServedLeaf {
     ServedLeaf::sealed(owner.pubkey(), &owner.nullifier_key, &SALT)
 }
 
-async fn read(chain: Chain, owner: Address) -> Option<EnrollIxData> {
+async fn read(chain: Chain, owner: Address) -> Option<EnrolledLeaf> {
     EnrollmentRead {
         tracking_registry: TRACKING,
         owner,
@@ -55,7 +54,13 @@ async fn an_enrollment_reads_the_leaf_and_nothing_without_one() {
     let chain = || Chain::ring(RingSettings::new(RingMode::Confidential));
     assert_eq!(read(chain(), owner.pubkey()).await, None);
     let applied = chain().with_tracking_leaves(&[leaf]);
-    assert_eq!(read(applied, owner.pubkey()).await, Some(leaf.enroll()));
+    assert_eq!(
+        read(applied, owner.pubkey()).await,
+        Some(EnrolledLeaf {
+            ix: leaf.enroll(),
+            seq: 0
+        })
+    );
 }
 
 fn enroll(owner: &ShieldedKeypair, viewing_u: [u8; 32]) -> Enroll<'_> {
@@ -78,12 +83,12 @@ async fn an_enrolled_owner_proves_a_rotation_and_another_key_is_refused() {
         .client();
     let viewing_u = X25519Keypair::new().pubkey().u();
     let rotation = enroll(&owner, viewing_u).prove(&client).await.unwrap();
-    let prior_viewing_hash = hash_bytes(&leaf.viewing_u).unwrap();
     assert_eq!(
         rotation.change,
         OwnedChange::Rotate {
             viewing_u,
-            prior_viewing_hash
+            prior_viewing_u: leaf.viewing_u,
+            prior_seq: [0; 8],
         }
     );
     assert_eq!(rotation.tracking_registry, TRACKING);
@@ -108,7 +113,8 @@ fn only_the_owner_signs_its_write_and_the_signature_binds_every_byte() {
         owner: owner.pubkey(),
         change: OwnedChange::Rotate {
             viewing_u: X25519Keypair::new().pubkey().u(),
-            prior_viewing_hash: [9; 32],
+            prior_viewing_u: [9; 32],
+            prior_seq: [0; 8],
         },
     };
     assert!(matches!(

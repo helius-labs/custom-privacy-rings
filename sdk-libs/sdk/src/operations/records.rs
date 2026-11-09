@@ -136,6 +136,8 @@ pub(crate) struct TrackingRead<'a> {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct TrackingPoolRead {
     pool: TrackingPool,
+    /// Aligned with the pool's records, the sentinel serves none.
+    viewing_seqs: Vec<Option<u64>>,
 }
 
 impl TrackingRead<'_> {
@@ -193,7 +195,12 @@ impl TrackingRead<'_> {
         };
         pool.verify(&root)
             .map_err(|_| RingError::InvalidRecordOpening)?;
-        Ok(TrackingPoolRead { pool })
+        let viewing_seqs = response
+            .records
+            .iter()
+            .map(|row| row.record.seal.as_ref().map(|seal| seal.seq))
+            .collect();
+        Ok(TrackingPoolRead { pool, viewing_seqs })
     }
 }
 
@@ -204,15 +211,26 @@ impl TrackingPoolRead {
 
     /// `None` for an absent member or one outside the pool.
     pub fn record(&self, member: &[u8; 32]) -> Option<&TrackingRecord> {
+        self.pool.records.get(self.row(member)?)
+    }
+
+    /// `None` for an absent member, one outside the pool or a row served without its seal.
+    pub fn viewing_seq(&self, member: &[u8; 32]) -> Option<u64> {
+        self.viewing_seqs.get(self.row(member)?).copied().flatten()
+    }
+
+    fn row(&self, member: &[u8; 32]) -> Option<usize> {
         let subject = self
             .pool
             .subjects
             .iter()
             .find(|subject| subject.member == *member)?;
+        let row = subject.record_index as usize;
         self.pool
             .records
-            .get(subject.record_index as usize)
-            .filter(|record| record.member == *member)
+            .get(row)
+            .is_some_and(|record| record.member == *member)
+            .then_some(row)
     }
 }
 

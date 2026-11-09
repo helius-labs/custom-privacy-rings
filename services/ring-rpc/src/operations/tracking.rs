@@ -516,7 +516,7 @@ fn list_key(record: &TrackingRecord, list_salt: &[u8; 32]) -> Result<[u8; 32], M
 pub mod fixture {
     use std::sync::{Arc, Mutex};
 
-    use custom_ring_interface::tracking::TrackingEntry;
+    use custom_ring_interface::tracking::{viewing_hash, TrackingEntry};
     use spr_indexer_api::{Base64String, Context, Hash};
     use zolana_ring_client::{rpc::WalletEnrollment, NullifierKeyEnvelope};
     use zolana_ring_indexer::{
@@ -617,7 +617,7 @@ pub mod fixture {
                         nullifier_pk,
                         ct_hash: hash_bytes(&sealed.ciphertext).expect("ct hash"),
                         list_tag,
-                        viewing_hash: hash_bytes(&VIEWING_U).expect("viewing hash"),
+                        viewing_hash: viewing_hash(&VIEWING_U, 0).expect("viewing hash"),
                         prior_viewing_hash: [0; 32],
                         proven: true,
                     }],
@@ -630,6 +630,7 @@ pub mod fixture {
                 RingTrackingSealView {
                     owner: owner.into(),
                     viewing_u: Base64String(VIEWING_U.to_vec()),
+                    seq: 0,
                     eph_pk: Base64String(sealed.eph_pk.as_bytes().to_vec()),
                     ciphertext: Base64String(sealed.ciphertext.to_vec()),
                 },

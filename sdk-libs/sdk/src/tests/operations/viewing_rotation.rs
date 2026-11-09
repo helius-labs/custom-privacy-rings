@@ -1,10 +1,10 @@
 use custom_ring_interface::RingMode;
 use solana_signer::Signer;
-use spr_hasher::primitives::hash_bytes;
 use spr_keypair::{ShieldedKeypair, ViewingKey, X25519Keypair};
 use zolana_ring_client::ViewingRotation;
 
 use super::*;
+use crate::enrollment::OwnedChange;
 use crate::tests::support::{keypair, ring, Chain, RingSettings, ServedLeaf, TRACKING};
 
 fn rotation<'a>(
@@ -30,7 +30,10 @@ fn chain(leaves: &[ServedLeaf]) -> RingClient<Chain, Chain> {
 async fn a_rotation_names_the_new_key_and_a_current_leaf_needs_none() {
     let identity = keypair(3);
     let address = identity.shielded_address().unwrap();
-    let leaf = ServedLeaf::of(&address, [0x06; 32]);
+    let leaf = ServedLeaf {
+        seq: 2,
+        ..ServedLeaf::of(&address, [0x06; 32])
+    };
     let client = chain(&[leaf]);
     let start = ViewingRotation {
         keys: RotatingRingKeys::new(&identity).unwrap(),
@@ -55,12 +58,12 @@ async fn a_rotation_names_the_new_key_and_a_current_leaf_needs_none() {
         .await
         .unwrap()
         .unwrap();
-    let prior_viewing_hash = hash_bytes(&leaf.viewing_u).unwrap();
     assert_eq!(
         prepared.change,
         OwnedChange::Rotate {
             viewing_u: new.u(),
-            prior_viewing_hash
+            prior_viewing_u: leaf.viewing_u,
+            prior_seq: 2u64.to_le_bytes(),
         }
     );
     assert_eq!(prepared.tracking_registry, TRACKING);

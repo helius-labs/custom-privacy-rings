@@ -8,7 +8,7 @@ use anyhow::Result;
 use custom_ring_interface::REGISTER_KEY_CIPHERTEXT_LEN;
 use sea_orm::{ConnectionTrait, QueryResult};
 
-use super::{bytes, field, int, TrackingStore};
+use super::{bytes, field, int, uint, TrackingStore};
 
 /// The owner and the sealed secrets of the write that inserted a leaf.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,6 +21,7 @@ pub(crate) struct LeafSeal {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LeafKey {
     pub viewing_u: [u8; 32],
+    pub seq: u64,
     pub seal: LeafSeal,
 }
 
@@ -29,11 +30,12 @@ pub(crate) struct LeafKey {
 pub(crate) struct LeafStamp {
     pub member: [u8; 32],
     pub viewing_u: [u8; 32],
+    pub seq: u64,
     /// Set on the insert alone, an update keeps the inserting write's.
     pub seal: Option<LeafSeal>,
 }
 
-const KEY_COLUMNS: [&str; 4] = ["viewing_u", "owner", "eph_u", "ciphertext"];
+const KEY_COLUMNS: [&str; 5] = ["viewing_u", "seq", "owner", "eph_u", "ciphertext"];
 
 impl<C: ConnectionTrait> TrackingStore<'_, C> {
     /// Every leaf version saved at `revision` takes its predecessor's key and seal, then each stamp overrides its owner's.
@@ -54,7 +56,7 @@ impl<C: ConnectionTrait> TrackingStore<'_, C> {
         for stamp in stamps {
             let (sql, mut values) = match &stamp.seal {
                 Some(seal) => (
-                    "UPDATE tracking_records SET viewing_u=$4, owner=$5, eph_u=$6, ciphertext=$7 \
+                    "UPDATE tracking_records SET viewing_u=$4, seq=$5, owner=$6, eph_u=$7, ciphertext=$8 \
                      WHERE program=$1 AND applied=$2 AND member=$3",
                     vec![
                         bytes(&seal.owner),
@@ -63,7 +65,7 @@ impl<C: ConnectionTrait> TrackingStore<'_, C> {
                     ],
                 ),
                 None => (
-                    "UPDATE tracking_records SET viewing_u=$4 \
+                    "UPDATE tracking_records SET viewing_u=$4, seq=$5 \
                      WHERE program=$1 AND applied=$2 AND member=$3",
                     vec![],
                 ),
@@ -74,6 +76,7 @@ impl<C: ConnectionTrait> TrackingStore<'_, C> {
                     int(revision)?,
                     bytes(&stamp.member),
                     bytes(&stamp.viewing_u),
+                    int(stamp.seq)?,
                 ],
             );
             self.tree.exec(sql, values).await?;
@@ -83,7 +86,7 @@ impl<C: ConnectionTrait> TrackingStore<'_, C> {
 
     /// The key and seal of `member`'s newest leaf version at or below `version`.
     pub async fn leaf_key(&self, member: &[u8; 32], version: u64) -> Result<Option<LeafKey>> {
-        let sql = "SELECT viewing_u, owner, eph_u, ciphertext FROM tracking_records \
+        let sql = "SELECT viewing_u, seq, owner, eph_u, ciphertext FROM tracking_records \
                    WHERE program=$1 AND member=$2 AND applied<=$3 ORDER BY applied DESC LIMIT 1";
         let row = self
             .tree
@@ -96,6 +99,7 @@ impl<C: ConnectionTrait> TrackingStore<'_, C> {
 fn leaf_key(row: &QueryResult) -> Result<LeafKey> {
     Ok(LeafKey {
         viewing_u: field(row, "viewing_u")?,
+        seq: uint(row, "seq")?,
         seal: LeafSeal {
             owner: field(row, "owner")?,
             eph_u: field(row, "eph_u")?,
