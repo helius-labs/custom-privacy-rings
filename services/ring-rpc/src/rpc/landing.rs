@@ -1,3 +1,11 @@
+/// Modelled at the base fee, the service sets no priority fee.
+pub(crate) fn signature_fees(signatures: usize) -> u64 {
+    const LAMPORTS_PER_SIGNATURE: u64 = 5_000;
+    u64::try_from(signatures)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(LAMPORTS_PER_SIGNATURE)
+}
+
 use async_trait::async_trait;
 use custom_ring_sdk::SignatureHistory;
 use solana_address::Address;

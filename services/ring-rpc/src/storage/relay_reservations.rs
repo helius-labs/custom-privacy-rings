@@ -6,8 +6,8 @@ use zolana_ring_client::rpc::RelayId;
 
 const TOTAL_SCOPE: [u8; 32] = [0; 32];
 
-/// One blockhash lifetime of silence hands the attempt on, the generation fence stops a stalled holder.
-const LEASE_SLOTS: u64 = 150;
+/// One blockhash lifetime, bounds an attempt's silence and a quote.
+pub(crate) const LEASE_SLOTS: u64 = 150;
 
 const PHASE_OPEN: &str = "open";
 const PHASE_BOUND: &str = "bound";
