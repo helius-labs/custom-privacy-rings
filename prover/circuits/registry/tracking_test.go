@@ -122,6 +122,7 @@ type trackingVector struct {
 	CtHash        string `json:"ct_hash"`
 	ListTag       string `json:"list_tag"`
 	ViewingHash   string `json:"viewing_hash"`
+	PriorHash     string `json:"prior_viewing_hash"`
 	Proven        bool   `json:"proven"`
 	EntryHash     string `json:"entry_hash"`
 	ChainFromZero string `json:"chain_from_zero"`
@@ -141,7 +142,8 @@ func TestTrackingHashesMatchRustVector(t *testing.T) {
 	}
 	entry := ringregistry.TrackingEntry{
 		Member: ringtest.VectorField(t, v.Member), NullifierPk: ringtest.VectorField(t, v.NullifierPk), CtHash: ringtest.VectorField(t, v.CtHash),
-		ListTag: ringtest.VectorField(t, v.ListTag), ViewingHash: ringtest.VectorField(t, v.ViewingHash), Unproven: !v.Proven,
+		ListTag: ringtest.VectorField(t, v.ListTag), ViewingHash: ringtest.VectorField(t, v.ViewingHash),
+		PriorViewingHash: ringtest.VectorField(t, v.PriorHash), Unproven: !v.Proven,
 	}
 	hash := entry.Hash(t)
 	if hash.Cmp(ringtest.VectorField(t, v.EntryHash)) != 0 {

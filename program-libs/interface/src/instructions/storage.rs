@@ -109,13 +109,16 @@ pub struct EnrollmentWrite<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnrollmentChange<'a> {
-    /// Inserts an absent owner's row, a present owner's row takes only the viewing key.
+    /// Inserts an absent owner's row, a present owner's apply refuses.
     Enroll {
         ix: &'a EnrollIxData,
         proof: &'a CustomRingProof,
     },
-    /// Moves a present owner's viewing key, an absent owner stays absent.
-    Rotate { viewing_u: &'a [u8; 32] },
+    /// Moves a present owner's viewing key from `prior_viewing_hash`, an absent owner stays absent.
+    Rotate {
+        viewing_u: &'a [u8; 32],
+        prior_viewing_hash: &'a [u8; 32],
+    },
 }
 
 /// The chain and the signature check read the same entry hash.
@@ -225,7 +228,12 @@ impl<'a> EnrollmentWrite<'a> {
             }
             enrollment_kind::ROTATE => {
                 let (viewing_u, rest) = rest.split_first_chunk::<32>().ok_or(invalid)?;
-                (EnrollmentChange::Rotate { viewing_u }, rest)
+                let (prior_viewing_hash, rest) = rest.split_first_chunk::<32>().ok_or(invalid)?;
+                let change = EnrollmentChange::Rotate {
+                    viewing_u,
+                    prior_viewing_hash,
+                };
+                (change, rest)
             }
             _ => return Err(invalid),
         };
@@ -241,9 +249,13 @@ impl<'a> EnrollmentWrite<'a> {
                 data.extend_from_slice(bytemuck::bytes_of(ix));
                 data.extend_from_slice(bytemuck::bytes_of(proof));
             }
-            EnrollmentChange::Rotate { viewing_u } => {
+            EnrollmentChange::Rotate {
+                viewing_u,
+                prior_viewing_hash,
+            } => {
                 data.push(enrollment_kind::ROTATE);
                 data.extend_from_slice(viewing_u);
+                data.extend_from_slice(prior_viewing_hash);
             }
         }
     }
@@ -252,16 +264,17 @@ impl<'a> EnrollmentWrite<'a> {
     pub fn check(&self) -> Result<(), StorageError> {
         match self.change {
             EnrollmentChange::Enroll { ix, .. } => ix.check(),
-            EnrollmentChange::Rotate { viewing_u } => check_viewing_key(viewing_u),
+            EnrollmentChange::Rotate { viewing_u, .. } => check_viewing_key(viewing_u),
         }
     }
 
     pub fn entry(&self) -> Result<TrackingEntry, StorageError> {
         match self.change {
             EnrollmentChange::Enroll { ix, .. } => TrackingEntry::from_enroll(self.owner, ix),
-            EnrollmentChange::Rotate { viewing_u } => {
-                TrackingEntry::from_rotation(self.owner, viewing_u)
-            }
+            EnrollmentChange::Rotate {
+                viewing_u,
+                prior_viewing_hash,
+            } => TrackingEntry::from_rotation(self.owner, viewing_u, prior_viewing_hash),
         }
     }
 

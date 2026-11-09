@@ -23,19 +23,19 @@ func (r TrackingRecord) Wires() registry.TrackingRecord {
 	return registry.TrackingRecord{Member: copied(r.Member), Next: copied(r.Next), NullifierPk: copied(r.NullifierPk), CtHash: copied(r.CtHash), ListTag: copied(r.ListTag), ViewingHash: copied(r.ViewingHash)}
 }
 
-// TrackingEntry mirrors registry.TrackingEntry, a nil ViewingHash reads as zero and Unproven marks a rotation.
+// TrackingEntry mirrors registry.TrackingEntry, a nil ViewingHash or PriorViewingHash reads as zero and Unproven marks a rotation.
 type TrackingEntry struct {
-	Member, NullifierPk, CtHash, ListTag, ViewingHash *big.Int
-	Unproven                                          bool
+	Member, NullifierPk, CtHash, ListTag, ViewingHash, PriorViewingHash *big.Int
+	Unproven                                                            bool
 }
 
 func (e TrackingEntry) Hash(t testing.TB) *big.Int {
 	t.Helper()
-	return ringtest.MustPoseidonHash(t, big.NewInt(shared.TrackingEntryDomain), e.Member, e.NullifierPk, e.CtHash, e.ListTag, copied(e.ViewingHash), e.proven())
+	return ringtest.MustPoseidonHash(t, big.NewInt(shared.TrackingEntryDomain), e.Member, e.NullifierPk, e.CtHash, e.ListTag, copied(e.ViewingHash), copied(e.PriorViewingHash), e.proven())
 }
 
 func (e TrackingEntry) Wires() registry.TrackingEntry {
-	return registry.TrackingEntry{Member: e.Member, NullifierPk: e.NullifierPk, CtHash: e.CtHash, ListTag: e.ListTag, ViewingHash: copied(e.ViewingHash), Proven: e.proven()}
+	return registry.TrackingEntry{Member: e.Member, NullifierPk: e.NullifierPk, CtHash: e.CtHash, ListTag: e.ListTag, ViewingHash: copied(e.ViewingHash), PriorViewingHash: copied(e.PriorViewingHash), Proven: e.proven()}
 }
 
 func (e TrackingEntry) proven() *big.Int {
@@ -96,7 +96,7 @@ func (w TrackingWrite) Wires() registry.EnrollmentWrite {
 func ZeroTrackingWrite() TrackingWrite {
 	zero := big.NewInt(0)
 	record := TrackingRecord{Member: zero, Next: zero, NullifierPk: zero, CtHash: zero, ListTag: zero, ViewingHash: zero}
-	entry := TrackingEntry{Member: zero, NullifierPk: zero, CtHash: zero, ListTag: zero, ViewingHash: zero, Unproven: true}
+	entry := TrackingEntry{Member: zero, NullifierPk: zero, CtHash: zero, ListTag: zero, ViewingHash: zero, PriorViewingHash: zero, Unproven: true}
 	return TrackingWrite{Entry: entry, Low: record, LowPath: zeroPath(), Slot: zeroPath()}
 }
 
@@ -138,6 +138,10 @@ func (r *Tracking) Apply(t testing.TB, e TrackingEntry) TrackingWrite {
 	w := TrackingWrite{Entry: e, Present: present, Low: low, LowPath: r.Path(index), Slot: zeroPath()}
 	switch {
 	case present:
+		// The circuit refuses an update from any key but the leaf's current one.
+		if copied(e.PriorViewingHash).Cmp(copied(low.ViewingHash)) != 0 {
+			t.Fatalf("ringregistry: %+v rotates from a key the leaf no longer holds", e)
+		}
 		updated := low
 		updated.ViewingHash = copied(e.ViewingHash)
 		r.set(t, index, updated)

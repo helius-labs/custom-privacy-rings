@@ -258,16 +258,25 @@ fn the_entry_binds_every_field_and_comes_from_the_enroll() {
     for other in moved {
         assert_ne!(other.hash(), entry.hash());
     }
-    // A rotation carries only its viewing key, unproven.
+    assert_eq!(entry.prior_viewing_hash, [0; 32]);
+    // A rotation carries only its viewing key and the key it replaces, unproven.
+    let rotation = TrackingEntry::from_rotation(&owner, &ix.viewing_u, &[3; 32]).unwrap();
     assert_eq!(
-        TrackingEntry::from_rotation(&owner, &ix.viewing_u),
-        Ok(TrackingEntry {
+        rotation,
+        TrackingEntry {
             nullifier_pk: [0; 32],
             ct_hash: [0; 32],
             list_tag: [0; 32],
+            prior_viewing_hash: [3; 32],
             proven: false,
             ..entry
-        })
+        }
+    );
+    assert_ne!(
+        TrackingEntry::from_rotation(&owner, &ix.viewing_u, &[4; 32])
+            .unwrap()
+            .hash(),
+        rotation.hash()
     );
 }
 
@@ -285,6 +294,7 @@ fn batch<'a>(
             owner: &owners[1],
             change: EnrollmentChange::Rotate {
                 viewing_u: &ix.viewing_u,
+                prior_viewing_hash: &ix.list_tag,
             },
         },
     ]
@@ -306,7 +316,7 @@ fn a_request_parses_exactly_its_count_of_writes() {
         writes: batch(&ix, &proof, &owners).to_vec(),
     };
     let data = request.encode();
-    assert_eq!(data.len(), ApplyEnrollmentsIxData::SIZE + 417 + 65);
+    assert_eq!(data.len(), ApplyEnrollmentsIxData::SIZE + 417 + 97);
     assert_eq!(ApplyEnrollmentsRequest::parse(&data), Ok(request));
     let refused = Err(StorageError::InvalidInstructionData);
     let edited = |edit: &dyn Fn(&mut Vec<u8>)| {
@@ -1024,10 +1034,14 @@ fn enrollment_vector() -> Value {
             proof: &proof,
         },
     };
+    let signed_enroll_viewing_hash = TrackingEntry::from_enroll(&owner, &ix)
+        .unwrap()
+        .viewing_hash;
     let rotate = EnrollmentWrite {
         owner: &owner,
         change: EnrollmentChange::Rotate {
             viewing_u: &[0x37; 32],
+            prior_viewing_hash: &signed_enroll_viewing_hash,
         },
     };
     let [signed_enroll, signed_rotate] =
@@ -1039,7 +1053,7 @@ fn enrollment_vector() -> Value {
         hex::encode(data)
     };
     json!({
-        "description": "One first enrollment and one rotation of the same owner. A write is owner || kind || body, kind 0 an EnrollIxData and a RegisterKey proof, kind 1 a viewing key. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, proven), a rotation's sealed fields zero. message is CRING/enr || registry || owner || entry_hash, the bytes the owner signs. chain_start is the hash chain of [CRTA, registry field, revision], chain_end folds Poseidon(chain, entry_hash) over both writes. Produced by program-libs/interface/tests/accounts.rs.",
+        "description": "One first enrollment and one rotation of the same owner. A write is owner || kind || body, kind 0 an EnrollIxData and a RegisterKey proof, kind 1 a viewing key and the viewing hash it replaces. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven), a rotation's sealed fields zero, a first enrollment's prior zero. message is CRING/enr || registry || owner || entry_hash, the bytes the owner signs. chain_start is the hash chain of [CRTA, registry field, revision], chain_end folds Poseidon(chain, entry_hash) over both writes. Produced by program-libs/interface/tests/accounts.rs.",
         "registry": hex::encode(registry),
         "owner": hex::encode(owner),
         "enroll_write": encoded(enroll),

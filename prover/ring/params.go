@@ -240,15 +240,17 @@ type ApplyRecordsParams struct {
 	Writes []*RecordWriteProofInput `json:"writes"`
 }
 
-// TrackingWrite is the witness of one applied entry in queue order.
+// TrackingWrite is the witness of one applied entry in write order.
 type TrackingWrite struct {
 	Member      Field `json:"member"`
 	NullifierPk Field `json:"nullifierPk"`
 	CtHash      Field `json:"ctHash"`
 	ListTag     Field `json:"listTag"`
 	ViewingHash Field `json:"viewingHash"`
-	Proven      bool  `json:"proven"`
-	Present     bool  `json:"present"`
+	// The leaf's viewing hash the owner signed against, zero on a first enrollment.
+	PriorViewingHash Field `json:"priorViewingHash"`
+	Proven           bool  `json:"proven"`
+	Present          bool  `json:"present"`
 	// The inserted leaf's index and path, zero on any other write.
 	Index uint64  `json:"index"`
 	Path  []Field `json:"path"`

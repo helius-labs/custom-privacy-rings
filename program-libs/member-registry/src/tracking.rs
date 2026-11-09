@@ -5,7 +5,7 @@
 //!
 //! Invariants, `ApplyEnrollmentsCircuit` holds each.
 //! 1. A proven entry of an absent owner inserts, an unproven one changes nothing, so no rotation creates a row.
-//! 2. An entry of a present owner moves only `viewing_hash`. The nullifier key, ciphertext hash and list tag stay as first inserted, an auditor's opened secrets keep matching them.
+//! 2. An entry of a present owner moves only `viewing_hash`, and only from the `prior_viewing_hash` it names. The nullifier key, ciphertext hash and list tag stay as first inserted, an auditor's opened secrets keep matching them, and an older rotation never replays over a newer one.
 //! 3. An insert takes the next empty leaf, so a full tree refuses a new owner and still applies updates.
 
 use custom_ring_interface::{
@@ -134,9 +134,12 @@ impl WritableLeaf for TrackingRecord {
         chain_link(previous, &entry.hash()?)
     }
 
-    /// A queued entry never refuses, a refusal at apply would block every later entry.
     fn after(self, entry: &TrackingEntry) -> Result<Self, RecordTreeError> {
         Ok(match (self.is_blank(), entry.proven) {
+            // The circuit refuses an update from any key but the row's current one.
+            (false, _) if entry.prior_viewing_hash != self.viewing_hash => {
+                return Err(RecordTreeError::StaleViewingKey)
+            }
             (false, _) => Self {
                 viewing_hash: entry.viewing_hash,
                 ..self

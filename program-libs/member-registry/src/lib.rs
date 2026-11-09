@@ -74,6 +74,8 @@ pub enum RecordTreeError {
     PoolShape,
     #[error("a proven tracking entry names a zero key")]
     TrackingKeyChanged,
+    #[error("a present owner's entry names a prior viewing hash the row does not hold")]
+    StaleViewingKey,
 }
 
 impl From<HasherError> for RecordTreeError {

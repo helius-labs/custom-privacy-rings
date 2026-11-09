@@ -54,7 +54,7 @@ func keys() []Key {
 			add(Key{Family: ApplyRecords, Inputs: writes, Private: private})
 		}
 	}
-	for _, writes := range registry.ApplyWidths {
+	for _, writes := range registry.EnrollmentWidths {
 		add(Key{Family: ApplyEnrollments, Inputs: writes})
 	}
 	add(Key{Family: RegisterKey})

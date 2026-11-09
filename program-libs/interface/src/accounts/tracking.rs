@@ -80,6 +80,8 @@ pub struct TrackingEntry {
     pub ct_hash: [u8; 32],
     pub list_tag: [u8; 32],
     pub viewing_hash: [u8; 32],
+    /// The leaf's viewing hash a rotation replaces, zero on a first enrollment.
+    pub prior_viewing_hash: [u8; 32],
     /// The write carried a verified `RegisterKey` proof, only a proven entry inserts a row.
     pub proven: bool,
 }
@@ -192,23 +194,29 @@ impl TrackingEntry {
             ct_hash: hash_bytes(&ix.ciphertext).map_err(|_| StorageError::HashingFailed)?,
             list_tag: ix.list_tag,
             viewing_hash: viewing_hash(&ix.viewing_u)?,
+            prior_viewing_hash: [0; 32],
             proven: true,
         })
     }
 
-    /// A rotation carries only the viewing key, the circuit moves no other field of a present row.
-    pub fn from_rotation(owner: &Address, viewing_u: &[u8; 32]) -> Result<Self, StorageError> {
+    /// A rotation's sealed fields stay zero, the circuit moves no other field of a present row.
+    pub fn from_rotation(
+        owner: &Address,
+        viewing_u: &[u8; 32],
+        prior_viewing_hash: &[u8; 32],
+    ) -> Result<Self, StorageError> {
         Ok(Self {
             member: owner_member(owner)?,
             nullifier_pk: [0; 32],
             ct_hash: [0; 32],
             list_tag: [0; 32],
             viewing_hash: viewing_hash(viewing_u)?,
+            prior_viewing_hash: *prior_viewing_hash,
             proven: false,
         })
     }
 
-    /// `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, proven)`, mirror
+    /// `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven)`, mirror
     /// `prover/circuits/registry/apply_enrollments.go`.
     pub fn hash(&self) -> Result<[u8; 32], HasherError> {
         Poseidon::hashv(&[
@@ -218,6 +226,7 @@ impl TrackingEntry {
             &self.ct_hash,
             &self.list_tag,
             &self.viewing_hash,
+            &self.prior_viewing_hash,
             &right_align(&[u8::from(self.proven)]),
         ])
     }
@@ -265,7 +274,7 @@ fn viewing_hash(viewing_u: &[u8; 32]) -> Result<[u8; 32], StorageError> {
     hash_bytes(viewing_u).map_err(|_| StorageError::HashingFailed)
 }
 
-/// The leaf member of a signer, a wallet or a PDA alike.
+/// The leaf member of an owner address.
 pub fn owner_member(owner: &Address) -> Result<[u8; 32], StorageError> {
     solana_owner_identity(owner.as_array()).map_err(|_| StorageError::HashingFailed)
 }

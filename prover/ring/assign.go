@@ -153,13 +153,13 @@ type enrollmentView struct {
 
 // trackingEntryView mirrors registry.TrackingEntry field for field.
 type trackingEntryView struct {
-	Member, NullifierPk, CtHash, ListTag, ViewingHash Field
-	Proven                                            bool
+	Member, NullifierPk, CtHash, ListTag, ViewingHash, PriorViewingHash Field
+	Proven                                                              bool
 }
 
 func (w TrackingWrite) view() any {
 	return enrollmentView{
-		Entry:   trackingEntryView{Member: w.Member, NullifierPk: w.NullifierPk, CtHash: w.CtHash, ListTag: w.ListTag, ViewingHash: w.ViewingHash, Proven: w.Proven},
+		Entry:   trackingEntryView{Member: w.Member, NullifierPk: w.NullifierPk, CtHash: w.CtHash, ListTag: w.ListTag, ViewingHash: w.ViewingHash, PriorViewingHash: w.PriorViewingHash, Proven: w.Proven},
 		Present: w.Present,
 		Low:     w.LowRecord,
 		LowSlot: newQuadPath(w.LowIndex, w.LowPath),

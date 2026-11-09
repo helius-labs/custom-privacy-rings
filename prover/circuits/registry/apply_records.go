@@ -57,6 +57,9 @@ const ApplyBatch = 16
 // ApplyWidths mirrors RingCircuit::apply_records in program-libs/interface/src/proof/key_catalog.rs.
 var ApplyWidths = []int{1, 2, 4, 8, ApplyBatch}
 
+// EnrollmentWidths mirrors the enrollment keys in program-libs/interface/src/proof/ring_keys.rs, the widest covers ENROLLMENT_BATCH.
+var EnrollmentWidths = []int{1, 2, 4, 8}
+
 // List bit positions, mirrored by GRANT_LISTS, DENY_LISTS and PRIVATE_LISTS in program-libs/policy/src/list.rs.
 var (
 	grantListBits   = []int{0, 6, 7}
