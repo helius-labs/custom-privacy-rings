@@ -392,7 +392,8 @@ impl ApplyKey {
             new_next_index: statement.new_next_index,
             chain_start: statement.chain_start,
             chain_end: statement.chain_end,
-            count: u8::try_from(statement.count).map_err(|_| RingError::RecordProjectionStale)?,
+            count: u8::try_from(statement.count)
+                .map_err(|_| CustomRingError::AuthorityBatchTooLarge)?,
             writes,
             private,
         })
@@ -441,7 +442,7 @@ impl EnrollBatch<'_> {
         client: &RingClient<R, I>,
     ) -> Result<ProvenEnrollBatch, RingError> {
         // 1. Each write verifies again, a write whose signature fails would refuse the whole batch.
-        let writes_len = self.writes.len();
+        let writes_len = self.writes.len() as u64;
         let writes = self
             .writes
             .iter()
@@ -485,7 +486,7 @@ impl EnrollBatch<'_> {
             RingCircuit::apply_enrollments(statement.count)
         else {
             return Err(RingError::EnrollmentBatchSize {
-                writes: usize::try_from(statement.count).unwrap_or(usize::MAX),
+                writes: statement.count,
             });
         };
         let public_input_hash = statement.hash()?;
@@ -503,7 +504,9 @@ impl EnrollBatch<'_> {
             new_next_index: statement.new_next_index,
             chain_start: statement.chain_start,
             chain_end: statement.chain_end,
-            count: u8::try_from(statement.count).map_err(|_| RingError::RecordProjectionStale)?,
+            count: u8::try_from(statement.count).map_err(|_| RingError::EnrollmentBatchSize {
+                writes: statement.count,
+            })?,
             writes: proof_writes,
         };
         let proof = RingRequest::new(circuit, &body)?

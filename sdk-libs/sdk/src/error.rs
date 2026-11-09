@@ -117,8 +117,6 @@ pub enum RingError {
     RecordUpdateIdMismatch,
     #[error("the {writer:?} writer may not write the list {list:?}")]
     ListNotWritable { list: ListId, writer: Writer },
-    #[error("the indexer's registry differs from the chain's, the projection lags")]
-    RecordProjectionStale,
     #[error("the transaction takes {bytes} bytes, a v1 transaction carries {limit}")]
     TransactionTooLarge { bytes: usize, limit: usize },
     #[error("the transaction names {addresses} addresses, a v1 transaction carries {limit}")]
@@ -328,7 +326,7 @@ pub enum RingError {
         "an enrollment batch takes one to {max} writes, not {writes}",
         max = custom_ring_interface::storage_instruction::ENROLLMENT_BATCH
     )]
-    EnrollmentBatchSize { writes: usize },
+    EnrollmentBatchSize { writes: u64 },
     #[error("the enrollment of {owner} takes the owner's own signature")]
     EnrollmentSigner { owner: Address },
     #[error(transparent)]
@@ -376,8 +374,7 @@ impl RingError {
     pub fn is_projection_lag(&self) -> bool {
         matches!(
             self,
-            Self::RecordProjectionStale
-                | Self::Client(ClientError::IndexerProofDataNotReady)
+            Self::Client(ClientError::IndexerProofDataNotReady)
                 | Self::Indexer(
                     RingRpcError::RegistryOutOfSync | RingRpcError::RegistryRootChanged
                 )
