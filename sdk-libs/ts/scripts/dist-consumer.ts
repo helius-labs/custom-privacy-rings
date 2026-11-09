@@ -97,7 +97,7 @@ export type {
   PublicOwnerTransferClient,
 } from "@heliuslabs/zolana-custom-rings";
 export { PublicOwnerTransfer } from "@heliuslabs/zolana-custom-rings";
-export { MEMBER_REGISTRY_CAPACITY } from "@heliuslabs/zolana-custom-rings/advanced";
+export { QUAD_CAPACITY } from "@heliuslabs/zolana-custom-rings/advanced";
 export type {
   MemberRecord,
   RecordWrite,
