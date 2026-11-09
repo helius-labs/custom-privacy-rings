@@ -58,6 +58,7 @@ struct TrackingCase {
     ct_hash: String,
     list_tag: String,
     viewing_hash: String,
+    prior_viewing_hash: String,
     proven: bool,
     entry_hash: String,
     chain_from_zero: String,
@@ -521,6 +522,7 @@ fn compute_vectors() -> StatementVectors {
         ct_hash: values.fields[15],
         list_tag: values.fields[16],
         viewing_hash: right_aligned(0x19),
+        prior_viewing_hash: right_aligned(0x1a),
         proven: true,
     };
     let ring_id = values.fields[17];
@@ -601,6 +603,7 @@ fn compute_vectors() -> StatementVectors {
             ct_hash: hex::encode(tracking_entry.ct_hash),
             list_tag: hex::encode(tracking_entry.list_tag),
             viewing_hash: hex::encode(tracking_entry.viewing_hash),
+            prior_viewing_hash: hex::encode(tracking_entry.prior_viewing_hash),
             proven: tracking_entry.proven,
             entry_hash: hex::encode(tracking_entry.hash().unwrap()),
             chain_from_zero: hex::encode(

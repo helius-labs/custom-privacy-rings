@@ -31,13 +31,14 @@ func (r rustTrackingRecord) record(t *testing.T) ringregistry.TrackingRecord {
 type rustTrackingEntry struct {
 	Member ringtest.Hex `json:"member"`
 	rustTrackingFields
-	Proven    bool         `json:"proven"`
-	EntryHash ringtest.Hex `json:"entry_hash"`
+	PriorViewingHash ringtest.Hex `json:"prior_viewing_hash"`
+	Proven           bool         `json:"proven"`
+	EntryHash        ringtest.Hex `json:"entry_hash"`
 }
 
 func (e rustTrackingEntry) entry(t *testing.T) ringregistry.TrackingEntry {
 	t.Helper()
-	return ringregistry.TrackingEntry{Member: e.Member.Int, NullifierPk: e.NullifierPk.Int, CtHash: e.CtHash.Int, ListTag: e.ListTag.Int, ViewingHash: e.ViewingHash.Int, Unproven: !e.Proven}
+	return ringregistry.TrackingEntry{Member: e.Member.Int, NullifierPk: e.NullifierPk.Int, CtHash: e.CtHash.Int, ListTag: e.ListTag.Int, ViewingHash: e.ViewingHash.Int, PriorViewingHash: e.PriorViewingHash.Int, Unproven: !e.Proven}
 }
 
 // The Rust witnesses solve the circuit and the host twin reaches every Rust root.

@@ -480,10 +480,14 @@ fn refusal_at(
     ))
 }
 
+/// Every check the program runs on a rotation passes, the circuit alone reads its prior key.
 fn rotation<'a>(owner: &'a Address, viewing_u: &'a [u8; 32]) -> EnrollmentWrite<'a> {
     EnrollmentWrite {
         owner,
-        change: EnrollmentChange::Rotate { viewing_u },
+        change: EnrollmentChange::Rotate {
+            viewing_u,
+            prior_viewing_hash: &[8; 32],
+        },
     }
 }
 

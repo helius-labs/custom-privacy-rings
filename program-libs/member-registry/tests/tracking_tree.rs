@@ -18,20 +18,27 @@ fn entry(byte: u8) -> TrackingEntry {
         ct_hash: member(byte ^ 0x50),
         list_tag: member(byte ^ 0x70),
         viewing_hash: member(byte ^ 0x60),
+        prior_viewing_hash: [0; 32],
         proven: true,
     }
 }
 
-/// A viewing key rotation as the program computes it, its sealed fields zero.
-fn rotation(byte: u8, viewing: u8) -> TrackingEntry {
+/// A viewing key rotation as the program computes it, from `prior` to `viewing`, its sealed fields zero.
+fn rotation(byte: u8, prior: [u8; 32], viewing: u8) -> TrackingEntry {
     TrackingEntry {
         nullifier_pk: [0; 32],
         ct_hash: [0; 32],
         list_tag: [0; 32],
         viewing_hash: member(viewing),
+        prior_viewing_hash: prior,
         proven: false,
         ..entry(byte)
     }
+}
+
+/// The rotation from the key a first enrollment of `byte` inserted.
+fn first_rotation(byte: u8, viewing: u8) -> TrackingEntry {
+    rotation(byte, entry(byte).viewing_hash, viewing)
 }
 
 fn inserted(byte: u8, next: [u8; 32]) -> TrackingRecord {
@@ -94,21 +101,12 @@ fn a_proven_insert_relinks_the_low_record_and_holds_the_entry() {
 }
 
 #[test]
-fn a_present_owner_moves_only_its_viewing_hash() {
+fn a_present_owner_rotates_only_from_the_key_its_row_holds() {
     let mut tree = TrackingTree::new().unwrap();
     apply(&mut tree, [0; 32], &[entry(5)]).unwrap();
     let before = tree.root().unwrap();
-    // A proven re-enrollment and a rotation alike leave the sealed fields as first inserted.
-    for update in [
-        rotation(5, 0x21),
-        TrackingEntry {
-            nullifier_pk: member(0x22),
-            ct_hash: member(0x22),
-            list_tag: member(0x22),
-            viewing_hash: member(0x22),
-            ..entry(5)
-        },
-    ] {
+    // 1. Each rotation names the key the row holds, and moves the viewing hash alone.
+    for update in [first_rotation(5, 0x21), rotation(5, member(0x21), 0x22)] {
         let inputs = apply(&mut tree, [0; 32], &[update]).unwrap();
         let write = inputs.writes[0];
         assert!(write.present);
@@ -128,13 +126,22 @@ fn a_present_owner_moves_only_its_viewing_hash() {
         );
     }
     assert_ne!(tree.root().unwrap(), before);
+    // 2. A replayed older rotation and a second first enrollment name a key the row does not hold.
+    let rotated = tree.clone();
+    for stale in [first_rotation(5, 0x21), entry(5)] {
+        assert_eq!(
+            apply(&mut tree, [0; 32], &[stale]),
+            Err(RecordTreeError::StaleViewingKey)
+        );
+    }
+    assert_eq!(tree, rotated);
 }
 
 #[test]
 fn an_unproven_entry_of_an_absent_owner_changes_nothing_and_still_chains() {
     let mut tree = TrackingTree::new().unwrap();
     let before = tree.clone();
-    let inputs = apply(&mut tree, [2; 32], &[rotation(6, 0x23)]).unwrap();
+    let inputs = apply(&mut tree, [2; 32], &[first_rotation(6, 0x23)]).unwrap();
     let write = inputs.writes[0];
     assert!(!write.present);
     assert_eq!(write.slot, QuadPath::default());
@@ -143,14 +150,14 @@ fn an_unproven_entry_of_an_absent_owner_changes_nothing_and_still_chains() {
     assert_eq!(inputs.new_next_index, inputs.old_next_index);
     assert_eq!(
         inputs.chain_end,
-        chain_link(&[2; 32], &rotation(6, 0x23).hash().unwrap()).unwrap()
+        chain_link(&[2; 32], &first_rotation(6, 0x23).hash().unwrap()).unwrap()
     );
 }
 
 #[test]
 fn a_duplicate_in_one_batch_inserts_then_updates() {
     let mut tree = TrackingTree::new().unwrap();
-    let inputs = apply(&mut tree, [0; 32], &[entry(6), rotation(6, 0x24)]).unwrap();
+    let inputs = apply(&mut tree, [0; 32], &[entry(6), first_rotation(6, 0x24)]).unwrap();
     assert_eq!(presence(&inputs), [false, true]);
     assert_eq!(inputs.writes[1].low, inserted(6, FIELD_MAX));
     assert_eq!((inputs.old_next_index, inputs.new_next_index), (1, 2));
@@ -240,7 +247,10 @@ fn a_full_tree_refuses_an_insert_and_still_applies_an_update_and_a_no_op() {
         Err(RecordTreeError::Full)
     ));
     let AppliedTree { proof, .. } = FullStore::with_present(member(10))
-        .apply([0; 32], &[rotation(10, 0x25), rotation(7, 0x26)])
+        .apply(
+            [0; 32],
+            &[first_rotation(10, 0x25), first_rotation(7, 0x26)],
+        )
         .unwrap();
     assert_eq!(presence(&proof), [true, false]);
     assert_eq!(proof.new_next_index, QUAD_CAPACITY);

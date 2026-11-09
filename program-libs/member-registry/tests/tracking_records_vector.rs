@@ -40,6 +40,7 @@ struct Entry {
     ct_hash: String,
     list_tag: String,
     viewing_hash: String,
+    prior_viewing_hash: String,
     proven: bool,
     entry_hash: String,
 }
@@ -82,17 +83,19 @@ fn entry(owner: u8) -> TrackingEntry {
         ct_hash: field(owner ^ 0x50),
         list_tag: field(owner ^ 0x70),
         viewing_hash: field(owner ^ 0x60),
+        prior_viewing_hash: [0; 32],
         proven: true,
     }
 }
 
-/// A rotation as the program computes it, a no-op of an absent owner.
+/// A rotation from the first enrollment's key as the program computes it, a no-op of an absent owner.
 fn rotation(owner: u8, viewing: u8) -> TrackingEntry {
     TrackingEntry {
         nullifier_pk: [0; 32],
         ct_hash: [0; 32],
         list_tag: [0; 32],
         viewing_hash: field(viewing),
+        prior_viewing_hash: entry(owner).viewing_hash,
         proven: false,
         ..entry(owner)
     }
@@ -129,6 +132,7 @@ fn write_vector(write: &TrackingWriteProofInput) -> Write {
             ct_hash: hex::encode(write.entry.ct_hash),
             list_tag: hex::encode(write.entry.list_tag),
             viewing_hash: hex::encode(write.entry.viewing_hash),
+            prior_viewing_hash: hex::encode(write.entry.prior_viewing_hash),
             proven: write.entry.proven,
             entry_hash: hex::encode(write.entry.hash().unwrap()),
         },
