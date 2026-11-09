@@ -297,20 +297,11 @@ type RegisterKeyParams struct {
 	AuditorPk       Bytes `json:"auditorPk"`
 }
 
-// TrackingLeaf mirrors registry.TrackingRecord field for field.
-type TrackingLeaf struct {
-	Member      Field `json:"member"`
-	Next        Field `json:"next"`
-	NullifierPk Field `json:"nullifierPk"`
-	CtHash      Field `json:"ctHash"`
-	ListTag     Field `json:"listTag"`
-}
-
 // TrackingOpening mirrors registry.TrackingOpening field for field.
 type TrackingOpening struct {
-	Present bool               `json:"present"`
-	Record  TrackingLeaf       `json:"record"`
-	Path    SharedRegistryPath `json:"path"`
+	Present bool                 `json:"present"`
+	Record  TrackingRecordParams `json:"record"`
+	Path    SharedRegistryPath   `json:"path"`
 }
 
 // MergeParams seals a ring's SPP merge output to its auditor, Tracking is nil under a zero key.
