@@ -1049,7 +1049,8 @@ fn enroll_batch(writer: &Address, tracking: Address) -> Instruction {
             owner: &owner,
             change: EnrollmentChange::Rotate {
                 viewing_u: &[9; 32],
-                prior_viewing_hash: &[8; 32],
+                prior_viewing_u: &[8; 32],
+                prior_seq: &[0; 8],
             },
         }],
     };

@@ -487,7 +487,8 @@ fn rotation<'a>(owner: &'a Address, viewing_u: &'a [u8; 32]) -> EnrollmentWrite<
         owner,
         change: EnrollmentChange::Rotate {
             viewing_u,
-            prior_viewing_hash: &[8; 32],
+            prior_viewing_u: &[8; 32],
+            prior_seq: &[0; 8],
         },
     }
 }

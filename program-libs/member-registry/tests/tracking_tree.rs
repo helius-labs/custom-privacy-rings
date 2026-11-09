@@ -1,8 +1,10 @@
 use custom_ring_interface::{
     chain_link,
+    storage_instruction::EnrollIxData,
     tracking::{TrackingEntry, TRACKING_CAPACITY},
     FIELD_MAX,
 };
+use solana_address::Address;
 use spr_hasher::primitives::right_align;
 use zolana_ring_member_registry::{
     AppliedTree, ApplyProofInputs, Canopy, IndexedRecord, NodePosition, OpeningCheck,
@@ -139,6 +141,44 @@ fn a_present_owner_rotates_only_from_the_key_its_row_holds() {
         );
     }
     assert_eq!(tree, rotated);
+}
+
+#[test]
+fn a_saved_rotation_fails_once_its_key_returns_and_a_wrong_seq_never_applies() {
+    let owner = Address::new_from_array([0x21; 32]);
+    let (a, b) = ([0x18; 32], [0x19; 32]);
+    let enroll = EnrollIxData {
+        nullifier_pk: member(0x40),
+        list_tag: member(0x41),
+        viewing_u: a,
+        eph_u: [5; 32],
+        ciphertext: [6; 64],
+    };
+    let rotate = |viewing_u, prior_viewing_u, prior_seq| {
+        TrackingEntry::from_rotation(&owner, viewing_u, prior_viewing_u, prior_seq).unwrap()
+    };
+    let a_to_b = rotate(&b, &a, 0);
+    let mut tree = TrackingTree::new().unwrap();
+    apply(
+        &mut tree,
+        [0; 32],
+        &[
+            TrackingEntry::from_enroll(&owner, &enroll).unwrap(),
+            a_to_b,
+            rotate(&a, &b, 1),
+        ],
+    )
+    .unwrap();
+    // The leaf holds A at seq 2, the saved A to B names A at seq 0 and a guessed seq names A at seq 1.
+    let held = tree.clone();
+    for stale in [a_to_b, rotate(&b, &a, 1)] {
+        assert_eq!(
+            apply(&mut tree, [0; 32], &[stale]),
+            Err(RecordTreeError::StaleViewingKey)
+        );
+    }
+    assert_eq!(tree, held);
+    apply(&mut tree, [0; 32], &[rotate(&b, &a, 2)]).unwrap();
 }
 
 #[test]

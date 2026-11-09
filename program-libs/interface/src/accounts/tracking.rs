@@ -28,8 +28,8 @@ use solana_address::Address;
 use spr_hasher::{
     hash_chain::create_hash_chain_4_from_slice,
     primitives::{
-        hash_bytes, is_canonical_bn254_scalar_be, is_canonical_x25519_public_key, right_align,
-        solana_owner_identity,
+        hash_bytes, is_canonical_bn254_scalar_be, is_canonical_x25519_public_key, pack_be,
+        right_align, solana_owner_identity,
     },
     Hasher, HasherError, Poseidon,
 };
@@ -196,7 +196,7 @@ impl TrackingEntry {
             nullifier_pk: ix.nullifier_pk,
             ct_hash: hash_bytes(&ix.ciphertext).map_err(|_| StorageError::HashingFailed)?,
             list_tag: ix.list_tag,
-            viewing_hash: viewing_hash(&ix.viewing_u)?,
+            viewing_hash: viewing_hash(&ix.viewing_u, 0)?,
             prior_viewing_hash: [0; 32],
             proven: true,
         })
@@ -206,15 +206,19 @@ impl TrackingEntry {
     pub fn from_rotation(
         owner: &Address,
         viewing_u: &[u8; 32],
-        prior_viewing_hash: &[u8; 32],
+        prior_viewing_u: &[u8; 32],
+        prior_seq: u64,
     ) -> Result<Self, StorageError> {
+        let seq = prior_seq
+            .checked_add(1)
+            .ok_or(StorageError::InvalidInstructionData)?;
         Ok(Self {
             member: owner_member(owner)?,
             nullifier_pk: [0; 32],
             ct_hash: [0; 32],
             list_tag: [0; 32],
-            viewing_hash: viewing_hash(viewing_u)?,
-            prior_viewing_hash: *prior_viewing_hash,
+            viewing_hash: viewing_hash(viewing_u, seq)?,
+            prior_viewing_hash: viewing_hash(prior_viewing_u, prior_seq)?,
             proven: false,
         })
     }
@@ -272,9 +276,16 @@ pub fn check_viewing_key(viewing_u: &[u8; 32]) -> Result<(), StorageError> {
     Ok(())
 }
 
-/// Hashed as bytes, an X25519 u can exceed the field.
-fn viewing_hash(viewing_u: &[u8; 32]) -> Result<[u8; 32], StorageError> {
-    hash_bytes(viewing_u).map_err(|_| StorageError::HashingFailed)
+/// Two limbs as an X25519 u can exceed the field, `seq` sets a returning key's hash apart.
+pub fn viewing_hash(viewing_u: &[u8; 32], seq: u64) -> Result<[u8; 32], StorageError> {
+    let [high, low] = pack_be::<32, 2>(viewing_u);
+    Poseidon::hashv(&[
+        &domain::field(domain::VIEWING_HASH),
+        &high,
+        &low,
+        &right_align(&seq.to_be_bytes()),
+    ])
+    .map_err(|_| StorageError::HashingFailed)
 }
 
 /// The leaf member of an owner address.

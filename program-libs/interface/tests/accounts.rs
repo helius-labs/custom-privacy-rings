@@ -11,7 +11,7 @@ use custom_ring_interface::{
         ENROLLMENT_BATCH,
     },
     tracking::{
-        tracking_chain_start, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
+        tracking_chain_start, viewing_hash, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
         TRACKING_CAPACITY, TRACKING_EMPTY_ROOT, TRACKING_GRACE_SLOTS, TRACKING_ROOT_HISTORY,
     },
     ApplyRecordsIxData, CustomRingError, CustomRingProof, NewRing, PolicyUpdate, RecordWriteData,
@@ -22,7 +22,7 @@ use custom_ring_interface::{
 use serde_json::{json, Value};
 use solana_address::Address;
 use spr_hasher::{
-    primitives::{hash_bytes, right_align, solana_owner_identity},
+    primitives::{hash_bytes, pack_be, right_align, solana_owner_identity},
     Hasher, Poseidon,
 };
 use zolana_ring_policy::{ListId, ListSet, Member, Rule, RuleTable, Subject};
@@ -214,7 +214,17 @@ fn the_entry_binds_every_field_and_comes_from_the_enroll() {
         solana_owner_identity(owner.as_array()).unwrap()
     );
     assert_eq!(entry.ct_hash, hash_bytes(&ix.ciphertext).unwrap());
-    assert_eq!(entry.viewing_hash, hash_bytes(&ix.viewing_u).unwrap());
+    let [high, low] = pack_be::<32, 2>(&ix.viewing_u);
+    assert_eq!(
+        entry.viewing_hash,
+        Poseidon::hashv(&[
+            &domain::field(domain::VIEWING_HASH),
+            &high,
+            &low,
+            &right_align(&0u64.to_be_bytes()),
+        ])
+        .unwrap()
+    );
     assert_eq!(
         entry.hash().unwrap(),
         Poseidon::hashv(&[
@@ -260,26 +270,45 @@ fn the_entry_binds_every_field_and_comes_from_the_enroll() {
         assert_ne!(other.hash(), entry.hash());
     }
     assert_eq!(entry.prior_viewing_hash, [0; 32]);
-    // A rotation carries only its viewing key and the key it replaces, unproven.
-    let rotation = TrackingEntry::from_rotation(&owner, &ix.viewing_u, &[3; 32]).unwrap();
+}
+
+#[test]
+fn a_rotation_moves_the_key_one_seq_on_and_a_returning_key_hashes_apart() {
+    let (owner, [a, b]) = (key(0x12), [[0x18; 32], [0x19; 32]]);
+    let hash = |u: &[u8; 32], seq| viewing_hash(u, seq).unwrap();
+    // 1. A rotation names the key it leaves at its seq and takes the next seq, unproven, sealed fields zero.
+    let a_to_b = TrackingEntry::from_rotation(&owner, &b, &a, 0).unwrap();
     assert_eq!(
-        rotation,
+        a_to_b,
         TrackingEntry {
+            member: solana_owner_identity(owner.as_array()).unwrap(),
             nullifier_pk: [0; 32],
             ct_hash: [0; 32],
             list_tag: [0; 32],
-            prior_viewing_hash: [3; 32],
+            viewing_hash: hash(&b, 1),
+            prior_viewing_hash: hash(&a, 0),
             proven: false,
-            ..entry
         }
     );
+    // 2. After A to B to A the leaf holds A at seq 2, the saved A to B names A at seq 0 and no longer matches.
+    let b_to_a = TrackingEntry::from_rotation(&owner, &a, &b, 1).unwrap();
+    assert_eq!(b_to_a.viewing_hash, hash(&a, 2));
+    assert_ne!(a_to_b.prior_viewing_hash, b_to_a.viewing_hash);
+    // 3. A wrong prior seq names another hash, and the seq cannot wrap.
     assert_ne!(
-        TrackingEntry::from_rotation(&owner, &ix.viewing_u, &[4; 32])
+        TrackingEntry::from_rotation(&owner, &b, &a, 1)
             .unwrap()
-            .hash(),
-        rotation.hash()
+            .prior_viewing_hash,
+        hash(&a, 0)
+    );
+    assert_eq!(
+        TrackingEntry::from_rotation(&owner, &b, &a, u64::MAX),
+        Err(StorageError::InvalidInstructionData)
     );
 }
+
+/// A first enrollment's seq, the prior of the first rotation.
+const FIRST_SEQ: [u8; 8] = [0; 8];
 
 fn batch<'a>(
     ix: &'a EnrollIxData,
@@ -295,7 +324,8 @@ fn batch<'a>(
             owner: &owners[1],
             change: EnrollmentChange::Rotate {
                 viewing_u: &ix.viewing_u,
-                prior_viewing_hash: &ix.list_tag,
+                prior_viewing_u: &ix.eph_u,
+                prior_seq: &FIRST_SEQ,
             },
         },
     ]
@@ -317,7 +347,7 @@ fn a_request_parses_exactly_its_count_of_writes() {
         writes: batch(&ix, &proof, &owners).to_vec(),
     };
     let data = request.encode();
-    assert_eq!(data.len(), ApplyEnrollmentsIxData::SIZE + 417 + 97);
+    assert_eq!(data.len(), ApplyEnrollmentsIxData::SIZE + 417 + 105);
     assert_eq!(ApplyEnrollmentsRequest::parse(&data), Ok(request));
     let refused = Err(StorageError::InvalidInstructionData);
     let edited = |edit: &dyn Fn(&mut Vec<u8>)| {
@@ -1035,14 +1065,12 @@ fn enrollment_vector() -> Value {
             proof: &proof,
         },
     };
-    let signed_enroll_viewing_hash = TrackingEntry::from_enroll(&owner, &ix)
-        .unwrap()
-        .viewing_hash;
     let rotate = EnrollmentWrite {
         owner: &owner,
         change: EnrollmentChange::Rotate {
             viewing_u: &[0x37; 32],
-            prior_viewing_hash: &signed_enroll_viewing_hash,
+            prior_viewing_u: &ix.viewing_u,
+            prior_seq: &FIRST_SEQ,
         },
     };
     let [signed_enroll, signed_rotate] =
@@ -1054,7 +1082,7 @@ fn enrollment_vector() -> Value {
         hex::encode(data)
     };
     json!({
-        "description": "One first enrollment and one rotation of the same owner. A write is owner || kind || body, kind 0 an EnrollIxData and a RegisterKey proof, kind 1 a viewing key and the viewing hash it replaces. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven), a rotation's sealed fields zero, a first enrollment's prior zero. message is CRING/enr || registry || owner || entry_hash, the bytes the owner signs. chain_start is the hash chain of [CRTA, registry field, revision], chain_end folds Poseidon(chain, entry_hash) over both writes. Produced by program-libs/interface/tests/accounts.rs.",
+        "description": "One first enrollment and one rotation of the same owner. A write is owner || kind || body, kind 0 an EnrollIxData and a RegisterKey proof, kind 1 the new viewing key, the prior key and its seq (u64 le). viewing_hash(u, seq) is Poseidon(CRVH, u in two big endian limbs of 31 and 1 bytes, seq), a first enrollment takes seq 0 and each rotation prior_seq + 1. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven), a rotation's sealed fields zero, a first enrollment's prior zero. message is CRING/enr || registry || owner || entry_hash, the bytes the owner signs. chain_start is the hash chain of [CRTA, registry field, revision], chain_end folds Poseidon(chain, entry_hash) over both writes. Produced by program-libs/interface/tests/accounts.rs.",
         "registry": hex::encode(registry),
         "owner": hex::encode(owner),
         "enroll_write": encoded(enroll),
