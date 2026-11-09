@@ -95,7 +95,7 @@ export interface RelayProofInputs {
   /** The owner sealed under the wide key, the relayer proves on it. */
   readonly wideOwners: boolean;
   readonly assets: AssetRegistry;
-  /** Encoding drops the sender's, Ring RPC derives it from `nullifierKey`. */
+  /** The sender's among them, Ring RPC reads the salts it screens from these alone. */
   readonly listSalts: readonly RingListSalt[];
   /** The public co-owners whose keys the seal holds, encoding sends only those a spend names. */
   readonly coOwners: readonly CoOwner[];
@@ -103,13 +103,8 @@ export interface RelayProofInputs {
   readonly approvalBlinder?: Bytes32;
 }
 
-export function writeRelayListSalts(
-  writer: Writer,
-  salts: readonly RingListSalt[],
-  sender: ShieldedAddress,
-): Writer {
-  const senderOwner = sender.signingPublicKey.ownerProofInputHash();
-  const sent = salts.filter(({ owner, salt }) => !isZero(salt) && !equalBytes(owner, senderOwner));
+export function writeRelayListSalts(writer: Writer, salts: readonly RingListSalt[]): Writer {
+  const sent = salts.filter(({ salt }) => !isZero(salt));
   writer.u8(sent.length, "listSalts.length");
   for (const { owner, salt } of sent)
     writer.bytes(owner, 32, "listSalts.owner").bytes(salt, 32, "listSalts.salt");
@@ -145,7 +140,7 @@ export function encodeRelayProofInputs(value: RelayProofInputs): Uint8Array {
   writer.bytes(value.blindingSeed, 32, "blindingSeed").u16(value.outputTreeId, "outputTreeId");
   // 2. A held co-owner no spend names keeps its nullifier secret from the relayer.
   const disclosed = value.coOwners.filter((coOwner) => spending.has(coOwner));
-  writeRelayListSalts(writer, value.listSalts, value.sender)
+  writeRelayListSalts(writer, value.listSalts)
     .u8(value.wideOwners ? 1 : 0, "wideOwners")
     .u8(disclosed.length, "coOwners.length");
   for (const { owner, nullifierKey } of disclosed) {

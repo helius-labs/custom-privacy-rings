@@ -127,21 +127,18 @@ function anonymousPayload() {
 }
 
 describe("relay proof inputs", () => {
-  it("names other owners' salts, the sender's and a zero-key salt left out", () => {
+  it("names the sender's and other owners' salts, a zero-key salt left out", () => {
     const { sender } = ownerSpend();
     const senderOwner = sender.signingPublicKey.ownerProofInputHash();
     const owner = filled(70) as Bytes32;
     const salt = filled(71) as Bytes32;
-    const written = writeRelayListSalts(
-      new Writer(),
-      [
-        { owner: senderOwner, salt },
-        { owner, salt },
-        { owner: filled(72) as Bytes32, salt: filled(0) as Bytes32 },
-      ],
-      sender,
-    ).finish();
-    expect(written).toEqual(Uint8Array.of(1, ...owner, ...salt));
+    const written = writeRelayListSalts(new Writer(), [
+      { owner: senderOwner, salt },
+      { owner, salt },
+      { owner: filled(72) as Bytes32, salt: filled(0) as Bytes32 },
+    ]).finish();
+    // Ring RPC reads every salt it screens from the payload, the sender's too.
+    expect(written).toEqual(Uint8Array.of(2, ...senderOwner, ...salt, ...owner, ...salt));
   });
 
   it("encodes the anonymous payload byte for byte as the Rust vector and derives its spend on decode", async () => {

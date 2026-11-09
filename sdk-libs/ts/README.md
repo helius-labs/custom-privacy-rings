@@ -133,9 +133,9 @@ disclosure is acceptable.
 
 On a ring reading a salted list, a relayed transfer or deposit gives Ring RPC the
 salt of every enrolled owner the policy screens, and Ring RPC can then read those
-owners' list status on that Ring. A transfer names other owners in `listSalts`
-and Ring RPC derives the sender's from the nullifier key it holds. A deposit
-carries the recipient's.
+owners' list status on that Ring. A transfer names the sender and the other
+owners in `listSalts`, since Ring RPC reads every salt it screens from the
+relay. A deposit carries the recipient's.
 
 On an anonymous Ring the transfer proof binds each live recipient slot's
 ciphertext and its recipient, no proof binds a discovery tag. A bad tag costs the

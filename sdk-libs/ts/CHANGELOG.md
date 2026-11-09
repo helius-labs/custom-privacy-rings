@@ -56,6 +56,7 @@ Changed
 
 Fixed
 
+- A relayed spend on a ring reading a salted list left the sender's list salt out of the relay payload, and Ring RPC refused it with `transferRefused`, now the payload carries the sender's salt with the other owners'.
 - `RingRpc.getDecryptedTransactions` refused a transaction whose slot kept its record in `outputs` beside a `payload` error, as Ring RPC serves it, now a slot may sit once in each list and a slot twice in one list stays refused.
 - A ring entry from a default note larger than its amount asked approval for the amount alone while the change also entered the ring, now the `ringEntry` intent and its summary name every unit entering the ring.
 - `PreparedRelay.send` called again after a lost answer asked Ring RPC to prepare the relay a second time, now it reads the relay's status first, returns the relay submitted once Ring RPC sent it and raises `RING_RELAY_FAILED` when Ring RPC failed it.
