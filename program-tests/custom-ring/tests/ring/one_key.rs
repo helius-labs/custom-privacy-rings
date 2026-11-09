@@ -64,14 +64,6 @@ const DISCOVERY_DEPOSIT: u64 = 1_000_000;
 const STATE_TREE_TYPE: u16 = 1;
 /// The default heap frame, no ring transaction requests a larger one.
 const HEAP_LIMIT: u64 = 32 * 1024;
-const TRACKING_SECTION: [&str; 6] = [
-    "trackingRoot",
-    "trackingRecords",
-    "trackingProof",
-    "trackingSubjects",
-    "rowEntries",
-    "outputEntries",
-];
 
 #[derive(Clone)]
 pub(super) struct SeededNotes {
@@ -1032,12 +1024,12 @@ fn one_key_settles_a_real_transfer_and_refuses_three_forgeries() -> Result<()> {
         )?);
     assert_account_unchanged(rpc, &env.tree, &tree_before)?;
     println!("wrong tracking key: real proof refused at the ring pairing, ProofVerificationFailed");
+    // No output owner's row enters the statement, so the wrong tree's paths open the sender's
+    // row under the wrong root as well. The forgery keeps the honest paths and claims that root.
     let mut crossed = honest_body.clone();
-    for section in TRACKING_SECTION {
-        crossed[section] = wrong_body[section].clone();
-    }
+    crossed["trackingRoot"] = wrong_body["trackingRoot"].clone();
     crossed["publicInputHash"] = field(&binding.statement(&instruction, wrong_root)?);
-    replay.refuses("wrong tracking key", crossed)?;
+    replay.refuses("wrong tracking root", crossed)?;
 
     let signature = land(&env, instruction.clone(), sender, &[])?;
     Landed {
