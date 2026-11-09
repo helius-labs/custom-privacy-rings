@@ -9,13 +9,12 @@ import type { ChainReader } from "@heliuslabs/spr/client";
 import { bytesKey } from "@heliuslabs/spr/internal";
 import type { Bytes32, RequestContext } from "@heliuslabs/spr/interface";
 
-import { RingError } from "../../protocol/error.js";
 import { MAX_RING_MEMBER_BATCH } from "../../protocol/indexer/indexer-limits.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
 import { memberOfTag } from "../../protocol/membership/policy.js";
 import { verifyTrackingOpening } from "../../protocol/membership/tracking.js";
 import type { TrackingReader } from "../../rpc/ports.js";
-import { newestTrackingRoot } from "../../rpc/tracking-resolver.js";
+import { readTrackingOpenings } from "../../rpc/tracking-resolver.js";
 
 /** Names the nullifier key a ring output's record omits, `undefined` while unknown. */
 export type OwnerNullifierKey = (ownerKey: Bytes32) => Bytes32 | undefined;
@@ -42,23 +41,18 @@ export async function readRegisteredKeys(
   const keys = new Map<string, Bytes32>();
   if (owners.length > 0) {
     const { tracking } = await fetchRingPolicy(client, ringProgramId, context);
-    const { root } = await newestTrackingRoot(
-      { client, trackingRegistry: tracking, ring: ringProgramId },
-      context,
-    );
     for (let start = 0; start < owners.length; start += MAX_RING_MEMBER_BATCH) {
       const page = owners.slice(start, start + MAX_RING_MEMBER_BATCH);
       const members = page.map((owner) => memberOfTag(owner));
-      const { openings } = await client.getTrackingOpenings(
-        { registry: tracking, members, expectedRoot: root },
+      // A leaf's nullifier key is final, so each page may open under its own newest root.
+      const { root, openings } = await readTrackingOpenings(
+        { client, trackingRegistry: tracking, members },
         context,
       );
-      if (openings.length !== page.length)
-        throw new RingError("RING_TRACKING_INVALID", { details: { reason: "openings" } });
       page.forEach((owner, index) => {
         const row = verifyTrackingOpening(
           openings[index] as (typeof openings)[number],
-          root,
+          root.hash,
           members[index] as Bytes32,
         );
         if (row !== undefined) keys.set(bytesKey(owner), row.nullifierPk);

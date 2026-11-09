@@ -29,7 +29,11 @@ import { X25519PublicKey, type ShieldedKeypairLike } from "@heliuslabs/spr/keypa
 import { listTagOf } from "../../crypto/keys/list-salt.js";
 import { checkedCustomRingProof } from "../../protocol/codec/ring-codecs.js";
 import { RingError } from "../../protocol/error.js";
-import { sealViewingKey, type TrackingSeal } from "../../protocol/indexer/tracking-codec.js";
+import {
+  sealViewingKey,
+  type ServedTrackingOpening,
+  type TrackingSeal,
+} from "../../protocol/indexer/tracking-codec.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
 import { checkedViewingU } from "../../protocol/membership/member-opening.js";
 import { memberOfTag } from "../../protocol/membership/policy.js";
@@ -38,7 +42,7 @@ import { ownerGrantPda, STORAGE_PROGRAM_ID } from "../../protocol/pda/index.js";
 import { registerKeyStatementHash } from "../../protocol/proof/statement.js";
 import type { SignedEnrollment } from "../../protocol/ring-rpc/enrollment-write.js";
 import type { RingProver, TrackingReader } from "../../rpc/ports.js";
-import { currentTrackingRoot, fetchTrackingRegistry } from "../../rpc/tracking-resolver.js";
+import { fetchTrackingRegistry, readTrackingOpenings } from "../../rpc/tracking-resolver.js";
 import { readerKeyBytes, type ReaderKey } from "./reader-access.js";
 import { sealNullifierKey } from "./register-key.js";
 
@@ -101,17 +105,10 @@ export async function enrollmentState(
   context?: RequestContext,
 ): Promise<EnrollmentState | undefined> {
   const { trackingRegistry, owner } = input;
-  const root = currentTrackingRoot(
-    await fetchTrackingRegistry(client, trackingRegistry, context),
-  ).hash;
   const member = memberOfTag(addressBytes(owner, "owner"));
-  const { openings } = await client.getTrackingOpenings(
-    { registry: trackingRegistry, members: [member], expectedRoot: root },
-    context,
-  );
-  const [opening] = openings;
-  if (opening === undefined || openings.length !== 1)
-    throw new RingError("RING_TRACKING_INVALID", { details: { reason: "openings" } });
+  const read = await readTrackingOpenings({ client, trackingRegistry, members: [member] }, context);
+  const root = read.root.hash;
+  const opening = read.openings[0] as ServedTrackingOpening;
   const record = verifyTrackingOpening(opening, root, member);
   if (record === undefined) return undefined;
   if (opening.kind !== "present" || opening.seal === undefined || opening.seal.owner !== owner)

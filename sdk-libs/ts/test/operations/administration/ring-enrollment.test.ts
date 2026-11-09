@@ -34,6 +34,7 @@ import {
   TRACKING_CAPACITY,
   TRACKING_QUAD_HEIGHT,
 } from "../../../src/protocol/membership/tracking.js";
+import { RingError } from "../../../src/protocol/error.js";
 import { memberOfTag } from "../../../src/protocol/membership/policy.js";
 import {
   TRACKING_EMPTY_ROOT,
@@ -437,6 +438,33 @@ describe("proveEnrollment", () => {
         trackingClient(REGISTRY, []),
       ),
     ).toBeUndefined();
+  });
+
+  it("rereads the root and the openings while the indexer lags an apply, Rust `is_projection_lag`", async () => {
+    // An apply between the account read and the openings moves the root the indexer serves.
+    const applied = [sealedEntry(OWNER)];
+    const client = trackingClient(REGISTRY, applied);
+    const getTrackingOpenings = vi
+      .fn(client.getTrackingOpenings)
+      .mockRejectedValueOnce(new RingError("RING_REGISTRY_ROOT_CHANGED"))
+      .mockRejectedValueOnce(new RingError("RING_REGISTRY_OUT_OF_SYNC"));
+    const state = await enrollmentState(
+      { trackingRegistry: REGISTRY, owner: OWNER },
+      { ...client, getTrackingOpenings },
+    );
+    expect(state).toMatchObject({ seal: SEAL, viewingU: VIEWING_U });
+    expect(getTrackingOpenings).toHaveBeenCalledTimes(3);
+    // A refusal that names no lag stops at once.
+    const refused = vi
+      .fn(client.getTrackingOpenings)
+      .mockRejectedValue(new RingError("RING_TRACKING_INVALID"));
+    await expect(
+      enrollmentState(
+        { trackingRegistry: REGISTRY, owner: OWNER },
+        { ...client, getTrackingOpenings: refused },
+      ),
+    ).rejects.toMatchObject({ code: "RING_TRACKING_INVALID" });
+    expect(refused).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a served viewing key the leaf does not hash", async () => {

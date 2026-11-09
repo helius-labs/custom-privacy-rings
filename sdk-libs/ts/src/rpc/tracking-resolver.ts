@@ -1,7 +1,7 @@
 import type { Address } from "@solana/kit";
 
 import type { ChainReader } from "@heliuslabs/spr/client";
-import { equalBytes, ZERO_NULLIFIER_PK } from "@heliuslabs/spr/internal";
+import { equalBytes, waitForProjection, ZERO_NULLIFIER_PK } from "@heliuslabs/spr/internal";
 import type { Bytes32, RequestContext } from "@heliuslabs/spr/interface";
 import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
 
@@ -17,6 +17,7 @@ import {
   type TrackingRecord,
   type TrackingRegistry,
 } from "../protocol/membership/tracking.js";
+import { MEMBER_REGISTRY_PROJECTION_ERRORS } from "./projection.js";
 import type { BoundRoot } from "./registered-record.js";
 import type { TrackingReader } from "./ports.js";
 
@@ -66,20 +67,15 @@ export async function resolveRingRecipient(
   context?: RequestContext,
 ): Promise<ResolvedRecipient> {
   const { client, trackingRegistry, to } = input;
-  const root = await newestTrackingRoot(
-    { client, trackingRegistry, ring: to.ringProgramId },
-    context,
-  );
   const member = to.recipient.signingPublicKey.ownerProofInputHash();
-  const { openings } = await client.getTrackingOpenings(
-    { registry: trackingRegistry, members: [member], expectedRoot: root.root },
-    context,
-  );
-  const [opening] = openings;
-  if (opening === undefined || openings.length !== 1)
-    throw new RingError("RING_TRACKING_INVALID", {
-      details: { reason: "openings", count: openings.length },
-    });
+  const read = await readTrackingOpenings({ client, trackingRegistry, members: [member] }, context);
+  const root: TrackingRoot = Object.freeze({
+    ringProgramId: to.ringProgramId,
+    registry: trackingRegistry,
+    revision: read.root.revision,
+    root: read.root.hash,
+  });
+  const opening = read.openings[0] as ServedTrackingOpening;
   const row = verifyTrackingOpening(opening, root.root, member);
   const named = to.recipient.nullifierPublicKey;
   if (equalBytes(named, ZERO_NULLIFIER_PK)) {
@@ -110,6 +106,39 @@ export async function resolveRingRecipient(
     viewingPublicKey: leafViewingKey(opening, row),
     listTag: row.listTag,
   });
+}
+
+/**
+ * Rereads the root with the openings while the indexer lags an apply that moves the root, Rust
+ * `RingError::is_projection_lag`.
+ */
+export function readTrackingOpenings(
+  input: Readonly<{
+    client: RingRecipientClient;
+    trackingRegistry: Address;
+    members: readonly Bytes32[];
+  }>,
+  context?: RequestContext,
+): Promise<Readonly<{ root: StorageRegistryRoot; openings: readonly ServedTrackingOpening[] }>> {
+  const { client, trackingRegistry, members } = input;
+  return waitForProjection(
+    async (attempt) => {
+      const root = currentTrackingRoot(
+        await fetchTrackingRegistry(client, trackingRegistry, attempt),
+      );
+      const { openings } = await client.getTrackingOpenings(
+        { registry: trackingRegistry, members, expectedRoot: root.hash },
+        attempt,
+      );
+      if (openings.length !== members.length)
+        throw new RingError("RING_TRACKING_INVALID", {
+          details: { reason: "openings", count: openings.length },
+        });
+      return Object.freeze({ root, openings });
+    },
+    MEMBER_REGISTRY_PROJECTION_ERRORS,
+    context,
+  );
 }
 
 export async function newestTrackingRoot(
