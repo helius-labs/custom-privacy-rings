@@ -82,7 +82,9 @@ fn a_stalled_forester_stops_a_dummy_input_transfer_and_no_deposit() -> Result<()
     ensure!(
         matches!(
             refused.downcast_ref::<RingError>(),
-            Some(RingError::Client(ClientError::NonSpendInputNotAllowed { .. }))
+            Some(RingError::Client(
+                ClientError::NonSpendInputNotAllowed { .. }
+            ))
         ),
         "refused by {refused:#}"
     );
