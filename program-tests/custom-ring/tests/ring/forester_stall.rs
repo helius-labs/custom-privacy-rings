@@ -1,3 +1,4 @@
+use spr_client::ClientError;
 use spr_interface::shape::Shape;
 
 use super::*;
@@ -73,11 +74,21 @@ fn a_stalled_forester_stops_a_dummy_input_transfer_and_no_deposit() -> Result<()
     exhaust_dummy_input_headroom(&env)?;
     let queue_index = nullifier_queue_index(&env)?;
 
-    // The deposit path touches no nullifier tree.
-    notes().deposit()?;
+    // A deposit spends only dummy inputs, the spent headroom refuses it before proving too.
+    let refused = notes()
+        .deposit()
+        .err()
+        .context("a deposit proved on a full nullifier batch")?;
+    ensure!(
+        matches!(
+            refused.downcast_ref::<RingError>(),
+            Some(RingError::Client(ClientError::NonSpendInputNotAllowed { .. }))
+        ),
+        "refused by {refused:#}"
+    );
     assert_eq!(nullifier_queue_index(&env)?, queue_index);
 
-    // One real input in a two-input shape leaves the second slot a dummy, SPP then flips its public flag.
+    // One real input in a two-input shape leaves a dummy slot, refused before proving once headroom is spent.
     let mut prepared =
         ConfidentialTransaction::new_with_ring(vec![input], sender.pubkey(), ring_program)?
             .with_output_tree_id(env.tree_id(env.tree)?)?;
@@ -89,17 +100,9 @@ fn a_stalled_forester_stops_a_dummy_input_transfer_and_no_deposit() -> Result<()
         transaction: prepared,
     })
     .with_shape(Shape::IN2_OUT2)?;
-    let proven = env.run(transfer.prove(env.client.ring_client()))?;
-    let refused = land(&env, proven.instruction()?, sender, &[])
-        .err()
-        .context("a dummy input settled on a full nullifier batch")?;
-    let code = format!(
-        "{:#x}",
-        ShieldedPoolError::TransactProofVerificationFailed as u32
-    );
-    ensure!(
-        refused.to_string().contains(&code),
-        "refused by {refused:#}"
-    );
-    Ok(())
+    match env.run(transfer.prove(env.client.ring_client())) {
+        Err(RingError::Client(ClientError::NonSpendInputNotAllowed { .. })) => Ok(()),
+        Err(other) => bail!("refused by {other}"),
+        Ok(_) => bail!("a dummy input proved on a full nullifier batch"),
+    }
 }
