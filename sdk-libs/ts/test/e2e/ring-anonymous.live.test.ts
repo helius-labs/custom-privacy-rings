@@ -68,10 +68,15 @@ async function member(ring: AnonymousRing): Promise<Member> {
   };
 }
 
-/** The ring rpc names the hidden sender and opens the payment and its change. */
-async function expectAudited(ring: AnonymousRing, sender: Actor, signature: string): Promise<void> {
+/** An anonymous hidden owner yields no spenders, Rust `RingOrigin::spenders`. */
+async function expectAudited(
+  ring: AnonymousRing,
+  spent: readonly Bytes32[],
+  signature: string,
+): Promise<void> {
   const item = await waitForAudited(ring.ringRpc, ring.target, ring.authority, signature);
-  expect(item.spenders).toContain(sender.keypair.shieldedAddress().solanaAddress());
+  expect(item.spenders).toEqual([]);
+  expect(item.nullifiers).toEqual(expect.arrayContaining([...spent]));
   expect(item.payloadErrors).toEqual([]);
   expect(auditedRingAmounts(item)).toEqual([PAYMENT, DEPOSIT - PAYMENT]);
 }
@@ -189,8 +194,12 @@ describe("anonymous ring", () => {
         ringProgramId: ring.ringProgramId,
         listSalt: new Uint8Array(32).fill(1) as Bytes32,
       });
+      const spent = sender.wallet
+        .utxos()
+        .filter((entry) => !entry.spent && entry.utxo.ringProgramId === ring.ringProgramId)
+        .map((entry) => entry.nullifier);
       const signature = await pay(ring, sender, to);
-      await expectAudited(ring, sender, signature);
+      await expectAudited(ring, spent, signature);
       await syncRing(ring, recipient);
       expect(ringHoldings(recipient, ring.ringProgramId)).toBe(PAYMENT);
       await syncRing(ring, sender);
