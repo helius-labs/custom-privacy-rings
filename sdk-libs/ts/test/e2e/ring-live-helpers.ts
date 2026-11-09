@@ -1,5 +1,9 @@
 // Shared by the ring live suites, the harness ring pins the released rows.
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
@@ -24,7 +28,11 @@ import {
   RingReaderGrantRequest,
   RingRpc,
   deployRingProgram,
+  enrollInstruction,
+  enrollmentState,
+  fetchRingPolicy,
   initializeRingInstruction,
+  proveEnrollment,
   LocalRingKeys,
   messageSignerReader,
   ringAuthAddress,
@@ -44,6 +52,9 @@ import {
   waitForSignature,
   type Actor,
 } from "./live-helpers.js";
+
+const SETTLE_MS = 180_000;
+const run = promisify(execFile);
 
 export function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -221,6 +232,67 @@ export async function readableRing(
   return { client, ringProgramId, authority, ringRpc, target };
 }
 
+/** A ring note spends only under an applied tracking row. */
+export async function enroll(
+  input: Readonly<{ ring: ReadableRing; payer: KeyPairSigner; owner: Actor }>,
+): Promise<void> {
+  const { ring, payer, owner } = input;
+  const { client, ringProgramId } = ring;
+  const { tracking: trackingRegistry } = await fetchRingPolicy(client, ringProgramId);
+  const { seal, proof } = await proveEnrollment({
+    holder: owner.keypair,
+    owner: owner.signer.address,
+    trackingRegistry,
+    listSalt: await ringKeys(owner).listSalt(ringProgramId),
+    client,
+    prover: client,
+  });
+  const instruction = await enrollInstruction(
+    {
+      payer,
+      owner: owner.signer,
+      trackingRegistry,
+      seal,
+      viewingU: owner.keypair.shieldedAddress().viewingPublicKey.u(),
+      proof,
+    },
+    client,
+  );
+  await sendInstruction(client, instruction, [payer, owner.signer]);
+  const config = join(await mkdtemp(join(tmpdir(), "ring-enroll-")), "ring.toml");
+  await writeFile(config, ringToml(ringProgramId));
+  const deadline = Date.now() + SETTLE_MS;
+  // An apply sent before the ring indexer lists the enrollment finds nothing pending.
+  for (;;) {
+    await run(requiredEnv("RING_CLI_BIN"), ["--config", config, "key", "apply"], {
+      timeout: Math.max(deadline - Date.now(), 1),
+    });
+    const state = await enrollmentState({ trackingRegistry, owner: owner.signer.address }, client);
+    if (state?.applied === true) return;
+    if (Date.now() > deadline)
+      throw new Error(`the enrollment of ${owner.signer.address} stays pending`);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+}
+
+/** The harness authority pays the apply. */
+function ringToml(ringProgramId: Address): string {
+  const urls = [
+    `rpc = "${requiredEnv("ZOLANA_LOCALNET_URL")}"`,
+    `indexer = "${requiredEnv("ZOLANA_INDEXER_URL")}"`,
+    `prover = "${requiredEnv("ZOLANA_PROVER_URL")}"`,
+    `ring_rpc = "${requiredEnv("RING_RPC_URL")}"`,
+  ].join("\n");
+  return [
+    `name = "ts-e2e-${ringProgramId}"`,
+    `program_id = "${ringProgramId}"`,
+    `authority_keypair = "${requiredEnv("RING_AUTHORITY_KEYPAIR")}"`,
+    `target = "localnet"`,
+    `[localnet]\n${urls}`,
+    `[devnet]\n${urls}`,
+  ].join("\n\n");
+}
+
 export function ringHoldings(actor: Actor, ringProgramId: Address): bigint {
   return actor.wallet
     .utxos()
@@ -302,7 +374,7 @@ export async function settleWithTransport(
   submission: RingTransactionSubmission,
   transport: RingSubmissionTransport,
 ) {
-  const deadline = Date.now() + 180_000;
+  const deadline = Date.now() + SETTLE_MS;
   submission.prove();
   for (;;) {
     const result = await submission.send(transport);

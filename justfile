@@ -24,8 +24,6 @@ photon-bin := env_var_or_default("ZOLANA_PHOTON_BIN", "target/debug/photon")
 export RING_INDEXER_BIN := env_var_or_default("RING_INDEXER_BIN", justfile_directory() / "target/debug/ring-indexer")
 # join keeps an absolute ZOLANA_SPP_KEYS_DIR as given.
 spp-keys-dir := join(justfile_directory(), env_var_or_default("ZOLANA_SPP_KEYS_DIR", "zolana/prover/server/proving-keys"))
-# Nonempty serves the TS live ring rpc with the relay, its fee payer funded from the faucet.
-ts-live-relay := env_var_or_default("RING_TS_RELAY", "")
 ring-keys-lock := "prover/ring/proving-keys.lock"
 custom-ring-keys := `python3 -c "import json;print(' '.join(sorted(json.load(open('prover/ring/proving-keys.lock'))['keys'])))"`
 
@@ -622,13 +620,10 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
     storage_authority="$("$ring_rpc" keygen --kind storage-authority \
       --out "$ring_dir/storage-authority.key" | sed -n 's/^storage authority *//p')"
     solana airdrop 100 "$storage_authority" --url {{localnet-rpc-url}} >/dev/null
-    relay_args=()
-    if [[ -n "{{ts-live-relay}}" ]]; then
-      fee_payer="$("$ring_rpc" keygen --kind fee-payer --out "$ring_dir/fee-payer.secret" \
-        | sed -n 's/^fee payer *//p')"
-      solana airdrop 100 "$fee_payer" --url {{localnet-rpc-url}} >/dev/null
-      relay_args=(--fee-payer-key-file "$ring_dir/fee-payer.secret")
-    fi
+    # The anonymous suite pays one transfer through the relay.
+    fee_payer="$("$ring_rpc" keygen --kind fee-payer --out "$ring_dir/fee-payer.secret" \
+      | sed -n 's/^fee payer *//p')"
+    solana airdrop 100 "$fee_payer" --url {{localnet-rpc-url}} >/dev/null
     serve_ring_rpc() {
       local reader_grants="$1" port={{localnet-ring-rpc-port}}
       held() { lsof -t -i "tcp:$port" -s tcp:listen 2>/dev/null; }
@@ -649,7 +644,7 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
         --allow-origin "$ring_origin" --webauthn-rp-id localhost \
         --store-url "sqlite://$PWD/$workdir/ring-rpc.sqlite?mode=rwc" \
         --prover-url {{localnet-prover-url}} --reader-grants "$reader_grants" \
-        ${relay_args[@]+"${relay_args[@]}"} \
+        --fee-payer-key-file "$ring_dir/fee-payer.secret" \
         > "$workdir/ring-rpc-$reader_grants.log" 2>&1 &
       printf 'waiting for ring rpc %s ' "$ring_rpc_url"
       for _ in $(seq 1 60); do
@@ -688,6 +683,7 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
       ZOLANA_TEST_TOKEN_2022_MINT="$token_2022_mint" \
       ZOLANA_TEST_TOKEN_2022_ACCOUNT="$token_2022_account" \
       ZOLANA_CLI_BIN="$PWD/$bin" \
+      RING_CLI_BIN="$PWD/$ring_cli" \
       RING_PROGRAM_ID="$ring_program_id" \
       RING_RPC_URL="$ring_rpc_url" \
       RING_AUTHORITY_KEYPAIR="$PWD/$ring_dir/authority.json" \
