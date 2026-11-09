@@ -565,6 +565,7 @@ function withdrawalStrategy(params: WithdrawalParams): RingSpendStrategy<
         },
         summary: `public withdrawal of ${String(params.amount)} ${assetLabel(asset)} from ring ${params.ringProgramId} to ${params.recipient}`,
         withdrawal: resolved.settlement.accounts,
+        withdrawalOwner: params.recipient,
         setupInstructions: resolved.setupInstructions,
         ...(resolved.setupInstructions.length === 0
           ? {}
@@ -578,6 +579,8 @@ interface RingSpendPlan {
   readonly intent: RingTransactionIntent;
   readonly summary: string;
   readonly withdrawal?: TransactWithdrawal;
+  /** The wallet whose token account receives the withdrawal. */
+  readonly withdrawalOwner?: Address;
   readonly setupInstructions?: readonly Instruction[];
   /** The accounts Ring RPC creates in place of `setupInstructions`. */
   readonly tokenAccountSetup?: readonly TokenAccountSetup[];
@@ -861,7 +864,9 @@ async function stageRingSpend<R>(
   return Object.freeze({
     selected,
     rail:
-      plan.withdrawal === undefined ? ownerRail : ownerRail.withWithdrawalAccounts(plan.withdrawal),
+      plan.withdrawal === undefined
+        ? ownerRail
+        : ownerRail.withWithdrawalAccounts(plan.withdrawal, plan.withdrawalOwner),
     plan,
     planned,
     anonymousPayment,

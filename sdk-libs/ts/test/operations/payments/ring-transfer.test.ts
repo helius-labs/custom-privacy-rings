@@ -4,6 +4,7 @@ import { publicListKey } from "../../../src/protocol/membership/private-list.js"
 import { policyWithdrawalHash } from "../../../src/proof/withdrawals.js";
 import {
   AccountRole,
+  address,
   generateKeyPairSigner,
   signTransactionWithSigners,
   type Address,
@@ -11,7 +12,13 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  addressBytes,
+  associatedTokenAddress,
+  splInterfaceWithBump,
+} from "@heliuslabs/spr/internal";
+import {
   SOL_INTERFACE,
+  SPL_TOKEN_PROGRAM_ID,
   TransactWithdrawal,
   type Bytes32,
   TRANSACTION_SIZE_LIMIT,
@@ -21,6 +28,7 @@ import {
   randomBlinding,
   ShieldedKeypair,
   SigningKey,
+  solanaOwnerIdentity,
   ViewingKey,
   X25519Keypair,
   X25519PublicKey,
@@ -381,6 +389,72 @@ describe("confidential rail", () => {
     checkTransferProof(fixture, data);
     await expect(withdraw(201n)).rejects.toThrow(isOwner);
     expect(fixture.sppCalls).toHaveLength(1);
+  });
+
+  it("reads a withdrawal to a token account the transaction creates as its named owner's", async () => {
+    const mint = address("So11111111111111111111111111111111111111112");
+    const fixture = await ringFixture({
+      records: [
+        {
+          member: memberOfAsset(mint),
+          lists: 0n,
+          mintPolicy: { ...EMPTY_MINT_POLICY, withdrawalThreshold: 1_000n },
+        },
+      ],
+    });
+    fixture.accounts.set(mint, {
+      owner: SPL_TOKEN_PROGRAM_ID,
+      lamports: 1n,
+      data: new Uint8Array(82),
+    });
+    const sender = ShieldedKeypair.generate();
+    const recipient = randomAddress();
+    const [recipientTokenAccount, [splTokenInterface, splInterfaceBump]] = await Promise.all([
+      associatedTokenAddress(recipient, mint, SPL_TOKEN_PROGRAM_ID),
+      splInterfaceWithBump(mint),
+    ]);
+    const withdraw = (owner?: Address) => {
+      fixture.enroll(sender.shieldedAddress());
+      const transfer = new ConfidentialTransfer(
+        sender.shieldedAddress(),
+        [noteInput(sender, 10_000n, fixture.ringProgramId, mint)],
+        fixture.authority,
+      );
+      transfer.withdraw(
+        mint,
+        4n,
+        WithdrawalTarget.spl({ recipientTokenAccount, splTokenInterface, splInterfaceBump }),
+      );
+      return CustomRingTransfer.new({
+        ringProgramId: fixture.ringProgramId,
+        keys: walletKeys(sender),
+        transfer,
+        assets,
+      })
+        .withWithdrawalAccounts(
+          TransactWithdrawal.spl({
+            mint,
+            splTokenInterface,
+            recipientTokenAccount,
+            tokenProgram: SPL_TOKEN_PROGRAM_ID,
+          }),
+          owner,
+        )
+        .prove(fixture.client);
+    };
+    await expect(withdraw()).rejects.toThrow(
+      expect.objectContaining({ code: "RING_ANONYMOUS_EXIT_TOKEN_ACCOUNT_INVALID" }),
+    );
+    const { data } = await expanded(fixture, await withdraw(recipient), "confidential");
+    expect(checkTransferProof(fixture, data)).toMatchObject({
+      withdrawalHash: policyWithdrawalHash([
+        {
+          owner: solanaOwnerIdentity(addressBytes(recipient)) as Bytes32,
+          asset: assetField(mint),
+          amount: 4n,
+        },
+      ]),
+    });
   });
 
   it("counts the setup instructions and the priority fee before approval and any proof", async () => {
