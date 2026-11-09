@@ -13,6 +13,7 @@ type rustTrackingFields struct {
 	NullifierPk ringtest.Hex `json:"nullifier_pk"`
 	CtHash      ringtest.Hex `json:"ct_hash"`
 	ListTag     ringtest.Hex `json:"list_tag"`
+	ViewingHash ringtest.Hex `json:"viewing_hash"`
 }
 
 type rustTrackingRecord struct {
@@ -24,37 +25,19 @@ type rustTrackingRecord struct {
 
 func (r rustTrackingRecord) record(t *testing.T) ringregistry.TrackingRecord {
 	t.Helper()
-	return ringregistry.TrackingRecord{Member: r.Member.Int, Next: r.Next.Int, NullifierPk: r.NullifierPk.Int, CtHash: r.CtHash.Int, ListTag: r.ListTag.Int}
+	return ringregistry.TrackingRecord{Member: r.Member.Int, Next: r.Next.Int, NullifierPk: r.NullifierPk.Int, CtHash: r.CtHash.Int, ListTag: r.ListTag.Int, ViewingHash: r.ViewingHash.Int}
 }
 
 type rustTrackingEntry struct {
 	Member ringtest.Hex `json:"member"`
 	rustTrackingFields
+	Proven    bool         `json:"proven"`
 	EntryHash ringtest.Hex `json:"entry_hash"`
 }
 
 func (e rustTrackingEntry) entry(t *testing.T) ringregistry.TrackingEntry {
 	t.Helper()
-	return ringregistry.TrackingEntry{Member: e.Member.Int, NullifierPk: e.NullifierPk.Int, CtHash: e.CtHash.Int, ListTag: e.ListTag.Int}
-}
-
-type rustTrackingPath struct {
-	Index    uint64           `json:"index"`
-	Siblings [][]ringtest.Hex `json:"siblings"`
-}
-
-func (p rustTrackingPath) path(t *testing.T) ringregistry.TrackingPath {
-	t.Helper()
-	path := ringregistry.TrackingPath{Index: p.Index}
-	if len(p.Siblings) != registry.TrackingHeight {
-		t.Fatalf("%d path levels", len(p.Siblings))
-	}
-	for level, row := range p.Siblings {
-		for k, sibling := range row {
-			path.Siblings[level][k] = sibling.Int
-		}
-	}
-	return path
+	return ringregistry.TrackingEntry{Member: e.Member.Int, NullifierPk: e.NullifierPk.Int, CtHash: e.CtHash.Int, ListTag: e.ListTag.Int, ViewingHash: e.ViewingHash.Int, Unproven: !e.Proven}
 }
 
 // The Rust witnesses solve the circuit and the host twin reaches every Rust root.
@@ -71,10 +54,11 @@ func TestApplyEnrollmentsMatchesRustVectors(t *testing.T) {
 			ChainEnd      ringtest.Hex `json:"chain_end"`
 			StatementHash ringtest.Hex `json:"statement_hash"`
 			Writes        []struct {
-				Entry   rustTrackingEntry  `json:"entry"`
-				Slot    rustTrackingPath   `json:"slot"`
-				Low     rustTrackingRecord `json:"low"`
-				LowPath rustTrackingPath   `json:"low_path"`
+				Entry   rustTrackingEntry       `json:"entry"`
+				Present bool                    `json:"present"`
+				Low     rustTrackingRecord      `json:"low"`
+				LowPath ringregistry.VectorPath `json:"low_path"`
+				Slot    ringregistry.VectorPath `json:"slot"`
 			} `json:"writes"`
 		} `json:"applications"`
 	}
@@ -110,7 +94,7 @@ func TestApplyEnrollmentsMatchesRustVectors(t *testing.T) {
 				}
 			}
 			for i, w := range app.Writes {
-				c.Writes[i] = ringregistry.TrackingWrite{Entry: entries[i], Slot: w.Slot.path(t), Low: w.Low.record(t), LowPath: w.LowPath.path(t)}.Wires()
+				c.Writes[i] = ringregistry.TrackingWrite{Entry: entries[i], Present: w.Present, Low: w.Low.record(t), LowPath: w.LowPath.Path(t), Slot: w.Slot.Path(t)}.Wires()
 			}
 			if err := solveEnrollments(t, c); err != nil {
 				t.Fatal(err)

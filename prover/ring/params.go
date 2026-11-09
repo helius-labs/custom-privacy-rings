@@ -69,6 +69,7 @@ type TrackingRecordParams struct {
 	NullifierPk Field `json:"nullifierPk"`
 	CtHash      Field `json:"ctHash"`
 	ListTag     Field `json:"listTag"`
+	ViewingHash Field `json:"viewingHash"`
 }
 
 // TrackingParams opens every owner row and live ring output under the frame's tracking root.
@@ -230,8 +231,8 @@ type ApplyRecordsParams struct {
 	RequestHead
 	OldRoot      Field  `json:"oldRoot"`
 	NewRoot      Field  `json:"newRoot"`
-	OldNextIndex uint32 `json:"oldNextIndex"`
-	NewNextIndex uint32 `json:"newNextIndex"`
+	OldNextIndex uint64 `json:"oldNextIndex"`
+	NewNextIndex uint64 `json:"newNextIndex"`
 	ChainStart   Field  `json:"chainStart"`
 	ChainEnd     Field  `json:"chainEnd"`
 	Count        uint8  `json:"count"`
@@ -239,17 +240,22 @@ type ApplyRecordsParams struct {
 	Writes []*RecordWriteProofInput `json:"writes"`
 }
 
-// TrackingWrite is the witness of one applied entry.
+// TrackingWrite is the witness of one applied entry in queue order.
 type TrackingWrite struct {
-	Member      Field                `json:"member"`
-	NullifierPk Field                `json:"nullifierPk"`
-	CtHash      Field                `json:"ctHash"`
-	ListTag     Field                `json:"listTag"`
-	Index       uint64               `json:"index"`
-	Path        []Field              `json:"path"`
-	LowRecord   TrackingRecordParams `json:"lowRecord"`
-	LowIndex    uint64               `json:"lowIndex"`
-	LowPath     []Field              `json:"lowPath"`
+	Member      Field `json:"member"`
+	NullifierPk Field `json:"nullifierPk"`
+	CtHash      Field `json:"ctHash"`
+	ListTag     Field `json:"listTag"`
+	ViewingHash Field `json:"viewingHash"`
+	Proven      bool  `json:"proven"`
+	Present     bool  `json:"present"`
+	// The inserted leaf's index and path, zero on any other write.
+	Index uint64  `json:"index"`
+	Path  []Field `json:"path"`
+	// The owner's own leaf when Present.
+	LowRecord TrackingRecordParams `json:"lowRecord"`
+	LowIndex  uint64               `json:"lowIndex"`
+	LowPath   []Field              `json:"lowPath"`
 }
 
 // PrivateApplyRecordsParams refuses a public request, every private field is required.

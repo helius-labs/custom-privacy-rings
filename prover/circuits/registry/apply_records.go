@@ -116,7 +116,7 @@ type PrivateApplyRecordsCircuit struct {
 type PrivateOwner struct {
 	ListSalt frontend.Variable
 	Record   TrackingRecord
-	Path     TrackingPath
+	Path     QuadPath
 }
 
 type registryState struct {

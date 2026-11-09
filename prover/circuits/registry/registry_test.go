@@ -24,11 +24,19 @@ func (c *rootCircuit) Define(api frontend.API) error {
 	return nil
 }
 
-// MEMBER_REGISTRY_EMPTY_ROOT in program-libs/interface/src/accounts/member_registry.rs, the sentinel leaf of eight inputs.
+// MEMBER_REGISTRY_EMPTY_ROOT in program-libs/interface/src/accounts/member_registry.rs, the sentinel leaf of eight inputs, and
+// TRACKING_EMPTY_ROOT in program-libs/interface/src/accounts/tracking.rs, the CRTK sentinel leaf of seven.
 func TestEmptyRootMatchesRust(t *testing.T) {
-	const rust = "053b2136ce0e6cffb89cb76c7a81b6d7e1bd424159ff4579f284a7e5f198956d"
-	if got := fmt.Sprintf("%064x", ringregistry.New(t).Root()); got != rust {
-		t.Fatalf("empty root %s, Rust %s", got, rust)
+	for _, tree := range []struct {
+		root *big.Int
+		rust string
+	}{
+		{ringregistry.New(t).Root(), "295ec16f1ff587f0269eb21ddf079a2b44cb3e0c6852f35431ab02f7651ac967"},
+		{ringregistry.NewTracking(t).Root(), "197ce7e4cc6e23ed6f4d5b32303dd91e032f9afdc7f8dd424ab2638d245e4559"},
+	} {
+		if got := fmt.Sprintf("%064x", tree.root); got != tree.rust {
+			t.Fatalf("empty root %s, Rust %s", got, tree.rust)
+		}
 	}
 }
 
@@ -46,7 +54,7 @@ func TestQuadPathFoldsTheHostTree(t *testing.T) {
 		}
 	}
 	// An empty leaf opens under the same root, its digits reach the top levels.
-	for _, index := range []uint64{21, 1 << 18, 2 << 18, 3 << 18, registry.Capacity - 1} {
+	for _, index := range []uint64{21, topDigit, 2 * topDigit, 3 * topDigit, registry.Capacity - 1} {
 		assignment := &rootCircuit{Root: root, Leaf: 0, Path: members.Path(index).Wires()}
 		if err := test.IsSolved(&rootCircuit{}, assignment, ecc.BN254.ScalarField()); err != nil {
 			t.Fatalf("empty leaf %d: %v", index, err)

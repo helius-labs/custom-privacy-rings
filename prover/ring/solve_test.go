@@ -144,7 +144,7 @@ func (batch registryBatch) request(t testing.TB) (*ApplyRecordsParams, bool) {
 	t.Helper()
 	members, entries := batch.members, batch.entries
 	p := &ApplyRecordsParams{
-		RequestHead: RequestHead{CircuitType: batch.circuit}, OldRoot: fb(members.Root()), OldNextIndex: uint32(members.NextIndex()),
+		RequestHead: RequestHead{CircuitType: batch.circuit}, OldRoot: fb(members.Root()), OldNextIndex: members.NextIndex(),
 		ChainStart: fb(batch.chainStart), Count: uint8(len(entries)), Writes: make([]*RecordWriteProofInput, batch.capacity),
 	}
 	chain := p.ChainStart.Int
@@ -154,7 +154,7 @@ func (batch registryBatch) request(t testing.TB) (*ApplyRecordsParams, bool) {
 		chain = ringtest.MustPoseidonHash(t, chain, e.Hash(t))
 		p.Writes[i] = requestValue[RecordWriteProofInput](t, wires[i])
 	}
-	p.NewRoot, p.NewNextIndex, p.ChainEnd = fb(members.Root()), uint32(members.NextIndex()), fb(chain)
+	p.NewRoot, p.NewNextIndex, p.ChainEnd = fb(members.Root()), members.NextIndex(), fb(chain)
 	fields := []*big.Int{
 		big.NewInt(shared.ApplyRecordsDomain), p.OldRoot.Int, p.NewRoot.Int, big.NewInt(int64(p.OldNextIndex)),
 		big.NewInt(int64(p.NewNextIndex)), p.ChainStart.Int, p.ChainEnd.Int, big.NewInt(int64(p.Count)),
