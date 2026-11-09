@@ -13,7 +13,6 @@ use super::{
         OwnerExposure,
     },
     audit::PresealedAudit,
-    delegate::delegate_rail,
     public_owners::check_zero_key_inputs,
     sealed, shape_keyed, ApprovalDisclosure, CoOwner, CoOwnerKey, DeliveredRail, Rail, RailKind,
     RingTransfer, SealRow, Spend, Staged, TransferAuthority,
@@ -222,7 +221,7 @@ impl Relayed<'_> {
                     }
                     Some(_) => {}
                 }
-                let ring_rail = delegate_rail(config.mode);
+                let ring_rail = RingRail::delegate(config.mode);
                 if !Shape::new(proof_inputs.input_utxos.len(), n_outputs).is_ring_authority() {
                     return Err(RingError::ShapeUnkeyed { rail: ring_rail });
                 }

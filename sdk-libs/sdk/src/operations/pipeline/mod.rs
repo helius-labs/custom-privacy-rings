@@ -66,11 +66,7 @@ pub use self::{
     relayed::{Relayed, RelayedTransfer, RelayedTransferInput},
 };
 
-pub(crate) use self::{
-    anonymous::HiddenOwner,
-    delegate::{delegate_rail, same_owner},
-    pool_subjects::KnownSalts,
-};
+pub(crate) use self::{anonymous::HiddenOwner, delegate::same_owner, pool_subjects::KnownSalts};
 
 use self::{
     anonymous::AnonymousSpend,
