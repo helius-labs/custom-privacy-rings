@@ -39,12 +39,15 @@ use zolana_ring_policy::registry_field;
 use crate::{
     auditor_key::is_auditor_key,
     domain,
-    member_registry::{GRACE_SLOTS, QUAD_CAPACITY},
+    member_registry::GRACE_SLOTS,
     storage::{advance_roots, root_at, Retirement, Revision, Root, StorageError},
     storage_instruction::{EnrollIxData, InitializeTrackingIxData},
     STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN,
 };
 
+/// One leaf per enrolled owner, at least `QUAD_HEIGHT` for `ZERO_SUBTREES` to serve both trees.
+pub const TRACKING_QUAD_HEIGHT: usize = 16;
+pub const TRACKING_CAPACITY: u64 = 1 << (2 * TRACKING_QUAD_HEIGHT);
 /// Fixed by the program, every retired tracking root serves it in full.
 pub const TRACKING_GRACE_SLOTS: u64 = GRACE_SLOTS;
 /// Every apply retires one root for `TRACKING_GRACE_SLOTS`, the history bounds applies per grace.
@@ -66,7 +69,7 @@ pub struct TrackingRegistry {
     pub ring_id: [u8; 32],
     /// Immutable, enrollment proofs seal to it.
     pub auditor_pubkey: [u8; TAGGED_X25519_KEY_LEN],
-    /// Little endian, the leaf the next new owner takes, at most `QUAD_CAPACITY`.
+    /// Little endian, the leaf the next new owner takes, at most `TRACKING_CAPACITY`.
     pub next_index: [u8; 8],
     /// Newest first, only retired roots have an expiry.
     pub roots: [Root; TRACKING_ROOT_HISTORY],
@@ -163,7 +166,7 @@ impl TrackingRegistry {
     /// Writes nothing on a refusal, a retired root stays served for its whole grace.
     pub fn update(&mut self, update: TrackingRootUpdate) -> Result<(), StorageError> {
         // The circuit opens no leaf past the capacity, a larger index would name a leaf no path reaches.
-        if !(1..=QUAD_CAPACITY).contains(&update.new_next_index) {
+        if !(1..=TRACKING_CAPACITY).contains(&update.new_next_index) {
             return Err(StorageError::TrackingTreeFull);
         }
         advance_roots(
@@ -181,7 +184,7 @@ impl TrackingRegistry {
 
     fn valid(&self) -> bool {
         self.discriminator == Self::DISCRIMINATOR
-            && (1..=QUAD_CAPACITY).contains(&self.next_index())
+            && (1..=TRACKING_CAPACITY).contains(&self.next_index())
     }
 }
 
@@ -314,7 +317,7 @@ mod tests {
         ])
         .unwrap();
         let mut zero = [0u8; 32];
-        for _ in 0..crate::QUAD_HEIGHT {
+        for _ in 0..TRACKING_QUAD_HEIGHT {
             node = Poseidon::hashv(&[&node, &zero, &zero, &zero]).unwrap();
             zero = Poseidon::hashv(&[&zero, &zero, &zero, &zero]).unwrap();
         }

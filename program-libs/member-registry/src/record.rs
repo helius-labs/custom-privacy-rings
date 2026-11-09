@@ -118,6 +118,7 @@ impl MemberRecord {
 
 impl IndexedLeaf for MemberRecord {
     const SENTINEL: Self = Self::SENTINEL;
+    type Path = QuadPath;
 
     fn member(&self) -> &[u8; 32] {
         &self.member

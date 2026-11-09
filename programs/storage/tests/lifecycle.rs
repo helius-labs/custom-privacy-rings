@@ -12,10 +12,11 @@ use custom_ring_interface::{
     },
     tagged_x25519,
     tracking::{
-        TrackingRegistry, TRACKING_EMPTY_ROOT, TRACKING_ROOT_HISTORY, ZERO_NULLIFIER_PUBKEY,
+        TrackingRegistry, TRACKING_CAPACITY, TRACKING_EMPTY_ROOT, TRACKING_ROOT_HISTORY,
+        ZERO_NULLIFIER_PUBKEY,
     },
     verifying_key, ApplyRecordsIxData, CustomRingProof, PlainGroth16Proof, RecordWriteData,
-    WriteRecordsIxData, QUAD_CAPACITY, READER_KEY_ED25519, ROOT_HISTORY, TAGGED_X25519_KEY_LEN,
+    WriteRecordsIxData, READER_KEY_ED25519, ROOT_HISTORY, TAGGED_X25519_KEY_LEN,
     VIEWING_PUBKEY_TAG,
 };
 use litesvm::LiteSVM;
@@ -918,11 +919,11 @@ fn an_apply_past_two_to_the_thirty_two_leaves_is_refused() {
         })
     };
     assert_eq!(
-        store.send_batch(&batch(&store, QUAD_CAPACITY + 1)),
+        store.send_batch(&batch(&store, TRACKING_CAPACITY + 1)),
         refusal_at(1, StorageError::TrackingTreeFull)
     );
     assert_eq!(store.tracking_registry(), before);
-    let full = batch(&store, QUAD_CAPACITY);
+    let full = batch(&store, TRACKING_CAPACITY);
     past_every_apply_check(&mut store, &full, 2);
 }
 

@@ -10,7 +10,7 @@
 //!
 //! Guarantees:
 //! 1. Every applied entry is one its owner signed over the registry, and every inserting entry carries a verified `RegisterKey` seal.
-//! 2. The new root and next index follow from the current ones by exactly the batch's entries in write order, and the next index stays within `QUAD_CAPACITY`.
+//! 2. The new root and next index follow from the current ones by exactly the batch's entries in write order, and the next index stays within `TRACKING_CAPACITY`.
 //! 3. The outgoing root keeps its full grace. An apply that would evict an unexpired root refuses.
 //! 4. An `EnrollmentsApplied` event carrying every write follows only a verified proof.
 //!

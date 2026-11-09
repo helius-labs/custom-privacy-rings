@@ -82,23 +82,47 @@ type Path struct {
 	Siblings [registry.Height][registry.Arity - 1]*big.Int
 }
 
+// TrackingPath mirrors registry.TrackingPath.
+type TrackingPath struct {
+	Index    uint64
+	Siblings [registry.TrackingHeight][registry.Arity - 1]*big.Int
+}
+
 func (p Path) Wires() registry.QuadPath {
 	w := registry.QuadPath{Index: p.Index}
-	for level, siblings := range p.Siblings {
-		for k, sibling := range siblings {
-			w.Siblings[level][k] = new(big.Int).Set(sibling)
-		}
-	}
+	wireSiblings(w.Siblings[:], p.Siblings[:])
+	return w
+}
+
+func (p TrackingPath) Wires() registry.TrackingPath {
+	w := registry.TrackingPath{Index: p.Index}
+	wireSiblings(w.Siblings[:], p.Siblings[:])
 	return w
 }
 
 // Root mirrors registry.QuadPath.Root.
 func (p Path) Root(t testing.TB, leaf *big.Int) *big.Int {
+	return foldPath(t, p.Index, p.Siblings[:], leaf)
+}
+
+func (p TrackingPath) Root(t testing.TB, leaf *big.Int) *big.Int {
+	return foldPath(t, p.Index, p.Siblings[:], leaf)
+}
+
+func wireSiblings(wires [][registry.Arity - 1]frontend.Variable, siblings [][registry.Arity - 1]*big.Int) {
+	for level, row := range siblings {
+		for k, sibling := range row {
+			wires[level][k] = new(big.Int).Set(sibling)
+		}
+	}
+}
+
+func foldPath(t testing.TB, index uint64, siblings [][registry.Arity - 1]*big.Int, leaf *big.Int) *big.Int {
 	t.Helper()
 	node := leaf
-	for level, siblings := range p.Siblings {
-		digit := int(p.Index>>(2*level)) & (registry.Arity - 1)
-		children := append(append(append([]*big.Int{}, siblings[:digit]...), node), siblings[digit:]...)
+	for level, row := range siblings {
+		digit := int(index>>(2*level)) & (registry.Arity - 1)
+		children := append(append(append([]*big.Int{}, row[:digit]...), node), row[digit:]...)
 		node = ringtest.MustPoseidonHash(t, children...)
 	}
 	return node
@@ -233,12 +257,22 @@ func (r *Registry) Path(index uint64) Path {
 
 func zeroPath() Path {
 	p := Path{}
-	for level := range p.Siblings {
-		for k := range p.Siblings[level] {
-			p.Siblings[level][k] = big.NewInt(0)
+	zeroSiblings(p.Siblings[:])
+	return p
+}
+
+func zeroTrackingPath() TrackingPath {
+	p := TrackingPath{}
+	zeroSiblings(p.Siblings[:])
+	return p
+}
+
+func zeroSiblings(siblings [][registry.Arity - 1]*big.Int) {
+	for level := range siblings {
+		for k := range siblings[level] {
+			siblings[level][k] = big.NewInt(0)
 		}
 	}
-	return p
 }
 
 func (r *Registry) node(level int, index uint64) *big.Int {

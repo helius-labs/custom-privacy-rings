@@ -88,7 +88,21 @@ func (w AppliedWrite) Write(t testing.TB) Write {
 func (p VectorPath) Path(t testing.TB) Path {
 	t.Helper()
 	path := Path{Index: p.Index}
-	if len(p.Siblings) != registry.Height {
+	p.fill(t, path.Siblings[:])
+	return path
+}
+
+func (p VectorPath) TrackingPath(t testing.TB) TrackingPath {
+	t.Helper()
+	path := TrackingPath{Index: p.Index}
+	p.fill(t, path.Siblings[:])
+	return path
+}
+
+// fill refuses a vector of another tree's height.
+func (p VectorPath) fill(t testing.TB, siblings [][registry.Arity - 1]*big.Int) {
+	t.Helper()
+	if len(p.Siblings) != len(siblings) {
 		t.Fatalf("ring records vector holds %d path levels", len(p.Siblings))
 	}
 	for level, row := range p.Siblings {
@@ -96,8 +110,7 @@ func (p VectorPath) Path(t testing.TB) Path {
 			t.Fatalf("ring records vector holds %d siblings at level %d", len(row), level)
 		}
 		for k, sibling := range row {
-			path.Siblings[level][k] = sibling.Int
+			siblings[level][k] = sibling.Int
 		}
 	}
-	return path
 }

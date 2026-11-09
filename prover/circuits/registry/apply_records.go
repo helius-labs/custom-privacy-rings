@@ -119,7 +119,7 @@ type PrivateApplyRecordsCircuit struct {
 type PrivateOwner struct {
 	ListSalt frontend.Variable
 	Record   TrackingRecord
-	Path     QuadPath
+	Path     TrackingPath
 }
 
 type registryState struct {
@@ -236,7 +236,7 @@ func (w RecordWriteProofInput) apply(api frontend.API, active frontend.Variable,
 	insert := api.Mul(absent, ringgadget.IsAny(api, nonzero...))
 	update := api.Mul(active, w.Exists)
 	// 5. An insert relinks the low record to the member and takes the empty leaf at the next index, linking on to the low record's old next.
-	// The next index keeps one free leaf per insert, a member placed on a later leaf would block the insert that reaches it. At next = Capacity the index fails QuadPath.digits, a full tree takes no member and a write that inserts nothing still passes.
+	// The next index keeps one free leaf per insert, a member placed on a later leaf would block the insert that reaches it. At next = Capacity the index fails quadDigits, a full tree takes no member and a write that inserts nothing still passes.
 	linked := api.Select(insert, relinkedRoot, s.root)
 	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: insert, A: w.Slot.Index, B: s.next})
 	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: insert, A: w.Old.Next, B: w.Low.Next})

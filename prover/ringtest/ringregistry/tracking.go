@@ -65,7 +65,7 @@ func PublicKey(t testing.TB, owner *big.Int) *big.Int {
 type TrackingOpening struct {
 	Present bool
 	Record  TrackingRecord
-	Path    Path
+	Path    TrackingPath
 }
 
 func (o TrackingOpening) Wires() registry.TrackingOpening {
@@ -80,9 +80,9 @@ type TrackingWrite struct {
 	Entry   TrackingEntry
 	Present bool
 	Low     TrackingRecord
-	LowPath Path
+	LowPath TrackingPath
 	// Slot is the next empty leaf on an insert and the zero path on any other write.
-	Slot Path
+	Slot TrackingPath
 }
 
 func (w TrackingWrite) Wires() registry.EnrollmentWrite {
@@ -97,7 +97,7 @@ func ZeroTrackingWrite() TrackingWrite {
 	zero := big.NewInt(0)
 	record := TrackingRecord{Member: zero, Next: zero, NullifierPk: zero, CtHash: zero, ListTag: zero, ViewingHash: zero}
 	entry := TrackingEntry{Member: zero, NullifierPk: zero, CtHash: zero, ListTag: zero, ViewingHash: zero, PriorViewingHash: zero, Unproven: true}
-	return TrackingWrite{Entry: entry, Low: record, LowPath: zeroPath(), Slot: zeroPath()}
+	return TrackingWrite{Entry: entry, Low: record, LowPath: zeroTrackingPath(), Slot: zeroTrackingPath()}
 }
 
 // Tracking keeps the sentinel at index 0 and appends every insert.
@@ -108,7 +108,7 @@ type Tracking struct {
 
 func NewTracking(t testing.TB) *Tracking {
 	t.Helper()
-	r := &Tracking{tree: newQuadTree(t, registry.Height)}
+	r := &Tracking{tree: newQuadTree(t, registry.TrackingHeight)}
 	zero := big.NewInt(0)
 	r.set(t, 0, TrackingRecord{Member: zero, Next: fieldMax, NullifierPk: zero, CtHash: zero, ListTag: zero, ViewingHash: zero})
 	return r
@@ -135,7 +135,7 @@ func (r *Tracking) Apply(t testing.TB, e TrackingEntry) TrackingWrite {
 	}
 	index, present := r.find(e.Member)
 	low := r.records[index]
-	w := TrackingWrite{Entry: e, Present: present, Low: low, LowPath: r.Path(index), Slot: zeroPath()}
+	w := TrackingWrite{Entry: e, Present: present, Low: low, LowPath: r.Path(index), Slot: zeroTrackingPath()}
 	switch {
 	case present:
 		// The circuit refuses an update from any key but the leaf's current one.
@@ -157,7 +157,7 @@ func (r *Tracking) Apply(t testing.TB, e TrackingEntry) TrackingWrite {
 }
 
 func (r *Tracking) SharedProof(indices []uint64) (registry.SharedQuadProof, error) {
-	proof, err := registry.NewSharedQuadProof(len(indices))
+	proof, err := registry.NewTrackingProof(len(indices))
 	if err != nil {
 		return registry.SharedQuadProof{}, err
 	}
@@ -173,8 +173,8 @@ func (r *Tracking) SharedProof(indices []uint64) (registry.SharedQuadProof, erro
 	return proof, nil
 }
 
-func (r *Tracking) Path(index uint64) Path {
-	p := Path{Index: index}
+func (r *Tracking) Path(index uint64) TrackingPath {
+	p := TrackingPath{Index: index}
 	copy(p.Siblings[:], r.tree.siblings(index))
 	return p
 }

@@ -48,9 +48,9 @@ type EnrollmentWrite struct {
 	Present frontend.Variable
 	// The owner's own leaf when Present, else the leaf bracketing it.
 	Low     TrackingRecord
-	LowSlot QuadPath
+	LowSlot TrackingPath
 	// The empty leaf an insert takes, any other write binds only its index range.
-	Slot QuadPath
+	Slot TrackingPath
 }
 
 // ApplyEnrollmentsCircuit only moves the tree, the program computes each entry and anyone may apply.
@@ -116,7 +116,7 @@ func (w EnrollmentWrite) apply(api frontend.API, active frontend.Variable, s reg
 	lowRoot, linked := w.LowSlot.Update(api, w.Low.Hash(api), replaced.Hash(api))
 	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: active, A: lowRoot, B: s.root})
 	// 5. An insert takes the empty leaf 0 at the next index under the relinked root, linking on to the low record's old next.
-	// At next = Capacity the index fails QuadPath.digits, a full tree takes no new owner. Any other write binds Slot only to an index in range, so a full tree still applies updates.
+	// At next = TrackingCapacity the index fails quadDigits, a full tree takes no new owner. Any other write binds Slot only to an index in range, so a full tree still applies updates.
 	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: insert, A: w.Slot.Index, B: s.next})
 	after := TrackingRecord{
 		Member: w.Entry.Member, Next: w.Low.Next, NullifierPk: w.Entry.NullifierPk, CtHash: w.Entry.CtHash, ListTag: w.Entry.ListTag, ViewingHash: w.Entry.ViewingHash,

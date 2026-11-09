@@ -229,7 +229,7 @@ impl Default for RecordWriteData {
 pub struct ApplyRecordsIxData {
     pub proof: CustomRingProof,
     pub new_root: [u8; 32],
-    /// Little endian, a u32 cannot hold `QUAD_CAPACITY`.
+    /// Little endian.
     pub new_next_index: [u8; 8],
     /// The proven `ApplyRecordsStatement::restrictive`, one or zero.
     pub restrictive: u8,

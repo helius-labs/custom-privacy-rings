@@ -132,7 +132,7 @@ func TestApplyEnrollmentsUpdatesPresentOwnersAndSkipsUnprovenAbsentOnes(t *testi
 
 // A full tree has no index for an insert, an update opens no slot and still applies.
 func TestApplyEnrollmentsUpdatesAFullTree(t *testing.T) {
-	capacity := big.NewInt(registry.Capacity)
+	capacity := big.NewInt(registry.TrackingCapacity)
 	b := applyEnrollments(t, trackingTree(t), 1, big.NewInt(0), rotation(0x10, 0xa5, 0xa3))
 	b.circuit.OldNextIndex, b.circuit.NewNextIndex = capacity, capacity
 	b.bind(t)
@@ -259,12 +259,12 @@ func TestApplyEnrollmentsRefusals(t *testing.T) {
 }
 
 func TestApplyEnrollmentsAtCapacity(t *testing.T) {
-	capacity := big.NewInt(registry.Capacity)
+	capacity := big.NewInt(registry.TrackingCapacity)
 	b := applyEnrollments(t, trackingTree(t), 1, big.NewInt(0), trackingEntry(0x20, 0xb0))
 	b.circuit.Writes[0].Slot.Index = capacity
 	b.circuit.OldNextIndex, b.circuit.NewNextIndex = capacity, new(big.Int).Add(capacity, big.NewInt(1))
 	b.bind(t)
-	ringtest.RequireRefused(t, solveEnrollments(t, b.circuit), "[ToBinary]", "registry.QuadPath.digits")
+	ringtest.RequireRefused(t, solveEnrollments(t, b.circuit), "[ToBinary]", "registry.quadDigits")
 }
 
 func TestApplyEnrollmentsKeys(t *testing.T) {

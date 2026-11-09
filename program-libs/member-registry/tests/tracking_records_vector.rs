@@ -4,7 +4,7 @@ use custom_ring_interface::tracking::{TrackingEntry, TRACKING_EMPTY_ROOT};
 use serde::{Deserialize, Serialize};
 use spr_hasher::primitives::right_align;
 use zolana_ring_member_registry::{
-    AppliedTree, QuadPath, RecordTree, TrackingRecord, TrackingTree, TrackingWriteProofInput,
+    AppliedTree, RecordTree, TrackingPath, TrackingRecord, TrackingTree, TrackingWriteProofInput,
 };
 
 const VECTORS: &str = concat!(
@@ -113,7 +113,7 @@ fn record_vector(record: &TrackingRecord) -> Record {
     }
 }
 
-fn path_vector(path: &QuadPath) -> Path {
+fn path_vector(path: &TrackingPath) -> Path {
     Path {
         index: path.index,
         siblings: path

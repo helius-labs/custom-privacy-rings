@@ -86,7 +86,7 @@ func TestPolicyRequestsRejectMalformedPayloads(t *testing.T) {
 			m["trackingSubjects"].([]any)[0].(map[string]any)["recordIndex"] = len(m["trackingRecords"].([]any))
 		}, "tracking record"},
 		{"tracking path outside tree", func(m map[string]any) {
-			m["trackingProof"].(map[string]any)["paths"].([]any)[0].(map[string]any)["index"] = registry.Capacity
+			m["trackingProof"].(map[string]any)["paths"].([]any)[0].(map[string]any)["index"] = registry.TrackingCapacity
 		}, "tracking path"},
 		{"row entry outside pool", func(m map[string]any) { m["rowEntries"].([]any)[0] = len(m["trackingSubjects"].([]any)) }, "tracking subject"},
 		{"short canopy", func(m map[string]any) { proof(m)["canopy"] = proof(m)["canopy"].([]any)[1:] }, "expected"},

@@ -24,7 +24,7 @@ import (
 // 1. A leaf carries CRTK and one owner's nullifier key, ciphertext hash, list tag and viewing hash, its domain keeps it apart from a policy leaf. Only Next and ViewingHash move after insert, registry/apply_enrollments.go holds both.
 // 2. Resolve reads a present owner's own leaf or proves the owner absent by the one link it falls inside, the sort order registry/apply_enrollments.go keeps leaves no third case.
 // 3. An absent owner or an unset cond reads an all zero row.
-// 4. The leaf folds to root while cond is set, and one index below Capacity names it.
+// 4. The leaf folds to root while cond is set, and one index below TrackingCapacity names it.
 // 5. No circuit decides on ViewingHash. A sender must check hash_bytes(viewing_u) against it off chain, an X25519 u can exceed the BN254 modulus.
 
 // The empty leaf is 0, and the sentinel (0, q-1, 0, 0, 0, 0) at index 0 brackets every member in [1, q-2].
@@ -44,7 +44,7 @@ func (r TrackingRecord) Hash(api frontend.API) frontend.Variable {
 type TrackingOpening struct {
 	Present frontend.Variable
 	Record  TrackingRecord
-	Path    QuadPath
+	Path    TrackingPath
 }
 
 // TrackingRow is zero for an absent owner or an unset cond.

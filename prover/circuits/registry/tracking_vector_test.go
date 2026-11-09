@@ -94,7 +94,7 @@ func TestApplyEnrollmentsMatchesRustVectors(t *testing.T) {
 				}
 			}
 			for i, w := range app.Writes {
-				c.Writes[i] = ringregistry.TrackingWrite{Entry: entries[i], Present: w.Present, Low: w.Low.record(t), LowPath: w.LowPath.Path(t), Slot: w.Slot.Path(t)}.Wires()
+				c.Writes[i] = ringregistry.TrackingWrite{Entry: entries[i], Present: w.Present, Low: w.Low.record(t), LowPath: w.LowPath.TrackingPath(t), Slot: w.Slot.TrackingPath(t)}.Wires()
 			}
 			if err := solveEnrollments(t, c); err != nil {
 				t.Fatal(err)

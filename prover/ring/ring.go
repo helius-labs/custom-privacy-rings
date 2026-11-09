@@ -161,7 +161,7 @@ func (t TrackingParams) validateIndices(size int) error {
 		}
 	}
 	for _, path := range t.TrackingProof.Paths {
-		if path.Index >= registry.Capacity {
+		if path.Index >= registry.TrackingCapacity {
 			return fmt.Errorf("tracking path index is outside the tree")
 		}
 	}

@@ -110,8 +110,8 @@ func TestTrackingOpeningRefusals(t *testing.T) {
 	}
 	t.Run("an index past the capacity", func(t *testing.T) {
 		c := trackingRow(tree, alice)
-		c.Opening.Path.Index = new(big.Int).Add(big.NewInt(1), big.NewInt(registry.Capacity))
-		ringtest.RequireRefused(t, solveTrackingRow(c), "[ToBinary]", "registry.QuadPath.digits")
+		c.Opening.Path.Index = new(big.Int).Add(big.NewInt(1), big.NewInt(registry.TrackingCapacity))
+		ringtest.RequireRefused(t, solveTrackingRow(c), "[ToBinary]", "registry.quadDigits")
 	})
 }
 
@@ -214,7 +214,7 @@ func TestSharedTrackingProofOpensLeaves(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		shape, err := registry.NewSharedQuadProof(openings)
+		shape, err := registry.NewTrackingProof(openings)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -230,7 +230,10 @@ func TestSharedTrackingProofOpensLeaves(t *testing.T) {
 			t.Fatalf("%d openings: a leaf outside the tree opened", openings)
 		}
 	}
-	if proof, err := registry.NewSharedQuadProof(1); err != nil || len(proof.Paths[0].Siblings) != registry.Height || proof.Validate(1) != nil {
+	if proof, err := registry.NewTrackingProof(1); err != nil || len(proof.Paths[0].Siblings) != registry.TrackingHeight || proof.Validate(1) != nil {
 		t.Fatalf("tracking proof height %v, %v", proof, err)
+	}
+	if proof, err := registry.NewSharedQuadProof(1); err != nil || len(proof.Paths[0].Siblings) != registry.Height || proof.Validate(1) != nil {
+		t.Fatalf("policy proof height %v, %v", proof, err)
 	}
 }

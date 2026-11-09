@@ -15,7 +15,7 @@
 //! 2. An insert relinks the low leaf to the member and takes the next empty leaf with the low leaf's old link, so the links stay one list sorted by member while the leaves stay in insert order.
 //! 3. A member keeps its leaf for good, and a full tree takes no new member.
 //! 4. An empty leaf is zero, and `ZERO_SUBTREES` roots an empty subtree of each height.
-//! 5. Both trees take `QUAD_HEIGHT`, their leaves stay apart by domain and width.
+//! 5. A leaf's `Path` fixes its tree's height, `QUAD_HEIGHT` for a policy registry and `TRACKING_QUAD_HEIGHT` for tracking, and their leaves stay apart by domain and width.
 
 mod memory;
 mod path;
@@ -28,7 +28,9 @@ use spr_hasher::HasherError;
 use thiserror::Error;
 
 pub use memory::{MemberRegistryTree, MemoryTree};
-pub use path::{quad_node, NodePosition, QuadPath, ZERO_SUBTREES};
+pub use path::{
+    quad_node, NodePosition, QuadPath, QuadPathOf, TrackingPath, TreePath, ZERO_SUBTREES,
+};
 pub use record::{
     MemberRecord, RecordStatementContext, RecordStatementError, RecordTracking,
     RecordWriteProofInput,

@@ -31,7 +31,7 @@ func TestEmptyRootMatchesRust(t *testing.T) {
 		root *big.Int
 		rust string
 	}{
-		{ringregistry.New(t).Root(), "295ec16f1ff587f0269eb21ddf079a2b44cb3e0c6852f35431ab02f7651ac967"},
+		{ringregistry.New(t).Root(), "17202a46b2fa553cc388a3acc58cec7fcf588e5349816f74bf85fa81a3943de2"},
 		{ringregistry.NewTracking(t).Root(), "197ce7e4cc6e23ed6f4d5b32303dd91e032f9afdc7f8dd424ab2638d245e4559"},
 	} {
 		if got := fmt.Sprintf("%064x", tree.root); got != tree.rust {
@@ -72,7 +72,7 @@ func TestQuadPathRejectsAnotherIndex(t *testing.T) {
 		frames []string
 	}{
 		{"a neighbour sharing the siblings", big.NewInt(2), []string{"[assertIsEqual]", "registry_test.(*rootCircuit).Define"}},
-		{"the index plus the capacity", new(big.Int).Add(big.NewInt(1), big.NewInt(registry.Capacity)), []string{"[ToBinary]", "registry.QuadPath.digits"}},
+		{"the index plus the capacity", new(big.Int).Add(big.NewInt(1), big.NewInt(registry.Capacity)), []string{"[ToBinary]", "registry.quadDigits"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := opening.Path.Wires()

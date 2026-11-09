@@ -18,7 +18,7 @@ use crate::{
     record::check_member,
     record_pool::RecordPoolOf,
     tree::{ApplyProofInputs, IndexedLeaf, RecordOpening, WritableLeaf, WriteStep},
-    QuadPath, RecordTreeError,
+    RecordTreeError, TrackingPath,
 };
 
 /// One enrolled owner, a zero `nullifier_pk` marks the sentinel and an unwritten leaf.
@@ -46,9 +46,9 @@ pub struct TrackingWriteProofInput {
     pub present: bool,
     /// The owner's leaf when present, else the record bracketing it, before the write.
     pub low: TrackingRecord,
-    pub low_path: QuadPath,
+    pub low_path: TrackingPath,
     /// The `next_index` leaf after the relink on an insert, else index 0 with zero siblings.
-    pub slot: QuadPath,
+    pub slot: TrackingPath,
 }
 
 impl TrackingRecord {
@@ -83,6 +83,7 @@ impl TrackingRecord {
 
 impl IndexedLeaf for TrackingRecord {
     const SENTINEL: Self = Self::SENTINEL;
+    type Path = TrackingPath;
 
     fn member(&self) -> &[u8; 32] {
         &self.member
@@ -165,7 +166,7 @@ impl WritableLeaf for TrackingRecord {
             low_path: step.low_path,
             slot: match insert {
                 true => step.slot,
-                false => QuadPath::default(),
+                false => TrackingPath::default(),
             },
         }
     }

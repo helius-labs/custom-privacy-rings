@@ -5,10 +5,10 @@
 
 use std::collections::BTreeMap;
 
-use custom_ring_interface::{QUAD_ARITY, QUAD_CAPACITY, QUAD_HEIGHT};
+use custom_ring_interface::QUAD_ARITY;
 
 use crate::{
-    path::{quad_node, NodePosition, ZERO_SUBTREES},
+    path::{capacity, quad_node, NodePosition, TreePath, ZERO_SUBTREES},
     record::check_member,
     tree::IndexedLeaf,
     IndexedRecord, MemberRecord, RecordStore, RecordTreeError,
@@ -39,7 +39,7 @@ impl<L: IndexedLeaf> MemoryTree<L> {
         if *sentinel.member() != [0; 32] || !sentinel.is_blank() {
             return Err(RecordTreeError::MissingSentinel);
         }
-        if records.len() as u64 > QUAD_CAPACITY {
+        if records.len() as u64 > capacity(L::Path::HEIGHT) {
             return Err(RecordTreeError::Full);
         }
         let mut members = BTreeMap::from([(*sentinel.member(), 0)]);
@@ -49,14 +49,15 @@ impl<L: IndexedLeaf> MemoryTree<L> {
                 return Err(RecordTreeError::DuplicateMember);
             }
         }
-        let mut levels = Vec::with_capacity(QUAD_HEIGHT + 1);
+        let height = L::Path::HEIGHT;
+        let mut levels = Vec::with_capacity(height + 1);
         levels.push(
             records
                 .iter()
                 .map(L::leaf_hash)
                 .collect::<Result<Vec<_>, _>>()?,
         );
-        for level in 0..QUAD_HEIGHT {
+        for level in 0..height {
             let parents = levels[level]
                 .chunks(QUAD_ARITY)
                 .map(|chunk| {

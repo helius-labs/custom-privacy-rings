@@ -10,11 +10,10 @@
 
 use core::marker::PhantomData;
 
-use custom_ring_interface::{QUAD_ARITY, QUAD_CAPACITY, QUAD_HEIGHT};
 use spr_hasher::HasherError;
 
 use crate::{
-    path::{children, quad_node, NodePosition, QuadPath, ZERO_SUBTREES},
+    path::{capacity, children, quad_node, NodePosition, TreePath, ZERO_SUBTREES},
     record::check_member,
     record_pool::{Canopy, PoolSubject, RecordPoolOf, SharedPath, SharedProof},
     MemberRecord, RecordTreeError,
@@ -23,6 +22,8 @@ use crate::{
 /// A sorted linked leaf, a member's absence opens the low leaf bracketing it.
 pub trait IndexedLeaf: Copy {
     const SENTINEL: Self;
+    /// Its `HEIGHT` sizes the leaf's tree.
+    type Path: TreePath;
 
     fn member(&self) -> &[u8; 32];
 
@@ -62,14 +63,14 @@ pub trait WritableLeaf: IndexedLeaf {
 
 /// What one write opened, in the order the apply circuit proves its steps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WriteStep<L> {
+pub struct WriteStep<L: IndexedLeaf> {
     /// `low` is the member's own leaf.
     pub present: bool,
     /// The member's leaf when present, else the leaf bracketing it, before the write.
     pub low: L,
-    pub low_path: QuadPath,
+    pub low_path: L::Path,
     /// `low_path` when present or for a no-op on a full tree, else the `next_index` leaf.
-    pub slot: QuadPath,
+    pub slot: L::Path,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,13 +102,13 @@ pub trait RecordStore<L: IndexedLeaf = MemberRecord> {
 
 /// A member under one root, its record or the low record bracketing it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RecordOpening<L = MemberRecord> {
-    Present { record: L, path: QuadPath },
-    Absent { low: L, path: QuadPath },
+pub enum RecordOpening<L: IndexedLeaf = MemberRecord> {
+    Present { record: L, path: L::Path },
+    Absent { low: L, path: L::Path },
 }
 
 #[must_use]
-pub struct OpeningCheck<'a, L = MemberRecord> {
+pub struct OpeningCheck<'a, L: IndexedLeaf = MemberRecord> {
     pub opening: &'a RecordOpening<L>,
     pub root: &'a [u8; 32],
     pub member: &'a [u8; 32],
@@ -155,10 +156,10 @@ pub struct AppliedTree<T, W = crate::RecordWriteProofInput> {
 
 pub trait RecordTree<L: IndexedLeaf = MemberRecord>: RecordStore<L> {
     fn root(&self) -> Result<[u8; 32], Self::Error> {
-        Filled::of(self)?.node(NodePosition::ROOT)
+        Filled::of(self)?.node(NodePosition::root(L::Path::HEIGHT))
     }
 
-    fn path(&self, index: u64) -> Result<QuadPath, Self::Error> {
+    fn path(&self, index: u64) -> Result<L::Path, Self::Error> {
         Filled::of(self)?.path(index)
     }
 
@@ -191,19 +192,23 @@ pub trait RecordTree<L: IndexedLeaf = MemberRecord>: RecordStore<L> {
         if members.len() > canopy.width() {
             return Err(RecordTreeError::PoolCapacity.into());
         }
+        // A canopy of the other tree's height would cut every path at the wrong level.
+        if canopy.height() != L::Path::HEIGHT {
+            return Err(RecordTreeError::PoolShape.into());
+        }
         let mut records: Vec<L> = Vec::new();
         let mut paths: Vec<SharedPath> = Vec::new();
         let mut subjects = Vec::with_capacity(members.len());
         for member in members {
             let (RecordOpening::Present { record, path }
             | RecordOpening::Absent { low: record, path }) = self.opening(member)?;
-            let record_index = match paths.iter().position(|known| known.index == path.index) {
+            let record_index = match paths.iter().position(|known| known.index == path.index()) {
                 Some(index) => index,
                 None => {
                     records.push(record);
                     paths.push(SharedPath {
-                        index: path.index,
-                        siblings: path.siblings[..canopy.path_levels()].to_vec(),
+                        index: path.index(),
+                        siblings: path.siblings()[..canopy.path_levels()].to_vec(),
                     });
                     records.len() - 1
                 }
@@ -277,14 +282,8 @@ impl<'s, L: IndexedLeaf, S: RecordStore<L> + ?Sized> Filled<'s, S, L> {
         self.store.node(at)
     }
 
-    fn path(&self, index: u64) -> Result<QuadPath, S::Error> {
-        let mut siblings = [[[0u8; 32]; QUAD_ARITY - 1]; QUAD_HEIGHT];
-        for (level, positions) in QuadPath::sibling_positions(index)?.iter().enumerate() {
-            for (sibling, at) in siblings[level].iter_mut().zip(positions) {
-                *sibling = self.node(*at)?;
-            }
-        }
-        Ok(QuadPath { index, siblings })
+    fn path(&self, index: u64) -> Result<L::Path, S::Error> {
+        L::Path::read(index, |at| self.node(at))
     }
 }
 
@@ -309,13 +308,14 @@ impl<L: IndexedLeaf, S: RecordStore<L> + ?Sized> Growing<'_, S, L> {
         let path = self.filled().path(index)?;
         self.store.set_record(index, record)?;
         let mut node = record.leaf_hash().map_err(RecordTreeError::from)?;
-        for (level, siblings) in path.siblings.iter().enumerate() {
+        for (level, siblings) in path.siblings().iter().enumerate() {
             let at = NodePosition::on_path(index, level);
             self.store.set_node(at, node)?;
             node =
                 quad_node(&children(node, at.digit(), siblings)).map_err(RecordTreeError::from)?;
         }
-        self.store.set_node(NodePosition::ROOT, node)
+        self.store
+            .set_node(NodePosition::root(L::Path::HEIGHT), node)
     }
 }
 
@@ -329,7 +329,7 @@ impl<L: WritableLeaf, S: RecordStore<L> + ?Sized> Growing<'_, S, L> {
         // Record state and storage failures can still reject a later step.
         entries.iter().try_for_each(L::check_entry)?;
         // 2. The original root and next index anchor the proof before any staged mutation.
-        let old_root = self.filled().node(NodePosition::ROOT)?;
+        let old_root = self.filled().node(NodePosition::root(L::Path::HEIGHT))?;
         let old_next_index = self.next_index;
         // 3. Proof steps and the entry chain follow the same batch order.
         // Each opening uses the running root, and the chain includes entries that leave the root unchanged.
@@ -343,7 +343,7 @@ impl<L: WritableLeaf, S: RecordStore<L> + ?Sized> Growing<'_, S, L> {
         // Any error propagates to that consuming boundary and discards the staged state.
         Ok(ApplyProofInputs {
             old_root,
-            new_root: self.filled().node(NodePosition::ROOT)?,
+            new_root: self.filled().node(NodePosition::root(L::Path::HEIGHT))?,
             old_next_index,
             new_next_index: self.next_index,
             chain_start,
@@ -379,7 +379,7 @@ impl<L: WritableLeaf, S: RecordStore<L> + ?Sized> Growing<'_, S, L> {
         }
         let low_path = self.filled().path(low_index)?;
         let inserted = L::blank(*member, *low.next()).after(entry)?;
-        let full = self.next_index >= QUAD_CAPACITY;
+        let full = self.next_index >= capacity(L::Path::HEIGHT);
         // An empty record is never inserted, the write proves the absence and keeps the root.
         if inserted.is_blank() {
             // The circuit range-checks a no-op's slot and nothing else.

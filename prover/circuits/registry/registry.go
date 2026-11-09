@@ -27,15 +27,19 @@ import (
 
 // Properties:
 // 1. A leaf covers its member, its link and every field a read or a write depends on, mirrored by MemberRecord::hash in program-libs/member-registry/src/record.rs.
-// 2. A path puts one leaf at one index, Index is bound below Capacity and the node takes the child position its two index bits name at each level.
+// 2. A path puts one leaf at one index, Index is bound below its tree's capacity and the node takes the child position its two index bits name at each level.
 // 3. A node hashes four children and a leaf eight fields, Poseidon's constants differ per width and no node opens as a leaf.
 
-// The tree shape mirrors QUAD_HEIGHT in program-libs/interface/src/accounts/member_registry.rs, the policy and tracking trees share it.
+// Height mirrors QUAD_HEIGHT in program-libs/interface/src/accounts/member_registry.rs, TrackingHeight
+// mirrors TRACKING_QUAD_HEIGHT in program-libs/interface/src/accounts/tracking.rs.
 const (
-	Height    = 16
-	Arity     = 4
-	IndexBits = 2 * Height
-	Capacity  = 1 << IndexBits
+	Height            = 13
+	Arity             = 4
+	IndexBits         = 2 * Height
+	Capacity          = 1 << IndexBits
+	TrackingHeight    = 16
+	TrackingIndexBits = 2 * TrackingHeight
+	TrackingCapacity  = 1 << TrackingIndexBits
 	// ListBits is the width of a record's list bitmap, bit id-1 marks list id.
 	ListBits = 64
 	// LimitFields mirrors AssetLimits::fields in program-libs/policy/src/asset_limits.rs.
@@ -74,28 +78,46 @@ func (b RecordBody) assertEmptyWhen(api frontend.API, cond frontend.Variable) {
 	}
 }
 
+// QuadPath opens a policy registry leaf, TrackingPath a tracking leaf.
 type QuadPath struct {
 	Index    frontend.Variable
 	Siblings [Height][Arity - 1]frontend.Variable // each level's other three children in child order, leaf level first
 }
 
+type TrackingPath struct {
+	Index    frontend.Variable
+	Siblings [TrackingHeight][Arity - 1]frontend.Variable
+}
+
 func (p QuadPath) Root(api frontend.API, leaf frontend.Variable) frontend.Variable {
-	return p.fold(api, p.digits(api), leaf)
+	return quadRoot(api, p.Index, p.Siblings[:], leaf)
 }
 
 func (p QuadPath) Update(api frontend.API, oldLeaf, newLeaf frontend.Variable) (oldRoot, newRoot frontend.Variable) {
+	return quadUpdate(api, p.Index, p.Siblings[:], oldLeaf, newLeaf)
+}
+
+func (p TrackingPath) Root(api frontend.API, leaf frontend.Variable) frontend.Variable {
+	return quadRoot(api, p.Index, p.Siblings[:], leaf)
+}
+
+func (p TrackingPath) Update(api frontend.API, oldLeaf, newLeaf frontend.Variable) (oldRoot, newRoot frontend.Variable) {
+	return quadUpdate(api, p.Index, p.Siblings[:], oldLeaf, newLeaf)
+}
+
+func quadRoot(api frontend.API, index frontend.Variable, siblings [][Arity - 1]frontend.Variable, leaf frontend.Variable) frontend.Variable {
+	return foldQuadPath(api, siblings, quadDigits(api, index, len(siblings)), leaf)
+}
+
+func quadUpdate(api frontend.API, index frontend.Variable, siblings [][Arity - 1]frontend.Variable, oldLeaf, newLeaf frontend.Variable) (oldRoot, newRoot frontend.Variable) {
 	// One index decomposition places the old and the new leaf in the same slot.
-	digits := p.digits(api)
-	return p.fold(api, digits, oldLeaf), p.fold(api, digits, newLeaf)
+	digits := quadDigits(api, index, len(siblings))
+	return foldQuadPath(api, siblings, digits, oldLeaf), foldQuadPath(api, siblings, digits, newLeaf)
 }
 
-func (p QuadPath) digits(api frontend.API) []frontend.Variable {
-	// IndexBits bits bound Index below Capacity, one index per leaf and no alias Index + Capacity.
-	return api.ToBinary(p.Index, IndexBits)
-}
-
-func (p QuadPath) fold(api frontend.API, digits []frontend.Variable, leaf frontend.Variable) frontend.Variable {
-	return foldQuadPath(api, p.Siblings[:], digits, leaf)
+// quadDigits binds index below 4^height, one index per leaf and no alias index + capacity.
+func quadDigits(api frontend.API, index frontend.Variable, height int) []frontend.Variable {
+	return api.ToBinary(index, 2*height)
 }
 
 // foldQuadPath takes two bits per level, low bit first, and bits may run past siblings for a canopy to read.
