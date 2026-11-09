@@ -22,6 +22,7 @@ import {
   STORAGE_REGISTRY_DISCRIMINATOR,
   STORAGE_REGISTRY_SIZE,
 } from "../../../src/protocol/codec/ring-codecs.js";
+import { STORAGE_PROGRAM_ID } from "../../../src/protocol/pda/index.js";
 import { MAX_SPP_CPI_ACCOUNTS } from "../../../src/protocol/transaction/spp.js";
 
 function rust(file: string): string {
@@ -49,7 +50,7 @@ describe("ring interface pins", () => {
   it("tags and budgets every instruction like Rust `instruction_tags!`", () => {
     const source = rust("instructions/instruction.rs");
     const units = new Map(
-      [...source.matchAll(/^const ([A-Z_]+): u32 = ([\d_]+);$/gmu)].map(
+      [...source.matchAll(/^(?:pub )?const ([A-Z_]+): u32 = ([\d_]+);$/gmu)].map(
         ([, name = "", value = ""]) => [name, integer(value)] as const,
       ),
     );
@@ -135,5 +136,10 @@ describe("ring interface pins", () => {
       rust("codec/spp.rs"),
     )?.[1];
     expect(MAX_SPP_CPI_ACCOUNTS).toBe(Number(pinned));
+  });
+
+  it("names the storage program Rust `STORAGE_PROGRAM_ID` names", () => {
+    const pinned = /STORAGE_PROGRAM_ID[^;]*from_str_const\("(\w+)"\)/u.exec(rust("lib.rs"))?.[1];
+    expect(STORAGE_PROGRAM_ID).toBe(pinned);
   });
 });
