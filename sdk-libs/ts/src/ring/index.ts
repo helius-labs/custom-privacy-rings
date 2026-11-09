@@ -191,6 +191,7 @@ export { openRingNotes, syncRingWallet } from "../state/ring-sync.js";
 export type { RingNotes, RingSyncClient, RingSyncInput } from "../state/ring-sync.js";
 export { LocalRingKeys, isRingKeys, ringWalletKeys } from "../state/ring-keys.js";
 export type {
+  MergeSeedRequest,
   RingDeliveryRequest,
   RingKeys,
   RingTagFrame,
@@ -226,6 +227,7 @@ export type {
   DelegateOutput,
   DelegateTransferClient,
   DelegateTransferInput,
+  DelegateWithdrawal,
   PreparedRingRelay,
   PublicOwnerTransferClient,
   ReadCache,
@@ -270,6 +272,7 @@ export {
   encodeRelayTransferTerms,
   type ApprovalLimit,
   type CoSignerRule,
+  type DelegateRingConfig,
   type ExactApproval,
   type FundedLeg,
   type RelayFunderTerms,
@@ -312,7 +315,7 @@ export type {
   RingTransactAccounts,
   TransactDeposit,
 } from "../operations/workflow/pipeline.js";
-export type { BoundPolicy, BoundRoot } from "../proof/policy-proof.js";
+export type { BoundPolicy, BoundRoot, PolicyReadClient } from "../proof/policy-proof.js";
 export {
   buildRingEntryTransaction,
   buildRingExitTransaction,
@@ -453,6 +456,7 @@ export {
 } from "../crypto/audit/merge-disclosure.js";
 export type {
   MergePublicInput,
+  RingMergeDisclosureRequest,
   RingMergeRequest,
   SealedMergeRecord,
 } from "../crypto/audit/merge-disclosure.js";
@@ -512,9 +516,11 @@ export {
   signRefuseListApprovalRequest,
 } from "../rpc/ring-rpc.js";
 export type {
+  DelegateNotesAttestationInput,
   ListApprovalTarget,
   PolicyAuthorityAction,
   RingReaderGrant,
+  WalletStatusAttestationInput,
 } from "../rpc/ring-rpc.js";
 export type {
   AuditedMergesPage,
@@ -585,6 +591,7 @@ export {
   proveEnrollment,
   type ApplyEnrollments,
   type Enroll,
+  type EnrollmentReadClient,
   type EnrollmentSeal,
   type WriteOwnerGrant,
 } from "../operations/management/enrollment.js";
@@ -612,6 +619,8 @@ export {
   trackingRecordHash,
   verifyTrackingOpening,
   type OwnerGrant,
+  type ServedTrackingPool,
+  type ServedTrackingRecord,
   type TrackingAuthorization,
   type TrackingEntry,
   type TrackingOpening,
@@ -654,6 +663,7 @@ export {
   fetchTrackingRegistry,
   newestTrackingRoot,
   resolveRingRecipient,
+  type AuthorizationReader,
   type ResolvedRecipient,
   type RingRecipientClient,
   type TrackingRoot,
@@ -665,6 +675,7 @@ export type {
   ServedTrackingOpening,
   TrackingOpenings,
   TrackingOpeningsRequest,
+  TrackingRecordPoolRequest,
   TrackingSeal,
 } from "../protocol/indexer/tracking-codec.js";
 export { ownerGrantPda, trackingAuthorizationPda } from "../protocol/pda/index.js";
