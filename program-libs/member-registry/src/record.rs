@@ -11,7 +11,7 @@
 use custom_ring_interface::{
     storage::{StorageError, StorageRegistry},
     storage_instruction::{AssetWrite, RecordWriteClassification},
-    write_chain, ApplyRecordsStatement, PrivateWrites, RecordWrite, FIELD_MAX, QUAD_HEIGHT,
+    write_chain, ApplyRecordsStatement, PrivateWrites, RecordWrite, FIELD_MAX,
 };
 use spr_hasher::{primitives::right_align, Hasher, HasherError, Poseidon};
 use thiserror::Error;
@@ -118,7 +118,6 @@ impl MemberRecord {
 
 impl IndexedLeaf for MemberRecord {
     const SENTINEL: Self = Self::SENTINEL;
-    const HEIGHT: usize = QUAD_HEIGHT;
 
     fn member(&self) -> &[u8; 32] {
         &self.member
@@ -150,7 +149,7 @@ impl IndexedLeaf for MemberRecord {
     }
 }
 
-impl WritableLeaf<QUAD_HEIGHT> for MemberRecord {
+impl WritableLeaf for MemberRecord {
     type Entry = RecordWrite;
     type WriteProof = RecordWriteProofInput;
 
@@ -174,26 +173,25 @@ impl WritableLeaf<QUAD_HEIGHT> for MemberRecord {
         Ok(self.written(entry))
     }
 
-    fn write_proof(
-        entry: RecordWrite,
-        step: WriteStep<Self, QUAD_HEIGHT>,
-    ) -> RecordWriteProofInput {
-        match step {
-            WriteStep::Present { old, slot } => RecordWriteProofInput {
+    fn write_proof(entry: RecordWrite, step: WriteStep<Self>) -> RecordWriteProofInput {
+        let WriteStep {
+            present,
+            low,
+            low_path,
+            slot,
+        } = step;
+        match present {
+            true => RecordWriteProofInput {
                 entry,
                 exists: true,
-                old_next: old.next,
-                old_lists: old.lists,
-                old_mint_policy: old.mint_policy,
+                old_next: low.next,
+                old_lists: low.lists,
+                old_mint_policy: low.mint_policy,
                 slot,
                 low: Self::default(),
                 low_path: QuadPath::default(),
             },
-            WriteStep::Absent {
-                low,
-                low_path,
-                slot,
-            } => RecordWriteProofInput {
+            false => RecordWriteProofInput {
                 entry,
                 exists: false,
                 old_next: low.next,
@@ -214,7 +212,7 @@ impl ApplyProofInputs<RecordWriteProofInput> {
     ) -> Result<ApplyRecordsStatement, RecordStatementError> {
         // 1. The registry snapshot fixes the old root and allocation cursor for the supplied proof inputs.
         if self.old_root != context.registry.newest().hash
-            || self.old_next_index != u64::from(context.registry.next_index())
+            || self.old_next_index != context.registry.next_index()
         {
             return Err(RecordStatementError::RegistryStateMismatch);
         }
@@ -241,13 +239,12 @@ impl ApplyProofInputs<RecordWriteProofInput> {
                 })
             }
         };
-        let index = |value: u64| u32::try_from(value).map_err(|_| RecordTreeError::IndexOutOfRange);
         Ok(ApplyRecordsStatement {
             restrictive: self.writes.iter().any(RecordWriteProofInput::restricts),
             old_root: self.old_root,
             new_root: self.new_root,
-            old_next_index: index(self.old_next_index)?,
-            new_next_index: index(self.new_next_index)?,
+            old_next_index: self.old_next_index,
+            new_next_index: self.new_next_index,
             chain_start: self.chain_start,
             chain_end: self.chain_end,
             count,

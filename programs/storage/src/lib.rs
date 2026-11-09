@@ -3,7 +3,7 @@
 //! SPP proves a spend against its own trees and knows no list, mint setting or enrolled key. A ring
 //! proof opens those from the two trees kept here, and the ring program hands it the root it read
 //! from the account. A policy registry holds an authority's lists and mint settings. A tracking
-//! registry holds one ring's enrolled owners, and anyone may apply its pending enrollments. The two
+//! registry holds one ring's enrolled owners, and anyone may apply its queued enrollments. The two
 //! stay apart because a stale apply proof fails on revision, and one shared tree would let
 //! enrollment traffic delay a restrictive write.
 //!
@@ -14,7 +14,7 @@
 //!
 //! Guarantees:
 //! 1. A root enters a registry only with an apply proof over the registry's current root, next index and revision, and the program chains the writes that proof covers.
-//! 2. A policy root moves under the registry authority's signature alone. A tracking root moves with no signature, over entries the program computes from authorization accounts.
+//! 2. A policy root moves under the registry authority's signature alone. A tracking root moves with no signature, over the entries the program queued at `Enroll`.
 //! 3. A revision names at most one root at a slot, `StorageRegistry::root` and `TrackingRegistry::root` share one rule.
 //!
 //! Relies on:

@@ -1,4 +1,4 @@
-//! Creates the ring account, its tracking registry and SPP's `RingConfig` in one instruction.
+//! Creates the ring account, its tracking registry with the enrollment queue and SPP's `RingConfig` in one instruction.
 //!
 //! The ring account fixes the auditor key and the mode for the ring's life. SPP admits any program's
 //! `RingConfig` and reads no auditor key, so the check of who sets those values lives here.
@@ -58,6 +58,7 @@ pub fn process_initialize_ix(
     let ring_auth = iter.next_mut("ring_auth")?;
     let spp_program = iter.next_account("spp_program")?;
     let tracking = iter.next_mut("tracking_registry")?;
+    let enrollment_queue = iter.next_mut("enrollment_queue")?;
     // Only the runtime reads it, the CPI names the storage program by id.
     iter.next_account("storage_program")?;
 
@@ -134,7 +135,7 @@ pub fn process_initialize_ix(
     }
     Init(&*account).init(ring)?;
     let placed = RingAuth::derive(program_id)?.check_account(ring_auth)?;
-    // 6. Storage creates the registry at the address these seeds fix, the ring PDA's signature admits no other ring.
+    // 6. Storage creates the registry at the address these seeds fix and its queue beside it, the ring PDA's signature admits no other ring.
     let tracking_data = [
         &[storage_tag::INITIALIZE_TRACKING][..],
         bytemuck::bytes_of(&InitializeTrackingIxData {
@@ -143,7 +144,13 @@ pub fn process_initialize_ix(
         }),
     ]
     .concat();
-    let tracking_accounts = [&*payer, &*ring_auth, &*tracking, &*system_program];
+    let tracking_accounts = [
+        &*payer,
+        &*ring_auth,
+        &*tracking,
+        &*enrollment_queue,
+        &*system_program,
+    ];
     placed.invoke_program(
         &STORAGE_PROGRAM_ID,
         tracking_accounts.as_slice(),

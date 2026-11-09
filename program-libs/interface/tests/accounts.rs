@@ -1,26 +1,26 @@
 use bytemuck::Zeroable;
 use custom_ring_interface::{
-    domain,
+    chain_link, domain,
     owner_grant::OwnerGrant,
     storage::{RegistryId, Revision, RootUpdate, StorageError, StorageRegistry},
     storage_instruction::{
-        AssetWrite, EnrollIxData, EnrollRequest, InitializeIxData, InitializeTrackingIxData,
-        OwnerGrantIxData, StorageUpdateIxData,
+        ApplyEnrollmentsIxData, AssetWrite, EnrollIxData, EnrollRequest, InitializeIxData,
+        InitializeTrackingIxData, OwnerGrantIxData, StorageUpdateIxData,
     },
     tracking::{
-        tracking_chain_start, FirstEnrollment, TrackingAuthorization, TrackingEntry,
-        TrackingRegistry, TrackingRootUpdate, TRACKING_CAPACITY, TRACKING_EMPTY_ROOT,
-        TRACKING_GRACE_SLOTS,
+        tracking_chain_start, EnrollmentQueue, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
+        ENROLLMENT_QUEUE_CAPACITY, TRACKING_EMPTY_ROOT, TRACKING_GRACE_SLOTS,
+        TRACKING_ROOT_HISTORY,
     },
     ApplyRecordsIxData, CustomRingError, CustomRingProof, NewRing, PolicyUpdate, RecordWriteData,
     RingAccount, RingMode, RingPolicy, RingRole, RingRoles, SourceSlot, WriteRecordsIxData,
-    MEMBER_REGISTRY_EMPTY_ROOT, N_SOURCE_SLOTS, READER_KEY_ED25519, ROOT_HISTORY,
+    MEMBER_REGISTRY_EMPTY_ROOT, N_SOURCE_SLOTS, QUAD_CAPACITY, READER_KEY_ED25519, ROOT_HISTORY,
     STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN, VIEWING_PUBKEY_TAG,
 };
 use serde_json::{json, Value};
 use solana_address::Address;
 use spr_hasher::{
-    primitives::{hash_bytes, solana_owner_identity},
+    primitives::{hash_bytes, right_align, solana_owner_identity},
     Hasher, Poseidon,
 };
 use zolana_ring_policy::{ListId, ListSet, Member, Rule, RuleTable, Subject};
@@ -202,24 +202,16 @@ fn enroll_ix(viewing_u: [u8; 32]) -> EnrollIxData {
     }
 }
 
-fn first_enrollment() -> TrackingAuthorization {
-    FirstEnrollment {
-        registry: key(0x11),
-        owner: key(0x12),
-        ix: &enroll_ix([0x18; 32]),
-    }
-    .account()
-}
-
 #[test]
-fn the_entry_binds_every_field_and_comes_from_the_account() {
-    let account = first_enrollment();
-    let entry = account.entry().unwrap();
+fn the_entry_binds_every_field_and_comes_from_the_enroll() {
+    let (owner, ix) = (key(0x12), enroll_ix([0x18; 32]));
+    let entry = TrackingEntry::from_enroll(&owner, &ix, true).unwrap();
     assert_eq!(
         entry.member,
-        solana_owner_identity(account.owner.as_array()).unwrap()
+        solana_owner_identity(owner.as_array()).unwrap()
     );
-    assert_eq!(entry.ct_hash, hash_bytes(&account.ciphertext).unwrap());
+    assert_eq!(entry.ct_hash, hash_bytes(&ix.ciphertext).unwrap());
+    assert_eq!(entry.viewing_hash, hash_bytes(&ix.viewing_u).unwrap());
     assert_eq!(
         entry.hash().unwrap(),
         Poseidon::hashv(&[
@@ -228,6 +220,8 @@ fn the_entry_binds_every_field_and_comes_from_the_account() {
             &entry.nullifier_pk,
             &entry.ct_hash,
             &entry.list_tag,
+            &entry.viewing_hash,
+            &right_align(&[1]),
         ])
         .unwrap()
     );
@@ -248,6 +242,15 @@ fn the_entry_binds_every_field_and_comes_from_the_account() {
             list_tag: [9; 32],
             ..entry
         },
+        TrackingEntry {
+            viewing_hash: [9; 32],
+            ..entry
+        },
+        // A rotation hashes apart from the first enrollment it shares every field with.
+        TrackingEntry {
+            proven: false,
+            ..entry
+        },
     ];
     for other in moved {
         assert_ne!(other.hash(), entry.hash());
@@ -255,56 +258,83 @@ fn the_entry_binds_every_field_and_comes_from_the_account() {
 }
 
 #[test]
-fn an_enrollment_applies_once_and_a_rotation_never_reopens_it() {
-    let mut account = first_enrollment();
-    assert!(account.is_pending());
-    let entry = account.apply().unwrap();
-    assert_eq!(entry, first_enrollment().entry().unwrap());
-    assert!(!account.is_pending());
-    assert_eq!(account.apply(), Err(StorageError::EnrollmentAlreadyApplied));
-    account.rotate(&enroll_ix([0x19; 32])).unwrap();
-    assert!(!account.is_pending());
-    assert_eq!(account.apply(), Err(StorageError::EnrollmentAlreadyApplied));
-    // The entry holds no viewing key, a rotation leaves the row the apply chained.
-    assert_eq!(account.entry().unwrap(), entry);
+fn a_queue_hands_out_entries_in_sequence_order_across_its_wrap() {
+    let registry = key(0x11);
+    let mut queue = EnrollmentQueue::new(registry);
+    let hash = |sequence: u64| {
+        let mut hash = [0; 32];
+        hash[..8].copy_from_slice(&sequence.to_le_bytes());
+        hash
+    };
+    let capacity = ENROLLMENT_QUEUE_CAPACITY as u64;
+    for sequence in 0..capacity {
+        assert_eq!(queue.push(hash(sequence)), Ok(sequence));
+    }
+    // 1. A full queue refuses with nothing written, the oldest entry's slot stays.
+    let full = queue;
+    assert_eq!(
+        queue.push(hash(capacity)),
+        Err(StorageError::EnrollmentQueueFull)
+    );
+    assert_eq!(queue, full);
+    // 2. An apply naming more than the queue holds refuses and leaves `head`.
+    assert_eq!(
+        queue.take(capacity + 1).err(),
+        Some(StorageError::EnrollmentQueueShort)
+    );
+    assert_eq!(queue, full);
+    // 3. A take frees its slots, a later push reuses the first and the next take reads past the wrap.
+    let taken: Vec<_> = queue.take(3).unwrap().copied().collect();
+    assert_eq!(taken, [0, 1, 2].map(hash));
+    assert_eq!(
+        (queue.head(), queue.tail(), queue.pending()),
+        (3, capacity, capacity - 3)
+    );
+    assert_eq!(queue.push(hash(capacity)), Ok(capacity));
+    queue.take(capacity - 4).unwrap().for_each(drop);
+    let wrapped: Vec<_> = queue.take(2).unwrap().copied().collect();
+    assert_eq!(wrapped, [capacity - 1, capacity].map(hash));
+    assert_eq!(queue.pending(), 0);
 }
 
 #[test]
-fn a_rotation_refuses_every_final_field_and_moves_the_viewing_key_alone() {
-    let mut account = first_enrollment();
-    let rotated = enroll_ix([0x19; 32]);
-    let before = account;
-    for changed in [
-        EnrollIxData {
-            nullifier_pk: [9; 32],
-            ..rotated
-        },
-        EnrollIxData {
-            list_tag: [9; 32],
-            ..rotated
-        },
-        EnrollIxData {
-            eph_u: [9; 32],
-            ..rotated
-        },
-        EnrollIxData {
-            ciphertext: [9; 64],
-            ..rotated
-        },
-    ] {
-        assert_eq!(
-            account.rotate(&changed),
-            Err(StorageError::EnrollmentKeyFinal)
-        );
-    }
-    assert_eq!(account, before);
-    account.rotate(&rotated).unwrap();
+fn a_queue_decodes_only_its_own_layout_and_names_its_registry() {
+    let registry = key(0x11);
+    let queue = EnrollmentQueue::new(registry);
+    let bytes = bytemuck::bytes_of(&queue);
     assert_eq!(
-        account,
-        TrackingAuthorization {
-            viewing_u: [0x19; 32],
-            ..before
-        }
+        EnrollmentQueue::decode(&STORAGE_PROGRAM_ID, bytes),
+        Some(queue)
+    );
+    assert_eq!(EnrollmentQueue::decode(&key(1), bytes), None);
+    let refused = |edit: fn(&mut EnrollmentQueue)| {
+        let mut queue = queue;
+        edit(&mut queue);
+        EnrollmentQueue::from_data(bytemuck::bytes_of(&queue)).is_none()
+    };
+    assert!(refused(
+        |queue| queue.discriminator = TrackingRegistry::DISCRIMINATOR
+    ));
+    assert!(refused(|queue| queue.head = 1u64.to_le_bytes()));
+    assert!(refused(|queue| {
+        queue.tail = (ENROLLMENT_QUEUE_CAPACITY as u64 + 1).to_le_bytes()
+    }));
+    let (address, _) = EnrollmentQueue::find_address(&registry);
+    assert_ne!(address, EnrollmentQueue::find_address(&key(0x13)).0);
+}
+
+#[test]
+fn an_apply_names_one_to_a_full_batch_of_entries() {
+    assert_eq!(
+        ApplyEnrollmentsIxData::check_count(0),
+        Err(StorageError::NoEnrollmentsNamed)
+    );
+    for count in [1, 3, 16] {
+        assert_eq!(ApplyEnrollmentsIxData::check_count(count), Ok(()));
+    }
+    assert_eq!(
+        ApplyEnrollmentsIxData::check_count(17),
+        Err(StorageError::UnsupportedBatch)
     );
 }
 
@@ -453,7 +483,7 @@ fn a_tracking_update_serves_the_old_root_for_its_grace() {
 #[test]
 fn a_tracking_update_waits_while_its_eviction_would_drop_an_unexpired_root() {
     let mut filled = TrackingRegistry::new(&tracking_ix());
-    let full = ROOT_HISTORY as u64 - 1;
+    let full = TRACKING_ROOT_HISTORY as u64 - 1;
     for revision in 0..full {
         filled.update(tracking_update(revision, 10, 3)).unwrap();
     }
@@ -472,9 +502,9 @@ fn a_tracking_update_waits_while_its_eviction_would_drop_an_unexpired_root() {
 #[test]
 fn a_tracking_tree_stays_valid_at_capacity_and_not_past_it() {
     let mut registry = TrackingRegistry::new(&tracking_ix());
-    registry.next_index = TRACKING_CAPACITY.to_le_bytes();
+    registry.next_index = QUAD_CAPACITY.to_le_bytes();
     assert!(TrackingRegistry::from_data(bytemuck::bytes_of(&registry)).is_some());
-    registry.next_index = (TRACKING_CAPACITY + 1).to_le_bytes();
+    registry.next_index = (QUAD_CAPACITY + 1).to_le_bytes();
     assert!(TrackingRegistry::from_data(bytemuck::bytes_of(&registry)).is_none());
 }
 
@@ -482,7 +512,7 @@ fn a_tracking_tree_stays_valid_at_capacity_and_not_past_it() {
 fn an_apply_fills_the_last_leaf_and_refuses_an_index_past_it() {
     let mut registry = TrackingRegistry::new(&tracking_ix());
     let past = TrackingRootUpdate {
-        new_next_index: TRACKING_CAPACITY + 1,
+        new_next_index: QUAD_CAPACITY + 1,
         ..tracking_update(0, 10, 1)
     };
     let before = registry;
@@ -490,11 +520,11 @@ fn an_apply_fills_the_last_leaf_and_refuses_an_index_past_it() {
     assert_eq!(registry, before);
     registry
         .update(TrackingRootUpdate {
-            new_next_index: TRACKING_CAPACITY,
+            new_next_index: QUAD_CAPACITY,
             ..tracking_update(0, 10, 1)
         })
         .unwrap();
-    assert_eq!(registry.next_index(), TRACKING_CAPACITY);
+    assert_eq!(registry.next_index(), QUAD_CAPACITY);
 }
 
 #[test]
@@ -535,7 +565,7 @@ fn the_grant_scopes_owner_and_reader_and_checks_its_scheme() {
 fn apply_ix() -> ApplyRecordsIxData {
     ApplyRecordsIxData {
         new_root: [8; 32],
-        new_next_index: 1u32.to_le_bytes(),
+        new_next_index: 1u64.to_le_bytes(),
         ..ApplyRecordsIxData::zeroed()
     }
 }
@@ -900,28 +930,24 @@ fn enrollment_vector() -> Value {
         eph_u: [0x35; 32],
         ciphertext: [0x36; 64],
     };
-    let (authorization, bump) = TrackingAuthorization::find_address(&registry, &owner);
-    let mut account = FirstEnrollment {
-        registry,
-        owner,
-        ix: &ix,
-    }
-    .account();
-    let entry = account.apply().unwrap();
+    let (queue, bump) = EnrollmentQueue::find_address(&registry);
+    let entry = TrackingEntry::from_enroll(&owner, &ix, true).unwrap();
+    let rotation = TrackingEntry::from_enroll(&owner, &ix, false).unwrap();
     let chain_start = tracking_chain_start(&registry, Revision::from(0)).unwrap();
     json!({
-        "description": "One enrollment and its permissionless apply. enroll_data follows tag 6, nullifier_pk || list_tag || viewing_u || eph_u || ciphertext, and a first enrollment appends a RegisterKey proof. The authorization PDA has seeds [tracking, registry, owner]. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag), chain_start is the hash chain of [CRTA, registry field, revision], chain_end is Poseidon(chain_start, entry_hash). account is the authorization after the apply. Produced by program-libs/interface/tests/accounts.rs.",
+        "description": "One enrollment and its permissionless apply. enroll_data follows tag 6, nullifier_pk || list_tag || viewing_u || eph_u || ciphertext, and a first enrollment appends a RegisterKey proof. The queue PDA has seeds [enrollment_queue, registry]. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, proven), rotation_hash the same entry unproven. chain_start is the hash chain of [CRTA, registry field, revision], chain_end is Poseidon(chain_start, entry_hash). Produced by program-libs/interface/tests/accounts.rs.",
         "registry": hex::encode(registry),
         "owner": hex::encode(owner),
         "member": hex::encode(entry.member),
         "ct_hash": hex::encode(entry.ct_hash),
+        "viewing_hash": hex::encode(entry.viewing_hash),
         "enroll_data": hex::encode(bytemuck::bytes_of(&ix)),
-        "authorization": hex::encode(authorization),
+        "enrollment_queue": hex::encode(queue),
         "bump": bump,
         "entry_hash": hex::encode(entry.hash().unwrap()),
+        "rotation_hash": hex::encode(rotation.hash().unwrap()),
         "chain_start": hex::encode(chain_start),
-        "chain_end": hex::encode(entry.chained(&chain_start).unwrap()),
-        "account": hex::encode(bytemuck::bytes_of(&account)),
+        "chain_end": hex::encode(chain_link(&chain_start, &entry.hash().unwrap()).unwrap()),
     })
 }
 

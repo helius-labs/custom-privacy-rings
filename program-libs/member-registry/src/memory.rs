@@ -5,26 +5,26 @@
 
 use std::collections::BTreeMap;
 
-use custom_ring_interface::{QUAD_ARITY, QUAD_HEIGHT};
+use custom_ring_interface::{QUAD_ARITY, QUAD_CAPACITY, QUAD_HEIGHT};
 
 use crate::{
-    path::{capacity, quad_node, NodePosition, ZERO_SUBTREES},
+    path::{quad_node, NodePosition, ZERO_SUBTREES},
     record::check_member,
     tree::IndexedLeaf,
     IndexedRecord, MemberRecord, RecordStore, RecordTreeError,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MemoryTree<L, const H: usize> {
+pub struct MemoryTree<L> {
     /// The populated prefix of each level, leaves first.
     levels: Vec<Vec<[u8; 32]>>,
     records: Vec<L>,
     members: BTreeMap<[u8; 32], u64>,
 }
 
-pub type MemberRegistryTree = MemoryTree<MemberRecord, QUAD_HEIGHT>;
+pub type MemberRegistryTree = MemoryTree<MemberRecord>;
 
-impl<L: IndexedLeaf, const H: usize> MemoryTree<L, H> {
+impl<L: IndexedLeaf> MemoryTree<L> {
     /// The tree holding only the sentinel, the state a new registry starts from.
     pub fn new() -> Result<Self, RecordTreeError> {
         Self::from_records(vec![L::SENTINEL])
@@ -39,7 +39,7 @@ impl<L: IndexedLeaf, const H: usize> MemoryTree<L, H> {
         if *sentinel.member() != [0; 32] || !sentinel.is_blank() {
             return Err(RecordTreeError::MissingSentinel);
         }
-        if records.len() as u64 > capacity(H) {
+        if records.len() as u64 > QUAD_CAPACITY {
             return Err(RecordTreeError::Full);
         }
         let mut members = BTreeMap::from([(*sentinel.member(), 0)]);
@@ -49,14 +49,14 @@ impl<L: IndexedLeaf, const H: usize> MemoryTree<L, H> {
                 return Err(RecordTreeError::DuplicateMember);
             }
         }
-        let mut levels = Vec::with_capacity(H + 1);
+        let mut levels = Vec::with_capacity(QUAD_HEIGHT + 1);
         levels.push(
             records
                 .iter()
                 .map(L::leaf_hash)
                 .collect::<Result<Vec<_>, _>>()?,
         );
-        for level in 0..H {
+        for level in 0..QUAD_HEIGHT {
             let parents = levels[level]
                 .chunks(QUAD_ARITY)
                 .map(|chunk| {
@@ -89,7 +89,7 @@ impl<L: IndexedLeaf, const H: usize> MemoryTree<L, H> {
     }
 }
 
-impl<L: IndexedLeaf, const H: usize> RecordStore<L, H> for MemoryTree<L, H> {
+impl<L: IndexedLeaf> RecordStore<L> for MemoryTree<L> {
     type Error = RecordTreeError;
 
     fn next_index(&self) -> Result<u64, RecordTreeError> {
