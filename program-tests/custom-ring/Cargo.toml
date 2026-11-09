@@ -43,7 +43,7 @@ zolana-ring-client = { workspace = true, features = ["rpc", "solana-rpc"] }
 zolana-ring-indexer = { workspace = true }
 zolana-ring-keys = { workspace = true }
 zolana-ring-policy = { workspace = true }
-zolana-ring-rpc = { workspace = true }
+zolana-ring-rpc = { workspace = true, features = ["surfpool-fixture"] }
 zolana-ring-transaction = { workspace = true }
 spr-test-utils = { workspace = true }
 spr-transaction = { workspace = true }

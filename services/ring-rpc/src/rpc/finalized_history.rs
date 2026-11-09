@@ -613,6 +613,20 @@ impl Snapshot {
     }
 }
 
+/// Opted in by `ZOLANA_RING_SURFPOOL_FIXTURE=1` against a loopback RPC alone.
+#[cfg(feature = "surfpool-fixture")]
+fn surfpool_fixture(rpc_url: &str) -> bool {
+    let loopback = reqwest::Url::parse(rpc_url).ok().is_some_and(|url| {
+        url.host_str().is_some_and(|host| {
+            host == "localhost"
+                || host
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        })
+    });
+    loopback && std::env::var_os("ZOLANA_RING_SURFPOOL_FIXTURE").is_some_and(|opt_in| opt_in == "1")
+}
+
 /// Binds every entry field, a refetch answering other history fails its run.
 fn run_digest(entries: &[SignatureEntry]) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -646,6 +660,11 @@ impl BoundEvents {
             }
             match self.canonical.origins.remove(&indexed.event_index) {
                 Some(origin) => {
+                    // The confirmed origin proves the ring called the pool, an indexer row that
+                    // omits the ring takes it from there. A row naming another ring still refuses.
+                    if transaction.ring_program_id.is_none() {
+                        transaction.ring_program_id = Some(self.ring);
+                    }
                     origin
                         .bind_transaction(&mut transaction, self.ring)
                         .map_err(history_error)?;
@@ -665,6 +684,18 @@ impl BoundEvents {
 }
 
 impl FinalizedUpstreams<'_> {
+    /// A node behind `snapshot` refuses the walk, so no lagging node drops a signature unseen.
+    ///
+    /// Surfpool instead drops every signature older than the slot, so its loopback fixture sends
+    /// none. One local node never lags its own finalized tip.
+    fn min_context_slot(&self, snapshot: u64) -> Option<u64> {
+        #[cfg(feature = "surfpool-fixture")]
+        if surfpool_fixture(&self.rpc.client().url()) {
+            return None;
+        }
+        Some(snapshot)
+    }
+
     pub(crate) async fn origins(&self, read: OriginRead) -> Result<CanonicalOrigins, AuditError> {
         <Self as FinalizedSource>::origins(self, read).await
     }
@@ -709,7 +740,7 @@ impl FinalizedSource for FinalizedUpstreams<'_> {
                 RpcRequest::GetSignaturesForAddress,
                 json!([read.ring.to_string(), {
                     "commitment": "finalized",
-                    "minContextSlot": read.snapshot,
+                    "minContextSlot": self.min_context_slot(read.snapshot),
                     "limit": read.limit,
                     "before": read.before.map(|signature| signature.to_string()),
                 }]),
@@ -1004,6 +1035,31 @@ mod tests {
             limit: NonZeroU32::new(limit).unwrap(),
             selection: HistorySelection::Ring,
         }
+    }
+
+    /// Photon's read by signature omits the ring, the confirmed origin names it.
+    #[tokio::test]
+    async fn an_indexed_row_without_its_ring_reads_under_the_confirmed_origin() {
+        let source = Source::new(&[entry(1)]);
+        let signature = entry(1).signature;
+        let unnamed = |ring_program_id| {
+            let mut indexed = source.indexed.lock().unwrap();
+            for row in indexed.get_mut(&signature).unwrap() {
+                row.transaction.ring_program_id = ring_program_id;
+            }
+        };
+        unnamed(None);
+        let page = FinalizedHistory::default()
+            .read(request(HistoryPosition::default()), &source)
+            .await
+            .unwrap();
+        assert_eq!(page.data[0].events[0].ring_program_id, Some(RING));
+
+        unnamed(Some(Address::new_from_array([9; 32])));
+        assert!(FinalizedHistory::default()
+            .read(request(HistoryPosition::default()), &source)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

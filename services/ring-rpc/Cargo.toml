@@ -9,6 +9,8 @@ publish = false
 
 [features]
 test-fixtures = []
+# Reads Surfpool's local history, opted in at runtime by `ZOLANA_RING_SURFPOOL_FIXTURE=1`.
+surfpool-fixture = []
 
 [[bin]]
 name = "ring-rpc"
