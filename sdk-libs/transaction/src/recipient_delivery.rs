@@ -132,7 +132,7 @@ pub fn carried_key(nullifier_pk: [u8; 32]) -> RecordKey {
 /// The nullifier key a reader rebuilds `record` under, `None` on a ring output under a nonzero key.
 ///
 /// Readers take a ring output's nonzero key from the recipient's own address or the owner's
-/// authorization, never from the record.
+/// tracking leaf, never from the record.
 pub fn published_nullifier_pk(record: &OutputRecord) -> Option<[u8; 32]> {
     match record.key {
         RecordKey::Zero => Some(ZERO_NULLIFIER_PUBKEY),

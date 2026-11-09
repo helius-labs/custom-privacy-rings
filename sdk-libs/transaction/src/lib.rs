@@ -180,6 +180,7 @@ impl RingOutputRail {
 
     /// `V_i` of every slot of a key's `capacity`, a slot past the published outputs takes the
     /// auditor's.
+    /// Any contributory key serves on a slot past them.
     pub fn recipient_keys(
         &self,
         outputs: &[SppProofOutputUtxo],
@@ -195,6 +196,8 @@ impl RingOutputRail {
     }
 
     /// `V_i`, the owner's viewing key on a ring output, the auditor's on an exit, a derived key on a dummy.
+    /// On an exit any contributory key serves, its owner reads SPP's body and every record reader
+    /// takes `V_i` from the auditor stream.
     pub fn recipient_key(
         &self,
         output: &SppProofOutputUtxo,

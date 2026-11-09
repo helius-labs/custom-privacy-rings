@@ -333,8 +333,6 @@ type PlannedSlot = Readonly<{
 /**
  * Rust `RingOutputRail`, keyed by a transaction viewing key the caller destroys, a rebuild draws a
  * new salt so a slot secret never repeats.
- * Every slot seals its record to `V_i` under `CRDS_i`, the auditor reads `V_i` from its stream and
- * derives the same secret from `tx_viewing_sk`. An exit's record travels in the auditor message.
  */
 export class RingOutputRail {
   readonly #paymentData: readonly (NoteData | undefined)[];

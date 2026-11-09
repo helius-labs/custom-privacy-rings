@@ -696,8 +696,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
         Ok(())
     }
 
-    /// Change publishes a zero tag and opens by trial under the entry's key, payments by the keys the
-    /// auditor stream seals. The sender recovers its outputs through that stream, the bundle names none.
+    /// Change publishes a zero tag and opens by trial under the entry's key.
     async fn open_bundle(
         &mut self,
         index: usize,
@@ -800,7 +799,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
         Ok(())
     }
 
-    /// Each key beside its slot, a zero key reads exit or dummy.
+    /// Each key beside its slot, an exit carries no ring body.
     fn record_sent(
         &mut self,
         body: &Body<'_>,

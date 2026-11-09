@@ -149,6 +149,7 @@ impl AuditStreamLayout {
         }
     }
 
+    /// A slot at or past `m` transmits no byte, the proof forces it empty.
     pub const fn recipient_key(self, slot: usize) -> StreamRegion {
         StreamRegion {
             start_counter: self.first_key_counter() + (slot * SEALED_KEY_BLOCKS) as u32,
@@ -178,6 +179,7 @@ impl AuditStreamLayout {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RecordKind {
+    /// The auditor rebuilds its hash from the derived blinding and the tree id.
     #[default]
     Dummy = 0,
     Ring = 1,
@@ -232,6 +234,7 @@ impl RecordKey {
 }
 
 /// One slot's record, the proof holds a dummy's plaintext to zero.
+/// SPP commits the owner key and the mint as hashes no reader inverts, so the record carries the raw values.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OutputRecord {
     pub kind: RecordKind,
@@ -377,6 +380,8 @@ impl MergeEnvelope {
 }
 
 /// One default-ring input's record, zero on any other slot, never its blinding or nullifier secret.
+/// A default-ring note can lack an earlier ring record, `input_commitment` names it in place of the
+/// blinding and the proof holds every other field to its preimage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EntryRecord {
     pub owner_key: [u8; 32],
@@ -419,6 +424,7 @@ pub enum AuditEvidence {
     },
 }
 
+/// The auditor derives every output blinding from the sealed viewing secret, the published salt and `n0`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuditEnvelope {
     pub tx_viewing_secret: [u8; ENVELOPE_KEY_LEN],
@@ -499,6 +505,7 @@ impl AuditEnvelope {
 }
 
 /// The recipient keys the auditor stream seals, slot `i` at key `i`.
+/// The auditor reads each `V_i` here, no directory names a recipient.
 pub fn encode_recipient_keys(keys: &[[u8; 32]]) -> Vec<u8> {
     keys.as_flattened().to_vec()
 }
@@ -513,6 +520,8 @@ pub fn decode_recipient_keys(
 }
 
 /// The unproven part of a recipient body, after the record under the same stream.
+/// It takes the keystream from [`RING_RECORD_LEN`], where the record's sealed key tail stays
+/// unpublished, so no keystream byte covers two published bytes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecipientPayload {
     /// The commitment covers it, a nonzero value travels with the note.
@@ -570,7 +579,8 @@ impl RecipientPayload {
 /// One length at every `m`.
 pub const SENDER_BUNDLE_LEN: usize = FIELD_LEN;
 
-/// `output_seed` outside the proof, the sender reads each recipient key from the auditor stream it opens.
+/// `output_seed` outside the proof, the sender reads each `V_i` from the auditor stream, the key record `i` is sealed to.
+/// Sealed to the sender's viewing key at index `m`, an opening marks a candidate the sender checks further.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SenderBundle {
     pub output_seed: [u8; 32],

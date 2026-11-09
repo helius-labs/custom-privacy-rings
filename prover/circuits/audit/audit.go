@@ -23,8 +23,7 @@
 //  1. X25519(auditor_sk, tx_u) and the salt give the stream's key and nonce.
 //  2. The envelope gives tx_viewing_sk, note count R and any entry evidence, the key region each V_i.
 //  3. X25519(tx_viewing_sk, V_i) opens record i, and the record, the frame's tree id and the payload's
-//     data hashes rebuild that slot's published hash. A dummy's record is zero and its hash rebuilds from
-//     the derived blinding and the frame's tree id.
+//     data hashes rebuild that slot's published hash. A dummy rebuilds as audit/record.go states.
 //
 // A statement built on the package proves the following.
 //  1. The auditor stream is AES-256-CTR under a key schedule bound to the auditor key, tx_u and the salt,

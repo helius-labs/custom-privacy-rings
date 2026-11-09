@@ -25,6 +25,7 @@ pub enum StreamError {
 }
 
 /// Its secret is rebuilt by the recipient from `X25519(u_sk, tx_u)`.
+/// The auditor rebuilds the same secret from `tx_viewing_sk` and the sealed `V_i`, one record serves both readers.
 pub struct DeliveredSlot<'a> {
     /// `X25519(tx_sk, u)`.
     pub agreement: &'a [u8; 32],

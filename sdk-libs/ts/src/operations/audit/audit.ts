@@ -888,7 +888,7 @@ function openSlot(
   const opened = reader.open(slot, output.payload);
   if (opened === undefined) return DISCLOSURE;
   const { record, payload } = opened;
-  // 1. A dummy's commitment is fixed by its derived blinding alone.
+  // 1. A dummy's zero record opens no note, its derived hash alone confirms the slot.
   if (record.kind === RecordKind.dummy)
     return equalBytes(dummyUtxoHash(treeId, reader.dummyBlinding(slot)), context.hash)
       ? Object.freeze({ ok: true, opening: DUMMY, payload: true })

@@ -2,9 +2,9 @@
 // enrolls and the salt behind its list tag. SPP spends a note under Poseidon(secret)
 // and the secret never leaves the owner. A ring owes its auditor the owner's spends,
 // each nullifier derives from that secret, and owes its private lists one fixed record
-// key per owner, that key derives from the salt. Storage `Enroll` verifies the proof
-// in the same instruction on the owner's first enrollment, the one proof that seals
-// those two values. Without it an owner could enroll a key whose nullifiers no auditor
+// key per owner, that key derives from the salt. Storage `ApplyEnrollments` verifies
+// the proof with the owner's first enrollment write, the one proof that seals those
+// two values. Without it an owner could enroll a key whose nullifiers no auditor
 // can compute, or a salt a private block never reaches.
 //
 // Read after shared/derivation.go, shared/envelope.go. Read before registry/tracking.go,

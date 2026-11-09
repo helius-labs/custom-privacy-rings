@@ -133,11 +133,7 @@ export function openSealedDisclosure(
   );
 }
 
-/**
- * `record_ct ‖ payload_ct` as one `CRING/rcp` stream under the slot secret `CRDS_i`. The circuit
- * encrypts the full record and binds the bytes the slot publishes. A non-exit slot publishes
- * `RING_RECORD_LEN` of them and its payload continues the keystream there, unread by any proof.
- */
+/** The published record then the payload as one `CRING/rcp` stream under `CRDS_i`, Rust `RecipientPayload`. */
 export function sealOutputSlot(
   slotSecret: Bytes32,
   output: Readonly<{ record: OutputRecord; payload?: RecipientPayload; payloadLength?: number }>,

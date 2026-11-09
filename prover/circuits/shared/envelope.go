@@ -113,6 +113,7 @@ type SlotSeal struct {
 	Eph         []frontend.Variable
 	RecipientPk [32]frontend.Variable
 	// Index and FirstNullifier part two slots of one key pair, a shared keystream would reveal the XOR of their records.
+	// Salt parts two seals that repeat EphSk, Index and FirstNullifier.
 	Salt, Index, FirstNullifier frontend.Variable
 	Info                        string
 }

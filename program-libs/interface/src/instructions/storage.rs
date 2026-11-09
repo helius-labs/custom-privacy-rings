@@ -85,6 +85,7 @@ pub struct EnrollIxData {
     /// Canonical and nonzero, the owner's signature alone authorizes it.
     pub viewing_u: [u8; 32],
     pub eph_u: [u8; 32],
+    /// The auditor derives every nullifier of the owner from the sealed secret and its private list key from the salt.
     pub ciphertext: [u8; REGISTER_KEY_CIPHERTEXT_LEN],
 }
 
@@ -153,6 +154,7 @@ pub enum StorageEvent<'a> {
     /// The header, then the batch's writes as the instruction carried them, proofs included.
     EnrollmentsApplied {
         header: EnrollmentsAppliedEvent,
+        /// The tracking leaf holds the `RegisterKey` seal as `ct_hash` alone, the auditor opens each enrolled secret from these writes.
         writes: Vec<EnrollmentWrite<'a>>,
     },
 }

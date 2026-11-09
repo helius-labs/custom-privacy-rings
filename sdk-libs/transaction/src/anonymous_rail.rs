@@ -235,8 +235,7 @@ impl AnonymousSeal<'_> {
     }
 
     /// The bundle at index `m` opens under a retained or reproducible sender viewing key and
-    /// published values alone. The sender recovers its outputs through the auditor stream, the
-    /// bundle names no recipient.
+    /// published values alone.
     pub fn sender_bundle(
         &self,
         blindings: &OutputBlindings,
