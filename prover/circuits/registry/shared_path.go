@@ -32,7 +32,7 @@ type SharedQuadPath struct {
 
 // SharedQuadProof's Canopy is one whole level of the tree, every node in index order.
 type SharedQuadProof struct {
-	// Zero means the policy registry's Height.
+	// Height or TrackingHeight, Validate refuses any other.
 	TreeHeight int `gnark:"-"`
 	Canopy     []frontend.Variable
 	Paths      []SharedQuadPath
@@ -42,7 +42,7 @@ type SharedQuadProof struct {
 const muxCanopyLimit = 16
 
 func NewSharedQuadProof(openings int) (SharedQuadProof, error) {
-	return newSharedProof(openings, 0)
+	return newSharedProof(openings, Height)
 }
 
 func NewTrackingProof(openings int) (SharedQuadProof, error) {
@@ -51,22 +51,25 @@ func NewTrackingProof(openings int) (SharedQuadProof, error) {
 
 func newSharedProof(openings, treeHeight int) (SharedQuadProof, error) {
 	proof := SharedQuadProof{TreeHeight: treeHeight}
-	if openings < 1 || openings > 1<<(2*proof.height()) {
+	if err := proof.checkHeight(); err != nil {
+		return SharedQuadProof{}, err
+	}
+	if openings < 1 || openings > 1<<(2*proof.TreeHeight) {
 		return SharedQuadProof{}, fmt.Errorf("registry opening count outside capacity")
 	}
 	width, levels := canopyShape(openings)
 	proof.Canopy, proof.Paths = make([]frontend.Variable, width), make([]SharedQuadPath, openings)
 	for i := range proof.Paths {
-		proof.Paths[i].Siblings = make([][Arity - 1]frontend.Variable, proof.height()-levels)
+		proof.Paths[i].Siblings = make([][Arity - 1]frontend.Variable, proof.TreeHeight-levels)
 	}
 	return proof, nil
 }
 
-func (p SharedQuadProof) height() int {
-	if p.TreeHeight == 0 {
-		return Height
+func (p SharedQuadProof) checkHeight() error {
+	if p.TreeHeight != Height && p.TreeHeight != TrackingHeight {
+		return fmt.Errorf("registry shared proof height %d names no tree", p.TreeHeight)
 	}
-	return p.TreeHeight
+	return nil
 }
 
 // canopyShape picks the narrowest level at least as wide as the pool, the levels above it hash once.
@@ -94,7 +97,7 @@ func (p SharedQuadProof) AssertLeavesWhen(api frontend.API, active, root fronten
 	// 2. Each leaf folds to the canopy node at its index's high digits, the two steps together are a full path.
 	if len(p.Canopy) <= muxCanopyLimit {
 		for i, path := range p.Paths {
-			node := path.root(api, leaves[i], p.height())
+			node := path.root(api, leaves[i], p.TreeHeight)
 			// Ungated, an inactive pool's canopy is prover-chosen and always admits its paths.
 			api.AssertIsEqual(selector.BinaryMux(api, node.bits, p.Canopy), node.value)
 		}
@@ -106,12 +109,15 @@ func (p SharedQuadProof) AssertLeavesWhen(api frontend.API, active, root fronten
 		table.Insert(node)
 	}
 	for i, path := range p.Paths {
-		node := path.root(api, leaves[i], p.height())
+		node := path.root(api, leaves[i], p.TreeHeight)
 		api.AssertIsEqual(table.Lookup(api.FromBinary(node.bits...))[0], node.value)
 	}
 }
 
 func (p SharedQuadProof) Validate(count int) error {
+	if err := p.checkHeight(); err != nil {
+		return err
+	}
 	if len(p.Paths) == 0 || len(p.Paths) != count {
 		return fmt.Errorf("registry shared opening count mismatch")
 	}
@@ -120,7 +126,7 @@ func (p SharedQuadProof) Validate(count int) error {
 		return fmt.Errorf("registry canopy width is not a supported power of four")
 	}
 	for _, path := range p.Paths {
-		if len(path.Siblings) != p.height()-levels {
+		if len(path.Siblings) != p.TreeHeight-levels {
 			return fmt.Errorf("registry shared path height mismatch")
 		}
 	}
