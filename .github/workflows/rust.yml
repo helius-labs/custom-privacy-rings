@@ -133,7 +133,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
-  # A release image or key must come from a zolana commit on main or release/*.
+  # The pin may lead zolana main, a release image still needs it on main or release/*.
   zolana-pin:
     name: zolana pin
     runs-on: ubuntu-latest
@@ -141,8 +141,13 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           submodules: true
-      - run: git -C zolana fetch --unshallow --no-tags origin || true
-      - run: cd zolana && tools/check-release-source.sh HEAD
+      - run: git -C zolana fetch --unshallow --no-tags origin '+refs/heads/*:refs/remotes/origin/*' || true
+      - name: The pin is on a zolana branch
+        run: |
+          branches=$(git -C zolana branch -r --contains HEAD)
+          test -n "$branches" || { echo "zolana $(git -C zolana rev-parse HEAD) is on no branch" >&2; exit 1; }
+          echo "$branches"
+          (cd zolana && tools/check-release-source.sh HEAD) || echo "::warning::the zolana pin is not on main or release/*, no release may be published from it"
 
   fmt:
     name: rustfmt
