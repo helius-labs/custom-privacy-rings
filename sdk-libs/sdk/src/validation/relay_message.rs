@@ -34,8 +34,8 @@ use zolana_ring_policy::{ApprovalTotals, Member, OutputTotals, OwnerDebit, Publi
 use zolana_ring_transaction::{open_recipient_body, record_key};
 
 use crate::{
-    pipeline::delegate_rail, AllowedNullifiers, CustomRing, CustomRingConfig, PendingSignature,
-    RequestedAuthorityTransfer, RingError,
+    AllowedNullifiers, CustomRing, CustomRingConfig, PendingSignature, RequestedAuthorityTransfer,
+    RingError, REDACTED,
 };
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -135,7 +135,7 @@ pub struct FundedLeg {
 }
 
 /// The preimage of one published output's `utxo_hash`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SlotOpening {
     pub slot: u32,
@@ -147,6 +147,33 @@ pub struct SlotOpening {
     pub tree_id: u16,
     pub data_hash: Hash,
     pub ring_data_hash: Hash,
+}
+
+impl core::fmt::Debug for SlotOpening {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            slot,
+            owner,
+            nullifier_pk,
+            mint,
+            amount,
+            blinding: _,
+            tree_id,
+            data_hash,
+            ring_data_hash,
+        } = self;
+        f.debug_struct("SlotOpening")
+            .field("slot", slot)
+            .field("owner", owner)
+            .field("nullifier_pk", nullifier_pk)
+            .field("mint", mint)
+            .field("amount", amount)
+            .field("blinding", &REDACTED)
+            .field("tree_id", tree_id)
+            .field("data_hash", data_hash)
+            .field("ring_data_hash", ring_data_hash)
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -484,7 +511,7 @@ impl ExpectedDelegate {
             ring: CustomRing::new(request.ring.0),
             fee_payer: quote.fee_payer.0,
             delegate: request.delegate.0,
-            rail: delegate_rail(config.mode),
+            rail: RingRail::delegate(config.mode),
             auditor: config.auditor_pubkey,
             tx_viewing_key: request.tx_viewing_key.clone(),
             sources: transfer
@@ -709,7 +736,7 @@ impl FunderApproval<'_> {
             self.message,
             ExpectedMessage::Funder(ExpectedFunder {
                 setup: setup_instructions(self.terms.fee_payer.0, &self.terms.setup),
-                rail: transfer_rail(self.config.mode),
+                rail: RingRail::transfer(self.config.mode),
                 terms: self.terms,
             }),
         )
@@ -731,18 +758,11 @@ fn setup_instructions(fee_payer: Address, setup: &[TokenAccountCreate]) -> Vec<I
         .collect()
 }
 
-const fn transfer_rail(mode: RingMode) -> RingRail {
-    match mode {
-        RingMode::Anonymous => RingRail::Anonymous,
-        RingMode::Confidential => RingRail::Confidential,
-    }
-}
-
 impl ExpectedPublicOwner {
     pub fn new(terms: RelayTransferTerms, mode: RingMode, known_nullifiers: Vec<[u8; 32]>) -> Self {
         Self {
             setup: setup_instructions(terms.fee_payer.0, &terms.setup),
-            rail: transfer_rail(mode),
+            rail: RingRail::transfer(mode),
             known_nullifiers,
             terms,
         }
@@ -1041,7 +1061,7 @@ impl CoSignerApproval<'_> {
                 ring: self.ring,
                 fee_payer: self.fee_payer,
                 signer: self.signer,
-                rail: transfer_rail(self.config.mode),
+                rail: RingRail::transfer(self.config.mode),
                 setup: setup_instructions(self.fee_payer, &self.setup),
                 rule: self.rule,
             }),

@@ -76,6 +76,7 @@ function anonymousPayload() {
         [{ recipient: owner.viewingPublicKey(), reply: null }],
         Array.from({ length: 16 }, () => filled(25) as Bytes32),
       ),
+      ownerExposed: false,
     },
     ringProgramId: ring,
     sender,
@@ -163,7 +164,15 @@ describe("relay proof inputs", () => {
       code: "RING_RELAY_PROOF_INPUTS",
     });
 
-    const { plan } = proofInputs.rail as Extract<RelayRail, { kind: "anonymous" }>;
+    const anonymous = proofInputs.rail as Extract<RelayRail, { kind: "anonymous" }>;
+    const exposed = await decodeRelayProofInputs(
+      encodeRelayProofInputs({ ...proofInputs, rail: { ...anonymous, ownerExposed: true } }),
+      new AssetRegistry(),
+    );
+    expect(exposed.rail).toMatchObject({ kind: "anonymous", ownerExposed: true });
+    expect(read.rail).toMatchObject({ kind: "anonymous", ownerExposed: false });
+
+    const { plan } = anonymous;
     const delegated = await decodeRelayProofInputs(
       encodeRelayProofInputs({
         ...proofInputs,

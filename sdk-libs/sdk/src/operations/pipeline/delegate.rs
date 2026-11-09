@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use custom_ring_interface::{RingMode, RingRail};
+use custom_ring_interface::RingRail;
 use solana_address::Address;
 use spr_client::AsyncRpc;
 use spr_interface::{
@@ -494,14 +494,6 @@ pub(crate) fn same_owner(left: &PublicKey, right: &PublicKey) -> bool {
     }
 }
 
-/// An anonymous ring keeps the victim and recipients hidden.
-pub(crate) const fn delegate_rail(mode: RingMode) -> RingRail {
-    match mode {
-        RingMode::Anonymous => RingRail::AnonymousDelegate,
-        RingMode::Confidential => RingRail::Delegate,
-    }
-}
-
 impl Delegated<'_> {
     pub(super) async fn stage<R: AsyncRpc + ?Sized>(
         &self,
@@ -570,11 +562,11 @@ impl Delegated<'_> {
                     .find(|&width| width >= needed.n_inputs() && width >= needed.n_outputs())
                     .map(|width| Shape::new(width, width))
                     .ok_or(RingError::ShapeUnkeyed {
-                        rail: delegate_rail(config.mode),
+                        rail: RingRail::delegate(config.mode),
                     })?
             }
         };
-        let ring_rail = delegate_rail(config.mode);
+        let ring_rail = RingRail::delegate(config.mode);
         // The anonymous frame's sender bundle reads output 0 as the source's change.
         let transaction = match ring_rail.anonymous_frame() {
             true => SenderChange {

@@ -63,7 +63,7 @@ impl core::fmt::Debug for MergeRecordOutput {
 }
 
 /// The fields a merge output inherits, an audit record and no wallet opening.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuditedMergeOutput {
     pub(crate) commitment: [u8; 32],
     pub(crate) slot: u64,
@@ -80,6 +80,45 @@ pub struct AuditedMergeOutput {
     pub(crate) amount: u64,
     pub(crate) real_nullifiers: Vec<[u8; 32]>,
     pub(crate) seed: [u8; 32],
+}
+
+impl core::fmt::Debug for AuditedMergeOutput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            commitment,
+            slot,
+            tx_signature,
+            event_index,
+            tree_id,
+            leaf_index,
+            first_nullifier,
+            ring_data_hash,
+            owner_key,
+            owner,
+            asset,
+            mint,
+            amount,
+            real_nullifiers,
+            seed: _,
+        } = self;
+        f.debug_struct("AuditedMergeOutput")
+            .field("commitment", commitment)
+            .field("slot", slot)
+            .field("tx_signature", tx_signature)
+            .field("event_index", event_index)
+            .field("tree_id", tree_id)
+            .field("leaf_index", leaf_index)
+            .field("first_nullifier", first_nullifier)
+            .field("ring_data_hash", ring_data_hash)
+            .field("owner_key", owner_key)
+            .field("owner", owner)
+            .field("asset", asset)
+            .field("mint", mint)
+            .field("amount", amount)
+            .field("real_nullifiers", real_nullifiers)
+            .field("seed", &REDACTED)
+            .finish()
+    }
 }
 
 /// Keeps one state per ring.

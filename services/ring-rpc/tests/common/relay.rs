@@ -237,6 +237,7 @@ pub fn anonymous_rail() -> RelayRail {
             [[25; 32]; MAX_OUTPUTS],
         )),
         exit_token_owner: None,
+        owner_exposed: false,
     }
 }
 

@@ -17,7 +17,7 @@ use zolana_ring_policy::OwnerDebit;
 
 use super::{
     approval_totals_of, charged_outflows_of, owner::deposit_funder, Anonymous, Delegated, Owner,
-    Planned, Rail, RingTransfer, Sealed,
+    OwnerExposure, Planned, Rail, RingTransfer, Sealed,
 };
 use crate::{
     relay_message::{
@@ -91,6 +91,7 @@ impl RingTransfer<Anonymous<'_>> {
             owner: &self.rail.owner,
             signer: self.rail.signer,
             exit_token_owner: self.rail.exit_token_owner,
+            owner_exposed: self.rail.exposure == OwnerExposure::Accepted,
         }
         .prepare(client, quote)
         .await
@@ -112,6 +113,7 @@ impl RingTransfer<Owner<'_>> {
                 .in_proof_owner
                 .ok_or(RingError::MissingInProofOwnerSignature)?,
             exit_token_owner: None,
+            owner_exposed: false,
         }
         .prepare(client, quote)
         .await
@@ -123,6 +125,7 @@ struct WalletRelay<'t, R: Rail> {
     owner: &'t Owner<'t>,
     signer: &'t SigningKey,
     exit_token_owner: Option<Address>,
+    owner_exposed: bool,
 }
 
 impl<'t, R: Rail> WalletRelay<'t, R> {
@@ -176,6 +179,7 @@ impl<'t, R: Rail> WalletRelay<'t, R> {
                 encode(RelayRail::Anonymous {
                     plan: plan.clone(),
                     exit_token_owner: self.exit_token_owner,
+                    owner_exposed: self.owner_exposed,
                 })?,
                 token_account_setup,
             ),
@@ -259,8 +263,7 @@ impl RingTransfer<Delegated<'_>> {
 }
 
 impl<P: Planned> Sealed<'_, P> {
-    /// One per key funding a deposit leg, the payer and an owner of the run left out. The payer pays
-    /// the message it builds, and an owner's check refuses a key named beside its run entry.
+    /// One per key funding a deposit leg, a leg the fee payer or a signing owner funds is refused.
     fn funder_terms(
         &self,
         fee_payer: Address,
@@ -276,7 +279,7 @@ impl<P: Planned> Sealed<'_, P> {
                 continue;
             };
             if funder == fee_payer || staged.owner_signers.contains(&funder) {
-                continue;
+                return Err(RingError::RelayFeePayerFundsDeposit);
             }
             let leg = FundedLeg {
                 mint: match transfer {

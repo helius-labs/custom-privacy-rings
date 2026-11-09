@@ -742,6 +742,7 @@ export class AnonymousTransfer {
             kind: "anonymous",
             plan: plan.plan,
             ...(this.#exitTokenOwner === undefined ? {} : { exitTokenOwner: this.#exitTokenOwner }),
+            ownerExposed: this.#exposure === "accepted",
           },
           ringProgramId,
           sender: keys.address(),

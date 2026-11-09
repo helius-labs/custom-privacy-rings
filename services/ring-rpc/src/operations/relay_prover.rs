@@ -188,12 +188,7 @@ impl<R: AsyncRpc + 'static, I: RingIndexerBackend + 'static> SdkRelayProver<R, I
                 .iter()
                 .copied()
                 .chain(delegate)
-                .chain(
-                    proven
-                        .deposit_funders()
-                        .into_iter()
-                        .filter(|funder| *funder != request.parties.fee_payer),
-                )
+                .chain(proven.deposit_funders())
                 .collect(),
             tree_fees,
         })

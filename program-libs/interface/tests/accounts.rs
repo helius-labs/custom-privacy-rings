@@ -659,11 +659,12 @@ fn the_grant_scopes_owner_and_reader_and_checks_its_scheme() {
     let reader = {
         let mut reader = [7; 34];
         reader[0] = READER_KEY_ED25519;
+        reader[33] = 0;
         reader
     };
     let (one, _) = OwnerGrant::find_address(&key(1), &key(2), &reader);
     let mut other_reader = reader;
-    other_reader[33] = 8;
+    other_reader[32] = 8;
     for other in [
         OwnerGrant::find_address(&key(1), &key(3), &reader).0,
         OwnerGrant::find_address(&key(9), &key(2), &reader).0,
@@ -686,6 +687,16 @@ fn the_grant_scopes_owner_and_reader_and_checks_its_scheme() {
     assert_eq!(
         OwnerGrantIxData { reader, active: 2 }.check(),
         Err(StorageError::InvalidInstructionData)
+    );
+    let mut padded = reader;
+    padded[33] = 1;
+    assert_eq!(
+        OwnerGrantIxData {
+            reader: padded,
+            active: 1
+        }
+        .check(),
+        Err(StorageError::InvalidReaderKey)
     );
 }
 

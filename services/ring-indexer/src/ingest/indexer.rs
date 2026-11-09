@@ -53,7 +53,7 @@ impl FromStr for StartSlot {
     }
 }
 
-/// Set once the index first reaches the confirmed tip.
+/// Set while the index holds the confirmed tip, cleared by a failed round.
 #[derive(Clone, Debug, Default)]
 pub struct Readiness(Arc<AtomicBool>);
 
@@ -64,6 +64,10 @@ impl Readiness {
 
     fn mark(&self) {
         self.0.store(true, Ordering::Release);
+    }
+
+    fn clear(&self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
@@ -108,6 +112,7 @@ impl Indexer {
                     }
                     Err(error) => {
                         log::error!("ring indexer failed ({error:#})");
+                        self.readiness.clear();
                         if let Err(error) = self.suspend().await {
                             log::error!("cannot mark ring lookups unavailable ({error:#})");
                         }

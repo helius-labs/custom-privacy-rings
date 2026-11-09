@@ -11,7 +11,12 @@ import { poseidon } from "@heliuslabs/spr/keypair";
 import { packDisclosure } from "../../crypto/audit/audit.js";
 import { u32Field } from "../../crypto/error.js";
 import { packBytesBe } from "../../crypto/derivation/hasher.js";
-import { auditLayoutValue, type AuditLayout } from "../codec/ring-disclosure-layout.js";
+import {
+  EXIT_RECORD_LEN,
+  RING_RECORD_LEN,
+  auditLayoutValue,
+  type AuditLayout,
+} from "../codec/ring-disclosure-layout.js";
 
 import { RingDomain, domainField } from "../../crypto/derivation/ring-domain.js";
 import { RingError } from "../error.js";
@@ -407,7 +412,12 @@ export function recordChain(
   capacity: number,
 ): Bytes32 {
   return filledChain(
-    outputs.map((output) => hashBytes(output.record) as Bytes32),
+    outputs.map((output) => {
+      const length = output.record.length;
+      if (length !== RING_RECORD_LEN && length !== EXIT_RECORD_LEN)
+        throw new RingError("RING_INVALID_LENGTH", { details: { field: "record", length } });
+      return hashBytes(output.record) as Bytes32;
+    }),
     capacity,
   );
 }

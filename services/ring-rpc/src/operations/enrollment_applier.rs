@@ -10,7 +10,10 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, PoisonError,
+    },
     time::Duration,
 };
 
@@ -33,7 +36,7 @@ use zolana_ring_client::rpc::{SubmitEnrollmentRequest, SubmitEnrollmentResponse}
 use crate::{
     error::{redacted, RingRpcError},
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
-    landing::{Attempt, ChainOutcome, Landing},
+    landing::{signature_fees, Attempt, ChainOutcome, Landing},
     storage_chain::StorageChain,
 };
 
@@ -57,6 +60,8 @@ pub enum EnrollmentRefusal {
         "the ring holds {MAX_HELD_ENROLLMENTS} enrollments, submit again after its next batch"
     )]
     Full = -32184,
+    #[error("the enrollment writer's fee budget is spent, the operator raises it")]
+    Budget = -32185,
 }
 
 /// Applies the held writes of each named ring, the payer is the ring's `EnrollmentWriter`.
@@ -64,6 +69,7 @@ pub struct EnrollmentApplier {
     chain: Arc<dyn StorageChain>,
     payer: Keypair,
     rings: Vec<Address>,
+    budget: EnrollmentBudget,
     held: Mutex<HashMap<Address, Arc<AsyncMutex<RingState>>>>,
 }
 
@@ -72,6 +78,13 @@ pub struct EnrollmentApplierParts {
     pub chain: Arc<dyn StorageChain>,
     pub payer: Keypair,
     pub rings: Vec<Address>,
+    pub budget_lamports: u64,
+}
+
+/// Charged at send, a batch that never lands keeps its charge.
+struct EnrollmentBudget {
+    total: u64,
+    spent: AtomicU64,
 }
 
 #[derive(Default)]
@@ -103,6 +116,7 @@ struct RingTracking {
 struct RingPass<'a> {
     chain: &'a dyn StorageChain,
     payer: &'a Keypair,
+    budget: &'a EnrollmentBudget,
     ring: CustomRing,
     state: &'a mut RingState,
 }
@@ -113,8 +127,34 @@ impl EnrollmentApplierParts {
             chain: self.chain,
             payer: self.payer,
             rings: self.rings,
+            budget: EnrollmentBudget {
+                total: self.budget_lamports,
+                spent: AtomicU64::new(0),
+            },
             held: Mutex::default(),
         }
+    }
+}
+
+impl EnrollmentBudget {
+    /// The payer's signature and one precompile signature per write.
+    fn batch_fee(writes: usize) -> u64 {
+        signature_fees(writes.saturating_add(1))
+    }
+
+    fn holds(&self, fee: u64) -> bool {
+        self.spent
+            .load(Ordering::Relaxed)
+            .checked_add(fee)
+            .is_some_and(|spent| spent <= self.total)
+    }
+
+    fn charge(&self, fee: u64) -> bool {
+        self.spent
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |spent| {
+                spent.checked_add(fee).filter(|spent| *spent <= self.total)
+            })
+            .is_ok()
     }
 }
 
@@ -131,6 +171,9 @@ impl EnrollmentApplier {
         let ring = request.ring.0;
         if !self.rings.contains(&ring) {
             return Err(EnrollmentRefusal::NotServed.into());
+        }
+        if !self.budget.holds(EnrollmentBudget::batch_fee(1)) {
+            return Err(EnrollmentRefusal::Budget.into());
         }
         // 1. The registry the ring pins, its ring id and auditor key bind every proof.
         let tracking = ring_tracking(self.chain.as_ref(), ring)
@@ -205,6 +248,7 @@ impl EnrollmentApplier {
         let pass = RingPass {
             chain: self.chain.as_ref(),
             payer: &self.payer,
+            budget: &self.budget,
             ring: CustomRing::new(ring),
             state: &mut state,
         };
@@ -283,10 +327,17 @@ impl RingPass<'_> {
     }
 
     async fn send(
-        self,
+        mut self,
         proven: ProvenEnrollBatch,
         writes: Vec<HeldWrite>,
     ) -> Result<(), RingRpcError> {
+        if !self
+            .budget
+            .charge(EnrollmentBudget::batch_fee(writes.len()))
+        {
+            self.requeue(writes);
+            return Err(EnrollmentRefusal::Budget.into());
+        }
         let latest = self.chain.latest_blockhash().await?;
         let message = compile_message(
             &self.payer.pubkey(),

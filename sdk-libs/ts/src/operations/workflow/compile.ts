@@ -25,14 +25,13 @@ export function checkTransactionFits(options: Omit<TransactionCompilerOptions, "
   compileUnsignedTransaction({ ...options, lifetime: SIZE_PROBE_LIFETIME });
 }
 
-/** Rust `v1::MAX_ADDRESSES`. */
-export const MAX_TRANSACTION_ADDRESSES = 64;
+import {
+  MAX_TRANSACTION_ADDRESSES,
+  MAX_TRANSACTION_INSTRUCTIONS,
+  MAX_TRANSACTION_SIGNATURES,
+} from "../../protocol/transaction/v1-limits.js";
 
-/** Rust `v1::MAX_SIGNATURES`. */
-export const MAX_TRANSACTION_SIGNATURES = 12;
-
-/** Rust `v1::MAX_INSTRUCTIONS`. */
-export const MAX_TRANSACTION_INSTRUCTIONS = 64;
+export { MAX_TRANSACTION_ADDRESSES, MAX_TRANSACTION_INSTRUCTIONS, MAX_TRANSACTION_SIGNATURES };
 
 /** Rust `TransactionSize`. */
 export interface TransactionSize {

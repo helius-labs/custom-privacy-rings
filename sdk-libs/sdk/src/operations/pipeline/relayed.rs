@@ -13,7 +13,6 @@ use super::{
         OwnerExposure,
     },
     audit::PresealedAudit,
-    delegate::delegate_rail,
     public_owners::check_zero_key_inputs,
     sealed, shape_keyed, ApprovalDisclosure, CoOwner, CoOwnerKey, DeliveredRail, Rail, RailKind,
     RingTransfer, SealRow, Spend, Staged, TransferAuthority,
@@ -127,6 +126,7 @@ impl Relayed<'_> {
             RelayRail::Anonymous {
                 plan,
                 exit_token_owner,
+                owner_exposed,
             } => {
                 if config.mode != RingMode::Anonymous {
                     return Err(RingError::NotAnonymousRing);
@@ -134,13 +134,17 @@ impl Relayed<'_> {
                 let signature = self
                     .owner_signature
                     .ok_or(RingError::MissingAnonymousSigner)?;
-                let owner = HiddenOwner::of(&sender.signing_pubkey)?;
-                owner.check_signers([self.fee_payer])?;
-                owner.check_signers(relayed.deposit_funders())?;
-                check_anonymous_inputs(&proof_inputs, &sender, OwnerExposure::Refused)?;
+                // Outside the owner's signature.
+                let exposure = OwnerExposure::of(*owner_exposed);
+                let guarded = exposure.guard(HiddenOwner::of(&sender.signing_pubkey)?);
+                if let Some(owner) = guarded {
+                    owner.check_signers([self.fee_payer])?;
+                    owner.check_signers(relayed.deposit_funders())?;
+                }
+                check_anonymous_inputs(&proof_inputs, &sender, exposure)?;
                 let exits = AnonymousExits {
                     transfers: &proof_inputs.external_data.interface_transfers,
-                    hidden_owner: Some(owner.0),
+                    hidden_owner: guarded.map(|owner| owner.0),
                     named_owner: *exit_token_owner,
                 };
                 let exits = exits.owners(client).await?;
@@ -222,7 +226,7 @@ impl Relayed<'_> {
                     }
                     Some(_) => {}
                 }
-                let ring_rail = delegate_rail(config.mode);
+                let ring_rail = RingRail::delegate(config.mode);
                 if !Shape::new(proof_inputs.input_utxos.len(), n_outputs).is_ring_authority() {
                     return Err(RingError::ShapeUnkeyed { rail: ring_rail });
                 }

@@ -40,12 +40,12 @@ use crate::{
     },
     database::Store,
     error::{redacted, RingRpcError},
-    landing::{Attempt, ChainOutcome, ChainSubmit, Landing, LatestBlockhash},
+    landing::{signature_fees, Attempt, ChainOutcome, ChainSubmit, Landing, LatestBlockhash},
     merge_inputs::{HoldInputs, MergeInputs},
     relay_prover::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver},
     relay_reservations::{
         Admission, Admit, AttemptEnd, Bind, Claim, ClaimCleanup, Fund, FundOutcome, Lease,
-        RelayBudget, RelayReservations, Release, Reservation, SpendCheck,
+        RelayBudget, RelayReservations, Release, Reservation, SpendCheck, LEASE_SLOTS,
     },
     relay_submit::{presigned_transaction, CollectedSignature},
     relays::{
@@ -55,8 +55,7 @@ use crate::{
     transfer_debits::deposit_flows,
 };
 
-/// Longest quote window, one blockhash lifetime.
-pub const QUOTE_SLOTS: u64 = 150;
+pub const QUOTE_SLOTS: u64 = LEASE_SLOTS;
 pub const RELAY_TRACK_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_CONCURRENT_PROOFS: usize = 4;
 const EXPIRED: &str = "the relay message expired before it landed";
@@ -65,7 +64,6 @@ const MANAGED_MERGE_DOMAIN: &[u8] = b"zolana/ring-rpc-managed-merge";
 /// One blockhash lifetime for the wallet to sign the stored message.
 pub const ABANDONED_AFTER_SLOTS: u64 = QUOTE_SLOTS;
 const SWEEP_PAGE: u64 = 16;
-const LAMPORTS_PER_SIGNATURE: u64 = 5_000;
 const ATTEMPT_KEY_DOMAIN: &[u8] = b"zolana/ring-rpc-attempt";
 const DELEGATE_KEY_DOMAIN: &[u8] = b"zolana/ring-rpc-attempt-delegate";
 
@@ -1652,13 +1650,6 @@ impl RelayPayload {
     }
 }
 
-/// Modelled at the base fee, the relay sets no priority fee.
-fn signature_fees(signatures: usize) -> u64 {
-    u64::try_from(signatures)
-        .unwrap_or(u64::MAX)
-        .saturating_mul(LAMPORTS_PER_SIGNATURE)
-}
-
 fn message_fee(message: &VersionedMessage) -> u64 {
     signature_fees(usize::from(message.header().num_required_signatures))
 }
@@ -1828,10 +1819,7 @@ mod tests {
         )
         .expect("compiled");
 
-        assert_eq!(
-            message_fee_of(&instruction, fee_payer),
-            2 * LAMPORTS_PER_SIGNATURE
-        );
+        assert_eq!(message_fee_of(&instruction, fee_payer), signature_fees(2));
         assert_eq!(
             message_fee_of(&instruction, fee_payer),
             message_fee(&compiled)

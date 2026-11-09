@@ -240,7 +240,7 @@ pub enum RingError {
     NotAnonymousRing,
     #[error("an anonymous ring spends only through the hidden owner's proof")]
     MissingAnonymousSigner,
-    #[error("a deposit leg of a relayed transfer names the relay's fee payer as its funder")]
+    #[error("a deposit leg of a relayed transfer names the relay's fee payer or a signing owner as its funder")]
     RelayFeePayerFundsDeposit,
     #[error("a default-ring spend of {inputs} inputs fits no entry key, split the transfer")]
     DefaultRingSpendTooWide { inputs: usize },

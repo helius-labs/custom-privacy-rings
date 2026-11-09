@@ -19,6 +19,7 @@ use custom_ring_interface::{
     storage::StorageRegistry,
     storage_instruction::{RecordWriteClassification, StorageUpdateIxData},
     ApplyRecordsIxData, CustomRingError, RecordWrite, RecordWriteData, RingAccount, RingPolicy,
+    PROOF_UNITS,
 };
 use custom_ring_sdk::{
     CustomRing, InitializeStorage, PrivateStorageWrite, ProvenPrivateWrite, RingError,
@@ -64,8 +65,6 @@ use crate::{
 pub const RECORD_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_BATCH_PLANS: usize = 2;
 const CONFIRM_POLL_INTERVAL: Duration = Duration::from_millis(400);
-/// The apply proof pairing fits under the transaction ceiling.
-pub(crate) const UPDATE_COMPUTE_UNITS: u32 = 1_400_000;
 const CREATE_COMPUTE_UNITS: u32 = 100_000;
 
 /// The owner and list salt behind a salted list key.
@@ -470,7 +469,7 @@ impl RecordWriter {
             &self.authority(),
             &[instruction],
             latest.blockhash,
-            ComputeBudgetConfig::new(UPDATE_COMPUTE_UNITS),
+            ComputeBudgetConfig::new(PROOF_UNITS),
         )?;
         let policies = self.queued_authorities(batch.iter()).await?;
         let slot = self.chain.slot().await?;

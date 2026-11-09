@@ -242,10 +242,15 @@ impl StorageChain for StubChain {
 }
 
 fn applier(chain: &Arc<StubChain>) -> EnrollmentApplier {
+    budgeted(chain, u64::MAX)
+}
+
+fn budgeted(chain: &Arc<StubChain>, budget_lamports: u64) -> EnrollmentApplier {
     EnrollmentApplierParts {
         chain: chain.clone(),
         payer: Keypair::new_from_array([9; 32]),
         rings: vec![RING, UNINITIALIZED_RING],
+        budget_lamports,
     }
     .applier()
 }
@@ -347,6 +352,24 @@ async fn a_write_the_program_would_refuse_is_never_held() {
     );
     applier.flush().await;
     assert!(chain.proved().is_empty());
+}
+
+#[tokio::test]
+async fn the_budget_pays_batch_fees_and_a_spent_one_refuses_the_next_write() {
+    let chain = StubChain::new();
+    chain.enrolled([3, 4]);
+    assert_eq!(
+        refusal(budgeted(&chain, 0).submit(rotation(3)).await),
+        EnrollmentRefusal::Budget
+    );
+    let applier = budgeted(&chain, signature_fees(2));
+    applier.submit(rotation(3)).await.expect("held");
+    applier.flush().await;
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+    assert_eq!(
+        refusal(applier.submit(rotation(4)).await),
+        EnrollmentRefusal::Budget
+    );
 }
 
 #[tokio::test]

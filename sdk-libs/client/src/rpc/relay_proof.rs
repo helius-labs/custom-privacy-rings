@@ -66,6 +66,8 @@ pub enum RelayRail {
     Anonymous {
         plan: Box<AnonymousPlan>,
         exit_token_owner: Option<Address>,
+        /// The owner accepts a public party or a zero-key spend naming it.
+        owner_exposed: bool,
     },
     Confidential,
     Delegate {
@@ -331,6 +333,7 @@ enum RailWire {
     Anonymous {
         plan: Box<PlanWire>,
         exit_token_owner: Option<Address>,
+        owner_exposed: bool,
     },
     Confidential,
     Delegate {
@@ -578,9 +581,11 @@ impl RailWire {
             RelayRail::Anonymous {
                 plan,
                 exit_token_owner,
+                owner_exposed,
             } => Self::Anonymous {
                 plan: Box::new(PlanWire::of(plan)),
                 exit_token_owner: *exit_token_owner,
+                owner_exposed: *owner_exposed,
             },
             RelayRail::Confidential => Self::Confidential,
             RelayRail::Delegate { delegate, plan } => Self::Delegate {
@@ -598,9 +603,11 @@ impl RailWire {
             Self::Anonymous {
                 plan,
                 exit_token_owner,
+                owner_exposed,
             } => RelayRail::Anonymous {
                 plan: Box::new(plan.plan()?),
                 exit_token_owner: *exit_token_owner,
+                owner_exposed: *owner_exposed,
             },
             Self::Confidential => RelayRail::Confidential,
             Self::Delegate { delegate, plan } => RelayRail::Delegate {

@@ -52,7 +52,12 @@ import { RingError } from "../error.js";
 
 /** Rust `RelayRail`. */
 export type RelayRail =
-  | Readonly<{ kind: "anonymous"; plan: AnonymousPlan; exitTokenOwner?: Address }>
+  | Readonly<{
+      kind: "anonymous";
+      plan: AnonymousPlan;
+      exitTokenOwner?: Address;
+      ownerExposed: boolean;
+    }>
   | Readonly<{ kind: "confidential" }>
   | Readonly<{ kind: "delegate"; delegate: Address; plan?: AnonymousPlan }>
   /** Spends no note, `plan` exactly on an anonymous ring. */
@@ -290,6 +295,7 @@ function writeRail(writer: Writer, rail: RelayRail): void {
       writer.option(rail.exitTokenOwner, (output, owner) =>
         output.bytes(addressBytes(owner), 32, "exitTokenOwner"),
       );
+      writer.u8(rail.ownerExposed ? 1 : 0, "ownerExposed");
       return;
     }
     case "confidential":
@@ -539,10 +545,13 @@ function readRail(reader: WireReader): RelayRail {
       const exitTokenOwner = reader.option("exitTokenOwner", () =>
         reader.address("exitTokenOwner"),
       );
+      const ownerExposed = reader.u8("ownerExposed");
+      if (ownerExposed > 1) throw refused("ownerExposed", ownerExposed);
       return Object.freeze({
         kind: "anonymous",
         plan,
         ...(exitTokenOwner === undefined ? {} : { exitTokenOwner }),
+        ownerExposed: ownerExposed === 1,
       });
     }
     case 1:

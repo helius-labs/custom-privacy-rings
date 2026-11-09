@@ -67,8 +67,14 @@ impl OwnerGrant {
 }
 
 impl OwnerGrantIxData {
+    /// An Ed25519 key's trailing byte is in the seeds, one grant address per reader.
     pub fn check(&self) -> Result<(), StorageError> {
-        if !matches!(self.reader[0], READER_KEY_ED25519 | READER_KEY_P256) {
+        let canonical = match self.reader[0] {
+            READER_KEY_ED25519 => self.reader[33] == 0,
+            READER_KEY_P256 => true,
+            _ => false,
+        };
+        if !canonical {
             return Err(StorageError::InvalidReaderKey);
         }
         if self.active > 1 {

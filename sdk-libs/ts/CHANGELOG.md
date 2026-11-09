@@ -7,6 +7,7 @@ The custom ring surface of `@heliuslabs/zolana` 0.4.0-alpha moves into `@heliusl
 Breaking
 
 - Zero-key transfer recipients must be absent at the selected tracking root. An enrolled recipient must receive under its registered nullifier key.
+- `AnonymousTransfer.prepareRelay` sends the `withOwnerExposure` choice to Ring RPC, and Ring RPC refuses a hidden owner that funds a leg, receives an exit or spends a zero-key note unless the choice is `"accepted"` → run Ring RPC of the same revision.
 
 - `DelegateTransfer` with an `exit` output fails before any proof with `RING_EXIT_PROOF_UNAVAILABLE` as the code or the cause code → pay delegate moves inside the ring or out through a public `withdrawal` until a release proves the exit.
 - The pinned peer is `@heliuslabs/spr` 0.9.0-alpha, the package `@heliuslabs/zolana` became → install `@heliuslabs/spr` in place of `@heliuslabs/zolana`, import core names from its entry points and pass `createCustomRingClient` an `SprClientConfig` without `provingKeys`.
@@ -44,7 +45,7 @@ Added
 - `AnonymousWallet.exposedNotes` holds zero-key notes apart from the balance, no automatic selection spends one, a shortfall they could cover raises `RING_UNFUNDED_PAST_EXPOSURE`, and `CustomRingTransfer.spendPublic(wallet)` spends the ones the caller names.
 - `readRegisteredKeys` reads the nullifier keys of a page's `unresolvedOwners` from their tracking leaves under the newest root, `auditRing` resolves a spend in the page of the output it spends under that key's held secret, `resolveRingOwners` keys an output only when its commitment rebuilds under the key and reports a `payload` entry otherwise, `resolveKnownUtxo` returns `undefined` there, `KnownUtxoIndex.insert` replaces an unresolved entry with the keyed one under the same commitment, and `NullifierSecrets.ownerSecret` traces the spend of an output whose record names no key under its owner's held secret.
 - The transfer key catalog serves a sixteen-output payout from up to four inputs of at most two owners under `custom-ring-transfer-16-in4-w4-s2`, the 40-input key `custom-ring-transfer-wide-2-in40-w4-s9` takes nine owners, the entry keys hold the tracking rows and records of the widest spend one inline transaction carries, and `TRANSFER_OUTPUT_CAPACITIES` lists 16.
-- `rotateViewingKey` moves a wallet's `LocalRingKeys` and `ViewingHistory` to a new viewing key, `updateViewingKey` builds the Rotate write Ring RPC applies to the owner's tracking leaf only while the leaf holds the key it replaces, and `confirmViewingKey` raises `RING_VIEWING_KEY_NOT_PUBLISHED` until the leaf under the newest root holds it.
+- `rotateViewingKey` moves a wallet's `LocalRingKeys` and `ViewingHistory` to a new viewing key, `updateViewingKey` builds the Rotate write Ring RPC applies to the owner's tracking leaf only while the leaf holds the key it replaces and raises `RING_VIEWING_KEY_NOT_HELD` when the leaf holds a key the wallet never held, and `confirmViewingKey` raises `RING_VIEWING_KEY_NOT_PUBLISHED` until the leaf under the newest root holds it.
 - `sealViewingKey` checks a served viewing key against its leaf, `encodeEnrollmentWrite` and `enrollmentWriteEntry` give a write's bytes and tracking entry, `trackingRotationOf` gives a rotation's entry, `signedWrite` gives a write's entry hash and the message its owner signs, `StorageProgramError` names `invalidStorageProgram`, `invalidSignatureInstruction` and `ownerSignatureMismatch`, and `RingInstructionTag.enrollBatch` names the batch the enrollment writer signs.
 
 Changed
@@ -58,3 +59,4 @@ Fixed
 - A ring entry from a default note larger than its amount asked approval for the amount alone while the change also entered the ring, now the `ringEntry` intent and its summary name every unit entering the ring.
 - `PreparedRelay.send` called again after a lost answer asked Ring RPC to prepare the relay a second time, now it reads the relay's status first, returns the relay submitted once Ring RPC sent it and raises `RING_RELAY_FAILED` when Ring RPC failed it.
 - `recoverRingMemberNotes` failed on one output whose mint no registry names, now that commitment stays in `unopened` and recovery goes on.
+- `recordChain` and `ringTransferStatement` hashed a record of any length into a statement the program never verifies, now a record off both published lengths raises `RING_INVALID_LENGTH` before any proof.

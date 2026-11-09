@@ -152,10 +152,14 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 chain: Arc::new(LiveStorageChain::connect(upstreams, prover_url)?),
                 payer,
                 rings: args.enrollment_apply_rings.clone(),
+                budget_lamports: args.enrollment_budget_lamports,
             }
             .applier(),
         );
         info!("enrollment writer {}", applier.payer());
+        if args.enrollment_budget_lamports == 0 {
+            warn!("enrollment writes off, set --enrollment-budget-lamports and fund the writer to turn them on");
+        }
         tokio::spawn(applier.clone().run(RECORD_FLUSH_INTERVAL));
         builder = builder.with_enrollment_applier(applier);
     }
@@ -182,7 +186,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     });
     info!("service pubkey {}", hub.service_pubkey());
     match hub.relay() {
-        None => warn!("relay off, relay enrollment and token account creates need --fee-payer-key-file and a relay budget"),
+        None => {
+            warn!("relay off, token account creates need --fee-payer-key-file and a relay budget")
+        }
         Some(relay) => {
             info!("relay fee payer {}", relay.fee_payer());
             match relay_budget.is_set() {
@@ -191,7 +197,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     relay_budget.total_lamports, relay_budget.signer_lamports
                 ),
                 false => warn!(
-                    "relay enrollment and token account creates off, set --relay-budget-lamports and --relay-signer-budget-lamports and fund the fee payer to turn them on"
+                    "token account creates off, set --relay-budget-lamports and --relay-signer-budget-lamports and fund the fee payer to turn them on"
                 ),
             }
         }

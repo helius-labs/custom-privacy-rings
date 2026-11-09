@@ -219,6 +219,7 @@ export const RING_ERROR_CODES = [
   "RING_RECIPIENT_LITERAL_ZERO_KEY",
   "RING_DEPOSIT_PROOF_DATA_SOURCE",
   "RING_VIEWING_KEY_MISMATCH",
+  "RING_VIEWING_KEY_NOT_HELD",
 ] as const;
 import { extractCauseCodes, hideCause, sanitizeDetails } from "@heliuslabs/spr/internal";
 import type { ErrorEnvelope } from "@heliuslabs/spr";
