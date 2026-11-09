@@ -55,7 +55,7 @@ pub use wallet_status::*;
 use crate::{
     AuditError, AuditedEntryInput, AuditedMergeOutput, AuditedOutput, AuditedTransaction,
     AuditedUtxo, KnownUtxo, OutputOpening, OutputPayloadErrorKind, ReaderKey, ReaderKeyError,
-    RingOwnerTag, RingWithdrawal, UtxoOwner,
+    RingOwnerTag, RingWithdrawal, UtxoOwner, REDACTED,
 };
 
 pub const HEALTH: &str = "health";
@@ -445,7 +445,7 @@ pub enum DecryptedOutputKind {
 }
 
 /// Exact field encodings keep an unknown asset readable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DecryptedUtxo {
     /// Base58 of it is the owner's Solana address.
@@ -465,7 +465,32 @@ pub struct DecryptedUtxo {
     pub ring_data_hash: Option<Hash>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+impl core::fmt::Debug for DecryptedUtxo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            owner_key,
+            nullifier_pk,
+            asset,
+            mint,
+            amount,
+            blinding: _,
+            data_hash,
+            ring_data_hash,
+        } = self;
+        f.debug_struct("DecryptedUtxo")
+            .field("owner_key", owner_key)
+            .field("nullifier_pk", nullifier_pk)
+            .field("asset", asset)
+            .field("mint", mint)
+            .field("amount", amount)
+            .field("blinding", &REDACTED)
+            .field("data_hash", data_hash)
+            .field("ring_data_hash", ring_data_hash)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DecryptedKnownUtxo {
     pub owner_key: SerializablePubkey,
@@ -484,6 +509,33 @@ pub struct DecryptedKnownUtxo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ring_data_hash: Option<Hash>,
     pub tree_id: u16,
+}
+
+impl core::fmt::Debug for DecryptedKnownUtxo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            owner_key,
+            nullifier_pk,
+            asset,
+            mint,
+            amount,
+            blinding: _,
+            data_hash,
+            ring_data_hash,
+            tree_id,
+        } = self;
+        f.debug_struct("DecryptedKnownUtxo")
+            .field("owner_key", owner_key)
+            .field("nullifier_pk", nullifier_pk)
+            .field("asset", asset)
+            .field("mint", mint)
+            .field("amount", amount)
+            .field("blinding", &REDACTED)
+            .field("data_hash", data_hash)
+            .field("ring_data_hash", ring_data_hash)
+            .field("tree_id", tree_id)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

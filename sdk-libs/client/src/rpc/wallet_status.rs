@@ -5,6 +5,7 @@ use solana_address::Address;
 use spr_indexer_api::{Base64String, Hash, SerializablePubkey, SerializableSignature};
 
 use super::{base64, Attestation, ReadAuth, ReadBuildError, ReadSigner, ReadTarget, SignedRequest};
+use crate::REDACTED;
 
 pub const WALLET_SNAPSHOT_EXPIRED: i32 = -32172;
 pub const WALLET_SNAPSHOT_CAPACITY: i32 = -32173;
@@ -62,7 +63,7 @@ pub struct WalletBalance {
 }
 
 /// A full opening, a wallet that got an unusable body rebuilds its note from it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct WalletNote {
     pub utxo_hash: Hash,
@@ -87,6 +88,45 @@ pub struct WalletNote {
     pub tx_signature: SerializableSignature,
     pub event_index: u16,
     pub slot_index: u32,
+}
+
+impl core::fmt::Debug for WalletNote {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            utxo_hash,
+            status,
+            nullifier_pk,
+            asset,
+            mint,
+            amount,
+            blinding: _,
+            data_hash,
+            ring_data_hash,
+            tree_id,
+            leaf_index,
+            slot,
+            tx_signature,
+            event_index,
+            slot_index,
+        } = self;
+        f.debug_struct("WalletNote")
+            .field("utxo_hash", utxo_hash)
+            .field("status", status)
+            .field("nullifier_pk", nullifier_pk)
+            .field("asset", asset)
+            .field("mint", mint)
+            .field("amount", amount)
+            .field("blinding", &REDACTED)
+            .field("data_hash", data_hash)
+            .field("ring_data_hash", ring_data_hash)
+            .field("tree_id", tree_id)
+            .field("leaf_index", leaf_index)
+            .field("slot", slot)
+            .field("tx_signature", tx_signature)
+            .field("event_index", event_index)
+            .field("slot_index", slot_index)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
