@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use anyhow::{anyhow, Result};
 use custom_ring_cli::ModeName;
-use custom_ring_sdk::CustomRing;
+use custom_ring_sdk::{CustomRing, DepositAsset, RingError};
 use custom_ring_test_validator::{
     cli::{merged, ListWrite, RingProject, RingToml},
     policy::{
@@ -21,8 +21,10 @@ use solana_signer::Signer;
 use spr_client::{IndexerRpcConfig, Rpc, UtxoScan};
 use spr_keypair::{ShieldedKeypair, X25519Keypair};
 use spr_transaction::Utxo;
-use zolana_ring_client::{AuditedTransaction, OutputOpening, RingConfidentialScan, RingScan};
-use zolana_ring_policy::{ListId, Member};
+use zolana_ring_client::{
+    owner_record_key, AuditedTransaction, OutputOpening, RingConfidentialScan, RingScan,
+};
+use zolana_ring_policy::ListId;
 
 /// `RELEASED` as `ring.toml` spells it.
 const RELEASED_TOML: &str = r#"[policy]
@@ -55,6 +57,7 @@ fn allow_frozen_and_block_rows_govern_every_transfer() -> Result<()> {
         tier: Tier::policy(&RELEASED),
     }
     .send(&env.client)?;
+    custom_ring_test_validator::policy::enroll_actors(&env, ring)?;
     let pinned = policy_registry(ring, &env)?;
     assert_eq!(
         pinned.rule_table()?,
@@ -68,6 +71,12 @@ fn allow_frozen_and_block_rows_govern_every_transfer() -> Result<()> {
     let sender_member = owner_member(sender)?;
     let blocked = ShieldedKeypair::new_ed25519()?;
     env.fund(blocked.pubkey(), ACTOR_AIRDROP)?;
+    custom_ring_test_validator::policy::EnrollOwners {
+        ring,
+        owners: &[&blocked],
+        env: &env,
+    }
+    .send()?;
     let blocked_member = owner_member(&blocked)?;
     let egress = Egress {
         ring,
@@ -84,16 +93,22 @@ fn allow_frozen_and_block_rows_govern_every_transfer() -> Result<()> {
     let enrol = |list_id, member| write(list_id, member, true);
     let clear = |list_id, member| write(list_id, member, false);
 
-    // 1. Allow admits a transfer only with both parties enrolled.
-    let notes = RingNotes {
-        ring,
-        owner: sender,
-        amount: DEPOSIT,
-        count: 2,
-        env: &env,
-    }
-    .deposit()?;
+    let deposit = |owner: &ShieldedKeypair, count: usize| {
+        RingNotes {
+            ring,
+            owner,
+            amount: DEPOSIT,
+            asset: DepositAsset::Sol,
+            count,
+            env: &env,
+        }
+        .deposit()
+    };
+
+    // 1. Allow refuses a deposit or a transfer until each party is enrolled.
+    deposit_refused(deposit(sender, 1))?;
     enrol(ListId::Allow, sender_member).send()?;
+    let notes = deposit(sender, 2)?;
     egress.input_utxo(sender, &notes[0]).expect_refusal()?;
     enrol(ListId::Allow, owner_member(recipient)?).send()?;
     egress.input_utxo(sender, &notes[0]).land()?;
@@ -104,22 +119,14 @@ fn allow_frozen_and_block_rows_govern_every_transfer() -> Result<()> {
     clear(ListId::Frozen, sender_member).send()?;
     egress.input_utxo(sender, &notes[1]).land()?;
 
-    // 3. Deposits are ungoverned ingress, the rows bound egress, and Block
-    //    refuses the party's own change output even once Allow admits it.
-    enrol(ListId::Block, blocked_member).send()?;
-    let note = RingNotes {
-        ring,
-        owner: &blocked,
-        amount: DEPOSIT,
-        count: 1,
-        env: &env,
-    }
-    .deposit()?
-    .into_iter()
-    .next()
-    .ok_or_else(|| anyhow!("the Block party's note"))?;
-    egress.input_utxo(&blocked, &note).expect_refusal()?;
+    // 3. Block refuses a deposit to the party and the party's change output even once Allow admits it.
     enrol(ListId::Allow, blocked_member).send()?;
+    let note = deposit(&blocked, 1)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("the Block party's note"))?;
+    enrol(ListId::Block, blocked_member).send()?;
+    deposit_refused(deposit(&blocked, 1))?;
     egress.input_utxo(&blocked, &note).expect_refusal()?;
     clear(ListId::Block, blocked_member).send()?;
     egress.input_utxo(&blocked, &note).land()?;
@@ -139,9 +146,9 @@ fn the_cli_pins_the_released_rows_and_governs_its_demo_transfers() -> Result<()>
         .run(ring.config(env.client.as_async()))?
         .ok_or_else(|| anyhow!("config after init"))?;
     assert_eq!(
-        config.authority,
-        demo.project.config_authority.pubkey(),
-        "the config authority holds the config"
+        config.roles.policy,
+        demo.project.policy_authority.pubkey(),
+        "the `policy_authority` key holds the policy role"
     );
     assert!(config.has_policy, "policy tier");
     let policy = policy_registry(ring, &env)?;
@@ -152,11 +159,11 @@ fn the_cli_pins_the_released_rows_and_governs_its_demo_transfers() -> Result<()>
     // 2. The demo, a granted reader, enrols both parties in Allow, the
     //    auditor opens its transfer.
     demo.grant_reader()?;
-    let output = demo.project.run(&["transact"])?;
+    let output = demo.project.run(&["transact", "--enrol-allow"])?;
     for line in ["allow       sender added", "allow       recipient added"] {
         assert!(output.contains(line), "{line} in\n{output}");
     }
-    let transactions = demo.audited()?;
+    let transactions = demo.audited_transfers()?;
     let [transfer] = transactions.as_slice() else {
         return Err(anyhow!(
             "expected one audited transfer, got {}",
@@ -174,7 +181,7 @@ fn the_cli_pins_the_released_rows_and_governs_its_demo_transfers() -> Result<()>
         .collect();
     assert_eq!(owners.len(), 2, "change and recipient stay in the ring");
     for (slot_index, owner_key) in owners {
-        let read = env.member_record(ring, Member::owner_tag(&owner_key)?)?;
+        let read = env.member_record(ring, owner_record_key(&owner_key)?)?;
         assert!(read.listed(ListId::Allow), "slot {slot_index} is enrolled");
     }
 
@@ -189,14 +196,29 @@ fn the_cli_pins_the_released_rows_and_governs_its_demo_transfers() -> Result<()>
     demo.project.write_list(frozen(true))?;
     demo.refused_transact()?;
     demo.project.write_list(frozen(false))?;
-    demo.project.run(&["transact"])?;
+    demo.project.run(&["transact", "--enrol-allow"])?;
     assert_eq!(
-        demo.audited()?.len(),
+        demo.audited_transfers()?.len(),
         2,
         "the released sender transacts again"
     );
     demo.project.remove()?;
     Ok(())
+}
+
+fn deposit_refused(deposit: Result<Vec<Utxo>>) -> Result<()> {
+    match deposit {
+        Err(error)
+            if matches!(
+                error.downcast_ref::<RingError>(),
+                Some(RingError::PolicyRuleUnsatisfied(_))
+            ) =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error.context("expected PolicyRuleUnsatisfied")),
+        Ok(_) => Err(anyhow!("the deposit landed under a refusing rule")),
+    }
 }
 
 struct Egress<'a> {
@@ -260,24 +282,23 @@ impl<'a> DemoRing<'a> {
         self.project.run(&[
             "reader",
             "grant",
-            &self.project.config_authority.pubkey().to_string(),
+            &self.project.policy_authority.pubkey().to_string(),
         ])?;
         Ok(())
     }
 
-    fn audited(&self) -> Result<Vec<AuditedTransaction>> {
+    /// Each demo deposit is an audited transfer of dummies, only spends count here.
+    fn audited_transfers(&self) -> Result<Vec<AuditedTransaction>> {
         let client = self.env.client.as_async();
-        let scan = RingScan::new(self.ring.program_id(), self.auditor.pubkey());
-        Ok(self
+        let scan = RingScan::new(self.ring.program_id(), self.auditor.pubkey())
+            .with_tracking_registry(self.ring.tracking_registry()?);
+        let mut transactions = self
             .env
             .client
-            .block_on(scan.audit(
-                &self.auditor,
-                client.indexer(),
-                client.rpc(),
-                &self.env.ring_assets()?,
-            ))?
-            .transactions)
+            .block_on(scan.audit(&self.auditor, client.indexer(), client.rpc()))?
+            .transactions;
+        transactions.retain(|transaction| transaction.real_inputs > 0);
+        Ok(transactions)
     }
 
     fn refused_transact(&self) -> Result<()> {
@@ -307,8 +328,8 @@ impl<'a> DemoRing<'a> {
                 .collect())
         };
         let before = unspent()?;
-        let audited_before = self.audited()?.len();
-        let refused = self.project.output(&["transact"])?;
+        let audited_before = self.audited_transfers()?.len();
+        let refused = self.project.output(&["transact", "--enrol-allow"])?;
         assert!(
             !refused.status.success(),
             "transact landed under a refusing rule"
@@ -322,7 +343,7 @@ impl<'a> DemoRing<'a> {
             before.len() + 2,
             "the refused demo keeps its two deposits"
         );
-        assert_eq!(self.audited()?.len(), audited_before);
+        assert_eq!(self.audited_transfers()?.len(), audited_before);
         Ok(())
     }
 }

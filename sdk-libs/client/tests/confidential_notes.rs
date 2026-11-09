@@ -1,10 +1,8 @@
-//! Scheme 10 opened into a wallet by `open_ring_confidential`.
-
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{OutputContext, OutputSlot, ShieldedTransaction};
 use spr_interface::instruction::instruction_data::transact::OwnerTag;
-use spr_keypair::{ShieldedAddress, ShieldedKeypair, SigningKey};
+use spr_keypair::{ShieldedAddress, ShieldedKeypair, SigningKey, X25519Keypair};
 use spr_transaction::{
     instructions::transact::ConfidentialTransaction, Data, Mint, Utxo, WalletUtxo,
 };
@@ -74,7 +72,7 @@ fn transfer(
         .viewing_key
         .get_transaction_viewing_key(&nullifier)
         .unwrap();
-    let rail = RingOutputRail::new(tx_key, delivery);
+    let rail = RingOutputRail::new(tx_key, X25519Keypair::new().pubkey(), delivery);
     let proof = rail.encrypt(tx, &address(sender)).unwrap();
     let published = rail.published_slots(&proof, &address(sender)).unwrap();
     let output_slots = published
@@ -87,7 +85,7 @@ fn transfer(
                 ref other => panic!("inline owner tag expected, got {other:?}"),
             },
             output_context: OutputContext {
-                hash: *slot.wire.hash(),
+                hash: *slot.wire().hash,
                 tree_id: TREE,
                 leaf_index: leaf as u64,
             },
@@ -111,7 +109,6 @@ fn transfer(
 
 fn held(owner: &ShieldedKeypair, transactions: &[ShieldedTransaction]) -> Vec<(u64, bool)> {
     let notes = open_ring_confidential(owner, &RingAssets::new([]).unwrap(), transactions).unwrap();
-    assert!(notes.pending.is_empty());
     notes
         .owned
         .utxos
@@ -129,7 +126,7 @@ fn held(owner: &ShieldedKeypair, transactions: &[ShieldedTransaction]) -> Vec<(u
 }
 
 #[test]
-fn a_delivered_transfer_opens_for_its_recipient_by_trial_over_the_held_mints() {
+fn a_delivered_transfer_opens_for_its_recipient_under_the_mint_its_body_names() {
     let (sender, recipient) = (keypair(1), keypair(2));
     let tx = transfer(&sender, &recipient, RingDelivery::Delivered);
     assert_eq!(held(&recipient, std::slice::from_ref(&tx)), [(SENT, false)]);

@@ -1,45 +1,29 @@
-import type { ChainReader, RpcAccount } from "@heliuslabs/zolana/client";
-import type { Address, RequestContext } from "@heliuslabs/zolana";
+import type { ChainReader, RpcAccount } from "@heliuslabs/spr/client";
+import type { Address, RequestContext } from "@heliuslabs/spr";
 
-import { decodeRingProgramConfig } from "../codec/ring-codecs.js";
-import { ringConfigAddress } from "../pda/index.js";
+import { decodeRingPolicy, RING_ROLES, type RingAuthorityRole } from "../codec/ring-codecs.js";
+import { ringPolicyAddress } from "../pda/index.js";
 import { RingError } from "../error.js";
-import {
-  decodeReadAccessRecord,
-  readerKeyEquals,
-  readAccessRecordAddress,
-  type ReaderKey,
-} from "../../operations/management/reader-access.js";
+import { readerKeyEquals, type ReaderKey } from "../../operations/management/reader-access.js";
 
 type AccountReader = Pick<ChainReader, "getMultipleAccounts">;
 
-export type RingRole = "authority" | "delegated reader" | "participant only";
+export type RingRole = RingAuthorityRole | "participant only";
 
-/** What a ring's config and read access records say about one key. */
+/** Every role the key holds, or only `participant only`. One key may hold several roles. */
 export async function ringRole(
   input: Readonly<{ rpc: AccountReader; ring: Address; reader: ReaderKey }>,
   context?: RequestContext,
-): Promise<RingRole> {
-  const [config, record] = await Promise.all([
-    ringConfigAddress(input.ring),
-    readAccessRecordAddress(input.ring, input.reader),
-  ]);
-  const [configAccount, recordAccount] = await input.rpc.getMultipleAccounts(
-    [config, record],
-    context,
-  );
-  const configData = owned(configAccount, input.ring);
-  if (configData === undefined) {
+): Promise<readonly RingRole[]> {
+  const address = await ringPolicyAddress(input.ring);
+  const [account] = await input.rpc.getMultipleAccounts([address], context);
+  const data = owned(account, input.ring);
+  if (data === undefined) {
     throw new RingError("RING_CONFIG_INVALID", { details: { reason: "ring has no config" } });
   }
-  if (readerKeyEquals(decodeRingProgramConfig(configData).authority, input.reader)) {
-    return "authority";
-  }
-  const recordData = owned(recordAccount, input.ring);
-  if (recordData && readerKeyEquals(decodeReadAccessRecord(recordData).reader, input.reader)) {
-    return "delegated reader";
-  }
-  return "participant only";
+  const { roles } = decodeRingPolicy(data);
+  const held = RING_ROLES.filter((role) => readerKeyEquals(roles[role], input.reader));
+  return held.length === 0 ? ["participant only"] : held;
 }
 
 /** An account another program owns says nothing about this ring. */

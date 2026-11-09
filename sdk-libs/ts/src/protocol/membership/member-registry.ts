@@ -1,24 +1,23 @@
-import type { MintPolicy } from "./mint-policy.js";
-import type { Bytes32 } from "@heliuslabs/zolana/interface";
+import { checkedBytes, equalBytes, poseidon, ZERO_32 } from "@heliuslabs/spr/internal";
+import type { Bytes32 } from "@heliuslabs/spr/interface";
 
-/** Rust `QUAD_ARITY` and `QUAD_HEIGHT`, the 4-ary record tree of a ring's member registry. */
+import type { MintPolicy } from "./mint-policy.js";
+
+/** Rust `QUAD_ARITY` and `QUAD_HEIGHT`, the 4-ary shape of the member registry. */
 export const QUAD_ARITY = 4;
-export const QUAD_HEIGHT = 10;
-/** Rust `MEMBER_REGISTRY_CAPACITY`, `4^10` leaves. */
-export const MEMBER_REGISTRY_CAPACITY = 1n << BigInt(2 * QUAD_HEIGHT);
-/** Rust `ROOT_HISTORY`, the registry roots a proof may bind. */
-export const MEMBER_REGISTRY_ROOT_HISTORY = 32;
-/** Rust `APPLY_BATCH`, the writes the larger apply key proves and the record queue holds. */
+export const QUAD_HEIGHT = 13;
+/** Rust `QUAD_CAPACITY`. */
+export const QUAD_CAPACITY = 1n << BigInt(2 * QUAD_HEIGHT);
+/** Rust `ROOT_HISTORY`, the roots a registry keeps. */
+export const ROOT_HISTORY = 32;
+/** Rust `APPLY_BATCH`, the writes the larger apply key proves. */
 export const APPLY_BATCH = 16;
 
-/** One leaf, `Poseidon(member, next, lists, escrow_key, mint_policy, withdrawal_threshold)`, Rust `MemberRecord`. */
 export interface MemberRecord {
   readonly member: Bytes32;
   readonly next: Bytes32;
   /** Bit `id - 1` marks list `id`. */
   readonly lists: bigint;
-  /** Zero until the member registers a key. */
-  readonly escrowKey: Bytes32;
   readonly mintPolicy: MintPolicy;
 }
 
@@ -28,11 +27,90 @@ export interface QuadPath {
   readonly siblings: readonly (readonly Bytes32[])[];
 }
 
-/** The least `levels` with `4^levels >= openings`, at most `QUAD_HEIGHT`. */
-export function canopyLevels(openings: number): number {
+/** The least `levels` with `4^levels >= openings`, at most `height`. */
+export function canopyLevels(openings: number, height: number): number {
   let levels = 0;
-  while (levels < QUAD_HEIGHT && QUAD_ARITY ** levels < openings) levels += 1;
+  while (levels < height && QUAD_ARITY ** levels < openings) levels += 1;
   return levels;
+}
+
+export type TreeRefusal = (reason: string) => never;
+
+/** The root `leaf` folds to along `path` in a tree of `height`, Rust `QuadPathOf::root`. */
+export function foldQuadPath(
+  path: QuadPath,
+  leaf: Bytes32,
+  refuse: TreeRefusal,
+  height: number,
+): Bytes32 {
+  if (
+    !Number.isSafeInteger(path.index) ||
+    path.index < 0 ||
+    BigInt(path.index) >= 1n << BigInt(2 * height)
+  )
+    refuse("IndexOutOfRange");
+  if (path.siblings.length !== height) refuse("PathHeight");
+  let node = leaf;
+  path.siblings.forEach((siblings, level) => {
+    if (siblings.length !== QUAD_ARITY - 1) refuse("PathArity");
+    const digit = Math.floor(path.index / QUAD_ARITY ** level) % QUAD_ARITY;
+    const children = siblings.map((sibling) => checkedBytes<Bytes32>(sibling, 32, "sibling"));
+    children.splice(digit, 0, node);
+    node = poseidon(children) as Bytes32;
+  });
+  return node;
+}
+
+/** Each pool path completed with the canopy nodes above its cut, a canopy off `root` refuses, Rust `SharedProof::verify`. */
+export function coveredPaths(
+  input: Readonly<{
+    paths: readonly QuadPath[];
+    canopy: readonly Bytes32[];
+    openings: number;
+    root: Bytes32;
+    height: number;
+  }>,
+  refuse: TreeRefusal,
+): readonly QuadPath[] {
+  const levels = canopyLevels(input.openings, input.height);
+  if (input.canopy.length !== QUAD_ARITY ** levels) refuse("PoolShape");
+  const canopy = [input.canopy.map((node) => checkedBytes<Bytes32>(node, 32, "canopy"))];
+  for (let level = 0; level < levels; level += 1) {
+    const below = canopy[level] ?? [];
+    canopy.push(
+      Array.from(
+        { length: below.length / QUAD_ARITY },
+        (_, parent) =>
+          poseidon(below.slice(parent * QUAD_ARITY, (parent + 1) * QUAD_ARITY)) as Bytes32,
+      ),
+    );
+  }
+  if (!equalBytes(canopy[levels]?.[0] ?? ZERO_32, input.root)) refuse("RootMismatch");
+  const height = input.height - levels;
+  return input.paths.map((path) => {
+    if (path.siblings.length !== height) refuse("PathHeight");
+    return Object.freeze({
+      index: path.index,
+      siblings: Object.freeze([
+        ...path.siblings,
+        ...canopy.slice(0, levels).map((nodes, level) => {
+          const node = Math.floor(path.index / QUAD_ARITY ** (height + level));
+          const first = node - (node % QUAD_ARITY);
+          return nodes
+            .slice(first, first + QUAD_ARITY)
+            .filter((_, child) => first + child !== node);
+        }),
+      ]),
+    });
+  });
+}
+
+/** `Poseidon(previous, entry)`, Rust `chain_link`, one step of a records or enrollment chain. */
+export function chainLink(previous: Bytes32, entry: Bytes32): Bytes32 {
+  return poseidon([
+    checkedBytes<Bytes32>(previous, 32, "chain"),
+    checkedBytes<Bytes32>(entry, 32, "entry"),
+  ]) as Bytes32;
 }
 
 /** Go `PooledSubject`, `recordIndex` the record holding or bracketing `member`. */
@@ -55,25 +133,23 @@ export type RecordOpening =
   | Readonly<{ kind: "present"; record: MemberRecord; path: QuadPath }>
   | Readonly<{ kind: "absent"; low: MemberRecord; path: QuadPath }>;
 
-/** One queued masked write, `lists' = (lists & !mask) | value`, the escrow key fills once. */
-export interface QueueEntry {
+/** `lists' = (lists & !mask) | value`. */
+export interface RecordWrite {
   readonly member: Bytes32;
   readonly mask: bigint;
   readonly value: bigint;
-  readonly escrowKey: Bytes32;
   readonly mintPolicy?: MintPolicy;
 }
 
-/** One queued write's apply proof input, Rust `RecordWriteProofInput`. */
+/** One write's apply proof input, Rust `RecordWriteProofInput`. */
 export interface RecordWriteProofInput {
-  readonly entry: QueueEntry;
+  readonly entry: RecordWrite;
   readonly exists: boolean;
   /** An absent member reads its low record's `next` and empty lists. */
   readonly oldNext: Bytes32;
   readonly oldLists: bigint;
-  readonly oldEscrow: Bytes32;
   readonly oldMintPolicy: MintPolicy;
-  /** The record's leaf, for an absent member the leaf at `next_index`. */
+  /** The record's leaf, for an absent member the leaf at `next_index`, the low leaf for a no-op on a full tree. */
   readonly slot: QuadPath;
   /** An absent member's low record and its path before the relink, empty for a present member. */
   readonly low: MemberRecord;
@@ -84,12 +160,12 @@ export interface RecordWriteProofInput {
 export interface ApplyProofInputs {
   readonly oldRoot: Bytes32;
   readonly newRoot: Bytes32;
-  readonly oldNextIndex: number;
-  readonly newNextIndex: number;
-  /** `chain(head - 1)`. */
+  readonly oldNextIndex: bigint;
+  readonly newNextIndex: bigint;
+  /** `chain_start` of the registry and revision. */
   readonly chainStart: Bytes32;
-  /** `chain(tail - 1)`. */
+  /** The chain past the last write. */
   readonly chainEnd: Bytes32;
-  /** Queue order. */
+  /** Instruction order. */
   readonly writes: readonly RecordWriteProofInput[];
 }

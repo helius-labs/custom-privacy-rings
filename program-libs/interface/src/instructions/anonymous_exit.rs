@@ -1,22 +1,22 @@
-//! The anonymous rail's exit accounts and named parties, one reading for the program and the SDKs.
+//! The anonymous rail's co-signer cells, and the exit account types the wallet's privacy check reads.
+//!
+//! The proof holds the hidden owner apart from every co-signer cell, a hidden owner holding a co-signer
+//! key would approve its own outflow. The payer, the funders and the exit destination take no cell, the
+//! program lets any of them name the hidden owner and the wallet decides. A SOL destination with data or
+//! a program owner, or a token account with a second authority or a keypair address, could name the
+//! hidden owner behind another key, so the wallet refuses each.
+//!
+//! Read after `program-libs/interface/src/instructions/withdrawals.rs`. Read before `program-libs/interface/src/instructions/cosign.rs`,
+//! `programs/custom-ring/src/instructions/transfer/accounts.rs`.
 
 use solana_address::Address;
 use spl_token_2022_interface::{extension::PodStateWithExtensions, pod::PodAccount};
-use spr_hasher::{primitives::solana_owner_identity, HasherError};
-use spr_interface::{
-    instruction::InterfaceTransfer, SPL_TOKEN_2022_PROGRAM_ID, SPL_TOKEN_ACCOUNT_INITIALIZED,
-    SPL_TOKEN_PROGRAM_ID,
-};
+use spr_hasher::primitives::solana_owner_identity;
+use spr_interface::SPL_TOKEN_ACCOUNT_INITIALIZED;
 
 use crate::{CustomRingError, SYSTEM_PROGRAM_ID};
 
-/// The payer, the co-signer and the exit destination.
-pub const ANONYMOUS_PARTIES: usize = 3;
-
-/// The recipient in a SOL withdrawal's settlement group.
-const SOL_WITHDRAWAL_RECIPIENT: usize = 1;
-/// The user token account in an SPL withdrawal's settlement group.
-const SPL_WITHDRAWAL_TOKEN_ACCOUNT: usize = 3;
+pub const ANONYMOUS_PARTIES: usize = crate::cosign::MAX_CO_SIGNERS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenAccountControl {
@@ -47,15 +47,12 @@ pub enum AnonymousExitDestination<'a> {
 pub trait SettlementAccount {
     fn address(&self) -> &Address;
     fn owner(&self) -> &Address;
-    fn data_len(&self) -> usize;
     fn token_account(&self) -> Result<TokenAccountState, CustomRingError>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnonymousParties<'a> {
-    pub payer: &'a [u8; 32],
-    pub cosigner: Option<&'a [u8; 32]>,
-    pub exit_destination: Option<&'a [u8; 32]>,
+    pub co_signers: &'a [Address],
 }
 
 impl TokenAccountState {
@@ -118,73 +115,16 @@ impl<'a> AnonymousExitDestination<'a> {
     }
 }
 
-/// The one key every withdrawal names, `None` without a withdrawal.
-pub fn anonymous_exit_destination<A: SettlementAccount>(
-    transfers: &[InterfaceTransfer],
-    groups: &[A],
-) -> Result<Option<[u8; 32]>, CustomRingError> {
-    let mut start = 0usize;
-    let mut exit: Option<[u8; 32]> = None;
-    for transfer in transfers {
-        let end = start
-            .checked_add(transfer.settlement_account_count())
-            .ok_or(CustomRingError::InvalidSettlementAccounts)?;
-        let group = groups
-            .get(start..end)
-            .ok_or(CustomRingError::InvalidSettlementAccounts)?;
-        start = end;
-        let named = match transfer {
-            InterfaceTransfer::SolDeposit { .. } | InterfaceTransfer::SplDeposit { .. } => continue,
-            InterfaceTransfer::SolWithdrawal { .. } => {
-                let recipient = settlement_at(group, SOL_WITHDRAWAL_RECIPIENT)?;
-                *AnonymousExitDestination::Sol {
-                    recipient: recipient.address(),
-                    owner: recipient.owner(),
-                    data_len: recipient.data_len(),
-                }
-                .named_key()?
-            }
-            InterfaceTransfer::SplWithdrawal { .. } => {
-                let account = settlement_at(group, SPL_WITHDRAWAL_TOKEN_ACCOUNT)?;
-                let token_program = account.owner().as_array();
-                if *token_program != SPL_TOKEN_PROGRAM_ID
-                    && *token_program != SPL_TOKEN_2022_PROGRAM_ID
-                {
-                    return Err(CustomRingError::AnonymousExitTokenAccountInvalid);
-                }
-                let control = account.token_account()?.control;
-                *AnonymousExitDestination::Spl {
-                    token_account: account.address(),
-                    control: &control,
-                }
-                .named_key()?
-            }
-        };
-        match exit {
-            Some(seen) if seen != named => {
-                return Err(CustomRingError::AnonymousExitDestinationsDiffer)
-            }
-            _ => exit = Some(named),
-        }
-    }
-    Ok(exit)
-}
-
 impl AnonymousParties<'_> {
-    /// Solana owner identities, zero for an absent party.
-    pub fn identities(&self) -> Result<[[u8; 32]; ANONYMOUS_PARTIES], HasherError> {
-        let identity =
-            |party: Option<&[u8; 32]>| party.map_or(Ok([0u8; 32]), solana_owner_identity);
-        Ok([
-            identity(Some(self.payer))?,
-            identity(self.cosigner)?,
-            identity(self.exit_destination)?,
-        ])
+    /// Solana owner identities in co-signer order, zero past the last co-signer.
+    pub fn identities(&self) -> Result<[[u8; 32]; ANONYMOUS_PARTIES], CustomRingError> {
+        if self.co_signers.len() > ANONYMOUS_PARTIES {
+            return Err(CustomRingError::TooManyAnonymousParties);
+        }
+        let mut identities = [[0u8; 32]; ANONYMOUS_PARTIES];
+        for (cell, co_signer) in identities.iter_mut().zip(self.co_signers) {
+            *cell = solana_owner_identity(co_signer.as_array())?;
+        }
+        Ok(identities)
     }
-}
-
-fn settlement_at<A>(group: &[A], position: usize) -> Result<&A, CustomRingError> {
-    group
-        .get(position)
-        .ok_or(CustomRingError::InvalidSettlementAccounts)
 }

@@ -1,18 +1,18 @@
 /** The ring output rails, mirrors Rust `zolana-ring-transaction` over the ring program's expansion. */
-import { encryptConfidential, equalBytes, ZERO_32 } from "@heliuslabs/zolana/internal";
-import type {
-  Address,
-  Bytes16,
-  Bytes32,
-  MessageData,
-  TransactOutput,
-} from "@heliuslabs/zolana/interface";
-import { randomSalt, ViewingKey } from "@heliuslabs/zolana/keypair";
-import type { ShieldedAddress, ViewTag, X25519PublicKey } from "@heliuslabs/zolana/keypair";
+import {
+  concatBytes,
+  encryptConfidential,
+  equalBytes,
+  isZero,
+  ZERO_32,
+} from "@heliuslabs/spr/internal";
+import type { Address } from "@heliuslabs/spr/interface";
+import type { Bytes16, Bytes32, MessageData, TransactOutput } from "@heliuslabs/spr/interface";
+import { randomSalt, ViewingKey } from "@heliuslabs/spr/keypair";
+import type { ShieldedAddress, X25519PublicKey } from "@heliuslabs/spr/keypair";
 import {
   createExternalData,
   createProofOutput,
-  Data,
   ProofInputUtxo,
   SOL_MINT,
   SppProofInputs,
@@ -20,28 +20,43 @@ import {
   type AssetRegistry,
   type PreparedTransfer,
   type ProofOutputUtxo,
-} from "@heliuslabs/zolana/transaction";
-import { SPP_SUPPORTED_SHAPES } from "@heliuslabs/zolana/interface";
+} from "@heliuslabs/spr/transaction";
+import { SPP_SUPPORTED_SHAPES } from "@heliuslabs/spr/interface";
 
 import {
-  anonymousRecipientOutputBody,
-  anonymousSenderOutputBody,
   encodeRingOutput,
   readRingOutput,
-  RING_DELIVERED_BODY_LEN,
+  ringBodyOutput,
   RingScheme,
-  sealDeliveredBody,
+  senderBundleOutputBody,
 } from "../../protocol/transaction/output.js";
+import { RING_RECORD_LEN } from "../../protocol/codec/ring-disclosure-layout.js";
 import {
-  DUMMY_RECIPIENT_VIEWING_PK,
-  RECIPIENT_BODY_LEN,
-} from "../../protocol/codec/anonymous-body.js";
+  replyLength,
+  sealReply,
+  sealSenderBundle,
+  type ReplyMetadata,
+} from "../../protocol/codec/anonymous-delivery.js";
 import {
-  encodeAnonymousRecipient,
-  encodeAnonymousSender,
-} from "../../protocol/codec/anonymous-plaintext.js";
-import { deliveredSlotSecret } from "../../crypto/derivation/ring-stream.js";
+  DUMMY_RECORD,
+  EMPTY_PAYLOAD,
+  RecordKind,
+  sealedRecordKey,
+  encodeRecipientPayload,
+  type OutputRecord,
+  type RecipientPayload,
+} from "../../protocol/codec/audit-stream.js";
+import { sealOutputSlot } from "../../crypto/audit/ring-disclosure.js";
+import {
+  anonymousSlotTag,
+  bundleTag,
+  confidentialSlotTag,
+  txKeySlotSecret,
+} from "../../crypto/derivation/ring-stream.js";
+import { randomTagPreimage } from "../../crypto/derivation/dummy-tag.js";
+import { dummyRecipientKey } from "../../crypto/derivation/dummy-key.js";
 import { withOutputFields } from "../../protocol/proof/proof-output.js";
+import type { NoteData } from "./anonymous.js";
 import {
   OutputBlindings,
   ringBlindedOutputs,
@@ -50,82 +65,87 @@ import {
 import { RingError } from "../../protocol/error.js";
 import {
   ringTransactOutput,
+  type PublishedSenderBundle,
   type RingOutput,
-  type SenderBundle,
 } from "../../protocol/transaction/transact.js";
 
-/** The widest SPP shape's outputs, the dummy tags a plan draws ahead. */
+/** The dummy preimages a plan draws ahead. */
 const MAX_OUTPUTS = Math.max(...SPP_SUPPORTED_SHAPES.map((shape) => shape.outputs));
 
 /** How the ring outputs of one transfer reach their recipients, Rust `RingDelivery`. */
 export type RingDelivery =
-  /** Scheme 10 delivered to the owner's viewing key, at `DELIVERED_AUDIT_CAPACITIES`. */
+  /** Each record under the owner's confidential tag. */
   | Readonly<{ kind: "delivered" }>
-  /** Scheme 1 under view tags at each recipient output, scheme 2 in a message. */
+  /** Each record under a view tag derived from its slot secret, sender bundle in a message. */
   | Readonly<{ kind: "anonymous"; plan: AnonymousPlan }>;
 
-/** One recipient body, its tag picked by the spec view tag selection, Rust `TaggedPayment`. */
-export interface TaggedPayment {
-  /** The recipient's viewing key the body is sealed to. */
+/** One recipient record, its tag derived from the slot secret. */
+export interface PlannedPayment {
+  /** The viewing key the record seals to. */
   readonly recipient: X25519PublicKey;
-  readonly tag: ViewTag;
+  /** `null` sends no reply, the caller always names the choice. */
+  readonly reply: ReplyMetadata | null;
 }
 
 /** One slot of an anonymous transfer, Rust `AnonymousSlot`. */
 export type AnonymousSlot =
-  /** A sender change output, output 0 always one. */
-  | Readonly<{ kind: "change"; tag: ViewTag }>
-  | Readonly<{ kind: "payment"; payment: TaggedPayment }>
+  /** At most two lead, the tag zero. */
+  | Readonly<{ kind: "change" }>
+  | Readonly<{ kind: "payment"; payment: PlannedPayment }>
   | Readonly<{ kind: "exit" }>
-  | Readonly<{ kind: "dummy"; tag: ViewTag }>;
+  | Readonly<{ kind: "dummy"; preimage: Bytes32 }>;
 
-/** The tags of one anonymous transfer, its payments in declared order, Rust `AnonymousPlan`. */
+/** Payments in declared order. */
 export class AnonymousPlan {
-  readonly senderTag: ViewTag;
-  readonly payments: readonly TaggedPayment[];
-  /** Drawn ahead, every encoding of a dummy slot publishes one tag. */
-  readonly #dummyTags: readonly ViewTag[];
+  readonly payments: readonly PlannedPayment[];
+  /** Drawn ahead, every encoding of one dummy slot publishes one tag. */
+  readonly #dummyPreimages: readonly Bytes32[];
 
-  private constructor(
-    senderTag: ViewTag,
-    payments: readonly TaggedPayment[],
-    dummyTags: readonly ViewTag[],
-  ) {
-    this.senderTag = senderTag;
+  private constructor(payments: readonly PlannedPayment[], dummyPreimages: readonly Bytes32[]) {
     this.payments = Object.freeze([...payments]);
-    this.#dummyTags = dummyTags;
+    this.#dummyPreimages = dummyPreimages;
     Object.freeze(this);
   }
 
-  static create(senderTag: ViewTag): AnonymousPlan {
+  static create(): AnonymousPlan {
     return new AnonymousPlan(
-      senderTag,
       [],
-      Object.freeze(Array.from({ length: MAX_OUTPUTS }, dummyTag)),
+      Object.freeze(Array.from({ length: MAX_OUTPUTS }, () => randomTagPreimage())),
     );
   }
 
-  withPayment(payment: TaggedPayment): AnonymousPlan {
+  /** `dummyPreimages` exactly as a sealed plan drew them. */
+  static fromDummyPreimages(
+    payments: readonly PlannedPayment[],
+    dummyPreimages: readonly Bytes32[],
+  ): AnonymousPlan {
+    if (dummyPreimages.length !== MAX_OUTPUTS)
+      throw new TransactionError("TRANSACTION_TOO_MANY_OUTPUTS");
+    return new AnonymousPlan(payments, Object.freeze([...dummyPreimages]));
+  }
+
+  /** One per output slot. */
+  dummyPreimages(): readonly Bytes32[] {
+    return this.#dummyPreimages;
+  }
+
+  withPayment(payment: PlannedPayment): AnonymousPlan {
     return new AnonymousPlan(
-      this.senderTag,
       [...this.payments, Object.freeze({ ...payment })],
-      this.#dummyTags,
+      this.#dummyPreimages,
     );
   }
 
   /** Change leads, every other ring output takes the next payment in declared order. */
   slots(outputs: readonly ProofOutputUtxo[], sender: ShieldedAddress): readonly AnonymousSlot[] {
     const change = leadingChange(outputs, sender);
-    if (change === 0) throw new RingError("RING_MISSING_SENDER_CHANGE");
     const payments = this.payments[Symbol.iterator]();
     const slots = outputs.map((output, slotIndex): AnonymousSlot => {
       const owner = output.ownerAddress;
-      const dummy = this.#dummyTags[slotIndex];
-      if (dummy === undefined) throw new TransactionError("TRANSACTION_TOO_MANY_OUTPUTS");
-      // Later change opens from the sender bundle, only output 0 takes the sender tag.
-      if (slotIndex < change)
-        return Object.freeze({ kind: "change", tag: slotIndex === 0 ? this.senderTag : dummy });
-      if (owner === undefined) return Object.freeze({ kind: "dummy", tag: dummy });
+      const preimage = this.#dummyPreimages[slotIndex];
+      if (preimage === undefined) throw new TransactionError("TRANSACTION_TOO_MANY_OUTPUTS");
+      if (slotIndex < change) return Object.freeze({ kind: "change" });
+      if (owner === undefined) return Object.freeze({ kind: "dummy", preimage });
       if (isChange(output, sender))
         throw new RingError("RING_ANONYMOUS_CHANGE", { details: { slotIndex } });
       if (output.ringProgramId === undefined) {
@@ -146,25 +166,35 @@ export class AnonymousPlan {
   }
 }
 
-export function anonymousSlotTag(slot: AnonymousSlot): ViewTag | undefined {
+/** Zero on change, `undefined` on an exit whose scheme 3 owner tag stays on the frame, Rust `RingOutputRail::anonymous_tag`. */
+export function anonymousTag(
+  slot: AnonymousSlot,
+  slotSecret: (recipient: X25519PublicKey) => Bytes32,
+): Bytes32 | undefined {
   switch (slot.kind) {
-    case "change":
-    case "dummy":
-      return slot.tag;
-    case "payment":
-      return slot.payment.tag;
     case "exit":
       return undefined;
+    case "change":
+      return ZERO_32;
+    case "dummy":
+      return anonymousSlotTag(slot.preimage);
+    case "payment": {
+      const secret = slotSecret(slot.payment.recipient);
+      try {
+        return anonymousSlotTag(secret);
+      } finally {
+        secret.fill(0);
+      }
+    }
   }
 }
 
-/** Moves the sender's change to the front, SPL before SOL, Rust `lead_change` before its reblinding. */
+/** Moves the sender's change to the front, Rust `lead_change` before its reblinding. */
 export function leadChange(
   outputs: readonly ProofOutputUtxo[],
   sender: ShieldedAddress,
 ): readonly ProofOutputUtxo[] {
-  const rank = (output: ProofOutputUtxo): number =>
-    !isChange(output, sender) ? 2 : output.asset === SOL_MINT ? 1 : 0;
+  const rank = (output: ProofOutputUtxo): number => (isChange(output, sender) ? 0 : 1);
   return Object.freeze(
     outputs
       .map((output, index) => ({ output, index }))
@@ -173,17 +203,17 @@ export function leadChange(
   );
 }
 
-/** A transfer returning nothing takes its first padding slot as a zero SOL change, Rust `SenderChange::ensure`. */
+/** The first padding slot becomes a zero SOL change, a frame with no padding carries none. */
 export function withSenderChange(
   outputs: readonly ProofOutputUtxo[],
   sender: ShieldedAddress,
 ): readonly ProofOutputUtxo[] {
   if (outputs.some((output) => isChange(output, sender))) return outputs;
   const slot = outputs.findIndex(
-    (output) => output.isDummy() && output.ringProgramId !== undefined,
+    (output) => output.isDummy() && !output.isCompact() && output.ringProgramId !== undefined,
   );
   const padding = outputs[slot];
-  if (padding?.ringProgramId === undefined) throw new RingError("RING_MISSING_SENDER_CHANGE");
+  if (padding?.ringProgramId === undefined) return outputs;
   const change = createProofOutput({
     ownerAddress: sender,
     asset: SOL_MINT,
@@ -193,49 +223,132 @@ export function withSenderChange(
   return Object.freeze(outputs.map((output, index) => (index === slot ? change : output)));
 }
 
-/** Ring change owned by the sender, every anonymous transfer leads with one. */
+/** Ring change owned by the sender and carrying no data, it leads the anonymous frame. */
 export function isChange(output: ProofOutputUtxo, sender: ShieldedAddress): boolean {
   return (
     output.ringProgramId !== undefined &&
     output.ownerAddress !== undefined &&
+    !carriesData(output) &&
     equalBytes(output.ownerAddress.toBytes(), sender.toBytes())
   );
 }
 
-/** One published slot, its compact wire form and what its audit proof opens, Rust `PublishedSlot`. */
+/** A nonzero data hash or ring data hash, the commitment covers both. */
+export function carriesData(output: ProofOutputUtxo): boolean {
+  return (
+    (output.dataHash !== undefined && !isZero(output.dataHash)) ||
+    (output.ringDataHash !== undefined && !isZero(output.ringDataHash))
+  );
+}
+
+/** The bytes past `output`'s record, `data` leads with the hash the commitment reads, Rust `recipient_payload`. */
+export function recipientPayload(output: ProofOutputUtxo): RecipientPayload {
+  const { dataHash, ringDataHash } = output;
+  return Object.freeze({
+    ...(ringDataHash === undefined || isZero(ringDataHash) ? {} : { ringDataHash }),
+    data:
+      dataHash === undefined || isZero(dataHash)
+        ? new Uint8Array()
+        : concatBytes(dataHash, output.data.utxoData() ?? new Uint8Array()),
+  });
+}
+
+/** The circuit derives the kind and the zero-key bit from the slot's opening, a dummy's plaintext is zero, Rust `RingOutputRail::output_record`. */
+export function outputRecord(output: ProofOutputUtxo): OutputRecord {
+  const owner = output.ownerAddress;
+  if (owner === undefined || output.isDummy()) return DUMMY_RECORD;
+  const kind = output.ringProgramId === undefined ? RecordKind.exit : RecordKind.ring;
+  return Object.freeze({
+    kind,
+    amount: output.amount,
+    ownerKey: owner.signingPublicKey.confidentialViewTag() as Bytes32,
+    mint: output.asset as Address,
+    blinding: output.blinding,
+    key: sealedRecordKey(kind, owner.nullifierPublicKey),
+  });
+}
+
+function withPaymentData(
+  outputs: readonly ProofOutputUtxo[],
+  senderOutputCount: number,
+  paymentData: readonly (NoteData | undefined)[],
+): readonly ProofOutputUtxo[] {
+  const payments = paymentData[Symbol.iterator]();
+  return outputs.map((output, slot) => {
+    // An exit past the sender's outputs takes no payment.
+    if (slot < senderOutputCount || output.isDummy() || output.ringProgramId === undefined)
+      return output;
+    const { value: data } = payments.next();
+    if (data === undefined) return output;
+    const { ringDataHash, application } = data;
+    if (application !== undefined && isZero(application.hash))
+      throw new RingError("RING_NOTE_DATA_UNBOUND", { details: { slotIndex: slot } });
+    const hashed = ringDataHash === undefined ? output : withOutputFields(output, { ringDataHash });
+    return application === undefined
+      ? hashed
+      : hashed.withUtxoData(application.bytes, application.hash);
+  });
+}
+
+/** The frame's `HAS_DATA`, every non-exit slot then carries a payload of one length, Rust `payload_width`. */
+export function framesData(outputs: readonly ProofOutputUtxo[]): boolean {
+  return outputs.some(
+    (output) => !output.isDummy() && (output.data.utxoData() !== undefined || carriesData(output)),
+  );
+}
+
+export type SlotWire = RingOutput;
+
+/** One published slot, its compact wire form and the key its record seals to, Rust `PublishedSlot`. */
 export interface PublishedSlot {
   readonly output: ProofOutputUtxo;
   /** The final slot index of `output`. */
   readonly slotIndex: number;
-  readonly wire: RingOutput;
+  readonly wire: SlotWire;
+  /** `V_i`, sealed to the auditor beside the envelope. */
+  readonly recipientKey: X25519PublicKey;
+  /** The slot's reply ciphertext when the frame carries replies. */
+  readonly reply?: Uint8Array;
   /** Set on the anonymous rail. */
   readonly anonymous?: AnonymousSlot;
 }
 
-type AnonymousSeal = Readonly<{
-  slots: readonly AnonymousSlot[];
-  outputs: readonly ProofOutputUtxo[];
-  sender: ShieldedAddress;
+/** The frame-wide lengths every slot of one transfer shares. */
+type FrameLengths = Readonly<{
+  /** `undefined` off a data frame. */
+  payloadLength: number | undefined;
+  /** `undefined` when no payment names a reply. */
+  replyLength: number | undefined;
 }>;
 
-/** How a delivered slot publishes. */
-type Slot =
-  | Readonly<{ kind: "ring"; recipient: X25519PublicKey }>
-  | Readonly<{ kind: "exit" }>
-  | Readonly<{ kind: "dummy" }>;
+/** One slot before framing, its key and tag fixed by the delivery and the slot index alone. */
+type PlannedSlot = Readonly<{
+  output: ProofOutputUtxo;
+  recipientKey: X25519PublicKey;
+  /** `undefined` on an exit, whose tag is its owner's. */
+  tag: Bytes32 | undefined;
+  anonymous?: AnonymousSlot;
+}>;
 
-/** The payload SPP binds for one final slot, as the program expands the slot's compact wire. */
-type FramedSlot = Readonly<{ viewTag: Bytes32; data?: Uint8Array }>;
-
-/** Rust `RingOutputRail`, keyed by a transaction viewing key the caller destroys and a salt drawn per rail. */
+/**
+ * Rust `RingOutputRail`, keyed by a transaction viewing key the caller destroys, a rebuild draws a
+ * new salt so a slot secret never repeats.
+ */
 export class RingOutputRail {
+  readonly #paymentData: readonly (NoteData | undefined)[];
   readonly txViewingKey: ViewingKey;
   readonly salt: Bytes16;
   readonly delivery: RingDelivery;
   readonly #firstNullifier: Bytes32;
 
   /** `firstNullifier` is the transfer's input slot 0, padding never moves it. */
-  constructor(txViewingKey: ViewingKey, firstNullifier: Bytes32, delivery: RingDelivery) {
+  constructor(
+    txViewingKey: ViewingKey,
+    firstNullifier: Bytes32,
+    delivery: RingDelivery,
+    paymentData: readonly (NoteData | undefined)[] = [],
+  ) {
+    this.#paymentData = paymentData;
     this.txViewingKey = txViewingKey;
     this.salt = randomSalt();
     this.delivery = delivery;
@@ -243,21 +356,15 @@ export class RingOutputRail {
     Object.freeze(this);
   }
 
-  /** The CRDS slot secret of the delivered ring output at `slotIndex`, the key of its body. */
+  /** The CRDS slot secret of the slot at `slotIndex` sealed to `recipient`. */
   slotSecret(recipient: X25519PublicKey, slotIndex: number): Bytes32 {
-    const agreement = this.txViewingKey.ecdh(recipient);
-    try {
-      return deliveredSlotSecret({
-        agreement,
-        txViewingKey: this.txViewingKey.publicKey(),
-        recipientViewingKey: recipient,
-        salt: this.salt,
-        outputIndex: slotIndex,
-        firstNullifier: this.#firstNullifier,
-      });
-    } finally {
-      agreement.fill(0);
-    }
+    return txKeySlotSecret({
+      txViewingKey: this.txViewingKey,
+      recipientViewingKey: recipient,
+      salt: this.salt,
+      outputIndex: slotIndex,
+      firstNullifier: this.#firstNullifier,
+    });
   }
 
   /** SPP's `blinding_seed`, rebuilt by any holder of the transaction key. */
@@ -276,14 +383,20 @@ export class RingOutputRail {
       prepared: PreparedTransfer;
       sender: ShieldedAddress;
       assets: AssetRegistry;
+      /** An exit's record seals to the auditor's key. */
+      auditor: X25519PublicKey;
       instructionDiscriminator: number;
     }>,
   ): SppProofInputs {
-    const { prepared, sender } = input;
+    const { prepared, sender, auditor } = input;
     if (!equalBytes(prepared.firstNullifier, this.#firstNullifier)) throw framingError(0);
     const anonymous = this.delivery.kind === "anonymous";
-    const proofOutputs = prepared.proofOutputs();
-    proofOutputs.forEach(checkPlain);
+    const proofOutputs = withPaymentData(
+      prepared.proofOutputs(),
+      prepared.senderOutputCount,
+      this.#paymentData,
+    );
+    checkCompactSuffix(proofOutputs);
     const planned = anonymous
       ? leadChange(withSenderChange(proofOutputs, sender), sender).map((output) =>
           // The anonymous circuit folds the zero tag into every padding owner.
@@ -297,30 +410,24 @@ export class RingOutputRail {
       firstNullifier: this.#firstNullifier,
       blindingSeed: this.blindingSeed(),
     });
-    let frames: readonly FramedSlot[];
-    let messages: MessageData[] = [];
-    if (this.delivery.kind === "anonymous") {
-      const { plan } = this.delivery;
-      const seal: AnonymousSeal = { slots: plan.slots(outputs, sender), outputs, sender };
-      messages = [
-        {
-          viewTag: plan.senderTag,
-          data: encodeRingOutput(RingScheme.anonymousSender, this.#senderBundle(seal)),
-        },
-      ];
-      frames = this.#anonymousFrames(seal, input.assets);
-    } else
-      frames = outputs.map((output, slotIndex) =>
-        this.#deliveredFrame(output, slotIndex, input.assets),
-      );
-    const published: TransactOutput[] = outputs.map((output, slotIndex) => {
-      const frame = frames[slotIndex];
-      if (frame === undefined) throw framingError(slotIndex);
-      return {
-        utxoHash: output.hash(prepared.outputTreeId),
-        ownerTag: { kind: "inline", value: frame.viewTag },
-        ...(frame.data === undefined ? {} : { data: frame.data }),
-      };
+    const live = publishedOutputs(outputs);
+    const slots = this.#plannedSlots(live, sender, auditor);
+    const lengths = frameLengths(this.delivery, live);
+    const messages: MessageData[] =
+      this.delivery.kind === "anonymous"
+        ? [
+            {
+              viewTag: this.#bundleTag(sender.viewingPublicKey, live.length),
+              data: encodeRingOutput(
+                RingScheme.ringSenderBundle,
+                this.#senderBundle(slots.length, sender.viewingPublicKey),
+              ),
+            },
+          ]
+        : [];
+    const published: TransactOutput[] = slots.map((slot, slotIndex) => {
+      const wire = this.#wire(slot, slotIndex, prepared.outputTreeId, input.assets, lengths);
+      return ringTransactOutput(wire, this.#reply(slot, slotIndex, lengths));
     });
     return new SppProofInputs({
       payer: prepared.payer,
@@ -346,180 +453,185 @@ export class RingOutputRail {
    * Every published slot in order, each expanding to exactly the output the SPP proof binds, Rust
    * `RingOutputRail::published_slots`.
    */
-  publishedSlots(proofInputs: SppProofInputs, sender: ShieldedAddress): readonly PublishedSlot[] {
-    const { outputs } = proofInputs;
+  publishedSlots(
+    proofInputs: SppProofInputs,
+    sender: ShieldedAddress,
+    auditor: X25519PublicKey,
+  ): readonly PublishedSlot[] {
+    const outputs = publishedOutputs(proofInputs.outputs);
     const published = proofInputs.externalData.outputs;
     if (published.length !== outputs.length)
       throw framingError(Math.min(outputs.length, published.length));
-    const anonymous =
-      this.delivery.kind === "anonymous" ? this.delivery.plan.slots(outputs, sender) : undefined;
+    const slots = this.#plannedSlots(outputs, sender, auditor);
+    const lengths = framedLengths(published, slots);
     return Object.freeze(
-      outputs.map((output, slotIndex) => {
+      slots.map((slot, slotIndex) => {
         const expected = published[slotIndex];
         if (expected === undefined) throw framingError(slotIndex);
-        const slot = anonymous?.[slotIndex];
+        // The exit body is scheme 3 under a random ephemeral, the published bytes are the wire's.
         const wire =
-          slot === undefined
-            ? this.#deliveredWire(output, expected, slotIndex)
-            : anonymousWire(slot, expected, slotIndex);
-        if (!sameOutput(ringTransactOutput(wire), expected)) throw framingError(slotIndex);
+          slot.tag === undefined
+            ? this.#exitWire(slot, slotIndex, expected)
+            : this.#wire(slot, slotIndex, proofInputs.outputTreeId, undefined, lengths);
+        const reply = replyOf(slot, expected, slotIndex);
+        if (!sameOutput(ringTransactOutput(wire, reply), expected)) throw framingError(slotIndex);
         return Object.freeze({
-          output,
+          output: slot.output,
           slotIndex,
           wire: Object.freeze(wire),
-          ...(slot === undefined ? {} : { anonymous: slot }),
+          recipientKey: slot.recipientKey,
+          ...(reply === undefined ? {} : { reply }),
+          ...(slot.anonymous === undefined ? {} : { anonymous: slot.anonymous }),
         });
       }),
     );
   }
 
-  /** The anonymous rail's sender bundle, the first message, Rust `RingOutputRail::published_sender`. */
-  publishedSender(proofInputs: SppProofInputs): SenderBundle | undefined {
+  /** The first message, its tag derived for index `m`. */
+  publishedSender(
+    proofInputs: SppProofInputs,
+    senderViewingPublicKey: X25519PublicKey,
+  ): PublishedSenderBundle | undefined {
     if (this.delivery.kind !== "anonymous") return undefined;
     const message = proofInputs.externalData.messages[0];
-    const body = message === undefined ? undefined : anonymousSenderOutputBody(message.data);
+    const body = message === undefined ? undefined : senderBundleOutputBody(message.data);
     if (
       message === undefined ||
       body === undefined ||
-      !equalBytes(message.viewTag, this.delivery.plan.senderTag)
+      !equalBytes(
+        message.viewTag,
+        this.#bundleTag(senderViewingPublicKey, publishedOutputs(proofInputs.outputs).length),
+      )
     )
       throw new RingError("RING_SENDER_BUNDLE_FRAMING");
     return Object.freeze({ tag: message.viewTag, body });
   }
 
-  /** Every tagged body sealed at its output position, an exit framed as scheme 3. */
-  #anonymousFrames(seal: AnonymousSeal, assets: AssetRegistry): readonly FramedSlot[] {
-    return seal.slots.map((slot, slotIndex) => {
-      const output = seal.outputs[slotIndex];
-      if (output === undefined) throw framingError(slotIndex);
-      const tag = anonymousSlotTag(slot);
-      if (tag === undefined) return this.#exitFrame(output, slotIndex, assets);
-      const body = this.#anonymousBody(seal, slotIndex);
-      const { data } = ringTransactOutput({
-        kind: "anonymous",
-        hash: ZERO_32,
-        tag,
-        ...(body === undefined ? {} : { body }),
+  /** `V_i` and the tag of each slot, Rust `RingOutputRail::slot_keys`. */
+  #plannedSlots(
+    outputs: readonly ProofOutputUtxo[],
+    sender: ShieldedAddress,
+    auditor: X25519PublicKey,
+  ): readonly PlannedSlot[] {
+    // Every encoding of one dummy slot seals to one key, a relay holding the transaction key
+    // rederives it.
+    const dummyKey = (slotIndex: number): X25519PublicKey => {
+      const txViewingSecret = this.txViewingKey.secretBytes();
+      try {
+        return dummyRecipientKey(txViewingSecret, slotIndex);
+      } finally {
+        txViewingSecret.fill(0);
+      }
+    };
+    if (this.delivery.kind === "anonymous") {
+      const anonymousSlots = this.delivery.plan.slots(outputs, sender);
+      return anonymousSlots.map((slot, slotIndex) => {
+        const output = outputs[slotIndex];
+        if (output === undefined) throw framingError(slotIndex);
+        const recipientKey =
+          slot.kind === "payment"
+            ? slot.payment.recipient
+            : slot.kind === "change"
+              ? sender.viewingPublicKey
+              : slot.kind === "exit"
+                ? auditor
+                : dummyKey(slotIndex);
+        const tag = anonymousTag(slot, (recipient) => this.slotSecret(recipient, slotIndex));
+        return Object.freeze({ output, recipientKey, tag, anonymous: slot });
       });
-      return Object.freeze({ viewTag: tag, ...(data === undefined ? {} : { data }) });
+    }
+    return outputs.map((output, slotIndex) => {
+      const owner = output.ownerAddress;
+      if (owner === undefined || output.isDummy()) {
+        const recipientKey = dummyKey(slotIndex);
+        // The derived key publishes its confidential tag as a real recipient's would.
+        return Object.freeze({
+          output,
+          recipientKey,
+          tag: confidentialSlotTag(recipientKey.u()),
+        });
+      }
+      if (output.ringProgramId === undefined)
+        return Object.freeze({ output, recipientKey: auditor, tag: undefined });
+      return Object.freeze({
+        output,
+        recipientKey: owner.viewingPublicKey,
+        tag: confidentialSlotTag(owner.viewingPublicKey.u()),
+      });
     });
   }
 
-  /** The body of a tagged slot sealed at its output position, `undefined` on a change output, Rust `AnonymousSeal::body`. */
-  #anonymousBody(seal: AnonymousSeal, slotIndex: number): Uint8Array | undefined {
-    const slot = seal.slots[slotIndex];
-    const output = seal.outputs[slotIndex];
-    if (slot === undefined || output === undefined) throw framingError(slotIndex);
-    switch (slot.kind) {
-      case "change":
-        return undefined;
-      case "dummy":
-        return randomBytes(RECIPIENT_BODY_LEN);
-      case "exit":
-        throw framingError(slotIndex);
-      case "payment": {
-        const owner = output.ownerAddress;
-        if (owner === undefined) throw framingError(slotIndex);
-        const plaintext = encodeAnonymousRecipient({
-          verified: {
-            ownerPublicKey: owner.signingPublicKey,
-            mint: output.asset,
-            amount: output.amount,
-          },
-          unverified: {
-            senderPublicKey: seal.sender.viewingPublicKey,
-            blinding: output.blinding,
-            data: new Data(),
-          },
-        });
-        return this.#seal(slot.payment.recipient, plaintext, slotIndex);
-      }
-    }
-  }
-
-  /** The change and the recipient list, sealed to the sender after every output, Rust `AnonymousSeal::sender_bundle`. */
-  #senderBundle(seal: AnonymousSeal): Uint8Array {
-    const change = seal.outputs.slice(0, leadingChange(seal.outputs, seal.sender));
-    // A zero amount reads back as absent and would shift the later change's position.
-    if (change.length > 1 && change.some((output) => output.amount === 0n))
-      throw new RingError("RING_ANONYMOUS_CHANGE_COUNT");
-    let splMint: Address = SOL_MINT;
-    let splAmount = 0n;
-    let solAmount = 0n;
-    for (const output of change.filter((held) => held.amount !== 0n)) {
-      const sol = output.asset === SOL_MINT;
-      if ((sol ? solAmount : splAmount) !== 0n) throw new RingError("RING_ANONYMOUS_CHANGE_COUNT");
-      if (sol) solAmount = output.amount;
-      else {
-        splMint = output.asset;
-        splAmount = output.amount;
-      }
-    }
-    const blindings = new OutputBlindings(this.#firstNullifier, this.blindingSeed());
-    const blindingSeed = blindings.outputSeed();
-    blindings.destroy();
+  /** `record_ct` under the slot secret, then the payload or the exit's scheme 3 body. */
+  #wire(
+    slot: PlannedSlot,
+    slotIndex: number,
+    treeId: PreparedTransfer["outputTreeId"],
+    assets: AssetRegistry | undefined,
+    lengths: FrameLengths,
+  ): SlotWire {
+    const { output } = slot;
+    const hash = output.hash(treeId);
+    const secret = this.slotSecret(slot.recipientKey, slotIndex);
     try {
-      const plaintext = encodeAnonymousSender({
-        verified: {
-          ownerPublicKey: seal.sender.signingPublicKey,
-          splMint,
-          splAmount,
-          solAmount,
-          recipientViewingPublicKeys: seal.slots.flatMap(listedRecipient),
-        },
-        unverified: { blindingSeed, splData: new Data(), solData: new Data() },
+      const record = outputRecord(output);
+      if (slot.tag === undefined) {
+        if (assets === undefined) throw framingError(slotIndex);
+        return {
+          hash,
+          ownerTag: exitTag(output, slotIndex),
+          record: sealOutputSlot(secret, { record }),
+          body: { kind: "exit", payload: this.#exitBody(output, slotIndex, assets) },
+        };
+      }
+      const sealed = sealOutputSlot(secret, {
+        record,
+        ...(lengths.payloadLength === undefined
+          ? {}
+          : {
+              payload: record.kind === RecordKind.ring ? recipientPayload(output) : EMPTY_PAYLOAD,
+              payloadLength: lengths.payloadLength,
+            }),
       });
-      return this.#seal(seal.sender.viewingPublicKey, plaintext, seal.outputs.length);
+      return {
+        hash,
+        ownerTag: slot.tag,
+        record: sealed.slice(0, RING_RECORD_LEN),
+        body: { kind: "recipient", payload: sealed.slice(RING_RECORD_LEN) },
+      };
     } finally {
-      blindingSeed.fill(0);
+      secret.fill(0);
     }
   }
 
-  #seal(recipient: X25519PublicKey, plaintext: Uint8Array, slotIndex: number): Uint8Array {
+  /** The exit's scheme 3 body as published, its record resealed to check the frame. */
+  #exitWire(slot: PlannedSlot, slotIndex: number, published: TransactOutput): SlotWire {
+    const { hash, ownerTag } = inline(published, slotIndex);
+    if (!equalBytes(ownerTag, exitTag(slot.output, slotIndex))) throw framingError(slotIndex);
+    const secret = this.slotSecret(slot.recipientKey, slotIndex);
     try {
-      return this.txViewingKey.encryptSlot(recipient, plaintext, this.salt, slotIndex);
+      return {
+        hash,
+        ownerTag,
+        record: sealOutputSlot(secret, { record: outputRecord(slot.output) }),
+        body: {
+          kind: "exit",
+          payload: schemeBody(
+            published.data ?? new Uint8Array(),
+            RingScheme.confidential,
+            slotIndex,
+          ),
+        },
+      };
     } finally {
-      plaintext.fill(0);
-    }
-  }
-
-  /** Rust `RingOutputRail::encode_delivered` under the owner tag `owner_tags` resolves. */
-  #deliveredFrame(output: ProofOutputUtxo, slotIndex: number, assets: AssetRegistry): FramedSlot {
-    const slot = deliveredSlot(output);
-    switch (slot.kind) {
-      case "exit":
-        return this.#exitFrame(output, slotIndex, assets);
-      case "ring": {
-        const secret = this.slotSecret(slot.recipient, slotIndex);
-        let body: Uint8Array;
-        try {
-          body = sealDeliveredBody(secret, { blinding: output.blinding, amount: output.amount });
-        } finally {
-          secret.fill(0);
-        }
-        const u = slot.recipient.u();
-        return framed(u, { kind: "delivered", hash: ZERO_32, u, body });
-      }
-      case "dummy": {
-        const body = randomBytes(RING_DELIVERED_BODY_LEN);
-        // A random key publishes as a real recipient's would.
-        const key = ViewingKey.generate();
-        try {
-          const u = key.publicKey().u();
-          return framed(u, { kind: "delivered", hash: ZERO_32, u, body });
-        } finally {
-          key.destroy();
-        }
-      }
+      secret.fill(0);
     }
   }
 
   /** Scheme 3 to the exit's owner at its slot, under the rail's salt. */
-  #exitFrame(output: ProofOutputUtxo, slotIndex: number, assets: AssetRegistry): FramedSlot {
+  #exitBody(output: ProofOutputUtxo, slotIndex: number, assets: AssetRegistry): Uint8Array {
     const owner = output.ownerAddress;
     if (owner === undefined) throw framingError(slotIndex);
-    const viewTag = owner.signingPublicKey.confidentialViewTag();
-    const payload = encryptConfidential(
+    return encryptConfidential(
       this.txViewingKey,
       owner.viewingPublicKey,
       {
@@ -531,50 +643,58 @@ export class RingOutputRail {
       this.salt,
       slotIndex,
     );
-    return framed(viewTag, { kind: "exit", hash: ZERO_32, ownerTag: viewTag, payload });
   }
 
-  /** The round trip through the program's expansion refuses any other framing. */
-  #deliveredWire(
-    output: ProofOutputUtxo,
-    published: TransactOutput,
-    slotIndex: number,
-  ): RingOutput {
-    const { hash, ownerTag } = inline(published, slotIndex);
-    const body = (scheme: RingScheme): Uint8Array =>
-      schemeBody(published.data ?? new Uint8Array(), scheme, slotIndex);
-    return deliveredSlot(output).kind === "exit"
-      ? { kind: "exit", hash, ownerTag, payload: body(RingScheme.confidential) }
-      : { kind: "delivered", hash, u: ownerTag, body: body(RingScheme.ringConfidentialDelivered) };
+  /** Random bytes on a non-exit slot that names none, every reply shares one length. */
+  #reply(slot: PlannedSlot, slotIndex: number, lengths: FrameLengths): Uint8Array | undefined {
+    const { replyLength: length } = lengths;
+    if (length === undefined || slot.tag === undefined) return undefined;
+    const reply = slot.anonymous?.kind === "payment" ? slot.anonymous.payment.reply : null;
+    if (reply === null) return randomBytes(length);
+    const secret = this.slotSecret(slot.recipientKey, slotIndex);
+    try {
+      return sealReply(secret, reply, length);
+    } finally {
+      secret.fill(0);
+    }
+  }
+
+  #bundleTag(senderViewingPublicKey: X25519PublicKey, outputCount: number): Bytes32 {
+    const secret = this.slotSecret(senderViewingPublicKey, outputCount);
+    try {
+      return bundleTag(secret);
+    } finally {
+      secret.fill(0);
+    }
+  }
+
+  /**
+   * The output seed sealed to the sender at index `m`. The sender recovers its outputs through the
+   * auditor stream, `V_k` of each slot there and change by trial under its own viewing keys.
+   */
+  #senderBundle(outputCount: number, senderKey: X25519PublicKey): Uint8Array {
+    const blindings = new OutputBlindings(this.#firstNullifier, this.blindingSeed());
+    const outputSeed = blindings.outputSeed();
+    blindings.destroy();
+    const secret = this.slotSecret(senderKey, outputCount);
+    try {
+      return sealSenderBundle(secret, { outputSeed });
+    } finally {
+      outputSeed.fill(0);
+      secret.fill(0);
+    }
   }
 }
-
-/** The body kind and tag each anonymous slot publishes, any other is refused. */
-function anonymousWire(
-  slot: AnonymousSlot,
+/** The reply bytes past a non-exit record, `undefined` on an exit or a frame without replies. */
+function replyOf(
+  slot: PlannedSlot,
   published: TransactOutput,
   slotIndex: number,
-): RingOutput {
-  const { hash, ownerTag } = inline(published, slotIndex);
-  const data = published.data;
-  const tag = anonymousSlotTag(slot);
-  if (tag === undefined) {
-    if (data === undefined) throw framingError(slotIndex);
-    return {
-      kind: "exit",
-      hash,
-      ownerTag,
-      payload: schemeBody(data, RingScheme.confidential, slotIndex),
-    };
-  }
-  if (!equalBytes(tag, ownerTag)) throw framingError(slotIndex);
-  if (slot.kind === "change") {
-    if (data !== undefined) throw framingError(slotIndex);
-    return { kind: "anonymous", hash, tag: ownerTag };
-  }
-  const body = data === undefined ? undefined : anonymousRecipientOutputBody(data);
-  if (body === undefined) throw framingError(slotIndex);
-  return { kind: "anonymous", hash, tag: ownerTag, body };
+): Uint8Array | undefined {
+  if (slot.tag === undefined) return undefined;
+  const framedBody = ringBodyOutput(published.data ?? new Uint8Array());
+  if (framedBody === undefined) throw framingError(slotIndex);
+  return framedBody.reply.length === 0 ? undefined : framedBody.reply;
 }
 
 function schemeBody(data: Uint8Array, scheme: RingScheme, slotIndex: number): Uint8Array {
@@ -583,35 +703,16 @@ function schemeBody(data: Uint8Array, scheme: RingScheme, slotIndex: number): Ui
   return frame.body;
 }
 
-/** The sender bundle's entry, a dummy key where no anonymous recipient reads the output. */
-function listedRecipient(slot: AnonymousSlot): readonly X25519PublicKey[] {
-  switch (slot.kind) {
-    case "change":
-      return [];
-    case "payment":
-      return [slot.payment.recipient];
-    // An exit's owner reads no shared tag, listing it would mispair the next payment.
-    case "exit":
-    case "dummy":
-      return [DUMMY_RECIPIENT_VIEWING_PK];
-  }
+/** Omission removes a suffix, no index moves and every published slot keeps its blinding. */
+function checkCompactSuffix(outputs: readonly ProofOutputUtxo[]): void {
+  const first = outputs.findIndex((output) => output.isCompact());
+  if (first >= 0 && outputs.slice(first).some((output) => !output.isCompact()))
+    throw new RingError("RING_COMPACT_NOT_SUFFIX", { details: { slotIndex: first } });
 }
 
-function deliveredSlot(output: ProofOutputUtxo): Slot {
-  const owner = output.ownerAddress;
-  if (owner === undefined) return Object.freeze({ kind: "dummy" });
-  if (output.ringProgramId === undefined) return Object.freeze({ kind: "exit" });
-  return Object.freeze({ kind: "ring", recipient: owner.viewingPublicKey });
-}
-
-/** A ring rail slot carries no data and is never compact padding, Rust `check_plain`. */
-function checkPlain(output: ProofOutputUtxo, slotIndex: number): void {
-  if (output.isCompact())
-    throw new RingError("RING_DELIVERED_COMPACT_PADDING", { details: { slotIndex } });
-  const carriesData =
-    !output.data.isEmpty() || output.dataHash !== undefined || output.ringDataHash !== undefined;
-  if (!output.isDummy() && carriesData)
-    throw new RingError("RING_DELIVERED_OUTPUT_DATA", { details: { slotIndex } });
+/** `m` slots, a compact suffix leaves the frame. */
+export function publishedOutputs(outputs: readonly ProofOutputUtxo[]): readonly ProofOutputUtxo[] {
+  return outputs.filter((output) => !output.isCompact());
 }
 
 function leadingChange(outputs: readonly ProofOutputUtxo[], sender: ShieldedAddress): number {
@@ -637,19 +738,6 @@ function sameOutput(expanded: TransactOutput, published: TransactOutput): boolea
   );
 }
 
-/** `0x00 ‖ 31 random bytes`, distributed as every derived view tag. */
-function dummyTag(): ViewTag {
-  const tag = randomBytes(32);
-  tag[0] = 0;
-  return tag as ViewTag;
-}
-
-function framed(viewTag: Bytes32, wire: RingOutput): FramedSlot {
-  const { data } = ringTransactOutput(wire);
-  if (data === undefined) throw new RingError("RING_OUTPUT_FRAMING");
-  return Object.freeze({ viewTag, data });
-}
-
 /** Random dummies join the last input tree and compact padding the first, as SPP reads them. */
 function paddedInputs(prepared: PreparedTransfer): readonly ProofInputUtxo[] {
   const treeId = prepared.compactPadding ? prepared.inputTreeIds[0] : prepared.inputTreeIds.at(-1);
@@ -662,6 +750,49 @@ function paddedInputs(prepared: PreparedTransfer): readonly ProofInputUtxo[] {
         : ProofInputUtxo.dummy(undefined, treeId),
     );
   return inputs;
+}
+
+/** The payload and reply lengths a sealer fixes, one per frame. */
+function frameLengths(delivery: RingDelivery, outputs: readonly ProofOutputUtxo[]): FrameLengths {
+  const replies =
+    delivery.kind === "anonymous"
+      ? delivery.plan.payments.flatMap((payment) => (payment.reply === null ? [] : [payment.reply]))
+      : [];
+  return Object.freeze({
+    payloadLength: framesData(outputs)
+      ? outputs.reduce(
+          (width, output) =>
+            output.ringProgramId === undefined || output.isDummy()
+              ? width
+              : Math.max(width, encodeRecipientPayload(recipientPayload(output)).length),
+          encodeRecipientPayload(EMPTY_PAYLOAD).length,
+        )
+      : undefined,
+    replyLength: replies.length === 0 ? undefined : replyLength(replies),
+  });
+}
+
+/** The payload length the published frame carries, read back from its first non-exit body. */
+function framedLengths(
+  published: readonly TransactOutput[],
+  slots: readonly PlannedSlot[],
+): FrameLengths {
+  const index = slots.findIndex((slot) => slot.tag !== undefined);
+  const framedBody =
+    index < 0 ? undefined : ringBodyOutput(published[index]?.data ?? new Uint8Array());
+  if (index >= 0 && framedBody === undefined) throw framingError(index);
+  const payload = (framedBody?.body.length ?? RING_RECORD_LEN) - RING_RECORD_LEN;
+  return Object.freeze({
+    payloadLength: payload === 0 ? undefined : payload,
+    replyLength: undefined,
+  });
+}
+
+/** SPP binds an exit's tag to its owner. */
+function exitTag(output: ProofOutputUtxo, slotIndex: number): Bytes32 {
+  const owner = output.ownerAddress;
+  if (owner === undefined) throw framingError(slotIndex);
+  return owner.signingPublicKey.confidentialViewTag() as Bytes32;
 }
 
 function framingError(slotIndex: number): RingError {

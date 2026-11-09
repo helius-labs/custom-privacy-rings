@@ -1,5 +1,7 @@
 //! Loaded ring context and transaction landing.
 
+use zolana_ring_client::rpc::RECORD_UPDATE_SLOTS;
+
 use super::*;
 
 pub struct Context {
@@ -50,16 +52,12 @@ impl ContextSetup {
             prover_tee_policy,
             fee_payer_keypair,
         } = self;
-        let root = config_path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
+        let root = config_root(&config_path);
         config.resolve_keypair_paths(|path| resolve(&root, path));
         let urls = config.urls();
         let zolana = ZolanaServices {
             rpc: SolanaRpc::new(urls.rpc.clone()),
-            indexer: ZolanaIndexer::new(&urls.indexer),
+            indexer: SprIndexer::new(&urls.indexer),
             prover: urls.prover_client(&root, prover_tee_policy.clone())?,
             ring_prover: urls.prover_client(&root, prover_tee_policy)?,
         }
@@ -83,6 +81,21 @@ impl Landing<'_> {
     /// Resent until the cluster settles it, a stale root is proved again.
     pub fn settle(self, zolana: &Zolana) -> Result<Signature> {
         let mut submission = RingSubmission::new(self.operation);
+        let charged =
+            zolana.block_on(submission.prove(zolana.ring_client(), self.payer, self.signers))?;
+        // A composed transfer can charge an owner for value another party moves out.
+        for flow in charged.iter().filter(|flow| flow.charge != 0) {
+            crate::line(
+                "charged outflow",
+                format_args!(
+                    "owner {} asset {} {} with {} charged beyond its debit",
+                    hex::encode(flow.owner),
+                    hex::encode(flow.asset),
+                    flow.charged_outflow,
+                    flow.charge
+                ),
+            );
+        }
         let settled = zolana.block_on(submission.send_until_settled(
             zolana.ring_client(),
             self.payer,
@@ -113,7 +126,7 @@ impl Context {
 
     pub fn ring_client(
         &self,
-    ) -> &custom_ring_sdk::RingClient<Blocking<SolanaRpc>, Blocking<ZolanaIndexer>> {
+    ) -> &custom_ring_sdk::RingClient<Blocking<SolanaRpc>, Blocking<SprIndexer>> {
         self.zolana.ring_client()
     }
 
@@ -129,12 +142,12 @@ impl Context {
             .context("the ring has no config, run `zolana-ring init` first")
     }
 
-    /// The config authority, read once.
+    /// The policy authority, read once.
     pub fn authority(&self) -> Result<&Keypair> {
         if let Some(authority) = self.authority.get() {
             return Ok(authority);
         }
-        let authority = self.config.config_authority()?;
+        let authority = self.config.policy_authority()?;
         Ok(self.authority.get_or_init(|| authority))
     }
 
@@ -158,6 +171,14 @@ impl Context {
             "the fee payer {owner} is the hidden owner, paying would publish it"
         );
         Ok(payer)
+    }
+
+    pub fn role_keypair_path(&self, role: RingRole) -> Result<PathBuf> {
+        self.config.role_keypair_path(&self.root, role)
+    }
+
+    pub fn role_keypair(&self, role: RingRole) -> Result<Keypair> {
+        file::read_keypair(&self.role_keypair_path(role)?)
     }
 
     /// For a step that only pays fees and small rent.
@@ -265,6 +286,37 @@ impl Context {
         RingRpcClient::new(&self.config.urls().ring_rpc)
     }
 
+    pub fn record_update_target(&self) -> Result<custom_ring_sdk::RecordUpdateTarget> {
+        let policy = self
+            .block(
+                self.ring
+                    .read::<custom_ring_interface::RingPolicy>(self.chain()),
+            )?
+            .context("the ring has no policy account, run `zolana-ring init` first")?;
+        Ok(custom_ring_sdk::RecordUpdateTarget {
+            genesis_hash: self.rpc().genesis_hash()?,
+            ring: self.ring,
+            registry: policy.records,
+            valid_until_slot: self.rpc().get_slot()?.saturating_add(RECORD_UPDATE_SLOTS),
+        })
+    }
+
+    /// Under the service key the ring rpc reports, refused when ring.toml pins another.
+    pub fn ring_rpc_target(&self) -> Result<zolana_ring_client::rpc::ReadTarget> {
+        let service = self.ring_rpc().service_pubkey()?;
+        if let Trust::Pinned(pinned) = self.trust(Trust::Unpinned)? {
+            ensure!(
+                pinned == service,
+                "the ring rpc reports service key {service}, ring.toml pins {pinned}"
+            );
+        }
+        Ok(zolana_ring_client::rpc::ReadTarget {
+            cluster: self.rpc().genesis_hash()?,
+            service,
+            ring: self.ring.program_id(),
+        })
+    }
+
     /// `unpinned` applies only when ring.toml pins no service key.
     pub fn trust(&self, unpinned: Trust) -> Result<Trust> {
         match self.config.urls().ring_rpc_pubkey.as_deref() {
@@ -287,6 +339,14 @@ impl Context {
                 compute_unit_limit,
             )
     }
+}
+
+pub(crate) fn config_root(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
 }
 
 pub(crate) fn resolve(root: &Path, path: &Path) -> PathBuf {

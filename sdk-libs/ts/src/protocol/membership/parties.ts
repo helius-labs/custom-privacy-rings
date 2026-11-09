@@ -1,14 +1,25 @@
-import { addressBytes, ZERO_32 } from "@heliuslabs/zolana/internal";
-import { solanaOwnerIdentity } from "@heliuslabs/zolana/keypair";
-import type { Address, Bytes32 } from "@heliuslabs/zolana/interface";
+import { addressBytes, ZERO_32 } from "@heliuslabs/spr/internal";
+import { solanaOwnerIdentity } from "@heliuslabs/spr/keypair";
+import type { Address, Bytes32 } from "@heliuslabs/spr/interface";
 
-/** Ordered exactly as the verifier's AnonymousParties. */
-export function anonymousPartyIdentities(
-  payer: Address,
-  cosigner?: Address,
-  destination?: Address,
-): readonly [Bytes32, Bytes32, Bytes32] {
-  const identity = (party: Address | undefined): Bytes32 =>
-    party === undefined ? ZERO_32 : (solanaOwnerIdentity(addressBytes(party)) as Bytes32);
-  return [identity(payer), identity(cosigner), identity(destination)];
+import { RingError } from "../error.js";
+import { ANONYMOUS_PARTIES } from "../transaction/transact.js";
+
+/**
+ * The co-signers in `CoSigners` account order, zero past the last, Rust `AnonymousParties`. The
+ * proof holds the hidden owner apart from every cell, a hidden co-signer would approve its own outflow.
+ */
+export function anonymousPartyIdentities(coSigners: readonly Address[]): readonly Bytes32[] {
+  if (coSigners.length > ANONYMOUS_PARTIES)
+    throw new RingError("RING_INVALID_LENGTH", {
+      details: { name: "anonymousParties", expected: ANONYMOUS_PARTIES, actual: coSigners.length },
+    });
+  return Object.freeze(
+    Array.from({ length: ANONYMOUS_PARTIES }, (_, cell): Bytes32 => {
+      const coSigner = coSigners[cell];
+      return coSigner === undefined
+        ? ZERO_32
+        : (solanaOwnerIdentity(addressBytes(coSigner)) as Bytes32);
+    }),
+  );
 }

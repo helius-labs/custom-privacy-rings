@@ -55,10 +55,13 @@ func sharedRegistry(t *testing.T) *ringregistry.Registry {
 	t.Helper()
 	members := ringregistry.New(t)
 	for i := int64(1); i <= 20; i++ {
-		members.Apply(t, entry(i*10, 1, 1, 0))
+		members.Apply(t, entry(i*10, 1, 1))
 	}
 	return members
 }
+
+// topDigit is the first index whose top level digit is set.
+const topDigit = 1 << (registry.IndexBits - 2)
 
 func TestSharedQuadProofAcceptsEveryTopology(t *testing.T) {
 	members := sharedRegistry(t)
@@ -86,12 +89,12 @@ func TestSharedQuadProofAcceptsEveryTopology(t *testing.T) {
 
 func TestSharedQuadProofRejectsUnboundPaths(t *testing.T) {
 	members := sharedRegistry(t)
-	indices := []uint64{1, 2, 3, 1 << 18, registry.Capacity - 1}
+	indices := []uint64{1, 2, 3, topDigit, registry.Capacity - 1}
 	for name, tamper := range map[string]func(*sharedPathCircuit){
 		"root":                  func(c *sharedPathCircuit) { c.Root = 1 },
 		"leaf":                  func(c *sharedPathCircuit) { c.Leaves[0] = 1 },
 		"low index":             func(c *sharedPathCircuit) { c.Proof.Paths[0].Index = 2 },
-		"canopy index":          func(c *sharedPathCircuit) { c.Proof.Paths[0].Index = 1 + (1 << 18) },
+		"canopy index":          func(c *sharedPathCircuit) { c.Proof.Paths[0].Index = 1 + topDigit },
 		"capacity alias":        func(c *sharedPathCircuit) { c.Proof.Paths[0].Index = registry.Capacity + 1 },
 		"negative index":        func(c *sharedPathCircuit) { c.Proof.Paths[0].Index = -1 },
 		"sibling":               func(c *sharedPathCircuit) { c.Proof.Paths[0].Siblings[0][0] = 1 },
@@ -109,10 +112,6 @@ func TestSharedQuadProofRejectsUnboundPaths(t *testing.T) {
 }
 
 func TestSharedQuadProofRejectsInvalidShape(t *testing.T) {
-	full, err := registry.NewSharedQuadProof(registry.Capacity)
-	if err != nil || len(full.Canopy) != registry.Capacity || len(full.Paths[0].Siblings) != 0 {
-		t.Fatal("full capacity shape rejected")
-	}
 	if _, err := sharedRegistry(t).SharedProof(nil); err == nil {
 		t.Fatal("empty host opening set accepted")
 	}
@@ -122,11 +121,13 @@ func TestSharedQuadProofRejectsInvalidShape(t *testing.T) {
 		}
 	}
 	for name, tamper := range map[string]func(*sharedPathCircuit){
-		"oversize canopy": func(c *sharedPathCircuit) { c.Proof.Canopy = make([]frontend.Variable, registry.Capacity+1) },
-		"empty canopy":    func(c *sharedPathCircuit) { c.Proof.Canopy = nil },
-		"canopy width":    func(c *sharedPathCircuit) { c.Proof.Canopy = c.Proof.Canopy[:3] },
-		"short path":      func(c *sharedPathCircuit) { c.Proof.Paths[0].Siblings = c.Proof.Paths[0].Siblings[:1] },
-		"missing leaf":    func(c *sharedPathCircuit) { c.Leaves = nil },
+		"wider canopy": func(c *sharedPathCircuit) {
+			c.Proof.Canopy = make([]frontend.Variable, registry.Arity*len(c.Proof.Canopy))
+		},
+		"empty canopy": func(c *sharedPathCircuit) { c.Proof.Canopy = nil },
+		"canopy width": func(c *sharedPathCircuit) { c.Proof.Canopy = c.Proof.Canopy[:3] },
+		"short path":   func(c *sharedPathCircuit) { c.Proof.Paths[0].Siblings = c.Proof.Paths[0].Siblings[:1] },
+		"missing leaf": func(c *sharedPathCircuit) { c.Leaves = nil },
 	} {
 		t.Run(name, func(t *testing.T) {
 			circuit := sharedCircuit(t, 5)
@@ -155,7 +156,7 @@ func (c *independentPathsCircuit) Define(api frontend.API) error {
 }
 
 func TestSharedQuadProofConstraintCounts(t *testing.T) {
-	pinned := map[int]int{1: 3103, 2: 5892, 4: 11486, 8: 21494, 16: 41502, 33: 78638, 69: 155258, 97: 207674, 100: 213290, 197: 394874}
+	pinned := map[int]int{1: 4033, 2: 7752, 4: 15206, 8: 28934, 16: 56382, 33: 109328, 69: 219428, 97: 297884, 100: 306290, 197: 578084}
 	for _, count := range []int{1, 2, 4, 8, 16, 33, 69, 97, 100, 197} {
 		shared, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, sharedCircuit(t, count))
 		if err != nil {
@@ -225,7 +226,7 @@ func TestSharedQuadProofCompiledSolver(t *testing.T) {
 			if err := compiled.IsSolved(witness); err != nil {
 				t.Fatal(err)
 			}
-			assignment.Proof.Paths[0].Index = 1 << 18
+			assignment.Proof.Paths[0].Index = topDigit
 			witness, err = frontend.NewWitness(assignment, ecc.BN254.ScalarField())
 			if err != nil {
 				t.Fatal(err)

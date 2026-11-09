@@ -1,6 +1,6 @@
 use custom_ring_interface::{
-    anonymous_exit_destination, AnonymousExitDestination, AnonymousParties, CustomRingError,
-    SettlementAccount, TokenAccountControl, TokenAccountState, SYSTEM_PROGRAM_ID,
+    AnonymousExitDestination, AnonymousParties, CustomRingError, SettlementAccount,
+    TokenAccountControl, TokenAccountState, SYSTEM_PROGRAM_ID,
 };
 use solana_address::Address;
 use spl_token_2022_interface::pod::{PodAccount, PodCOption};
@@ -39,10 +39,6 @@ impl SettlementAccount for Account {
 
     fn owner(&self) -> &Address {
         &self.owner
-    }
-
-    fn data_len(&self) -> usize {
-        self.data.len()
     }
 
     fn token_account(&self) -> Result<TokenAccountState, CustomRingError> {
@@ -165,68 +161,42 @@ fn an_anonymous_exit_names_one_key_or_its_refusal() {
     }
 }
 
+/// The payer, the funders and the exit take no cell.
 #[test]
-fn every_withdrawal_of_a_spend_names_the_same_destination() {
-    let sol_out = InterfaceTransfer::SolWithdrawal { amount: 1 };
-    let sol_in = InterfaceTransfer::SolDeposit { amount: 1 };
-    let spl_out = InterfaceTransfer::SplWithdrawal {
-        amount: 1,
-        spl_interface_bump: 0,
-    };
-    let wallet = Address::new_from_array(OWNER);
-    let window = |groups: Vec<Vec<Account>>| groups.into_iter().flatten().collect::<Vec<_>>();
-
-    assert_eq!(
-        anonymous_exit_destination(&[sol_in], &window(vec![sol_group(wallet, vec![])])),
-        Ok(None)
-    );
-    assert_eq!(
-        anonymous_exit_destination(
-            &[sol_out, spl_out],
-            &window(vec![
-                sol_group(wallet, vec![]),
-                spl_group(OFF_CURVE, token_account(|_| {})),
-            ])
-        ),
-        Ok(Some(OWNER))
-    );
-    assert_eq!(
-        anonymous_exit_destination(
-            &[sol_out, sol_out],
-            &window(vec![
-                sol_group(wallet, vec![]),
-                sol_group(Address::new_from_array([6; 32]), vec![]),
-            ])
-        ),
-        Err(CustomRingError::AnonymousExitDestinationsDiffer)
-    );
-    let mut foreign = spl_group(OFF_CURVE, token_account(|_| {}));
-    foreign[3].owner = SYSTEM_PROGRAM_ID;
-    assert_eq!(
-        anonymous_exit_destination(&[spl_out], &foreign),
-        Err(CustomRingError::AnonymousExitTokenAccountInvalid)
-    );
-    assert_eq!(
-        anonymous_exit_destination(&[spl_out], &sol_group(wallet, vec![])),
-        Err(CustomRingError::InvalidSettlementAccounts)
-    );
-}
-
-#[test]
-fn an_absent_party_is_a_zero_identity() {
-    let payer = [7; 32];
+fn the_co_signers_fill_the_cells_in_order() {
+    let co_signers = [
+        Address::new_from_array([8; 32]),
+        Address::new_from_array([9; 32]),
+    ];
     let parties = AnonymousParties {
-        payer: &payer,
-        cosigner: None,
-        exit_destination: Some(&OWNER),
+        co_signers: &co_signers,
     };
     assert_eq!(
         parties.identities(),
         Ok([
-            solana_owner_identity(&payer).unwrap(),
+            solana_owner_identity(co_signers[0].as_array()).unwrap(),
+            solana_owner_identity(co_signers[1].as_array()).unwrap(),
             [0; 32],
-            solana_owner_identity(&OWNER).unwrap(),
+            [0; 32],
+            [0; 32],
         ])
+    );
+}
+
+#[test]
+fn a_co_signer_past_the_fifth_is_refused() {
+    let co_signers = [Address::new_from_array([8; 32]); 6];
+    assert!(AnonymousParties {
+        co_signers: &co_signers[..5],
+    }
+    .identities()
+    .is_ok());
+    assert_eq!(
+        AnonymousParties {
+            co_signers: &co_signers,
+        }
+        .identities(),
+        Err(CustomRingError::TooManyAnonymousParties)
     );
 }
 
@@ -275,6 +245,58 @@ fn policy_withdrawals_authenticate_live_owners_and_preserve_order() {
     accounts[5].data = token_account(|_| {});
     accounts[5].owner = SYSTEM_PROGRAM_ID;
     assert!(policy_withdrawals(&[sol, spl], &accounts, &[OWNER]).is_err());
+}
+
+/// The ring circuit range checks no leg, the program's digest over u64 settlement amounts bounds each.
+#[test]
+fn withdrawal_digest_reads_u64_settlement_amounts() {
+    use custom_ring_interface::{domain, policy_withdrawal_hash, policy_withdrawals};
+    use spr_hasher::{hash_chain::create_hash_chain_4, primitives::right_align};
+    let settled = InterfaceTransfer::SolWithdrawal { amount: u64::MAX };
+    let accounts = sol_group(Address::new_from_array(OWNER), vec![]);
+    let legs = policy_withdrawals(&[settled], &accounts, &[]).unwrap();
+    assert_eq!(legs[0].amount, u64::MAX);
+    // The amount field is the u64 right aligned, its 24 high bytes stay zero for every settlement.
+    let amount = right_align(&u64::MAX.to_be_bytes());
+    assert_eq!(amount[..24], [0; 24]);
+    let fields = [
+        domain::field(domain::WITHDRAWALS),
+        right_align(&1u64.to_be_bytes()),
+        legs[0].owner,
+        legs[0].asset,
+        amount,
+    ];
+    assert_eq!(
+        policy_withdrawal_hash(&legs).unwrap(),
+        create_hash_chain_4(fields.iter()).unwrap()
+    );
+}
+
+#[test]
+fn repeated_owners_and_mints_screen_as_their_first_leg() {
+    use custom_ring_interface::{policy_withdrawals, PolicyWithdrawal};
+    let spl = InterfaceTransfer::SplWithdrawal {
+        amount: 9,
+        spl_interface_bump: 0,
+    };
+    let sol = InterfaceTransfer::SolWithdrawal { amount: 7 };
+    let mut accounts = sol_group(Address::new_from_array(OWNER), vec![]);
+    accounts.extend(sol_group(Address::new_from_array(OWNER), vec![]));
+    for _ in 0..2 {
+        let mut group = spl_group(ON_CURVE, token_account(|_| {}));
+        group[spl.mint_account_position().unwrap()].address = Address::new_from_array(MINT);
+        accounts.extend(group);
+    }
+    let legs = policy_withdrawals(&[sol, sol, spl, spl], &accounts, &[OWNER, OWNER]).unwrap();
+    assert_eq!(
+        legs,
+        [
+            PolicyWithdrawal::new(&OWNER, None, 7).unwrap(),
+            PolicyWithdrawal::new(&OWNER, None, 7).unwrap(),
+            PolicyWithdrawal::new(&OWNER, Some(&MINT), 9).unwrap(),
+            PolicyWithdrawal::new(&OWNER, Some(&MINT), 9).unwrap(),
+        ]
+    );
 }
 
 #[test]

@@ -1,80 +1,104 @@
+import { SPP_SUPPORTED_SHAPES } from "@heliuslabs/spr/interface";
+import type { Bytes16, Bytes32 } from "@heliuslabs/spr/interface";
+import { clampViewingSecret } from "@heliuslabs/spr/internal";
+
 import { CUSTOM_RING_PROOF_LENGTH } from "../../src/protocol/proof/custom-ring-proof.js";
-import { disclosureFieldCount } from "../../src/protocol/codec/ring-disclosure-layout.js";
-import { SPP_SUPPORTED_SHAPES } from "@heliuslabs/zolana/interface";
-import type { Bytes16, Bytes32 } from "@heliuslabs/zolana/interface";
-import { RingInstructionTag } from "../../src/operations/management/admin.js";
 import {
+  RING_RECORD_LEN,
+  PAYLOAD_LENGTH_LEN,
+  envelopeRegion,
+  recipientKeysLen,
+} from "../../src/protocol/codec/ring-disclosure-layout.js";
+import { SENDER_BUNDLE_LEN } from "../../src/protocol/codec/anonymous-delivery.js";
+import { RingInstructionTag } from "../../src/protocol/transaction/instruction-tag.js";
+import { RING_AUTHORITY_SHAPES } from "../../src/protocol/transaction/spp.js";
+import {
+  isAnonymousFrame,
+  isDelegateRail,
   PLAIN_GROTH16_PROOF_LENGTH,
+  ringStreamLayout,
   RingTransactData,
-  ringDisclosureLayout,
   type RingOutput,
   type RingRail,
 } from "../../src/protocol/transaction/transact.js";
-import { RING_AUTHORITY_SHAPES } from "../../src/protocol/transaction/spp.js";
-import { RECIPIENT_BODY_LEN } from "../../src/protocol/codec/anonymous-body.js";
 
-function field(byte: number): Bytes32 {
+export function field(byte: number): Bytes32 {
   const value = new Uint8Array(32);
   value[31] = byte;
   return value as Bytes32;
 }
 
-/** An exit-free frame of `inputs` and `outputs` the rail's audit key serves, no proof valid. */
+export function clampedSecret(byte: number): Bytes32 {
+  return clampViewingSecret(new Uint8Array(32).fill(byte) as Bytes32) as Bytes32;
+}
+
+/** A frame of `inputs` and `outputs` the rail's audit key serves, no proof valid. */
 export function ringFrame(
-  input: Readonly<{ rail: RingRail; inputs: number; outputs: number; fullOpenings?: boolean }>,
+  input: Readonly<{
+    rail: RingRail;
+    inputs: number;
+    outputs: number;
+    entry?: boolean;
+    hasData?: boolean;
+    publicOwners?: boolean;
+    wideOwners?: boolean;
+  }>,
 ): RingTransactData {
   const { rail, inputs, outputs } = input;
-  const keyed = rail === "delegate" ? RING_AUTHORITY_SHAPES : SPP_SUPPORTED_SHAPES;
-  const shape = keyed.find((entry) => entry.inputs >= inputs && entry.outputs === outputs);
+  const entry = input.entry ?? false;
+  const hasData = input.hasData ?? false;
+  const publicOwners = input.publicOwners ?? false;
+  const keyed = isDelegateRail(rail) ? RING_AUTHORITY_SHAPES : SPP_SUPPORTED_SHAPES;
+  const shape = keyed.find((entry_) => entry_.inputs >= inputs && entry_.outputs === outputs);
   if (shape === undefined) throw new Error("no shape serves the counts");
-  const flags = {
-    exits: false,
-    keyEscrow: rail === "delegate",
-    fullOpenings: input.fullOpenings ?? false,
-  };
-  const layout = ringDisclosureLayout({
+  const layout = ringStreamLayout({
     rail,
     nIn: shape.inputs,
     nOut: shape.outputs,
     inputs,
     outputs,
-    layout: flags,
+    entry,
+    publicOwners,
   });
-  const slot = (index: number): RingOutput =>
-    rail === "anonymous"
-      ? {
-          kind: "anonymous",
-          hash: field(10 + index),
-          tag: field(index + 1),
-          ...(index === 0 ? {} : { body: new Uint8Array(RECIPIENT_BODY_LEN) }),
-        }
-      : {
-          kind: "delivered",
-          hash: field(10 + index),
-          u: field(40 + index),
-          body: new Uint8Array(40),
-        };
+  const anonymous = isAnonymousFrame(rail);
+  const slot = (index: number): RingOutput => {
+    const change = anonymous && index === 0;
+    return {
+      hash: field(10 + index),
+      ownerTag: change ? (new Uint8Array(32) as Bytes32) : field(40 + index),
+      record: new Uint8Array(RING_RECORD_LEN).fill(index + 1),
+      body: {
+        kind: "recipient",
+        payload: new Uint8Array(hasData ? PAYLOAD_LENGTH_LEN : 0).fill(index + 101),
+      },
+    };
+  };
+  const delegate = isDelegateRail(rail);
   return {
     rail,
     nIn: shape.inputs,
     nOut: shape.outputs,
-    auditProof: new Uint8Array(CUSTOM_RING_PROOF_LENGTH),
-    approvalRequired: false,
+    proof: new Uint8Array(CUSTOM_RING_PROOF_LENGTH),
+    trackingRevision: 7n,
+    ...(delegate ? {} : { ownRevision: 1n }),
+    splWithdrawalOwners: [],
+    approval: 0,
+    noSpend: false,
+    publicOwners,
     expiryUnixTs: 0,
     txViewingU: field(1),
     salt: new Uint8Array(16).fill(3) as Bytes16,
+    extensions: {},
     interfaceTransfers: [],
-    keyEscrow: flags.keyEscrow,
-    fullOpenings: flags.fullOpenings,
+    hasData,
+    entry,
+    wideOwners: input.wideOwners ?? false,
     outputs: Array.from({ length: outputs }, (_, index) => slot(index)),
-    ...(rail === "anonymous" ? { sender: { tag: field(1), body: new Uint8Array(150) } } : {}),
-    ephU: field(2),
-    sealed: field(3),
-    disclosure: Array.from({ length: disclosureFieldCount(layout) }, (_, index) =>
-      field(index + 1),
-    ),
+    ...(anonymous ? { sender: { tag: field(1), body: new Uint8Array(SENDER_BUNDLE_LEN) } } : {}),
+    envelope: new Uint8Array(envelopeRegion(layout).length).fill(3),
+    recipientKeys: new Uint8Array(recipientKeysLen(layout)).fill(9),
     privateTxHash: field(4),
-    ...(rail === "anonymous"
+    ...(rail === "anonymous" && !publicOwners
       ? { anonymous: { commitment: field(5), commitmentPok: field(6) } }
       : {}),
     sppProof: new Uint8Array(PLAIN_GROTH16_PROOF_LENGTH),
@@ -85,7 +109,8 @@ export function ringFrame(
 
 /** The ring program's own instruction data around `frame`. */
 export function ringInstructionData(frame: RingTransactData): Uint8Array {
-  const tag =
-    frame.rail === "delegate" ? RingInstructionTag.delegateTransact : RingInstructionTag.transact;
+  const tag = isDelegateRail(frame.rail)
+    ? RingInstructionTag.authorityTransfer
+    : RingInstructionTag.transfer;
   return Uint8Array.of(tag, ...RingTransactData.encode(frame));
 }

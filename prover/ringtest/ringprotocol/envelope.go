@@ -8,19 +8,26 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
-	ve "github.com/helius-labs/zolana/prover/server/circuits/encryption"
 	"github.com/helius-labs/zolana/prover/server/prover-test/spp/spptest"
 )
 
-// SealBody is the delivered body, AES-256-CTR of be32(blinding) ‖ u64be(amount) under the stream of the slot secret.
-func SealBody(t testing.TB, slotSecret, blinding *big.Int, amount uint64) [shared.BodyLen]byte {
+// senderBundleEncInfo mirrors SENDER_BUNDLE_LABEL.
+const senderBundleEncInfo = "CRING/snd"
+
+// SenderBundle is the sender bundle plaintext, the recipient keys travel in the auditor stream alone.
+type SenderBundle struct {
+	OutputSeed *big.Int
+}
+
+// SenderBundleLen mirrors SENDER_BUNDLE_LEN, the same for every m.
+const SenderBundleLen = 32
+
+func (b SenderBundle) Seal(t testing.TB, slotSecret *big.Int) []byte {
 	t.Helper()
-	blindingBytes := spptest.MustFieldBytes(t, blinding)
-	plaintext := binary.BigEndian.AppendUint64(blindingBytes[:], amount)
-	key, nonce := AuditStreamKeys(t, slotSecret)
-	return [shared.BodyLen]byte(CTREncrypt(t, key, nonce, plaintext))
+	seed := spptest.MustFieldBytes(t, b.OutputSeed)
+	key, nonce := AuditStreamKeys(t, slotSecret, senderBundleEncInfo)
+	return CTREncrypt(t, key, nonce, seed[:])
 }
 
 // Clamped is the RFC 7748 clamping of secret, the one encoding the circuit accepts as plaintext.
@@ -62,34 +69,29 @@ func Pack33(key [33]byte) (lo, hi *big.Int) {
 }
 
 // AuditStreamKeys mirrors shared.AuditStreamKeySchedule.
-func AuditStreamKeys(t testing.TB, secret *big.Int) (key [32]byte, nonce [12]byte) {
+func AuditStreamKeys(t testing.TB, secret *big.Int, label string) (key [32]byte, nonce [12]byte) {
 	t.Helper()
-	head := spptest.MustFieldBytes(t, ringtest.MustPoseidonHash(t, new(big.Int).SetBytes(append([]byte(shared.AuditEncInfo), 0)), secret))
-	tail := spptest.MustFieldBytes(t, ringtest.MustPoseidonHash(t, new(big.Int).SetBytes(append([]byte(shared.AuditEncInfo), 1)), secret))
+	head := spptest.MustFieldBytes(t, ringtest.MustPoseidonHash(t, new(big.Int).SetBytes(append([]byte(label), 0)), secret))
+	tail := spptest.MustFieldBytes(t, ringtest.MustPoseidonHash(t, new(big.Int).SetBytes(append([]byte(label), 1)), secret))
 	copy(key[:31], head[1:])
 	key[31] = tail[19]
 	copy(nonce[:], tail[20:])
 	return key, nonce
 }
 
-// KeySchedule mirrors ve.KeySchedule for an info string of at most 31 bytes.
-func KeySchedule(t testing.TB, secret *big.Int, info string) (key [32]byte, nonce [12]byte) {
+// EnvelopeDigest mirrors ciphertext_digest, head element 7 of a transfer statement.
+func EnvelopeDigest(t testing.TB, ciphertext []byte) *big.Int {
 	t.Helper()
-	if len(info) > 31 {
-		t.Fatalf("info %q packs into more than one field", info)
-	}
-	siloed := ringtest.MustPoseidonHash(t, Tag(ve.DomSepSilo), secret, new(big.Int).SetBytes([]byte(info)))
-	keyLo := spptest.MustFieldBytes(t, ringtest.MustPoseidonHash(t, Tag(ve.DomSepKey), siloed))
-	keyHi := spptest.MustFieldBytes(t, ringtest.MustPoseidonHash(t, Tag(ve.DomSepKey+1), siloed))
-	nonceRaw := spptest.MustFieldBytes(t, ringtest.MustPoseidonHash(t, Tag(ve.DomSepNonce), siloed))
-	copy(key[:16], keyHi[16:])
-	copy(key[16:], keyLo[16:])
-	copy(nonce[:], nonceRaw[20:])
-	return key, nonce
+	return ringtest.MustPoseidonHash(t, big.NewInt(int64(len(ciphertext))), spptest.MustHashChain4(t, PackDisclosure(ciphertext)))
 }
 
 // CTREncrypt mirrors aes.Cipher.CTREncrypt, the first keystream block counts from nonce || 2.
 func CTREncrypt(t testing.TB, key [32]byte, nonce [12]byte, plaintext []byte) []byte {
+	t.Helper()
+	return CTREncryptAt(t, key, nonce, 2, plaintext)
+}
+
+func CTREncryptAt(t testing.TB, key [32]byte, nonce [12]byte, first uint32, plaintext []byte) []byte {
 	t.Helper()
 	block, err := stdaes.NewCipher(key[:])
 	if err != nil {
@@ -97,7 +99,7 @@ func CTREncrypt(t testing.TB, key [32]byte, nonce [12]byte, plaintext []byte) []
 	}
 	var counter [16]byte
 	copy(counter[:12], nonce[:])
-	counter[15] = 2
+	binary.BigEndian.PutUint32(counter[12:], first)
 
 	ciphertext := make([]byte, len(plaintext))
 	cipher.NewCTR(block, counter[:]).XORKeyStream(ciphertext, plaintext)

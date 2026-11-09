@@ -100,10 +100,16 @@ fn localnet_bring_up_is_live() -> Result<()> {
     let indexed = env
         .client
         .indexer()
-        .get_shielded_transactions_by_tags(vec![UNUSED_VIEW_TAG], None, Some(10), None)
+        .get_shielded_transactions_by_tags(
+            vec![UNUSED_VIEW_TAG],
+            None,
+            Some(10),
+            Default::default(),
+            None,
+        )
         .map_err(|e| anyhow!("indexer {} failed {e:?}", env.indexer_url))?;
     assert!(
-        indexed.transactions.is_empty(),
+        indexed.data.is_empty(),
         "no transaction exists under the unused probe tag"
     );
     assert!(indexed.context.slot > 0, "indexer has persisted a slot");
@@ -172,8 +178,8 @@ fn localnet_bring_up_is_live() -> Result<()> {
     Ok(())
 }
 
-/// The ring rpc reads the Loader v3 upgrade authority and the config authority
-/// from the chain, so this runs against the deployed program, not a mock.
+/// The ring rpc reads the Loader v3 upgrade authority and the policy authority
+/// from the chain, the test runs against the deployed program.
 #[test]
 fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
     let env = setup()?;
@@ -190,7 +196,11 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
     let genesis_hash = runtime
         .block_on(source.genesis_hash())
         .map_err(|e| anyhow!("genesis hash {e:?}"))?;
-    let hub = Hub::builder(source, genesis_hash)
+    let identity = ServiceIdentity {
+        genesis_hash,
+        service: Keypair::new(),
+    };
+    let hub = Hub::builder(source, identity)
         .derived(RootSecret::from_bytes([7; 32])?)
         .map_err(|e| anyhow!("hub {e:?}"))?;
     let service = hub
@@ -209,7 +219,7 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
         other => Err(anyhow!("expected {expected:?}, got {other:?}")),
     };
     let stranger = Keypair::new();
-    let config_authority = Keypair::new();
+    let policy_authority = Keypair::new();
 
     // 1. No config yet, so only the program's upgrade authority is accepted.
     expect_refusal(
@@ -217,7 +227,7 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
         Unauthorized::NotRingAuthority,
     )?;
     expect_refusal(
-        authorize(&request(&config_authority, genesis_hash)?),
+        authorize(&request(&policy_authority, genesis_hash)?),
         Unauthorized::NotRingAuthority,
     )?;
     expect_refusal(
@@ -228,31 +238,28 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
     authorize(&released).map_err(|e| anyhow!("upgrade authority {e:?}"))?;
     expect_refusal(authorize(&released), Unauthorized::Replay)?;
 
-    // 2. Once the config exists its authority alone is accepted, even after
-    //    the deployer hands it over.
+    // 2. Once the ring exists its policy authority alone is accepted, the deployer holds no role.
+    let roles = custom_ring_interface::RingRoles {
+        policy: policy_authority.pubkey(),
+        ..RingRoleKeys::of(&env.payer).roles(&env.payer)
+    };
     rpc.create_and_send_transaction(
-        &[
-            custom_ring_sdk::CreateConfig {
-                ring,
-                payer: env.payer.pubkey(),
-                authority: env.payer.pubkey(),
-                auditor_pubkey: service.auditor_pubkey(),
-                kind: custom_ring_sdk::RingKind::Policy,
-            }
-            .instruction()?,
-            custom_ring_sdk::SetAuthority {
-                ring,
-                authority: env.payer.pubkey(),
-                new_authority: config_authority.pubkey(),
-            }
-            .instruction(),
-        ],
+        &[custom_ring_sdk::Initialize {
+            ring,
+            payer: env.payer.pubkey(),
+            authority: env.payer.pubkey(),
+            auditor_pubkey: service.auditor_pubkey(),
+            kind: custom_ring_sdk::RingKind::AuditOnly,
+            roles,
+            policy: None,
+        }
+        .instruction()?],
         env.payer.pubkey(),
-        &[&env.payer, &config_authority],
-        ComputeBudgetConfig::for_instruction_count(2),
+        &[&env.payer],
+        ComputeBudgetConfig::for_instruction_count(1),
     )?;
-    authorize(&request(&config_authority, genesis_hash)?)
-        .map_err(|e| anyhow!("config authority {e:?}"))?;
+    authorize(&request(&policy_authority, genesis_hash)?)
+        .map_err(|e| anyhow!("policy authority {e:?}"))?;
     for refused in [&env.payer, &stranger] {
         expect_refusal(
             authorize(&request(refused, genesis_hash)?),
@@ -262,30 +269,36 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
     Ok(())
 }
 
-/// The operator cli against the deployed program, the config authority is a
-/// second key and the rerun sees the config through a hosted-looking ring rpc.
+/// The operator cli against the deployed program, the `policy_authority` key holds the
+/// policy role and the rerun sees the ring through a hosted-looking ring rpc.
 #[test]
-fn cli_init_hands_the_config_over_and_reruns_from_the_chain() -> Result<()> {
+fn cli_init_names_the_roles_and_reruns_from_the_chain() -> Result<()> {
     let env = setup()?;
     let ring = CustomRing::new(custom_ring_program_id()?);
     let auditor = X25519Keypair::new();
+    let ring_rpc = RingRpcSpec {
+        env: &env,
+        ring: ring.program_id(),
+        auditor: auditor.clone(),
+    }
+    .serve()?;
     let project = RingProject::create(&env, &auditor.pubkey())?;
     let init = || project.run(&["init"]);
 
-    // 1. A local ring rpc lets the key file through, the config is created
-    //    under the deployer and handed over in the same run.
+    // 1. A local ring rpc lets the key file through, the deployer creates the
+    //    ring naming the `policy_authority` key as its policy authority.
     project.write_config(RingToml {
         env: &env,
-        ring_rpc: "http://127.0.0.1:1",
+        ring_rpc: &ring_rpc.url,
         policy: None,
         mode: ModeName::Confidential,
     })?;
     let first = init()?;
-    assert!(first.contains("authority   transferred"), "{first}");
+    assert!(first.contains("config      created"), "{first}");
     let config = env
         .run(ring.config(env.client.as_async()))?
         .ok_or_else(|| anyhow!("config after init"))?;
-    assert_eq!(config.authority, project.config_authority.pubkey());
+    assert_eq!(config.roles.policy, project.policy_authority.pubkey());
     assert_eq!(config.auditor_pubkey, auditor.pubkey());
 
     // 2. The rerun takes the key from the chain, so the hosted-looking rpc is
@@ -298,9 +311,8 @@ fn cli_init_hands_the_config_over_and_reruns_from_the_chain() -> Result<()> {
     })?;
     let second = init()?;
     assert!(second.contains("config      already present"), "{second}");
-    assert!(second.contains("authority   already present"), "{second}");
 
-    // 3. The config authority closes and reopens the ring through the program,
+    // 3. The pauser `init` created closes and reopens the ring through the program,
     //    the SPP flag follows each run.
     let paused = project.run(&["authority", "pause"])?;
     assert!(paused.contains("spp ring    paused"), "{paused}");
@@ -309,5 +321,136 @@ fn cli_init_hands_the_config_over_and_reruns_from_the_chain() -> Result<()> {
     assert!(resumed.contains("spp ring    resumed"), "{resumed}");
     assert!(!registration(&env, ring)?.paused, "reopened by the cli");
     project.remove()?;
+    Ok(())
+}
+
+/// A keyed recipient reads a payment before it registers, the auditor keys the output once the
+/// recipient's authorization appears, and the recipient spends it under that same key.
+#[test]
+fn a_recipient_receives_before_registration_then_registers_and_spends() -> Result<()> {
+    let mut env = setup()?;
+    let rpc = env.client.rpc();
+    let indexer = env.client.indexer();
+    let ring_program = custom_ring_program_id()?;
+    let ring = CustomRing::new(ring_program);
+    let auditor = X25519Keypair::new();
+    let auditor_tag = auditor_view_tag(&auditor.pubkey());
+    RegisterRing {
+        ring,
+        payer: &env.payer,
+        auditor_pubkey: auditor.pubkey(),
+        tier: Tier::policy(&EMPTY),
+    }
+    .send(&env.client)?;
+    // 1. Only the sender registers, the payment needs no row for its recipient.
+    EnrollOwners {
+        ring,
+        owners: &[&env.sender.keypair],
+        env: &env,
+    }
+    .send()?;
+    let sender = &env.sender.keypair;
+    let recipient = &env.recipient.keypair;
+    let recipient_address = recipient.shielded_address()?;
+    let deposited = DefaultRingDeposit {
+        depositor: sender,
+        tree: env.tree,
+        asset: DepositAsset::Sol,
+        amount: DEFAULT_DEPOSIT,
+    }
+    .send(rpc, indexer, &env.assets)?;
+    let entry_input = deposited.input_utxo(&env)?;
+    wait_for_merkle_proof(indexer, env.tree, entry_input.utxo_hash);
+    let mut prepared =
+        ConfidentialTransaction::new_with_ring(vec![entry_input], sender.pubkey(), ring_program)?;
+    prepared.transfer_sol(&recipient_address, ENTRY_AMOUNT)?;
+    let paid = OwnerTransfer {
+        ring,
+        sender,
+        prepared,
+        interface_transfer_accounts: Vec::new(),
+        auditor_tag,
+        cosigner: None,
+    }
+    .send(&env)?;
+
+    // 2. The recipient rebuilds the note under its own key, no registry read.
+    let assets = env.ring_assets()?;
+    WalletSync {
+        wallet: &mut env.recipient.wallet,
+        keys: &env.recipient.keypair,
+        assets: &assets,
+        transactions: std::slice::from_ref(&paid.indexed),
+    }
+    .sync()?;
+    assert_eq!(
+        sorted_unspent_notes(&env.recipient.wallet),
+        vec![(SOL_MINT, ENTRY_AMOUNT, Some(ring_program))],
+        "the recipient reads the payment before it registers"
+    );
+
+    // 3. The auditor keeps the proven record and leaves its key unresolved.
+    let recipient_key = |env: &TestEnv| -> Result<(Option<[u8; 32]>, usize)> {
+        let audited = AuditLookup {
+            scan: RingScan::new(ring_program, auditor.pubkey()),
+            auditor: &auditor,
+            signature: paid.signature,
+        }
+        .run(env)?;
+        let [output] = audited
+            .outputs
+            .iter()
+            .filter(|output| output.slot_index == RECIPIENT_SLOT)
+            .collect::<Vec<_>>()[..]
+        else {
+            bail!("one opening of the recipient slot");
+        };
+        let utxo = output.opening.utxo().context("a real output")?;
+        ensure!(utxo.amount == ENTRY_AMOUNT, "the record stands unresolved");
+        Ok((utxo.owner.nullifier_pk(), audited.outputs.len()))
+    };
+    let (unresolved, opened) = recipient_key(&env)?;
+    assert_eq!(unresolved, None);
+
+    // 4. Registration names the address key, the auditor resolves the same output.
+    EnrollOwners {
+        ring,
+        owners: &[&env.recipient.keypair],
+        env: &env,
+    }
+    .send()?;
+    assert_eq!(
+        recipient_key(&env)?,
+        (Some(recipient_address.nullifier_pubkey), opened),
+        "the late registration keys the same output and loses none"
+    );
+
+    // 5. The spend proves its key equal to the registered row.
+    let received = Note {
+        owner: &env.recipient.keypair,
+        asset: SOL_MINT,
+        amount: ENTRY_AMOUNT,
+        blinding: output_blinding(&paid.outputs, RECIPIENT_SLOT)?,
+        ring_program_id: Some(ring_program),
+    };
+    let mut prepared = ConfidentialTransaction::new_with_ring(
+        vec![received.input_utxo(&env)?],
+        env.recipient.keypair.pubkey(),
+        ring_program,
+    )?;
+    prepared.transfer_sol(&env.sender.keypair.shielded_address()?, EXIT_AMOUNT)?;
+    let spent = OwnerTransfer {
+        ring,
+        sender: &env.recipient.keypair,
+        prepared,
+        interface_transfer_accounts: Vec::new(),
+        auditor_tag,
+        cosigner: None,
+    }
+    .send(&env)?;
+    ensure!(
+        !spent.outputs.is_empty(),
+        "the registered recipient spends its note"
+    );
     Ok(())
 }

@@ -27,32 +27,17 @@ runs:
       with:
         name: ring_tools
         mode: restore
-    - id: surfpool
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+    - uses: ./zolana/.github/actions/install-surfpool
       with:
-        path: zolana/target/tools/surfpool
-        key: surfpool-${{ runner.os }}-${{ hashFiles('zolana/justfile') }}
-    - if: steps.surfpool.outputs.cache-hit != 'true'
-      shell: bash
-      run: just zolana::install-surfpool
+        working-directory: zolana
     - id: squads
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      shell: bash
+      working-directory: zolana
+      run: echo "sha256=$(just --evaluate smart-account-sha256)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: zolana/target/deploy/squads_smart_account_program.so
-        key: squads-smart-account-SMRTzfY6DfH5ik3TKiyLFfXexV8uSG3d2UksSCYdunG
-    - if: steps.squads.outputs.cache-hit != 'true'
-      shell: bash
-      run: just zolana::fetch-smart-account
-    - id: keys
-      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: zolana/prover/server/proving-keys
-        key: proving-keys-${{ hashFiles('prover/ring/proving-keys.lock', 'zolana/prover/server/prover/provingkeys/proving-keys.lock') }}
+        key: squads-smart-account-${{ steps.squads.outputs.sha256 }}
     - shell: bash
-      run: just fetch-custom-ring-keys
-    # A pull request entry would evict the main entries.
-    - if: steps.keys.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
-      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: zolana/prover/server/proving-keys
-        key: ${{ steps.keys.outputs.cache-primary-key }}
+      run: just zolana::ensure-smart-account
+    - uses: ./.github/actions/proving-keys

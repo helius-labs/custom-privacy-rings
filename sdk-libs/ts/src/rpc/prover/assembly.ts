@@ -1,7 +1,7 @@
-import type { Bytes32 } from "@heliuslabs/zolana";
-import { bigintToBytes, inputCircuitUtxo, outputCircuitUtxo } from "@heliuslabs/zolana/internal";
-import { DUMMY_DOMAIN, UTXO_DOMAIN, treeIdField } from "@heliuslabs/zolana/interface";
-import type { ProofInputUtxo, ProofOutputUtxo, TreeId } from "@heliuslabs/zolana/transaction";
+import type { Bytes32 } from "@heliuslabs/spr";
+import { bigintToBytes, inputCircuitUtxo, outputCircuitUtxo } from "@heliuslabs/spr/internal";
+import { DUMMY_DOMAIN, UTXO_DOMAIN, treeIdField } from "@heliuslabs/spr/interface";
+import type { ProofInputUtxo, ProofOutputUtxo, TreeId } from "@heliuslabs/spr/transaction";
 
 import type { RingSlotOpening } from "./ring.js";
 
@@ -55,8 +55,8 @@ export function ringOutputOpening(output: ProofOutputUtxo, outputTreeId: TreeId)
   });
 }
 
-/** Rust `Opening::default`, the slot past a key's used capacity. */
-export const EMPTY_RING_OPENING: RingSlotOpening = zeroOpening(0);
+/** A slot past the published count, the circuit admits a dummy domain alone. */
+export const RING_SLOT_PADDING: RingSlotOpening = zeroOpening(DUMMY_DOMAIN);
 
 function zeroOpening(domain: number): RingSlotOpening {
   return Object.freeze({
