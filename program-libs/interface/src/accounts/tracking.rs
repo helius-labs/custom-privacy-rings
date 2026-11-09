@@ -209,9 +209,7 @@ impl TrackingEntry {
         prior_viewing_u: &[u8; 32],
         prior_seq: u64,
     ) -> Result<Self, StorageError> {
-        let seq = prior_seq
-            .checked_add(1)
-            .ok_or(StorageError::InvalidInstructionData)?;
+        let seq = next_viewing_seq(prior_seq).ok_or(StorageError::InvalidInstructionData)?;
         Ok(Self {
             member: owner_member(owner)?,
             nullifier_pk: [0; 32],
@@ -274,6 +272,10 @@ pub fn check_viewing_key(viewing_u: &[u8; 32]) -> Result<(), StorageError> {
         return Err(StorageError::NonCanonicalViewingKey);
     }
     Ok(())
+}
+
+pub const fn next_viewing_seq(prior_seq: u64) -> Option<u64> {
+    prior_seq.checked_add(1)
 }
 
 /// Two limbs as an X25519 u can exceed the field, `seq` sets a returning key's hash apart.

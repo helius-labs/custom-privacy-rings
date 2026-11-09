@@ -15,7 +15,7 @@ use custom_ring_interface::{
         tag, EnrollmentChange, EnrollmentWrite, EnrollmentsAppliedEvent, InitializeTrackingIxData,
         StorageEvent,
     },
-    tracking::{tracking_chain_start, TrackingRegistry, TrackingRootUpdate},
+    tracking::{next_viewing_seq, tracking_chain_start, TrackingRegistry, TrackingRootUpdate},
 };
 use sea_orm::ConnectionTrait;
 use solana_address::Address;
@@ -191,7 +191,7 @@ fn leaf_stamps(
                     prior_seq,
                     ..
                 } => {
-                    let Some(seq) = u64::from_le_bytes(*prior_seq).checked_add(1) else {
+                    let Some(seq) = next_viewing_seq(u64::from_le_bytes(*prior_seq)) else {
                         return Some(Err(fault("a rotation counter overflowed")));
                     };
                     (*viewing_u, seq, None)
