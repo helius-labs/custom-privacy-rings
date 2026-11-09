@@ -154,9 +154,10 @@ export const RING_ERROR_CODES = [
   "RING_ENROLLMENT_KEY_MISMATCH",
   "RING_ENROLLMENT_ZERO_KEY",
   "RING_ENROLLMENT_NONE_NAMED",
-  // Reserved, nothing raises these and the snapshot keeps later codes in place.
+  // Reserved, nothing raises it and the snapshot keeps later codes in place.
   "RING_ENROLLMENT_CREDENTIAL_MISMATCH",
   "RING_ALREADY_ENROLLED",
+  // Reserved, nothing raises these and the snapshot keeps later codes in place.
   "RING_ENROLLMENT_STATUS_UNKNOWN",
   "RING_RELAY_NEEDS_USER_RECORD",
   "RING_ENROLLMENT_ADDRESS_PROOF",
@@ -341,6 +342,9 @@ export const StorageProgramError = Object.freeze({
   privateWriteWithoutTracking: 9035,
   trackingTreeFull: 9036,
   rootHistoryRetained: 9037,
+  invalidStorageProgram: 9041,
+  invalidSignatureInstruction: 9042,
+  ownerSignatureMismatch: 9043,
 } as const);
 
 export class RingError extends Error {

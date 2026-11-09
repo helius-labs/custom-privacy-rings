@@ -1,9 +1,12 @@
 /** The per-ring tracking registry, Rust `custom_ring_interface::tracking`. */
 import { hexToBytes } from "@noble/hashes/utils.js";
 
+import type { Address } from "@solana/kit";
+
 import {
   bigIntBytes,
   checkedBytes,
+  encodeBase58,
   equalBytes,
   hashBytes,
   poseidon,
@@ -25,7 +28,7 @@ import {
 import { FIELD_MAX } from "./member-opening.js";
 
 export const TRACKING_GRACE_SLOTS = 750n;
-/** Rust `TRACKING_ROOT_HISTORY`, the roots a tracking registry keeps. */
+/** Rust `TRACKING_ROOT_HISTORY`. */
 export const TRACKING_ROOT_HISTORY = 128;
 /** The sentinel at leaf 0 under zero subtrees. */
 export const TRACKING_EMPTY_ROOT = hexToBytes(
@@ -34,13 +37,15 @@ export const TRACKING_EMPTY_ROOT = hexToBytes(
 
 const REGISTRY_DISCRIMINATOR = 3;
 const OWNER_GRANT_DISCRIMINATOR = 5;
-const REGISTRY_SIZE = 74 + 48 * TRACKING_ROOT_HISTORY;
+const REGISTRY_SIZE = 106 + 48 * TRACKING_ROOT_HISTORY;
 const OWNER_GRANT_SIZE = 2;
 
 export interface TrackingRegistry {
+  /** The ring's `ring_auth`, the one signer of `ApplyEnrollments`. */
+  readonly authority: Address;
   readonly ringId: Bytes32;
   readonly auditorPubkey: Bytes33;
-  /** At most `QUAD_CAPACITY`, the last leaf index is `QUAD_CAPACITY - 1`. */
+  /** At most `QUAD_CAPACITY`. */
   readonly nextIndex: bigint;
   /** Newest first. */
   readonly roots: readonly (StorageRegistryRoot | undefined)[];
@@ -62,7 +67,9 @@ export interface TrackingFields {
 
 /** One enrollment an apply chains, Rust `TrackingEntry`. */
 export interface TrackingEntry extends TrackingFields {
-  /** Set when the request carried a verified `RegisterKey` proof, a rotation carries none. */
+  /** The leaf's viewing hash a Rotate replaces, zero on an Enroll. */
+  readonly priorViewingHash: Bytes32;
+  /** Set when the write carried a verified `RegisterKey` proof, only a proven entry inserts. */
   readonly proven: boolean;
 }
 
@@ -86,6 +93,7 @@ export const TRACKING_SENTINEL: TrackingRecord = Object.freeze({
 
 export function decodeTrackingRegistry(data: Uint8Array): TrackingRegistry {
   const reader = account(data, REGISTRY_DISCRIMINATOR, REGISTRY_SIZE);
+  const authority = encodeBase58(reader.bytes(32, "authority"));
   const ringId = reader.bytes(32, "ringId") as Bytes32;
   const auditorPubkey = reader.bytes(33, "auditorPubkey") as Bytes33;
   const nextIndex = reader.u64("nextIndex");
@@ -99,6 +107,7 @@ export function decodeTrackingRegistry(data: Uint8Array): TrackingRegistry {
   if (nextIndex < 1n || nextIndex > QUAD_CAPACITY)
     throw new RingError("RING_TRACKING_INVALID", { details: { nextIndex: nextIndex.toString() } });
   return Object.freeze({
+    authority,
     ringId,
     auditorPubkey,
     nextIndex,
@@ -115,7 +124,7 @@ export function decodeOwnerGrant(data: Uint8Array): OwnerGrant {
   return grant;
 }
 
-/** Rust `TrackingEntry::from_enroll`, the entry an enrollment of `member` chains. */
+/** Rust `TrackingEntry::from_enroll`, proven since every Enroll carries a `RegisterKey` proof. */
 export function trackingEntryOf(
   input: Readonly<{
     member: Bytes32;
@@ -123,7 +132,6 @@ export function trackingEntryOf(
     listTag: Bytes32;
     viewingU: Bytes32;
     ciphertext: Bytes64;
-    proven: boolean;
   }>,
 ): TrackingEntry {
   return Object.freeze({
@@ -132,7 +140,23 @@ export function trackingEntryOf(
     ctHash: hashBytes(checkedBytes<Bytes64>(input.ciphertext, 64, "ciphertext")) as Bytes32,
     listTag: input.listTag,
     viewingHash: viewingKeyHash(input.viewingU),
-    proven: input.proven,
+    priorViewingHash: ZERO_32,
+    proven: true,
+  });
+}
+
+/** Rust `TrackingEntry::from_rotation`, moves a present leaf's viewing hash only from `priorViewingHash`. */
+export function trackingRotationOf(
+  input: Readonly<{ member: Bytes32; viewingU: Bytes32; priorViewingHash: Bytes32 }>,
+): TrackingEntry {
+  return Object.freeze({
+    member: input.member,
+    nullifierPk: ZERO_32,
+    ctHash: ZERO_32,
+    listTag: ZERO_32,
+    viewingHash: viewingKeyHash(input.viewingU),
+    priorViewingHash: checkedBytes<Bytes32>(input.priorViewingHash, 32, "prior viewing hash"),
+    proven: false,
   });
 }
 
@@ -141,11 +165,12 @@ export function viewingKeyHash(viewingU: Bytes32): Bytes32 {
   return hashBytes(checkedBytes<Bytes32>(viewingU, 32, "viewing key")) as Bytes32;
 }
 
-/** `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, proven)`. */
+/** `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven)`. */
 export function trackingEntryHash(entry: TrackingEntry): Bytes32 {
   return poseidon([
     domainField(RingDomain.trackingEntry),
     ...trackingFields(entry),
+    checkedBytes<Bytes32>(entry.priorViewingHash, 32, "prior viewing hash"),
     bigIntBytes(entry.proven ? 1n : 0n) as Bytes32,
   ]) as Bytes32;
 }

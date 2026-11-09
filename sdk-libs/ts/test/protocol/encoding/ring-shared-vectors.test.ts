@@ -398,15 +398,16 @@ describe("ring-statements.json", () => {
   });
 
   it("hashes a tracking entry and chains it as the program does", () => {
-    // The Rust vector export writes `viewing_hash` and `proven`.
+    // The Rust vector export writes `viewing_hash`, `prior_viewing_hash` and `proven`.
     const tracking = statements.tracking as typeof statements.tracking &
-      Readonly<{ viewing_hash: string; proven: boolean }>;
+      Readonly<{ viewing_hash: string; prior_viewing_hash: string; proven: boolean }>;
     const entry = {
       member: field(tracking.member),
       nullifierPk: field(tracking.nullifier_pk),
       ctHash: field(tracking.ct_hash),
       listTag: field(tracking.list_tag),
       viewingHash: field(tracking.viewing_hash),
+      priorViewingHash: field(tracking.prior_viewing_hash),
       proven: tracking.proven,
     };
     expect(hex(trackingEntryHash(entry))).toBe(tracking.entry_hash);

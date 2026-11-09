@@ -1,18 +1,17 @@
 /**
  * A wallet's viewing key rotation through Ring RPC.
  *
- * Read after `operations/management/enrollment.ts`, whose request without a
- * proof carries the new key. Read after `LocalRingKeys` and `ViewingHistory`,
- * the two halves of a wallet a rotation moves together.
+ * Read after `operations/management/enrollment.ts`. Read after `LocalRingKeys`
+ * and `ViewingHistory`, the two halves of a wallet a rotation moves together.
  *
  * A rotation runs in three steps. `rotateViewingKey` is local, and the wallet
  * stores the new viewing secret and the rotated history before the owner signs
- * what `updateViewingKey` builds. A leaf naming a key the wallet lost routes
- * every later payment to notes nobody opens. Ring RPC writes the signed request,
- * and senders read the new key only once an apply moves the owner's leaf to it.
- * `confirmViewingKey` reads that leaf back. The leaf holds only the current
- * key's hash, the history keeps every earlier key, and notes sealed to an
- * earlier key open through it.
+ * the Rotate write `updateViewingKey` builds. A leaf naming a key the wallet
+ * lost routes every later payment to notes nobody opens. Ring RPC sends the
+ * signed write, and senders read the new key only once an apply moves the
+ * owner's leaf to it. `confirmViewingKey` reads that leaf back. The leaf holds
+ * only the current key's hash, the history keeps every earlier key, and notes
+ * sealed to an earlier key open through it.
  */
 import type { Address } from "@solana/kit";
 
@@ -25,12 +24,7 @@ import { fetchRingPolicy } from "../../protocol/membership/config.js";
 import type { RelayEnrollInputs } from "../../protocol/ring-rpc/relay-enroll-inputs.js";
 import type { LocalRingKeys, RingKeys } from "../../state/ring-keys.js";
 import type { ViewingHistory } from "../../state/viewing-history.js";
-import {
-  enrollRequestOf,
-  enrollmentState,
-  type EnrollmentReadClient,
-  type EnrollmentState,
-} from "./enrollment.js";
+import { enrollmentState, type EnrollmentReadClient, type EnrollmentState } from "./enrollment.js";
 
 /** `rotateViewingKey` moves both to one current key. */
 export interface ViewingRotation {
@@ -46,7 +40,7 @@ export function rotateViewingKey(
   return Object.freeze({ keys: input.keys.rotate(input.next), history });
 }
 
-/** The proofless request of the holder's current key, `undefined` when the leaf already holds it. */
+/** The Rotate write of the holder's current key, `undefined` when the leaf already holds it. */
 export async function updateViewingKey(
   input: Readonly<{
     client: EnrollmentReadClient;
@@ -62,20 +56,29 @@ export async function updateViewingKey(
   const viewingU = input.keys.address().viewingPublicKey.u();
   if (!equalBytes(input.history.current().viewingPublicKey.u(), viewingU))
     throw new RingError("RING_VIEWING_HISTORY_NOT_CURRENT");
-  // 2. A rotation repeats the seal of the first enrollment. A holder of another
-  // nullifier key would publish a viewing key the enrolled leaf does not belong to.
+  // 2. A holder of another nullifier key would publish a viewing key the
+  // enrolled leaf does not belong to.
   const { tracking } = await fetchRingPolicy(input.client, input.ringProgramId, context);
   const stored = await storedEnrollment({ ...input, trackingRegistry: tracking }, context);
   if (!equalBytes(stored.seal.nullifierPk, input.keys.address().nullifierPublicKey))
     throw new RingError("RING_ENROLLMENT_KEY_MISMATCH");
   if (equalBytes(stored.viewingU, viewingU)) return undefined;
-  return enrollRequestOf(
-    { ringProgramId: input.ringProgramId, owner: input.owner, seal: stored.seal, viewingU },
-    tracking,
-  );
+  // 3. The Rotate binds the leaf's current viewing hash, an apply refuses it once the leaf moves.
+  return Object.freeze({
+    ringProgramId: input.ringProgramId,
+    trackingRegistry: tracking,
+    write: Object.freeze({
+      owner: input.owner,
+      change: Object.freeze({
+        kind: "rotate",
+        viewingU,
+        priorViewingHash: stored.record.viewingHash,
+      }),
+    }),
+  });
 }
 
-/** Resolves once the leaf under the newest root holds the holder's current key, an absent leaf or an older key refuses. */
+/** The owner's leaf under the newest root, refused unless it holds the holder's current key. */
 export async function confirmViewingKey(
   input: Readonly<{
     client: EnrollmentReadClient;

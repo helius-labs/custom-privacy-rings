@@ -93,6 +93,7 @@ export function trackingRegistryAccount(
 ): RpcAccount {
   const writer = new Writer()
     .u8(3, "discriminator")
+    .bytes(new Uint8Array(32), 32, "authority")
     .bytes(new Uint8Array(32), 32, "ringId")
     .bytes(input.auditorPubkey, 33, "auditorPubkey")
     .u64(input.nextIndex, "nextIndex");
@@ -137,6 +138,7 @@ export const FIXTURE_ROLES: RingRoles = Object.freeze({
   policy: getAddressDecoder().decode(new Uint8Array(32).fill(0xa2)),
   pauser: getAddressDecoder().decode(new Uint8Array(32).fill(0xa3)),
   cosignAdmin: getAddressDecoder().decode(new Uint8Array(32).fill(0xa4)),
+  enrollmentWriter: getAddressDecoder().decode(new Uint8Array(32).fill(0xa5)),
 });
 
 const FIXTURE_AUDITOR = X25519Keypair.fromBytes(new Uint8Array(32).fill(9)).publicKey().toBytes();

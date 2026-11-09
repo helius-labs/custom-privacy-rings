@@ -2,8 +2,6 @@
 export const RING_PROVING_KEY_SHA256S: Readonly<Record<string, string>> = Object.freeze({
   "custom_ring_apply_enrollments_1.key":
     "791f47ad50cc81c6473ebb6036a01c784e07c8825401ed8a51b3be83a7ed809c",
-  "custom_ring_apply_enrollments_16.key":
-    "cfdababa9b2d069838b3df4208e633bc4ab0819501eb7f4695f8c5ce1a6e5126",
   "custom_ring_apply_enrollments_2.key":
     "4ebc264d5365198282b541413268fde0c621977d26b57cefa12433569c99f42b",
   "custom_ring_apply_enrollments_4.key":

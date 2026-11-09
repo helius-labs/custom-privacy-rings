@@ -1,9 +1,10 @@
 /**
  * A nonzero key enrolls in the ring's tracking registry, Rust `custom_ring_sdk::enrollment`.
  *
- * Ring RPC alone writes an enrollment on chain. The owner signs a request over its record and, on a
- * first enrollment, the `RegisterKey` proof, and an owner's state is its leaf under the newest
- * root. A request Ring RPC holds grants nothing until a root holds the leaf. Read before
+ * Ring RPC alone writes an enrollment on chain, batching owner-signed writes into one `EnrollBatch`.
+ * A first enrollment is an Enroll write of its record and `RegisterKey` proof, the owner signs
+ * the `signedWrite` message over its entry hash, and an owner's state is its leaf under the newest
+ * root. A write Ring RPC holds grants nothing until a root holds the leaf. Read before
  * `viewing-rotation.ts`.
  */
 import type { Address, Instruction } from "@solana/kit";
@@ -43,7 +44,7 @@ import { sealNullifierKey } from "./register-key.js";
 
 export const OWNER_GRANT_TAG = 8;
 
-/** The fields a first enrollment proves and a rotation repeats. */
+/** The fields a first enrollment proves, fixed once its leaf inserts. */
 export interface EnrollmentSeal {
   readonly nullifierPk: Bytes32;
   readonly listTag: Bytes32;
@@ -56,8 +57,8 @@ export interface Enroll {
   readonly owner: Address;
   readonly seal: EnrollmentSeal;
   readonly viewingU: Bytes32;
-  /** The `RegisterKey` proof on a first enrollment, none on a rotation. */
-  readonly proof?: Uint8Array;
+  /** `proveEnrollment`'s `RegisterKey` proof. */
+  readonly proof: Uint8Array;
 }
 
 /** The owner's leaf under the newest root, its viewing key checked against the leaf. */
@@ -71,7 +72,6 @@ export interface EnrollmentState {
 export type EnrollmentReadClient = Pick<ChainReader, "getAccount"> &
   Pick<TrackingReader, "getTrackingOpenings">;
 
-/** The request the owner signs for Ring RPC, a seal off the applied one refuses. */
 export async function enrollmentRequest(
   input: Enroll,
   client: EnrollmentReadClient,
@@ -80,22 +80,17 @@ export async function enrollmentRequest(
   const { ringProgramId, owner, seal } = input;
   // 1. The ring pins its tracking registry, the request names no other.
   const { tracking } = await fetchRingPolicy(client, ringProgramId, context);
-  // 2. A present owner's later enrollment moves only its viewing key, so the seal must repeat.
+  // 2. The zero key seals no secret, and a present owner rotates in place of enrolling.
   checkEnrollment({
     seal,
     stored: await enrollmentState({ trackingRegistry: tracking, owner }, client, context),
   });
-  return enrollRequestOf(input, tracking);
-}
-
-/** The request of `input` under `trackingRegistry`, a caller that checked the seal itself builds it here. */
-export function enrollRequestOf(input: Enroll, trackingRegistry: Address): RelayEnrollInputs {
+  const record = Object.freeze({ ...seal, viewingU: checkedViewingU(input.viewingU) });
+  const proof = checkedCustomRingProof(input.proof);
   return Object.freeze({
-    ringProgramId: input.ringProgramId,
-    owner: input.owner,
-    trackingRegistry,
-    record: Object.freeze({ ...input.seal, viewingU: checkedViewingU(input.viewingU) }),
-    ...(input.proof === undefined ? {} : { proof: checkedCustomRingProof(input.proof) }),
+    ringProgramId,
+    trackingRegistry: tracking,
+    write: Object.freeze({ owner, change: Object.freeze({ kind: "enroll", record, proof }) }),
   });
 }
 
@@ -139,14 +134,8 @@ export function checkEnrollment(
   const { seal, stored } = input;
   if (equalBytes(seal.nullifierPk, ZERO_NULLIFIER_PK))
     throw new RingError("RING_ENROLLMENT_ZERO_KEY");
-  if (stored === undefined) return;
-  if (
-    !equalBytes(stored.seal.nullifierPk, seal.nullifierPk) ||
-    !equalBytes(stored.seal.listTag, seal.listTag) ||
-    !equalBytes(stored.seal.ephU, seal.ephU) ||
-    !equalBytes(stored.seal.ciphertext, seal.ciphertext)
-  )
-    throw new RingError("RING_ENROLLMENT_KEY_MISMATCH");
+  // An Enroll names a zero prior viewing hash, the apply refuses it once the leaf exists.
+  if (stored !== undefined) throw new RingError("RING_ALREADY_ENROLLED");
 }
 
 /** Seals the nullifier key to the registry's auditor and proves it. */

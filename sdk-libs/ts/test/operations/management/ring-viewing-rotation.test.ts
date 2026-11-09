@@ -5,7 +5,6 @@ import { initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes16, Bytes32 } from "@heliuslabs/spr/interface";
 import { ShieldedKeypair, SigningKey, ViewingKey } from "@heliuslabs/spr/keypair";
 
-import { encodeEnrollmentRecord } from "../../../src/protocol/ring-rpc/relay-enroll-inputs.js";
 import {
   confirmViewingKey,
   rotateViewingKey,
@@ -60,7 +59,7 @@ function rotation(holder: ShieldedKeypair, next: ViewingKey) {
 }
 
 describe("viewing key rotation through the tracking row", () => {
-  it("requests the new key without a proof and confirms it once an apply moves the leaf", async () => {
+  it("writes the new key as a Rotate and confirms it once an apply moves the leaf", async () => {
     const holder = wallet(1);
     const { owner, client, apply } = await enrolled(holder);
     const rotated = rotation(holder, ViewingKey.generate());
@@ -76,15 +75,21 @@ describe("viewing key rotation through the tracking row", () => {
     const confirm = () =>
       confirmViewingKey({ client, owner, trackingRegistry: REGISTRY, keys: rotated.keys });
 
-    // 1. The rotation repeats the seal, carries the new key and no proof.
+    // 1. A Rotate carries the new key and the viewing hash the leaf held when the owner read it.
     const request = await update();
     if (request === undefined) throw new Error("a rotation");
     expect(request.trackingRegistry).toBe(REGISTRY);
-    expect(request.proof).toBeUndefined();
-    expect(encodeEnrollmentRecord(request.record).subarray(64, 96)).toEqual(current);
-    await expect(confirm()).rejects.toMatchObject({ code: "RING_VIEWING_KEY_NOT_PUBLISHED" });
+    expect(request.write).toEqual({
+      owner,
+      change: {
+        kind: "rotate",
+        viewingU: current,
+        priorViewingHash: viewingKeyHash(holder.viewingPublicKey().u()),
+      },
+    });
 
     // 2. A rotation Ring RPC holds confirms nothing until an apply moves the leaf.
+    await expect(confirm()).rejects.toMatchObject({ code: "RING_VIEWING_KEY_NOT_PUBLISHED" });
     apply(current);
     expect((await confirm()).viewingU).toEqual(current);
     expect(await update()).toBeUndefined();

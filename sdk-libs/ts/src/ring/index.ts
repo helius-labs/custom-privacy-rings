@@ -583,7 +583,6 @@ export type { ReaderKey } from "../operations/management/reader-access.js";
 export { createPasskey, passkeyReader, type Passkey } from "../crypto/keys/passkey.js";
 export {
   OWNER_GRANT_TAG,
-  enrollRequestOf,
   enrollmentRequest,
   enrollmentState,
   ownerGrantInstruction,
@@ -612,6 +611,7 @@ export {
   decodeTrackingRegistry,
   trackingEntryHash,
   trackingEntryOf,
+  trackingRotationOf,
   trackingRecordHash,
   verifyTrackingOpening,
   viewingKeyHash,
@@ -627,11 +627,20 @@ export {
 export { privateListKey, publicListKey } from "../protocol/membership/private-list.js";
 export { listSaltOf, listTagOf } from "../crypto/keys/list-salt.js";
 export {
+  ENROLLMENT_BATCH,
+  ENROLLMENT_SIGNATURE_LABEL,
+  EnrollmentKind,
+  SIGNED_MESSAGE_LEN,
   encodeEnrollmentRecord,
+  encodeEnrollmentWrite,
   encodeRelayEnrollInputs,
-  enrollRequestDigest,
+  signedWrite,
+  enrollmentWriteEntry,
+  type EnrollmentChange,
   type EnrollmentRecord,
+  type EnrollmentWrite,
   type RelayEnrollInputs,
+  type SignedWrite,
 } from "../protocol/ring-rpc/relay-enroll-inputs.js";
 export type { TransactionSize } from "../operations/workflow/compile.js";
 export {

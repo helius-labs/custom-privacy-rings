@@ -26,9 +26,10 @@ import {
   type EnrollmentState,
 } from "../../../src/operations/management/enrollment.js";
 import {
-  encodeEnrollmentRecord,
+  encodeEnrollmentWrite,
   encodeRelayEnrollInputs,
-  enrollRequestDigest,
+  signedWrite,
+  enrollmentWriteEntry,
 } from "../../../src/protocol/ring-rpc/relay-enroll-inputs.js";
 import { QUAD_CAPACITY, QUAD_HEIGHT } from "../../../src/protocol/membership/member-registry.js";
 import { memberOfTag } from "../../../src/protocol/membership/policy.js";
@@ -90,9 +91,11 @@ function ringClient(applied: readonly FixtureTrackingEntry[] = []) {
 beforeAll(initializePoseidon);
 
 describe("checkEnrollment", () => {
-  it("passes a first enrollment and a rotation of the viewing key", () => {
+  it("passes a first enrollment and refuses an owner a root already holds", () => {
     expect(() => checkEnrollment({ seal: SEAL, stored: undefined })).not.toThrow();
-    expect(() => checkEnrollment({ seal: SEAL, stored: stored() })).not.toThrow();
+    expect(() => checkEnrollment({ seal: SEAL, stored: stored() })).toThrow(
+      "RING_ALREADY_ENROLLED",
+    );
   });
 
   it("refuses the zero key before the owner signs", () => {
@@ -103,32 +106,23 @@ describe("checkEnrollment", () => {
       }),
     ).toThrow("RING_ENROLLMENT_ZERO_KEY");
   });
-
-  it.each(["nullifierPk", "listTag", "ephU", "ciphertext"] as const)(
-    "refuses a changed %s, an entry of a present owner moves only its viewing key",
-    (name) => {
-      expect(() =>
-        checkEnrollment({
-          seal: { ...SEAL, [name]: name === "ciphertext" ? new Uint8Array(64) : field(0x77) },
-          stored: stored(),
-        }),
-      ).toThrow("RING_ENROLLMENT_KEY_MISMATCH");
-    },
-  );
 });
 
 describe("tracking accounts", () => {
-  it("decodes a registry of 128 roots and refuses a next index past the tree", () => {
-    const data = new Uint8Array(74 + 48 * TRACKING_ROOT_HISTORY);
-    expect(data).toHaveLength(6218);
+  it("decodes a registry of its authority and 128 roots and refuses a next index past the tree", () => {
+    const data = new Uint8Array(106 + 48 * TRACKING_ROOT_HISTORY);
+    expect(data).toHaveLength(6250);
     data[0] = 3;
-    data.set(field(0x21), 1);
-    data[33] = 4;
-    const nextIndex = (value: bigint) => new DataView(data.buffer).setBigUint64(66, value, true);
+    data.set(addressBytes(OWNER, "authority"), 1);
+    data.set(field(0x21), 33);
+    data[65] = 4;
+    const nextIndex = (value: bigint) => new DataView(data.buffer).setBigUint64(98, value, true);
     nextIndex(1n);
-    data.set(TRACKING_EMPTY_ROOT, 74);
-    data.set(field(0x22), 74 + 48 * (TRACKING_ROOT_HISTORY - 1));
+    data.set(TRACKING_EMPTY_ROOT, 106);
+    data.set(field(0x22), 106 + 48 * (TRACKING_ROOT_HISTORY - 1));
     const decoded = decodeTrackingRegistry(data);
+    expect(decoded.authority).toBe(OWNER);
+    expect(decoded.ringId).toEqual(field(0x21));
     expect(decoded.nextIndex).toBe(1n);
     expect(decoded.roots).toHaveLength(TRACKING_ROOT_HISTORY);
     expect(decoded.roots[0]?.hash).toEqual(TRACKING_EMPTY_ROOT);
@@ -141,7 +135,7 @@ describe("tracking accounts", () => {
     expect(() => decodeTrackingRegistry(data)).toThrow("RING_TRACKING_INVALID");
     nextIndex(0n);
     expect(() => decodeTrackingRegistry(data)).toThrow("RING_TRACKING_INVALID");
-    expect(() => decodeTrackingRegistry(data.subarray(0, 1610))).toThrow("RING_TRACKING_INVALID");
+    expect(() => decodeTrackingRegistry(data.subarray(0, 6218))).toThrow("RING_TRACKING_INVALID");
   });
 
   it("binds the proven bit and the viewing key in the entry hash", () => {
@@ -151,8 +145,8 @@ describe("tracking accounts", () => {
       listTag: SEAL.listTag,
       viewingU: VIEWING_U,
       ciphertext: SEAL.ciphertext,
-      proven: true,
     });
+    expect(entry.proven).toBe(true);
     expect(entry.ctHash).toEqual(hashBytes(SEAL.ciphertext));
     expect(entry.viewingHash).toEqual(hashBytes(VIEWING_U));
     expect(trackingEntryHash({ ...entry, proven: false })).not.toEqual(trackingEntryHash(entry));
@@ -223,41 +217,76 @@ describe("tracking openings", () => {
 });
 
 describe("enrollment requests", () => {
-  it("names the ring's registry, the record, then the proof on a first enrollment, none on a rotation", async () => {
-    const client = await ringClient();
+  it("lays out an Enroll write as owner, kind 0, record and proof under the ring's registry", async () => {
     const first = await enrollmentRequest(
       { ringProgramId: RING, owner: OWNER, seal: SEAL, viewingU: VIEWING_U, proof: PROOF },
-      client,
+      await ringClient(),
     );
-    expect(first).toMatchObject({ ringProgramId: RING, owner: OWNER, trackingRegistry: REGISTRY });
-    const record = encodeEnrollmentRecord(first.record);
-    const data = new Reader(record);
+    expect(first).toMatchObject({ ringProgramId: RING, trackingRegistry: REGISTRY });
+    const write = encodeEnrollmentWrite(first.write);
+    expect(write).toHaveLength(417);
+    const data = new Reader(write);
+    expect(data.bytes(32, "owner")).toEqual(addressBytes(OWNER, "owner"));
+    expect(data.u8("kind")).toBe(0);
     expect(data.bytes(32, "nullifierPk")).toEqual(SEAL.nullifierPk);
     expect(data.bytes(32, "listTag")).toEqual(SEAL.listTag);
     expect(data.bytes(32, "viewingU")).toEqual(VIEWING_U);
     expect(data.bytes(32, "ephU")).toEqual(SEAL.ephU);
     expect(data.bytes(64, "ciphertext")).toEqual(SEAL.ciphertext);
+    expect(data.bytes(192, "proof")).toEqual(PROOF);
     data.done();
-    const wire = encodeRelayEnrollInputs(first);
-    expect(wire).toHaveLength(96 + 192 + 1 + 192);
-    expect(wire.subarray(96, 288)).toEqual(record);
-    const rotation = await enrollmentRequest(
-      { ringProgramId: RING, owner: OWNER, seal: SEAL, viewingU: VIEWING_U },
-      client,
-    );
-    expect(encodeRelayEnrollInputs(rotation)).toHaveLength(96 + 192 + 1);
-    // The owner's signature binds the proof, a request without it signs another digest.
-    expect(enrollRequestDigest(rotation)).not.toEqual(enrollRequestDigest(first));
+    expect(encodeRelayEnrollInputs(first).subarray(64)).toEqual(write);
+  });
+
+  it("signs a 105-byte message over the registry, the owner and the proven entry hash", () => {
+    const enroll = {
+      owner: OWNER,
+      change: { kind: "enroll", record: { ...SEAL, viewingU: VIEWING_U }, proof: PROOF },
+    } as const;
+    const entry = enrollmentWriteEntry(enroll);
+    expect(entry).toMatchObject({ proven: true, ctHash: hashBytes(SEAL.ciphertext) });
+    const signed = signedWrite(enroll, REGISTRY);
+    expect(signed.entryHash).toEqual(trackingEntryHash(entry));
+    const { message } = signed;
+    expect(message).toHaveLength(105);
+    expect(new TextDecoder().decode(message.subarray(0, 9))).toBe("CRING/enr");
+    expect(message.subarray(9, 41)).toEqual(addressBytes(REGISTRY, "registry"));
+    expect(message.subarray(41, 73)).toEqual(addressBytes(OWNER, "owner"));
+    expect(message.subarray(73)).toEqual(trackingEntryHash(entry));
+    // A write signed for one registry applies to no other.
+    expect(signedWrite(enroll, RING).message).not.toEqual(message);
+    expect(entry.priorViewingHash).toEqual(ZERO_32);
+    const prior = hashBytes(field(0x16)) as Bytes32;
+    const rotate = {
+      owner: OWNER,
+      change: { kind: "rotate", viewingU: VIEWING_U, priorViewingHash: prior },
+    } as const;
+    expect(encodeEnrollmentWrite(rotate)).toHaveLength(97);
+    expect(encodeEnrollmentWrite(rotate).subarray(65)).toEqual(prior);
+    expect(enrollmentWriteEntry(rotate)).toMatchObject({
+      nullifierPk: ZERO_32,
+      ctHash: ZERO_32,
+      listTag: ZERO_32,
+      viewingHash: hashBytes(VIEWING_U),
+      priorViewingHash: prior,
+      proven: false,
+    });
+    expect(signedWrite(rotate, REGISTRY).message).not.toEqual(message);
+    // A rotation signed against one prior key applies to no other.
+    const other = { ...rotate, change: { ...rotate.change, priorViewingHash: ZERO_32 } };
+    expect(signedWrite(other, REGISTRY).message).not.toEqual(signedWrite(rotate, REGISTRY).message);
   });
 
   it("checks the owner's leaf under the newest root before the owner signs", async () => {
-    const client = await ringClient([sealedEntry(OWNER)]);
-    const request = (seal: EnrollmentSeal) =>
-      enrollmentRequest({ ringProgramId: RING, owner: OWNER, seal, viewingU: field(0x16) }, client);
-    await expect(request(SEAL)).resolves.toBeDefined();
-    await expect(
-      request({ ...SEAL, ciphertext: new Uint8Array(64).fill(0x16) as Bytes64 }),
-    ).rejects.toMatchObject({ code: "RING_ENROLLMENT_KEY_MISMATCH" });
+    const request = async (applied: readonly FixtureTrackingEntry[]) =>
+      enrollmentRequest(
+        { ringProgramId: RING, owner: OWNER, seal: SEAL, viewingU: field(0x16), proof: PROOF },
+        await ringClient(applied),
+      );
+    await expect(request([])).resolves.toBeDefined();
+    await expect(request([sealedEntry(OWNER)])).rejects.toMatchObject({
+      code: "RING_ALREADY_ENROLLED",
+    });
     await expect(
       enrollmentRequest(
         {
@@ -265,6 +294,7 @@ describe("enrollment requests", () => {
           owner: OWNER,
           seal: { ...SEAL, nullifierPk: ZERO_NULLIFIER_PK as Bytes32 },
           viewingU: VIEWING_U,
+          proof: PROOF,
         },
         await ringClient(),
       ),
@@ -280,6 +310,7 @@ describe("enrollment requests", () => {
           owner: OWNER,
           seal: SEAL,
           viewingU: new Uint8Array(32).fill(0xff) as Bytes32,
+          proof: PROOF,
         },
         client,
       ),
@@ -323,11 +354,11 @@ describe("proveEnrollment", () => {
   const auditor = X25519Keypair.generate();
 
   function registryAccount(ringId: Bytes32): { data: Uint8Array } {
-    const data = new Uint8Array(6218);
+    const data = new Uint8Array(6250);
     data[0] = 3;
-    data.set(ringId, 1);
-    data.set(auditor.publicKey().toBytes(), 33);
-    new DataView(data.buffer).setBigUint64(66, 1n, true);
+    data.set(ringId, 33);
+    data.set(auditor.publicKey().toBytes(), 65);
+    new DataView(data.buffer).setBigUint64(98, 1n, true);
     return { data };
   }
 

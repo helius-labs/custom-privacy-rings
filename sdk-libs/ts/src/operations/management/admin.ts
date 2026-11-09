@@ -86,7 +86,7 @@ function ringKindByte(kind: RingKind): number {
   return RING_KIND_BYTES[kind];
 }
 
-/** Rust `Initialize`, the upgrade authority signs and names the four roles, storage creates the tracking registry and the pool registers the ring in the same instruction. */
+/** Rust `Initialize`, the upgrade authority signs and names the five roles, storage creates the tracking registry and the pool registers the ring in the same instruction. */
 export async function initializeRingInstruction(
   input: Readonly<{
     ringProgramId: Address;

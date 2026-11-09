@@ -3,7 +3,7 @@ import type { RequestContext, Signature } from "@heliuslabs/spr/interface";
 
 import {
   encodeRelayEnrollInputs,
-  enrollRequestDigest,
+  signedWrite,
   type RelayEnrollInputs,
 } from "../../protocol/ring-rpc/relay-enroll-inputs.js";
 import type { RelayIntent, RelayQuote } from "../../protocol/ring-rpc/ring-rpc-types.js";
@@ -12,7 +12,7 @@ import { PreparedRelay } from "../../rpc/relay.js";
 import { signMessage } from "../../rpc/ring-rpc.js";
 import { enrollmentRequest, type Enroll, type EnrollmentReadClient } from "./enrollment.js";
 
-/** The owner signs the request alone, Ring RPC writes the enrollment and asks no second signature. */
+/** The owner signs no transaction, Ring RPC batches the signed write. */
 export async function prepareEnrollRelay(
   input: Readonly<{
     inputs: RelayEnrollInputs;
@@ -21,8 +21,11 @@ export async function prepareEnrollRelay(
   }>,
 ): Promise<PreparedRelay> {
   const { inputs, owner, quote } = input;
-  if (owner.address !== inputs.owner) throw mismatch("Signer");
-  const signature = await signMessage(owner, enrollRequestDigest(inputs));
+  if (owner.address !== inputs.write.owner) throw mismatch("Signer");
+  const signature = await signMessage(
+    owner,
+    signedWrite(inputs.write, inputs.trackingRegistry).message,
+  );
   const intent: RelayIntent = {
     operation: "enroll",
     proofInputs: getBase64Decoder().decode(encodeRelayEnrollInputs(inputs)) as never,
@@ -31,7 +34,7 @@ export async function prepareEnrollRelay(
   return new PreparedRelay({ ring: inputs.ringProgramId, quote, intent });
 }
 
-/** A first enrollment or a rotation, checked against the owner's leaf before the owner signs. */
+/** A first enrollment, checked against the owner's leaf before the owner signs. */
 export async function prepareEnrollmentRelay(
   input: Readonly<{
     enroll: Enroll;

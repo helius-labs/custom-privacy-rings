@@ -418,7 +418,12 @@ function write(value: unknown): RecordWriteProofInput {
 function trackingWrite(value: unknown): TrackingWriteProofInput {
   const item = record(value);
   return {
-    entry: { member: field(item["member"]), ...trackingFields(item), proven: flag(item["proven"]) },
+    entry: {
+      member: field(item["member"]),
+      ...trackingFields(item),
+      priorViewingHash: field(item["priorViewingHash"]),
+      proven: flag(item["proven"]),
+    },
     present: flag(item["present"]),
     slot: quadPath(item["index"], item["path"]),
     lowRecord: trackingRecord(item["lowRecord"]),
@@ -1124,7 +1129,7 @@ describe("tracking apply requests", () => {
         newNextIndex,
         writes: [
           {
-            entry: { ...TRACKING_SENTINEL, proven: true },
+            entry: { ...TRACKING_SENTINEL, priorViewingHash: ZERO_32, proven: true },
             present: false,
             slot: ZERO_PATH(QUAD_HEIGHT),
             lowRecord: TRACKING_SENTINEL,
@@ -1133,6 +1138,15 @@ describe("tracking apply requests", () => {
         ],
       }) satisfies RingProofRequest;
     const full = ringProofRequestBody(enrollments(1n << 32n));
+    // Storage caps a batch at five writes, the eight write key serves it.
+    const batch = (count: number) => ({
+      ...enrollments(2n),
+      writes: Array.from({ length: count }, () => enrollments(2n).writes[0]!),
+    });
+    expect(ringCircuitType(ringProofCircuit(batch(5)))).toBe("custom-ring-apply-enrollments-8");
+    expect(() => ringProofRequestBody(batch(6))).toThrow(
+      expect.objectContaining({ details: { field: "writes", expected: 5, actual: 6 } }),
+    );
     expect(ringCircuitType(ringProofCircuit(enrollments(2n)))).toBe(
       "custom-ring-apply-enrollments-1",
     );

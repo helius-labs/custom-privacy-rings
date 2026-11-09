@@ -1,11 +1,28 @@
-/** Rust `RelayEnrollInputs` in wincode, the enrollment request Ring RPC alone writes on chain. */
-import { addressBytes, concatBytes, sha256, Writer } from "@heliuslabs/spr/internal";
+/** Rust `EnrollmentWrite` and the `RelayEnrollInputs` an owner hands Ring RPC, the sole enrollment writer. */
+import { addressBytes, concatBytes, Writer } from "@heliuslabs/spr/internal";
 import type { Address, Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 
 import { checkedCustomRingProof } from "../codec/ring-codecs.js";
 import { checkedViewingU } from "../membership/member-opening.js";
+import { memberOfTag } from "../membership/policy.js";
+import {
+  trackingEntryHash,
+  trackingEntryOf,
+  trackingRotationOf,
+  type TrackingEntry,
+} from "../membership/tracking.js";
 
-/** Rust `EnrollIxData`, the record the tracking leaf takes its fields from. */
+/** Rust `ENROLLMENT_BATCH`, the most writes one `EnrollBatch` carries. */
+export const ENROLLMENT_BATCH = 5;
+/** Rust `domain::ENROLLMENT_SIGNATURE_LABEL`. */
+export const ENROLLMENT_SIGNATURE_LABEL = new TextEncoder().encode("CRING/enr");
+/** Rust `SIGNED_MESSAGE_LEN`. */
+export const SIGNED_MESSAGE_LEN = 105;
+
+/** Rust `enrollment_kind`. */
+export const EnrollmentKind = Object.freeze({ enroll: 0, rotate: 1 } as const);
+
+/** Rust `EnrollIxData`. */
 export interface EnrollmentRecord {
   readonly nullifierPk: Bytes32;
   readonly listTag: Bytes32;
@@ -14,44 +31,80 @@ export interface EnrollmentRecord {
   readonly ciphertext: Bytes64;
 }
 
+/** Rust `EnrollmentChange`. */
+export type EnrollmentChange =
+  | Readonly<{ kind: "enroll"; record: EnrollmentRecord; proof: Uint8Array }>
+  | Readonly<{ kind: "rotate"; viewingU: Bytes32; priorViewingHash: Bytes32 }>;
+
+/** Rust `EnrollmentWrite`. */
+export interface EnrollmentWrite {
+  readonly owner: Address;
+  readonly change: EnrollmentChange;
+}
+
 export interface RelayEnrollInputs {
   readonly ringProgramId: Address;
-  readonly owner: Address;
   readonly trackingRegistry: Address;
-  readonly record: EnrollmentRecord;
-  /** The `RegisterKey` proof on a first enrollment, none on a rotation. */
-  readonly proof?: Uint8Array;
+  readonly write: EnrollmentWrite;
 }
 
-const ENROLL_REQUEST_DOMAIN = new TextEncoder().encode("zolana/ring-rpc-relay-enroll");
-
+/** `ring || registry || write`, the write as `ApplyEnrollments` carries it. */
 export function encodeRelayEnrollInputs(value: RelayEnrollInputs): Uint8Array {
-  const writer = new Writer()
-    .bytes(addressBytes(value.ringProgramId), 32, "ringProgramId")
-    .bytes(addressBytes(value.owner), 32, "owner")
-    .bytes(addressBytes(value.trackingRegistry), 32, "trackingRegistry")
-    .bytes(encodeEnrollmentRecord(value.record), 192, "record")
-    .u8(value.proof === undefined ? 0 : 1, "proof.present");
-  if (value.proof !== undefined)
-    writer.bytes(checkedCustomRingProof(value.proof), value.proof.length, "proof");
-  return writer.finish();
+  return concatBytes(
+    addressBytes(value.ringProgramId, "ringProgramId"),
+    addressBytes(value.trackingRegistry, "trackingRegistry"),
+    encodeEnrollmentWrite(value.write),
+  );
 }
 
-/**
- * The owner signs it over the domain, the ring, the owner, the registry, the record and the proof,
- * so Ring RPC can write no other enrollment for the owner. It names no quote, a retry keeps it.
- */
-export function enrollRequestDigest(value: RelayEnrollInputs): Bytes32 {
-  return sha256(
-    concatBytes(
-      ENROLL_REQUEST_DOMAIN,
-      addressBytes(value.ringProgramId),
-      addressBytes(value.owner),
-      addressBytes(value.trackingRegistry),
-      encodeEnrollmentRecord(value.record),
-      value.proof ?? new Uint8Array(),
+/** Rust `EnrollmentWrite::encode_into`, `owner || kind || body`. */
+export function encodeEnrollmentWrite(write: EnrollmentWrite): Uint8Array {
+  const writer = new Writer().bytes(addressBytes(write.owner, "owner"), 32, "owner");
+  const { change } = write;
+  if (change.kind === "rotate")
+    return writer
+      .u8(EnrollmentKind.rotate, "kind")
+      .bytes(checkedViewingU(change.viewingU), 32, "viewingU")
+      .bytes(change.priorViewingHash, 32, "priorViewingHash")
+      .finish();
+  return writer
+    .u8(EnrollmentKind.enroll, "kind")
+    .bytes(encodeEnrollmentRecord(change.record), 192, "record")
+    .bytes(checkedCustomRingProof(change.proof), 192, "proof")
+    .finish();
+}
+
+/** Rust `EnrollmentWrite::entry`. */
+export function enrollmentWriteEntry(write: EnrollmentWrite): TrackingEntry {
+  const member = memberOfTag(addressBytes(write.owner, "owner"));
+  const { change } = write;
+  return change.kind === "rotate"
+    ? trackingRotationOf({
+        member,
+        viewingU: checkedViewingU(change.viewingU),
+        priorViewingHash: change.priorViewingHash,
+      })
+    : trackingEntryOf({ member, ...change.record });
+}
+
+/** Rust `SignedWrite`, the chain and the signature check read the same entry hash. */
+export interface SignedWrite {
+  readonly entryHash: Bytes32;
+  readonly message: Uint8Array;
+}
+
+/** Rust `EnrollmentWrite::signed`, binds one registry and every entry field, the `RegisterKey` proof alone binds `eph_u`. */
+export function signedWrite(write: EnrollmentWrite, registry: Address): SignedWrite {
+  const entryHash = trackingEntryHash(enrollmentWriteEntry(write));
+  return Object.freeze({
+    entryHash,
+    message: concatBytes(
+      ENROLLMENT_SIGNATURE_LABEL,
+      addressBytes(registry, "registry"),
+      addressBytes(write.owner, "owner"),
+      entryHash,
     ),
-  ) as Bytes32;
+  });
 }
 
 /** `nullifier_pk || list_tag || viewing_u || eph_u || ciphertext`, a noncanonical viewing key refused. */

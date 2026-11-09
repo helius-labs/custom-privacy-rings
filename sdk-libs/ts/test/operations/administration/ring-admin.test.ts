@@ -225,7 +225,7 @@ describe("ring setup", () => {
 
 describe("ring account", () => {
   const MODE_OFFSET = 2;
-  const CREATED_SLOT_OFFSET = 199;
+  const CREATED_SLOT_OFFSET = 231;
   const account = () => ringPolicyData({ bump: 254 });
 
   it("reads the roles and the created slot after the auditor key", () => {
@@ -273,6 +273,7 @@ describe("role writes", () => {
     ["policy", 1],
     ["pauser", 2],
     ["cosignAdmin", 3],
+    ["enrollmentWriter", 4],
   ] as const)("hands the %s role over only with both signatures", async (role, byte) => {
     const instruction = await updateRingAuthorityInstruction({
       ringProgramId: RING,

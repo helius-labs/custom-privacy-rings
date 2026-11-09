@@ -73,7 +73,7 @@ export type RelayIntent =
   | Readonly<{ operation: "deposit"; proofInputs: Base64String; depositorSignature: Signature }>
   /** `proofInputs` is a Rust `RelayMergeInputs`, the owner signs its digest here. */
   | Readonly<{ operation: "merge"; proofInputs: Base64String; ownerSignature: Signature }>
-  /** `proofInputs` is a Rust `RelayEnrollInputs`, the owner signs its digest here and the returned message later. */
+  /** `proofInputs` is a Rust `RelayEnrollInputs`, the owner signs its write's `signedWrite` message and nothing later. */
   | Readonly<{ operation: "enroll"; proofInputs: Base64String; ownerSignature: Signature }>;
 
 /** Rust `PrepareRelayRequest`. */

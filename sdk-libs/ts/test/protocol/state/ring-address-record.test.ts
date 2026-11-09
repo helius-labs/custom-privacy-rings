@@ -19,12 +19,13 @@ import {
   TRACKING_EMPTY_ROOT,
   TRACKING_SENTINEL,
   trackingEntryHash,
-  trackingEntryOf,
   trackingRecordHash,
 } from "../../../src/protocol/membership/tracking.js";
 import {
   encodeEnrollmentRecord,
-  encodeRelayEnrollInputs,
+  encodeEnrollmentWrite,
+  signedWrite,
+  enrollmentWriteEntry,
 } from "../../../src/protocol/ring-rpc/relay-enroll-inputs.js";
 import { recordTree } from "../../helpers/member-registry.js";
 
@@ -59,7 +60,7 @@ const enroll = JSON.parse(
     | "chain_start"
     | "chain_end",
     string
-  > & { proven: boolean }
+  >
 >;
 
 const REGISTRY = address(encodeBase58(field(enroll.registry)));
@@ -73,16 +74,16 @@ const SEAL = {
   ephU: data(96, 32) as Bytes32,
   ciphertext: data(128, 64) as Bytes64,
 };
+const WRITE = {
+  owner: OWNER,
+  change: {
+    kind: "enroll",
+    record: { ...SEAL, viewingU: VIEWING_U },
+    proof: new Uint8Array(192).fill(5),
+  },
+} as const;
 /** Hashed after `initializePoseidon`. */
-const entry = () =>
-  trackingEntryOf({
-    member: field(enroll.member),
-    nullifierPk: SEAL.nullifierPk,
-    listTag: SEAL.listTag,
-    viewingU: VIEWING_U,
-    ciphertext: SEAL.ciphertext,
-    proven: enroll.proven,
-  });
+const entry = () => enrollmentWriteEntry(WRITE);
 
 beforeAll(initializePoseidon);
 
@@ -119,11 +120,15 @@ describe("empty_root.json", () => {
 });
 
 describe("tracking_enroll.json", () => {
-  it("encodes the record byte for byte as the request Ring RPC writes", () => {
-    const record = { ...SEAL, viewingU: VIEWING_U };
-    expect(hex(encodeEnrollmentRecord(record))).toBe(enroll.enroll_data);
-    const inputs = { ringProgramId: REGISTRY, owner: OWNER, trackingRegistry: REGISTRY, record };
-    expect(hex(encodeRelayEnrollInputs(inputs).subarray(96, 288))).toBe(enroll.enroll_data);
+  it("encodes the record byte for byte inside the Enroll write", () => {
+    expect(hex(encodeEnrollmentRecord(WRITE.change.record))).toBe(enroll.enroll_data);
+    expect(hex(encodeEnrollmentWrite(WRITE).subarray(33, 225))).toBe(enroll.enroll_data);
+  });
+
+  it("signs the entry hash under the registry", () => {
+    const message = signedWrite(WRITE, REGISTRY).message;
+    expect(hex(message.subarray(9, 41))).toBe(enroll.registry);
+    expect(hex(message.subarray(73))).toBe(enroll.entry_hash);
   });
 
   it("derives the owner's member from its address", () => {

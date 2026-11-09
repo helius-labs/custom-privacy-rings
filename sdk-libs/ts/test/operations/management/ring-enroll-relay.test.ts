@@ -14,7 +14,7 @@ import {
   prepareEnrollRelay,
 } from "../../../src/operations/management/enroll-relay.js";
 import {
-  enrollRequestDigest,
+  signedWrite,
   type RelayEnrollInputs,
 } from "../../../src/protocol/ring-rpc/relay-enroll-inputs.js";
 import { PendingRelaySignature, type RingRelayClient } from "../../../src/rpc/relay.js";
@@ -35,9 +35,8 @@ const ownerSigner = () => createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(
 function inputsOf(owner: Address): RelayEnrollInputs {
   return {
     ringProgramId: address(0x90),
-    owner,
     trackingRegistry: REGISTRY,
-    record: { ...SEAL, viewingU: filled(5) },
+    write: { owner, change: { kind: "rotate", viewingU: filled(5), priorViewingHash: filled(6) } },
   };
 }
 
@@ -51,7 +50,7 @@ function relayAnswering(step: Readonly<Record<string, unknown>>) {
 }
 
 describe("relayed enrollment", () => {
-  it("signs the request digest alone and takes Ring RPC's write without a second signature", async () => {
+  it("signs the write's message alone and takes Ring RPC's batch without a second signature", async () => {
     const owner = await ownerSigner();
     const inputs = inputsOf(owner.address);
     const prepared = await prepareEnrollRelay({ inputs, owner, quote });
@@ -61,7 +60,7 @@ describe("relayed enrollment", () => {
       await verifySignature(
         owner.keyPair.publicKey,
         new Uint8Array(getBase58Encoder().encode(intent.ownerSignature)) as never,
-        enrollRequestDigest(inputs),
+        signedWrite(inputs.write, inputs.trackingRegistry).message,
       ),
     ).toBe(true);
     const relay = relayAnswering({ step: "submitted", relayId: prepared.relayId() });
@@ -90,6 +89,7 @@ describe("relayed enrollment", () => {
           owner: owner.address,
           seal: SEAL,
           viewingU: filled(5),
+          proof: new Uint8Array(192).fill(6),
         },
         owner,
         quote,
@@ -100,6 +100,7 @@ describe("relayed enrollment", () => {
     const { intent } = prepared.request;
     if (intent.operation !== "enroll") throw new Error("an enroll relay");
     const wire = new Uint8Array(getBase64Encoder().encode(intent.proofInputs));
-    expect(wire.subarray(64, 96)).toEqual(addressBytes(fixture.trackingRegistry));
+    expect(wire.subarray(32, 64)).toEqual(addressBytes(fixture.trackingRegistry));
+    expect(wire.subarray(64, 96)).toEqual(addressBytes(owner.address));
   });
 });

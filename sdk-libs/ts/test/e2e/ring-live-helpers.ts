@@ -152,6 +152,7 @@ export async function createRing(client: CustomRingClient, ring: FreshRing): Pro
         policy: authority.address,
         pauser: await fresh(),
         cosignAdmin: await fresh(),
+        enrollmentWriter: await fresh(),
       },
       ...(table === undefined
         ? {}

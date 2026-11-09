@@ -72,6 +72,7 @@ describe("ring program", () => {
       policy: await fresh(),
       pauser: await fresh(),
       cosignAdmin: await fresh(),
+      enrollmentWriter: await fresh(),
     };
     await sendInstruction(
       client,

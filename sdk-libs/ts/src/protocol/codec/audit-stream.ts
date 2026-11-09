@@ -47,7 +47,7 @@ export const RECORD_ZERO_KEY_BIT = 4;
 /**
  * Rust `RecordKey`. A non-exit record names its key by the zero-key bit alone. An accepted
  * nonzero-key spend matches the owner's immutable registered key, so a reader takes an unpublished
- * key from its own address or the owner's tracking authorization and keeps it only when the
+ * key from its own address or the owner's tracking leaf and keeps it only when the
  * commitment rebuilds. An exit carries its key, the default ring registers nobody.
  */
 export type RecordKey =

@@ -34,6 +34,7 @@ import type {
 } from "../../protocol/membership/tracking.js";
 import {
   applyKeyWidth,
+  enrollmentKeyWidth,
   ringCircuitType,
   ringProvingKey,
   type RingKeyCircuit,
@@ -47,6 +48,7 @@ import {
 import { auditLayoutValue, type AuditLayout } from "../../protocol/codec/ring-disclosure-layout.js";
 import { ANONYMOUS_PARTIES } from "../../protocol/transaction/transact.js";
 import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "./types.js";
+import { ENROLLMENT_BATCH } from "../../protocol/ring-rpc/relay-enroll-inputs.js";
 import { N_PUBLIC_SLOTS } from "../../protocol/transaction/spp.js";
 
 /** Go `Opening`, one transaction slot as the ring circuits open it. */
@@ -229,7 +231,7 @@ export interface PrivateOwnerProofInput {
 /** Go `TrackingWrite`, the witness of one applied entry. */
 export interface TrackingWriteProofInput {
   readonly entry: TrackingEntry;
-  /** The owner holds a leaf at the running root, `lowRecord` is that leaf and the entry moves only its viewing hash. */
+  /** The owner holds a leaf at the running root, `lowRecord` is then that leaf. */
   readonly present: boolean;
   /** The leaf an insert takes, index 0 with zero siblings when the entry inserts nothing. */
   readonly slot: QuadPath;
@@ -311,7 +313,10 @@ export function ringProofCircuit(request: RingProofRequest): RingKeyCircuit {
         private: request.private !== undefined,
       };
     case "applyEnrollments":
-      return { family: "applyEnrollments", writes: applyCapacity(listLength(request.writes)) };
+      return {
+        family: "applyEnrollments",
+        writes: enrollmentCapacity(listLength(request.writes)),
+      };
     case "registerKey":
       return { family: "registerKey" };
     case "merge":
@@ -371,7 +376,7 @@ export function ringProofRequestBody(request: RingProofRequest): Readonly<Record
       };
     }
     case "applyEnrollments": {
-      const capacity = applyCapacity(request.writes.length);
+      const capacity = enrollmentCapacity(request.writes.length);
       return {
         ...head,
         ...applyHeadJson(request),
@@ -425,6 +430,15 @@ const MAX_LEAF_INDEX = Number(QUAD_CAPACITY) - 1;
 /** A count no apply key holds keeps its own width and fails the catalog lookup. */
 function applyCapacity(count: number): number {
   return count >= 1 && count <= APPLY_BATCH ? applyKeyWidth(count) : count;
+}
+
+/** Storage refuses a batch past `ENROLLMENT_BATCH` though a wider key exists. */
+function enrollmentCapacity(count: number): number {
+  if (count > ENROLLMENT_BATCH)
+    throw new ClientError("CLIENT_INVALID_LENGTH", {
+      details: { field: "writes", expected: ENROLLMENT_BATCH, actual: count },
+    });
+  return count >= 1 ? enrollmentKeyWidth(count) : count;
 }
 
 /** A list width no key serves fails here, before any encoding. */
@@ -815,6 +829,7 @@ function trackingWriteJson(write: TrackingWriteProofInput, name: string): Json {
   return {
     member: field(write.entry.member, `${name}.member`),
     ...trackingFieldsJson(write.entry, name),
+    priorViewingHash: field(write.entry.priorViewingHash, `${name}.priorViewingHash`),
     proven: flag(write.entry.proven),
     present: flag(write.present),
     ...quadPathJson(write.slot, name, "index", "path"),

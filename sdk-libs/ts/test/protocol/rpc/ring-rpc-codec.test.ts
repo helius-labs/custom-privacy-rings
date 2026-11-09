@@ -9,7 +9,7 @@ import { ringRpcRefusalName } from "../../../src/protocol/ring-rpc/ring-rpc-refu
 import type { RelayIntent } from "../../../src/protocol/ring-rpc/ring-rpc-types.js";
 import {
   encodeRelayEnrollInputs,
-  enrollRequestDigest,
+  signedWrite,
 } from "../../../src/protocol/ring-rpc/relay-enroll-inputs.js";
 import { readFileSync } from "node:fs";
 
@@ -92,17 +92,22 @@ describe("relay_enroll_inputs.json", () => {
   const record = bytes("record");
   const inputs = {
     ringProgramId: filled(1, 32) as Address,
-    owner: filled(2, 32) as Address,
     trackingRegistry: filled(3, 32) as Address,
-    record: {
-      nullifierPk: record.slice(0, 32) as Bytes32,
-      listTag: record.slice(32, 64) as Bytes32,
-      viewingU: record.slice(64, 96) as Bytes32,
-      ephU: record.slice(96, 128) as Bytes32,
-      ciphertext: record.slice(128, 192) as Bytes64,
+    write: {
+      owner: filled(2, 32) as Address,
+      change: {
+        kind: "enroll",
+        record: {
+          nullifierPk: record.slice(0, 32) as Bytes32,
+          listTag: record.slice(32, 64) as Bytes32,
+          viewingU: record.slice(64, 96) as Bytes32,
+          ephU: record.slice(96, 128) as Bytes32,
+          ciphertext: record.slice(128, 192) as Bytes64,
+        },
+        proof: bytes("proof"),
+      },
     },
-    proof: bytes("proof"),
-  };
+  } as const;
   const request = (intent: RelayIntent) => ({
     ring: filled(1, 32) as Address,
     quote: { feePayer: filled(2, 32) as Address, validUntilSlot: 4242n },
@@ -111,20 +116,11 @@ describe("relay_enroll_inputs.json", () => {
   const proofInputs = "AwQF" as indexerTypes.Base64String;
   const signature = filled(7, 64) as Signature;
 
-  it("encodes the inputs and hashes the digest Rust writes", () => {
+  it("encodes the inputs and the signed message Rust writes", () => {
     expect(hex(encodeRelayEnrollInputs(inputs))).toBe(vector["encoded"]);
-    expect(hex(enrollRequestDigest(inputs))).toBe(vector["request_digest"]);
-  });
-
-  it("moves the digest with a changed field", () => {
-    expect(
-      hex(
-        enrollRequestDigest({
-          ...inputs,
-          record: { ...inputs.record, listTag: new Uint8Array(32).fill(9) as Bytes32 },
-        }),
-      ),
-    ).not.toBe(vector["request_digest"]);
+    expect(hex(signedWrite(inputs.write, inputs.trackingRegistry).message)).toBe(
+      vector["signed_message"],
+    );
   });
 
   it("carries each signature byte for byte as Rust", () => {

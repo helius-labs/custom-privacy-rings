@@ -19,6 +19,8 @@ export interface RingRoles {
   readonly pauser: Address;
   /** Signs `SetCoSigner` and `ClearCoSigner`. */
   readonly cosignAdmin: Address;
+  /** Signs `EnrollBatch`, the one path into the tracking tree. */
+  readonly enrollmentWriter: Address;
 }
 
 /** Rust `RingRole`, the role `UpdateAuthority` rotates. */
@@ -30,6 +32,7 @@ export const RING_ROLE_BYTES: Readonly<Record<RingAuthorityRole, number>> = Obje
   policy: 1,
   pauser: 2,
   cosignAdmin: 3,
+  enrollmentWriter: 4,
 });
 
 /** `RingRoles` field order. */
@@ -38,6 +41,7 @@ export const RING_ROLES: readonly RingAuthorityRole[] = Object.freeze([
   "policy",
   "pauser",
   "cosignAdmin",
+  "enrollmentWriter",
 ]);
 
 /** Rust `CustomRingCoSigner`, the signer's `CoSigner` record. */
@@ -127,7 +131,7 @@ export const RING_CO_SIGNER_SIZE = 35;
 /** Rust `CoSignerCounts::CLASSES`. */
 const RING_COSIGN_CLASSES = [RING_COSIGN_TRANSFERS, RING_COSIGN_DEPOSITS, RING_COSIGN_WITHDRAWALS];
 export const RING_POLICY_DISCRIMINATOR = 15;
-export const RING_POLICY_SIZE = 1125;
+export const RING_POLICY_SIZE = 1157;
 export const STORAGE_REGISTRY_DISCRIMINATOR = 1;
 export const STORAGE_REGISTRY_SIZE = 1657;
 

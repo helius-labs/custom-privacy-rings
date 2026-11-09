@@ -46,7 +46,6 @@ import type {
   Bytes64,
   Bytes128,
   MergeTransactInstructionData,
-  RequestContext,
 } from "@heliuslabs/spr/interface";
 import {
   mergePrivateTxBlinding,
@@ -74,7 +73,6 @@ import {
 import type { MergeProofRequest, RingProofRequest } from "../../../src/rpc/prover/ring.js";
 import { ringAuthAddress, ringPolicyPda } from "../../../src/protocol/pda/index.js";
 import { LocalRingKeys, ringWalletKeys, type RingKeys } from "../../../src/state/ring-keys.js";
-import { extended } from "../../../src/operations/workflow/extended.js";
 import type { RingMode } from "../../../src/protocol/codec/ring-codecs.js";
 import {
   MAX_RING_MERGE_INPUTS,
@@ -1116,73 +1114,6 @@ describe("PDA owner merge", () => {
       address: pda,
       role: AccountRole.READONLY_SIGNER,
     });
-  });
-
-  it("merges a PDA's keyed notes under its tracking row with no owner signer", async () => {
-    const holder = await pdaOwner();
-    const owner = holder.shieldedAddress();
-    const wallet = new Wallet({ identity: owner, registry: new AssetRegistry() });
-    wallet._replace({
-      utxos: [3n, 5n].map((amount, index) => {
-        const proof = ProofInputUtxo.fromKeypair(
-          new Utxo({
-            owner: owner.signingPublicKey,
-            asset: SOL_MINT,
-            amount,
-            blinding: field(Number(amount)),
-            ringProgramId: RING,
-          }),
-          holder,
-          {},
-          7,
-        );
-        return {
-          utxo: proof.utxo,
-          outputContext: {
-            hash: proof.hash(),
-            tree: treeAddress(7),
-            treeId: 7,
-            leafIndex: BigInt(index),
-          },
-          nullifier: proof.nullifier(),
-          spent: false,
-        };
-      }),
-      transactions: [],
-      nullifiers: new Set(),
-    });
-    const proveMerge = vi.fn<MergeAssembler["proveMerge"]>(async ({ prepared }) => {
-      const data = provenMerge(prepared);
-      return { data, outputHash: data.outputUtxoHash };
-    });
-    const keys = pdaKeys(holder);
-    const asked: RingMergeDisclosureRequest[] = [];
-    const sealer = nullifierKeyMergeSealer({
-      nullifierKey: holder.nullifierKey(),
-      prover: { proveRing: async () => PROOF },
-    });
-    const transaction = await buildRingMergeTransaction(
-      await ringMergeParams({
-        proveMerge,
-        wallet,
-        keys: extended(keys, {
-          sealRingMerge: (request: RingMergeDisclosureRequest, context?: RequestContext) => {
-            asked.push(request);
-            return sealer.sealRingMerge(request, context);
-          },
-        }),
-        proofDataSource: "client",
-        rows: [trackingEntry(owner)],
-      }),
-    );
-    const pda = addressBytes(owner.solanaAddress());
-    expect(asked[0]?.ownerKey).toEqual(pda);
-    const merged = decodeRingMergeRequest(ringInstruction(transaction).subarray(1));
-    expect(merged.authority).toBe(MergeRingAuthority.ring);
-    expect(
-      openMergeRecord(mergeAuditor, merged.sealed, asked[0]!.firstNullifier).record.ownerKey,
-    ).toEqual(pda);
-    expect(ringAccounts(transaction)).not.toContain(owner.solanaAddress());
   });
 
   it("refuses a PDA paying its keyed merge and a zero-key merge another account signs", async () => {

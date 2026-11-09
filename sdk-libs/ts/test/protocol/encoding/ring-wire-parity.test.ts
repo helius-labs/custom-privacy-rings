@@ -258,7 +258,7 @@ interface TrackingApplication {
   readonly statement_hash: string;
   readonly writes: readonly Readonly<{
     entry: Omit<TrackingRow, "next" | "leaf_hash"> &
-      Readonly<{ proven: boolean; entry_hash: string }>;
+      Readonly<{ prior_viewing_hash: string; proven: boolean; entry_hash: string }>;
     low: TrackingRow;
   }>[];
 }
@@ -273,7 +273,11 @@ describe("tracking-records.json", () => {
       viewingHash: field(row.viewing_hash),
     }) satisfies TrackingFields;
   const entryOf = (row: TrackingApplication["writes"][number]["entry"]) =>
-    ({ ...fieldsOf(row), proven: row.proven }) satisfies TrackingEntry;
+    ({
+      ...fieldsOf(row),
+      priorViewingHash: field(row.prior_viewing_hash),
+      proven: row.proven,
+    }) satisfies TrackingEntry;
   const recordOf = (row: TrackingRow) =>
     ({ ...fieldsOf(row), next: field(row.next) }) satisfies TrackingRecord;
 

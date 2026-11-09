@@ -25,13 +25,17 @@ export type RingKeyCircuit =
 
 /** Go `registry.ApplyWidths`. */
 const APPLY_WIDTHS: readonly number[] = Object.freeze([1, 2, 4, 8, APPLY_BATCH]);
+/** Go `registry.EnrollmentWidths`, the widest serves an `ENROLLMENT_BATCH`. */
+const ENROLLMENT_WIDTHS: readonly number[] = Object.freeze([1, 2, 4, 8]);
 
 /** Rust `RingCircuit::apply_records`, the narrowest apply key holding `count` writes. */
 export function applyKeyWidth(count: number): number {
-  const width = APPLY_WIDTHS.find((writes) => count <= writes);
-  if (count < 1 || width === undefined)
-    throw new RingError("RING_STORAGE_WRITE_INVALID", { details: { reason: "UnsupportedBatch" } });
-  return width;
+  return keyWidth(APPLY_WIDTHS, count);
+}
+
+/** The narrowest apply enrollments key holding `count` writes. */
+export function enrollmentKeyWidth(count: number): number {
+  return keyWidth(ENROLLMENT_WIDTHS, count);
 }
 
 /** Rust `RING_KEYS`, every ring key in its order, `name` the circuit type the prover serves. */
@@ -51,7 +55,7 @@ export const RING_KEYS: readonly Readonly<{
             ] as const,
         ),
       ),
-      ...APPLY_WIDTHS.map(
+      ...ENROLLMENT_WIDTHS.map(
         (writes) =>
           [
             { family: "applyEnrollments", writes },
@@ -120,4 +124,11 @@ function sameRingCircuit(left: RingKeyCircuit, right: RingKeyCircuit): boolean {
       .flat();
   const [first, second] = [shape(left), shape(right)];
   return first.length === second.length && first.every((value, i) => value === second[i]);
+}
+
+function keyWidth(widths: readonly number[], count: number): number {
+  const width = widths.find((writes) => count <= writes);
+  if (count < 1 || width === undefined)
+    throw new RingError("RING_STORAGE_WRITE_INVALID", { details: { reason: "UnsupportedBatch" } });
+  return width;
 }
