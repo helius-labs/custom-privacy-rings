@@ -115,10 +115,12 @@ pub enum EnrollmentChange<'a> {
         ix: &'a EnrollIxData,
         proof: &'a CustomRingProof,
     },
-    /// Moves a present owner's viewing key from `prior_viewing_hash`, an absent owner stays absent.
+    /// Moves a present owner's viewing key from the prior key at `prior_seq`, an absent owner stays absent.
     Rotate {
         viewing_u: &'a [u8; 32],
-        prior_viewing_hash: &'a [u8; 32],
+        prior_viewing_u: &'a [u8; 32],
+        /// Little endian, the new key takes `prior_seq + 1`.
+        prior_seq: &'a [u8; 8],
     },
 }
 
@@ -230,10 +232,12 @@ impl<'a> EnrollmentWrite<'a> {
             }
             enrollment_kind::ROTATE => {
                 let (viewing_u, rest) = rest.split_first_chunk::<32>().ok_or(invalid)?;
-                let (prior_viewing_hash, rest) = rest.split_first_chunk::<32>().ok_or(invalid)?;
+                let (prior_viewing_u, rest) = rest.split_first_chunk::<32>().ok_or(invalid)?;
+                let (prior_seq, rest) = rest.split_first_chunk::<8>().ok_or(invalid)?;
                 let change = EnrollmentChange::Rotate {
                     viewing_u,
-                    prior_viewing_hash,
+                    prior_viewing_u,
+                    prior_seq,
                 };
                 (change, rest)
             }
@@ -253,11 +257,13 @@ impl<'a> EnrollmentWrite<'a> {
             }
             EnrollmentChange::Rotate {
                 viewing_u,
-                prior_viewing_hash,
+                prior_viewing_u,
+                prior_seq,
             } => {
                 data.push(enrollment_kind::ROTATE);
                 data.extend_from_slice(viewing_u);
-                data.extend_from_slice(prior_viewing_hash);
+                data.extend_from_slice(prior_viewing_u);
+                data.extend_from_slice(prior_seq);
             }
         }
     }
@@ -275,8 +281,14 @@ impl<'a> EnrollmentWrite<'a> {
             EnrollmentChange::Enroll { ix, .. } => TrackingEntry::from_enroll(self.owner, ix),
             EnrollmentChange::Rotate {
                 viewing_u,
-                prior_viewing_hash,
-            } => TrackingEntry::from_rotation(self.owner, viewing_u, prior_viewing_hash),
+                prior_viewing_u,
+                prior_seq,
+            } => TrackingEntry::from_rotation(
+                self.owner,
+                viewing_u,
+                prior_viewing_u,
+                u64::from_le_bytes(*prior_seq),
+            ),
         }
     }
 

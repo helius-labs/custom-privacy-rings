@@ -29,6 +29,8 @@ pub const REGISTER_KEY: u32 = 0x4352_5247;
 pub const TRACKING_LEAF: u32 = 0x4352_544b;
 /// `"CRTQ"`
 pub const TRACKING_ENTRY: u32 = 0x4352_5451;
+/// `"CRVH"`
+pub const VIEWING_HASH: u32 = 0x4352_5648;
 /// `"CRTA"`
 pub const APPLY_ENROLLMENTS: u32 = 0x4352_5441;
 /// `"CRMG"`
