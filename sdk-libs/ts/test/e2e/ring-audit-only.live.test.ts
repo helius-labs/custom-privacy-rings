@@ -5,6 +5,7 @@ import { signSendAndConfirm } from "./live-helpers.js";
 import {
   airdrop,
   auditedRingAmounts,
+  enroll,
   freshActor,
   readableRing,
   ringHoldings,
@@ -17,9 +18,8 @@ const PAYMENT = 250_000_000n;
 
 describe("confidential audit-only ring", () => {
   it("moves a deposit to another member and opens the transfer to the auditor", async () => {
-    const { client, ringProgramId, authority, ringRpc, target } = await readableRing({
-      kind: "auditOnly",
-    });
+    const ring = await readableRing({ kind: "auditOnly" });
+    const { client, ringProgramId, authority, ringRpc, target } = ring;
     const sender = await freshActor(client);
     const recipient = await freshActor(client);
     await airdrop(client, sender.signer.address);
@@ -33,6 +33,7 @@ describe("confidential audit-only ring", () => {
     await signSendAndConfirm(client, deposit, [sender.signer]);
     await sync(client, sender);
     expect(ringHoldings(sender, ringProgramId)).toBe(DEPOSIT);
+    await enroll({ ring, payer: sender.signer, owner: sender });
 
     const transfer = await buildRingTransferTransaction({
       client,
