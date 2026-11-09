@@ -223,8 +223,8 @@ fn an_anonymous_ring_hides_owners_and_preserves_auditor_access() -> Result<()> {
         "the first nullifier fixes the transaction viewing key of every attempt"
     );
     assert!(
-        indexed.output_slots[0].payload.is_empty(),
-        "output 0 is the sender change and carries no body"
+        !indexed.output_slots[0].payload.is_empty(),
+        "output 0 is the sender change and carries its record body"
     );
     let (auditor_message, sender_bundle) = indexed.messages.split_last().unwrap();
     assert_eq!(auditor_message.view_tag, auditor_tag);
