@@ -375,6 +375,19 @@ fn the_wide_key() -> Result<TransferShape> {
 }
 
 /// One leg past the narrow key of the same outputs selects the wide key.
+/// The most notes an SPP shape of the key's output width spends, a key wider than SPP proves no frame.
+fn widest_spp_inputs(shape: TransferShape) -> usize {
+    SPP_SUPPORTED_SHAPES
+        .iter()
+        .filter(|spp| {
+            spp.n_outputs() == usize::from(shape.outputs)
+                && spp.n_inputs() <= usize::from(shape.inputs)
+        })
+        .map(Shape::n_inputs)
+        .max()
+        .unwrap_or(1)
+}
+
 /// The input cap of an anonymous sixteen output payout.
 fn sixteen_output_payouts(spend: Spend, shape: TransferShape) -> Option<usize> {
     (spend.rail() == RingRail::Anonymous && shape.outputs == 16).then_some(2)
@@ -889,7 +902,7 @@ impl ShapeRing<'_> {
                 let mut settled_legs = 0;
                 let counts = match payout_cap {
                     Some(cap) => [1, cap],
-                    None => [1, usize::from(shape.inputs)],
+                    None => [1, widest_spp_inputs(shape)],
                 };
                 for count in counts {
                     let notes = match unspent.remove(&(kind, count)) {
