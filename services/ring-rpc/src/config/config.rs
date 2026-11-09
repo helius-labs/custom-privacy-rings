@@ -160,6 +160,14 @@ pub struct ServeArgs {
         requires_all = ["prover_url", "enrollment_apply_rings"]
     )]
     pub enrollment_applier_key_file: Option<PathBuf>,
+    /// Lamports the enrollment writer spends on batch fees over the process life, zero refuses every write.
+    #[arg(
+        long,
+        env = "RING_RPC_ENROLLMENT_BUDGET_LAMPORTS",
+        default_value_t = 0,
+        requires = "enrollment_applier_key_file"
+    )]
+    pub enrollment_budget_lamports: u64,
     /// A ring whose pending enrollments the applier sends.
     #[arg(
         long = "enrollment-apply-ring",
