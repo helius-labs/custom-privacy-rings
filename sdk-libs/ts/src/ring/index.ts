@@ -430,7 +430,7 @@ export type {
   UtxoOwner,
 } from "../operations/audit/audit.js";
 export { readRegisteredKeys } from "../operations/audit/owner-keys.js";
-export type { OwnerNullifierKey } from "../operations/audit/owner-keys.js";
+export type { OwnerNullifierKey, RegisteredKeysClient } from "../operations/audit/owner-keys.js";
 export {
   auditRingMerges,
   classifyMergeNullifier,
