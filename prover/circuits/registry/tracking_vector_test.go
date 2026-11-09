@@ -4,7 +4,6 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/helius-labs/zolana-custom-rings/prover/circuits/registry"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringregistry"
 )
@@ -80,7 +79,7 @@ func TestApplyEnrollmentsMatchesRustVectors(t *testing.T) {
 					t.Fatalf("write %d low leaf differs from Rust", i)
 				}
 			}
-			b := applyEnrollments(t, tree, registry.ApplyBatch, app.ChainStart.Int, entries...)
+			b := applyEnrollments(t, tree, widestEnrollment(), app.ChainStart.Int, entries...)
 			c := b.circuit
 			for name, pair := range map[string][2]*big.Int{
 				"old root":       {ringtest.AsBigInt(c.OldRoot), app.OldRoot.Int},

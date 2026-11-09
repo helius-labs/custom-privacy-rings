@@ -156,7 +156,7 @@ func (c *independentPathsCircuit) Define(api frontend.API) error {
 }
 
 func TestSharedQuadProofConstraintCounts(t *testing.T) {
-	pinned := map[int]int{1: 3103, 2: 5892, 4: 11486, 8: 21494, 16: 41502, 33: 78638, 69: 155258, 97: 207674, 100: 213290, 197: 394874}
+	pinned := map[int]int{1: 4963, 2: 9612, 4: 18926, 8: 36374, 16: 71262, 33: 140018, 69: 283598, 97: 388094, 100: 399290, 197: 761294}
 	for _, count := range []int{1, 2, 4, 8, 16, 33, 69, 97, 100, 197} {
 		shared, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, sharedCircuit(t, count))
 		if err != nil {

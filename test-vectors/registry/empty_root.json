@@ -1,6 +1,6 @@
 {
   "description": "The sentinel leaf and the root of the tree holding only it, for the policy registry and the tracking registry. Produced by program-libs/member-registry/tests/empty_root_vector.rs.",
-  "empty_root": "053b2136ce0e6cffb89cb76c7a81b6d7e1bd424159ff4579f284a7e5f198956d",
+  "empty_root": "295ec16f1ff587f0269eb21ddf079a2b44cb3e0c6852f35431ab02f7651ac967",
   "sentinel": {
     "leaf_hash": "2adbf3112973e94609e90102fb39fd13905f02e30e8d57a4e58f51f2e5c7443d",
     "limits": [
@@ -14,9 +14,9 @@
     "next": "30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000000",
     "withdrawal_threshold": "0"
   },
-  "tracking_empty_root": "2425fb189630d5f84bcc34f42804377d8564a55959c92ad1fa6fee86a590614e",
+  "tracking_empty_root": "197ce7e4cc6e23ed6f4d5b32303dd91e032f9afdc7f8dd424ab2638d245e4559",
   "tracking_sentinel": {
-    "leaf_hash": "2871e041079b3de429d955f47273a6bd9f70e0e8e90d40cee0434f78d97c1627",
+    "leaf_hash": "1f21a560552de4e2c7e08cec27aaeaf7f4605b71556afef9f790fb3a546a8aa1",
     "member": "0000000000000000000000000000000000000000000000000000000000000000",
     "next": "30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000000"
   },

@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 
 import emptyVector from "../../../../../test-vectors/registry/empty_root.json" with { type: "json" };
 import { initializePoseidon } from "@heliuslabs/spr";
-import { encodeBase58, poseidon, solanaOwnerIdentity } from "@heliuslabs/spr/internal";
+import { encodeBase58, poseidon } from "@heliuslabs/spr/internal";
 import type { Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 
 import {
@@ -52,11 +52,12 @@ const enroll = JSON.parse(
   Record<
     | "registry"
     | "owner"
-    | "member"
-    | "ct_hash"
-    | "viewing_hash"
-    | "enroll_data"
-    | "entry_hash"
+    | "enroll_write"
+    | "enroll_entry_hash"
+    | "enroll_message"
+    | "rotate_write"
+    | "rotate_entry_hash"
+    | "rotate_message"
     | "chain_start"
     | "chain_end",
     string
@@ -65,8 +66,10 @@ const enroll = JSON.parse(
 
 const REGISTRY = address(encodeBase58(field(enroll.registry)));
 const OWNER = address(encodeBase58(field(enroll.owner)));
-const data = (from: number, length: number) =>
-  Uint8Array.from(Buffer.from(enroll.enroll_data.slice(2 * from, 2 * (from + length)), "hex"));
+const bytesOf = (written: string, from: number, length: number) =>
+  Uint8Array.from(Buffer.from(written.slice(2 * from, 2 * (from + length)), "hex"));
+/** A write is owner || kind || body. */
+const data = (from: number, length: number) => bytesOf(enroll.enroll_write, 33 + from, length);
 const VIEWING_U = data(64, 32) as Bytes32;
 const SEAL = {
   nullifierPk: data(0, 32) as Bytes32,
@@ -79,7 +82,15 @@ const WRITE = {
   change: {
     kind: "enroll",
     record: { ...SEAL, viewingU: VIEWING_U },
-    proof: new Uint8Array(192).fill(5),
+    proof: data(192, 192),
+  },
+} as const;
+const ROTATE = {
+  owner: OWNER,
+  change: {
+    kind: "rotate",
+    viewingU: bytesOf(enroll.rotate_write, 33, 32) as Bytes32,
+    priorViewingHash: bytesOf(enroll.rotate_write, 65, 32) as Bytes32,
   },
 } as const;
 /** Hashed after `initializePoseidon`. */
@@ -120,30 +131,28 @@ describe("empty_root.json", () => {
 });
 
 describe("tracking_enroll.json", () => {
-  it("encodes the record byte for byte inside the Enroll write", () => {
-    expect(hex(encodeEnrollmentRecord(WRITE.change.record))).toBe(enroll.enroll_data);
-    expect(hex(encodeEnrollmentWrite(WRITE).subarray(33, 225))).toBe(enroll.enroll_data);
+  it("encodes each write byte for byte", () => {
+    expect(hex(encodeEnrollmentWrite(WRITE))).toBe(enroll.enroll_write);
+    expect(hex(encodeEnrollmentRecord(WRITE.change.record))).toBe(
+      enroll.enroll_write.slice(2 * 33, 2 * 225),
+    );
+    expect(hex(encodeEnrollmentWrite(ROTATE))).toBe(enroll.rotate_write);
   });
 
-  it("signs the entry hash under the registry", () => {
-    const message = signedWrite(WRITE, REGISTRY).message;
-    expect(hex(message.subarray(9, 41))).toBe(enroll.registry);
-    expect(hex(message.subarray(73))).toBe(enroll.entry_hash);
+  it("signs each entry hash under the registry", () => {
+    expect(hex(signedWrite(WRITE, REGISTRY).message)).toBe(enroll.enroll_message);
+    expect(hex(signedWrite(ROTATE, REGISTRY).message)).toBe(enroll.rotate_message);
   });
 
-  it("derives the owner's member from its address", () => {
-    expect(hex(solanaOwnerIdentity(field(enroll.owner)))).toBe(enroll.member);
-  });
-
-  it("hashes the entry from the instruction data and chains it from the apply's start", () => {
-    const ENTRY = entry();
-    expect(hex(ENTRY.ctHash)).toBe(enroll.ct_hash);
-    expect(hex(ENTRY.viewingHash)).toBe(enroll.viewing_hash);
-    expect(hex(trackingEntryHash(ENTRY))).toBe(enroll.entry_hash);
-    expect(hex(chainLink(field(enroll.chain_start), trackingEntryHash(ENTRY)))).toBe(
+  it("hashes both entries and chains them from the apply's start", () => {
+    const first = trackingEntryHash(entry());
+    const rotation = trackingEntryHash(enrollmentWriteEntry(ROTATE));
+    expect(hex(first)).toBe(enroll.enroll_entry_hash);
+    expect(hex(rotation)).toBe(enroll.rotate_entry_hash);
+    expect(hex(chainLink(chainLink(field(enroll.chain_start), first), rotation))).toBe(
       enroll.chain_end,
     );
-    const moved = { ...ENTRY, listTag: field(enroll.member) };
-    expect(hex(trackingEntryHash(moved))).not.toBe(enroll.entry_hash);
+    const moved = { ...entry(), listTag: field(enroll.rotate_entry_hash) };
+    expect(hex(trackingEntryHash(moved))).not.toBe(enroll.enroll_entry_hash);
   });
 });

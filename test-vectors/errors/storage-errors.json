@@ -17,11 +17,7 @@
   "UnsupportedBatch": 9016,
   "NonCanonicalViewingKey": 9021,
   "InvalidTrackingRegistry": 9022,
-  "InvalidTrackingAuthorization": 9023,
-  "EnrollmentAlreadyApplied": 9024,
-  "EnrollmentKeyFinal": 9025,
   "ZeroNullifierKey": 9028,
-  "EnrollmentProofShape": 9029,
   "NoEnrollmentsNamed": 9030,
   "InvalidOwnerGrant": 9031,
   "InvalidReaderKey": 9032,
@@ -29,5 +25,8 @@
   "InvalidAssetWrite": 9034,
   "PrivateWriteWithoutTracking": 9035,
   "TrackingTreeFull": 9036,
-  "RootHistoryRetained": 9037
+  "RootHistoryRetained": 9037,
+  "InvalidStorageProgram": 9041,
+  "InvalidSignatureInstruction": 9042,
+  "OwnerSignatureMismatch": 9043
 }
