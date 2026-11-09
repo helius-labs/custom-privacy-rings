@@ -160,6 +160,7 @@ impl RingRpcSpec<'_> {
                 ),
                 payer: self.env.payer.insecure_clone(),
                 rings: vec![self.ring],
+                budget_lamports: u64::MAX,
             }
             .applier(),
         );

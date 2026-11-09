@@ -659,6 +659,7 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
         --fee-payer-key-file "$ring_dir/fee-payer.secret" \
         --enrollment-applier-key-file "$ring_dir/enrollment-writer.key" \
         --enrollment-apply-ring "$(IFS=,; echo "${e2e_rings[*]}")" \
+        --enrollment-budget-lamports 1000000000 \
         > "$workdir/ring-rpc-$reader_grants.log" 2>&1 &
       printf 'waiting for ring rpc %s ' "$ring_rpc_url"
       for _ in $(seq 1 60); do
