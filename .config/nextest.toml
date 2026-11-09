@@ -23,7 +23,6 @@ test-group = "serial-validator"
 [[profile.ci.overrides]]
 filter = "package(custom-ring-test-validator)"
 test-group = "serial-validator"
-retries = 2
 
 # Real proofs and deposits for each corner of every key, ahead of `shapes::sweep_` because the first match wins.
 [[profile.default.overrides]]
