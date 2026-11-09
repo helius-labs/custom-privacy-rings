@@ -676,25 +676,32 @@ export async function auditRing(
     ...(input.knownUtxos === undefined ? {} : { fallback: input.knownUtxos }),
     ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
   });
-  const audited = auditConfirmedRingHistory({
+  // 1. Decrypt every row, each output joins the index as it opens.
+  const opened = openedHistory({
     auditor: input.auditor,
     ringProgramId: input.ringProgramId,
     history,
     rows,
     known,
   });
+  // 2. Read the registered keys of the owners whose records name no key.
   const registered = await readRegisteredKeys(
     {
       client: input.client,
       ringProgramId: input.ringProgramId,
-      owners: audited.flatMap(unresolvedOwners),
+      owners: opened.flatMap(({ audited }) => unresolvedOwners(audited)),
     },
     context,
   );
+  // 3. A key the commitment rebuilds under indexes its note's nullifier before the last pass, a
+  // spend in the same page then resolves under that key's held secret.
   const ringId = ringIdField(input.ringProgramId);
-  const transactions = Object.freeze(
-    audited.map((transaction) => resolveRingOwners(transaction, ringId, registered)),
-  );
+  const resolved = opened.map((entry) => {
+    const audited = resolveRingOwners(entry.audited, ringId, registered);
+    if (audited !== entry.audited) indexOutputs(known, audited);
+    return { ...entry, audited };
+  });
+  const transactions = settledHistory(resolved, known);
   return Object.freeze({
     transactions,
     skipped: Object.freeze(rows.skipped),
@@ -703,15 +710,25 @@ export async function auditRing(
 }
 
 /** An input a later row opens resolves on the last pass. */
-export function auditConfirmedRingHistory(
-  input: Readonly<{
-    auditor: X25519Keypair;
-    ringProgramId: Address;
-    history: readonly ConfirmedRingTransaction[];
-    rows: RowOrigins;
-    known: KnownUtxoIndex;
-  }>,
-): readonly AuditedRingTransaction[] {
+export function auditConfirmedRingHistory(input: HistoryAudit): readonly AuditedRingTransaction[] {
+  return settledHistory(openedHistory(input), input.known);
+}
+
+interface HistoryAudit {
+  readonly auditor: X25519Keypair;
+  readonly ringProgramId: Address;
+  readonly history: readonly ConfirmedRingTransaction[];
+  readonly rows: RowOrigins;
+  readonly known: KnownUtxoIndex;
+}
+
+interface OpenedTransfer {
+  readonly audited: AuditedRingTransaction;
+  readonly senderNamed: boolean;
+}
+
+/** Merges open first, a transfer input that spends a merge output resolves at its own row. */
+function openedHistory(input: HistoryAudit): readonly OpenedTransfer[] {
   const { known, rows } = input;
   for (const confirmed of input.history) {
     rows.attempt(confirmed.transaction, () => {
@@ -729,7 +746,7 @@ export function auditConfirmedRingHistory(
       }
     });
   }
-  const opened: { audited: AuditedRingTransaction; senderNamed: boolean }[] = [];
+  const opened: OpenedTransfer[] = [];
   for (const confirmed of input.history) {
     if (confirmed.kind !== "transfer") continue;
     const audited = rows.attempt(confirmed.transaction, () =>
@@ -743,9 +760,16 @@ export function auditConfirmedRingHistory(
       }),
     );
     if (audited === undefined) continue;
-    for (const { commitment, utxo } of auditedUtxos(audited)) known.insert(commitment, utxo);
+    indexOutputs(known, audited);
     opened.push({ audited, senderNamed: isAnonymousFrame(confirmed.rail) });
   }
+  return opened;
+}
+
+function settledHistory(
+  opened: readonly OpenedTransfer[],
+  known: KnownUtxoIndex,
+): readonly AuditedRingTransaction[] {
   return Object.freeze(
     opened.map(({ audited, senderNamed }) => {
       const inputs = Object.freeze(
@@ -759,6 +783,10 @@ export function auditConfirmedRingHistory(
       return Object.freeze({ ...audited, ...(sender === undefined ? {} : { sender }), inputs });
     }),
   );
+}
+
+function indexOutputs(known: KnownUtxoIndex, audited: AuditedRingTransaction): void {
+  for (const { commitment, utxo } of auditedUtxos(audited)) known.insert(commitment, utxo);
 }
 
 /** A count off the input map, a default bit off a note or an opening off a default bit. */

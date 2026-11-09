@@ -659,6 +659,29 @@ describe("auditRing", () => {
     });
   });
 
+  it("resolves a spend in the page of its creation under the secret of the registered key", async () => {
+    const auditor = X25519Keypair.generate();
+    const created = sealedTransfer({ auditor: auditor.publicKey() });
+    const keySecret = field(`${"00".repeat(31)}33`);
+    // The caller holds the registered key's secret alone, no owner secret.
+    const secrets: NullifierSecrets = {
+      secret: (nullifierPk) =>
+        equalBytes(nullifierPk, OTHER_NULLIFIER_PK) ? keySecret : undefined,
+    };
+    const spend = spendOf(auditor, created, keySecret);
+    const page = await scan([created.transaction, spend.transaction], TRANSFERS, {
+      auditor,
+      secrets,
+    });
+    const [audited, spent] = page.transactions;
+    expect(audited?.outputs[0]?.opening).toMatchObject({
+      kind: "ring",
+      utxo: { nullifierPk: OTHER_NULLIFIER_PK },
+    });
+    expect(spent?.inputs[0]?.hash).toEqual(spend.commitment);
+    expect(spent?.inputs[0]?.opening).toMatchObject({ kind: "opened" });
+  });
+
   it("keeps a note under a foreign key unkeyed and its spend unresolved", async () => {
     const auditor = X25519Keypair.generate();
     const foreign = field(`${"00".repeat(31)}41`);
