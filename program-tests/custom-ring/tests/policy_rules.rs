@@ -21,8 +21,10 @@ use solana_signer::Signer;
 use spr_client::{IndexerRpcConfig, Rpc, UtxoScan};
 use spr_keypair::{ShieldedKeypair, X25519Keypair};
 use spr_transaction::Utxo;
-use zolana_ring_client::{AuditedTransaction, OutputOpening, RingConfidentialScan, RingScan};
-use zolana_ring_policy::{ListId, Member};
+use zolana_ring_client::{
+    owner_record_key, AuditedTransaction, OutputOpening, RingConfidentialScan, RingScan,
+};
+use zolana_ring_policy::ListId;
 
 /// `RELEASED` as `ring.toml` spells it.
 const RELEASED_TOML: &str = r#"[policy]
@@ -179,7 +181,7 @@ fn the_cli_pins_the_released_rows_and_governs_its_demo_transfers() -> Result<()>
         .collect();
     assert_eq!(owners.len(), 2, "change and recipient stay in the ring");
     for (slot_index, owner_key) in owners {
-        let read = env.member_record(ring, Member::owner_tag(&owner_key)?)?;
+        let read = env.member_record(ring, owner_record_key(&owner_key)?)?;
         assert!(read.listed(ListId::Allow), "slot {slot_index} is enrolled");
     }
 

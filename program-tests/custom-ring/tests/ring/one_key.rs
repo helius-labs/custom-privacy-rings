@@ -408,9 +408,13 @@ fn address_member(address: &ShieldedAddress) -> Result<[u8; 32]> {
 
 /// `extra` holds the allowed members no shielded address names.
 pub(super) fn own_tree(rows: &[ShieldedAddress], extra: &[[u8; 32]]) -> Result<MemberRegistryTree> {
+    // The Allow lists sit on each owner's public record, the tracking rows on its identity.
     let mut members = rows
         .iter()
-        .map(address_member)
+        .map(|address| {
+            let owner = zolana_ring_policy::Member::from_bytes(address_member(address)?)?;
+            Ok(*zolana_ring_policy::Member::public(&owner)?.as_bytes())
+        })
         .collect::<Result<Vec<_>>>()?;
     members.extend_from_slice(extra);
     let linked = linked(members);

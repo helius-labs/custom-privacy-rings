@@ -28,7 +28,10 @@ use spr_client::{prover::indexed::ProofDataSource, AsyncProverClient, Rpc};
 use spr_keypair::{ShieldedKeypair, X25519Keypair};
 use spr_test_utils::test_validator_asserts::wait_for_merkle_proof;
 use spr_transaction::{instructions::transact::ConfidentialTransaction, Utxo};
-use zolana_ring_client::{records::storage_apply_proof_inputs, RingIndexer};
+use zolana_ring_client::{
+    records::{owner_record_key, storage_apply_proof_inputs},
+    RingIndexer,
+};
 use zolana_ring_indexer::{
     rpc::{GetStorageApplyProofInputsRequest, StorageWriteView},
     tracking::GetPendingEnrollmentsRequest,
@@ -67,10 +70,13 @@ pub const APPROVED_AND_UNBLOCKED: RuleTable = RuleTable::builder()
     .rule(Rule::forbid(Subject::OutputOwner, ListId::Block))
     .build();
 
+/// The owner's public list record, the key every SDK reader names.
 pub fn owner_member(owner: &ShieldedKeypair) -> Result<Member> {
-    Ok(Member::owner_tag(
-        &owner.signing_pubkey().confidential_view_tag()?,
-    )?)
+    Ok(owner_record_key(&owner_tag(owner)?)?)
+}
+
+fn owner_tag(owner: &ShieldedKeypair) -> Result<[u8; 32]> {
+    Ok(owner.signing_pubkey().confidential_view_tag()?)
 }
 
 pub fn policy_registry(ring: CustomRing, env: &TestEnv) -> Result<Box<RingPolicy>> {
@@ -538,7 +544,8 @@ impl PrivateBlockWrites<'_> {
         for (index, owner) in owners.iter().enumerate() {
             let list_salt = owner.list_salt(&program)?;
             writes.push(RecordWriteData {
-                member: *Member::salted(&owner_member(owner)?, &list_salt)?.as_bytes(),
+                member: *Member::salted(&Member::owner_tag(&owner_tag(owner)?)?, &list_salt)?
+                    .as_bytes(),
                 lists: WriteRecordsIxData::new(
                     ListChange {
                         set: ListSet::single(ListId::PrivateBlock),
