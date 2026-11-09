@@ -147,14 +147,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         builder = builder.with_store(store);
     }
     if let (Some(prover_url), Some(payer)) = (&args.prover_url, enrollment_applier) {
-        let applier = EnrollmentApplierParts {
-            chain: Arc::new(LiveStorageChain::connect(upstreams, prover_url)?),
-            payer,
-            rings: args.enrollment_apply_rings.clone(),
-        }
-        .applier();
-        info!("enrollment applier {}", applier.payer());
-        tokio::spawn(applier.run(RECORD_FLUSH_INTERVAL));
+        let applier = Arc::new(
+            EnrollmentApplierParts {
+                chain: Arc::new(LiveStorageChain::connect(upstreams, prover_url)?),
+                payer,
+                rings: args.enrollment_apply_rings.clone(),
+            }
+            .applier(),
+        );
+        info!("enrollment writer {}", applier.payer());
+        tokio::spawn(applier.clone().run(RECORD_FLUSH_INTERVAL));
+        builder = builder.with_enrollment_applier(applier);
     }
     if let (Some(prover_url), Some(authority)) = (&args.prover_url, storage_authority) {
         let chain = LiveStorageChain::connect(upstreams, prover_url)?;

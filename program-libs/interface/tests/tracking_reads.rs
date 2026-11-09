@@ -21,6 +21,7 @@ fn ring() -> Box<RingPolicy> {
             policy: key(2),
             pauser: key(3),
             cosign_admin: key(4),
+            enrollment_writer: key(5),
         },
         auditor_pubkey: [4; 33],
         created_slot: 0,

@@ -34,9 +34,9 @@ use spr_transaction::{OutputContext, OutputSlot};
 use zolana_ring_client::{
     auditor_view_tag, confirmed_merge,
     history::{HistoryCursor, HistoryQuery, HistoryStream},
-    AuditError, AuditStreamSeal, AuditedEntryInput, AuditedTransaction, ConfirmedMerge,
-    ConfirmedMergeDisclosure, MergeAudit, MergeLedger, MergeRecordSeal, OutputOpening,
-    OutputPayloadError, OutputPayloadErrorKind, RingOrigin, RingOwnerTag, RingScan,
+    AsyncRingIndexer, AuditError, AuditStreamSeal, AuditedEntryInput, AuditedTransaction,
+    ConfirmedMerge, ConfirmedMergeDisclosure, MergeAudit, MergeLedger, MergeRecordSeal,
+    OutputOpening, OutputPayloadError, OutputPayloadErrorKind, RingOrigin, RingOwnerTag, RingScan,
     TransactionAudit, TransactionOrigin, UtxoOwner,
 };
 
@@ -132,7 +132,7 @@ fn audit(
     TransactionAudit::new(transaction, layout).run(&auditor())
 }
 
-/// The audit with each ring owner's key read as its authorization names it.
+/// The audit with each ring owner's key read as its tracking leaf names it.
 fn audit_registered(
     built: &Built,
     transaction: &ShieldedTransaction,
@@ -919,6 +919,10 @@ impl AsyncRpc for PagedIndexer {
         .response())
     }
 }
+
+/// The scans name no tracking registry, no key read reaches the ring indexer.
+#[async_trait::async_trait]
+impl AsyncRingIndexer for PagedIndexer {}
 
 struct KnownOrigins {
     ring: Address,

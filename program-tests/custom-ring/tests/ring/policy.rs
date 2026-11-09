@@ -279,14 +279,9 @@ fn the_key_enrollment_lifecycle_ends_in_a_delegate_move() -> Result<()> {
     }
     .send(&env)?;
 
-    // The auditor opens the key from the owner's enrollment.
-    let enrolled =
-        owner_enrollment(&env, ring, member.pubkey())?.context("the member's enrollment")?;
-    let nullifier_key = SealedNullifierKey {
-        eph_pk: X25519Pubkey::from_u(enrolled.eph_u)?,
-        ciphertext: enrolled.ciphertext,
-    }
-    .open(&auditor)?;
+    let nullifier_key = owner_leaf(&env, ring, member.pubkey())?
+        .context("the member's leaf")?
+        .nullifier_key(&auditor)?;
     assert_eq!(nullifier_key.pubkey()?, member_address.nullifier_pubkey);
     let tracking: custom_ring_interface::tracking::TrackingRegistry =
         fetch_state(env.client.rpc(), &policy_registry(ring, &env)?.tracking)?;

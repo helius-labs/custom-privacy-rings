@@ -1,198 +1,105 @@
+//! The viewing key and the seal of each tracking leaf version, beside the leaf fields the tree hashes.
+//!
+//! A leaf commits to `viewing_hash` and `ct_hash` only. Each version keeps the viewing key the hash
+//! commits to and the seal of the Enroll write that inserted the leaf, so a served opening carries
+//! both and a reader checks them against the leaf.
+
 use anyhow::Result;
-use custom_ring_interface::{tracking::TrackingAuthorization, REGISTER_KEY_CIPHERTEXT_LEN};
+use custom_ring_interface::REGISTER_KEY_CIPHERTEXT_LEN;
 use sea_orm::{ConnectionTrait, QueryResult};
-use solana_address::Address;
 
-use super::{bytes, field, int, uint, TrackingStore};
+use super::{bytes, field, int, TrackingStore};
 
-/// The owner's authorization with no viewing key, final after its first `Enroll` except for the apply mark.
+/// The owner and the sealed secrets of the write that inserted a leaf.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Enrollment {
+pub(crate) struct LeafSeal {
     pub owner: [u8; 32],
-    pub authorization: [u8; 32],
-    pub member: [u8; 32],
-    pub nullifier_pk: [u8; 32],
-    pub ct_hash: [u8; 32],
-    pub list_tag: [u8; 32],
     pub eph_u: [u8; 32],
     pub ciphertext: [u8; REGISTER_KEY_CIPHERTEXT_LEN],
-    pub applied: bool,
 }
 
-impl Enrollment {
-    /// The image the program's final field and apply checks run on, neither reads its zero viewing key.
-    pub fn account(&self, registry: [u8; 32]) -> TrackingAuthorization {
-        TrackingAuthorization {
-            discriminator: TrackingAuthorization::DISCRIMINATOR,
-            registry: Address::new_from_array(registry),
-            owner: Address::new_from_array(self.owner),
-            nullifier_pk: self.nullifier_pk,
-            list_tag: self.list_tag,
-            viewing_u: [0; 32],
-            eph_u: self.eph_u,
-            ciphertext: self.ciphertext,
-            applied: u8::from(self.applied),
-        }
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LeafKey {
+    pub viewing_u: [u8; 32],
+    pub seal: LeafSeal,
 }
 
-const ENROLLMENT_READ: &str = "SELECT owner, authorization_account, member, nullifier_pk, \
-     ct_hash, list_tag, eph_u, ciphertext, \
-     CAST(CASE WHEN applied_slot IS NULL THEN 0 ELSE 1 END AS BIGINT) AS applied \
-     FROM tracking_authorizations";
+/// What one applied write left on its owner's leaf.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LeafStamp {
+    pub member: [u8; 32],
+    pub viewing_u: [u8; 32],
+    /// Set on the insert alone, an update keeps the inserting write's.
+    pub seal: Option<LeafSeal>,
+}
+
+const KEY_COLUMNS: [&str; 4] = ["viewing_u", "owner", "eph_u", "ciphertext"];
 
 impl<C: ConnectionTrait> TrackingStore<'_, C> {
-    pub async fn enrollment(&self, owner: &[u8; 32]) -> Result<Option<Enrollment>> {
-        self.enrollment_where("owner", owner).await
+    /// Every leaf version saved at `revision` takes its predecessor's key and seal, then each stamp overrides its owner's.
+    pub async fn stamp_leaves(&self, revision: u64, stamps: &[LeafStamp]) -> Result<()> {
+        let carried = KEY_COLUMNS
+            .iter()
+            .map(|column| {
+                format!(
+                    "{column}=(SELECT p.{column} FROM tracking_records p \
+                     WHERE p.program=tracking_records.program AND p.member=tracking_records.member \
+                     AND p.applied<tracking_records.applied ORDER BY p.applied DESC LIMIT 1)"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("UPDATE tracking_records SET {carried} WHERE program=$1 AND applied=$2");
+        self.tree.exec(&sql, vec![int(revision)?]).await?;
+        for stamp in stamps {
+            let (sql, mut values) = match &stamp.seal {
+                Some(seal) => (
+                    "UPDATE tracking_records SET viewing_u=$4, owner=$5, eph_u=$6, ciphertext=$7 \
+                     WHERE program=$1 AND applied=$2 AND member=$3",
+                    vec![
+                        bytes(&seal.owner),
+                        bytes(&seal.eph_u),
+                        bytes(&seal.ciphertext),
+                    ],
+                ),
+                None => (
+                    "UPDATE tracking_records SET viewing_u=$4 \
+                     WHERE program=$1 AND applied=$2 AND member=$3",
+                    vec![],
+                ),
+            };
+            values.splice(
+                0..0,
+                [
+                    int(revision)?,
+                    bytes(&stamp.member),
+                    bytes(&stamp.viewing_u),
+                ],
+            );
+            self.tree.exec(sql, values).await?;
+        }
+        Ok(())
     }
 
-    /// The account an apply names.
-    pub async fn enrollment_at(&self, authorization: &[u8; 32]) -> Result<Option<Enrollment>> {
-        self.enrollment_where("authorization_account", authorization)
-            .await
-    }
-
-    /// The final fields of a member's authorization, the source of a leaf's seal.
-    pub async fn enrollment_of(&self, member: &[u8; 32]) -> Result<Option<Enrollment>> {
-        self.enrollment_where("member", member).await
-    }
-
-    async fn enrollment_where(&self, column: &str, key: &[u8; 32]) -> Result<Option<Enrollment>> {
-        let sql = format!("{ENROLLMENT_READ} WHERE registry=$1 AND {column}=$2");
-        let row = self.tree.query_one(&sql, vec![bytes(key)]).await?;
-        row.as_ref().map(enrollment).transpose()
-    }
-
-    /// First enrollments no apply has inserted, ascending by owner.
-    pub async fn pending(&self, after: Option<&[u8; 32]>, limit: u64) -> Result<Vec<Enrollment>> {
-        let sql = format!(
-            "{ENROLLMENT_READ} WHERE registry=$1 AND owner>$2 AND applied_slot IS NULL \
-             ORDER BY owner LIMIT $3"
-        );
-        let after = bytes(after.unwrap_or(&[0; 32]));
-        let rows = self.tree.query_all(&sql, vec![after, int(limit)?]).await?;
-        rows.iter().map(enrollment).collect()
-    }
-
-    pub async fn save_first(&self, first: &Enrollment, slot: u64) -> Result<()> {
-        let sql =
-            "INSERT INTO tracking_authorizations(registry,owner,authorization_account,member,\
-                   nullifier_pk,ct_hash,list_tag,eph_u,ciphertext,slot) \
-                   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)";
-        let values = vec![
-            bytes(&first.owner),
-            bytes(&first.authorization),
-            bytes(&first.member),
-            bytes(&first.nullifier_pk),
-            bytes(&first.ct_hash),
-            bytes(&first.list_tag),
-            bytes(&first.eph_u),
-            bytes(&first.ciphertext),
-            int(slot)?,
-        ];
-        self.tree.exec(sql, values).await
-    }
-
-    pub async fn mark_applied(&self, owner: &[u8; 32], slot: u64) -> Result<()> {
-        let sql = "UPDATE tracking_authorizations SET applied_slot=$3 \
-                   WHERE registry=$1 AND owner=$2";
-        self.tree.exec(sql, vec![bytes(owner), int(slot)?]).await
+    /// The key and seal of `member`'s newest leaf version at or below `version`.
+    pub async fn leaf_key(&self, member: &[u8; 32], version: u64) -> Result<Option<LeafKey>> {
+        let sql = "SELECT viewing_u, owner, eph_u, ciphertext FROM tracking_records \
+                   WHERE program=$1 AND member=$2 AND applied<=$3 ORDER BY applied DESC LIMIT 1";
+        let row = self
+            .tree
+            .query_one(sql, vec![bytes(member), int(version)?])
+            .await?;
+        row.as_ref().map(leaf_key).transpose()
     }
 }
 
-/// Enrollments carry no revision a registry undo can read.
-pub(super) async fn rollback_slot<C: ConnectionTrait>(conn: &C, slot: u64) -> Result<()> {
-    for sql in [
-        "DELETE FROM tracking_authorizations WHERE slot=$1",
-        "UPDATE tracking_authorizations SET applied_slot=NULL WHERE applied_slot=$1",
-    ] {
-        super::exec(conn, sql, vec![int(slot)?]).await?;
-    }
-    Ok(())
-}
-
-fn enrollment(row: &QueryResult) -> Result<Enrollment> {
-    Ok(Enrollment {
-        owner: field(row, "owner")?,
-        authorization: field(row, "authorization_account")?,
-        member: field(row, "member")?,
-        nullifier_pk: field(row, "nullifier_pk")?,
-        ct_hash: field(row, "ct_hash")?,
-        list_tag: field(row, "list_tag")?,
-        eph_u: field(row, "eph_u")?,
-        ciphertext: field(row, "ciphertext")?,
-        applied: uint(row, "applied")? != 0,
+fn leaf_key(row: &QueryResult) -> Result<LeafKey> {
+    Ok(LeafKey {
+        viewing_u: field(row, "viewing_u")?,
+        seal: LeafSeal {
+            owner: field(row, "owner")?,
+            eph_u: field(row, "eph_u")?,
+            ciphertext: field(row, "ciphertext")?,
+        },
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::tests::database;
-
-    const REGISTRY: [u8; 32] = [7; 32];
-
-    fn first(owner: u8) -> Enrollment {
-        Enrollment {
-            owner: [owner; 32],
-            authorization: [owner + 50; 32],
-            member: [owner + 100; 32],
-            nullifier_pk: [1; 32],
-            ct_hash: [2; 32],
-            list_tag: [3; 32],
-            eph_u: [4; 32],
-            ciphertext: [5; REGISTER_KEY_CIPHERTEXT_LEN],
-            applied: false,
-        }
-    }
-
-    #[tokio::test]
-    async fn an_applied_enrollment_leaves_pending_for_good() {
-        let db = database().await;
-        let store = TrackingStore::new(&db, REGISTRY);
-        let owner = first(9);
-        store.save_first(&owner, 10).await.unwrap();
-        assert_eq!(store.pending(None, 8).await.unwrap(), [owner]);
-        store.mark_applied(&owner.owner, 11).await.unwrap();
-        assert!(store.pending(None, 8).await.unwrap().is_empty());
-        let applied = Enrollment {
-            applied: true,
-            ..owner
-        };
-        assert_eq!(
-            store.enrollment_of(&owner.member).await.unwrap(),
-            Some(applied)
-        );
-    }
-
-    #[tokio::test]
-    async fn pending_pages_ascend_by_owner_within_one_registry() {
-        let db = database().await;
-        let store = TrackingStore::new(&db, REGISTRY);
-        for owner in [3, 1, 2] {
-            store.save_first(&first(owner), 10).await.unwrap();
-        }
-        TrackingStore::new(&db, [8; 32])
-            .save_first(&first(4), 10)
-            .await
-            .unwrap();
-        let owners =
-            |page: Vec<Enrollment>| page.iter().map(|row| row.owner[0]).collect::<Vec<_>>();
-        assert_eq!(owners(store.pending(None, 2).await.unwrap()), [1, 2]);
-        let after = [2; 32];
-        assert_eq!(owners(store.pending(Some(&after), 2).await.unwrap()), [3]);
-    }
-
-    #[tokio::test]
-    async fn a_rolled_back_block_restores_the_enrollment_it_moved() {
-        let db = database().await;
-        let store = TrackingStore::new(&db, REGISTRY);
-        let owner = first(9);
-        store.save_first(&owner, 10).await.unwrap();
-        store.mark_applied(&owner.owner, 11).await.unwrap();
-        rollback_slot(&db, 11).await.unwrap();
-        assert_eq!(store.enrollment(&owner.owner).await.unwrap(), Some(owner));
-        rollback_slot(&db, 10).await.unwrap();
-        assert_eq!(store.enrollment(&owner.owner).await.unwrap(), None);
-    }
 }

@@ -1,7 +1,4 @@
 use super::*;
-use custom_ring_test_validator::{
-    policy::ApplyOwnerEnrollments, shared::STORAGE_CPI_OWNER_PROGRAM,
-};
 
 #[test]
 fn every_apply_capacity_settles_and_refuses_an_altered_root() -> Result<()> {
@@ -22,58 +19,6 @@ fn every_apply_capacity_settles_and_refuses_an_altered_root() -> Result<()> {
         }
         .send()?;
     }
-    Ok(())
-}
-
-#[test]
-fn a_pda_enrolls_and_applies_its_key_on_the_validator() -> Result<()> {
-    use custom_ring_interface::STORAGE_PROGRAM_ID;
-    use custom_ring_sdk::Enroll;
-    use solana_instruction::AccountMeta;
-    use spr_keypair::{NullifierKey, ViewingKey};
-    let env = setup()?;
-    let ring = CustomRing::new(custom_ring_program_id()?);
-    RegisterRing {
-        ring,
-        payer: &env.payer,
-        auditor_pubkey: X25519Keypair::new().pubkey(),
-        tier: Tier::policy(&EMPTY),
-    }
-    .send(&env.client)?;
-    let owner = Address::find_program_address(&[b"owner"], &STORAGE_CPI_OWNER_PROGRAM).0;
-    let viewing_key = ViewingKey::new();
-    let mut instruction = env
-        .run(
-            Enroll {
-                ring,
-                payer: env.payer.pubkey(),
-                owner,
-                nullifier_key: &NullifierKey::from_secret([7; 31]),
-                viewing_pubkey: viewing_key.pubkey(),
-                list_salt: viewing_key.merge_seed(
-                    ring.program_id().as_array(),
-                    &zolana_ring_keys::LIST_SALT_LABEL,
-                )?,
-            }
-            .prove(env.client.ring_client()),
-        )?
-        .instruction();
-    instruction.program_id = STORAGE_CPI_OWNER_PROGRAM;
-    instruction.accounts[1].is_signer = false;
-    instruction
-        .accounts
-        .push(AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false));
-    send(env.client.rpc(), &env.payer, &[instruction])?;
-    let enrolled = owner_enrollment(&env, ring, owner)?.context("the PDA's enrollment")?;
-    ensure!(enrolled.viewing_u == viewing_key.pubkey().u() && enrolled.is_pending());
-    ApplyOwnerEnrollments {
-        ring,
-        owners: &[owner],
-        env: &env,
-    }
-    .send()?;
-    let applied = owner_enrollment(&env, ring, owner)?.context("the PDA's enrollment")?;
-    ensure!(!applied.is_pending());
     Ok(())
 }
 
@@ -223,11 +168,10 @@ fn viewing_key_rotation_survives_restart_and_a_wallet_wipe() -> Result<()> {
                 env: &env,
             }
             .send()?;
-            let updated = owner_enrollment(&env, ring, recipient.pubkey())?
-                .context("the rotated recipient enrollment")?;
+            let updated = owner_leaf(&env, ring, recipient.pubkey())?
+                .context("the rotated recipient leaf")?;
             assert_eq!(updated.viewing_u, rotated.viewing_pubkey().u());
-            assert_eq!(updated.nullifier_pk, original_address.nullifier_pk);
-            assert!(!updated.is_pending(), "a rotation leaves no tracking work");
+            assert_eq!(updated.record.nullifier_pk, original_address.nullifier_pk);
             let history = wallet
                 .history()
                 .clone()

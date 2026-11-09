@@ -17,6 +17,7 @@ bytemuck = { workspace = true }
 custom-ring-interface = { workspace = true }
 pinocchio = { workspace = true, features = ["cpi"] }
 pinocchio-system = { workspace = true }
+solana-sdk-ids = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }

@@ -2,9 +2,8 @@ use std::{future::Future, num::NonZeroU32, time::Duration};
 
 use async_trait::async_trait;
 use custom_ring_interface::{
-    storage::StorageRegistry,
-    tracking::{TrackingAuthorization, TrackingRegistry, TRACKING_CAPACITY},
-    CoSignScope, OwnerGrant, ReaderKeyBytes, RingAccount, RingMode, RingPolicy, RingRoles,
+    storage::StorageRegistry, tracking::TrackingRegistry, CoSignScope, OwnerGrant, ReaderKeyBytes,
+    RingAccount, RingMode, RingPolicy, RingRoles,
 };
 use custom_ring_sdk::{CustomRing, RingError};
 use solana_account::Account;
@@ -18,6 +17,8 @@ use spr_client::{
     rpc::ProgramAccountsFilter, AsyncRpc, AsyncSolanaRpc, AsyncSprIndexer, ClientError,
     GetShieldedTransactionsByTagsResponse, IndexerRpcConfig, RingHistoryOptions,
 };
+use spr_hasher::primitives::solana_owner_identity;
+use spr_indexer_api::Hash;
 use spr_interface::{
     pda,
     state::{discriminator::SPL_ASSET_REGISTRY, SplAssetRegistry},
@@ -27,7 +28,8 @@ use spr_keypair::X25519Pubkey;
 use spr_transaction::{AssetRegistry, Mint, ShieldedTransaction, SOL_MINT};
 use zolana_ring_client::{
     history::HistoryPosition, program_data, AsyncRingIndexer, AuditError, MemberOpeningRead,
-    MergeAudit, MergeAuditPage, RingIndexerError, RingOrigin, StorageTip, TransactionOrigin,
+    MergeAudit, MergeAuditPage, ResolveError, RingIndexerError, RingOrigin, StorageTip,
+    TrackingLeafCheck, TransactionOrigin,
 };
 use zolana_ring_indexer::rpc::{
     GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
@@ -36,7 +38,9 @@ use zolana_ring_indexer::rpc::{
 use zolana_ring_transaction::RingAssets;
 
 use zolana_ring_client::rpc::{RingChainStatus, WalletEnrollment};
-use zolana_ring_indexer::tracking::{GetTrackingRecordsRequest, GetTrackingRecordsResponse};
+use zolana_ring_indexer::tracking::{
+    GetTrackingOpeningsRequest, GetTrackingRecordsRequest, GetTrackingRecordsResponse,
+};
 
 use crate::{
     audit::Page,
@@ -155,12 +159,12 @@ pub trait TransactionSource: Send + Sync {
         async { Err(ClientError::Rpc("no tracking records".to_owned()).into()) }
     }
 
-    /// The owner's own authorization under the ring's pinned registry, read from the account.
+    /// The owner's leaf under the ring's newest confirmed tracking root.
     fn tracking_enrollment(
         &self,
         _ring: Address,
         _owner: Address,
-    ) -> impl Future<Output = Result<WalletEnrollment, ClientError>> + Send {
+    ) -> impl Future<Output = Result<WalletEnrollment, RingRpcError>> + Send {
         async { Ok(WalletEnrollment::NotEnrolled) }
     }
 
@@ -231,19 +235,6 @@ pub struct TrackingRoot {
     pub root: [u8; 32],
     pub revision: u64,
     pub next_index: u64,
-}
-
-/// A pending enrollment grants nothing, and past capacity it never applies.
-fn enrollment_of(
-    authorization: Option<&TrackingAuthorization>,
-    tree_full: bool,
-) -> WalletEnrollment {
-    match authorization {
-        None => WalletEnrollment::NotEnrolled,
-        Some(held) if !held.is_pending() => WalletEnrollment::Applied,
-        Some(_) if tree_full => WalletEnrollment::PendingPastCapacity,
-        Some(_) => WalletEnrollment::Pending,
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -657,20 +648,39 @@ impl TransactionSource for ChainSource {
         &self,
         ring: Address,
         owner: Address,
-    ) -> Result<WalletEnrollment, ClientError> {
+    ) -> Result<WalletEnrollment, RingRpcError> {
         let Some(root) = self.tracking_root(ring, Finality::Confirmed).await? else {
             return Ok(WalletEnrollment::NotEnrolled);
         };
-        let (address, _) = TrackingAuthorization::find_address(&root.registry, &owner);
-        let authorization = self
-            .rpc
-            .get_account(address)
-            .await?
-            .and_then(|account| TrackingAuthorization::decode(&account.owner, &account.data));
-        Ok(enrollment_of(
-            authorization.as_ref(),
-            root.next_index >= TRACKING_CAPACITY,
-        ))
+        // The leaf opens under the root the registry account names, the indexer cannot add one.
+        let member = solana_owner_identity(owner.as_array()).map_err(AuditError::from)?;
+        let response = self
+            .indexer
+            .get_tracking_openings(GetTrackingOpeningsRequest {
+                registry: root.registry.into(),
+                members: vec![Hash(member)],
+                expected_root: Hash(root.root),
+            })
+            .await?;
+        let [view] = response.openings.as_slice() else {
+            return Err(AuditError::from(ResolveError::OpeningCount {
+                got: response.openings.len(),
+                want: 1,
+            })
+            .into());
+        };
+        let applied = TrackingLeafCheck {
+            view,
+            root: &root.root,
+            member: &member,
+        }
+        .verify()
+        .map_err(AuditError::from)?
+        .is_some();
+        Ok(match applied {
+            true => WalletEnrollment::Applied,
+            false => WalletEnrollment::NotEnrolled,
+        })
     }
 
     async fn owner_grant_held(

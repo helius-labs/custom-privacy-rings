@@ -98,6 +98,7 @@ pub struct RoleKeys {
     pub policy: Keypair,
     pub pauser: Keypair,
     pub cosign_admin: Keypair,
+    pub enrollment_writer: Keypair,
 }
 
 impl RoleKeys {
@@ -107,6 +108,7 @@ impl RoleKeys {
             policy: Keypair::new(),
             pauser: Keypair::new(),
             cosign_admin: Keypair::new(),
+            enrollment_writer: Keypair::new(),
         }
     }
 
@@ -116,6 +118,7 @@ impl RoleKeys {
             RingRole::Policy => &self.policy,
             RingRole::Pauser => &self.pauser,
             RingRole::CosignAdmin => &self.cosign_admin,
+            RingRole::EnrollmentWriter => &self.enrollment_writer,
         }
     }
 
@@ -125,6 +128,7 @@ impl RoleKeys {
             policy: self.policy.pubkey(),
             pauser: self.pauser.pubkey(),
             cosign_admin: self.cosign_admin.pubkey(),
+            enrollment_writer: self.enrollment_writer.pubkey(),
         }
     }
 }

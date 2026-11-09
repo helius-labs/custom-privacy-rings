@@ -456,7 +456,7 @@ impl ApplyInputsCheck<'_> {
             storage_apply_proof_inputs(self.response).map_err(|_| RingRpcError::StaleRecords)?;
         let matches = self.response.revision == current.revision.value()
             && inputs.old_root == current.hash
-            && inputs.old_next_index == u64::from(self.registry.next_index())
+            && inputs.old_next_index == self.registry.next_index()
             && inputs
                 .writes
                 .iter()

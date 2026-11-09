@@ -1,4 +1,4 @@
-//! Storage registry builders, the apply proof of a record batch and the tracking applier.
+//! Storage registry builders, the apply proof of a record batch and the enrollment writer's batch.
 //!
 //! A public batch proves under the public apply key. A batch with salted owner writes uses the
 //! private apply key of its width and proves, for each one, the owner's enrolled tracking row under
@@ -13,25 +13,29 @@
 use custom_ring_interface::{
     domain,
     key_catalog::RingCircuit,
-    member_registry::APPLY_BATCH,
+    owner_signature::{Ed25519Signatures, OwnerSignature},
     storage::{RegistryId, Revision, StorageRegistry},
     storage_instruction::{
-        tag, ApplyEnrollmentsIxData, AssetWrite, InitializeIxData, RecordWriteClassification,
-        StorageUpdateIxData,
+        tag, ApplyEnrollmentsIxData, ApplyEnrollmentsRequest, AssetWrite, InitializeIxData,
+        RecordWriteClassification, StorageUpdateIxData,
     },
-    tracking::{TrackingAuthorization, TrackingEntry},
+    tag as ring_tag,
+    tracking::TrackingEntry,
     ApplyRecordsIxData, ApplyRecordsStatement, CustomRingError, GRACE_SLOTS, STORAGE_PROGRAM_ID,
     SYSTEM_PROGRAM_ID,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
+use solana_sdk_ids::{ed25519_program, sysvar};
 use spr_client::AsyncRpc;
 use spr_hasher::primitives::solana_owner_identity;
+use spr_indexer_api::Hash;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
-use zolana_ring_client::{records::path_of, resolver::tracking_record, AsyncRingIndexer};
+use zolana_ring_client::{
+    records::path_of, resolver::tracking_record, rpc::SubmitEnrollmentRequest, AsyncRingIndexer,
+};
 use zolana_ring_indexer::tracking::{
-    GetPendingEnrollmentsRequest, GetTrackingApplyProofInputsRequest,
-    GetTrackingApplyProofInputsResponse,
+    GetTrackingApplyProofInputsRequest, GetTrackingApplyProofInputsResponse, RingTrackingEntryView,
 };
 use zolana_ring_member_registry::{
     ApplyProofInputs, RecordStatementContext, RecordTracking, TrackingOpening,
@@ -412,35 +416,82 @@ async fn prove_apply<R: AsyncRpc, I: RingIndexerBackend>(
     })
 }
 
-/// Anyone may send it.
+/// The writer's batch, signed by the ring's `EnrollmentWriter` role and preceded by every owner signature.
 #[must_use]
-pub struct ApplyEnrollments<'a> {
+pub struct EnrollBatch<'a> {
+    pub ring: CustomRing,
+    pub writer: Address,
     pub tracking_registry: Address,
-    /// The registry revision `chain_start` binds.
-    pub revision: Revision,
-    /// In chain order.
-    pub owners: &'a [Address],
-    pub inputs: &'a ApplyProofInputs<TrackingWriteProofInput>,
+    /// Owner writes in the order the batch applies them.
+    pub writes: &'a [SubmitEnrollmentRequest],
 }
 
-impl ApplyEnrollments<'_> {
+/// The batch proven from the root the indexer's current revision holds.
+#[must_use]
+pub struct ProvenEnrollBatch {
+    /// The ed25519 precompile instruction, then the ring `EnrollBatch` it must directly precede.
+    pub instructions: [Instruction; 2],
+    /// A landed apply past it leaves the batch unsendable.
+    pub revision: Revision,
+}
+
+impl EnrollBatch<'_> {
     pub async fn prove<R: AsyncRpc, I: RingIndexerBackend>(
         self,
         client: &RingClient<R, I>,
-    ) -> Result<Instruction, RingError> {
-        let statement = self.inputs.statement();
+    ) -> Result<ProvenEnrollBatch, RingError> {
+        // 1. Each write verifies again, a write whose signature fails would refuse the whole batch.
+        let writes_len = self.writes.len();
+        let writes = self
+            .writes
+            .iter()
+            .map(|request| request.verify(&self.tracking_registry))
+            .collect::<Result<Vec<_>, _>>()?;
+        let signed = writes
+            .iter()
+            .map(|write| write.signed(&self.tracking_registry))
+            .collect::<Result<Vec<_>, _>>()?;
+        let raw: Vec<[u8; 64]> = self
+            .writes
+            .iter()
+            .map(|request| request.signature.0.into())
+            .collect();
+        let signatures: Vec<_> = writes
+            .iter()
+            .zip(&raw)
+            .zip(&signed)
+            .map(|((write, signature), signed)| OwnerSignature {
+                owner: write.owner,
+                signature,
+                message: &signed.message,
+            })
+            .collect();
+        // 2. The apply proof covers the entries in write order from the current root.
+        let entries = writes
+            .iter()
+            .map(|write| Ok(entry_view(&write.entry()?)))
+            .collect::<Result<Vec<_>, RingError>>()?;
+        let response = client
+            .zolana()
+            .get_tracking_apply_proof_inputs(GetTrackingApplyProofInputsRequest {
+                registry: self.tracking_registry.into(),
+                entries,
+            })
+            .await?;
+        let inputs = tracking_apply_inputs(&response)?;
+        let revision = Revision::from(response.revision);
+        let statement = inputs.statement();
         let circuit = RingCircuit::apply_enrollments(statement.count);
         let RingCircuit::ApplyEnrollments { writes: batch } = circuit else {
             return Err(RingError::UnpinnedProvingKey(circuit));
         };
         let public_input_hash = statement.hash()?;
-        let mut writes: Vec<_> = self
-            .inputs
+        let mut proof_writes: Vec<_> = inputs
             .writes
             .iter()
             .map(|write| Some(write.into()))
             .collect();
-        writes.resize_with(usize::from(batch), || None);
+        proof_writes.resize_with(usize::from(batch), || None);
         let body = ApplyEnrollmentsBody {
             public_input_hash,
             old_root: statement.old_root,
@@ -450,82 +501,56 @@ impl ApplyEnrollments<'_> {
             chain_start: statement.chain_start,
             chain_end: statement.chain_end,
             count: u8::try_from(statement.count).map_err(|_| RingError::RecordProjectionStale)?,
-            writes,
+            writes: proof_writes,
         };
         let proof = RingRequest::new(circuit, &body)?
             .prove(client, public_input_hash)
             .await?;
-        let data = ApplyEnrollmentsIxData {
-            revision: self.revision,
+        let ix = ApplyEnrollmentsIxData {
+            revision,
             proof: to_instruction_proof(proof)?,
             new_root: statement.new_root,
             new_next_index: statement.new_next_index.to_le_bytes(),
+            count: body.count,
         };
-        let mut accounts = vec![AccountMeta::new(self.tracking_registry, false)];
-        accounts.extend(self.owners.iter().map(|owner| {
-            let (authorization, _) =
-                TrackingAuthorization::find_address(&self.tracking_registry, owner);
-            AccountMeta::new(authorization, false)
-        }));
-        Ok(storage_ix(
-            accounts,
-            [&[tag::APPLY_ENROLLMENTS][..], bytemuck::bytes_of(&data)].concat(),
-        ))
+        let data = ApplyEnrollmentsRequest { ix: &ix, writes }.encode();
+        // 3. Storage reads the signatures from the instruction just before the top level one.
+        let precompile = Instruction {
+            program_id: ed25519_program::ID,
+            accounts: Vec::new(),
+            data: Ed25519Signatures::encode(&signatures)
+                .ok_or(RingError::EnrollmentBatchSize { writes: writes_len })?,
+        };
+        let ring = self.ring;
+        let accounts = vec![
+            AccountMeta::new_readonly(self.writer, true),
+            AccountMeta::new_readonly(ring.policy_pda(), false),
+            AccountMeta::new_readonly(ring.ring_auth_pda(), false),
+            AccountMeta::new(self.tracking_registry, false),
+            AccountMeta::new_readonly(sysvar::instructions::ID, false),
+            AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),
+        ];
+        let batch = ring.ix(accounts, [&[ring_tag::ENROLL_BATCH][..], &data].concat());
+        Ok(ProvenEnrollBatch {
+            instructions: [precompile, batch],
+            revision,
+        })
     }
 }
 
-/// Oldest first, up to one apply key's batch.
-#[must_use]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EnrollPending {
-    pub ring: CustomRing,
-}
-
-impl EnrollPending {
-    /// `None` when nothing is pending, a pending enrollment grants nothing until its root lands.
-    pub async fn prove<R: AsyncRpc, I: RingIndexerBackend>(
-        self,
-        client: &RingClient<R, I>,
-    ) -> Result<Option<Instruction>, RingError> {
-        let policy = self.ring.require_policy(client.zolana()).await?;
-        let registry = policy.tracking;
-        let pending = client
-            .zolana()
-            .get_pending_enrollments(GetPendingEnrollmentsRequest {
-                registry: registry.into(),
-                after: None,
-                limit: u64::from(APPLY_BATCH as u32),
-            })
-            .await?;
-        if pending.enrollments.is_empty() {
-            return Ok(None);
-        }
-        let owners: Vec<Address> = pending
-            .enrollments
-            .iter()
-            .map(|enrollment| enrollment.owner.0)
-            .collect();
-        let response = client
-            .zolana()
-            .get_tracking_apply_proof_inputs(GetTrackingApplyProofInputsRequest {
-                registry: registry.into(),
-                owners: owners.iter().copied().map(Into::into).collect(),
-            })
-            .await?;
-        let inputs = tracking_apply_inputs(&response)?;
-        let instruction = ApplyEnrollments {
-            tracking_registry: registry,
-            revision: Revision(response.revision.to_le_bytes()),
-            owners: &owners,
-            inputs: &inputs,
-        }
-        .prove(client)
-        .await?;
-        Ok(Some(instruction))
+fn entry_view(entry: &TrackingEntry) -> RingTrackingEntryView {
+    RingTrackingEntryView {
+        member: Hash(entry.member),
+        nullifier_pk: Hash(entry.nullifier_pk),
+        ct_hash: Hash(entry.ct_hash),
+        list_tag: Hash(entry.list_tag),
+        viewing_hash: Hash(entry.viewing_hash),
+        prior_viewing_hash: Hash(entry.prior_viewing_hash),
+        proven: entry.proven,
     }
 }
 
-pub fn tracking_apply_inputs(
+fn tracking_apply_inputs(
     response: &GetTrackingApplyProofInputsResponse,
 ) -> Result<ApplyProofInputs<TrackingWriteProofInput>, RingError> {
     let writes = response
@@ -538,10 +563,14 @@ pub fn tracking_apply_inputs(
                     nullifier_pk: write.nullifier_pk.0,
                     ct_hash: write.ct_hash.0,
                     list_tag: write.list_tag.0,
+                    viewing_hash: write.viewing_hash.0,
+                    prior_viewing_hash: write.prior_viewing_hash.0,
+                    proven: write.proven,
                 },
-                slot: path_of(&write.slot)?,
+                present: write.present,
                 low: tracking_record(&write.low),
                 low_path: path_of(&write.low_path)?,
+                slot: path_of(&write.slot)?,
             })
         })
         .collect::<Result<_, RingError>>()?;

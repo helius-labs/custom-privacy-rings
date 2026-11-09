@@ -1,9 +1,10 @@
 //! Enrollments of one ring, read from its pinned tracking tree and opened with the auditor key.
 //!
-//! Storage `Enroll` writes one authorization per owner and `ApplyEnrollments` moves it into the
-//! tracking tree. A row's nullifier key, list tag and seal never change after the first enrollment,
-//! a rotation moves only its viewing key. Leaves are appended in order, so every enrolled owner sits
-//! below the root's next index and a scan by leaf index under one root finds each of them once.
+//! Storage `Enroll` queues one entry per call and `ApplyEnrollments` folds queued entries into the
+//! tracking tree. A row's nullifier key, list tag and seal never change after its first proven entry
+//! inserts it, a rotation moves only its `viewing_hash`, never a held field. Leaves are appended in
+//! order, so every enrolled owner sits below the root's next index and a scan by leaf index under
+//! one root finds each of them once.
 //!
 //! A scan reads only the root the registry names at finalized commitment. A confirmed root can leave
 //! the chain with its fork, and a cursor moved past a forked leaf would never read the canonical row
@@ -23,7 +24,7 @@
 
 use std::{collections::HashMap, future::Future};
 
-use custom_ring_interface::{domain, tracking::TRACKING_QUAD_HEIGHT, REGISTER_KEY_CIPHERTEXT_LEN};
+use custom_ring_interface::{domain, REGISTER_KEY_CIPHERTEXT_LEN};
 use solana_address::Address;
 use spr_client::ClientError;
 use spr_hasher::primitives::hash_bytes;
@@ -391,8 +392,7 @@ impl<S: TrackingSource> TrackingScan<'_, S> {
         root: &TrackingRoot,
     ) -> Result<HeldEnrollment, TrackingRefusal> {
         let record = tracking_record(&view.record);
-        let path =
-            path_of::<TRACKING_QUAD_HEIGHT>(&view.path).map_err(|_| TrackingRefusal::Opening)?;
+        let path = path_of(&view.path).map_err(|_| TrackingRefusal::Opening)?;
         // 1. The path rebuilds the registry's root, the indexer cannot add or alter a row.
         OpeningCheck {
             opening: &TrackingOpening::Present { record, path },
@@ -563,6 +563,9 @@ pub mod fixture {
         Ok(held)
     }
 
+    /// The viewing key every fixture leaf holds, a scan reads no viewing key.
+    const VIEWING_U: [u8; 32] = [9; 32];
+
     /// Empty until the first enrollment applies.
     #[derive(Clone, Default)]
     pub struct TrackingLedger(Arc<Mutex<Option<Ledger>>>);
@@ -614,6 +617,9 @@ pub mod fixture {
                         nullifier_pk,
                         ct_hash: hash_bytes(&sealed.ciphertext).expect("ct hash"),
                         list_tag,
+                        viewing_hash: hash_bytes(&VIEWING_U).expect("viewing hash"),
+                        prior_viewing_hash: [0; 32],
+                        proven: true,
                     }],
                 )
                 .expect("apply");
@@ -623,6 +629,7 @@ pub mod fixture {
                 member,
                 RingTrackingSealView {
                     owner: owner.into(),
+                    viewing_u: Base64String(VIEWING_U.to_vec()),
                     eph_pk: Base64String(sealed.eph_pk.as_bytes().to_vec()),
                     ciphertext: Base64String(sealed.ciphertext.to_vec()),
                 },
@@ -642,7 +649,7 @@ pub mod fixture {
             }
         }
 
-        /// What the owner's own authorization reads, every fixture enrollment is applied.
+        /// What the owner's leaf reads, every fixture enrollment is applied.
         pub fn enrollment(&self, owner: &Address) -> WalletEnrollment {
             let member = *Member::owner_tag(owner.as_array())
                 .expect("member")
@@ -690,6 +697,7 @@ pub mod fixture {
                             nullifier_pk: Hash(record.nullifier_pk),
                             ct_hash: Hash(record.ct_hash),
                             list_tag: Hash(record.list_tag),
+                            viewing_hash: Hash(record.viewing_hash),
                             seal: ledger.seals.get(&record.member).cloned(),
                         },
                         path: RingRecordPathView {

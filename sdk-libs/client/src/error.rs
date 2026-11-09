@@ -19,8 +19,8 @@ use crate::OutputPayloadErrorKind;
 pub enum AuditError {
     #[error("the ring output's owner key is not resolved yet")]
     UnresolvedOwner,
-    #[error("an owner's tracking authorization is refused")]
-    Authorization(#[source] Box<crate::ResolveError>),
+    #[error("an owner's tracking leaf is refused")]
+    TrackingLeaf(#[source] Box<crate::ResolveError>),
     #[error("the last message of the transaction is not tagged for the auditor")]
     MissingAuditorMessage,
     #[error("auditor message of {0} bytes does not fit the disclosure layout")]
@@ -205,7 +205,7 @@ impl AuditError {
             | Self::NullifierPad
             | Self::NullifierKeyMismatch
             | Self::UnresolvedOwner
-            | Self::Authorization(_)
+            | Self::TrackingLeaf(_)
             | Self::RecoveryProgressMismatch
             | Self::MergeDisclosureMismatch
             | Self::MergeAuditWorkBudget
@@ -232,7 +232,8 @@ impl From<crate::ResolveError> for AuditError {
     fn from(error: crate::ResolveError) -> Self {
         match error {
             crate::ResolveError::Rpc(error) => Self::Client(*error),
-            refused => Self::Authorization(Box::new(refused)),
+            crate::ResolveError::Indexer(error) => error.into(),
+            refused => Self::TrackingLeaf(Box::new(refused)),
         }
     }
 }

@@ -599,7 +599,7 @@ impl TransactionSource for StaticSource {
         &self,
         _ring: Address,
         owner: Address,
-    ) -> Result<WalletEnrollment, ClientError> {
+    ) -> Result<WalletEnrollment, RingRpcError> {
         Ok(self.tracking.0.enrollment(&owner))
     }
 

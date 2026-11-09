@@ -68,6 +68,8 @@ instruction_tags! {
     /// Signed by the upgrade authority, one budget for the ring account, its policy, the tracking and SPP CPIs.
     Initialize = INITIALIZE: 53 => 3 * ACCOUNT_UNITS + POLICY_UNITS,
     UpdatePolicy = UPDATE_POLICY: 54 => POLICY_UNITS,
+    /// Signed by the enrollment writer, one storage CPI checks every owner signature and proof.
+    EnrollBatch = ENROLL_BATCH: 66 => PROOF_UNITS,
 }
 
 /// Fixed for the ring's life.
@@ -227,7 +229,8 @@ impl Default for RecordWriteData {
 pub struct ApplyRecordsIxData {
     pub proof: CustomRingProof,
     pub new_root: [u8; 32],
-    pub new_next_index: [u8; 4],
+    /// Little endian, a u32 cannot hold `QUAD_CAPACITY`.
+    pub new_next_index: [u8; 8],
     /// The proven `ApplyRecordsStatement::restrictive`, one or zero.
     pub restrictive: u8,
 }
@@ -347,8 +350,8 @@ pub(crate) fn list_and_mint_entry(
 }
 
 impl ApplyRecordsIxData {
-    pub const fn new_next_index(&self) -> u32 {
-        u32::from_le_bytes(self.new_next_index)
+    pub const fn new_next_index(&self) -> u64 {
+        u64::from_le_bytes(self.new_next_index)
     }
 
     /// `StorageUpdateIxData::parse` refuses a byte above one.
@@ -369,7 +372,7 @@ pub(crate) fn write_count(count: usize) -> Result<u8, CustomRingError> {
 const _: () = assert!(WriteRecordsIxData::SIZE == 16);
 const _: () = assert!(core::mem::align_of::<RecordWriteData>() == 1);
 const _: () = assert!(RecordWriteData::SIZE == 145);
-const _: () = assert!(ApplyRecordsIxData::SIZE == 229);
+const _: () = assert!(ApplyRecordsIxData::SIZE == 233);
 const _: () = assert!(APPLY_BATCH <= u8::MAX as usize);
 
 #[cfg(test)]

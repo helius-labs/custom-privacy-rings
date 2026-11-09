@@ -21,55 +21,30 @@ import (
 )
 
 // Properties:
-// 1. A leaf carries CRTK and one owner's nullifier key, ciphertext hash and list tag, its domain keeps it apart from a policy leaf. Every field is final, the owner's viewing key stays on its authorization account.
+// 1. A leaf carries CRTK and one owner's nullifier key, ciphertext hash, list tag and viewing hash, its domain keeps it apart from a policy leaf. Only Next and ViewingHash move after insert, registry/apply_enrollments.go holds both.
 // 2. Resolve reads a present owner's own leaf or proves the owner absent by the one link it falls inside, the sort order registry/apply_enrollments.go keeps leaves no third case.
 // 3. An absent owner or an unset cond reads an all zero row.
-// 4. The leaf folds to root while cond is set, and one index below TrackingCapacity names it.
+// 4. The leaf folds to root while cond is set, and one index below Capacity names it.
+// 5. No circuit decides on ViewingHash. A sender must check hash_bytes(viewing_u) against it off chain, an X25519 u can exceed the BN254 modulus.
 
-// The tree shape mirrors TRACKING_QUAD_HEIGHT in program-libs/interface/src/accounts/tracking.rs.
-const (
-	TrackingHeight    = 16
-	TrackingIndexBits = 2 * TrackingHeight
-	TrackingCapacity  = 1 << TrackingIndexBits
-)
-
-// The empty leaf is 0, and the sentinel (0, q-1, 0, 0, 0) at index 0 brackets every member in [1, q-2].
+// The empty leaf is 0, and the sentinel (0, q-1, 0, 0, 0, 0) at index 0 brackets every member in [1, q-2].
 type TrackingRecord struct {
 	Member, Next frontend.Variable
 	NullifierPk  frontend.Variable
 	CtHash       frontend.Variable
 	ListTag      frontend.Variable
+	ViewingHash  frontend.Variable
 }
 
 func (r TrackingRecord) Hash(api frontend.API) frontend.Variable {
-	return gadget.PoseidonHash(api, []frontend.Variable{shared.TrackingLeafDomain, r.Member, r.Next, r.NullifierPk, r.CtHash, r.ListTag})
-}
-
-type TrackingPath struct {
-	Index    frontend.Variable
-	Siblings [TrackingHeight][Arity - 1]frontend.Variable
-}
-
-func (p TrackingPath) Root(api frontend.API, leaf frontend.Variable) frontend.Variable {
-	return foldQuadPath(api, p.Siblings[:], p.digits(api), leaf)
-}
-
-func (p TrackingPath) Update(api frontend.API, oldLeaf, newLeaf frontend.Variable) (oldRoot, newRoot frontend.Variable) {
-	// One index decomposition places the old and the new leaf in the same slot.
-	digits := p.digits(api)
-	return foldQuadPath(api, p.Siblings[:], digits, oldLeaf), foldQuadPath(api, p.Siblings[:], digits, newLeaf)
-}
-
-func (p TrackingPath) digits(api frontend.API) []frontend.Variable {
-	// A full tree has no index for the next leaf, a new enrollment fails here.
-	return api.ToBinary(p.Index, TrackingIndexBits)
+	return gadget.PoseidonHash(api, []frontend.Variable{shared.TrackingLeafDomain, r.Member, r.Next, r.NullifierPk, r.CtHash, r.ListTag, r.ViewingHash})
 }
 
 // TrackingOpening opens one leaf, the owner's own when Present, else the low record bracketing the owner.
 type TrackingOpening struct {
 	Present frontend.Variable
 	Record  TrackingRecord
-	Path    TrackingPath
+	Path    QuadPath
 }
 
 // TrackingRow is zero for an absent owner or an unset cond.

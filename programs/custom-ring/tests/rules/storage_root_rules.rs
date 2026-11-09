@@ -16,8 +16,8 @@ use zolana_ring_policy::{ring_id_field, ListId, ListSet};
 use crate::{
     common::{
         allow_list_table, auditor_pubkey, list_table, policy_pda, reaches_verification, refused,
-        retired, root, tracking_registry, transact, Ring, Sent, Setup, UpdatePolicyIx, PROGRAM,
-        RECORDS,
+        retired, ring_auth, root, tracking_registry, transact, Ring, Sent, Setup, UpdatePolicyIx,
+        PROGRAM, RECORDS,
     },
     transact_rules::{spp_list, Fixture},
 };
@@ -158,10 +158,13 @@ fn update_policy_rebinds_the_records_to_a_registry_of_any_authority() {
 
 /// Valid but for its address.
 fn forged_tracking() -> Vec<u8> {
-    let registry = TrackingRegistry::new(&InitializeTrackingIxData {
-        ring_id: ring_id_field(PROGRAM.as_array()).unwrap(),
-        auditor_pubkey: auditor_pubkey(),
-    });
+    let registry = TrackingRegistry::new(
+        ring_auth(),
+        &InitializeTrackingIxData {
+            ring_id: ring_id_field(PROGRAM.as_array()).unwrap(),
+            auditor_pubkey: auditor_pubkey(),
+        },
+    );
     bytemuck::bytes_of(&registry).to_vec()
 }
 

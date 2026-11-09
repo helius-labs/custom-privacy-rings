@@ -48,9 +48,6 @@ pub struct GetWalletStatusResponse {
 #[serde(rename_all = "camelCase")]
 pub enum WalletEnrollment {
     NotEnrolled,
-    Pending,
-    /// The tree is full, the first enrollment stays pending with its rent spent.
-    PendingPastCapacity,
     Applied,
 }
 

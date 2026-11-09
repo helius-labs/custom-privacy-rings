@@ -54,7 +54,7 @@ const trackingColumns = 2
 // NewTracking also sizes for the key's withdrawal owners, a salted list reads each owner's row.
 func NewTracking(rows, outputs, withdrawals int) (Tracking, error) {
 	capacity := rows + outputs + withdrawals
-	proof, err := registry.NewTrackingProof(capacity)
+	proof, err := registry.NewSharedQuadProof(capacity)
 	if err != nil {
 		return Tracking{}, err
 	}

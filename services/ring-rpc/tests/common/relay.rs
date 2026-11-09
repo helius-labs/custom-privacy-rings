@@ -28,8 +28,7 @@ use spr_transaction::{
     Data, Mint, SppProofOutputUtxo, Utxo,
 };
 use zolana_ring_client::rpc::{
-    PrepareRelayRequest, ProofInputBytes, RelayEnrollInputs, RelayIntent, RelayProofInputs,
-    RelayQuote, RelayRail,
+    PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayProofInputs, RelayQuote, RelayRail,
 };
 use zolana_ring_rpc::{
     ChainOutcome, ChainSubmit, DelegateSeal, LatestBlockhash, ProvenRelay, RelayError,
@@ -51,7 +50,6 @@ pub struct RecordingProver {
     pub co_signers: Option<Vec<Address>>,
     /// The next proven transfer's data, a frame past one transaction.
     pub frame: Mutex<Option<Vec<u8>>>,
-    pub refuse_enrollment: AtomicBool,
 }
 
 #[async_trait]
@@ -71,7 +69,6 @@ impl RelayProver for RecordingProver {
             ),
             RelayPayload::Deposit(deposit) => (deposit.deposit_funders().collect(), vec![1, 2, 3]),
             RelayPayload::Merge(_) => (Vec::new(), vec![1, 2, 3]),
-            RelayPayload::Enroll(_) => panic!("the relay builds an enrollment itself"),
         };
         let co_signers = self
             .co_signers
@@ -106,13 +103,6 @@ impl RelayProver for RecordingProver {
     ) -> Result<RelayProofInputs, RingRpcError> {
         unreachable!("the wallet seals its own transfer")
     }
-
-    async fn check_enrollment(&self, _enrollment: &RelayEnrollInputs) -> Result<(), RingRpcError> {
-        match self.refuse_enrollment.load(Ordering::Relaxed) {
-            true => Err(RelayError::InvalidEnrollment.into()),
-            false => Ok(()),
-        }
-    }
 }
 
 /// Every sent transaction lands, a send past `LAST_VALID_BLOCK_HEIGHT` is refused.
@@ -127,8 +117,6 @@ pub struct RecordingChain {
     pub outcome: Mutex<Option<Option<ChainOutcome>>>,
     pub slot: AtomicU64,
     pub accounts: Mutex<Vec<Address>>,
-    /// Live accounts that hold data, an enrolled owner's tracking authorization.
-    pub filled: Mutex<Vec<Address>>,
     pub simulation_refusal: Mutex<Option<String>>,
 }
 
@@ -142,7 +130,6 @@ impl Default for RecordingChain {
             outcome: Mutex::new(None),
             slot: AtomicU64::new(SLOT),
             accounts: Mutex::default(),
-            filled: Mutex::default(),
             simulation_refusal: Mutex::default(),
         }
     }
@@ -173,9 +160,6 @@ impl ChainSubmit for RecordingChain {
     }
 
     async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, RingRpcError> {
-        if self.filled.lock().expect("filled").contains(&address) {
-            return Ok(Some(vec![1]));
-        }
         Ok(self
             .accounts
             .lock()

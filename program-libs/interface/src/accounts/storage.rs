@@ -24,7 +24,7 @@ use zolana_ring_policy::registry_field;
 
 use crate::{
     domain,
-    member_registry::{MEMBER_REGISTRY_CAPACITY, MEMBER_REGISTRY_EMPTY_ROOT},
+    member_registry::{MEMBER_REGISTRY_EMPTY_ROOT, QUAD_CAPACITY},
     state::ROOT_HISTORY,
     storage_instruction::{InitializeIxData, StorageUpdateIxData},
     STORAGE_PROGRAM_ID,
@@ -58,7 +58,7 @@ pub struct StorageRegistry {
     /// Little endian and final, how long an outgoing root serves after a write no rule reads.
     pub grace_slots: [u8; 8],
     /// Little endian, the leaf the next insert takes, the apply statement moves it.
-    pub next_index: [u8; 4],
+    pub next_index: [u8; 8],
     /// Immutable, zero serves as a curator only.
     pub ring_id: [u8; 32],
     /// Immutable, a ring maps a private list only to a source pinned to its own registry.
@@ -116,7 +116,7 @@ impl StorageRegistry {
         registry.grace_slots = ix.grace_slots;
         registry.ring_id = ix.ring_id;
         registry.tracking_registry = ix.tracking_registry;
-        registry.next_index = 1u32.to_le_bytes();
+        registry.next_index = 1u64.to_le_bytes();
         registry.roots[0].hash = MEMBER_REGISTRY_EMPTY_ROOT;
         registry
     }
@@ -143,8 +143,8 @@ impl StorageRegistry {
         u64::from_le_bytes(self.grace_slots)
     }
 
-    pub const fn next_index(&self) -> u32 {
-        u32::from_le_bytes(self.next_index)
+    pub const fn next_index(&self) -> u64 {
+        u64::from_le_bytes(self.next_index)
     }
 
     pub const fn newest(&self) -> Root {
@@ -193,7 +193,7 @@ impl StorageRegistry {
 
     fn valid(&self) -> bool {
         self.discriminator == Self::DISCRIMINATOR
-            && (1..=MEMBER_REGISTRY_CAPACITY).contains(&u64::from(self.next_index()))
+            && (1..=QUAD_CAPACITY).contains(&self.next_index())
     }
 }
 
@@ -225,8 +225,8 @@ pub(crate) enum Retirement {
 }
 
 /// Writes nothing on a refusal, `revision` is the one the proof was made against.
-pub(crate) fn advance_roots(
-    roots: &mut [Root; ROOT_HISTORY],
+pub(crate) fn advance_roots<const N: usize>(
+    roots: &mut [Root; N],
     revision: Revision,
     retirement: Retirement,
     new_root: [u8; 32],
@@ -239,7 +239,7 @@ pub(crate) fn advance_roots(
         .checked_add(1)
         .ok_or(StorageError::RevisionOverflow)?;
     match retirement {
-        Retirement::Retained { slot, .. } if slot < roots[ROOT_HISTORY - 1].expires_at() => {
+        Retirement::Retained { slot, .. } if slot < roots[N - 1].expires_at() => {
             return Err(StorageError::RootHistoryRetained);
         }
         // A graced update tightens nothing, so the rotation dropping the oldest root only makes its proofs prove again.
@@ -259,8 +259,8 @@ pub(crate) fn advance_roots(
 }
 
 /// The current root, or a retired one before its expiry.
-pub(crate) fn root_at(
-    roots: &[Root; ROOT_HISTORY],
+pub(crate) fn root_at<const N: usize>(
+    roots: &[Root; N],
     revision: Revision,
     slot: u64,
 ) -> Result<[u8; 32], StorageError> {
@@ -316,16 +316,8 @@ pub enum StorageError {
     NonCanonicalViewingKey = 9021,
     #[error("tracking registry is invalid")]
     InvalidTrackingRegistry = 9022,
-    #[error("tracking authorization is invalid")]
-    InvalidTrackingAuthorization = 9023,
-    #[error("the enrollment is already applied")]
-    EnrollmentAlreadyApplied = 9024,
-    #[error("the enrolled nullifier key, list tag and ciphertext are final")]
-    EnrollmentKeyFinal = 9025,
     #[error("a zero nullifier key does not enroll")]
     ZeroNullifierKey = 9028,
-    #[error("a first enrollment carries a proof and a rotation none")]
-    EnrollmentProofShape = 9029,
     #[error("an apply names no enrollment")]
     NoEnrollmentsNamed = 9030,
     #[error("owner grant account is invalid")]
@@ -342,6 +334,12 @@ pub enum StorageError {
     TrackingTreeFull = 9036,
     #[error("the apply would evict a tracking root inside its grace")]
     RootHistoryRetained = 9037,
+    #[error("the event self invocation needs the storage program account")]
+    InvalidStorageProgram = 9041,
+    #[error("the instruction before is no ed25519 instruction with one signature per write")]
+    InvalidSignatureInstruction = 9042,
+    #[error("a signature names another owner or message than its write")]
+    OwnerSignatureMismatch = 9043,
 }
 
 impl From<StorageError> for ProgramError {
@@ -352,4 +350,4 @@ impl From<StorageError> for ProgramError {
 
 // Byte fields only, the `Pod` image is the account data with no padding.
 const _: () = assert!(core::mem::align_of::<StorageRegistry>() == 1);
-const _: () = assert!(StorageRegistry::SIZE == 1653);
+const _: () = assert!(StorageRegistry::SIZE == 1657);

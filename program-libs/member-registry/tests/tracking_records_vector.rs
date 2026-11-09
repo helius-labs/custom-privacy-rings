@@ -4,7 +4,7 @@ use custom_ring_interface::tracking::{TrackingEntry, TRACKING_EMPTY_ROOT};
 use serde::{Deserialize, Serialize};
 use spr_hasher::primitives::right_align;
 use zolana_ring_member_registry::{
-    AppliedTree, RecordTree, TrackingPath, TrackingRecord, TrackingTree, TrackingWriteProofInput,
+    AppliedTree, QuadPath, RecordTree, TrackingRecord, TrackingTree, TrackingWriteProofInput,
 };
 
 const VECTORS: &str = concat!(
@@ -39,6 +39,9 @@ struct Entry {
     nullifier_pk: String,
     ct_hash: String,
     list_tag: String,
+    viewing_hash: String,
+    prior_viewing_hash: String,
+    proven: bool,
     entry_hash: String,
 }
 
@@ -49,6 +52,7 @@ struct Record {
     nullifier_pk: String,
     ct_hash: String,
     list_tag: String,
+    viewing_hash: String,
     leaf_hash: String,
 }
 
@@ -61,6 +65,7 @@ struct Path {
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 struct Write {
     entry: Entry,
+    present: bool,
     slot: Path,
     low: Record,
     low_path: Path,
@@ -77,6 +82,22 @@ fn entry(owner: u8) -> TrackingEntry {
         nullifier_pk: field(owner ^ 0x40),
         ct_hash: field(owner ^ 0x50),
         list_tag: field(owner ^ 0x70),
+        viewing_hash: field(owner ^ 0x60),
+        prior_viewing_hash: [0; 32],
+        proven: true,
+    }
+}
+
+/// A rotation from the first enrollment's key as the program computes it, a no-op of an absent owner.
+fn rotation(owner: u8, viewing: u8) -> TrackingEntry {
+    TrackingEntry {
+        nullifier_pk: [0; 32],
+        ct_hash: [0; 32],
+        list_tag: [0; 32],
+        viewing_hash: field(viewing),
+        prior_viewing_hash: entry(owner).viewing_hash,
+        proven: false,
+        ..entry(owner)
     }
 }
 
@@ -87,11 +108,12 @@ fn record_vector(record: &TrackingRecord) -> Record {
         nullifier_pk: hex::encode(record.nullifier_pk),
         ct_hash: hex::encode(record.ct_hash),
         list_tag: hex::encode(record.list_tag),
+        viewing_hash: hex::encode(record.viewing_hash),
         leaf_hash: hex::encode(record.hash().unwrap()),
     }
 }
 
-fn path_vector(path: &TrackingPath) -> Path {
+fn path_vector(path: &QuadPath) -> Path {
     Path {
         index: path.index,
         siblings: path
@@ -109,8 +131,12 @@ fn write_vector(write: &TrackingWriteProofInput) -> Write {
             nullifier_pk: hex::encode(write.entry.nullifier_pk),
             ct_hash: hex::encode(write.entry.ct_hash),
             list_tag: hex::encode(write.entry.list_tag),
+            viewing_hash: hex::encode(write.entry.viewing_hash),
+            prior_viewing_hash: hex::encode(write.entry.prior_viewing_hash),
+            proven: write.entry.proven,
             entry_hash: hex::encode(write.entry.hash().unwrap()),
         },
+        present: write.present,
         slot: path_vector(&write.slot),
         low: record_vector(&write.low),
         low_path: path_vector(&write.low_path),
@@ -158,10 +184,21 @@ fn compute_vectors() -> TrackingVectors {
         [0x13; 32],
         &[entry(0x48), entry(0x08)],
     );
+    let updates = apply(
+        &mut tree,
+        "updates_no_op_and_insert_then_update",
+        [0x14; 32],
+        &[
+            rotation(0x20, 0x91),
+            rotation(0x28, 0x92),
+            entry(0x38),
+            rotation(0x38, 0x93),
+        ],
+    );
     TrackingVectors {
         description: "Tracking tree applications with every proof input. Produced by program-libs/member-registry/tests/tracking_records_vector.rs.".to_string(),
         empty_root: hex::encode(TRACKING_EMPTY_ROOT),
-        applications: vec![inserts, one, bounds],
+        applications: vec![inserts, one, bounds, updates],
     }
 }
 

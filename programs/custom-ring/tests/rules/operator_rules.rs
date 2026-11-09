@@ -1,10 +1,15 @@
 //! Ring account and policy writes, their roles and their declared budgets.
 
 use custom_ring_interface::{
-    storage::StorageError, tag, tracking::TrackingRegistry, CoSignScope, CoSigner, CustomRingError,
-    InitializeIxData, InstructionTag, PolicyBindingIxData, PolicySourceIxData, PolicyTableIxData,
-    RingKind, RingMode, RingPolicy, RingRole, SetPausedIxData, SourceSpec, UpdatePolicyIxData,
-    TAGGED_X25519_KEY_LEN,
+    storage::StorageError,
+    storage_instruction::{
+        ApplyEnrollmentsIxData, ApplyEnrollmentsRequest, EnrollmentChange, EnrollmentWrite,
+    },
+    tag,
+    tracking::TrackingRegistry,
+    CoSignScope, CoSigner, CustomRingError, InitializeIxData, InstructionTag, PolicyBindingIxData,
+    PolicySourceIxData, PolicyTableIxData, RingKind, RingMode, RingPolicy, RingRole,
+    SetPausedIxData, SourceSpec, UpdatePolicyIxData, STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{error::InstructionError, AccountMeta, Instruction};
@@ -22,11 +27,12 @@ use crate::common::{
 };
 use crate::transact_rules::SPP;
 
-const ROLES: [RingRole; 4] = [
+const ROLES: [RingRole; 5] = [
     RingRole::Admin,
     RingRole::Policy,
     RingRole::Pauser,
     RingRole::CosignAdmin,
+    RingRole::EnrollmentWriter,
 ];
 
 impl Ring {
@@ -118,6 +124,7 @@ fn initialize_creates_the_ring_and_spp_registration_under_the_upgrade_authority(
     let tracking: TrackingRegistry = ring.read(&tracking_registry());
     assert_eq!(tracking.auditor_pubkey, auditor_pubkey());
     assert_eq!(tracking.ring_id, ring_id_field(PROGRAM.as_array()).unwrap());
+    assert_eq!(tracking.authority, ring_auth());
     assert!(account.written_policy_hash().is_some());
     let registration: RingConfig = ring.read(&ring_auth());
     assert_eq!(
@@ -1026,6 +1033,63 @@ fn a_table_write_decodes_and_counts_its_generation_on_the_policy() {
             rules_write(&policy, allow_list_table(Vec::new())),
         ),
         CustomRingError::PolicyGenerationOverflow,
+    );
+}
+
+/// One rotation, storage reaches its signature check only past the ring's role and pin.
+fn enroll_batch(writer: &Address, tracking: Address) -> Instruction {
+    let header = ApplyEnrollmentsIxData {
+        count: 1,
+        ..bytemuck::Zeroable::zeroed()
+    };
+    let owner = Address::new_unique();
+    let request = ApplyEnrollmentsRequest {
+        ix: &header,
+        writes: vec![EnrollmentWrite {
+            owner: &owner,
+            change: EnrollmentChange::Rotate {
+                viewing_u: &[9; 32],
+                prior_viewing_hash: &[8; 32],
+            },
+        }],
+    };
+    Instruction {
+        program_id: PROGRAM,
+        accounts: vec![
+            AccountMeta::new_readonly(*writer, true),
+            AccountMeta::new_readonly(policy_pda(), false),
+            AccountMeta::new(ring_auth(), false),
+            AccountMeta::new(tracking, false),
+            AccountMeta::new_readonly(pinocchio::sysvars::instructions::INSTRUCTIONS_ID, false),
+            AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),
+        ],
+        data: [&[tag::ENROLL_BATCH][..], &request.encode()].concat(),
+    }
+}
+
+#[test]
+fn only_the_enrollment_writer_reaches_storage_through_the_ring_pda() {
+    let mut ring = Ring::new(Setup::AuditOnly);
+    let writer = ring.roles.enrollment_writer.pubkey();
+    let policy = ring.roles.policy.pubkey();
+    refused(
+        ring.role_send(RingRole::Policy, enroll_batch(&policy, tracking_registry())),
+        CustomRingError::UnauthorizedAuthority,
+    );
+    refused(
+        ring.role_send(
+            RingRole::EnrollmentWriter,
+            enroll_batch(&writer, Address::new_unique()),
+        ),
+        CustomRingError::InvalidTrackingRegistry,
+    );
+    // Storage accepts `ring_auth` as the registry's authority and stops at the missing owner signature.
+    refused_with(
+        ring.role_send(
+            RingRole::EnrollmentWriter,
+            enroll_batch(&writer, tracking_registry()),
+        ),
+        InstructionError::Custom(StorageError::InvalidSignatureInstruction as u32),
     );
 }
 

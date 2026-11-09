@@ -2,6 +2,8 @@
 //!
 //! Read after `lib.rs`. Read before `instructions/transfer/processor.rs`.
 
+#[path = "tracking/enroll_batch.rs"]
+mod enroll_batch;
 #[path = "configuration/setup/initialize.rs"]
 mod initialize;
 #[path = "runtime/instruction_runtime.rs"]
@@ -28,6 +30,7 @@ mod update_policy;
 #[path = "verification/verifier.rs"]
 mod verifier;
 
+pub(crate) use enroll_batch::process_enroll_batch_ix;
 pub(crate) use initialize::process_initialize_ix;
 pub(crate) use merge::process_merge_ix;
 pub(crate) use set_cosigner::{process_clear_cosigner_ix, process_set_cosigner_ix};

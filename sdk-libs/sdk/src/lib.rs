@@ -85,8 +85,7 @@ pub use crate::{
         RingDepositBatch, RingDepositBatchReceipt, RingDepositReceipt,
     },
     enrollment::{
-        Enroll, EnrollInstruction, EnrollRelay, EnrollmentAttempt, EnrollmentJournal,
-        EnrollmentOutcome, WriteOwnerGrant,
+        Enroll, EnrollmentRead, EnrollmentService, OwnedChange, OwnerEnrollment, WriteOwnerGrant,
     },
     error::RingError,
     merge::{
@@ -120,13 +119,12 @@ pub use crate::{
     select::{select_merge_where, select_spend_where},
     signature_history::SignatureHistory,
     storage::{
-        tracking_apply_inputs, ApplyEnrollments, EnrollPending, InitializeStorage,
-        PrivateStorageWrite, ProvenPrivateWrite, SaltedOwnerWrite, StorageApplyProof,
-        UpdateStorage, UpdateStorageAuthority,
+        EnrollBatch, InitializeStorage, PrivateStorageWrite, ProvenEnrollBatch, ProvenPrivateWrite,
+        SaltedOwnerWrite, StorageApplyProof, UpdateStorage, UpdateStorageAuthority,
     },
     submission::{
         live_registry, RingOperation, RingSubmission, SettledSubmission, SubmissionStatus,
     },
     trees::{tree_id, written_tree_fees},
-    viewing_rotation::{RotateViewingKey, RotatedViewingKey},
+    viewing_rotation::RotateViewingKey,
 };

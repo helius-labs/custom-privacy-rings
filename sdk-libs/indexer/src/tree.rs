@@ -5,9 +5,9 @@ use thiserror::Error;
 use zolana_ring_member_registry::MemoryTree;
 pub use zolana_ring_member_registry::{
     ApplyProofInputs, Canopy, IndexedLeaf, IndexedRecord, MemberRecord, NodePosition, OpeningCheck,
-    PoolSubject, QuadPath, QuadPathOf, RecordOpening, RecordPool, RecordPoolOf, RecordStore,
-    RecordTree, RecordTreeError, RecordWriteProofInput, SharedPath, SharedProof, TrackingOpening,
-    TrackingPath, TrackingPool, TrackingRecord, TrackingWriteProofInput, WritableLeaf,
+    PoolSubject, QuadPath, RecordOpening, RecordPool, RecordPoolOf, RecordStore, RecordTree,
+    RecordTreeError, RecordWriteProofInput, SharedPath, SharedProof, TrackingOpening, TrackingPool,
+    TrackingRecord, TrackingWriteProofInput, WritableLeaf,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,7 +27,7 @@ pub struct ReadRows<L = MemberRecord> {
 }
 
 impl<L: IndexedLeaf> ReadRows<L> {
-    pub fn into_tree<const H: usize>(self) -> LoadedTree<L, H> {
+    pub fn into_tree(self) -> LoadedTree<L> {
         let mut records = BTreeMap::new();
         let mut absent = BTreeSet::new();
         for read in self.reads {
@@ -65,17 +65,17 @@ impl<L> Default for WrittenRows<L> {
 }
 
 impl<L: IndexedLeaf> WrittenRows<L> {
-    /// The rows of a tree holding only the sentinel, `H` its height.
-    pub fn fresh<const H: usize>() -> Result<Self, RecordTreeError> {
-        let tree = MemoryTree::<L, H>::new()?;
-        let next_index = RecordStore::<L, H>::next_index(&tree)?;
+    /// The rows of a tree holding only the sentinel.
+    pub fn fresh() -> Result<Self, RecordTreeError> {
+        let tree = MemoryTree::<L>::new()?;
+        let next_index = RecordStore::<L>::next_index(&tree)?;
         let mut nodes = BTreeMap::new();
-        for level in 0..=H {
+        for level in 0..=QUAD_HEIGHT {
             let populated = (0..)
                 .map(|position| NodePosition { level, position })
                 .take_while(|at| !at.is_empty(next_index));
             for at in populated {
-                nodes.insert(at, RecordStore::<L, H>::node(&tree, at)?);
+                nodes.insert(at, RecordStore::<L>::node(&tree, at)?);
             }
         }
         let records = (0..)
@@ -102,7 +102,7 @@ pub enum LoadedTreeError {
     RecordNotLoaded,
 }
 
-pub struct LoadedTree<L = MemberRecord, const H: usize = QUAD_HEIGHT> {
+pub struct LoadedTree<L = MemberRecord> {
     next_index: u64,
     nodes: BTreeMap<NodePosition, [u8; 32]>,
     records: BTreeMap<[u8; 32], IndexedRecord<L>>,
@@ -111,14 +111,14 @@ pub struct LoadedTree<L = MemberRecord, const H: usize = QUAD_HEIGHT> {
     written: WrittenRows<L>,
 }
 
-impl<L: WritableLeaf<H>, const H: usize> LoadedTree<L, H> {
+impl<L: WritableLeaf> LoadedTree<L> {
     /// A failed batch drops the staged tree and leaves the caller's savepoint nothing to roll back.
     pub fn apply_batch(
         self,
         chain_start: [u8; 32],
         entries: &[L::Entry],
     ) -> Result<Application<L::WriteProof, L>, LoadedTreeError> {
-        let applied = RecordTree::<L, H>::apply(self, chain_start, entries)?;
+        let applied = RecordTree::<L>::apply(self, chain_start, entries)?;
         Ok(Application {
             inputs: applied.proof,
             rows: applied.tree.written,
@@ -126,7 +126,7 @@ impl<L: WritableLeaf<H>, const H: usize> LoadedTree<L, H> {
     }
 }
 
-impl<L: IndexedLeaf, const H: usize> RecordStore<L, H> for LoadedTree<L, H> {
+impl<L: IndexedLeaf> RecordStore<L> for LoadedTree<L> {
     type Error = LoadedTreeError;
 
     fn next_index(&self) -> Result<u64, LoadedTreeError> {
@@ -180,16 +180,12 @@ impl<L: IndexedLeaf, const H: usize> RecordStore<L, H> for LoadedTree<L, H> {
 }
 
 /// The root and every node the openings of `leaves` read.
-pub fn node_keys<const H: usize>(
+pub fn node_keys(
     leaves: impl IntoIterator<Item = u64>,
 ) -> Result<BTreeSet<NodePosition>, RecordTreeError> {
-    let mut keys = BTreeSet::from([NodePosition::root(H)]);
+    let mut keys = BTreeSet::from([NodePosition::ROOT]);
     for leaf in leaves {
-        keys.extend(
-            QuadPathOf::<H>::sibling_positions(leaf)?
-                .into_iter()
-                .flatten(),
-        );
+        keys.extend(QuadPath::sibling_positions(leaf)?.into_iter().flatten());
     }
     Ok(keys)
 }
@@ -202,7 +198,7 @@ mod tests {
 
     /// The sentinel tree with `member` read as absent, its low record the sentinel.
     fn loaded(member: [u8; 32]) -> LoadedTree {
-        let fresh = WrittenRows::<MemberRecord>::fresh::<QUAD_HEIGHT>().unwrap();
+        let fresh = WrittenRows::<MemberRecord>::fresh().unwrap();
         let low = *fresh.records.values().next().unwrap();
         ReadRows {
             next_index: 1,

@@ -16,7 +16,6 @@ pub enum RelayOperation {
     Delegate,
     Deposit,
     Merge,
-    Enroll,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,11 +79,6 @@ pub enum RelayIntent {
     },
     /// `proof_inputs` is a `RelayMergeInputs`, the owner signs its digest here.
     Merge {
-        proof_inputs: ProofInputBytes,
-        owner_signature: SerializableSignature,
-    },
-    /// `proof_inputs` is a `RelayEnrollInputs`, the owner signs its digest here and the returned message later.
-    Enroll {
         proof_inputs: ProofInputBytes,
         owner_signature: SerializableSignature,
     },
@@ -167,7 +161,6 @@ impl RelayIntent {
             Self::Delegate { .. } => RelayOperation::Delegate,
             Self::Deposit { .. } => RelayOperation::Deposit,
             Self::Merge { .. } => RelayOperation::Merge,
-            Self::Enroll { .. } => RelayOperation::Enroll,
         }
     }
 
@@ -185,7 +178,7 @@ impl RelayIntent {
                 token_account_setup,
                 ..
             } => token_account_setup,
-            Self::Deposit { .. } | Self::Merge { .. } | Self::Enroll { .. } => &[],
+            Self::Deposit { .. } | Self::Merge { .. } => &[],
         }
     }
 
@@ -195,8 +188,7 @@ impl RelayIntent {
             | Self::Confidential { proof_inputs, .. }
             | Self::Delegate { proof_inputs, .. }
             | Self::Deposit { proof_inputs, .. }
-            | Self::Merge { proof_inputs, .. }
-            | Self::Enroll { proof_inputs, .. } => proof_inputs,
+            | Self::Merge { proof_inputs, .. } => proof_inputs,
         }
     }
 }

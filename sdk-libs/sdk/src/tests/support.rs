@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use bytemuck::{Pod, Zeroable};
 use custom_ring_interface::{
     storage::{RegistryId, Revision, StorageRegistry},
-    storage_instruction::{InitializeIxData, InitializeTrackingIxData},
-    tracking::{TrackingAuthorization, TrackingRegistry},
+    storage_instruction::{EnrollIxData, InitializeIxData, InitializeTrackingIxData},
+    tracking::TrackingRegistry,
     CoSignScope, CoSigner, CoSignerCounts, NewRing, PolicyUpdate, RingMode, RingPolicy, RingRoles,
     SourceSlot, CO_SIGNER, N_SOURCE_SLOTS, RING_POLICY_PDA_SEED, STORAGE_PROGRAM_ID,
 };
@@ -21,7 +21,10 @@ use spr_client::{
     ClientError, Context, GetMerkleProofsResponse, IndexerRpcConfig, InputWitnesses, MerkleContext,
     MerkleProof, ProofDataSource,
 };
-use spr_hasher::{Hasher, Poseidon};
+use spr_hasher::{
+    primitives::{hash_bytes, solana_owner_identity},
+    Hasher, Poseidon,
+};
 use spr_indexer_api::{Base64String, Hash, SerializablePubkey};
 use spr_interface::{
     state::{
@@ -35,7 +38,9 @@ use spr_keypair::ShieldedAddress;
 use spr_keypair::{random_blinding, NullifierKey, ShieldedKeypair, SigningKey, X25519Keypair};
 use spr_transaction::{utxo::SppProofInputUtxo, Data, Mint, Utxo, WalletUtxo};
 use spr_tree::{TreeAccount, TreeFeeSchedule, UTXO_TREE_HEIGHT};
-use zolana_ring_client::{AsyncRingIndexer, RingIndexerError};
+use zolana_ring_client::{
+    AsyncRingIndexer, NullifierKeyEnvelope, RingIndexerError, SealedNullifierKey,
+};
 use zolana_ring_indexer::{
     rpc::{
         GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
@@ -45,7 +50,7 @@ use zolana_ring_indexer::{
     tracking::{
         GetTrackingOpeningsRequest, GetTrackingOpeningsResponse, GetTrackingRecordPoolRequest,
         GetTrackingRecordPoolResponse, RingIndexedTrackingRecordView, RingTrackingOpening,
-        RingTrackingRecordView,
+        RingTrackingRecordView, RingTrackingSealView,
     },
 };
 use zolana_ring_member_registry::{
@@ -250,6 +255,7 @@ impl RingSettings {
                 policy: Address::new_from_array([0xa2; 32]),
                 pauser: Address::new_from_array([0xa3; 32]),
                 cosign_admin: Address::new_from_array([0xa4; 32]),
+                enrollment_writer: Address::new_from_array([0xa5; 32]),
             },
             auditor_pubkey: *auditor().pubkey().as_bytes(),
             created_slot: self.created_slot,
@@ -423,19 +429,19 @@ impl Chain {
         self.with_tracking_fixture(Arc::new(TrackingFixture::tagged(addresses, list_tag)))
     }
 
-    /// The tree's registry and each enrolled owner's authorization holding its address viewing key.
+    /// `leaves` alone hold tracking rows, each served beside its seal.
+    pub(crate) fn with_tracking_leaves(self, leaves: &[ServedLeaf]) -> Self {
+        self.with_tracking_fixture(Arc::new(TrackingFixture::new(leaves)))
+    }
+
+    /// The tree and a registry account holding its root as the newest.
     fn with_tracking_fixture(self, tracking: Arc<TrackingFixture>) -> Self {
-        let chain = tracking
-            .authorizations
-            .iter()
-            .fold(self, |chain, (address, account)| {
-                chain.with(*address, account.clone())
-            });
+        let account = tracking.account();
         Self {
-            tracking: Some(Arc::clone(&tracking)),
-            ..chain
+            tracking: Some(tracking),
+            ..self
         }
-        .with(TRACKING, tracking.account())
+        .with(TRACKING, account)
     }
 
     /// The indexed route, the prover fetches the input proofs and no witness is read here.
@@ -627,7 +633,7 @@ impl AsyncRingIndexer for Chain {
             .tree
             .record_pool(
                 &members,
-                Canopy::covering_tracking(request.openings as usize).unwrap(),
+                Canopy::covering(request.openings as usize).unwrap(),
             )
             .unwrap();
         Ok(GetTrackingRecordPoolResponse {
@@ -641,7 +647,7 @@ impl AsyncRingIndexer for Chain {
                 .iter()
                 .zip(&pool.proof.paths)
                 .map(|(record, path)| RingIndexedTrackingRecordView {
-                    record: record_view(record),
+                    record: tracking.view(record),
                     path: RingRecordPathView {
                         index: path.index,
                         siblings: path.siblings.iter().map(|level| level.map(Hash)).collect(),
@@ -666,9 +672,73 @@ impl Chain {
     }
 }
 
+/// One leaf the indexer serves, every hash the leaf binds rebuilt from its seal and viewing key.
+#[derive(Clone, Copy)]
+pub(crate) struct ServedLeaf {
+    pub owner: Address,
+    pub nullifier_pk: [u8; 32],
+    pub list_tag: [u8; 32],
+    pub viewing_u: [u8; 32],
+    pub seal: SealedNullifierKey,
+}
+
+impl ServedLeaf {
+    /// `address` under `list_tag`, its seal one no test opens.
+    pub(crate) fn of(address: &ShieldedAddress, list_tag: [u8; 32]) -> Self {
+        Self {
+            owner: address.solana_address().unwrap(),
+            nullifier_pk: address.nullifier_pubkey,
+            list_tag,
+            viewing_u: address.viewing_pubkey.u(),
+            seal: SealedNullifierKey {
+                eph_pk: auditor().pubkey(),
+                ciphertext: [0x05; 64],
+            },
+        }
+    }
+
+    /// `key` and `list_salt` sealed to the ring auditor, as a first enrollment proves them.
+    pub(crate) fn sealed(owner: Address, key: &NullifierKey, list_salt: &[u8; 32]) -> Self {
+        let envelope = NullifierKeyEnvelope::new(key, list_salt, &auditor().pubkey()).unwrap();
+        Self {
+            owner,
+            nullifier_pk: envelope.nullifier_pk,
+            list_tag: custom_ring_interface::domain::list_tag(list_salt).unwrap(),
+            viewing_u: X25519Keypair::new().pubkey().u(),
+            seal: envelope.sealed,
+        }
+    }
+
+    pub(crate) fn member(&self) -> [u8; 32] {
+        solana_owner_identity(self.owner.as_array()).unwrap()
+    }
+
+    /// The `Enroll` data that inserts the leaf.
+    pub(crate) fn enroll(&self) -> EnrollIxData {
+        EnrollIxData {
+            nullifier_pk: self.nullifier_pk,
+            list_tag: self.list_tag,
+            viewing_u: self.viewing_u,
+            eph_u: self.seal.eph_pk.u(),
+            ciphertext: self.seal.ciphertext,
+        }
+    }
+
+    fn record(&self, next: [u8; 32]) -> TrackingRecord {
+        TrackingRecord {
+            member: self.member(),
+            next,
+            nullifier_pk: self.nullifier_pk,
+            ct_hash: hash_bytes(&self.seal.ciphertext).unwrap(),
+            list_tag: self.list_tag,
+            viewing_hash: hash_bytes(&self.viewing_u).unwrap(),
+        }
+    }
+}
+
 struct TrackingFixture {
     tree: TrackingTree,
-    authorizations: Vec<(Address, Account)>,
+    leaves: HashMap<[u8; 32], ServedLeaf>,
 }
 
 impl TrackingFixture {
@@ -688,62 +758,45 @@ impl TrackingFixture {
     }
 
     fn tagged(addresses: &[ShieldedAddress], list_tag: [u8; 32]) -> Self {
-        let mut members: Vec<([u8; 32], ShieldedAddress)> = addresses
+        let leaves: Vec<_> = addresses
             .iter()
-            .map(|address| {
-                (
-                    address.signing_pubkey.owner_proof_input_hash().unwrap(),
-                    *address,
-                )
-            })
+            .map(|address| ServedLeaf::of(address, list_tag))
             .collect();
-        members.sort_by_key(|(member, _)| *member);
+        Self::new(&leaves)
+    }
+
+    fn new(leaves: &[ServedLeaf]) -> Self {
+        let mut sorted: Vec<ServedLeaf> = leaves.to_vec();
+        sorted.sort_by_key(ServedLeaf::member);
         let mut records = vec![TrackingRecord {
-            next: members
+            next: sorted
                 .first()
-                .map_or(TrackingRecord::SENTINEL.next, |(member, _)| *member),
+                .map_or(TrackingRecord::SENTINEL.next, ServedLeaf::member),
             ..TrackingRecord::SENTINEL
         }];
-        let mut authorizations = Vec::with_capacity(members.len());
-        for (position, (member, address)) in members.iter().enumerate() {
-            records.push(TrackingRecord {
-                member: *member,
-                next: members
-                    .get(position + 1)
-                    .map_or(TrackingRecord::SENTINEL.next, |(next, _)| *next),
-                nullifier_pk: address.nullifier_pubkey,
-                ct_hash: [0x05; 32],
-                list_tag,
-            });
-            let owner =
-                Address::new_from_array(address.signing_pubkey.confidential_view_tag().unwrap());
-            let authorization = TrackingAuthorization {
-                discriminator: TrackingAuthorization::DISCRIMINATOR,
-                registry: TRACKING,
-                owner,
-                nullifier_pk: address.nullifier_pubkey,
-                list_tag,
-                viewing_u: address.viewing_pubkey.u(),
-                eph_u: [0; 32],
-                ciphertext: [0; 64],
-                applied: 1,
-            };
-            authorizations.push((
-                TrackingAuthorization::find_address(&TRACKING, &owner).0,
-                account(STORAGE_PROGRAM_ID, &authorization),
-            ));
+        for (position, leaf) in sorted.iter().enumerate() {
+            let next = sorted
+                .get(position + 1)
+                .map_or(TrackingRecord::SENTINEL.next, ServedLeaf::member);
+            records.push(leaf.record(next));
         }
         Self {
             tree: TrackingTree::from_records(records).unwrap(),
-            authorizations,
+            leaves: sorted
+                .into_iter()
+                .map(|leaf| (leaf.member(), leaf))
+                .collect(),
         }
     }
 
     fn account(&self) -> Account {
-        let mut registry = TrackingRegistry::new(&InitializeTrackingIxData {
-            ring_id: ring().ring_id().unwrap(),
-            auditor_pubkey: *auditor().pubkey().as_bytes(),
-        });
+        let mut registry = TrackingRegistry::new(
+            ring().ring_auth_pda(),
+            &InitializeTrackingIxData {
+                ring_id: ring().ring_id().unwrap(),
+                auditor_pubkey: *auditor().pubkey().as_bytes(),
+            },
+        );
         registry.roots[0].hash = self.tree.root().unwrap();
         registry.roots[0].revision = Revision::from(REVISION);
         account(STORAGE_PROGRAM_ID, &registry)
@@ -764,23 +817,33 @@ impl TrackingFixture {
         };
         RingTrackingOpening {
             present,
-            record: record_view(&record),
+            record: self.view(&record),
             path: RingRecordPathView {
                 index: path.index,
                 siblings: path.siblings.iter().map(|level| level.map(Hash)).collect(),
             },
         }
     }
-}
 
-fn record_view(record: &TrackingRecord) -> RingTrackingRecordView {
-    RingTrackingRecordView {
-        member: Hash(record.member),
-        next: Hash(record.next),
-        nullifier_pk: Hash(record.nullifier_pk),
-        ct_hash: Hash(record.ct_hash),
-        list_tag: Hash(record.list_tag),
-        seal: None,
+    /// The sentinel alone serves no seal.
+    fn view(&self, record: &TrackingRecord) -> RingTrackingRecordView {
+        RingTrackingRecordView {
+            member: Hash(record.member),
+            next: Hash(record.next),
+            nullifier_pk: Hash(record.nullifier_pk),
+            ct_hash: Hash(record.ct_hash),
+            list_tag: Hash(record.list_tag),
+            viewing_hash: Hash(record.viewing_hash),
+            seal: self
+                .leaves
+                .get(&record.member)
+                .map(|leaf| RingTrackingSealView {
+                    owner: leaf.owner.into(),
+                    viewing_u: Base64String(leaf.viewing_u.to_vec()),
+                    eph_pk: Base64String(leaf.seal.eph_pk.as_bytes().to_vec()),
+                    ciphertext: Base64String(leaf.seal.ciphertext.to_vec()),
+                }),
+        }
     }
 }
 

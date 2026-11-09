@@ -13,7 +13,8 @@ use zolana_ring_policy::MemberError;
 
 use crate::{
     authority_transfer::AuthorityTransferError, authorize::Unauthorized, cosign::CoSignError,
-    record_update::RecordUpdateRefusal, relay::RelayError, tracking::TrackingRefusal,
+    enrollment_applier::EnrollmentRefusal, record_update::RecordUpdateRefusal, relay::RelayError,
+    tracking::TrackingRefusal,
 };
 
 #[derive(Debug, Error)]
@@ -86,6 +87,8 @@ pub enum RingRpcError {
     StaleMergeSettings,
     #[error(transparent)]
     Tracking(#[from] TrackingRefusal),
+    #[error(transparent)]
+    Enrollment(#[from] EnrollmentRefusal),
     #[error("merge build failed because {0}")]
     MergeBuild(Box<custom_ring_sdk::RingError>),
 }
@@ -237,6 +240,9 @@ impl From<RingRpcError> for ErrorObjectOwned {
             }
             RecordUpdate(refusal) => {
                 return ErrorObjectOwned::owned(refusal.code(), refusal.to_string(), None::<()>);
+            }
+            Enrollment(refusal) => {
+                return ErrorObjectOwned::owned(*refusal as i32, refusal.to_string(), None::<()>);
             }
             StaleRecords | StorageUpdate(_) => {
                 error!("storage update failed {}", redacted(&failure));

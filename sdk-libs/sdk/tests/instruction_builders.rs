@@ -108,6 +108,7 @@ fn roles() -> RingRoles {
         policy: Address::new_from_array([22; 32]),
         pauser: Address::new_from_array([23; 32]),
         cosign_admin: Address::new_from_array([24; 32]),
+        enrollment_writer: Address::new_from_array([25; 32]),
     }
 }
 

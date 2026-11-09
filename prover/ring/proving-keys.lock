@@ -6,11 +6,6 @@
       "size": 7350842,
       "source": "release"
     },
-    "custom_ring_apply_enrollments_16.key": {
-      "sha256": "cfdababa9b2d069838b3df4208e633bc4ab0819501eb7f4695f8c5ce1a6e5126",
-      "size": 117577909,
-      "source": "release"
-    },
     "custom_ring_apply_enrollments_2.key": {
       "sha256": "4ebc264d5365198282b541413268fde0c621977d26b57cefa12433569c99f42b",
       "size": 14711330,

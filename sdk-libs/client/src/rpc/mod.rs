@@ -24,13 +24,13 @@ use zolana_secret_file::{
 
 mod authority_transfer;
 mod delegate_read;
+mod enrollment;
 mod list_salt_read;
 mod merge_settings;
 mod policy_authority;
 mod reader_grant;
 mod record_update;
 mod relay;
-mod relay_enroll;
 mod relay_proof;
 mod spend_coverage;
 mod wallet_activity;
@@ -39,13 +39,13 @@ mod wallet_status;
 
 pub use authority_transfer::*;
 pub use delegate_read::*;
+pub use enrollment::*;
 pub use list_salt_read::*;
 pub use merge_settings::*;
 pub use policy_authority::*;
 pub use reader_grant::*;
 pub use record_update::*;
 pub use relay::*;
-pub use relay_enroll::*;
 pub use relay_proof::*;
 pub use spend_coverage::*;
 pub use wallet_activity::*;
@@ -70,6 +70,7 @@ pub const PREPARE_RELAY: &str = "prepareRelay";
 pub const SUBMIT_RELAY: &str = "submitRelay";
 pub const GET_RELAY_STATUS: &str = "getRelayStatus";
 pub const SUBMIT_RECORD_UPDATE: &str = "submitRecordUpdate";
+pub const SUBMIT_ENROLLMENT: &str = "submitEnrollment";
 pub const GET_RECORD_UPDATE_STATUS: &str = "getRecordUpdateStatus";
 pub const SET_MERGE_SETTINGS: &str = "setMergeSettings";
 pub const SET_READER_GRANT: &str = "setReaderGrant";

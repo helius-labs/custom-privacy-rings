@@ -51,6 +51,8 @@ pub mod merge;
 pub mod output;
 #[path = "accounts/owner_grant.rs"]
 pub mod owner_grant;
+#[path = "proof/owner_signature.rs"]
+pub mod owner_signature;
 #[path = "proof/ring_keys.rs"]
 pub mod ring_keys;
 #[path = "codec/spp.rs"]

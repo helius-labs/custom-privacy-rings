@@ -51,7 +51,7 @@ func (c *RegisterKeyCircuit) Define(api frontend.API) error {
 	nullifierPk := gadget.PoseidonHash(api, []frontend.Variable{secret})
 	// 2. A salt the envelope does not hold would leave the owner off the auditor's list writes.
 	// The tag commits to the owner's one salt. policy/subjects.go forces a present row's salt to open the tag, and so forces the key ListKey(owner, salt) a private entry sits under, with no choice left to the prover.
-	// A tag cannot move for that reason. A new salt would name a key with no entry, and a privately blocked owner would read as unlisted. `Enroll` verifies the proof only at the first enrollment, a later `Enroll` carries no proof and TrackingAuthorization::rotate refuses a changed key, tag, ephemeral key or ciphertext, and ApplyEnrollmentsCircuit holds the leaf's key, tag and ciphertext hash. No instruction closes the account and no write removes the leaf, a present row stays present under every later root.
+	// A tag cannot move for that reason. A new salt would name a key with no entry, and a privately blocked owner would read as unlisted. A rotation carries no proof and enters unproven, and ApplyEnrollmentsCircuit lets it insert nothing and move only a present leaf's viewing hash, so the leaf's key, tag and ciphertext hash stay as first inserted. No write removes the leaf, a present row stays present under every later root.
 	api.AssertIsEqual(c.ListSalt[0], 0)
 	salt := shared.PackBounded(api, c.ListSalt[1:])[0]
 	// ListKey(owner, 0) is the owner's public key, a zero salt would put the private entries on the public record. The circuit refuses only zero, the wallet's derivation supplies the entropy.

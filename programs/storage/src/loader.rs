@@ -2,10 +2,10 @@
 //!
 //! Read after `programs/storage/src/lib.rs`, `program-libs/interface/src/accounts/storage.rs`,
 //! `program-libs/interface/src/accounts/tracking.rs`. Read before
-//! `programs/storage/src/instructions/update.rs`, `programs/storage/src/instructions/enroll.rs`.
+//! `programs/storage/src/instructions/update.rs`, `programs/storage/src/instructions/apply_enrollments.rs`.
 //!
 //! Guarantees:
-//! 1. A registry, authorization or grant loads only when the program owns it, at its exact size and under its discriminator.
+//! 1. A registry or grant loads only when the program owns it, at its exact size and under its discriminator.
 //! 2. A created account takes its canonical bump from the derivation, never from instruction data.
 //!
 //! Relies on:
@@ -13,16 +13,16 @@
 
 use custom_ring_interface::{
     owner_grant::OwnerGrant,
+    owner_signature::Ed25519Signatures,
     storage::{Revision, StorageError, StorageRegistry},
-    storage_instruction::{
-        EnrollIxData, InitializeIxData, InitializeTrackingIxData, OwnerGrantIxData,
-    },
-    tracking::{FirstEnrollment, TrackingAuthorization, TrackingRegistry},
+    storage_instruction::{InitializeIxData, InitializeTrackingIxData, OwnerGrantIxData},
+    tracking::TrackingRegistry,
 };
 use pinocchio::{
     account::{Ref, RefMut},
     cpi::{Seed, Signer},
     error::ProgramError,
+    sysvars::instructions::Instructions,
     AccountView, Address, ProgramResult,
 };
 
@@ -97,49 +97,9 @@ impl TrackingRegistryInit<'_> {
             size: TrackingRegistry::SIZE,
         }
         .create(account)?;
-        account
-            .try_borrow_mut()?
-            .copy_from_slice(bytemuck::bytes_of(&TrackingRegistry::new(self.ix)));
-        Ok(())
-    }
-}
-
-/// A first enrollment, whose owner signature and proof the processor checked.
-#[must_use]
-pub struct TrackingAuthorizationInit<'a> {
-    pub program_id: &'a Address,
-    pub payer: &'a AccountView,
-    pub owner: &'a Address,
-    pub registry: &'a Address,
-    pub ix: &'a EnrollIxData,
-}
-
-impl TrackingAuthorizationInit<'_> {
-    #[inline(always)]
-    pub fn init(self, account: &mut AccountView) -> ProgramResult {
-        let seeds = TrackingAuthorization::seeds(self.registry, self.owner);
-        let (address, bump) = Address::derive_program_address(&seeds, self.program_id)
-            .ok_or(StorageError::InvalidTrackingAuthorization)?;
-        if account.address() != &address || !account.is_writable() {
-            return Err(StorageError::InvalidTrackingAuthorization.into());
-        }
-        CanonicalPda {
-            program_id: self.program_id,
-            payer: self.payer,
-            seeds: &seeds,
-            bump,
-            size: TrackingAuthorization::SIZE,
-        }
-        .create(account)?;
-        let first = FirstEnrollment {
-            registry: *self.registry,
-            owner: *self.owner,
-            ix: self.ix,
-        }
-        .account();
-        account
-            .try_borrow_mut()?
-            .copy_from_slice(bytemuck::bytes_of(&first));
+        bytemuck::try_from_bytes_mut::<TrackingRegistry>(&mut account.try_borrow_mut()?)
+            .map_err(|_| StorageError::InvalidTrackingRegistry)?
+            .init(*self.creator, self.ix);
         Ok(())
     }
 }
@@ -238,27 +198,6 @@ pub fn load_tracking_registry_mut<'a>(
         .map_err(|_| StorageError::InvalidTrackingRegistry.into())
 }
 
-/// An authorization of `registry`, its stored field binds it because it is created only at its PDA.
-#[inline(always)]
-pub fn load_owned_tracking_authorization_mut<'a>(
-    program_id: &Address,
-    registry: &Address,
-    account: &'a mut AccountView,
-) -> Result<RefMut<'a, TrackingAuthorization>, ProgramError> {
-    if !account.owned_by(program_id) || !account.is_writable() {
-        return Err(StorageError::InvalidTrackingAuthorization.into());
-    }
-    let authorization = RefMut::filter_map(
-        account.try_borrow_mut()?,
-        TrackingAuthorization::from_data_mut,
-    )
-    .map_err(|_| StorageError::InvalidTrackingAuthorization)?;
-    if &authorization.registry != registry {
-        return Err(StorageError::InvalidTrackingAuthorization.into());
-    }
-    Ok(authorization)
-}
-
 #[inline(always)]
 pub fn load_registry_mut<'a>(
     program_id: &Address,
@@ -278,6 +217,38 @@ pub fn check_authority(registry: &StorageRegistry, authority: &AccountView) -> P
         return Err(StorageError::Unauthorized.into());
     }
     Ok(())
+}
+
+/// `check` must match each signature to its write, the runtime verified them in the ed25519 instruction just before the current top-level one.
+#[inline(always)]
+pub fn with_owner_signatures<T>(
+    sysvar: &AccountView,
+    count: usize,
+    check: impl FnOnce(Ed25519Signatures<'_>) -> Result<T, ProgramError>,
+) -> Result<T, ProgramError> {
+    let instructions = Instructions::try_from(sysvar)?;
+    let precompile = instructions
+        .get_instruction_relative(-1)
+        .map_err(|_| StorageError::InvalidSignatureInstruction)?;
+    if precompile.get_program_id() != &solana_sdk_ids::ed25519_program::ID {
+        return Err(StorageError::InvalidSignatureInstruction.into());
+    }
+    check(Ed25519Signatures::parse(
+        precompile.get_instruction_data(),
+        count,
+    )?)
+}
+
+/// The event self invocation resolves the program from the instruction's accounts.
+#[inline(always)]
+pub fn check_storage_program(
+    program_id: &Address,
+    account: &AccountView,
+) -> Result<(), StorageError> {
+    match account.address() == program_id {
+        true => Ok(()),
+        false => Err(StorageError::InvalidStorageProgram),
+    }
 }
 
 #[inline(always)]

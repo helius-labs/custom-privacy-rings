@@ -24,8 +24,7 @@ use crate::{
     migration::Migrator,
     rpc::SolanaRpc,
     storage::{
-        self, Enrollment, RingCursor, StorageRoot, StorageState, StorageStore, TrackingState,
-        TrackingStore,
+        self, RingCursor, StorageRoot, StorageState, StorageStore, TrackingState, TrackingStore,
     },
     storage_registry::StorageCall,
     tracking_registry::TrackingCall,
@@ -98,7 +97,7 @@ fn openings_request(state: &StorageState, root: [u8; 32]) -> GetStorageMemberOpe
 #[tokio::test]
 async fn member_page_reports_a_missing_leaf_instead_of_skipping_it() {
     let (db, mut state, mut cursor) = fixture().await;
-    state.account.next_index = 2u32.to_le_bytes();
+    state.account.next_index = 2u64.to_le_bytes();
     state.account.roots[0].revision = Revision::from(1);
     let store = StorageStore::new(&db, state.registry);
     store.save_state(&state).await.unwrap();
@@ -224,9 +223,9 @@ async fn storage_shaped_instructions_of_other_programs_cost_no_queries() {
         tag::INITIALIZE,
         tag::UPDATE,
         tag::UPDATE_AUTHORITY,
-        tag::ENROLL,
         tag::APPLY_ENROLLMENTS,
         tag::INITIALIZE_TRACKING,
+        tag::EMIT_EVENT,
     ];
     let shaped = storage_tags
         .into_iter()
@@ -307,7 +306,10 @@ async fn postgres_migrates_both_ways_and_serves_the_ring_queries() {
         &tracking,
         &TrackingState {
             registry: [12; 32],
-            account: Box::new(TrackingRegistry::new(&creator)),
+            account: Box::new(TrackingRegistry::new(
+                Address::new_from_array([3; 32]),
+                &creator,
+            )),
             fault: None,
         },
     )
@@ -316,22 +318,5 @@ async fn postgres_migrates_both_ways_and_serves_the_ring_queries() {
     assert!(tracking.state().await.unwrap().is_some());
     let low = tracking.tree().low_record(&field(4), 0).await.unwrap();
     assert_eq!(low.index, 0);
-    let enrollment = Enrollment {
-        owner: [1; 32],
-        authorization: [2; 32],
-        member: field(4),
-        nullifier_pk: field(5),
-        ct_hash: field(6),
-        list_tag: field(7),
-        eph_u: [8; 32],
-        ciphertext: [9; 64],
-        applied: false,
-    };
-    tracking.save_first(&enrollment, 5).await.unwrap();
-    assert_eq!(tracking.pending(None, 8).await.unwrap(), [enrollment]);
-    tracking.mark_applied(&[1; 32], 6).await.unwrap();
-    assert!(tracking.pending(None, 8).await.unwrap().is_empty());
-    let applied = tracking.enrollment_at(&[2; 32]).await.unwrap().unwrap();
-    assert!(applied.applied);
     Migrator::reset(&db).await.unwrap();
 }

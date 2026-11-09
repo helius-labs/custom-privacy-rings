@@ -4,13 +4,12 @@
 //! Read before `prover/circuits/registry/tracking.go`, `prover/circuits/registry/apply_enrollments.go`.
 //!
 //! Invariants, `ApplyEnrollmentsCircuit` holds each.
-//! 1. Every write inserts an absent owner, only a row's successor link moves after insert.
-//! 2. An insert takes the next empty leaf, so a full tree refuses a new owner.
+//! 1. A proven entry of an absent owner inserts, an unproven one changes nothing, so no rotation creates a row.
+//! 2. An entry of a present owner moves only `viewing_hash`, and only from the `prior_viewing_hash` it names. The nullifier key, ciphertext hash and list tag stay as first inserted, an auditor's opened secrets keep matching them, and an older rotation never replays over a newer one.
+//! 3. An insert takes the next empty leaf, so a full tree refuses a new owner and still applies updates.
 
 use custom_ring_interface::{
-    domain,
-    tracking::{TrackingEntry, TRACKING_QUAD_HEIGHT},
-    ApplyEnrollmentsStatement, FIELD_MAX,
+    chain_link, domain, tracking::TrackingEntry, ApplyEnrollmentsStatement, FIELD_MAX,
 };
 use spr_hasher::{Hasher, HasherError, Poseidon};
 
@@ -19,7 +18,7 @@ use crate::{
     record::check_member,
     record_pool::RecordPoolOf,
     tree::{ApplyProofInputs, IndexedLeaf, RecordOpening, WritableLeaf, WriteStep},
-    RecordTreeError, TrackingPath,
+    QuadPath, RecordTreeError,
 };
 
 /// One enrolled owner, a zero `nullifier_pk` marks the sentinel and an unwritten leaf.
@@ -30,10 +29,12 @@ pub struct TrackingRecord {
     pub nullifier_pk: [u8; 32],
     pub ct_hash: [u8; 32],
     pub list_tag: [u8; 32],
+    /// `hash_bytes(viewing_u)`, an X25519 u can exceed the field and no circuit decides on it.
+    pub viewing_hash: [u8; 32],
 }
 
-pub type TrackingTree = MemoryTree<TrackingRecord, TRACKING_QUAD_HEIGHT>;
-pub type TrackingOpening = RecordOpening<TrackingRecord, TRACKING_QUAD_HEIGHT>;
+pub type TrackingTree = MemoryTree<TrackingRecord>;
+pub type TrackingOpening = RecordOpening<TrackingRecord>;
 pub type TrackingPool = RecordPoolOf<TrackingRecord>;
 
 /// One entry's proof input, mirror `EnrollmentWrite` of
@@ -41,11 +42,13 @@ pub type TrackingPool = RecordPoolOf<TrackingRecord>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TrackingWriteProofInput {
     pub entry: TrackingEntry,
-    /// The `next_index` leaf after the relink.
-    pub slot: TrackingPath,
-    /// The low record and its path before the relink.
+    /// `low` is the owner's own leaf.
+    pub present: bool,
+    /// The owner's leaf when present, else the record bracketing it, before the write.
     pub low: TrackingRecord,
-    pub low_path: TrackingPath,
+    pub low_path: QuadPath,
+    /// The `next_index` leaf after the relink on an insert, else index 0 with zero siblings.
+    pub slot: QuadPath,
 }
 
 impl TrackingRecord {
@@ -56,9 +59,10 @@ impl TrackingRecord {
         nullifier_pk: [0; 32],
         ct_hash: [0; 32],
         list_tag: [0; 32],
+        viewing_hash: [0; 32],
     };
 
-    /// `Poseidon(CRTK, member, next, nullifier_pk, ct_hash, list_tag)`, mirror
+    /// `Poseidon(CRTK, member, next, nullifier_pk, ct_hash, list_tag, viewing_hash)`, mirror
     /// `prover/circuits/registry/tracking.go`.
     pub fn hash(&self) -> Result<[u8; 32], HasherError> {
         Poseidon::hashv(&[
@@ -68,6 +72,7 @@ impl TrackingRecord {
             &self.nullifier_pk,
             &self.ct_hash,
             &self.list_tag,
+            &self.viewing_hash,
         ])
     }
 
@@ -78,7 +83,6 @@ impl TrackingRecord {
 
 impl IndexedLeaf for TrackingRecord {
     const SENTINEL: Self = Self::SENTINEL;
-    const HEIGHT: usize = TRACKING_QUAD_HEIGHT;
 
     fn member(&self) -> &[u8; 32] {
         &self.member
@@ -109,7 +113,7 @@ impl IndexedLeaf for TrackingRecord {
     }
 }
 
-impl WritableLeaf<TRACKING_QUAD_HEIGHT> for TrackingRecord {
+impl WritableLeaf for TrackingRecord {
     type Entry = TrackingEntry;
     type WriteProof = TrackingWriteProofInput;
 
@@ -119,50 +123,49 @@ impl WritableLeaf<TRACKING_QUAD_HEIGHT> for TrackingRecord {
 
     fn check_entry(entry: &TrackingEntry) -> Result<(), RecordTreeError> {
         check_member(&entry.member)?;
-        if entry.nullifier_pk == [0; 32] {
+        // A rotation carries no sealed fields, only a proven entry inserts them.
+        if entry.proven && entry.nullifier_pk == [0; 32] {
             return Err(RecordTreeError::TrackingKeyChanged);
         }
         Ok(())
     }
 
     fn chained(previous: &[u8; 32], entry: &TrackingEntry) -> Result<[u8; 32], HasherError> {
-        entry.chained(previous)
+        chain_link(previous, &entry.hash()?)
     }
 
-    /// A present owner refuses, the apply circuit only inserts.
     fn after(self, entry: &TrackingEntry) -> Result<Self, RecordTreeError> {
-        if !self.is_blank() {
-            return Err(RecordTreeError::TrackingOwnerPresent);
-        }
-        Ok(Self {
-            nullifier_pk: entry.nullifier_pk,
-            ct_hash: entry.ct_hash,
-            list_tag: entry.list_tag,
-            ..self
+        Ok(match (self.is_blank(), entry.proven) {
+            // The circuit refuses an update from any key but the row's current one.
+            (false, _) if entry.prior_viewing_hash != self.viewing_hash => {
+                return Err(RecordTreeError::StaleViewingKey)
+            }
+            (false, _) => Self {
+                viewing_hash: entry.viewing_hash,
+                ..self
+            },
+            (true, true) => Self {
+                nullifier_pk: entry.nullifier_pk,
+                ct_hash: entry.ct_hash,
+                list_tag: entry.list_tag,
+                viewing_hash: entry.viewing_hash,
+                ..self
+            },
+            (true, false) => self,
         })
     }
 
-    /// `after` refused a present owner before the tree built a `Present` step, the slot alone stands.
-    fn write_proof(
-        entry: TrackingEntry,
-        step: WriteStep<Self, TRACKING_QUAD_HEIGHT>,
-    ) -> TrackingWriteProofInput {
-        match step {
-            WriteStep::Present { slot, .. } => TrackingWriteProofInput {
-                entry,
-                slot,
-                low: Self::default(),
-                low_path: TrackingPath::default(),
-            },
-            WriteStep::Absent {
-                low,
-                low_path,
-                slot,
-            } => TrackingWriteProofInput {
-                entry,
-                slot,
-                low,
-                low_path,
+    /// The circuit opens `slot` only on an insert.
+    fn write_proof(entry: TrackingEntry, step: WriteStep<Self>) -> TrackingWriteProofInput {
+        let insert = !step.present && entry.proven;
+        TrackingWriteProofInput {
+            entry,
+            present: step.present,
+            low: step.low,
+            low_path: step.low_path,
+            slot: match insert {
+                true => step.slot,
+                false => QuadPath::default(),
             },
         }
     }

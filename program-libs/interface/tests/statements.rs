@@ -2,11 +2,11 @@
 
 use custom_ring_interface::tracking::{TrackingEntry, TRACKING_EMPTY_ROOT};
 use custom_ring_interface::{
-    ciphertext_digest, cosign::ApprovalMask, domain, record_chain, ApplyEnrollmentsStatement,
-    ApplyRecordsStatement, AuditHead, AuditKey, AuditLayout, AuditStreamLayout, ConfidentialSender,
-    CustomRingError, PrivateWrites, RegisterKeyStatement, RingOutput, SignerSet, SlotBody,
-    TransferFamily, TransferRoots, TransferStatement, ANONYMOUS_PARTIES, AUDIT_HEAD_ELEMENTS,
-    EXIT_RECORD_LEN, RING_RECORD_LEN,
+    chain_link, ciphertext_digest, cosign::ApprovalMask, domain, record_chain,
+    ApplyEnrollmentsStatement, ApplyRecordsStatement, AuditHead, AuditKey, AuditLayout,
+    AuditStreamLayout, ConfidentialSender, CustomRingError, PrivateWrites, RegisterKeyStatement,
+    RingOutput, SignerSet, SlotBody, TransferFamily, TransferRoots, TransferStatement,
+    ANONYMOUS_PARTIES, AUDIT_HEAD_ELEMENTS, EXIT_RECORD_LEN, RING_RECORD_LEN,
 };
 use custom_ring_interface::{PublicLeg, PublicSlotError, PublicSlots, SOL_ASSET_ADDRESS};
 use serde::{Deserialize, Serialize};
@@ -57,6 +57,9 @@ struct TrackingCase {
     nullifier_pk: String,
     ct_hash: String,
     list_tag: String,
+    viewing_hash: String,
+    prior_viewing_hash: String,
+    proven: bool,
     entry_hash: String,
     chain_from_zero: String,
     list_salt: String,
@@ -113,8 +116,8 @@ struct TransferCase {
 struct ApplyCase {
     old_root: String,
     new_root: String,
-    old_next_index: u32,
-    new_next_index: u32,
+    old_next_index: u64,
+    new_next_index: u64,
     chain_start: String,
     chain_end: String,
     count: u64,
@@ -129,8 +132,8 @@ struct ApplyCase {
 struct ApplyPublicCase {
     old_root: String,
     new_root: String,
-    old_next_index: u32,
-    new_next_index: u32,
+    old_next_index: u64,
+    new_next_index: u64,
     chain_start: String,
     chain_end: String,
     count: u64,
@@ -518,6 +521,9 @@ fn compute_vectors() -> StatementVectors {
         nullifier_pk: values.fields[13],
         ct_hash: values.fields[15],
         list_tag: values.fields[16],
+        viewing_hash: right_aligned(0x19),
+        prior_viewing_hash: right_aligned(0x1a),
+        proven: true,
     };
     let ring_id = values.fields[17];
     let list_salt = right_aligned(0x07);
@@ -596,8 +602,13 @@ fn compute_vectors() -> StatementVectors {
             nullifier_pk: hex::encode(tracking_entry.nullifier_pk),
             ct_hash: hex::encode(tracking_entry.ct_hash),
             list_tag: hex::encode(tracking_entry.list_tag),
+            viewing_hash: hex::encode(tracking_entry.viewing_hash),
+            prior_viewing_hash: hex::encode(tracking_entry.prior_viewing_hash),
+            proven: tracking_entry.proven,
             entry_hash: hex::encode(tracking_entry.hash().unwrap()),
-            chain_from_zero: hex::encode(tracking_entry.chained(&[0; 32]).unwrap()),
+            chain_from_zero: hex::encode(
+                chain_link(&[0; 32], &tracking_entry.hash().unwrap()).unwrap(),
+            ),
             list_salt: hex::encode(list_salt),
             secret_list_tag: hex::encode(domain::list_tag(&list_salt).unwrap()),
         },

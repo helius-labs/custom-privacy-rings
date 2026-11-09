@@ -75,6 +75,7 @@ pub fn run(args: NewArgs, ask: &mut dyn Ask, catalogue: Option<&str>) -> Result<
         admin_keypair: None,
         pauser_keypair: None,
         cosign_admin_keypair: None,
+        enrollment_writer_keypair: None,
         mode: answers.mode,
         policy: answers.policy,
         cosigner: None,

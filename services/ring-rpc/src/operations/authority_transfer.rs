@@ -81,6 +81,9 @@ impl From<DelegateSourceError> for RingRpcError {
             }
             DelegateSourceError::SealMismatch => TrackingRefusal::Sealed.into(),
             DelegateSourceError::Seal(error) => error.into(),
+            DelegateSourceError::Tracking(error) => {
+                zolana_ring_client::AuditError::from(error).into()
+            }
             DelegateSourceError::Keypair(error) => error.into(),
             DelegateSourceError::Transaction(error) => error.into(),
             DelegateSourceError::Client(error) => error.into(),
@@ -508,13 +511,6 @@ mod tests {
 
     #[async_trait]
     impl RelayProver for SealingProver {
-        async fn check_enrollment(
-            &self,
-            _enrollment: &zolana_ring_client::rpc::RelayEnrollInputs,
-        ) -> Result<(), RingRpcError> {
-            Err(RingRpcError::StateUnavailable)
-        }
-
         async fn prove(&self, request: RelayProofRequest<'_>) -> Result<ProvenRelay, RingRpcError> {
             let RelayPayload::Transfer(proof_inputs) = request.payload else {
                 panic!("an authority transfer proves a transfer");

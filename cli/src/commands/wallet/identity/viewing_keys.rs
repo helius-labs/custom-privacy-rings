@@ -1,4 +1,4 @@
-//! `key rotate`, a new viewing key in the member's tracking authorization, and the key holder every
+//! `key rotate`, a new viewing key handed to ring rpc for the member's tracking leaf, and the key holder every
 //! wallet command loads.
 //!
 //! Read before `wallet`. Read after `custom_ring_sdk::RotateViewingKey`.
@@ -17,7 +17,7 @@ use zolana_ring_client::ViewingRotation;
 use zolana_ring_keys::RotatingRingKeys;
 use zolana_secret_file::{create_key32, read_key32, Access};
 
-use crate::{line, member::authorization, wallet::unix_now, Context};
+use crate::{line, member::enrollment, wallet::unix_now, Context};
 
 /// Under the `keys/` that `new` writes into `.gitignore`, one directory per owner.
 pub const ROTATED_VIEWING_KEY_DIR: &str = "keys/viewing-keys";
@@ -34,24 +34,23 @@ impl Context {
 }
 
 pub fn rotate(ctx: &Context) -> Result<()> {
-    let config = ctx.ring_config()?;
     let owner = ctx.sender()?;
     let identity = ShieldedKeypair::from_keypair(&owner)?;
     let rotated = RotatedKeys::of(ctx, &identity);
     let keys = rotated.holder(&identity)?;
-    let published = authorization(ctx.ring, &ctx.zolana, &identity)?
-        .context("the sender has no tracking authorization, enroll before a rotation")?
+    let published = enrollment(ctx.ring, &ctx.zolana, &identity)?
+        .context("the sender holds no enrollment, enroll before a rotation")?
         .viewing_u;
-    // 1. An authorization key the wallet never held is another copy's, publishing over it strands its payments.
+    // 1. An enrolled key the wallet never held is another copy's, publishing over it strands its payments.
     ensure!(
         keys.viewing_public_keys()
             .iter()
             .any(|key| key.u() == published),
-        "the tracking authorization names a viewing key the wallet does not hold"
+        "the enrollment names a viewing key the wallet does not hold"
     );
     let store = ctx.anonymous_wallet_store(identity.viewing_pubkey());
     let rotation = if published == keys.address()?.viewing_pubkey.u() {
-        // 2. The secret file lands before the history and the authorization name its key, a
+        // 2. The secret file lands before the history and the enrollment name its key, a
         //    stopped run still holds it.
         let next = ViewingKey::new();
         rotated.store(&next)?;
@@ -65,7 +64,7 @@ pub fn rotate(ctx: &Context) -> Result<()> {
             Ok(rotation)
         })?
     } else {
-        // 3. An older held key in the authorization marks a stopped run, whose newest file joins
+        // 3. An older held key in the enrollment marks a stopped run, whose newest file joins
         //    the history and publishes before any new key.
         store.update(|wallet| {
             let current = keys.address()?.viewing_pubkey;
@@ -82,20 +81,25 @@ pub fn rotate(ctx: &Context) -> Result<()> {
             })
         })?
     };
-    let sent = ctx.block(
+    let prepared = ctx.block(
         RotateViewingKey {
             ring: ctx.ring,
-            owner: &owner,
-            payer: ctx.member_payer(config.mode, owner.pubkey())?,
+            owner: owner.pubkey(),
             keys: &rotation.keys,
             history: &rotation.history,
         }
-        .send(ctx.ring_client()),
+        .prepare(ctx.ring_client()),
     )?;
-    line("viewing key", hex::encode(sent.viewing_pubkey.as_bytes()));
-    match sent.signature {
-        Some(signature) => line("tracking rotation", signature),
-        None => line("tracking authorization", "already current"),
+    line(
+        "viewing key",
+        hex::encode(rotation.keys.address()?.viewing_pubkey.as_bytes()),
+    );
+    match prepared {
+        Some(rotation) => {
+            ctx.ring_rpc().submit_enrollment(rotation.sign(&owner)?)?;
+            line("tracking rotation", "held by ring rpc");
+        }
+        None => line("tracking leaf", "already current"),
     }
     Ok(())
 }

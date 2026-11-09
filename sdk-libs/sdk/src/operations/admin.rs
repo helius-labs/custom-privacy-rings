@@ -347,7 +347,7 @@ impl CustomRing {
         Ok(self.ix(accounts, tagged(tag::SET_PAUSED, &state)?))
     }
 
-    fn ix(self, accounts: Vec<AccountMeta>, data: Vec<u8>) -> Instruction {
+    pub(crate) fn ix(self, accounts: Vec<AccountMeta>, data: Vec<u8>) -> Instruction {
         Instruction {
             program_id: self.program_id(),
             accounts,

@@ -14,7 +14,7 @@ use custom_ring_interface::{
     storage::{chain_start, Revision, StorageRegistry},
     tracking::TrackingRegistry,
     CustomRingError, RecordWrite, RecordWriteData, WriteRecordsIxData, APPLY_BATCH, QUAD_ARITY,
-    QUAD_HEIGHT, STORAGE_PROGRAM_ID,
+    STORAGE_PROGRAM_ID,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction};
 use solana_address::Address;
@@ -51,8 +51,7 @@ use crate::{
 mod tracking;
 
 pub(crate) use tracking::{
-    pending_enrollments, tracking_apply_proof_inputs, tracking_openings, tracking_record_pool,
-    tracking_records,
+    tracking_apply_proof_inputs, tracking_openings, tracking_record_pool, tracking_records,
 };
 
 /// The longest a stalled tip misses a chain move.
@@ -253,7 +252,7 @@ pub(crate) async fn storage_member_records(
         at: root.tree(),
         leaves: request.start_index..end,
     }
-    .read::<QUAD_HEIGHT>()
+    .read()
     .await?
     .iter()
     .map(indexed_member_view)
@@ -312,7 +311,7 @@ pub(crate) async fn storage_apply_proof_inputs(
     let snapshot = Snapshot::<StorageState>::registry(db, &request.registry).await?;
     let root = StorageRoot::current(&*snapshot.state.account);
     let chain_start = chain_start(&request.registry.0, root.revision.into()).map_err(internal)?;
-    let loaded: LoadedRegistry = TreeRead::batch::<QUAD_HEIGHT>(root.tree(), &entries)
+    let loaded: LoadedRegistry = TreeRead::batch(root.tree(), &entries)
         .load(snapshot.store().tree())
         .await
         .map_err(internal)?;
@@ -443,7 +442,7 @@ struct LeafPage<'a, C, L> {
 }
 
 impl<C: ConnectionTrait, L: StoredLeaf> LeafPage<'_, C, L> {
-    async fn read<const H: usize>(self) -> Result<Vec<OpenedLeaf<L>>, RingApiError> {
+    async fn read(self) -> Result<Vec<OpenedLeaf<L>>, RingApiError> {
         let rows = self
             .store
             .records_by_index(self.leaves.clone(), self.at.version)
@@ -462,7 +461,7 @@ impl<C: ConnectionTrait, L: StoredLeaf> LeafPage<'_, C, L> {
             inserts: 0,
             canopy: None,
         };
-        let loaded: LoadedRegistry<L, H> = read.load(self.store).await.map_err(internal)?;
+        let loaded: LoadedRegistry<L> = read.load(self.store).await.map_err(internal)?;
         members
             .iter()
             .map(|member| loaded.opening(self.root, member))
@@ -531,11 +530,11 @@ impl<A: CachedAccount> Snapshot<RegistryState<A>> {
 }
 
 impl<A: CachedAccount> RootRead<A> {
-    async fn load<const H: usize>(
+    async fn load(
         &self,
         members: &[Hash],
         canopy: Option<Canopy>,
-    ) -> Result<LoadedRegistry<A::Leaf, H>, RingApiError> {
+    ) -> Result<LoadedRegistry<A::Leaf>, RingApiError> {
         let read = TreeRead {
             at: self.root.tree(),
             records: RecordRead::Members(members.iter().map(|member| member.0).collect()),
@@ -552,8 +551,6 @@ enum Served<'r> {
     Root(&'r StorageRoot),
     /// Apply proof inputs hold while the current root stays.
     Current(&'r StorageRoot),
-    /// Pending state names no root.
-    Tip,
 }
 
 impl Served<'_> {
@@ -561,12 +558,11 @@ impl Served<'_> {
         match self {
             Self::Root(root) => chain.root_at(Revision::from(root.revision), slot) == Ok(root.root),
             Self::Current(root) => StorageRoot::current(chain) == **root,
-            Self::Tip => true,
         }
     }
 }
 
-impl<L: IndexedLeaf + Default, const H: usize> LoadedRegistry<L, H> {
+impl<L: IndexedLeaf + Default> LoadedRegistry<L> {
     fn pool(
         &self,
         root: &[u8; 32],

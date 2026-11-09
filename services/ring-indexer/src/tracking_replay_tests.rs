@@ -1,40 +1,39 @@
 use bytemuck::Zeroable;
 use custom_ring_interface::{
-    storage::Revision,
     storage_instruction::{
-        tag, ApplyEnrollmentsIxData, EnrollIxData, EnrollRequest, InitializeTrackingIxData,
+        tag, EnrollIxData, EnrollmentChange, EnrollmentWrite, EnrollmentsAppliedEvent,
+        InitializeTrackingIxData, StorageEvent,
     },
     tracking::{
-        tracking_chain_start, TrackingAuthorization, TrackingEntry, TrackingRegistry,
-        TRACKING_EMPTY_ROOT, TRACKING_QUAD_HEIGHT,
+        tracking_chain_start, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
+        TRACKING_EMPTY_ROOT,
     },
     CustomRingProof, STORAGE_PROGRAM_ID, VIEWING_PUBKEY_TAG,
 };
 use sea_orm::TransactionTrait;
 use solana_address::Address;
 use solana_signature::Signature;
+use spr_hasher::primitives::hash_bytes;
 use spr_indexer_api::Hash;
-use zolana_ring_indexer::{
-    rpc::RingRecordPathView,
-    tracking::{
-        GetPendingEnrollmentsRequest, GetTrackingApplyProofInputsRequest,
-        GetTrackingOpeningsRequest, GetTrackingRecordPoolRequest, GetTrackingRecordsRequest,
-        GetTrackingRecordsResponse, RingTrackingRecordView,
-    },
-    tree::{OpeningCheck, QuadPathOf, RecordOpening, RecordTree, TrackingRecord},
+use zolana_ring_indexer::tracking::{
+    GetTrackingApplyProofInputsRequest, GetTrackingOpeningsRequest, GetTrackingRecordPoolRequest,
+    GetTrackingRecordsRequest, GetTrackingRecordsResponse, RingTrackingEntryView,
+    RingTrackingOpening,
 };
-use zolana_ring_member_registry::TrackingTree;
+use zolana_ring_member_registry::{RecordTree, TrackingTree};
 
 use super::{account, block, replay_indexer, rpc, Chain};
 use crate::{
     api,
     block::{BlockInfo, BlockMetadata, Instruction, InstructionGroup, TransactionInfo},
+    error::RingApiError,
     indexer::Indexer,
-    storage::{self, Enrollment, RingCursor, TrackingState, TrackingStore},
+    storage::{self, RingCursor, TrackingState, TrackingStore},
     tests::{database, field},
 };
 
 const OWNER: Address = Address::new_from_array([51; 32]);
+const WRITER: Address = Address::new_from_array([49; 32]);
 const NEWEST_SLOT: u64 = 5_000;
 
 struct Ledger {
@@ -43,25 +42,64 @@ struct Ledger {
     chain: std::sync::Arc<std::sync::Mutex<Chain>>,
     handle: jsonrpsee::server::ServerHandle,
     registry: Address,
-    authorization: Address,
 }
 
-fn ix_data(viewing: u8) -> EnrollIxData {
+/// Zero, storage verified the proof before the event the projection reads.
+static PROOF: std::sync::LazyLock<CustomRingProof> =
+    std::sync::LazyLock::new(CustomRingProof::zeroed);
+
+/// One write as the test owns it, borrowed into an `EnrollmentWrite` for the codec.
+#[derive(Clone, Copy)]
+enum Write {
+    Enroll(Address, EnrollIxData),
+    /// The new viewing key and the viewing hash it replaces.
+    Rotate(Address, [u8; 32], [u8; 32]),
+}
+
+/// Passes `EnrollIxData::check`, `seal` varies the ciphertext and `viewing` the key.
+fn ix_data(seal: u8, viewing: u8) -> EnrollIxData {
     EnrollIxData {
         nullifier_pk: field(1),
         list_tag: field(2),
         viewing_u: field(viewing),
         eph_u: field(4),
-        ciphertext: [5; 64],
+        ciphertext: [seal; 64],
     }
 }
 
-fn instruction(accounts: Vec<Address>, data: Vec<u8>) -> Instruction {
+fn instruction(
+    program_id: Address,
+    accounts: Vec<Address>,
+    data: Vec<u8>,
+    height: u32,
+) -> Instruction {
     Instruction {
-        program_id: STORAGE_PROGRAM_ID,
+        program_id,
         data,
         accounts,
-        stack_height: Some(1),
+        stack_height: Some(height),
+    }
+}
+
+impl Write {
+    fn borrowed(&self) -> EnrollmentWrite<'_> {
+        match self {
+            Self::Enroll(owner, ix) => EnrollmentWrite {
+                owner,
+                change: EnrollmentChange::Enroll { ix, proof: &PROOF },
+            },
+            Self::Rotate(owner, viewing_u, prior_viewing_hash) => EnrollmentWrite {
+                owner,
+                change: EnrollmentChange::Rotate {
+                    viewing_u,
+                    prior_viewing_hash,
+                },
+            },
+        }
+    }
+
+    fn entry(&self) -> TrackingEntry {
+        self.borrowed().entry().unwrap()
     }
 }
 
@@ -70,7 +108,6 @@ impl Ledger {
         let creator = Address::new_from_array([50; 32]);
         let ring_id = field(9);
         let (registry, _) = TrackingRegistry::find_address(&creator, &ring_id);
-        let (authorization, _) = TrackingAuthorization::find_address(&registry, &OWNER);
         let mut auditor_pubkey = [9; 33];
         auditor_pubkey[0] = VIEWING_PUBKEY_TAG;
         let data = InitializeTrackingIxData {
@@ -88,54 +125,73 @@ impl Ledger {
             chain,
             handle,
             registry,
-            authorization,
         };
         let initialize = instruction(
-            vec![creator, creator, registry],
+            STORAGE_PROGRAM_ID,
+            vec![creator, creator, registry, Address::default()],
             [&[tag::INITIALIZE_TRACKING][..], bytemuck::bytes_of(&data)].concat(),
+            1,
         );
-        ledger.land(1, initialize).await.unwrap();
+        ledger
+            .land_transactions(1, vec![settled(initialize, vec![])])
+            .await
+            .unwrap();
         ledger
     }
 
-    /// The account as the chain holds it now, whatever slot the replay reached.
-    fn hold_account(&self, viewing: u8) {
-        let account_image = TrackingAuthorization {
-            discriminator: TrackingAuthorization::DISCRIMINATOR,
-            registry: self.registry,
-            owner: OWNER,
-            nullifier_pk: field(1),
-            list_tag: field(2),
-            viewing_u: field(viewing),
-            eph_u: field(4),
-            ciphertext: [5; 64],
-            applied: 0,
-        };
-        self.chain.lock().unwrap().accounts.insert(
-            self.authorization.to_string(),
-            account(STORAGE_PROGRAM_ID, bytemuck::bytes_of(&account_image)),
-        );
-    }
-
-    fn enroll(&self, viewing: u8, proof: Option<&CustomRingProof>) -> Instruction {
-        let ix = ix_data(viewing);
-        let request = EnrollRequest { ix: &ix, proof };
-        instruction(
-            vec![OWNER, OWNER, self.registry, self.authorization],
-            [&[tag::ENROLL][..], &request.encode()].concat(),
+    /// The storage `ApplyEnrollments` an honest writer proves at the projected revision, with the event it emits.
+    async fn apply(&self, tree: &mut TrackingTree, writes: &[Write]) -> (Instruction, Instruction) {
+        let state = self.state().await;
+        let revision = state.account.newest().revision;
+        let chain_start = tracking_chain_start(&self.registry, revision).unwrap();
+        let entries: Vec<_> = writes.iter().map(Write::entry).collect();
+        let applied = tree.clone().apply(chain_start, &entries).unwrap();
+        *tree = applied.tree;
+        let mut next = *state.account;
+        next.update(TrackingRootUpdate {
+            revision,
+            slot: 0,
+            new_root: applied.proof.new_root,
+            new_next_index: applied.proof.new_next_index,
+        })
+        .unwrap();
+        self.applying(
+            writes,
+            EnrollmentsAppliedEvent {
+                registry: self.registry,
+                revision: next.newest().revision,
+                new_root: applied.proof.new_root,
+                new_next_index: applied.proof.new_next_index.to_le_bytes(),
+                count: writes.len() as u8,
+            },
         )
     }
 
-    async fn land(&mut self, slot: u64, instruction: Instruction) -> anyhow::Result<()> {
-        self.land_all(slot, vec![instruction]).await
+    /// The parent and its event for `header`, nothing checked.
+    fn applying(
+        &self,
+        writes: &[Write],
+        header: EnrollmentsAppliedEvent,
+    ) -> (Instruction, Instruction) {
+        let borrowed: Vec<_> = writes.iter().map(Write::borrowed).collect();
+        let parent = instruction(
+            STORAGE_PROGRAM_ID,
+            vec![WRITER, self.registry],
+            vec![tag::APPLY_ENROLLMENTS],
+            1,
+        );
+        let event = StorageEvent::EnrollmentsApplied {
+            header,
+            writes: borrowed,
+        };
+        let event = instruction(STORAGE_PROGRAM_ID, vec![], event.encode(), 2);
+        (parent, event)
     }
 
-    async fn land_all(&mut self, slot: u64, instructions: Vec<Instruction>) -> anyhow::Result<()> {
-        let transactions = instructions
-            .into_iter()
-            .map(|instruction| settled(instruction, vec![]))
-            .collect();
-        self.land_transactions(slot, transactions).await
+    async fn land_apply(&mut self, slot: u64, (parent, event): (Instruction, Instruction)) {
+        self.land_transactions(slot, vec![settled(parent, vec![event])])
+            .await
+            .unwrap();
     }
 
     async fn land_transactions(
@@ -159,52 +215,6 @@ impl Ledger {
         Ok(())
     }
 
-    /// The tracking entry of the account, the same at every viewing key.
-    fn entry(&self) -> TrackingEntry {
-        TrackingAuthorization {
-            discriminator: TrackingAuthorization::DISCRIMINATOR,
-            registry: self.registry,
-            owner: OWNER,
-            nullifier_pk: field(1),
-            list_tag: field(2),
-            viewing_u: field(3),
-            eph_u: field(4),
-            ciphertext: [5; 64],
-            applied: 0,
-        }
-        .entry()
-        .unwrap()
-    }
-
-    /// The apply an honest applier proves at the projected revision.
-    async fn apply(&self, tree: &mut TrackingTree, entries: &[TrackingEntry]) -> Instruction {
-        self.apply_for(tree, entries, &[self.authorization]).await
-    }
-
-    /// The apply of `entries`, each authorization in entry order.
-    async fn apply_for(
-        &self,
-        tree: &mut TrackingTree,
-        entries: &[TrackingEntry],
-        authorizations: &[Address],
-    ) -> Instruction {
-        let revision: Revision = self.state().await.account.newest().revision;
-        let chain_start = tracking_chain_start(&self.registry, revision).unwrap();
-        let applied = tree.clone().apply(chain_start, entries).unwrap();
-        *tree = applied.tree;
-        let inputs = applied.proof;
-        let data = ApplyEnrollmentsIxData {
-            revision,
-            proof: Zeroable::zeroed(),
-            new_root: inputs.new_root,
-            new_next_index: inputs.new_next_index.to_le_bytes(),
-        };
-        instruction(
-            [&[self.registry][..], authorizations].concat(),
-            [&[tag::APPLY_ENROLLMENTS][..], bytemuck::bytes_of(&data)].concat(),
-        )
-    }
-
     /// The chain confirms the projection at `slot`.
     async fn serve(&mut self, slot: u64) {
         let state = self.state().await;
@@ -219,10 +229,6 @@ impl Ledger {
         self.cursor.resume(self.indexer.db.as_ref()).await.unwrap();
     }
 
-    fn member(&self) -> [u8; 32] {
-        self.entry().member
-    }
-
     fn store(&self) -> TrackingStore<'_, sea_orm::DatabaseConnection> {
         TrackingStore::new(self.indexer.db.as_ref(), self.registry.to_bytes())
     }
@@ -231,196 +237,40 @@ impl Ledger {
         self.store().state().await.unwrap().unwrap()
     }
 
-    async fn enrollment(&self) -> Option<Enrollment> {
-        self.enrollment_of(OWNER).await
+    async fn fault(&self) -> String {
+        self.state().await.fault.expect("the projection stopped")
     }
 
-    async fn enrollment_of(&self, owner: Address) -> Option<Enrollment> {
-        self.store().enrollment(&owner.to_bytes()).await.unwrap()
+    /// The owner's opening under the newest root, served as a sender reads it.
+    async fn opening(&mut self, slot: u64, owner: Address) -> RingTrackingOpening {
+        self.serve(slot).await;
+        let member = Write::Rotate(owner, field(3), [0; 32]).entry().member;
+        let root = self.state().await.account.newest().hash;
+        let response = api::tracking_openings(
+            self.indexer.db.as_ref(),
+            self.indexer.rpc.as_ref(),
+            GetTrackingOpeningsRequest {
+                registry: self.registry.into(),
+                members: vec![Hash(member)],
+                expected_root: Hash(root),
+            },
+        )
+        .await
+        .unwrap();
+        response.openings.into_iter().next().unwrap()
+    }
+
+    /// Rolls the newest block back as a fork does.
+    async fn rewind(&mut self) {
+        let tx = self.indexer.db.begin().await.unwrap();
+        storage::rollback(&tx, &mut self.cursor).await.unwrap();
+        tx.commit().await.unwrap();
     }
 
     async fn stop(self) {
         self.handle.stop().unwrap();
         self.handle.stopped().await;
     }
-}
-
-#[tokio::test]
-async fn a_replayed_enrollment_takes_final_fields_from_the_account() {
-    let mut ledger = Ledger::new().await;
-    // The account may already hold a later rotation.
-    ledger.hold_account(7);
-    let proof = CustomRingProof::zeroed();
-    ledger
-        .land(2, ledger.enroll(3, Some(&proof)))
-        .await
-        .unwrap();
-    let held = ledger.enrollment().await.unwrap();
-    assert!(!held.applied);
-    assert_eq!(
-        (
-            held.nullifier_pk,
-            held.list_tag,
-            held.eph_u,
-            held.ciphertext
-        ),
-        (field(1), field(2), field(4), [5; 64])
-    );
-    assert_eq!(held.authorization, ledger.authorization.to_bytes());
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn a_rotation_leaves_the_enrollment_the_pending_set_and_the_root_unchanged() {
-    let mut ledger = Ledger::new().await;
-    ledger.hold_account(3);
-    let proof = CustomRingProof::zeroed();
-    ledger
-        .land(2, ledger.enroll(3, Some(&proof)))
-        .await
-        .unwrap();
-    let first = ledger.enrollment().await.unwrap();
-    let before = ledger.state().await;
-    ledger.land(3, ledger.enroll(6, None)).await.unwrap();
-    assert_eq!(ledger.enrollment().await.unwrap(), first);
-    assert_eq!(ledger.store().pending(None, 8).await.unwrap(), [first]);
-    assert_eq!(ledger.state().await, before);
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn a_rotation_moving_a_final_field_stops_the_projection() {
-    let mut ledger = enrolled().await;
-    let ix = EnrollIxData {
-        ciphertext: [6; 64],
-        ..ix_data(6)
-    };
-    let request = EnrollRequest {
-        ix: &ix,
-        proof: None,
-    };
-    let rotation = instruction(
-        vec![OWNER, OWNER, ledger.registry, ledger.authorization],
-        [&[tag::ENROLL][..], &request.encode()].concat(),
-    );
-    ledger.land(3, rotation).await.unwrap();
-    let fault = ledger.state().await.fault.unwrap();
-    assert!(fault.contains("rotation refused"), "{fault}");
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn a_first_enrollment_without_a_proof_stops_the_projection() {
-    let mut ledger = Ledger::new().await;
-    ledger.hold_account(3);
-    ledger.land(2, ledger.enroll(3, None)).await.unwrap();
-    let fault = ledger.state().await.fault.unwrap();
-    assert!(fault.contains("no proof"), "{fault}");
-    assert_eq!(ledger.enrollment().await, None);
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn an_unreadable_authorization_retries_and_quarantines_nothing() {
-    let mut ledger = Ledger::new().await;
-    let proof = CustomRingProof::zeroed();
-    let error = ledger
-        .land(2, ledger.enroll(3, Some(&proof)))
-        .await
-        .unwrap_err();
-    assert!(
-        format!("{error:#}").contains("no tracking authorization"),
-        "{error:#}"
-    );
-    assert!(ledger.state().await.fault.is_none());
-    assert_eq!(ledger.enrollment().await, None);
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn an_authorization_of_another_owner_stops_the_projection() {
-    let mut ledger = Ledger::new().await;
-    ledger.hold_account(3);
-    let foreign = Address::new_from_array([52; 32]);
-    let proof = CustomRingProof::zeroed();
-    let ix = ix_data(3);
-    let request = EnrollRequest {
-        ix: &ix,
-        proof: Some(&proof),
-    };
-    let enroll = instruction(
-        vec![foreign, foreign, ledger.registry, ledger.authorization],
-        [&[tag::ENROLL][..], &request.encode()].concat(),
-    );
-    ledger.land(2, enroll).await.unwrap();
-    let fault = ledger.state().await.fault.unwrap();
-    assert!(fault.contains("another owner"), "{fault}");
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn a_rolled_back_enrollment_leaves_no_row() {
-    let mut ledger = Ledger::new().await;
-    ledger.hold_account(3);
-    let proof = CustomRingProof::zeroed();
-    ledger
-        .land(2, ledger.enroll(3, Some(&proof)))
-        .await
-        .unwrap();
-    let tx = ledger.indexer.db.begin().await.unwrap();
-    storage::rollback(&tx, &mut ledger.cursor).await.unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(ledger.enrollment().await, None);
-    let tx = ledger.indexer.db.begin().await.unwrap();
-    storage::rollback(&tx, &mut ledger.cursor).await.unwrap();
-    tx.commit().await.unwrap();
-    assert!(ledger.store().state().await.unwrap().is_none());
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn pending_enrollments_serve_first_enrollments_at_a_confirmed_tip() {
-    let mut ledger = Ledger::new().await;
-    ledger.hold_account(3);
-    let proof = CustomRingProof::zeroed();
-    ledger
-        .land(2, ledger.enroll(3, Some(&proof)))
-        .await
-        .unwrap();
-    ledger.serve(2).await;
-    let request = GetPendingEnrollmentsRequest {
-        registry: ledger.registry.into(),
-        after: None,
-        limit: 1,
-    };
-    let read = |request| {
-        api::pending_enrollments(
-            ledger.indexer.db.as_ref(),
-            ledger.indexer.rpc.as_ref(),
-            request,
-        )
-    };
-    let page = read(request.clone()).await.unwrap();
-    let [row] = page.enrollments.as_slice() else {
-        panic!("one owner is pending, {:?}", page.enrollments);
-    };
-    assert_eq!(row.owner, OWNER.into());
-    assert_eq!(row.nullifier_pk, Hash(field(1)));
-    assert_eq!(page.next_after, Some(OWNER.into()));
-    let past = GetPendingEnrollmentsRequest {
-        after: page.next_after,
-        ..request.clone()
-    };
-    assert!(read(past).await.unwrap().enrollments.is_empty());
-    let unbounded = GetPendingEnrollmentsRequest {
-        limit: 0,
-        ..request
-    };
-    assert!(matches!(
-        read(unbounded).await,
-        Err(crate::error::RingApiError::InvalidRequest(_))
-    ));
-    ledger.stop().await;
 }
 
 fn settled(
@@ -437,277 +287,256 @@ fn settled(
     }
 }
 
-fn wire_record(view: &RingTrackingRecordView) -> TrackingRecord {
-    TrackingRecord {
-        member: view.member.0,
-        next: view.next.0,
-        nullifier_pk: view.nullifier_pk.0,
-        ct_hash: view.ct_hash.0,
-        list_tag: view.list_tag.0,
-    }
-}
-
-fn wire_path(path: &RingRecordPathView) -> QuadPathOf<TRACKING_QUAD_HEIGHT> {
-    QuadPathOf {
-        index: path.index,
-        siblings: core::array::from_fn(|level| {
-            path.siblings[level].clone().map(|sibling| sibling.0)
-        }),
-    }
-}
-
-/// An enrollment landed at slot 2, nothing applied.
-async fn enrolled() -> Ledger {
+/// A rotation ahead of the first enrollment changes nothing, the Enroll inserts the leaf, a later
+/// rotation moves only its viewing key and the seal stays the inserting write's.
+#[tokio::test]
+async fn a_late_registration_inserts_once_and_later_rotations_move_only_the_viewing_key() {
     let mut ledger = Ledger::new().await;
-    ledger.hold_account(3);
-    let proof = CustomRingProof::zeroed();
-    ledger
-        .land(2, ledger.enroll(3, Some(&proof)))
-        .await
-        .unwrap();
-    ledger
+    assert!(!ledger.opening(1, OWNER).await.present);
+    let mut tree = TrackingTree::new().unwrap();
+    let batch = [
+        Write::Rotate(OWNER, field(6), [0; 32]),
+        Write::Enroll(OWNER, ix_data(5, 3)),
+    ];
+    let apply = ledger.apply(&mut tree, &batch).await;
+    ledger.land_apply(2, apply).await;
+    let state = ledger.state().await;
+    assert_eq!(state.fault, None);
+    assert_eq!(state.account.newest().hash, tree.root().unwrap());
+    assert_eq!(state.account.next_index(), 2);
+    let inserted = ledger.opening(2, OWNER).await;
+    assert!(inserted.present);
+    let seal = inserted.record.seal.clone().unwrap();
+    assert_eq!(seal.viewing_u.0, field(3));
+    assert_eq!(seal.ciphertext.0, [5; 64]);
+    assert_eq!(seal.eph_pk.0[1..], field(4));
+    assert_eq!(seal.owner, OWNER.into());
+    let apply = ledger
+        .apply(
+            &mut tree,
+            &[Write::Rotate(
+                OWNER,
+                field(7),
+                hash_bytes(&field(3)).unwrap(),
+            )],
+        )
+        .await;
+    ledger.land_apply(3, apply).await;
+    assert_eq!(ledger.state().await.fault, None);
+    let updated = ledger.opening(3, OWNER).await;
+    assert_eq!(updated.record.ct_hash, inserted.record.ct_hash);
+    assert_eq!(
+        updated.record.viewing_hash,
+        Hash(hash_bytes(&field(7)).unwrap())
+    );
+    let seal = updated.record.seal.unwrap();
+    assert_eq!(seal.viewing_u.0, field(7));
+    assert_eq!(seal.ciphertext.0, [5; 64]);
+    ledger.stop().await;
+}
+
+/// The rule the circuit and the projection share refuses a repeated Enroll and a Rotate from a stale key.
+#[test]
+fn a_repeated_enrollment_and_a_stale_rotation_do_not_apply() {
+    let first = Write::Enroll(OWNER, ix_data(5, 3)).entry();
+    for second in [
+        Write::Enroll(OWNER, ix_data(8, 7)),
+        Write::Rotate(OWNER, field(7), hash_bytes(&field(6)).unwrap()),
+    ] {
+        let applied = TrackingTree::new()
+            .unwrap()
+            .apply([0; 32], &[first, second.entry()]);
+        assert!(applied.is_err());
+    }
 }
 
 #[tokio::test]
-async fn an_applied_enrollment_opens_under_the_program_root_with_its_seal() {
-    let mut ledger = enrolled().await;
-    let mut tree = TrackingTree::new().unwrap();
-    let apply = ledger.apply(&mut tree, &[ledger.entry()]).await;
-    ledger.land(3, apply).await.unwrap();
+async fn an_event_off_the_projected_root_or_revision_stops_the_projection() {
+    for (forge, reason) in [
+        (0, "applied root mismatch"),
+        (1, "another revision"),
+        (2, "registry"),
+    ] {
+        let mut ledger = Ledger::new().await;
+        let writes = [Write::Enroll(OWNER, ix_data(5, 3))];
+        let (parent, event) = ledger
+            .apply(&mut TrackingTree::new().unwrap(), &writes)
+            .await;
+        let StorageEvent::EnrollmentsApplied { mut header, .. } =
+            StorageEvent::decode(&event.data).unwrap();
+        match forge {
+            0 => header.new_root = field(8),
+            1 => header.revision.0[0] ^= 1,
+            _ => header.registry = Address::new_from_array([70; 32]),
+        }
+        let (_, forged) = ledger.applying(&writes, header);
+        ledger.land_apply(2, (parent, forged)).await;
+        let stopped = match forge {
+            2 => TrackingStore::new(ledger.indexer.db.as_ref(), [70; 32])
+                .state()
+                .await
+                .unwrap()
+                .is_none(),
+            _ => ledger.fault().await.contains(reason),
+        };
+        assert!(stopped, "forge {forge}");
+        assert_eq!(
+            ledger.state().await.account.newest().hash,
+            TRACKING_EMPTY_ROOT
+        );
+        ledger.stop().await;
+    }
+}
+
+/// `tag::EMIT_EVENT` bytes count only as the direct child of a storage `ApplyEnrollments`.
+#[tokio::test]
+async fn an_event_under_another_parent_or_in_a_failed_transaction_is_ignored() {
+    let mut ledger = Ledger::new().await;
+    let writes = [Write::Enroll(OWNER, ix_data(5, 3))];
+    let (parent, event) = ledger
+        .apply(&mut TrackingTree::new().unwrap(), &writes)
+        .await;
+    let other_program = Instruction {
+        program_id: Address::new_from_array([61; 32]),
+        ..parent.clone()
+    };
+    let other_tag = Instruction {
+        data: vec![tag::UPDATE],
+        ..parent.clone()
+    };
+    let outer_event = Instruction {
+        stack_height: Some(1),
+        ..event.clone()
+    };
+    let failed = TransactionInfo {
+        error: Some("custom program error".into()),
+        ..settled(parent, vec![event.clone()])
+    };
+    ledger
+        .land_transactions(
+            2,
+            vec![
+                settled(other_program, vec![event.clone()]),
+                settled(other_tag, vec![event]),
+                settled(outer_event, vec![]),
+                failed,
+            ],
+        )
+        .await
+        .unwrap();
     let state = ledger.state().await;
     assert_eq!(state.fault, None);
-    let root = tree.root().unwrap();
-    assert_eq!(state.account.newest().hash, root);
-    assert_eq!(state.account.next_index(), 2);
-    assert_eq!(state.account.roots[1].hash, TRACKING_EMPTY_ROOT);
-    ledger.serve(3).await;
-    let member = ledger.member();
-    let (db, rpc) = (ledger.indexer.db.as_ref(), ledger.indexer.rpc.as_ref());
-    let registry = ledger.registry.into();
-    let absent = field(77);
-    let opened = api::tracking_openings(
-        db,
-        rpc,
-        GetTrackingOpeningsRequest {
-            registry,
-            members: vec![Hash(member), Hash(absent)],
-            expected_root: Hash(root),
-        },
+    assert_eq!(state.account.newest().hash, TRACKING_EMPTY_ROOT);
+    ledger.stop().await;
+}
+
+#[tokio::test]
+async fn a_rolled_back_batch_replays_to_the_same_root() {
+    let mut ledger = Ledger::new().await;
+    let mut tree = TrackingTree::new().unwrap();
+    let apply = ledger
+        .apply(&mut tree, &[Write::Enroll(OWNER, ix_data(5, 3))])
+        .await;
+    ledger.land_apply(2, apply.clone()).await;
+    let applied = ledger.state().await;
+    ledger.rewind().await;
+    assert_eq!(
+        ledger.state().await.account.newest().hash,
+        TRACKING_EMPTY_ROOT
+    );
+    ledger.land_apply(2, apply).await;
+    assert_eq!(ledger.state().await, applied);
+    ledger.stop().await;
+}
+
+#[tokio::test]
+async fn apply_proof_inputs_take_the_writer_entries_and_reach_the_root_the_program_records() {
+    let mut ledger = Ledger::new().await;
+    ledger.serve(1).await;
+    let (db, rpc) = (ledger.indexer.db.clone(), ledger.indexer.rpc.clone());
+    let registry = ledger.registry;
+    let write = Write::Enroll(OWNER, ix_data(5, 3));
+    let view = |entry: TrackingEntry| RingTrackingEntryView {
+        member: Hash(entry.member),
+        nullifier_pk: Hash(entry.nullifier_pk),
+        ct_hash: Hash(entry.ct_hash),
+        list_tag: Hash(entry.list_tag),
+        viewing_hash: Hash(entry.viewing_hash),
+        prior_viewing_hash: Hash(entry.prior_viewing_hash),
+        proven: entry.proven,
+    };
+    let request = |entries: Vec<RingTrackingEntryView>| GetTrackingApplyProofInputsRequest {
+        registry: registry.into(),
+        entries,
+    };
+    for count in [0, 6] {
+        assert!(matches!(
+            api::tracking_apply_proof_inputs(
+                db.as_ref(),
+                rpc.as_ref(),
+                request(vec![view(write.entry()); count])
+            )
+            .await,
+            Err(RingApiError::InvalidRequest(_))
+        ));
+    }
+    let inputs = api::tracking_apply_proof_inputs(
+        db.as_ref(),
+        rpc.as_ref(),
+        request(vec![view(write.entry())]),
     )
     .await
     .unwrap();
-    let [present, missing] = opened.openings.as_slice() else {
-        panic!("two members open twice");
+    let mut tree = TrackingTree::new().unwrap();
+    let apply = ledger.apply(&mut tree, &[write]).await;
+    assert_eq!(inputs.old_root, Hash(TRACKING_EMPTY_ROOT));
+    assert_eq!(inputs.new_root, Hash(tree.root().unwrap()));
+    let [served] = inputs.writes.as_slice() else {
+        panic!("one entry writes once");
     };
-    assert!(present.present && !missing.present);
-    let verified = OpeningCheck {
-        opening: &RecordOpening::Present {
-            record: wire_record(&present.record),
-            path: wire_path(&present.path),
-        },
-        root: &root,
-        member: &member,
-    }
-    .verify()
-    .unwrap();
-    assert_eq!(verified.map(|record| record.nullifier_pk), Some(field(1)));
-    let no_row = OpeningCheck {
-        opening: &RecordOpening::Absent {
-            low: wire_record(&missing.record),
-            path: wire_path(&missing.path),
-        },
-        root: &root,
-        member: &absent,
-    }
-    .verify()
-    .unwrap();
-    assert_eq!(no_row, None);
-    let seal = present.record.seal.as_ref().unwrap();
-    assert_eq!(seal.owner, OWNER.into());
-    assert_eq!(seal.ciphertext.0, [5; 64]);
-    assert_eq!(seal.eph_pk.0[1..], field(4));
+    assert_eq!((served.proven, served.present), (true, false));
+    ledger.land_apply(2, apply).await;
+    ledger.stop().await;
+}
+
+#[tokio::test]
+async fn every_tracking_read_serves_the_leaf_key_and_seal() {
+    let mut ledger = Ledger::new().await;
+    let mut tree = TrackingTree::new().unwrap();
+    let apply = ledger
+        .apply(&mut tree, &[Write::Enroll(OWNER, ix_data(5, 3))])
+        .await;
+    ledger.land_apply(2, apply).await;
+    let opened = ledger.opening(2, OWNER).await;
+    let (db, rpc) = (ledger.indexer.db.as_ref(), ledger.indexer.rpc.as_ref());
+    let registry = ledger.registry.into();
+    let root = Hash(tree.root().unwrap());
     let page = api::tracking_records(
         db,
         rpc,
         GetTrackingRecordsRequest {
             registry,
-            expected_root: Hash(root),
+            expected_root: root.clone(),
             start_index: 1,
             limit: 16,
         },
     )
     .await
     .unwrap();
-    assert_eq!(page.records.len(), 1);
-    assert_eq!(page.records[0].record, present.record);
-    assert_eq!(page.next_leaf_index, None);
+    assert_eq!(page.records[0].record, opened.record);
     let pool = api::tracking_record_pool(
         db,
         rpc,
         GetTrackingRecordPoolRequest {
             registry,
-            members: vec![Hash(member)],
-            expected_root: Hash(root),
+            members: vec![opened.record.member.clone()],
+            expected_root: root,
             openings: 4,
         },
     )
     .await
     .unwrap();
-    assert_eq!(pool.records[0].record, present.record);
-    let pending = api::pending_enrollments(
-        db,
-        rpc,
-        GetPendingEnrollmentsRequest {
-            registry,
-            after: None,
-            limit: 8,
-        },
-    )
-    .await
-    .unwrap();
-    assert!(pending.enrollments.is_empty());
-    ledger.stop().await;
-}
-
-/// A rotation on either side of an apply in one block leaves the entry and the leaf as enrolled.
-#[tokio::test]
-async fn a_rotation_around_an_apply_leaves_the_leaf_and_nothing_pending() {
-    for rotation_first in [true, false] {
-        let mut ledger = enrolled().await;
-        let mut tree = TrackingTree::new().unwrap();
-        let apply = ledger.apply(&mut tree, &[ledger.entry()]).await;
-        let block = match rotation_first {
-            true => vec![ledger.enroll(6, None), apply],
-            false => vec![apply, ledger.enroll(6, None)],
-        };
-        ledger.land_all(3, block).await.unwrap();
-        let state = ledger.state().await;
-        assert_eq!(state.fault, None);
-        assert_eq!(state.account.newest().hash, tree.root().unwrap());
-        assert!(ledger.enrollment().await.unwrap().applied);
-        assert!(ledger.store().pending(None, 8).await.unwrap().is_empty());
-        let leaf = ledger
-            .store()
-            .tree()
-            .record(&ledger.member(), 1)
-            .await
-            .unwrap()
-            .unwrap()
-            .record;
-        assert_eq!(leaf.nullifier_pk, field(1));
-        ledger.stop().await;
-    }
-}
-
-#[tokio::test]
-async fn a_root_off_the_projected_entry_stops_the_projection_and_applies_nothing() {
-    let mut ledger = enrolled().await;
-    let mut tree = TrackingTree::new().unwrap();
-    // The proof names a ciphertext the account never holds.
-    let forged = TrackingEntry {
-        ct_hash: field(8),
-        ..ledger.entry()
-    };
-    let apply = ledger.apply(&mut tree, &[forged]).await;
-    ledger.land(3, apply).await.unwrap();
-    let fault = ledger.state().await.fault.unwrap();
-    assert!(fault.contains("applied root mismatch"), "{fault}");
-    assert!(!ledger.enrollment().await.unwrap().applied);
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn a_second_apply_of_one_enrollment_stops_the_projection() {
-    let mut ledger = enrolled().await;
-    let mut tree = TrackingTree::new().unwrap();
-    let apply = ledger.apply(&mut tree, &[ledger.entry()]).await;
-    ledger.land(3, apply).await.unwrap();
-    // The tree refuses a present owner, so the second apply names the current revision by hand.
-    let data = ApplyEnrollmentsIxData {
-        revision: ledger.state().await.account.newest().revision,
-        proof: Zeroable::zeroed(),
-        new_root: field(8),
-        new_next_index: 3u64.to_le_bytes(),
-    };
-    let again = instruction(
-        vec![ledger.registry, ledger.authorization],
-        [&[tag::APPLY_ENROLLMENTS][..], bytemuck::bytes_of(&data)].concat(),
-    );
-    ledger.land(4, again).await.unwrap();
-    let fault = ledger.state().await.fault.unwrap();
-    assert!(fault.contains("already applied"), "{fault}");
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn an_apply_naming_no_enrollment_stops_the_projection() {
-    let mut ledger = Ledger::new().await;
-    let mut tree = TrackingTree::new().unwrap();
-    let apply = ledger.apply(&mut tree, &[ledger.entry()]).await;
-    ledger.land(2, apply).await.unwrap();
-    let fault = ledger.state().await.fault.unwrap();
-    assert!(fault.contains("names no enrollment"), "{fault}");
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn a_rolled_back_apply_replays_to_the_same_root() {
-    let mut ledger = enrolled().await;
-    let mut tree = TrackingTree::new().unwrap();
-    let apply = ledger.apply(&mut tree, &[ledger.entry()]).await;
-    ledger.land(3, apply.clone()).await.unwrap();
-    let applied = ledger.state().await;
-    let tx = ledger.indexer.db.begin().await.unwrap();
-    storage::rollback(&tx, &mut ledger.cursor).await.unwrap();
-    tx.commit().await.unwrap();
-    let rewound = ledger.state().await;
-    assert_eq!(rewound.account.newest().hash, TRACKING_EMPTY_ROOT);
-    let member = ledger.member();
-    let leaf = ledger.store().tree().record(&member, u64::MAX >> 1).await;
-    assert_eq!(leaf.unwrap(), None);
-    assert!(!ledger.enrollment().await.unwrap().applied);
-    ledger.land(3, apply).await.unwrap();
-    assert_eq!(ledger.state().await, applied);
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn apply_proof_inputs_reach_the_root_the_program_records() {
-    let mut ledger = enrolled().await;
-    ledger.serve(2).await;
-    let (db, rpc) = (ledger.indexer.db.clone(), ledger.indexer.rpc.clone());
-    let registry = ledger.registry;
-    let request = |owners: Vec<Address>| GetTrackingApplyProofInputsRequest {
-        registry: registry.into(),
-        owners: owners.into_iter().map(Into::into).collect(),
-    };
-    let unknown = request(vec![Address::new_from_array([60; 32])]);
-    assert!(matches!(
-        api::tracking_apply_proof_inputs(db.as_ref(), rpc.as_ref(), unknown).await,
-        Err(crate::error::RingApiError::InvalidRequest(_))
-    ));
-    let twice = request(vec![OWNER, OWNER]);
-    assert!(matches!(
-        api::tracking_apply_proof_inputs(db.as_ref(), rpc.as_ref(), twice).await,
-        Err(crate::error::RingApiError::InvalidRequest(_))
-    ));
-    let inputs = api::tracking_apply_proof_inputs(db.as_ref(), rpc.as_ref(), request(vec![OWNER]))
-        .await
-        .unwrap();
-    let mut tree = TrackingTree::new().unwrap();
-    let apply = ledger.apply(&mut tree, &[ledger.entry()]).await;
-    assert_eq!(inputs.new_root, Hash(tree.root().unwrap()));
-    assert_eq!(inputs.old_root, Hash(TRACKING_EMPTY_ROOT));
-    let [write] = inputs.writes.as_slice() else {
-        panic!("one owner writes once");
-    };
-    assert_eq!(write.member, Hash(ledger.member()));
-    ledger.land(3, apply).await.unwrap();
-    ledger.serve(3).await;
-    assert!(matches!(
-        api::tracking_apply_proof_inputs(db.as_ref(), rpc.as_ref(), request(vec![OWNER])).await,
-        Err(crate::error::RingApiError::InvalidRequest(_))
-    ));
+    assert_eq!(pool.records[0].record, opened.record);
     ledger.stop().await;
 }
 
@@ -721,46 +550,18 @@ async fn a_registry_off_its_canonical_address_is_not_indexed() {
     };
     let creator = Address::new_from_array([50; 32]);
     let initialize = instruction(
+        STORAGE_PROGRAM_ID,
         vec![creator, creator, forged],
         [&[tag::INITIALIZE_TRACKING][..], bytemuck::bytes_of(&data)].concat(),
+        1,
     );
-    ledger.land(2, initialize).await.unwrap();
+    ledger
+        .land_transactions(2, vec![settled(initialize, vec![])])
+        .await
+        .unwrap();
     let store: TrackingStore<'_, _> =
         TrackingStore::new(ledger.indexer.db.as_ref(), forged.to_bytes());
     assert!(store.state().await.unwrap().is_none());
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn a_program_owner_enrolls_through_its_own_cross_program_call() {
-    let mut ledger = Ledger::new().await;
-    ledger.hold_account(3);
-    let proof = CustomRingProof::zeroed();
-    let caller = Instruction {
-        program_id: Address::new_from_array([61; 32]),
-        data: vec![1],
-        accounts: vec![],
-        stack_height: Some(1),
-    };
-    let inner = ledger.enroll(3, Some(&proof));
-    ledger
-        .land_transactions(2, vec![settled(caller, vec![inner])])
-        .await
-        .unwrap();
-    assert!(ledger.enrollment().await.is_some());
-    ledger.stop().await;
-}
-
-#[tokio::test]
-async fn a_failed_enrollment_leaves_no_row() {
-    let mut ledger = Ledger::new().await;
-    let proof = CustomRingProof::zeroed();
-    let failed = TransactionInfo {
-        error: Some("custom program error".into()),
-        ..settled(ledger.enroll(3, Some(&proof)), vec![])
-    };
-    ledger.land_transactions(2, vec![failed]).await.unwrap();
-    assert_eq!(ledger.enrollment().await, None);
     ledger.stop().await;
 }
 
@@ -793,29 +594,20 @@ impl zolana_ring_rpc::TrackingSource for Endpoint<'_> {
     }
 }
 
-/// `owner`'s authorization sealed to `auditor`, as its `Enroll` leaves the account.
-fn sealed_authorization(
-    registry: Address,
-    owner: Address,
-    seed: u8,
-    auditor: &spr_keypair::X25519Pubkey,
-) -> TrackingAuthorization {
+/// A first enrollment of the key `seed` derives, sealed to `auditor`.
+fn sealed(seed: u8, auditor: &spr_keypair::X25519Pubkey) -> EnrollIxData {
     let key = spr_keypair::NullifierKey::from_secret([seed; 31]);
     let mut list_salt = [seed; 32];
     list_salt[0] = 0;
     let sealed = zolana_ring_client::NullifierKeyEnvelope::new(&key, &list_salt, auditor)
         .unwrap()
         .sealed;
-    TrackingAuthorization {
-        discriminator: TrackingAuthorization::DISCRIMINATOR,
-        registry,
-        owner,
+    EnrollIxData {
         nullifier_pk: key.pubkey().unwrap(),
         list_tag: custom_ring_interface::domain::list_tag(&list_salt).unwrap(),
         viewing_u: field(seed),
         eph_u: sealed.eph_pk.u(),
         ciphertext: sealed.ciphertext,
-        applied: 0,
     }
 }
 
@@ -827,39 +619,14 @@ async fn a_fresh_auditor_scans_the_indexer_endpoint_from_the_first_leaf_and_hold
         Address::new_from_array([61; 32]),
         Address::new_from_array([62; 32]),
     ];
-    let proof = CustomRingProof::zeroed();
-    let mut entries = Vec::new();
-    let mut authorizations = Vec::new();
-    for (slot, owner) in (2..).zip(owners) {
-        let held = sealed_authorization(ledger.registry, owner, slot as u8, &auditor.pubkey());
-        let (authorization, _) = TrackingAuthorization::find_address(&ledger.registry, &owner);
-        ledger.chain.lock().unwrap().accounts.insert(
-            authorization.to_string(),
-            account(STORAGE_PROGRAM_ID, bytemuck::bytes_of(&held)),
-        );
-        let ix = EnrollIxData {
-            nullifier_pk: held.nullifier_pk,
-            list_tag: held.list_tag,
-            viewing_u: held.viewing_u,
-            eph_u: held.eph_u,
-            ciphertext: held.ciphertext,
-        };
-        let request = EnrollRequest {
-            ix: &ix,
-            proof: Some(&proof),
-        };
-        let enroll = instruction(
-            vec![owner, owner, ledger.registry, authorization],
-            [&[tag::ENROLL][..], &request.encode()].concat(),
-        );
-        ledger.land(slot, enroll).await.unwrap();
-        entries.push(held.entry().unwrap());
-        authorizations.push(authorization);
-    }
+    let writes: Vec<_> = (2..)
+        .zip(owners)
+        .map(|(seed, owner)| Write::Enroll(owner, sealed(seed, &auditor.pubkey())))
+        .collect();
     let mut tree = TrackingTree::new().unwrap();
-    let apply = ledger.apply_for(&mut tree, &entries, &authorizations).await;
-    ledger.land(4, apply).await.unwrap();
-    ledger.serve(4).await;
+    let apply = ledger.apply(&mut tree, &writes).await;
+    ledger.land_apply(2, apply).await;
+    ledger.serve(2).await;
 
     let held = zolana_ring_rpc::tracking_fixture::fresh_scan(
         Address::new_from_array([60; 32]),

@@ -1,20 +1,21 @@
 use std::ops::Range;
 
 use custom_ring_interface::{
+    check_member,
+    storage_instruction::ApplyEnrollmentsIxData,
     tagged_x25519,
-    tracking::{tracking_chain_start, TrackingRegistry, TRACKING_QUAD_HEIGHT},
-    APPLY_BATCH,
+    tracking::{owner_member, tracking_chain_start, TrackingEntry, TrackingRegistry},
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use solana_address::Address;
+use spr_hasher::primitives::hash_bytes;
 use spr_indexer_api::{Base64String, Hash};
 use zolana_ring_indexer::{
     tracking::{
-        GetPendingEnrollmentsRequest, GetPendingEnrollmentsResponse,
         GetTrackingApplyProofInputsRequest, GetTrackingApplyProofInputsResponse,
         GetTrackingOpeningsRequest, GetTrackingOpeningsResponse, GetTrackingRecordPoolRequest,
         GetTrackingRecordPoolResponse, GetTrackingRecordsRequest, GetTrackingRecordsResponse,
-        RingIndexedTrackingRecordView, RingPendingEnrollmentView, RingTrackingOpening,
+        RingIndexedTrackingRecordView, RingTrackingEntryView, RingTrackingOpening,
         RingTrackingRecordView, RingTrackingSealView, RingTrackingWriteView,
     },
     tree::{Canopy, TrackingRecord, TrackingWriteProofInput},
@@ -27,11 +28,11 @@ use super::{
 use crate::{
     error::RingApiError,
     member_registry::{LoadedRegistry, TreeRead},
-    storage::{Enrollment, RegistryState, StorageRoot, TrackingStore},
+    storage::{RegistryState, StorageRoot, TrackingStore},
 };
 
 type TrackingSnapshot = Snapshot<RegistryState<TrackingRegistry>>;
-type LoadedTracking = LoadedRegistry<TrackingRecord, TRACKING_QUAD_HEIGHT>;
+type LoadedTracking = LoadedRegistry<TrackingRecord>;
 
 pub(crate) async fn tracking_openings(
     db: &DatabaseConnection,
@@ -45,12 +46,13 @@ pub(crate) async fn tracking_openings(
         .await?;
     let loaded: LoadedTracking = read.load(&request.members, None).await?;
     let store = read.snapshot.store();
+    let version = read.root.revision;
     let mut openings = Vec::with_capacity(request.members.len());
     for member in &request.members {
         let opened = loaded.opening(&read.root.root, &member.0)?;
         openings.push(RingTrackingOpening {
             present: opened.present,
-            record: sealed_view(&store, &opened.record).await?,
+            record: sealed_view(&store, &opened.record, version).await?,
             path: opened.path,
         });
     }
@@ -63,7 +65,7 @@ pub(crate) async fn tracking_openings(
     })
 }
 
-/// Every leaf carries the seal its authorization retains.
+/// Every leaf carries its viewing key and the seal of the entry that inserted it.
 pub(crate) async fn tracking_records(
     db: &DatabaseConnection,
     chain: &impl ChainSource,
@@ -91,9 +93,9 @@ pub(crate) async fn tracking_records(
         at: root.tree(),
         leaves,
     }
-    .read::<TRACKING_QUAD_HEIGHT>()
+    .read()
     .await?;
-    let records = indexed_views(&store, opened).await?;
+    let records = indexed_views(&store, opened, root.revision).await?;
     let context = read.snapshot.confirm(chain, Served::Root(&root)).await?;
     Ok(GetTrackingRecordsResponse {
         context,
@@ -110,14 +112,14 @@ pub(crate) async fn tracking_record_pool(
 ) -> Result<GetTrackingRecordPoolResponse, RingApiError> {
     check_members(&request.members)?;
     check_openings(&request.members, request.openings, |pools| pools.tracking)?;
-    let canopy = Canopy::covering_tracking(request.openings as usize).map_err(validation)?;
+    let canopy = Canopy::covering(request.openings as usize).map_err(validation)?;
     let read = TrackingSnapshot::registry(db, &request.registry)
         .await?
         .at_root(&request.expected_root.0)
         .await?;
     let loaded: LoadedTracking = read.load(&request.members, Some(canopy)).await?;
     let pool = loaded.pool(&read.root.root, &request.members, canopy)?;
-    let records = indexed_views(&read.snapshot.store(), pool.records).await?;
+    let records = indexed_views(&read.snapshot.store(), pool.records, read.root.revision).await?;
     let root = read.root;
     let context = read.snapshot.confirm(chain, Served::Root(&root)).await?;
     Ok(GetTrackingRecordPoolResponse {
@@ -129,69 +131,32 @@ pub(crate) async fn tracking_record_pool(
     })
 }
 
-pub(crate) async fn pending_enrollments(
-    db: &DatabaseConnection,
-    chain: &impl ChainSource,
-    request: GetPendingEnrollmentsRequest,
-) -> Result<GetPendingEnrollmentsResponse, RingApiError> {
-    check_page_limit(request.limit)?;
-    let snapshot = TrackingSnapshot::registry(db, &request.registry).await?;
-    let after = request.after.map(|owner| owner.0.to_bytes());
-    let rows = snapshot
-        .store()
-        .pending(after.as_ref(), request.limit)
-        .await
-        .map_err(internal)?;
-    let context = snapshot.confirm(chain, Served::Tip).await?;
-    let next_after = rows
-        .last()
-        .filter(|_| rows.len() as u64 == request.limit)
-        .map(|row| Address::new_from_array(row.owner).into());
-    Ok(GetPendingEnrollmentsResponse {
-        context,
-        enrollments: rows.iter().map(pending_view).collect(),
-        next_after,
-    })
-}
-
-/// The owners apply from the current root, as the next `ApplyEnrollments` names them.
+/// The writer's entries apply in request order from the current root, as its next `ApplyEnrollments` writes them.
 pub(crate) async fn tracking_apply_proof_inputs(
     db: &DatabaseConnection,
     chain: &impl ChainSource,
     request: GetTrackingApplyProofInputsRequest,
 ) -> Result<GetTrackingApplyProofInputsResponse, RingApiError> {
-    if !(1..=APPLY_BATCH).contains(&request.owners.len()) {
-        return Err(validation("invalid enrollment count"));
-    }
+    let count = u8::try_from(request.entries.len()).map_err(validation)?;
+    ApplyEnrollmentsIxData::check_count(count).map_err(validation)?;
+    let entries = request
+        .entries
+        .iter()
+        .map(entry_of)
+        .collect::<Result<Vec<_>, _>>()?;
     let snapshot = TrackingSnapshot::registry(db, &request.registry).await?;
     let root = StorageRoot::current(&*snapshot.state.account);
     let store = snapshot.store();
-    let mut entries = Vec::with_capacity(request.owners.len());
-    for (position, owner) in request.owners.iter().enumerate() {
-        if request.owners[..position].contains(owner) {
-            return Err(validation("an apply names an owner twice"));
-        }
-        let held = store
-            .enrollment(&owner.0.to_bytes())
-            .await
-            .map_err(internal)?
-            .ok_or_else(|| validation("an apply names no enrollment"))?;
-        let entry = held
-            .account(snapshot.state.registry)
-            .apply()
-            .map_err(validation)?;
-        entries.push(entry);
-    }
     let chain_start =
         tracking_chain_start(&request.registry.0, root.revision.into()).map_err(internal)?;
-    let loaded: LoadedTracking = TreeRead::batch::<TRACKING_QUAD_HEIGHT>(root.tree(), &entries)
+    let loaded: LoadedTracking = TreeRead::batch(root.tree(), &entries)
         .load(store.tree())
         .await
         .map_err(internal)?;
     let inputs = loaded
         .tree
         .apply_batch(chain_start, &entries)
-        .map_err(internal)?
+        .map_err(validation)?
         .inputs;
     if inputs.old_root != root.root {
         return Err(internal("the loaded tree does not reach the current root"));
@@ -213,38 +178,46 @@ pub(crate) async fn tracking_apply_proof_inputs(
 async fn indexed_views<C: ConnectionTrait>(
     store: &TrackingStore<'_, C>,
     leaves: Vec<OpenedLeaf<TrackingRecord>>,
+    version: u64,
 ) -> Result<Vec<RingIndexedTrackingRecordView>, RingApiError> {
     let mut views = Vec::with_capacity(leaves.len());
     for leaf in leaves {
         views.push(RingIndexedTrackingRecordView {
-            record: sealed_view(store, &leaf.record).await?,
+            record: sealed_view(store, &leaf.record, version).await?,
             path: leaf.path,
         });
     }
     Ok(views)
 }
 
-/// Serves a seal only under the ciphertext hash its leaf binds.
+/// Serves a key only under the `viewing_hash` and a seal only under the `ct_hash` its leaf version binds.
 async fn sealed_view<C: ConnectionTrait>(
     store: &TrackingStore<'_, C>,
     record: &TrackingRecord,
+    version: u64,
 ) -> Result<RingTrackingRecordView, RingApiError> {
     if record.member == [0; 32] {
         return Ok(record_view(record));
     }
-    let held = store
-        .enrollment_of(&record.member)
+    let key = store
+        .leaf_key(&record.member, version)
         .await
         .map_err(internal)?
-        .ok_or_else(|| internal("a tracking leaf has no enrollment"))?;
-    if held.ct_hash != record.ct_hash {
-        return Err(internal("a stored seal disagrees with its leaf"));
+        .ok_or_else(|| internal("a tracking leaf has no viewing key"))?;
+    let seal = &key.seal;
+    let owner = Address::new_from_array(seal.owner);
+    if hash_bytes(&key.viewing_u).map_err(internal)? != record.viewing_hash
+        || hash_bytes(&seal.ciphertext).map_err(internal)? != record.ct_hash
+        || owner_member(&owner).map_err(internal)? != record.member
+    {
+        return Err(internal("a stored key or seal disagrees with its leaf"));
     }
     Ok(RingTrackingRecordView {
         seal: Some(RingTrackingSealView {
-            owner: Address::new_from_array(held.owner).into(),
-            eph_pk: Base64String(tagged_x25519(&held.eph_u).to_vec()),
-            ciphertext: Base64String(held.ciphertext.to_vec()),
+            owner: owner.into(),
+            viewing_u: Base64String(key.viewing_u.to_vec()),
+            eph_pk: Base64String(tagged_x25519(&seal.eph_u).to_vec()),
+            ciphertext: Base64String(seal.ciphertext.to_vec()),
         }),
         ..record_view(record)
     })
@@ -257,28 +230,37 @@ fn record_view(record: &TrackingRecord) -> RingTrackingRecordView {
         nullifier_pk: Hash(record.nullifier_pk),
         ct_hash: Hash(record.ct_hash),
         list_tag: Hash(record.list_tag),
+        viewing_hash: Hash(record.viewing_hash),
         seal: None,
     }
 }
 
 fn write_view(write: &TrackingWriteProofInput) -> RingTrackingWriteView {
+    let entry = &write.entry;
     RingTrackingWriteView {
-        member: Hash(write.entry.member),
-        nullifier_pk: Hash(write.entry.nullifier_pk),
-        ct_hash: Hash(write.entry.ct_hash),
-        list_tag: Hash(write.entry.list_tag),
+        member: Hash(entry.member),
+        proven: entry.proven,
+        present: write.present,
+        nullifier_pk: Hash(entry.nullifier_pk),
+        ct_hash: Hash(entry.ct_hash),
+        list_tag: Hash(entry.list_tag),
+        viewing_hash: Hash(entry.viewing_hash),
+        prior_viewing_hash: Hash(entry.prior_viewing_hash),
         slot: path_view(write.slot.index, &write.slot.siblings),
         low: record_view(&write.low),
         low_path: path_view(write.low_path.index, &write.low_path.siblings),
     }
 }
 
-fn pending_view(row: &Enrollment) -> RingPendingEnrollmentView {
-    RingPendingEnrollmentView {
-        owner: Address::new_from_array(row.owner).into(),
-        member: Hash(row.member),
-        nullifier_pk: Hash(row.nullifier_pk),
-        ct_hash: Hash(row.ct_hash),
-        list_tag: Hash(row.list_tag),
-    }
+fn entry_of(view: &RingTrackingEntryView) -> Result<TrackingEntry, RingApiError> {
+    check_member(&view.member.0).map_err(validation)?;
+    Ok(TrackingEntry {
+        member: view.member.0,
+        nullifier_pk: view.nullifier_pk.0,
+        ct_hash: view.ct_hash.0,
+        list_tag: view.list_tag.0,
+        viewing_hash: view.viewing_hash.0,
+        prior_viewing_hash: view.prior_viewing_hash.0,
+        proven: view.proven,
+    })
 }

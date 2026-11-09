@@ -152,7 +152,7 @@ pub use relay_reservations::RelayBudget;
 pub use relay_services::{RelayServices, RelayServicesInit};
 pub use relay_submit::CollectedSignature;
 pub use server::{relay_module, rpc_module, run_server, BindPolicy, ServerError, ServerOptions};
-pub use storage_chain::{live_ring_client, LiveStorageChain, ProvedEnrollments, StorageChain};
+pub use storage_chain::{live_ring_client, LiveStorageChain, StorageChain};
 #[cfg(feature = "test-fixtures")]
 pub use tracking::fixture as tracking_fixture;
 pub use tracking::{HeldEnrollment, TrackingRefusal, TrackingSource};
