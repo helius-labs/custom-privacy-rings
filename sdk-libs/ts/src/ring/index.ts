@@ -456,6 +456,7 @@ export {
 } from "../crypto/audit/merge-disclosure.js";
 export type {
   MergePublicInput,
+  MergeSeal,
   RingMergeDisclosureRequest,
   RingMergeRequest,
   SealedMergeRecord,
