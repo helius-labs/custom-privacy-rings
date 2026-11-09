@@ -555,7 +555,7 @@ fn authority_rotates_and_the_old_authority_is_refused() {
 fn unknown_tags_are_refused() {
     let mut store = Store::new();
     store.initialize(GRACE);
-    for unknown in [2, 3, 5, 10] {
+    for unknown in [2, 3, 5, 6, 11] {
         let mut instruction = store.zero_proof_update(0, ListId::Block);
         instruction.data[0] = unknown;
         assert_eq!(
@@ -563,6 +563,17 @@ fn unknown_tags_are_refused() {
             refusal(StorageError::InvalidInstructionData)
         );
     }
+}
+
+#[test]
+fn the_event_tag_accepts_any_bytes_and_writes_nothing() {
+    let mut store = Store::new();
+    store.initialize(GRACE);
+    let registry = store.registry();
+    let mut forged = store.zero_proof_update(0, ListId::Block);
+    forged.data[0] = tag::EMIT_EVENT;
+    assert_eq!(store.send_as_authority(forged), Ok(()));
+    assert_eq!(store.registry(), registry);
 }
 
 #[test]

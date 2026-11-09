@@ -21,7 +21,7 @@ solana-sdk-ids = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }
-litesvm = { workspace = true }
+litesvm = { workspace = true, features = ["precompiles"] }
 serde_json = { workspace = true }
 solana-address = { workspace = true }
 solana-clock = { workspace = true }
