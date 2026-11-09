@@ -12,11 +12,11 @@ use custom_ring_interface::{
     },
     tracking::{
         tracking_chain_start, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
-        TRACKING_EMPTY_ROOT, TRACKING_GRACE_SLOTS, TRACKING_ROOT_HISTORY,
+        TRACKING_CAPACITY, TRACKING_EMPTY_ROOT, TRACKING_GRACE_SLOTS, TRACKING_ROOT_HISTORY,
     },
     ApplyRecordsIxData, CustomRingError, CustomRingProof, NewRing, PolicyUpdate, RecordWriteData,
     RingAccount, RingMode, RingPolicy, RingRole, RingRoles, SourceSlot, WriteRecordsIxData,
-    MEMBER_REGISTRY_EMPTY_ROOT, N_SOURCE_SLOTS, QUAD_CAPACITY, READER_KEY_ED25519, ROOT_HISTORY,
+    MEMBER_REGISTRY_EMPTY_ROOT, N_SOURCE_SLOTS, READER_KEY_ED25519, ROOT_HISTORY,
     STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN, VIEWING_PUBKEY_TAG,
 };
 use serde_json::{json, Value};
@@ -224,6 +224,7 @@ fn the_entry_binds_every_field_and_comes_from_the_enroll() {
             &entry.ct_hash,
             &entry.list_tag,
             &entry.viewing_hash,
+            &entry.prior_viewing_hash,
             &right_align(&[1]),
         ])
         .unwrap()
@@ -598,9 +599,9 @@ fn a_tracking_update_waits_while_its_eviction_would_drop_an_unexpired_root() {
 #[test]
 fn a_tracking_tree_stays_valid_at_capacity_and_not_past_it() {
     let mut registry = TrackingRegistry::new(key(0x30), &tracking_ix());
-    registry.next_index = QUAD_CAPACITY.to_le_bytes();
+    registry.next_index = TRACKING_CAPACITY.to_le_bytes();
     assert!(TrackingRegistry::from_data(bytemuck::bytes_of(&registry)).is_some());
-    registry.next_index = (QUAD_CAPACITY + 1).to_le_bytes();
+    registry.next_index = (TRACKING_CAPACITY + 1).to_le_bytes();
     assert!(TrackingRegistry::from_data(bytemuck::bytes_of(&registry)).is_none());
 }
 
@@ -608,7 +609,7 @@ fn a_tracking_tree_stays_valid_at_capacity_and_not_past_it() {
 fn an_apply_fills_the_last_leaf_and_refuses_an_index_past_it() {
     let mut registry = TrackingRegistry::new(key(0x30), &tracking_ix());
     let past = TrackingRootUpdate {
-        new_next_index: QUAD_CAPACITY + 1,
+        new_next_index: TRACKING_CAPACITY + 1,
         ..tracking_update(0, 10, 1)
     };
     let before = registry;
@@ -616,11 +617,11 @@ fn an_apply_fills_the_last_leaf_and_refuses_an_index_past_it() {
     assert_eq!(registry, before);
     registry
         .update(TrackingRootUpdate {
-            new_next_index: QUAD_CAPACITY,
+            new_next_index: TRACKING_CAPACITY,
             ..tracking_update(0, 10, 1)
         })
         .unwrap();
-    assert_eq!(registry.next_index(), QUAD_CAPACITY);
+    assert_eq!(registry.next_index(), TRACKING_CAPACITY);
 }
 
 #[test]

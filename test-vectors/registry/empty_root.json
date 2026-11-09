@@ -1,6 +1,6 @@
 {
   "description": "The sentinel leaf and the root of the tree holding only it, for the policy registry and the tracking registry. Produced by program-libs/member-registry/tests/empty_root_vector.rs.",
-  "empty_root": "295ec16f1ff587f0269eb21ddf079a2b44cb3e0c6852f35431ab02f7651ac967",
+  "empty_root": "17202a46b2fa553cc388a3acc58cec7fcf588e5349816f74bf85fa81a3943de2",
   "sentinel": {
     "leaf_hash": "2adbf3112973e94609e90102fb39fd13905f02e30e8d57a4e58f51f2e5c7443d",
     "limits": [
