@@ -40,7 +40,7 @@ pub fn run_move(ctx: &Context, args: DelegateMoveArgs) -> Result<()> {
     let auditor = ring_auditor_key(ctx, &args.auditor_key)?;
     let chain = ctx.chain();
     let enrollment = TrackingEnrollment {
-        rpc: chain.rpc(),
+        rpc: ctx.zolana.as_async(),
         tracking_registry: config.account().tracking,
         auditor: &auditor,
     };

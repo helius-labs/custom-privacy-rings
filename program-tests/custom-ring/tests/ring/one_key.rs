@@ -13,10 +13,9 @@ use custom_ring_interface::{
     key_catalog::{RingCircuit, RING_KEYS},
     policy_withdrawal_hash,
     storage::{Revision, Root, StorageRegistry},
-    tracking::{TrackingAuthorization, TrackingRegistry},
+    tracking::TrackingRegistry,
     verifying_key, RingProof, SignerSet, SlotBody, TransferBinding, TransferRoots,
-    ANONYMOUS_PARTIES, MAX_CPI_DATA_LEN, PROVING_KEY_SHA256S, REGISTER_KEY_CIPHERTEXT_LEN,
-    STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN,
+    ANONYMOUS_PARTIES, MAX_CPI_DATA_LEN, PROVING_KEY_SHA256S, TAGGED_X25519_KEY_LEN,
 };
 use custom_ring_test_validator::policy::RELEASED;
 use serde_json::Value;
@@ -29,7 +28,7 @@ use spr_client::{
     ClientError, ConfirmedInstructionGroups, GetMerkleProofsResponse, MerkleContext, MerkleProof,
     Proof, ProofDataSource, WitnessReader,
 };
-use spr_hasher::{Hasher, HasherError, Poseidon};
+use spr_hasher::{primitives::hash_bytes, Hasher, HasherError, Poseidon};
 use spr_indexer_api::Hash;
 use spr_interface::N_PUBLIC_SLOTS;
 use spr_keypair::NullifierKey;
@@ -260,7 +259,7 @@ impl RingIndexer for SeededIndexer {
             .tracking
             .record_pool(
                 &members,
-                Canopy::covering_tracking(request.openings as usize).unwrap(),
+                Canopy::covering(request.openings as usize).unwrap(),
             )
             .unwrap();
         Ok(GetTrackingRecordPoolResponse {
@@ -277,6 +276,7 @@ impl RingIndexer for SeededIndexer {
                         nullifier_pk: Hash(record.nullifier_pk),
                         ct_hash: Hash(record.ct_hash),
                         list_tag: Hash(record.list_tag),
+                        viewing_hash: Hash(record.viewing_hash),
                         seal: None,
                     },
                     path: path_view(path),
@@ -430,21 +430,22 @@ pub(super) fn tracking_tree(rows: &[ShieldedAddress]) -> Result<TrackingTree> {
         .map(|address| Ok((address_member(address)?, address)))
         .collect::<Result<std::collections::HashMap<_, _>>>()?;
     let linked = linked(addresses.keys().copied().collect());
-    let records = std::iter::once(TrackingRecord {
+    let records = std::iter::once(Ok(TrackingRecord {
         next: linked.first,
         ..TrackingRecord::SENTINEL
-    })
+    }))
     .chain(linked.rows.iter().map(|row| {
         let address = addresses[&row.member];
-        TrackingRecord {
+        Ok(TrackingRecord {
             member: row.member,
             next: row.next,
             nullifier_pk: address.nullifier_pubkey,
             ct_hash: [0x05; 32],
             list_tag: [0x06; 32],
-        }
+            viewing_hash: hash_bytes(&address.viewing_pubkey.u())?,
+        })
     }))
-    .collect();
+    .collect::<Result<_>>()?;
     Ok(TrackingTree::from_records(records)?)
 }
 
@@ -477,38 +478,6 @@ impl AccountEdit<'_> {
         edit(&mut state);
         self.env
             .set_account_data(self.address, bytemuck::bytes_of(&state))
-    }
-}
-
-/// The applied authorization of each row, a sender reads the viewing key there.
-pub(super) struct SeededAuthorizations<'a> {
-    pub(super) env: &'a TestEnv,
-    pub(super) registry: Address,
-    pub(super) rows: &'a [ShieldedAddress],
-}
-
-impl SeededAuthorizations<'_> {
-    pub(super) fn write(self) -> Result<()> {
-        for row in self.rows {
-            let owner = Address::new_from_array(row.signing_pubkey.confidential_view_tag()?);
-            let authorization = TrackingAuthorization {
-                discriminator: TrackingAuthorization::DISCRIMINATOR,
-                registry: self.registry,
-                owner,
-                nullifier_pk: row.nullifier_pubkey,
-                list_tag: [0x06; 32],
-                viewing_u: row.viewing_pubkey.u(),
-                eph_u: [0; 32],
-                ciphertext: [0; REGISTER_KEY_CIPHERTEXT_LEN],
-                applied: 1,
-            };
-            self.env.create_account(
-                TrackingAuthorization::find_address(&self.registry, &owner).0,
-                STORAGE_PROGRAM_ID,
-                bytemuck::bytes_of(&authorization),
-            )?;
-        }
-        Ok(())
     }
 }
 
@@ -899,12 +868,6 @@ fn one_key_settles_a_real_transfer_and_refuses_three_forgeries() -> Result<()> {
         .apply(|registry: &mut TrackingRegistry| registry.roots[0] = newest_root(root))
     };
     write_tracking(honest_root)?;
-    SeededAuthorizations {
-        env: &env,
-        registry: policy.tracking,
-        rows: &honest_rows,
-    }
-    .write()?;
     let Seeded {
         wallets: notes,
         notes: seeded,

@@ -86,7 +86,7 @@ pub use crate::{
     },
     enrollment::{
         Enroll, EnrollInstruction, EnrollRelay, EnrollmentAttempt, EnrollmentJournal,
-        EnrollmentOutcome, WriteOwnerGrant,
+        EnrollmentOutcome, EnrollmentRead, WriteOwnerGrant,
     },
     error::RingError,
     merge::{

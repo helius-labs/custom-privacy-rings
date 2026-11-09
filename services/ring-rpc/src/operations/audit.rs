@@ -359,7 +359,7 @@ impl<S: TransactionSource> AuditService<S> {
             .grant(&request.auth, &attestation, Some(wallet))
             .await?;
         grant.spend().await?;
-        // The owner's own authorization account answers, it needs no scan.
+        // The owner's leaf under the newest root and the queue answer, they need no scan.
         let enrollment = self
             .shared
             .source

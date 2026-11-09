@@ -4460,6 +4460,7 @@ dependencies = [
  "solana-transaction",
  "solana-transaction-status-client-types",
  "spr-client",
+ "spr-hasher",
  "spr-indexer-api",
  "spr-keypair",
  "spr-rpc-http",

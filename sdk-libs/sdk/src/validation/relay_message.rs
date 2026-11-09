@@ -479,7 +479,7 @@ fn check_signer(envelope: &Envelope, accounts: &[AccountMeta]) -> Result<(), Mes
 }
 
 impl ExpectedEnroll {
-    /// A swapped registry or authorization reads the owner's key into another account.
+    /// A swapped registry or queue would queue the owner's key for another registry.
     pub fn check(&self, message: &[u8]) -> Result<VerifiedMessage, MessageMismatch> {
         let envelope = Envelope {
             ring: CustomRing::new(self.inputs.ring_program_id),
@@ -490,7 +490,7 @@ impl ExpectedEnroll {
             setup: Vec::new(),
         };
         let instruction = envelope.open(message)?;
-        let expected = self.inputs.instruction(self.fee_payer);
+        let expected = self.inputs.instruction();
         if instruction.accounts != expected.accounts {
             return Err(MessageMismatch::Accounts);
         }

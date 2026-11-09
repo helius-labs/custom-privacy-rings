@@ -1,8 +1,6 @@
 use async_trait::async_trait;
 use custom_ring_interface::{
-    compute_unit_limit,
-    storage_instruction::EnrollRequest,
-    tracking::{TrackingAuthorization, TrackingRegistry},
+    compute_unit_limit, storage_instruction::EnrollRequest, tracking::TrackingRegistry,
     InstructionTag, RegisterKeyCheck,
 };
 use custom_ring_sdk::{
@@ -83,17 +81,15 @@ pub trait RelayProver: Send + Sync {
         parties: RelayParties,
     ) -> Result<RelayProofInputs, RingRpcError>;
 
-    /// Refuses a proof the program would refuse, ahead of any charge, the relay pays the account's rent.
+    /// Refuses data or a proof the program would refuse, ahead of any charge.
     async fn check_enrollment(&self, enrollment: &RelayEnrollInputs) -> Result<(), RingRpcError>;
 }
 
-/// What the storage program reads of a relayed enrollment ahead of creating its account.
+/// What the storage program checks of a relayed enrollment ahead of queueing it.
 #[must_use]
 struct EnrollmentProof<'a> {
     enrollment: &'a RelayEnrollInputs,
     registry: &'a TrackingRegistry,
-    /// The owner's authorization account holds data, a rotation proves nothing.
-    enrolled: bool,
 }
 
 impl EnrollmentProof<'_> {
@@ -106,20 +102,19 @@ impl EnrollmentProof<'_> {
         let EnrollRequest { ix, proof } =
             EnrollRequest::parse(data).map_err(|_| RelayError::InvalidEnrollment)?;
         ix.check().map_err(|_| RelayError::InvalidEnrollment)?;
-        match (self.enrolled, proof) {
-            (true, None) => Ok(()),
-            (false, Some(proof)) => RegisterKeyCheck {
-                ring_id: &self.registry.ring_id,
-                auditor_pubkey: &self.registry.auditor_pubkey,
-                owner: &self.enrollment.owner,
-                ix,
-                proof,
-            }
-            .verify()
-            .map_err(|_| RelayError::RegisterKeyProof),
-            (true, Some(_)) => Err(RelayError::AlreadyEnrolled),
-            (false, None) => Err(RelayError::InvalidEnrollment),
+        // A rotation proves nothing, the apply moves only its viewing key.
+        let Some(proof) = proof else {
+            return Ok(());
+        };
+        RegisterKeyCheck {
+            ring_id: &self.registry.ring_id,
+            auditor_pubkey: &self.registry.auditor_pubkey,
+            owner: &self.enrollment.owner,
+            ix,
+            proof,
         }
+        .verify()
+        .map_err(|_| RelayError::RegisterKeyProof)
     }
 }
 
@@ -201,16 +196,9 @@ impl<R: AsyncRpc + 'static, I: RingIndexerBackend + 'static> RelayProver for Sdk
             .await?
             .and_then(|account| TrackingRegistry::decode(&account.owner, &account.data))
             .ok_or(RelayError::InvalidEnrollment)?;
-        let (authorization, _) =
-            TrackingAuthorization::find_address(&enrollment.tracking_registry, &enrollment.owner);
-        let enrolled = rpc
-            .get_account(authorization)
-            .await?
-            .is_some_and(|account| !account.data.is_empty());
         Ok(EnrollmentProof {
             enrollment,
             registry: &registry,
-            enrolled,
         }
         .check()?)
     }
@@ -319,7 +307,7 @@ mod tests {
         ix
     }
 
-    fn checked(data: Vec<u8>, enrolled: bool) -> Result<(), RelayError> {
+    fn checked(data: Vec<u8>) -> Result<(), RelayError> {
         EnrollmentProof {
             enrollment: &RelayEnrollInputs {
                 ring_program_id: Address::new_from_array([1; 32]),
@@ -328,7 +316,6 @@ mod tests {
                 instruction_data: data,
             },
             registry: &TrackingRegistry::zeroed(),
-            enrolled,
         }
         .check()
     }
@@ -343,27 +330,19 @@ mod tests {
     }
 
     #[test]
-    fn only_a_rotation_goes_without_a_proof_and_garbage_refuses() {
+    fn a_rotation_goes_without_a_proof_a_bad_proof_and_garbage_refuse() {
         let (ix, zero_proof) = (fields(), CustomRingProof::zeroed());
-        assert!(checked(data(&ix, None), true).is_ok());
+        assert!(checked(data(&ix, None)).is_ok());
         assert!(matches!(
-            checked(data(&ix, Some(&zero_proof)), false),
+            checked(data(&ix, Some(&zero_proof))),
             Err(RelayError::RegisterKeyProof)
         ));
-        assert!(matches!(
-            checked(data(&ix, Some(&zero_proof)), true),
-            Err(RelayError::AlreadyEnrolled)
-        ));
-        for (bytes, enrolled) in [
-            (data(&ix, None), false),
-            (data(&EnrollIxData::zeroed(), None), true),
-            (vec![6, 1, 2, 3], true),
-            (Vec::new(), true),
+        for bytes in [
+            data(&EnrollIxData::zeroed(), None),
+            vec![6, 1, 2, 3],
+            Vec::new(),
         ] {
-            assert!(matches!(
-                checked(bytes, enrolled),
-                Err(RelayError::InvalidEnrollment)
-            ));
+            assert!(matches!(checked(bytes), Err(RelayError::InvalidEnrollment)));
         }
     }
 }

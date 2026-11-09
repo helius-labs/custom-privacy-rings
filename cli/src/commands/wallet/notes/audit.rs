@@ -6,13 +6,12 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
-use custom_ring_interface::{tracking::TrackingAuthorization, RingMode};
+use custom_ring_interface::RingMode;
 use solana_address::Address;
-use spr_client::Rpc;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
-use spr_keypair::{NullifierKey, X25519Keypair, X25519Pubkey};
+use spr_keypair::{NullifierKey, X25519Keypair};
 use zolana_ring_client::{
-    AuditedTransaction, AuditedUtxo, OutputOpening, RingScan, SealedNullifierKey,
+    AuditedTransaction, AuditedUtxo, OutputOpening, RegisteredKeys, RingScan,
 };
 
 use crate::{
@@ -141,27 +140,28 @@ fn created_notes(
     }
 }
 
-/// `None` for an owner holding no enrollment.
+/// `None` for an owner holding no leaf under the registry's newest root.
 fn enrolled_key(
     ctx: &Context,
     auditor: &X25519Keypair,
     tracking: &Address,
     owner: &Address,
 ) -> Result<Option<NullifierKey>> {
-    let (address, _) = TrackingAuthorization::find_address(tracking, owner);
-    let Some(enrolled) = ctx
-        .rpc()
-        .get_account(address)?
-        .and_then(|account| TrackingAuthorization::decode(&account.owner, &account.data))
-    else {
-        return Ok(None);
-    };
-    let key = SealedNullifierKey {
-        eph_pk: X25519Pubkey::from_u(enrolled.eph_u)?,
-        ciphertext: enrolled.ciphertext,
-    }
-    .open(auditor)?;
-    Ok(Some(key))
+    let chain = ctx.zolana.as_async();
+    let owner = owner.to_bytes();
+    let mut leaves = ctx.block(async {
+        let leaves = RegisteredKeys {
+            registry: *tracking,
+            owners: &[owner],
+        }
+        .leaves(chain, chain)
+        .await?;
+        anyhow::Ok(leaves)
+    })?;
+    Ok(leaves
+        .remove(&owner)
+        .map(|leaf| leaf.nullifier_key(auditor))
+        .transpose()?)
 }
 
 impl fmt::Display for OpenedSlot<'_> {

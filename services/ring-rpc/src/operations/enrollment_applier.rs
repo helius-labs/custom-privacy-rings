@@ -1,12 +1,11 @@
-//! Applies each named ring's pending enrollments to its tracking tree, one batch per root.
+//! Applies each named ring's queued enrollments to its tracking tree, one batch per root.
 //!
 //! Each ring runs on its own task under the shared bound of `keyed_tasks`, so a ring whose proof stalls
 //! holds one slot and never the apply of another ring.
 //!
-//! The ring indexer lists pending authorizations unverified. A page must ascend by owner past the
-//! cursor, only a full page continues, and every named account must read pending on chain, so a
-//! dropped or reordered page delays an owner and never grants one. A rotation moves only the viewing
-//! key, so it neither lists an account nor stales a proof.
+//! The batch size comes from the queue account's `head` and `tail` on chain. The program consumes
+//! entries from `head` in order and the ring indexer only proves them, so an indexer serving other
+//! entries yields a proof the program refuses and never a granted owner.
 //!
 //! Read after `services/ring-indexer/src/rpc/tracking.rs` and `sdk-libs/sdk/src/operations/storage.rs`.
 
@@ -18,8 +17,8 @@ use std::{
 
 use custom_ring_interface::{
     member_registry::APPLY_BATCH,
-    tracking::{TrackingAuthorization, TrackingRegistry, TRACKING_CAPACITY},
-    RingAccount, RingPolicy, ROOT_HISTORY,
+    tracking::{EnrollmentQueue, TrackingRegistry, TRACKING_ROOT_HISTORY},
+    RingAccount, RingPolicy,
 };
 use custom_ring_sdk::CustomRing;
 use log::warn;
@@ -27,9 +26,7 @@ use solana_address::Address;
 use solana_keypair::Keypair;
 use solana_signer::Signer;
 use spr_client::{compile_message, sign_transaction, ComputeBudgetConfig};
-use spr_indexer_api::SerializablePubkey;
 use tokio::sync::Mutex as AsyncMutex;
-use zolana_ring_indexer::tracking::{GetPendingEnrollmentsRequest, RingPendingEnrollmentView};
 
 use crate::{
     error::{redacted, RingRpcError},
@@ -37,10 +34,9 @@ use crate::{
     landing::{Attempt, Landing},
     record_writer::UPDATE_COMPUTE_UNITS,
     storage_chain::{ProvedEnrollments, StorageChain},
-    tracking::TrackingRefusal,
 };
 
-/// Applies the pending enrollments of each named ring, the payer holds no ring role.
+/// Applies the queued enrollments of each named ring, the payer holds no ring role.
 pub struct EnrollmentApplier {
     applier: Arc<Applier>,
     rings: Vec<Address>,
@@ -69,12 +65,6 @@ struct RegistryPass<'a> {
     payer: &'a Keypair,
     registry: Address,
     state: &'a mut RegistryState,
-}
-
-/// Every pending enrollment is a first enrollment and takes a leaf.
-struct Batch {
-    owners: Vec<Address>,
-    free_leaves: u64,
 }
 
 impl EnrollmentApplierParts {
@@ -179,15 +169,15 @@ impl RegistryPass<'_> {
             return Ok(());
         };
         // 2. The program refuses an apply that would evict a root inside its grace, waiting spends no proof.
-        if slot < tracking.roots[ROOT_HISTORY - 1].expires_at() {
+        if slot < tracking.roots[TRACKING_ROOT_HISTORY - 1].expires_at() {
             return Ok(());
         }
-        let owners = self.choose(&tracking).await?;
-        if owners.is_empty() {
+        let count = self.queued().await?.min(APPLY_BATCH as u64);
+        if count == 0 {
             return Ok(());
         }
         // 3. Proving takes long, an apply landed meanwhile moves the root and leaves the proof unsent.
-        let proved = self.chain.prove_enrollments(self.registry, &owners).await?;
+        let proved = self.chain.prove_enrollments(self.registry, count).await?;
         let current = self.tracking().await?;
         if current.is_none_or(|current| current.newest().revision != proved.revision) {
             return Ok(());
@@ -195,47 +185,15 @@ impl RegistryPass<'_> {
         self.send(proved).await
     }
 
-    /// Oldest pages first until one batch fills, an account the chain holds applied or absent stays out.
-    async fn choose(&self, tracking: &TrackingRegistry) -> Result<Vec<Address>, RingRpcError> {
-        let mut batch = Batch {
-            owners: Vec::new(),
-            free_leaves: TRACKING_CAPACITY.saturating_sub(tracking.next_index()),
-        };
-        let mut after = None;
-        loop {
-            let page = self
-                .chain
-                .pending_enrollments(GetPendingEnrollmentsRequest {
-                    registry: self.registry.into(),
-                    after,
-                    limit: APPLY_BATCH as u64,
-                })
-                .await?;
-            after = checked_page(&page.enrollments, after, page.next_after)?;
-            for view in &page.enrollments {
-                if batch.is_full() {
-                    break;
-                }
-                // The indexer lists unverified, the program refuses the whole apply over one applied account.
-                if self.pending_on_chain(&view.owner.0).await? {
-                    batch.offer(view.owner.0);
-                }
-            }
-            if after.is_none() || batch.is_full() {
-                break;
-            }
-        }
-        Ok(batch.owners)
-    }
-
-    async fn pending_on_chain(&self, owner: &Address) -> Result<bool, RingRpcError> {
-        let (address, _) = TrackingAuthorization::find_address(&self.registry, owner);
+    /// Entries no apply consumed, read from the queue account and never from the indexer.
+    async fn queued(&self) -> Result<u64, RingRpcError> {
+        let (address, _) = EnrollmentQueue::find_address(&self.registry);
         Ok(self
             .chain
             .account(address)
             .await?
-            .and_then(|account| TrackingAuthorization::decode(&account.owner, &account.data))
-            .is_some_and(|authorization| authorization.is_pending()))
+            .and_then(|account| EnrollmentQueue::decode(&account.owner, &account.data))
+            .map_or(0, |queue| queue.pending()))
     }
 
     async fn send(self, proved: ProvedEnrollments) -> Result<(), RingRpcError> {
@@ -261,42 +219,6 @@ impl RegistryPass<'_> {
             .account(self.registry)
             .await?
             .and_then(|account| TrackingRegistry::decode(&account.owner, &account.data)))
-    }
-}
-
-/// The cursor past the page, a page out of order or short of a continuation refuses.
-fn checked_page(
-    enrollments: &[RingPendingEnrollmentView],
-    after: Option<SerializablePubkey>,
-    next_after: Option<SerializablePubkey>,
-) -> Result<Option<SerializablePubkey>, TrackingRefusal> {
-    let mut previous = after.map(|after| after.0);
-    for view in enrollments {
-        if previous.is_some_and(|previous| view.owner.0 <= previous) {
-            return Err(TrackingRefusal::PageShape);
-        }
-        previous = Some(view.owner.0);
-    }
-    let full = enrollments.len() == APPLY_BATCH;
-    match next_after {
-        None => Ok(None),
-        Some(next) if full && Some(next.0) == previous => Ok(Some(next)),
-        Some(_) => Err(TrackingRefusal::PageShape),
-    }
-}
-
-impl Batch {
-    /// A full tree takes no further owner.
-    fn offer(&mut self, owner: Address) {
-        let Some(left) = self.free_leaves.checked_sub(1) else {
-            return;
-        };
-        self.free_leaves = left;
-        self.owners.push(owner);
-    }
-
-    fn is_full(&self) -> bool {
-        self.owners.len() == APPLY_BATCH
     }
 }
 

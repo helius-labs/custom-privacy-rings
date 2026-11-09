@@ -321,6 +321,8 @@ pub(crate) struct TrackingLeafRequest {
     pub ct_hash: [u8; 32],
     #[serde(with = "fe")]
     pub list_tag: [u8; 32],
+    #[serde(with = "fe")]
+    pub viewing_hash: [u8; 32],
 }
 
 impl From<&TrackingRecord> for TrackingLeafRequest {
@@ -331,6 +333,7 @@ impl From<&TrackingRecord> for TrackingLeafRequest {
             nullifier_pk: record.nullifier_pk,
             ct_hash: record.ct_hash,
             list_tag: record.list_tag,
+            viewing_hash: record.viewing_hash,
         }
     }
 }
@@ -636,8 +639,8 @@ pub(crate) struct ApplyRecords {
     pub old_root: [u8; 32],
     #[serde(with = "fe")]
     pub new_root: [u8; 32],
-    pub old_next_index: u32,
-    pub new_next_index: u32,
+    pub old_next_index: u64,
+    pub new_next_index: u64,
     #[serde(with = "fe")]
     pub chain_start: [u8; 32],
     #[serde(with = "fe")]
@@ -704,6 +707,10 @@ pub(crate) struct TrackingWrite {
     pub ct_hash: [u8; 32],
     #[serde(with = "fe")]
     pub list_tag: [u8; 32],
+    #[serde(with = "fe")]
+    pub viewing_hash: [u8; 32],
+    pub proven: bool,
+    pub present: bool,
     pub index: u64,
     #[serde(serialize_with = "fe::seq")]
     pub path: Vec<[u8; 32]>,
@@ -721,6 +728,9 @@ impl From<&TrackingWriteProofInput> for TrackingWrite {
             nullifier_pk: entry.nullifier_pk,
             ct_hash: entry.ct_hash,
             list_tag: entry.list_tag,
+            viewing_hash: entry.viewing_hash,
+            proven: entry.proven,
+            present: write.present,
             index: write.slot.index,
             path: write.slot.siblings.as_flattened().to_vec(),
             low_record: (&write.low).into(),

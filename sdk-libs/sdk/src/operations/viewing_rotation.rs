@@ -1,9 +1,7 @@
-//! Publishes a rotated viewing key in the ring's tracking authorization, the account senders read.
+//! Queues a rotated viewing key for the owner's tracking leaf, the key senders read once an apply folds it.
 //!
 //! Read after `zolana_ring_client::ViewingRotation`, whose stored keys and history come first.
 
-use custom_ring_interface::tracking::TrackingAuthorization;
-use solana_address::Address;
 use solana_signature::Signature;
 use solana_signer::Signer;
 use spr_client::{compile_message, sign_transaction, AsyncRpc, ComputeBudgetConfig};
@@ -14,7 +12,7 @@ use zolana_ring_keys::RotatingRingKeys;
 
 use crate::client::{RingClient, RingIndexerBackend};
 use crate::{
-    enrollment::{rotation_request, EnrollInstruction},
+    enrollment::{rotation_request, EnrollInstruction, EnrollmentRead},
     submission::check_transaction_size,
     CustomRing, RingError,
 };
@@ -36,7 +34,7 @@ pub struct RotateViewingKey<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RotatedViewingKey {
     pub viewing_pubkey: X25519Pubkey,
-    /// `None` when the authorization already held the key.
+    /// `None` when the enrollment already held the key.
     pub signature: Option<Signature>,
 }
 
@@ -50,7 +48,7 @@ impl RotateViewingKey<'_> {
         if self.history.current().viewing_pubkey() != address.viewing_pubkey {
             return Err(RingError::ViewingHistoryNotCurrent);
         }
-        // 2. An authorization key the wallet never held is another copy's, publishing over it strands its payments.
+        // 2. An enrolled key the wallet never held is another copy's, publishing over it strands its payments.
         let owner = self.owner.pubkey();
         let registry = self
             .ring
@@ -58,7 +56,13 @@ impl RotateViewingKey<'_> {
             .await?
             .account()
             .tracking;
-        let enrolled = read_authorization(client, &registry, &owner).await?;
+        let enrolled = EnrollmentRead {
+            tracking_registry: registry,
+            owner,
+        }
+        .read(client.zolana())
+        .await?
+        .ok_or(RingError::RotationUnenrolled { owner })?;
         if enrolled.nullifier_pk != address.nullifier_pubkey {
             return Err(RingError::AlreadyEnrolled { owner });
         }
@@ -77,7 +81,7 @@ impl RotateViewingKey<'_> {
                 signature: None,
             });
         }
-        // 3. The rotation repeats the final key, tag and seal, the program refuses any other change.
+        // 3. The rotation repeats the final key, tag and seal, the apply moves only the viewing key.
         let payer = self.payer.pubkey();
         let instruction = EnrollInstruction {
             payer,
@@ -94,31 +98,9 @@ impl RotateViewingKey<'_> {
         let signature = client
             .process_transaction(sign_transaction(message, &signers)?)
             .await?;
-        // 4. A concurrent rotation of the owner can leave the authorization at another key.
-        if read_authorization(client, &registry, &owner)
-            .await?
-            .viewing_u
-            != viewing_u
-        {
-            return Err(RingError::ViewingKeyNotPublished { owner });
-        }
         Ok(RotatedViewingKey {
             viewing_pubkey: address.viewing_pubkey,
             signature: Some(signature),
         })
     }
-}
-
-async fn read_authorization<R: AsyncRpc, I: RingIndexerBackend>(
-    client: &RingClient<R, I>,
-    registry: &Address,
-    owner: &Address,
-) -> Result<TrackingAuthorization, RingError> {
-    let (authorization, _) = TrackingAuthorization::find_address(registry, owner);
-    client
-        .get_account(authorization)
-        .await?
-        .and_then(|account| TrackingAuthorization::decode(&account.owner, &account.data))
-        .filter(|enrolled| enrolled.registry == *registry && enrolled.owner == *owner)
-        .ok_or(RingError::RotationUnenrolled { owner: *owner })
 }

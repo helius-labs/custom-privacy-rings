@@ -81,6 +81,9 @@ impl From<DelegateSourceError> for RingRpcError {
             }
             DelegateSourceError::SealMismatch => TrackingRefusal::Sealed.into(),
             DelegateSourceError::Seal(error) => error.into(),
+            DelegateSourceError::Tracking(error) => {
+                zolana_ring_client::AuditError::from(error).into()
+            }
             DelegateSourceError::Keypair(error) => error.into(),
             DelegateSourceError::Transaction(error) => error.into(),
             DelegateSourceError::Client(error) => error.into(),

@@ -1,13 +1,12 @@
-use custom_ring_interface::{tracking::TrackingAuthorization, STORAGE_PROGRAM_ID};
 use solana_address::Address;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use spr_keypair::{random_blinding, NullifierKey, PublicKey, ShieldedAddress, X25519Keypair};
 use spr_transaction::{Data, Mint, Utxo, WalletUtxo};
-use zolana_ring_client::NullifierKeyEnvelope;
+use zolana_ring_client::AuditError;
 
 use super::{AllowedNullifiers, DelegateSourceError, ResolvedSource, TrackingEnrollment};
 use crate::tests::support::{
-    account, auditor, keypair, program, ring_utxo, wallet, Chain, TRACKING, TREE_ID,
+    auditor, keypair, program, ring_utxo, wallet, Chain, ServedLeaf, TRACKING, TREE_ID,
 };
 
 fn enrollment<'a>(chain: &'a Chain, auditor: &'a X25519Keypair) -> TrackingEnrollment<'a, Chain> {
@@ -18,24 +17,9 @@ fn enrollment<'a>(chain: &'a Chain, auditor: &'a X25519Keypair) -> TrackingEnrol
     }
 }
 
-/// `owner`'s tracking authorization sealing `key` to the ring auditor.
+/// `owner`'s tracking leaf sealing `key` to the ring auditor.
 fn enrolled(owner: Address, key: &NullifierKey) -> Chain {
-    let envelope = NullifierKeyEnvelope::new(key, &[0; 32], &auditor().pubkey()).unwrap();
-    let authorization = TrackingAuthorization {
-        discriminator: TrackingAuthorization::DISCRIMINATOR,
-        registry: TRACKING,
-        owner,
-        nullifier_pk: envelope.nullifier_pk,
-        list_tag: [0; 32],
-        viewing_u: [0; 32],
-        eph_u: envelope.sealed.eph_pk.u(),
-        ciphertext: envelope.sealed.ciphertext,
-        applied: 1,
-    };
-    Chain::default().with(
-        TrackingAuthorization::find_address(&TRACKING, &owner).0,
-        account(STORAGE_PROGRAM_ID, &authorization),
-    )
+    Chain::default().with_tracking_leaves(&[ServedLeaf::sealed(owner, key, &[0; 32])])
 }
 
 #[tokio::test]
@@ -91,7 +75,7 @@ async fn a_nonzero_source_spends_under_its_enrolled_key() {
 #[tokio::test]
 async fn an_unenrolled_nonzero_source_is_refused() {
     let source = keypair(12).shielded_address().unwrap();
-    let (chain, auditor) = (Chain::default(), auditor());
+    let (chain, auditor) = (Chain::default().with_tracking_leaves(&[]), auditor());
 
     let refused = ResolvedSource::resolve(source, &enrollment(&chain, &auditor)).await;
 
@@ -110,6 +94,28 @@ async fn an_enrollment_under_another_key_is_refused() {
     let refused = ResolvedSource::resolve(source, &enrollment(&chain, &auditor)).await;
 
     assert!(matches!(refused, Err(DelegateSourceError::KeyMismatch)));
+}
+
+#[tokio::test]
+async fn a_seal_that_derives_another_key_than_its_leaf_is_refused() {
+    let owner = keypair(17);
+    let source = owner.shielded_address().unwrap();
+    let forged = ServedLeaf {
+        nullifier_pk: source.nullifier_pubkey,
+        ..ServedLeaf::sealed(
+            source.solana_address().unwrap(),
+            &NullifierKey::from_secret([18; 31]),
+            &[0; 32],
+        )
+    };
+    let (chain, auditor) = (Chain::default().with_tracking_leaves(&[forged]), auditor());
+
+    let refused = ResolvedSource::resolve(source, &enrollment(&chain, &auditor)).await;
+
+    assert!(matches!(
+        refused,
+        Err(DelegateSourceError::Seal(AuditError::NullifierKeyMismatch))
+    ));
 }
 
 #[tokio::test]

@@ -1,17 +1,33 @@
+//! Resolves ring keys from tracking leaves opened under a root the registry holds.
+//!
+//! A leaf commits to `viewing_hash`, never the viewing key, because an X25519 u can exceed the BN254
+//! modulus. The indexer serves the key beside the leaf, and a reader accepts it only once the leaf
+//! opens under the root and the key hashes to the leaf's `viewing_hash`. A queued enrollment grants
+//! nothing and resolves nothing.
+
 use std::collections::HashMap;
 
-use custom_ring_interface::{domain, tracking::TrackingAuthorization, STORAGE_PROGRAM_ID};
-use solana_account::Account;
+use custom_ring_interface::{
+    domain,
+    storage_instruction::EnrollIxData,
+    tracking::{TrackingRegistry, ENROLLMENT_QUEUE_CAPACITY},
+};
 use solana_address::Address;
-use solana_rpc_client_api::request::MAX_MULTIPLE_ACCOUNTS;
 use spr_client::{AsyncRpc, ClientError};
-use spr_hasher::HasherError;
+use spr_hasher::{
+    primitives::{hash_bytes, solana_owner_identity},
+    HasherError,
+};
 use spr_indexer_api::Hash;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
-use spr_keypair::{KeypairError, X25519Pubkey};
+use spr_keypair::{KeypairError, NullifierKey, X25519Keypair, X25519Pubkey};
 use thiserror::Error;
-use zolana_ring_indexer::tracking::{
-    GetTrackingOpeningsRequest, RingTrackingOpening, RingTrackingRecordView,
+use zolana_ring_indexer::{
+    rpc::MAX_RING_MEMBER_PAGE_LIMIT,
+    tracking::{
+        GetEnrollmentQueueRequest, GetTrackingOpeningsRequest, RingQueuedEnrollmentView,
+        RingTrackingOpening, RingTrackingRecordView,
+    },
 };
 use zolana_ring_keys::{RingAddress, RingKeyError};
 use zolana_ring_member_registry::{OpeningCheck, RecordTreeError, TrackingOpening, TrackingRecord};
@@ -19,13 +35,14 @@ use zolana_ring_member_registry::{OpeningCheck, RecordTreeError, TrackingOpening
 use crate::{
     indexer::{AsyncRingIndexer, RingIndexerError},
     records::path_of,
+    AuditError, SealedNullifierKey,
 };
 
 /// The salt stays with the address it came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedRecipient {
     pub nullifier_pk: [u8; 32],
-    /// The authorization's, a rotation moves it past the address.
+    /// The leaf's, a rotation moves it past the address.
     pub viewing_pubkey: X25519Pubkey,
     /// `None` with no row, off every private list. Zero under the zero key.
     pub list_tag: Option<[u8; 32]>,
@@ -47,24 +64,18 @@ pub enum ResolveError {
     Opening(#[source] RecordTreeError),
     #[error("the tracking opening is malformed")]
     MalformedOpening,
-    #[error("the indexer answered {0} openings for one owner")]
-    OpeningCount(usize),
+    #[error("the indexer answered {got} openings for {want} owners")]
+    OpeningCount { got: usize, want: usize },
     #[error("the address list salt hashes to another list tag than the tracking leaf")]
     ListTagMismatch,
     #[error("the tracking leaf holds another nullifier key than the address")]
     NullifierKeyMismatch,
-    #[error("the owner's tracking authorization is absent")]
-    AuthorizationMissing,
-    #[error("the tracking authorization is not a storage program account")]
-    AuthorizationProgramOwner,
-    #[error("the tracking authorization data is malformed")]
-    AuthorizationMalformed,
-    #[error("the tracking authorization names another registry")]
-    AuthorizationRegistry,
-    #[error("the tracking authorization names another owner")]
-    AuthorizationOwner,
-    #[error("the rpc answered {got} authorizations for {want} owners")]
-    AuthorizationCount { got: usize, want: usize },
+    #[error("the served viewing key does not hash to the tracking leaf's viewing hash")]
+    ViewingKeyMismatch,
+    #[error("the served seal does not hash to the tracking leaf or names another owner")]
+    SealMismatch,
+    #[error("the tracking registry is not an initialized storage program account")]
+    TrackingRegistryMissing,
 }
 
 /// `registry` is the one the ring's policy names.
@@ -75,31 +86,30 @@ pub struct RecipientResolver<'a> {
     pub root: [u8; 32],
 }
 
-/// One owner's authorization as an RPC served it, the PDA alone binds no served account.
+/// One served opening of `member` under `root`.
 #[must_use]
-pub struct AuthorizationCheck<'a> {
-    pub registry: Address,
-    pub owner: Address,
-    pub account: Option<&'a Account>,
+pub struct TrackingLeafCheck<'a> {
+    pub view: &'a RingTrackingOpening,
+    pub root: &'a [u8; 32],
+    pub member: &'a [u8; 32],
 }
 
-/// What the opening alone settles, an enrolled owner still needs its authorization's viewing key.
-#[derive(Debug)]
-enum Opened {
-    Resolved(ResolvedRecipient),
-    Enrolled {
-        nullifier_pk: [u8; 32],
-        list_tag: [u8; 32],
-    },
+/// A present leaf under the checked root, the viewing key its `viewing_hash` commits to and the seal its `ct_hash` commits to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrackingLeaf {
+    pub record: TrackingRecord,
+    /// The Solana owner the leaf's member commits to.
+    pub owner: Address,
+    pub viewing_u: [u8; 32],
+    pub seal: SealedNullifierKey,
 }
 
 impl RecipientResolver<'_> {
-    /// Reads the authorization at confirmed commitment, a later rotation leaves the payment sealed to the key read.
-    pub async fn resolve<C: AsyncRpc + AsyncRingIndexer + ?Sized>(
+    /// One opening under the frame's root settles presence and every key, a later rotation leaves the payment sealed to the key read.
+    pub async fn resolve<C: AsyncRingIndexer + ?Sized>(
         self,
         client: &C,
     ) -> Result<ResolvedRecipient, ResolveError> {
-        // 1. The opening under the frame's root settles presence, the nullifier key and the list tag.
         let member = self
             .address
             .recipient
@@ -113,33 +123,12 @@ impl RecipientResolver<'_> {
             })
             .await?;
         let [opening] = response.openings.as_slice() else {
-            return Err(ResolveError::OpeningCount(response.openings.len()));
+            return Err(ResolveError::OpeningCount {
+                got: response.openings.len(),
+                want: 1,
+            });
         };
-        let (nullifier_pk, list_tag) = match self.verify(&member, opening)? {
-            Opened::Resolved(resolved) => return Ok(resolved),
-            Opened::Enrolled {
-                nullifier_pk,
-                list_tag,
-            } => (nullifier_pk, list_tag),
-        };
-        // 2. The leaf holds no viewing key, the owner's authorization account names it at either key.
-        let owner = self.owner()?;
-        let (authorization, _) = TrackingAuthorization::find_address(&self.registry, &owner);
-        let account = client
-            .get_account(authorization)
-            .await
-            .map_err(|error| ResolveError::Rpc(Box::new(error)))?;
-        let viewing_u = AuthorizationCheck {
-            registry: self.registry,
-            owner,
-            account: account.as_ref(),
-        }
-        .viewing_u()?;
-        Ok(ResolvedRecipient {
-            nullifier_pk,
-            viewing_pubkey: X25519Pubkey::from_u(viewing_u)?,
-            list_tag: Some(list_tag),
-        })
+        self.verify(&member, opening)
     }
 
     /// An owner with no row resolves to the address keys, only a later registration of the same key spends.
@@ -147,82 +136,101 @@ impl RecipientResolver<'_> {
         &self,
         member: &[u8; 32],
         view: &RingTrackingOpening,
-    ) -> Result<Opened, ResolveError> {
+    ) -> Result<ResolvedRecipient, ResolveError> {
         let address = self.address;
         RingAddress::check_list_salt(&address.recipient, &address.list_salt)?;
+        let nullifier_pk = address.recipient.nullifier_pubkey;
+        let opened = TrackingLeafCheck {
+            view,
+            root: &self.root,
+            member,
+        }
+        .verify()?;
+        let Some(TrackingLeaf {
+            record, viewing_u, ..
+        }) = opened
+        else {
+            return Ok(ResolvedRecipient {
+                nullifier_pk,
+                viewing_pubkey: address.recipient.viewing_pubkey,
+                list_tag: None,
+            });
+        };
+        let list_tag = if nullifier_pk == ZERO_NULLIFIER_PUBKEY {
+            [0; 32]
+        } else if record.nullifier_pk != nullifier_pk {
+            return Err(ResolveError::NullifierKeyMismatch);
+        } else if domain::list_tag(&address.list_salt)? != record.list_tag {
+            return Err(ResolveError::ListTagMismatch);
+        } else {
+            record.list_tag
+        };
+        Ok(ResolvedRecipient {
+            nullifier_pk,
+            viewing_pubkey: X25519Pubkey::from_u(viewing_u)?,
+            list_tag: Some(list_tag),
+        })
+    }
+}
+
+impl TrackingLeafCheck<'_> {
+    /// `None` for an absent member, its absence proven under the root.
+    pub fn verify(self) -> Result<Option<TrackingLeaf>, ResolveError> {
+        let view = self.view;
         let path = path_of(&view.path).map_err(|_| ResolveError::MalformedOpening)?;
         let record = tracking_record(&view.record);
         let opening = match view.present {
             true => TrackingOpening::Present { record, path },
             false => TrackingOpening::Absent { low: record, path },
         };
-        let row = OpeningCheck {
+        let Some(record) = OpeningCheck {
             opening: &opening,
-            root: &self.root,
-            member,
+            root: self.root,
+            member: self.member,
         }
         .verify()
-        .map_err(ResolveError::Opening)?;
-        let nullifier_pk = address.recipient.nullifier_pubkey;
-        match (row, nullifier_pk == ZERO_NULLIFIER_PUBKEY) {
-            (None, _) => Ok(Opened::Resolved(ResolvedRecipient {
-                nullifier_pk,
-                viewing_pubkey: address.recipient.viewing_pubkey,
-                list_tag: None,
-            })),
-            (Some(_), true) => Ok(Opened::Enrolled {
-                nullifier_pk,
-                list_tag: [0; 32],
-            }),
-            (Some(row), false) if row.nullifier_pk != nullifier_pk => {
-                Err(ResolveError::NullifierKeyMismatch)
-            }
-            (Some(row), false) if domain::list_tag(&address.list_salt)? != row.list_tag => {
-                Err(ResolveError::ListTagMismatch)
-            }
-            (Some(row), false) => Ok(Opened::Enrolled {
-                nullifier_pk,
-                list_tag: row.list_tag,
-            }),
+        .map_err(ResolveError::Opening)?
+        else {
+            return Ok(None);
+        };
+        // The root authenticates the leaf's hashes alone, each served preimage counts once it hashes to one.
+        let served = view
+            .record
+            .seal
+            .as_ref()
+            .ok_or(ResolveError::MalformedOpening)?;
+        let viewing_u: [u8; 32] = fixed(&served.viewing_u.0)?;
+        if hash_bytes(&viewing_u)? != record.viewing_hash {
+            return Err(ResolveError::ViewingKeyMismatch);
         }
-    }
-
-    /// The Solana owner whose identity the tracking member commits.
-    fn owner(&self) -> Result<Address, ResolveError> {
-        Ok(Address::new_from_array(
-            self.address
-                .recipient
-                .signing_pubkey
-                .confidential_view_tag()?,
-        ))
+        let seal = SealedNullifierKey {
+            eph_pk: X25519Pubkey::from_bytes(fixed(&served.eph_pk.0)?)?,
+            ciphertext: fixed(&served.ciphertext.0)?,
+        };
+        let owner = served.owner.0;
+        if hash_bytes(&seal.ciphertext)? != record.ct_hash
+            || solana_owner_identity(owner.as_array())? != record.member
+        {
+            return Err(ResolveError::SealMismatch);
+        }
+        Ok(Some(TrackingLeaf {
+            record,
+            owner,
+            viewing_u,
+            seal,
+        }))
     }
 }
 
-impl AuthorizationCheck<'_> {
-    /// The viewing key the owner last signed into its authorization.
-    pub fn viewing_u(self) -> Result<[u8; 32], ResolveError> {
-        Ok(self.authorization()?.viewing_u)
-    }
-
-    /// Final from the account's creation, an account not yet applied still names it.
-    pub fn nullifier_pk(self) -> Result<[u8; 32], ResolveError> {
-        Ok(self.authorization()?.nullifier_pk)
-    }
-
-    fn authorization(self) -> Result<TrackingAuthorization, ResolveError> {
-        let account = self.account.ok_or(ResolveError::AuthorizationMissing)?;
-        if account.owner != STORAGE_PROGRAM_ID {
-            return Err(ResolveError::AuthorizationProgramOwner);
+impl TrackingLeaf {
+    /// The auditor's opening of the seal, accepted only when its secrets derive the leaf's nullifier key and list tag.
+    pub fn nullifier_key(&self, auditor: &X25519Keypair) -> Result<NullifierKey, AuditError> {
+        let key = self.seal.open(auditor)?;
+        let list_tag = domain::list_tag(&self.seal.open_list_salt(auditor)?)?;
+        if key.pubkey()? != self.record.nullifier_pk || list_tag != self.record.list_tag {
+            return Err(AuditError::NullifierKeyMismatch);
         }
-        let authorization = TrackingAuthorization::from_data(&account.data)
-            .ok_or(ResolveError::AuthorizationMalformed)?;
-        if authorization.registry != self.registry {
-            return Err(ResolveError::AuthorizationRegistry);
-        }
-        if authorization.owner != self.owner {
-            return Err(ResolveError::AuthorizationOwner);
-        }
-        Ok(*authorization)
+        Ok(key)
     }
 }
 
@@ -231,56 +239,149 @@ impl AuthorizationCheck<'_> {
 pub struct RegisteredKeys<'a> {
     /// The ring's pinned tracking registry.
     pub registry: Address,
+    /// Solana owners.
     pub owners: &'a [[u8; 32]],
 }
 
 impl RegisteredKeys<'_> {
-    /// An owner with no account is absent and its outputs stay unresolved.
+    /// An owner with no leaf under the newest root is absent and its outputs stay unresolved.
     pub async fn read(
         self,
         rpc: &(impl AsyncRpc + ?Sized),
+        indexer: &(impl AsyncRingIndexer + ?Sized),
     ) -> Result<HashMap<[u8; 32], [u8; 32]>, ResolveError> {
-        let mut keys = HashMap::with_capacity(self.owners.len());
-        // The RPC answers at most `MAX_MULTIPLE_ACCOUNTS` accounts per request, in request order.
-        for owners in self.owners.chunks(MAX_MULTIPLE_ACCOUNTS) {
-            let owners: Vec<Address> = owners
+        let leaves = self.leaves(rpc, indexer).await?;
+        Ok(leaves
+            .into_iter()
+            .map(|(owner, leaf)| (owner, leaf.record.nullifier_pk))
+            .collect())
+    }
+
+    /// Each present owner's leaf with its authenticated viewing key and seal.
+    pub async fn leaves(
+        self,
+        rpc: &(impl AsyncRpc + ?Sized),
+        indexer: &(impl AsyncRingIndexer + ?Sized),
+    ) -> Result<HashMap<[u8; 32], TrackingLeaf>, ResolveError> {
+        let mut leaves = HashMap::with_capacity(self.owners.len());
+        if self.owners.is_empty() {
+            return Ok(leaves);
+        }
+        // 1. The newest root from the registry account, so an indexer cannot pick the root it serves under.
+        let root = rpc
+            .get_account(self.registry)
+            .await
+            .map_err(|error| ResolveError::Rpc(Box::new(error)))?
+            .and_then(|account| TrackingRegistry::decode(&account.owner, &account.data))
+            .ok_or(ResolveError::TrackingRegistryMissing)?
+            .newest()
+            .hash;
+        // 2. One opening per owner, each checked against that root, a present leaf gives the key.
+        for owners in self.owners.chunks(MAX_RING_MEMBER_PAGE_LIMIT as usize) {
+            let members = owners
                 .iter()
-                .copied()
-                .map(Address::new_from_array)
-                .collect();
-            let addresses = owners
-                .iter()
-                .map(|owner| TrackingAuthorization::find_address(&self.registry, owner).0)
-                .collect();
-            let accounts = rpc
-                .get_multiple_accounts(addresses)
-                .await
-                .map_err(|error| ResolveError::Rpc(Box::new(error)))?;
-            // A short or long answer would pair an account with another owner's PDA.
-            if accounts.len() != owners.len() {
-                return Err(ResolveError::AuthorizationCount {
-                    got: accounts.len(),
+                .map(solana_owner_identity)
+                .collect::<Result<Vec<_>, _>>()?;
+            let response = indexer
+                .get_tracking_openings(GetTrackingOpeningsRequest {
+                    registry: self.registry.into(),
+                    members: members.iter().copied().map(Hash).collect(),
+                    expected_root: Hash(root),
+                })
+                .await?;
+            // A short or long answer would pair an opening with another owner's member.
+            if response.openings.len() != owners.len() {
+                return Err(ResolveError::OpeningCount {
+                    got: response.openings.len(),
                     want: owners.len(),
                 });
             }
-            for (owner, account) in owners.into_iter().zip(&accounts) {
-                let Some(account) = account else {
-                    continue;
-                };
-                let nullifier_pk = AuthorizationCheck {
-                    registry: self.registry,
-                    owner,
-                    account: Some(account),
+            for ((owner, member), view) in owners.iter().zip(&members).zip(&response.openings) {
+                let opened = TrackingLeafCheck {
+                    view,
+                    root: &root,
+                    member,
                 }
-                .nullifier_pk()?;
-                keys.insert(owner.to_bytes(), nullifier_pk);
+                .verify()?;
+                if let Some(leaf) = opened {
+                    leaves.insert(*owner, leaf);
+                }
             }
         }
-        Ok(keys)
+        Ok(leaves)
     }
 }
 
-/// The leaf hashes only `ct_hash`.
+/// Every queued entry of one registry in sequence order, unverified, a queued entry grants nothing.
+#[must_use]
+pub struct QueuedEnrollments {
+    pub registry: Address,
+}
+
+/// One queued entry as its `Enroll` named it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueuedEnrollment {
+    pub sequence: u64,
+    pub owner: Address,
+    pub proven: bool,
+    pub ix: EnrollIxData,
+}
+
+impl QueuedEnrollments {
+    /// The pages stay within the queue's capacity, a looping indexer cannot hold the read.
+    pub async fn read(
+        self,
+        indexer: &(impl AsyncRingIndexer + ?Sized),
+    ) -> Result<Vec<QueuedEnrollment>, ResolveError> {
+        let limit = MAX_RING_MEMBER_PAGE_LIMIT;
+        let mut entries = Vec::new();
+        let mut after = None;
+        for _ in 0..(ENROLLMENT_QUEUE_CAPACITY as u64).div_ceil(limit) {
+            let page = indexer
+                .get_enrollment_queue(GetEnrollmentQueueRequest {
+                    registry: self.registry.into(),
+                    after,
+                    limit,
+                })
+                .await?;
+            let next = page
+                .entries
+                .last()
+                .filter(|last| last.sequence + 1 < page.tail)
+                .map(|last| last.sequence);
+            for entry in &page.entries {
+                entries.push(queued(entry)?);
+            }
+            match next {
+                Some(sequence) => after = Some(sequence),
+                None => break,
+            }
+        }
+        Ok(entries)
+    }
+}
+
+fn queued(entry: &RingQueuedEnrollmentView) -> Result<QueuedEnrollment, ResolveError> {
+    let eph_pk = X25519Pubkey::from_bytes(fixed(&entry.eph_pk.0)?)?;
+    Ok(QueuedEnrollment {
+        sequence: entry.sequence,
+        owner: entry.owner.0,
+        proven: entry.proven,
+        ix: EnrollIxData {
+            nullifier_pk: entry.nullifier_pk.0,
+            list_tag: entry.list_tag.0,
+            viewing_u: fixed(&entry.viewing_u.0)?,
+            eph_u: eph_pk.u(),
+            ciphertext: fixed(&entry.ciphertext.0)?,
+        },
+    })
+}
+
+fn fixed<const N: usize>(bytes: &[u8]) -> Result<[u8; N], ResolveError> {
+    bytes.try_into().map_err(|_| ResolveError::MalformedOpening)
+}
+
+/// The leaf hashes `ct_hash` and `viewing_hash`, never the seal they commit to.
 pub fn tracking_record(view: &RingTrackingRecordView) -> TrackingRecord {
     TrackingRecord {
         member: view.member.0,
@@ -288,6 +389,7 @@ pub fn tracking_record(view: &RingTrackingRecordView) -> TrackingRecord {
         nullifier_pk: view.nullifier_pk.0,
         ct_hash: view.ct_hash.0,
         list_tag: view.list_tag.0,
+        viewing_hash: view.viewing_hash.0,
     }
 }
 
@@ -295,25 +397,26 @@ pub fn tracking_record(view: &RingTrackingRecordView) -> TrackingRecord {
 mod tests {
     use async_trait::async_trait;
     use custom_ring_interface::{
-        storage_instruction::EnrollIxData,
-        tracking::{FirstEnrollment, TrackingEntry},
+        storage_instruction::InitializeTrackingIxData, tracking::TrackingEntry, STORAGE_PROGRAM_ID,
     };
-    use spr_indexer_api::Context;
+    use solana_account::Account;
+    use spr_indexer_api::{Base64String, Context};
     use spr_keypair::{
         shielded::{ShieldedAddress, ShieldedKeypair},
         SigningKey, ViewingKey,
     };
     use zolana_ring_indexer::{
         rpc::{RingRecordPathView, StorageRootView},
-        tracking::{GetTrackingOpeningsResponse, RingTrackingOpening},
+        tracking::{GetTrackingOpeningsResponse, RingTrackingSealView},
     };
     use zolana_ring_keys::ListSaltHolder;
-    use zolana_ring_member_registry::{RecordOpening, RecordTree, TrackingPath, TrackingTree};
+    use zolana_ring_member_registry::{QuadPath, RecordOpening, RecordTree, TrackingTree};
 
     use super::*;
 
     const RING: Address = Address::new_from_array([4; 32]);
     const REGISTRY: Address = Address::new_from_array([5; 32]);
+    const CIPHERTEXT: [u8; 64] = [7; 64];
 
     fn wallet(byte: u8) -> ShieldedKeypair {
         ShieldedKeypair::from_keypair(SigningKey::from_ed25519_bytes(&[byte; 32])).unwrap()
@@ -338,98 +441,116 @@ mod tests {
         owner.signing_pubkey().owner_proof_input_hash().unwrap()
     }
 
-    fn solana_owner(owner: &ShieldedKeypair) -> Address {
-        Address::new_from_array(owner.signing_pubkey().confidential_view_tag().unwrap())
-    }
-
-    fn entry(owner: &ShieldedKeypair) -> TrackingEntry {
+    /// The owner's proven entry holding `viewing`.
+    fn entry(owner: &ShieldedKeypair, viewing: X25519Pubkey) -> TrackingEntry {
         TrackingEntry {
             member: member(owner),
             nullifier_pk: owner.nullifier_key.pubkey().unwrap(),
-            ct_hash: [7; 32],
+            ct_hash: hash_bytes(&CIPHERTEXT).unwrap(),
             list_tag: domain::list_tag(&owner.list_salt(&RING).unwrap()).unwrap(),
+            viewing_hash: hash_bytes(&viewing.u()).unwrap(),
+            proven: true,
         }
     }
 
-    /// The owner's applied authorization under `registry`, holding `viewing`.
-    fn authorization(registry: Address, owner: Address, viewing: X25519Pubkey) -> Account {
-        let ix = EnrollIxData {
-            nullifier_pk: [0; 32],
-            list_tag: [0; 32],
-            viewing_u: viewing.u(),
-            eph_u: [0; 32],
-            ciphertext: [0; 64],
-        };
-        let mut held = FirstEnrollment {
-            registry,
-            owner,
-            ix: &ix,
-        }
-        .account();
-        held.applied = 1;
-        Account {
-            lamports: 1,
-            data: bytemuck::bytes_of(&held).to_vec(),
-            owner: STORAGE_PROGRAM_ID,
-            executable: false,
-            rent_epoch: 0,
-        }
-    }
-
-    fn view_path(path: &TrackingPath) -> RingRecordPathView {
+    fn view_path(path: &QuadPath) -> RingRecordPathView {
         RingRecordPathView {
             index: path.index,
             siblings: path.siblings.iter().map(|level| level.map(Hash)).collect(),
         }
     }
 
-    fn view_record(record: &TrackingRecord) -> RingTrackingRecordView {
-        RingTrackingRecordView {
-            member: Hash(record.member),
-            next: Hash(record.next),
-            nullifier_pk: Hash(record.nullifier_pk),
-            ct_hash: Hash(record.ct_hash),
-            list_tag: Hash(record.list_tag),
-            seal: None,
+    /// The registry account holding `root` as its newest.
+    fn registry_account(root: [u8; 32]) -> Account {
+        let mut registry = TrackingRegistry::new(&InitializeTrackingIxData {
+            ring_id: [1; 32],
+            auditor_pubkey: [2; 33],
+        });
+        registry.roots[0].hash = root;
+        Account {
+            lamports: 1,
+            data: bytemuck::bytes_of(&registry).to_vec(),
+            owner: STORAGE_PROGRAM_ID,
+            executable: false,
+            rent_epoch: 0,
         }
     }
 
-    fn view(tree: &TrackingTree, member: &[u8; 32]) -> RingTrackingOpening {
-        match tree.opening(member).unwrap() {
-            RecordOpening::Present { record, path } => RingTrackingOpening {
-                present: true,
-                record: view_record(&record),
-                path: view_path(&path),
-            },
-            RecordOpening::Absent { low, path } => RingTrackingOpening {
-                present: false,
-                record: view_record(&low),
-                path: view_path(&path),
-            },
-        }
-    }
-
-    fn tree(entries: &[TrackingEntry]) -> TrackingTree {
-        TrackingTree::new()
-            .unwrap()
-            .apply([0; 32], entries)
-            .unwrap()
-            .tree
-    }
-
-    /// One opening per owner and the authorization the chain holds, `None` for an absent account.
+    /// The tree an indexer opens and the viewing key it serves beside each leaf.
     struct Served {
         tree: TrackingTree,
-        account: Option<Account>,
+        /// Member to the owner and viewing key the seal names.
+        keys: HashMap<[u8; 32], (Address, [u8; 32])>,
+        /// Openings answered per member.
         openings: usize,
+        registry: Option<Account>,
+        requests: std::sync::Mutex<Vec<usize>>,
     }
 
     impl Served {
-        fn new(entries: &[TrackingEntry], account: Option<Account>) -> Self {
+        fn new(enrolled: &[(&ShieldedKeypair, X25519Pubkey)]) -> Self {
+            let entries: Vec<_> = enrolled
+                .iter()
+                .map(|(owner, viewing)| entry(owner, *viewing))
+                .collect();
+            let keys = enrolled
+                .iter()
+                .map(|(owner, viewing)| {
+                    (
+                        member(owner),
+                        (Address::new_from_array(solana_owner(owner)), viewing.u()),
+                    )
+                })
+                .collect();
+            Self::of(&entries, keys)
+        }
+
+        fn of(entries: &[TrackingEntry], keys: HashMap<[u8; 32], (Address, [u8; 32])>) -> Self {
+            let tree = TrackingTree::new()
+                .unwrap()
+                .apply([0; 32], entries)
+                .unwrap()
+                .tree;
+            let registry = Some(registry_account(tree.root().unwrap()));
             Self {
-                tree: tree(entries),
-                account,
+                tree,
+                keys,
                 openings: 1,
+                registry,
+                requests: std::sync::Mutex::default(),
+            }
+        }
+
+        fn view_record(&self, record: &TrackingRecord) -> RingTrackingRecordView {
+            let seal =
+                self.keys
+                    .get(&record.member)
+                    .map(|(owner, viewing_u)| RingTrackingSealView {
+                        owner: (*owner).into(),
+                        viewing_u: Base64String(viewing_u.to_vec()),
+                        eph_pk: Base64String(ViewingKey::new().pubkey().as_bytes().to_vec()),
+                        ciphertext: Base64String(CIPHERTEXT.to_vec()),
+                    });
+            RingTrackingRecordView {
+                member: Hash(record.member),
+                next: Hash(record.next),
+                nullifier_pk: Hash(record.nullifier_pk),
+                ct_hash: Hash(record.ct_hash),
+                list_tag: Hash(record.list_tag),
+                viewing_hash: Hash(record.viewing_hash),
+                seal,
+            }
+        }
+
+        fn view(&self, member: &[u8; 32]) -> RingTrackingOpening {
+            let (present, record, path) = match self.tree.opening(member).unwrap() {
+                RecordOpening::Present { record, path } => (true, record, path),
+                RecordOpening::Absent { low, path } => (false, low, path),
+            };
+            RingTrackingOpening {
+                present,
+                record: self.view_record(&record),
+                path: view_path(&path),
             }
         }
 
@@ -442,6 +563,18 @@ mod tests {
             .resolve(self)
             .await
         }
+
+        async fn keys(
+            &self,
+            owners: &[[u8; 32]],
+        ) -> Result<HashMap<[u8; 32], [u8; 32]>, ResolveError> {
+            RegisteredKeys {
+                registry: REGISTRY,
+                owners,
+            }
+            .read(self, self)
+            .await
+        }
     }
 
     #[async_trait]
@@ -450,12 +583,11 @@ mod tests {
             &self,
             request: GetTrackingOpeningsRequest,
         ) -> Result<GetTrackingOpeningsResponse, RingIndexerError> {
+            // A lying indexer serves its own tree under any requested root.
             let root = self.tree.root().unwrap();
             assert_eq!(request.registry, REGISTRY.into());
-            assert_eq!(request.expected_root, Hash(root));
-            let [member] = request.members.as_slice() else {
-                panic!("one member");
-            };
+            assert!(request.members.len() as u64 <= MAX_RING_MEMBER_PAGE_LIMIT);
+            self.requests.lock().unwrap().push(request.members.len());
             Ok(GetTrackingOpeningsResponse {
                 context: Context {
                     slot: 1,
@@ -466,36 +598,37 @@ mod tests {
                     revision: 1,
                     next_index: 2,
                 },
-                openings: vec![view(&self.tree, &member.0); self.openings],
+                openings: request
+                    .members
+                    .iter()
+                    .flat_map(|member| vec![self.view(&member.0); self.openings])
+                    .collect(),
             })
         }
     }
 
     #[async_trait]
     impl AsyncRpc for Served {
-        async fn get_account(&self, _address: Address) -> Result<Option<Account>, ClientError> {
-            Ok(self.account.clone())
-        }
-
-        async fn get_multiple_accounts(
-            &self,
-            addresses: Vec<Address>,
-        ) -> Result<Vec<Option<Account>>, ClientError> {
-            Ok(vec![self.account.clone(); addresses.len()])
+        async fn get_account(&self, address: Address) -> Result<Option<Account>, ClientError> {
+            assert_eq!(address, REGISTRY);
+            Ok(self.registry.clone())
         }
     }
 
+    fn solana_owner(owner: &ShieldedKeypair) -> [u8; 32] {
+        owner.signing_pubkey().confidential_view_tag().unwrap()
+    }
+
     #[tokio::test]
-    async fn an_applied_enrollment_resolves_to_the_authorization_viewing_key() {
+    async fn an_applied_enrollment_resolves_to_the_leaf_viewing_key() {
         let owner = wallet(3);
         let rotated = ViewingKey::new().pubkey();
-        let leaf = entry(&owner);
-        let served = Served::new(
-            &[leaf],
-            Some(authorization(REGISTRY, solana_owner(&owner), rotated)),
-        );
+        let leaf = entry(&owner, rotated);
         assert_eq!(
-            served.resolve(&enrolled(&owner)).await.unwrap(),
+            Served::new(&[(&owner, rotated)])
+                .resolve(&enrolled(&owner))
+                .await
+                .unwrap(),
             ResolvedRecipient {
                 nullifier_pk: leaf.nullifier_pk,
                 viewing_pubkey: rotated,
@@ -504,179 +637,23 @@ mod tests {
         );
     }
 
+    /// The leaf binds the hash alone, a served key of another hash or a missing one never reaches a sender.
     #[tokio::test]
-    async fn an_authorization_off_the_program_registry_or_owner_is_refused() {
+    async fn a_served_viewing_key_off_the_leaf_hash_or_missing_is_refused() {
         let owner = wallet(3);
-        let viewing = ViewingKey::new().pubkey();
-        let address = enrolled(&owner);
-        let refusal = |account: Option<Account>| async {
-            Served::new(&[entry(&owner)], account)
-                .resolve(&address)
-                .await
-                .unwrap_err()
-        };
+        let mut served = Served::new(&[(&owner, ViewingKey::new().pubkey())]);
+        let solana = Address::new_from_array(solana_owner(&owner));
+        served
+            .keys
+            .insert(member(&owner), (solana, ViewingKey::new().pubkey().u()));
         assert!(matches!(
-            refusal(None).await,
-            ResolveError::AuthorizationMissing
+            served.resolve(&enrolled(&owner)).await,
+            Err(ResolveError::ViewingKeyMismatch)
         ));
-        let mut foreign = authorization(REGISTRY, solana_owner(&owner), viewing);
-        foreign.owner = Address::new_from_array([6; 32]);
+        served.keys.clear();
         assert!(matches!(
-            refusal(Some(foreign)).await,
-            ResolveError::AuthorizationProgramOwner
-        ));
-        let other_registry = authorization(RING, solana_owner(&owner), viewing);
-        assert!(matches!(
-            refusal(Some(other_registry)).await,
-            ResolveError::AuthorizationRegistry
-        ));
-        let other_owner = authorization(REGISTRY, solana_owner(&wallet(4)), viewing);
-        assert!(matches!(
-            refusal(Some(other_owner)).await,
-            ResolveError::AuthorizationOwner
-        ));
-    }
-
-    /// An unapplied authorization already names the key, a missing one leaves the owner unresolved.
-    #[tokio::test]
-    async fn registered_keys_read_an_authorization_and_refuse_a_foreign_one() {
-        let owner = wallet(3);
-        let owner_key = solana_owner(&owner).to_bytes();
-        let read = |account: Option<Account>| async move {
-            RegisteredKeys {
-                registry: REGISTRY,
-                owners: &[owner_key],
-            }
-            .read(&Served::new(&[], account))
-            .await
-        };
-        let mut held = authorization(REGISTRY, solana_owner(&owner), ViewingKey::new().pubkey());
-        let mut stored = *TrackingAuthorization::from_data(&held.data).unwrap();
-        stored.nullifier_pk = [8; 32];
-        stored.applied = 0;
-        held.data = bytemuck::bytes_of(&stored).to_vec();
-        assert_eq!(
-            read(Some(held)).await.unwrap(),
-            HashMap::from([(owner_key, [8; 32])])
-        );
-        assert!(read(None).await.unwrap().is_empty());
-        let viewing = ViewingKey::new().pubkey();
-        let other_registry = authorization(RING, solana_owner(&owner), viewing);
-        assert!(matches!(
-            read(Some(other_registry)).await,
-            Err(ResolveError::AuthorizationRegistry)
-        ));
-        let other_owner = authorization(REGISTRY, solana_owner(&wallet(4)), viewing);
-        assert!(matches!(
-            read(Some(other_owner)).await,
-            Err(ResolveError::AuthorizationOwner)
-        ));
-        let mut foreign = authorization(REGISTRY, solana_owner(&owner), viewing);
-        foreign.owner = Address::new_from_array([6; 32]);
-        assert!(matches!(
-            read(Some(foreign)).await,
-            Err(ResolveError::AuthorizationProgramOwner)
-        ));
-    }
-
-    /// Each authorization at its own PDA, every request capped as a Solana RPC caps it.
-    struct ManyOwners {
-        accounts: HashMap<Address, Account>,
-        requests: std::sync::Mutex<Vec<usize>>,
-    }
-
-    #[async_trait]
-    impl AsyncRpc for ManyOwners {
-        async fn get_multiple_accounts(
-            &self,
-            addresses: Vec<Address>,
-        ) -> Result<Vec<Option<Account>>, ClientError> {
-            assert!(addresses.len() <= MAX_MULTIPLE_ACCOUNTS);
-            self.requests.lock().unwrap().push(addresses.len());
-            Ok(addresses
-                .iter()
-                .map(|address| self.accounts.get(address).cloned())
-                .collect())
-        }
-    }
-
-    /// Owner `i` at position `i` of every chunk reads its own account, every third holds none.
-    #[tokio::test]
-    async fn registered_keys_read_more_owners_than_one_request_takes_each_beside_its_own() {
-        let owners: Vec<[u8; 32]> = (0..2 * MAX_MULTIPLE_ACCOUNTS + 5)
-            .map(|index| {
-                let mut owner = [0; 32];
-                owner[..8].copy_from_slice(&(index as u64).to_le_bytes());
-                owner
-            })
-            .collect();
-        let key_of = |owner: &[u8; 32]| {
-            let mut key = *owner;
-            key[31] = 0x5a;
-            key
-        };
-        let viewing = ViewingKey::new().pubkey();
-        let accounts = owners
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| index % 3 != 0)
-            .map(|(_, owner)| {
-                let owner = Address::new_from_array(*owner);
-                let mut held = authorization(REGISTRY, owner, viewing);
-                let mut stored = *TrackingAuthorization::from_data(&held.data).unwrap();
-                stored.nullifier_pk = key_of(&owner.to_bytes());
-                held.data = bytemuck::bytes_of(&stored).to_vec();
-                (
-                    TrackingAuthorization::find_address(&REGISTRY, &owner).0,
-                    held,
-                )
-            })
-            .collect();
-        let rpc = ManyOwners {
-            accounts,
-            requests: std::sync::Mutex::new(Vec::new()),
-        };
-        let keys = RegisteredKeys {
-            registry: REGISTRY,
-            owners: &owners,
-        }
-        .read(&rpc)
-        .await
-        .unwrap();
-        let expected: HashMap<[u8; 32], [u8; 32]> = owners
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| index % 3 != 0)
-            .map(|(_, owner)| (*owner, key_of(owner)))
-            .collect();
-        assert_eq!(keys, expected);
-        assert_eq!(
-            *rpc.requests.lock().unwrap(),
-            [MAX_MULTIPLE_ACCOUNTS, MAX_MULTIPLE_ACCOUNTS, 5]
-        );
-    }
-
-    #[tokio::test]
-    async fn an_answer_of_another_length_is_refused() {
-        let owner = solana_owner(&wallet(3)).to_bytes();
-        struct Short;
-        #[async_trait]
-        impl AsyncRpc for Short {
-            async fn get_multiple_accounts(
-                &self,
-                _addresses: Vec<Address>,
-            ) -> Result<Vec<Option<Account>>, ClientError> {
-                Ok(Vec::new())
-            }
-        }
-        assert!(matches!(
-            RegisteredKeys {
-                registry: REGISTRY,
-                owners: &[owner],
-            }
-            .read(&Short)
-            .await,
-            Err(ResolveError::AuthorizationCount { got: 0, want: 1 })
+            served.resolve(&enrolled(&owner)).await,
+            Err(ResolveError::MalformedOpening)
         ));
     }
 
@@ -686,7 +663,9 @@ mod tests {
         let mut address = enrolled(&owner);
         address.list_salt = [9; 32];
         assert!(matches!(
-            Served::new(&[entry(&owner)], None).resolve(&address).await,
+            Served::new(&[(&owner, ViewingKey::new().pubkey())])
+                .resolve(&address)
+                .await,
             Err(ResolveError::ListTagMismatch)
         ));
     }
@@ -694,10 +673,16 @@ mod tests {
     #[tokio::test]
     async fn a_leaf_key_off_the_address_key_is_refused() {
         let owner = wallet(3);
-        let mut leaf = entry(&owner);
+        let viewing = ViewingKey::new().pubkey();
+        let mut leaf = entry(&owner, viewing);
         leaf.nullifier_pk = [8; 32];
+        let solana = Address::new_from_array(solana_owner(&owner));
+        let served = Served::of(
+            &[leaf],
+            HashMap::from([(leaf.member, (solana, viewing.u()))]),
+        );
         assert!(matches!(
-            Served::new(&[leaf], None).resolve(&enrolled(&owner)).await,
+            served.resolve(&enrolled(&owner)).await,
             Err(ResolveError::NullifierKeyMismatch)
         ));
     }
@@ -708,7 +693,7 @@ mod tests {
         let owner = wallet(3);
         let address = enrolled(&owner);
         assert_eq!(
-            Served::new(&[entry(&wallet(4))], None)
+            Served::new(&[(&wallet(4), ViewingKey::new().pubkey())])
                 .resolve(&address)
                 .await
                 .unwrap(),
@@ -722,13 +707,12 @@ mod tests {
 
     /// Payment validation refuses an enrolled recipient under the zero key.
     #[tokio::test]
-    async fn a_zero_key_address_keeps_the_zero_key_and_an_enrolled_owner_takes_its_current_viewing_key(
+    async fn a_zero_key_address_keeps_the_zero_key_and_an_enrolled_owner_takes_the_leaf_viewing_key(
     ) {
         let owner = wallet(3);
         let address = zero_key(&owner);
-        let unenrolled = Served::new(&[], None).resolve(&address).await.unwrap();
         assert_eq!(
-            unenrolled,
+            Served::new(&[]).resolve(&address).await.unwrap(),
             ResolvedRecipient {
                 nullifier_pk: ZERO_NULLIFIER_PUBKEY,
                 viewing_pubkey: address.recipient.viewing_pubkey,
@@ -736,46 +720,40 @@ mod tests {
             }
         );
         let rotated = ViewingKey::new().pubkey();
-        let enrolled = Served::new(
-            &[entry(&owner)],
-            Some(authorization(REGISTRY, solana_owner(&owner), rotated)),
-        );
         assert_eq!(
-            enrolled.resolve(&address).await.unwrap(),
+            Served::new(&[(&owner, rotated)])
+                .resolve(&address)
+                .await
+                .unwrap(),
             ResolvedRecipient {
                 nullifier_pk: ZERO_NULLIFIER_PUBKEY,
                 viewing_pubkey: rotated,
                 list_tag: Some([0; 32]),
             }
         );
-        assert!(matches!(
-            Served::new(&[entry(&owner)], None).resolve(&address).await,
-            Err(ResolveError::AuthorizationMissing)
-        ));
     }
 
     #[test]
     fn an_opening_under_another_root_and_a_forged_absence_are_refused() {
         let owner = wallet(3);
         let member = member(&owner);
-        let enrolled_tree = tree(&[entry(&owner)]);
-        let address = enrolled(&owner);
-        let check = |root, opening: &RingTrackingOpening| {
-            RecipientResolver {
-                address: &address,
-                registry: REGISTRY,
-                root,
+        let enrolled_tree = Served::new(&[(&owner, ViewingKey::new().pubkey())]);
+        let check = |root: [u8; 32], view: &RingTrackingOpening| {
+            TrackingLeafCheck {
+                view,
+                root: &root,
+                member: &member,
             }
-            .verify(&member, opening)
+            .verify()
         };
-        let honest = view(&enrolled_tree, &member);
+        let honest = enrolled_tree.view(&member);
         assert!(matches!(
             check([1; 32], &honest),
             Err(ResolveError::Opening(RecordTreeError::RootMismatch))
         ));
-        let forged = view(&TrackingTree::new().unwrap(), &member);
+        let forged = Served::new(&[]).view(&member);
         assert!(matches!(
-            check(enrolled_tree.root().unwrap(), &forged),
+            check(enrolled_tree.tree.root().unwrap(), &forged),
             Err(ResolveError::Opening(RecordTreeError::RootMismatch))
         ));
     }
@@ -783,11 +761,57 @@ mod tests {
     #[tokio::test]
     async fn an_extra_opening_is_refused() {
         let owner = wallet(3);
-        let mut served = Served::new(&[entry(&owner)], None);
+        let mut served = Served::new(&[(&owner, ViewingKey::new().pubkey())]);
         served.openings = 2;
         assert!(matches!(
             served.resolve(&enrolled(&owner)).await,
-            Err(ResolveError::OpeningCount(2))
+            Err(ResolveError::OpeningCount { got: 2, want: 1 })
         ));
+        assert!(matches!(
+            served.keys(&[solana_owner(&owner)]).await,
+            Err(ResolveError::OpeningCount { got: 2, want: 1 })
+        ));
+    }
+
+    /// An owner with no leaf stays out of the keys, its outputs remain unresolved.
+    #[tokio::test]
+    async fn registered_keys_take_present_leaves_under_the_registry_root() {
+        let owner = wallet(3);
+        let absent = wallet(4);
+        let served = Served::new(&[(&owner, ViewingKey::new().pubkey())]);
+        assert_eq!(
+            served
+                .keys(&[solana_owner(&owner), solana_owner(&absent)])
+                .await
+                .unwrap(),
+            HashMap::from([(solana_owner(&owner), owner.nullifier_key.pubkey().unwrap())])
+        );
+        let mut stale = Served::new(&[(&owner, ViewingKey::new().pubkey())]);
+        stale.registry = Some(registry_account([1; 32]));
+        assert!(matches!(
+            stale.keys(&[solana_owner(&owner)]).await,
+            Err(ResolveError::Opening(RecordTreeError::RootMismatch))
+        ));
+        stale.registry = None;
+        assert!(matches!(
+            stale.keys(&[solana_owner(&owner)]).await,
+            Err(ResolveError::TrackingRegistryMissing)
+        ));
+        assert!(stale.keys(&[]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn registered_keys_read_more_owners_than_one_page_takes() {
+        let owners: Vec<[u8; 32]> = (0..2 * MAX_RING_MEMBER_PAGE_LIMIT + 5)
+            .map(|index| {
+                let mut owner = [0; 32];
+                owner[..8].copy_from_slice(&index.to_le_bytes());
+                owner
+            })
+            .collect();
+        let served = Served::new(&[]);
+        assert!(served.keys(&owners).await.unwrap().is_empty());
+        let page = MAX_RING_MEMBER_PAGE_LIMIT as usize;
+        assert_eq!(*served.requests.lock().unwrap(), [page, page, 5]);
     }
 }

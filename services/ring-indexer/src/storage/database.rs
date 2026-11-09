@@ -7,7 +7,6 @@ use std::{
 use anyhow::{Context, Result};
 use bytemuck::Pod;
 use custom_ring_interface::{
-    state::ROOT_HISTORY,
     storage::{Revision, Root, StorageError, StorageRegistry},
     tracking::TrackingRegistry,
 };
@@ -25,7 +24,7 @@ use crate::{block::BlockMetadata, indexer::Quarantine};
 
 mod tracking;
 
-pub(crate) use tracking::Enrollment;
+pub(crate) use tracking::{LeafStamp, QueueBounds, QueuedEnrollment};
 
 /// A read takes each row's newest version at or below `version`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,7 +120,8 @@ impl StoredLeaf for MemberRecord {
 
 impl StoredLeaf for TrackingRecord {
     const TABLE: &'static str = "tracking_records";
-    const COLUMNS: &'static str = "member, next_member, nullifier_pk, ct_hash, list_tag";
+    const COLUMNS: &'static str =
+        "member, next_member, nullifier_pk, ct_hash, list_tag, viewing_hash";
 
     fn from_row(row: &QueryResult) -> Result<Self> {
         Ok(Self {
@@ -130,6 +130,7 @@ impl StoredLeaf for TrackingRecord {
             nullifier_pk: field(row, "nullifier_pk")?,
             ct_hash: field(row, "ct_hash")?,
             list_tag: field(row, "list_tag")?,
+            viewing_hash: field(row, "viewing_hash")?,
         })
     }
 
@@ -140,6 +141,7 @@ impl StoredLeaf for TrackingRecord {
             bytes(&self.nullifier_pk),
             bytes(&self.ct_hash),
             bytes(&self.list_tag),
+            bytes(&self.viewing_hash),
         ])
     }
 }
@@ -150,7 +152,8 @@ pub(crate) trait ProjectedAccount: Pod + Eq + Send + Sync {
     const STATES: &'static str;
 
     fn from_image(data: &[u8]) -> Option<&Self>;
-    fn roots(&self) -> &[Root; ROOT_HISTORY];
+    /// Newest first.
+    fn roots(&self) -> &[Root];
     fn root_at(&self, revision: Revision, slot: u64) -> Result<[u8; 32], StorageError>;
     fn leaves(&self) -> u64;
 }
@@ -163,7 +166,7 @@ impl ProjectedAccount for StorageRegistry {
         Self::from_data(data)
     }
 
-    fn roots(&self) -> &[Root; ROOT_HISTORY] {
+    fn roots(&self) -> &[Root] {
         &self.roots
     }
 
@@ -172,7 +175,7 @@ impl ProjectedAccount for StorageRegistry {
     }
 
     fn leaves(&self) -> u64 {
-        u64::from(self.next_index())
+        self.next_index()
     }
 }
 
@@ -184,7 +187,7 @@ impl ProjectedAccount for TrackingRegistry {
         Self::from_data(data)
     }
 
-    fn roots(&self) -> &[Root; ROOT_HISTORY] {
+    fn roots(&self) -> &[Root] {
         &self.roots
     }
 
@@ -764,7 +767,10 @@ mod tests {
         let db = database().await;
         let store = RegistryStore::<_, MemberRecord>::new(&db, [1; 32]);
         let keys = [
-            NodePosition::root(0),
+            NodePosition {
+                level: 0,
+                position: 0,
+            },
             NodePosition {
                 level: 0,
                 position: 1,
@@ -901,7 +907,13 @@ mod tests {
             .await
             .unwrap();
         assert!(store
-            .nodes(&BTreeSet::from([NodePosition::root(0)]), 1)
+            .nodes(
+                &BTreeSet::from([NodePosition {
+                    level: 0,
+                    position: 0
+                }]),
+                1
+            )
             .await
             .is_err());
     }

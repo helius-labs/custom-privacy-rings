@@ -34,7 +34,7 @@ use zolana_ring_indexer::{
         GetStorageRecordPool,
     },
     tracking::method::{
-        GetPendingEnrollments, GetTrackingApplyProofInputs, GetTrackingOpenings,
+        GetEnrollmentQueue, GetTrackingApplyProofInputs, GetTrackingOpenings,
         GetTrackingRecordPool, GetTrackingRecords,
     },
 };
@@ -54,7 +54,7 @@ pub const RING_METHODS: [&str; 9] = [
     GetTrackingOpenings::NAME,
     GetTrackingRecords::NAME,
     GetTrackingRecordPool::NAME,
-    GetPendingEnrollments::NAME,
+    GetEnrollmentQueue::NAME,
     GetTrackingApplyProofInputs::NAME,
 ];
 
@@ -157,7 +157,7 @@ fn ring_methods(lookups: Lookups) -> Result<RpcModule<Lookups>> {
         GetTrackingOpenings => api::tracking_openings,
         GetTrackingRecords => api::tracking_records,
         GetTrackingRecordPool => api::tracking_record_pool,
-        GetPendingEnrollments => api::pending_enrollments,
+        GetEnrollmentQueue => api::enrollment_queue,
         GetTrackingApplyProofInputs => api::tracking_apply_proof_inputs,
     );
     Ok(module)

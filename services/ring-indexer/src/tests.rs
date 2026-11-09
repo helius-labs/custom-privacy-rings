@@ -5,7 +5,7 @@ use std::sync::{
 
 use custom_ring_interface::{
     storage::{RegistryId, Revision, StorageRegistry},
-    storage_instruction::{tag, InitializeIxData, InitializeTrackingIxData},
+    storage_instruction::{tag, EnrollIxData, InitializeIxData, InitializeTrackingIxData},
     tracking::TrackingRegistry,
     MEMBER_REGISTRY_EMPTY_ROOT,
 };
@@ -24,8 +24,8 @@ use crate::{
     migration::Migrator,
     rpc::SolanaRpc,
     storage::{
-        self, Enrollment, RingCursor, StorageRoot, StorageState, StorageStore, TrackingState,
-        TrackingStore,
+        self, QueueBounds, QueuedEnrollment, RingCursor, StorageRoot, StorageState, StorageStore,
+        TrackingState, TrackingStore,
     },
     storage_registry::StorageCall,
     tracking_registry::TrackingCall,
@@ -98,7 +98,7 @@ fn openings_request(state: &StorageState, root: [u8; 32]) -> GetStorageMemberOpe
 #[tokio::test]
 async fn member_page_reports_a_missing_leaf_instead_of_skipping_it() {
     let (db, mut state, mut cursor) = fixture().await;
-    state.account.next_index = 2u32.to_le_bytes();
+    state.account.next_index = 2u64.to_le_bytes();
     state.account.roots[0].revision = Revision::from(1);
     let store = StorageStore::new(&db, state.registry);
     store.save_state(&state).await.unwrap();
@@ -316,22 +316,24 @@ async fn postgres_migrates_both_ways_and_serves_the_ring_queries() {
     assert!(tracking.state().await.unwrap().is_some());
     let low = tracking.tree().low_record(&field(4), 0).await.unwrap();
     assert_eq!(low.index, 0);
-    let enrollment = Enrollment {
+    let queued = QueuedEnrollment {
+        sequence: 0,
         owner: [1; 32],
-        authorization: [2; 32],
-        member: field(4),
-        nullifier_pk: field(5),
-        ct_hash: field(6),
-        list_tag: field(7),
-        eph_u: [8; 32],
-        ciphertext: [9; 64],
-        applied: false,
+        proven: true,
+        ix: EnrollIxData {
+            nullifier_pk: field(5),
+            list_tag: field(7),
+            viewing_u: field(3),
+            eph_u: [8; 32],
+            ciphertext: [9; 64],
+        },
     };
-    tracking.save_first(&enrollment, 5).await.unwrap();
-    assert_eq!(tracking.pending(None, 8).await.unwrap(), [enrollment]);
-    tracking.mark_applied(&[1; 32], 6).await.unwrap();
-    assert!(tracking.pending(None, 8).await.unwrap().is_empty());
-    let applied = tracking.enrollment_at(&[2; 32]).await.unwrap().unwrap();
-    assert!(applied.applied);
+    tracking.enqueue(&queued, 5).await.unwrap();
+    assert_eq!(tracking.queued(0, 8).await.unwrap(), [queued]);
+    tracking.mark_applied(0, 1, 6).await.unwrap();
+    assert_eq!(
+        tracking.queue_bounds().await.unwrap(),
+        QueueBounds { head: 1, tail: 1 }
+    );
     Migrator::reset(&db).await.unwrap();
 }

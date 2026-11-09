@@ -138,6 +138,7 @@ impl Initialize<'_> {
             AccountMeta::new(ring.ring_auth_pda(), false),
             AccountMeta::new_readonly(pda::shielded_pool_program_id(), false),
             AccountMeta::new(ring.tracking_registry()?, false),
+            AccountMeta::new(ring.enrollment_queue()?, false),
             AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),
         ]);
         let policy = match self.policy {

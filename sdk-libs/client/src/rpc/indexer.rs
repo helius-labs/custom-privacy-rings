@@ -15,7 +15,7 @@ use zolana_ring_indexer::{
         RingRpcError,
     },
     tracking::method::{
-        GetPendingEnrollments, GetTrackingApplyProofInputs, GetTrackingOpenings,
+        GetEnrollmentQueue, GetTrackingApplyProofInputs, GetTrackingOpenings,
         GetTrackingRecordPool, GetTrackingRecords,
     },
 };
@@ -118,7 +118,7 @@ ring_indexer! {
     get_tracking_openings => GetTrackingOpenings,
     get_tracking_records => GetTrackingRecords,
     get_tracking_record_pool => GetTrackingRecordPool,
-    get_pending_enrollments => GetPendingEnrollments,
+    get_enrollment_queue => GetEnrollmentQueue,
     get_tracking_apply_proof_inputs => GetTrackingApplyProofInputs,
 }
 

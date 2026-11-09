@@ -11,14 +11,15 @@ use custom_ring_cli::{wait_for, Probe, Zolana};
 use custom_ring_interface::{
     mint_policy_write,
     storage::{Revision, StorageRegistry},
-    storage_instruction::StorageUpdateIxData,
-    tracking::{TrackingAuthorization, TrackingRegistry},
+    storage_instruction::{EnrollIxData, StorageUpdateIxData},
+    tracking::TrackingRegistry,
     RecordWriteData, RingPolicy, WriteRecordsIxData,
 };
 use custom_ring_sdk::{
     CustomRing, CustomRingTransfer, CustomRingTransferInput, DepositAsset, DepositRecipient,
-    Enroll, EnrollPending, InitializeStorage, PrivateStorageWrite, ProvenRingTransfer, RingDeposit,
-    RingDepositReceipt, RingError, SaltedOwnerWrite, StorageApplyProof, UpdateStorage,
+    Enroll, EnrollPending, EnrollmentRead, InitializeStorage, PrivateStorageWrite,
+    ProvenRingTransfer, RingDeposit, RingDepositReceipt, RingError, SaltedOwnerWrite,
+    StorageApplyProof, UpdateStorage,
 };
 use solana_address::Address;
 use solana_keypair::Keypair;
@@ -30,11 +31,11 @@ use spr_test_utils::test_validator_asserts::wait_for_merkle_proof;
 use spr_transaction::{instructions::transact::ConfidentialTransaction, Utxo};
 use zolana_ring_client::{
     records::{owner_record_key, storage_apply_proof_inputs},
-    RingIndexer,
+    RegisteredKeys, RingIndexer, TrackingLeaf,
 };
 use zolana_ring_indexer::{
     rpc::{GetStorageApplyProofInputsRequest, StorageWriteView},
-    tracking::GetPendingEnrollmentsRequest,
+    tracking::GetEnrollmentQueueRequest,
 };
 use zolana_ring_keys::ListSaltHolder;
 use zolana_ring_policy::{
@@ -324,23 +325,39 @@ impl RegistryWrite<'_> {
     }
 }
 
+/// The owner's fields once the queue applies, its queued part unverified.
 pub fn owner_enrollment(
     env: &TestEnv,
     ring: CustomRing,
     owner: Address,
-) -> Result<Option<TrackingAuthorization>> {
+) -> Result<Option<EnrollIxData>> {
     let tracking = env
         .run(ring.require_policy(env.client.as_async()))?
         .tracking;
-    let (authorization, _) = TrackingAuthorization::find_address(&tracking, &owner);
-    env.client
-        .rpc()
-        .get_account(authorization)?
-        .map(|account| {
-            TrackingAuthorization::decode(&account.owner, &account.data)
-                .ok_or_else(|| anyhow!("{authorization} holds no tracking authorization"))
-        })
-        .transpose()
+    Ok(env.run(
+        EnrollmentRead {
+            tracking_registry: tracking,
+            owner,
+        }
+        .read(env.client.as_async()),
+    )?)
+}
+
+/// The owner's leaf under the registry's newest root, its key and seal checked.
+pub fn owner_leaf(env: &TestEnv, ring: CustomRing, owner: Address) -> Result<Option<TrackingLeaf>> {
+    let chain = env.client.as_async();
+    let tracking = env.run(ring.require_policy(chain))?.tracking;
+    let owner = owner.to_bytes();
+    let mut leaves = env.run(async {
+        let leaves = RegisteredKeys {
+            registry: tracking,
+            owners: &[owner],
+        }
+        .leaves(chain, chain)
+        .await?;
+        Ok(leaves)
+    })?;
+    Ok(leaves.remove(&owner))
 }
 
 /// The indexer serves the rows on return.
@@ -370,11 +387,10 @@ impl ApplyOwnerEnrollments<'_> {
         wait_for("the applied enrollments", || {
             let mut applied = true;
             for owner in self.owners {
-                applied &= owner_enrollment(env, self.ring, *owner)?
-                    .is_some_and(|enrollment| !enrollment.is_pending());
+                applied &= owner_leaf(env, self.ring, *owner)?.is_some();
             }
             if applied {
-                return Ok(match pending_enrollments(env, registry, 1)? {
+                return Ok(match queued_enrollments(env, registry)? {
                     Probe::Ready(0) => Probe::Ready(None),
                     Probe::Ready(_) | Probe::NotYet => Probe::NotYet,
                     Probe::Retry(error) => Probe::Retry(error),
@@ -396,19 +412,19 @@ impl ApplyOwnerEnrollments<'_> {
     }
 }
 
-/// A lagging ring indexer answers a later poll.
-fn pending_enrollments(env: &TestEnv, registry: Address, limit: u64) -> Result<Probe<usize>> {
+/// Entries no apply consumed, a lagging ring indexer answers a later poll.
+fn queued_enrollments(env: &TestEnv, registry: Address) -> Result<Probe<u64>> {
     let read = env
         .client
         .indexer()
-        .get_pending_enrollments(GetPendingEnrollmentsRequest {
+        .get_enrollment_queue(GetEnrollmentQueueRequest {
             registry: registry.into(),
             after: None,
-            limit,
+            limit: 1,
         })
         .map_err(RingError::from);
     match read {
-        Ok(pending) => Ok(Probe::Ready(pending.enrollments.len())),
+        Ok(queue) => Ok(Probe::Ready(queue.tail - queue.head)),
         Err(error) if error.is_projection_lag() => Ok(Probe::Retry(error.into())),
         Err(error) => Err(error.into()),
     }
@@ -459,17 +475,17 @@ impl EnrollOwners<'_> {
         .send()
     }
 
-    /// One apply of the whole batch, a partial read of the pending queue would select a narrower key.
+    /// One apply of the whole batch, a partial read of the queue would select a narrower key.
     pub fn send_in_one_batch(self) -> Result<()> {
         let env = self.env;
         self.enroll()?;
         let registry = env
             .run(self.ring.require_policy(env.client.as_async()))?
             .tracking;
-        wait_for("the whole pending batch", || {
-            let limit = u64::try_from(self.owners.len())?;
-            Ok(match pending_enrollments(env, registry, limit)? {
-                Probe::Ready(count) if count == self.owners.len() => Probe::Ready(()),
+        wait_for("the whole queued batch", || {
+            let owners = u64::try_from(self.owners.len())?;
+            Ok(match queued_enrollments(env, registry)? {
+                Probe::Ready(count) if count == owners => Probe::Ready(()),
                 Probe::Ready(_) | Probe::NotYet => Probe::NotYet,
                 Probe::Retry(error) => Probe::Retry(error),
             })
@@ -488,7 +504,7 @@ impl EnrollOwners<'_> {
         let payer = env.payer.pubkey();
         for owner in self.owners {
             let list_salt = owner.list_salt(&self.ring.program_id())?;
-            // A present row takes a rotation with no proof, `Enroll::prove` reads it.
+            // A held enrollment takes a rotation with no proof, `Enroll::prove` reads it.
             let instruction = wait_for("the ring indexer to serve the enrollment", || {
                 let proven = env.run(
                     Enroll {
@@ -632,7 +648,7 @@ impl StorageRecords<'_> {
                 .ok_or_else(|| anyhow::anyhow!("the ring's records are not a storage registry"))?;
             Ok(
                 match inputs.old_root == state.newest().hash
-                    && inputs.old_next_index == u64::from(state.next_index())
+                    && inputs.old_next_index == state.next_index()
                 {
                     true => Probe::Ready((response, inputs, state)),
                     false => Probe::NotYet,

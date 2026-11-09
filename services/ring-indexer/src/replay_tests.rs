@@ -170,7 +170,7 @@ fn apply_data(inputs: &ApplyProofInputs) -> ApplyRecordsIxData {
     ApplyRecordsIxData {
         proof: Zeroable::zeroed(),
         new_root: inputs.new_root,
-        new_next_index: u32::try_from(inputs.new_next_index).unwrap().to_le_bytes(),
+        new_next_index: inputs.new_next_index.to_le_bytes(),
         restrictive: u8::from(inputs.writes.iter().any(RecordWriteProofInput::restricts)),
     }
 }

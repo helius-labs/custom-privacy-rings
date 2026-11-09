@@ -88,7 +88,7 @@ fn private_update(members: &[u8]) -> BlockInfo {
     let apply = ApplyRecordsIxData {
         proof: bytemuck::Zeroable::zeroed(),
         new_root: proof.new_root,
-        new_next_index: u32::try_from(proof.new_next_index).unwrap().to_le_bytes(),
+        new_next_index: proof.new_next_index.to_le_bytes(),
         restrictive: 0,
     };
     let data = StorageUpdateIxData {

@@ -1,13 +1,13 @@
-//! Storage `Enroll` writes the owner's tracking authorization, an apply moves it into the tracking tree.
+//! Storage `Enroll` queues one entry for the owner, `ApplyEnrollments` folds queued entries into the tracking tree.
 //!
 //! A first enrollment proves `RegisterKey`, the ciphertext opens to the nullifier secret and list salt
-//! under the registry's auditor key, and fixes the key, list tag and seal for good. It grants nothing
-//! until `ApplyEnrollments` inserts its row in a tracking root. A rotation carries no proof and writes
-//! only the viewing key on the authorization, the owner's signature alone authorizes it, and it leaves
-//! no tracking work.
+//! under the registry's auditor key. Its entry inserts the owner's leaf and fixes the key, list tag and
+//! seal for good. A rotation carries no proof, the owner's signature alone authorizes it, and its
+//! entry moves only the leaf's viewing key. A queued entry grants nothing until an apply folds it under
+//! a root, and a rotation queued before the owner's first enrollment changes nothing.
 //!
-//! A signed attempt is recorded before its broadcast and reconciled by signature and by the
-//! authorization account. A first enrollment lands once, the program refuses a second key.
+//! A signed attempt is recorded before its broadcast and reconciled by its signature alone, no account
+//! holds the enrollment.
 //!
 //! Read after `sdk-libs/client/src/rpc/relay_enroll.rs` and
 //! `programs/storage/src/instructions/enroll.rs`.
@@ -20,7 +20,6 @@ use custom_ring_interface::{
     domain,
     key_catalog::RingCircuit,
     storage_instruction::{tag, EnrollIxData, EnrollRequest, OwnerGrantIxData},
-    tracking::TrackingAuthorization,
     ReaderKeyBytes, RegisterKeyStatement, SYSTEM_PROGRAM_ID,
 };
 use solana_address::Address;
@@ -39,9 +38,9 @@ use zeroize::Zeroizing;
 use zolana_ring_client::{
     rpc::{
         PrepareRelayRequest, ProofInputBytes, RelayEnrollInputs, RelayIntent, RelayQuote,
-        ENROLL_COMPUTE_UNITS,
+        StorageEnroll, ENROLL_COMPUTE_UNITS,
     },
-    NullifierKeyEnvelope,
+    AsyncRingIndexer, NullifierKeyEnvelope, QueuedEnrollments, RegisteredKeys,
 };
 
 use crate::client::{RingClient, RingIndexerBackend};
@@ -66,7 +65,7 @@ pub struct Enroll<'a> {
     pub payer: Address,
     pub owner: Address,
     pub nullifier_key: &'a NullifierKey,
-    /// The key senders read from the authorization, a rotation moves only it.
+    /// The key senders read from the leaf, a rotation moves only it.
     pub viewing_pubkey: X25519Pubkey,
     /// `ListSaltHolder::list_salt` of the ring.
     pub list_salt: [u8; 32],
@@ -95,6 +94,7 @@ pub struct EnrollRelay<'a> {
 #[must_use]
 #[derive(Clone, Debug, PartialEq, Eq, SchemaWrite, SchemaRead)]
 pub struct EnrollInstruction {
+    /// Pays the transaction fee, `Enroll` itself moves no lamports.
     pub payer: Address,
     pub owner: Address,
     pub tracking_registry: Address,
@@ -126,11 +126,9 @@ pub enum EnrollmentOutcome {
         slot: u64,
     },
     Failed(TransactionError),
-    /// The attempt shows no landing and the authorization already holds its key and viewing key.
-    Reserved,
     /// The attempt can still land.
     Pending,
-    /// No landing and no matching authorization past the blockhash, the same request may go again.
+    /// No landing past the blockhash, the same request may go again.
     Expired,
 }
 
@@ -161,20 +159,20 @@ impl Enroll<'_> {
         .prepare(quote)
     }
 
-    /// The program refuses a second key for one owner, a present authorization takes a rotation.
+    /// An owner holding a leaf or a queued first enrollment takes a rotation, its first key stays final.
     pub async fn prove<R: AsyncRpc, I: RingIndexerBackend>(
         &self,
         client: &RingClient<R, I>,
     ) -> Result<EnrollInstruction, RingError> {
         let config = self.ring.require_config(client.zolana()).await?;
         let tracking_registry = config.account().tracking;
-        // 1. A present authorization fixed key, tag and seal, a rotation repeats them unproven.
-        let (authorization, _) =
-            TrackingAuthorization::find_address(&tracking_registry, &self.owner);
-        let enrolled = client
-            .get_account(authorization)
-            .await?
-            .and_then(|account| TrackingAuthorization::decode(&account.owner, &account.data));
+        // 1. A held enrollment fixed key, tag and seal, a rotation repeats them unproven.
+        let enrolled = EnrollmentRead {
+            tracking_registry,
+            owner: self.owner,
+        }
+        .read(client.zolana())
+        .await?;
         let viewing_u = self.viewing_pubkey.u();
         if let Some(enrolled) = enrolled {
             if enrolled.nullifier_pk != self.nullifier_key.pubkey()? {
@@ -188,7 +186,7 @@ impl Enroll<'_> {
             });
         }
         // 2. RegisterKey proves the ciphertext opens to the nullifier secret and list salt under
-        //    the auditor key the registry pins, so the auditor recovers both from the account.
+        //    the auditor key the registry pins, so the auditor recovers both from the inserting entry.
         let ring_id = self.ring.ring_id()?;
         let auditor_pk = config.auditor_pubkey;
         let key = self.nullifier_key;
@@ -240,10 +238,6 @@ impl Enroll<'_> {
 }
 
 impl EnrollInstruction {
-    pub fn authorization(&self) -> Address {
-        TrackingAuthorization::find_address(&self.tracking_registry, &self.owner).0
-    }
-
     /// The fields and the proof, a rotation holds none.
     pub fn parsed(&self) -> Result<EnrollRequest<'_>, RingError> {
         Ok(EnrollRequest::parse(&self.request)?)
@@ -251,16 +245,11 @@ impl EnrollInstruction {
 
     /// For a PDA owner its program passes it to `invoke_signed`.
     pub fn instruction(&self) -> Instruction {
-        storage_ix(
-            vec![
-                AccountMeta::new(self.payer, true),
-                AccountMeta::new_readonly(self.owner, true),
-                AccountMeta::new(self.tracking_registry, false),
-                AccountMeta::new(self.authorization(), false),
-                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
-            ],
-            [&[tag::ENROLL][..], &self.request].concat(),
-        )
+        StorageEnroll {
+            owner: self.owner,
+            tracking_registry: self.tracking_registry,
+        }
+        .instruction([&[tag::ENROLL][..], &self.request].concat())
     }
 
     /// `Ok` means recorded and broadcast or in doubt, a preflight refusal returns its error.
@@ -310,14 +299,11 @@ impl EnrollInstruction {
     }
 }
 
-/// The authorization's final key, tag and seal under a new viewing key, unproven.
-pub(crate) fn rotation_request(enrolled: &TrackingAuthorization, viewing_u: [u8; 32]) -> Vec<u8> {
+/// The enrollment's final key, tag and seal under a new viewing key, unproven.
+pub(crate) fn rotation_request(enrolled: &EnrollIxData, viewing_u: [u8; 32]) -> Vec<u8> {
     let ix = EnrollIxData {
-        nullifier_pk: enrolled.nullifier_pk,
-        list_tag: enrolled.list_tag,
         viewing_u,
-        eph_u: enrolled.eph_u,
-        ciphertext: enrolled.ciphertext,
+        ..*enrolled
     };
     EnrollRequest {
         ix: &ix,
@@ -371,29 +357,12 @@ impl EnrollmentAttempt {
         &self,
         client: &RingClient<R, I>,
     ) -> Result<EnrollmentOutcome, RingError> {
-        // 1. The attempt's own status decides first.
         let observed = outcome(
             client.zolana(),
             self.signature(),
             self.last_valid_block_height,
         )
         .await?;
-        if let Outcome::Confirmed { slot } = observed {
-            return Ok(EnrollmentOutcome::Landed { slot });
-        }
-        // 2. An authorization already holding the attempt's key and viewing key needs no resend,
-        //    some `Enroll` wrote it, ours or another.
-        let data = self.instruction.parsed()?.ix;
-        let held = client
-            .get_account(self.instruction.authorization())
-            .await?
-            .and_then(|account| TrackingAuthorization::decode(&account.owner, &account.data))
-            .is_some_and(|held| {
-                held.nullifier_pk == data.nullifier_pk && held.viewing_u == data.viewing_u
-            });
-        if held {
-            return Ok(EnrollmentOutcome::Reserved);
-        }
         Ok(match observed {
             Outcome::Unknown => EnrollmentOutcome::Pending,
             Outcome::Failed(TransactionError::BlockhashNotFound) => EnrollmentOutcome::Expired,
@@ -431,5 +400,54 @@ impl WriteOwnerGrant {
             ],
             [&[tag::OWNER_GRANT][..], bytemuck::bytes_of(&data)].concat(),
         )
+    }
+}
+
+/// The enrollment an owner holds once the queue applies, its leaf's or its queued first enrollment's fields.
+#[must_use]
+pub struct EnrollmentRead {
+    pub tracking_registry: Address,
+    pub owner: Address,
+}
+
+impl EnrollmentRead {
+    /// `None` with no leaf and no queued first enrollment, the queued part unverified and granting nothing.
+    pub async fn read(
+        self,
+        client: &(impl AsyncRpc + AsyncRingIndexer + ?Sized),
+    ) -> Result<Option<EnrollIxData>, RingError> {
+        // 1. The leaf under the newest root, its viewing key and seal checked against the leaf hashes.
+        let owner = self.owner.to_bytes();
+        let mut held = RegisteredKeys {
+            registry: self.tracking_registry,
+            owners: &[owner],
+        }
+        .leaves(client, client)
+        .await?
+        .remove(&owner)
+        .map(|leaf| EnrollIxData {
+            nullifier_pk: leaf.record.nullifier_pk,
+            list_tag: leaf.record.list_tag,
+            viewing_u: leaf.viewing_u,
+            eph_u: leaf.seal.eph_pk.u(),
+            ciphertext: leaf.seal.ciphertext,
+        });
+        // 2. The queue applies in sequence order as the apply rule does, a proven entry of an absent
+        //    owner inserts and any later entry moves only the viewing key.
+        let queued = QueuedEnrollments {
+            registry: self.tracking_registry,
+        }
+        .read(client)
+        .await?;
+        for entry in queued.iter().filter(|entry| entry.owner == self.owner) {
+            held = match held {
+                Some(enrolled) => Some(EnrollIxData {
+                    viewing_u: entry.ix.viewing_u,
+                    ..enrolled
+                }),
+                None => entry.proven.then_some(entry.ix),
+            };
+        }
+        Ok(held)
     }
 }

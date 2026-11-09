@@ -49,7 +49,7 @@ pub struct GetWalletStatusResponse {
 pub enum WalletEnrollment {
     NotEnrolled,
     Pending,
-    /// The tree is full, the first enrollment stays pending with its rent spent.
+    /// The tree is full, the queued first enrollment never inserts.
     PendingPastCapacity,
     Applied,
 }

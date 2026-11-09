@@ -65,15 +65,19 @@ fn a_pda_enrolls_and_applies_its_key_on_the_validator() -> Result<()> {
         .push(AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false));
     send(env.client.rpc(), &env.payer, &[instruction])?;
     let enrolled = owner_enrollment(&env, ring, owner)?.context("the PDA's enrollment")?;
-    ensure!(enrolled.viewing_u == viewing_key.pubkey().u() && enrolled.is_pending());
+    ensure!(enrolled.viewing_u == viewing_key.pubkey().u());
+    ensure!(
+        owner_leaf(&env, ring, owner)?.is_none(),
+        "a queued entry grants nothing"
+    );
     ApplyOwnerEnrollments {
         ring,
         owners: &[owner],
         env: &env,
     }
     .send()?;
-    let applied = owner_enrollment(&env, ring, owner)?.context("the PDA's enrollment")?;
-    ensure!(!applied.is_pending());
+    let applied = owner_leaf(&env, ring, owner)?.context("the PDA's leaf")?;
+    ensure!(applied.viewing_u == viewing_key.pubkey().u());
     Ok(())
 }
 
@@ -223,11 +227,10 @@ fn viewing_key_rotation_survives_restart_and_a_wallet_wipe() -> Result<()> {
                 env: &env,
             }
             .send()?;
-            let updated = owner_enrollment(&env, ring, recipient.pubkey())?
-                .context("the rotated recipient enrollment")?;
+            let updated = owner_leaf(&env, ring, recipient.pubkey())?
+                .context("the rotated recipient leaf")?;
             assert_eq!(updated.viewing_u, rotated.viewing_pubkey().u());
-            assert_eq!(updated.nullifier_pk, original_address.nullifier_pk);
-            assert!(!updated.is_pending(), "a rotation leaves no tracking work");
+            assert_eq!(updated.record.nullifier_pk, original_address.nullifier_pk);
             let history = wallet
                 .history()
                 .clone()

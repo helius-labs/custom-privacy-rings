@@ -236,13 +236,7 @@ impl Indexer {
         block: &BlockInfo,
         cursor: &mut RingCursor,
     ) -> Result<()> {
-        let undo = BlockWork {
-            tx,
-            block,
-            rpc: &self.rpc,
-        }
-        .run()
-        .await?;
+        let undo = BlockWork { tx, block }.run().await?;
         storage::save_journal(
             tx,
             &BlockJournal {
@@ -354,13 +348,11 @@ pub(crate) struct Projection<'p, 'c, C, A: ProjectedAccount> {
     pub store: &'p ProjectedStore<'c, C, A>,
     pub state: &'p mut RegistryState<A>,
     pub slot: u64,
-    pub rpc: &'p SolanaRpc,
 }
 
 struct BlockWork<'a> {
     tx: &'a DatabaseTransaction,
     block: &'a BlockInfo,
-    rpc: &'a SolanaRpc,
 }
 
 impl BlockWork<'_> {
@@ -420,7 +412,6 @@ impl BlockWork<'_> {
                 store: &store,
                 state: &mut state,
                 slot: self.block.metadata.slot,
-                rpc: self.rpc,
             })
             .await;
         let saved = match projected {

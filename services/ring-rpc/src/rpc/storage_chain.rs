@@ -17,9 +17,7 @@ use zolana_ring_indexer::rpc::{
     GetStorageApplyProofInputsRequest, GetStorageApplyProofInputsResponse,
     GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
 };
-use zolana_ring_indexer::tracking::{
-    GetPendingEnrollmentsRequest, GetPendingEnrollmentsResponse, GetTrackingApplyProofInputsRequest,
-};
+use zolana_ring_indexer::tracking::GetTrackingApplyProofInputsRequest;
 use zolana_ring_member_registry::ApplyProofInputs;
 
 use crate::{
@@ -57,16 +55,11 @@ pub trait StorageChain: ChainSubmit {
         registry: &StorageRegistry,
     ) -> Result<ApplyRecordsIxData, RingRpcError>;
 
-    async fn pending_enrollments(
-        &self,
-        request: GetPendingEnrollmentsRequest,
-    ) -> Result<GetPendingEnrollmentsResponse, RingRpcError>;
-
-    /// `owners` applied in order from the current root.
+    /// The next `count` queued entries applied in sequence order from the current root.
     async fn prove_enrollments(
         &self,
         registry: Address,
-        owners: &[Address],
+        count: u64,
     ) -> Result<ProvedEnrollments, RingRpcError>;
 }
 
@@ -189,28 +182,17 @@ impl StorageChain for LiveStorageChain {
         .map_err(|error| RingRpcError::StorageUpdate(error.into()))
     }
 
-    async fn pending_enrollments(
-        &self,
-        request: GetPendingEnrollmentsRequest,
-    ) -> Result<GetPendingEnrollmentsResponse, RingRpcError> {
-        Ok(self
-            .client
-            .indexer()
-            .get_pending_enrollments(request)
-            .await?)
-    }
-
     async fn prove_enrollments(
         &self,
         registry: Address,
-        owners: &[Address],
+        count: u64,
     ) -> Result<ProvedEnrollments, RingRpcError> {
         let response = self
             .client
             .indexer()
             .get_tracking_apply_proof_inputs(GetTrackingApplyProofInputsRequest {
                 registry: registry.into(),
-                owners: owners.iter().copied().map(Into::into).collect(),
+                count,
             })
             .await?;
         let storage = |error: custom_ring_sdk::RingError| RingRpcError::StorageUpdate(error.into());
@@ -219,7 +201,6 @@ impl StorageChain for LiveStorageChain {
         let instruction = ApplyEnrollments {
             tracking_registry: registry,
             revision,
-            owners,
             inputs: &inputs,
         }
         .prove(&self.client)

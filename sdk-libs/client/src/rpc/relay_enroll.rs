@@ -1,4 +1,4 @@
-use custom_ring_interface::{tracking::TrackingAuthorization, STORAGE_PROGRAM_ID};
+use custom_ring_interface::{tracking::EnrollmentQueue, STORAGE_PROGRAM_ID};
 use sha2::{Digest, Sha256};
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -14,6 +14,14 @@ pub struct RelayEnrollInputs {
     pub tracking_registry: Address,
     /// Tag 6 first, the program holds every field to the owner's signature and proof.
     pub instruction_data: Vec<u8>,
+}
+
+/// `Enroll` moves no lamports, so it names no payer.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorageEnroll {
+    pub owner: Address,
+    pub tracking_registry: Address,
 }
 
 const ENROLL_REQUEST_DOMAIN: &[u8] = b"zolana/ring-rpc-relay-enroll";
@@ -34,21 +42,12 @@ impl RelayEnrollInputs {
             .into()
     }
 
-    /// `payer, owner, tracking_registry, authorization, system_program`.
-    pub fn instruction(&self, fee_payer: Address) -> Instruction {
-        let (authorization, _) =
-            TrackingAuthorization::find_address(&self.tracking_registry, &self.owner);
-        Instruction {
-            program_id: STORAGE_PROGRAM_ID,
-            accounts: vec![
-                AccountMeta::new(fee_payer, true),
-                AccountMeta::new_readonly(self.owner, true),
-                AccountMeta::new(self.tracking_registry, false),
-                AccountMeta::new(authorization, false),
-                AccountMeta::new_readonly(Address::default(), false),
-            ],
-            data: self.instruction_data.clone(),
+    pub fn instruction(&self) -> Instruction {
+        StorageEnroll {
+            owner: self.owner,
+            tracking_registry: self.tracking_registry,
         }
+        .instruction(self.instruction_data.clone())
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, RelayProofInputsError> {
@@ -57,5 +56,21 @@ impl RelayEnrollInputs {
 
     pub fn decode(bytes: &[u8]) -> Result<Self, RelayProofInputsError> {
         Ok(wincode::deserialize_exact(bytes)?)
+    }
+}
+
+impl StorageEnroll {
+    /// `data` starts with `tag::ENROLL`.
+    pub fn instruction(self, data: Vec<u8>) -> Instruction {
+        let (queue, _) = EnrollmentQueue::find_address(&self.tracking_registry);
+        Instruction {
+            program_id: STORAGE_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new_readonly(self.owner, true),
+                AccountMeta::new_readonly(self.tracking_registry, false),
+                AccountMeta::new(queue, false),
+            ],
+            data,
+        }
     }
 }

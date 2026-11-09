@@ -9,16 +9,15 @@
 use std::collections::BTreeSet;
 
 use async_trait::async_trait;
-use custom_ring_interface::tracking::TrackingAuthorization;
 use solana_address::Address;
 use spr_client::{AsyncRpc, ClientError};
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use spr_keypair::{
-    KeypairError, NullifierKey, ShieldedAddress, X25519Keypair, X25519Pubkey, SHIELDED_ADDRESS_LEN,
+    KeypairError, NullifierKey, ShieldedAddress, X25519Keypair, SHIELDED_ADDRESS_LEN,
 };
 use spr_transaction::{TransactionError, WalletUtxo};
 use thiserror::Error;
-use zolana_ring_client::{AuditError, SealedNullifierKey};
+use zolana_ring_client::{AsyncRingIndexer, AuditError, RegisteredKeys, ResolveError};
 
 use crate::pipeline::same_owner;
 
@@ -48,6 +47,8 @@ pub enum DelegateSourceError {
     Client(#[from] ClientError),
     #[error(transparent)]
     Seal(#[from] AuditError),
+    #[error(transparent)]
+    Tracking(#[from] ResolveError),
 }
 
 /// The single enrollment read every nonzero source resolves through.
@@ -62,7 +63,7 @@ pub trait SourceEnrollment: Sync {
     ) -> Result<Option<NullifierKey>, Self::Error>;
 }
 
-/// The auditor opens the seal on the source's tracking authorization, only an enrolled owner holds one.
+/// The auditor opens the seal of the source's tracking leaf under the registry's newest root, only an enrolled owner holds one.
 pub struct TrackingEnrollment<'a, R> {
     pub rpc: &'a R,
     pub tracking_registry: Address,
@@ -70,34 +71,25 @@ pub struct TrackingEnrollment<'a, R> {
 }
 
 #[async_trait]
-impl<R: AsyncRpc> SourceEnrollment for TrackingEnrollment<'_, R> {
+impl<R: AsyncRpc + AsyncRingIndexer> SourceEnrollment for TrackingEnrollment<'_, R> {
     type Error = DelegateSourceError;
 
     async fn escrowed_key(
         &self,
         source: &ShieldedAddress,
     ) -> Result<Option<NullifierKey>, DelegateSourceError> {
-        let owner = source.solana_address()?;
-        let (authorization, _) =
-            TrackingAuthorization::find_address(&self.tracking_registry, &owner);
-        let Some(enrolled) = self
-            .rpc
-            .get_account(authorization)
-            .await?
-            .and_then(|account| TrackingAuthorization::decode(&account.owner, &account.data))
-        else {
-            return Ok(None);
-        };
-        let key = SealedNullifierKey {
-            eph_pk: X25519Pubkey::from_u(enrolled.eph_u)?,
-            ciphertext: enrolled.ciphertext,
+        let owner = source.solana_address()?.to_bytes();
+        let mut leaves = RegisteredKeys {
+            registry: self.tracking_registry,
+            owners: &[owner],
         }
-        .open(self.auditor)?;
-        // The seal's pad alone does not bind the opened key to the storage program's record.
-        if key.pubkey()? != enrolled.nullifier_pk {
-            return Err(DelegateSourceError::SealMismatch);
-        }
-        Ok(Some(key))
+        .leaves(self.rpc, self.rpc)
+        .await?;
+        leaves
+            .remove(&owner)
+            .map(|leaf| leaf.nullifier_key(self.auditor))
+            .transpose()
+            .map_err(Into::into)
     }
 }
 

@@ -206,7 +206,7 @@ pub enum RingError {
     RecipientLiteralZeroKey { slot_index: usize },
     #[error("the owner at output {slot_index} is enrolled, the zero key does not pay it")]
     EnrolledRecipientAtZeroKey { slot_index: usize },
-    #[error("output {slot_index} names a viewing key other than its owner's authorization holds, ask for a new address")]
+    #[error("output {slot_index} names a viewing key other than its owner's tracking leaf holds, ask for a new address")]
     RecipientViewingKeyStale { slot_index: usize },
     #[error("the transfer has {owners} owner signers, its accounts leave room for {limit}")]
     TooManyOwnerSigners { owners: usize, limit: usize },
@@ -319,7 +319,7 @@ pub enum RingError {
         signature: Signature,
         error: solana_transaction_error::TransactionError,
     },
-    #[error("{owner} holds a tracking authorization under another nullifier key, the first key is final")]
+    #[error("{owner} is enrolled under another nullifier key, the first key is final")]
     AlreadyEnrolled { owner: Address },
     #[error("the journal did not record the enrollment attempt, nothing was sent")]
     AttemptNotRecorded(#[source] Box<dyn std::error::Error + Send + Sync>),
@@ -333,14 +333,12 @@ pub enum RingError {
     RelayFailed { reason: String },
     #[error("the submission sends only an attempt its charged outflows were read from")]
     SubmissionUnproved,
-    #[error("{owner} holds no tracking authorization, enroll before a rotation")]
+    #[error("{owner} holds no tracking leaf or queued enrollment, enroll before a rotation")]
     RotationUnenrolled { owner: Address },
     #[error("the viewing history's current key differs from the key holder's")]
     ViewingHistoryNotCurrent,
-    #[error("the tracking authorization of {owner} names a viewing key the wallet does not hold")]
+    #[error("the enrollment of {owner} names a viewing key the wallet does not hold")]
     ViewingKeyNotHeld { owner: Address },
-    #[error("the tracking authorization of {owner} does not hold the rotated viewing key")]
-    ViewingKeyNotPublished { owner: Address },
     #[error("the owner of write {write_index} holds no applied tracking row")]
     WriteOwnerNotEnrolled { write_index: u8 },
     #[error("write {write_index} is not the list key of its owner under the salt")]

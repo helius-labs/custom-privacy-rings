@@ -1,12 +1,12 @@
-use anyhow::{Context as _, Result};
-use custom_ring_interface::tracking::TrackingAuthorization;
-use custom_ring_sdk::{CustomRing, Enroll, EnrollPending};
+use anyhow::Result;
+use custom_ring_interface::storage_instruction::EnrollIxData;
+use custom_ring_sdk::{CustomRing, Enroll, EnrollPending, EnrollmentRead};
 use solana_signature::Signature;
 use solana_signer::Signer;
 use spr_client::{BlockingIndexer, BlockingRpc};
 use spr_keypair::ShieldedKeypair;
 use spr_transaction::ShieldedKeys;
-use zolana_ring_client::RingIndexer;
+use zolana_ring_client::{RegisteredKeys, RingIndexer};
 use zolana_ring_keys::ListSaltHolder;
 
 use crate::{line, patiently, wait_for, Context, KeyCommand, Probe, Zolana};
@@ -118,37 +118,48 @@ fn plan(registered: bool, confirm: impl FnOnce() -> Result<bool>) -> Result<Plan
     })
 }
 
-/// The first key is final, the member's authorization account holds it.
+/// The first key is final, a leaf or a queued first enrollment holds it.
 fn registered<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
     ring: CustomRing,
     zolana: &Zolana<R, I>,
     keys: &ShieldedKeypair,
 ) -> Result<bool> {
-    Ok(authorization(ring, zolana, keys)?.is_some())
+    Ok(enrollment(ring, zolana, keys)?.is_some())
 }
 
-/// An apply has landed the member's row in the tracking root.
+/// An apply has landed the member's leaf under the newest tracking root.
 pub(crate) fn applied<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
     ring: CustomRing,
     zolana: &Zolana<R, I>,
     keys: &ShieldedKeypair,
 ) -> Result<bool> {
-    Ok(authorization(ring, zolana, keys)?.is_some_and(|held| !held.is_pending()))
+    let chain = zolana.as_async();
+    let policy = zolana.block_on(ring.require_policy(chain.rpc()))?;
+    let owner = keys.pubkey().to_bytes();
+    zolana.block_on(async {
+        let leaves = RegisteredKeys {
+            registry: policy.tracking,
+            owners: &[owner],
+        }
+        .leaves(chain, chain)
+        .await?;
+        Ok(leaves.contains_key(&owner))
+    })
 }
 
-pub(crate) fn authorization<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
+/// The member's fields once the queue applies, `None` when it never enrolled.
+pub(crate) fn enrollment<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
     ring: CustomRing,
     zolana: &Zolana<R, I>,
     keys: &ShieldedKeypair,
-) -> Result<Option<TrackingAuthorization>> {
-    let policy = zolana.block_on(ring.require_policy(zolana.as_async().rpc()))?;
-    let (address, _) = TrackingAuthorization::find_address(&policy.tracking, &keys.pubkey());
-    zolana
-        .rpc()
-        .get_account(address)?
-        .map(|account| {
-            TrackingAuthorization::decode(&account.owner, &account.data)
-                .with_context(|| format!("{address} is not a tracking authorization"))
-        })
-        .transpose()
+) -> Result<Option<EnrollIxData>> {
+    let chain = zolana.as_async();
+    let policy = zolana.block_on(ring.require_policy(chain.rpc()))?;
+    Ok(zolana.block_on(
+        EnrollmentRead {
+            tracking_registry: policy.tracking,
+            owner: keys.pubkey(),
+        }
+        .read(chain),
+    )?)
 }

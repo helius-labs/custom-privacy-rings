@@ -22,7 +22,7 @@ use crate::{
     history::{HistoryCursor, HistoryPosition, HistoryQuery, HistoryStream, PageEnd},
     origin::{ConfirmedEventKind, RingOrigin, TransactionOrigin},
     types::AuditedTransaction,
-    AuditError, RegisteredKeys,
+    AsyncRingIndexer, AuditError, RegisteredKeys,
 };
 
 /// One bounded read, `next_cursor` is live only when the page cap stopped it.
@@ -234,8 +234,7 @@ impl RingScan {
         self.ring_program_id
     }
 
-    /// The ring's pinned tracking registry, its authorizations key the outputs whose record publishes
-    /// no key. Without it those outputs stay unresolved.
+    /// The ring's pinned tracking registry, its leaves key the outputs whose record publishes no key.
     pub fn with_tracking_registry(mut self, registry: Address) -> Self {
         self.tracking_registry = Some(registry);
         self
@@ -286,7 +285,7 @@ impl RingScan {
     }
 
     /// Reads no earlier page.
-    pub async fn audit<I: AsyncRpc, O: TransactionOrigin + AsyncRpc>(
+    pub async fn audit<I: AsyncRpc + AsyncRingIndexer, O: TransactionOrigin + AsyncRpc>(
         mut self,
         auditor: &X25519Keypair,
         indexer: &I,
@@ -308,7 +307,7 @@ impl RingScan {
                 Err(error) => skipped.push(SkippedRow::of(transaction, error)?),
             }
         }
-        // One read for the page, an owner with no account yet stays unresolved for a later scan.
+        // One read for the page, an owner with no leaf yet stays unresolved for a later scan.
         if let Some(registry) = registry {
             let mut owners: Vec<[u8; 32]> = transactions
                 .iter()
@@ -316,12 +315,11 @@ impl RingScan {
                 .collect();
             owners.sort_unstable();
             owners.dedup();
-            // Authorizations are chain accounts, the indexer serves none.
             let keys = RegisteredKeys {
                 registry,
                 owners: &owners,
             }
-            .read(origin)
+            .read(origin, indexer)
             .await?;
             for audited in &mut transactions {
                 audited.resolve_owners(ring, |owner| keys.get(owner).copied())?;

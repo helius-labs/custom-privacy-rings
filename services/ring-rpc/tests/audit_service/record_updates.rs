@@ -25,7 +25,6 @@ use zolana_ring_indexer::rpc::{
     GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse, RingListWriteView,
     RingRecordWriteView,
 };
-use zolana_ring_indexer::tracking::{GetPendingEnrollmentsRequest, GetPendingEnrollmentsResponse};
 use zolana_ring_member_registry::ApplyProofInputs;
 use zolana_ring_policy::{AssetLimits, ListId, Member, MintPolicy, Rule, RuleTable, Subject};
 use zolana_ring_rpc::{
@@ -232,17 +231,10 @@ impl StorageChain for StubChain {
         })
     }
 
-    async fn pending_enrollments(
-        &self,
-        _request: GetPendingEnrollmentsRequest,
-    ) -> Result<GetPendingEnrollmentsResponse, RingRpcError> {
-        unreachable!("the record writer applies no enrollment")
-    }
-
     async fn prove_enrollments(
         &self,
         _registry: Address,
-        _owners: &[Address],
+        _count: u64,
     ) -> Result<ProvedEnrollments, RingRpcError> {
         unreachable!("the record writer applies no enrollment")
     }

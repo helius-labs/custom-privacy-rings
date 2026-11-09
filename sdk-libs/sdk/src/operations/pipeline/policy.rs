@@ -7,7 +7,7 @@ use custom_ring_interface::{
 };
 use solana_address::Address;
 use spr_client::AsyncRpc;
-use spr_hasher::primitives::right_align;
+use spr_hasher::primitives::{hash_bytes, right_align};
 use spr_interface::{N_PUBLIC_SLOTS, ZERO_NULLIFIER_PUBKEY};
 use spr_transaction::instructions::transact::SppProofInputs;
 use zolana_ring_client::{records::RecordPoolRead, AsyncRingIndexer};
@@ -24,12 +24,10 @@ use super::{
 };
 use crate::{
     limits::Outflows,
-    records::{
-        OutputKey, PoolRead, RecipientViewingKeys, SealedOutput, TrackingPoolRead, TrackingRead,
-    },
+    records::{OutputKey, PoolRead, TrackingPoolRead, TrackingRead},
     request::{
-        owner_key, OwnerEntry, PolicyParams, PolicyTable, PolicyWithdrawalRequest, PoolEntry,
-        RecordPools, TrackingParams,
+        OwnerEntry, PolicyParams, PolicyTable, PolicyWithdrawalRequest, PoolEntry, RecordPools,
+        TrackingParams,
     },
     submission::BoundRoot,
     CustomRingConfig, PinnedPolicy, RingError,
@@ -213,13 +211,7 @@ impl PolicyRead<'_> {
         .read(client)
         .await?;
         self.check_input_keys(&tracking_pool)?;
-        let sealed = self.check_output_keys(&tracking_pool, &ring_owners)?;
-        RecipientViewingKeys {
-            registry: tracking.registry,
-            outputs: &sealed,
-        }
-        .check(client)
-        .await?;
+        self.check_output_keys(&tracking_pool, &ring_owners)?;
         let mut sender_entries = core::mem::take(&mut planned.senders);
         sender_entries.resize(capacity, OwnerEntry::default());
         let public_asset_entries = core::mem::take(&mut planned.public_assets);
@@ -351,13 +343,12 @@ impl PolicyRead<'_> {
         Ok(())
     }
 
-    /// The outputs whose viewing key the owner's authorization must hold, a spending owner's outputs excluded.
+    /// A registered owner's output seals to the key its leaf holds at the frame's root, a spending owner's outputs excepted.
     fn check_output_keys(
         &self,
         pool: &TrackingPoolRead,
         owners: &[Option<[u8; 32]>],
-    ) -> Result<Vec<SealedOutput>, RingError> {
-        let mut sealed = Vec::new();
+    ) -> Result<(), RingError> {
         for (slot_index, (output, owner)) in self.inputs.output_utxos.iter().zip(owners).enumerate()
         {
             let (Some(address), Some(member)) = (output.owner_address, owner) else {
@@ -376,15 +367,13 @@ impl PolicyRead<'_> {
                 .input_utxos
                 .iter()
                 .any(|input| input.is_note() && input.utxo.owner == address.signing_pubkey);
-            if row.is_some() && !spends {
-                sealed.push(SealedOutput {
-                    slot_index,
-                    owner: Address::new_from_array(owner_key(&address.signing_pubkey)?),
-                    viewing_u: address.viewing_pubkey.u(),
-                });
+            // A rotation that lands after the frame's root leaves the payment sealed to the key read.
+            let viewing_hash = hash_bytes(&address.viewing_pubkey.u())?;
+            if row.is_some_and(|row| row.viewing_hash != viewing_hash) && !spends {
+                return Err(RingError::RecipientViewingKeyStale { slot_index });
             }
         }
-        Ok(sealed)
+        Ok(())
     }
 }
 

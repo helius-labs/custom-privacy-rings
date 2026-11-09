@@ -4028,9 +4028,9 @@ mod enroll_message {
     fn the_shared_enroll_messages_keep_their_verdicts() {
         let owner = keypair(1).pubkey();
         let asked = inputs(owner);
-        let honest = asked.instruction(FEE_PAYER);
+        let honest = asked.instruction();
         let mut swapped = honest.clone();
-        swapped.accounts[2].pubkey = Address::new_from_array([0x56; 32]);
+        swapped.accounts[1].pubkey = Address::new_from_array([0x56; 32]);
         let mut rewritten = honest.clone();
         rewritten.data[1] ^= 1;
         let case = |name: &str, payer: &Address, answer: Instruction, verdict: &str| MessageCase {
@@ -4080,7 +4080,7 @@ mod enroll_message {
 
     #[tokio::test]
     async fn the_enrollment_the_owner_proved_is_signed() {
-        let honest = inputs(keypair(1).pubkey()).instruction(FEE_PAYER);
+        let honest = inputs(keypair(1).pubkey()).instruction();
         assert!(matches!(
             signed(honest.clone()).await,
             Ok(RelayStatus::Sent { .. })
@@ -4098,9 +4098,9 @@ mod enroll_message {
 
     #[tokio::test]
     async fn a_relay_that_swaps_an_account_or_a_byte_is_refused() {
-        let honest = inputs(keypair(1).pubkey()).instruction(FEE_PAYER);
+        let honest = inputs(keypair(1).pubkey()).instruction();
         let mut swapped = honest.clone();
-        swapped.accounts[2].pubkey = Address::new_from_array([0x56; 32]);
+        swapped.accounts[1].pubkey = Address::new_from_array([0x56; 32]);
         assert!(matches!(
             signed(swapped).await,
             Err(RingError::RelayMessage(MessageMismatch::Accounts))

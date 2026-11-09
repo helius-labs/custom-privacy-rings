@@ -1,7 +1,7 @@
 use std::{collections::HashSet, future::Future, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use custom_ring_interface::{storage_instruction, tracking::TrackingAuthorization};
+use custom_ring_interface::storage_instruction;
 use custom_ring_sdk::{FitError, FitSigners, RingError, SealRow, TransactionFit};
 use jsonrpsee::types::ErrorObjectOwned;
 use log::warn;
@@ -125,10 +125,6 @@ pub enum RelayError {
     /// One code per row, a client reads the row from the code alone.
     #[error("the sealed auditor stream does not open under the key the records select, seal under the {row:?} row and sign again")]
     Reseal { row: SealRow },
-    #[error(
-        "the owner already holds a tracking authorization, only a rotation goes without a proof"
-    )]
-    AlreadyEnrolled,
     #[error("the RegisterKey proof does not verify for the enrolled key")]
     RegisterKeyProof,
     #[error("the chain simulation refuses the enrollment before any signature because {reason}")]
@@ -270,7 +266,6 @@ impl RelayError {
                 row: SealRow::Narrow,
             } => -32211,
             Self::Reseal { row: SealRow::Wide } => -32212,
-            Self::AlreadyEnrolled => -32213,
             Self::RegisterKeyProof => -32214,
             Self::EnrollmentRefused { .. } => -32215,
             Self::Oversized { .. } => -32216,
@@ -430,7 +425,7 @@ impl Relay {
                 // The wallet proved its seal, the relay only pays.
                 RelayPayload::Enroll(enrollment) => {
                     self.prover.check_enrollment(enrollment).await?;
-                    let proven = enrollment_step(enrollment, parties.fee_payer);
+                    let proven = enrollment_step(enrollment);
                     self.preflight(&proven).await?;
                     proven
                 }
@@ -632,7 +627,9 @@ impl Relay {
             mut instructions,
             rent: setup_rent,
         } = self.missing_setup(&setup).await?;
-        let landing_rent = match self.created_rent(&payload).await? {
+        // `Enroll` creates no account, an enrollment reserves no rent.
+        let created_rent = matches!(payload, RelayPayload::Enroll(_)).then_some(0);
+        let landing_rent = match created_rent {
             Some(created) => Some(setup_rent.saturating_add(created)),
             None => (setup_rent > 0).then_some(setup_rent),
         }
@@ -839,30 +836,6 @@ impl Relay {
             rent = rent.saturating_add(self.chain.rent_exempt_lamports(data_len).await?);
         }
         Ok(MissingSetup { instructions, rent })
-    }
-
-    /// Every enrollment holds its fee, only a first one reserves rent, no instruction closes the
-    /// account.
-    async fn created_rent(&self, payload: &RelayPayload) -> Result<Option<u64>, RingRpcError> {
-        let RelayPayload::Enroll(enrollment) = payload else {
-            return Ok(None);
-        };
-        let (authorization, _) =
-            TrackingAuthorization::find_address(&enrollment.tracking_registry, &enrollment.owner);
-        // The same read as the proof check, an account with no data still takes the create.
-        let enrolled = self
-            .chain
-            .account_data(authorization)
-            .await?
-            .is_some_and(|data| !data.is_empty());
-        Ok(Some(match enrolled {
-            true => 0,
-            false => {
-                self.chain
-                    .rent_exempt_lamports(TrackingAuthorization::SIZE)
-                    .await?
-            }
-        }))
     }
 
     /// Ends a row whose attempt can no longer land, a selection a retry or another closer overtook
@@ -1815,7 +1788,7 @@ fn delegate_key(relay_id: &RelayId) -> [u8; 32] {
         .into()
 }
 
-/// The relay pays for no owner's account but the owner's own, and for no other storage instruction.
+/// The relay pays the fee of the owner's own `Enroll` alone, and of no other storage instruction.
 fn check_enrollment(enrollment: &RelayEnrollInputs, fee_payer: Address) -> Result<(), RelayError> {
     let refused = enrollment.owner == fee_payer
         || enrollment.instruction_data.first() != Some(&storage_instruction::tag::ENROLL)
@@ -1826,9 +1799,9 @@ fn check_enrollment(enrollment: &RelayEnrollInputs, fee_payer: Address) -> Resul
     }
 }
 
-fn enrollment_step(enrollment: &RelayEnrollInputs, fee_payer: Address) -> ProvenRelay {
+fn enrollment_step(enrollment: &RelayEnrollInputs) -> ProvenRelay {
     ProvenRelay {
-        instruction: enrollment.instruction(fee_payer),
+        instruction: enrollment.instruction(),
         budget: ComputeBudgetConfig::new(ENROLL_COMPUTE_UNITS),
         co_signers: Vec::new(),
         signers: vec![enrollment.owner],
@@ -1920,12 +1893,8 @@ mod tests {
             reason: String::new(),
         };
         assert_eq!(
-            [
-                RelayError::AlreadyEnrolled.code(),
-                RelayError::RegisterKeyProof.code(),
-                refused.code(),
-            ],
-            [-32213, -32214, -32215]
+            [RelayError::RegisterKeyProof.code(), refused.code()],
+            [-32214, -32215]
         );
     }
 

@@ -1,7 +1,6 @@
 use custom_ring_interface::{
     storage::{chain_start, RootUpdate, StorageError, StorageRegistry},
     storage_instruction::{tag, InitializeIxData, StorageUpdateIxData},
-    QUAD_HEIGHT,
 };
 use sea_orm::ConnectionTrait;
 use solana_address::Address;
@@ -96,7 +95,7 @@ impl RegistryCall<StorageRegistry> for StorageCall<'_> {
         store: &StorageStore<'_, C>,
         state: &StorageState,
     ) -> anyhow::Result<()> {
-        plant_tree::<_, _, QUAD_HEIGHT>(store.tree()).await?;
+        plant_tree(store.tree()).await?;
         store
             .save_root(&StorageRoot::current(&*state.account))
             .await?;
@@ -159,12 +158,12 @@ impl<C: ConnectionTrait> Projection<'_, '_, C, StorageRegistry> {
         let registry = Address::new_from_array(self.state.registry);
         let chain_start = chain_start(&registry, data.revision)
             .map_err(|error| fault(format!("chain start failed ({error})")))?;
-        AppliedBatch::<MemberRecord, QUAD_HEIGHT> {
+        AppliedBatch::<MemberRecord> {
             at: StorageRoot::current(account).tree(),
             chain_start,
             entries: &entries,
             new_root: data.apply.new_root,
-            new_next_index: u64::from(data.apply.new_next_index()),
+            new_next_index: data.apply.new_next_index(),
             revision,
         }
         .save(self.store.tree())

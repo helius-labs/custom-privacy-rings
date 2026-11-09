@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 
-use custom_ring_interface::QUAD_HEIGHT;
+use custom_ring_interface::QUAD_CAPACITY;
 use sea_orm::ConnectionTrait;
 use spr_indexer_api::Hash;
 use zolana_ring_indexer::tree::{
-    node_keys, Canopy, IndexedRecord, LoadedTree, MemberRead, MemberRecord, ReadRows, WritableLeaf,
-    WrittenRows,
+    node_keys, ApplyProofInputs, Canopy, IndexedRecord, LoadedTree, MemberRead, MemberRecord,
+    ReadRows, WritableLeaf, WrittenRows,
 };
 
 use crate::{
@@ -13,8 +13,8 @@ use crate::{
     storage::{RegistryStore, StoredLeaf, TreeVersion},
 };
 
-pub(crate) struct LoadedRegistry<L = MemberRecord, const H: usize = QUAD_HEIGHT> {
-    pub tree: LoadedTree<L, H>,
+pub(crate) struct LoadedRegistry<L = MemberRecord> {
+    pub tree: LoadedTree<L>,
 }
 
 pub(crate) struct TreeRead<L = MemberRecord> {
@@ -33,16 +33,16 @@ pub(crate) enum RecordRead<L = MemberRecord> {
 
 impl<L: StoredLeaf> TreeRead<L> {
     /// Reads for applying `entries`, each entry may insert a record.
-    pub fn batch<const H: usize>(at: TreeVersion, entries: &[L::Entry]) -> Self
+    pub fn batch(at: TreeVersion, entries: &[L::Entry]) -> Self
     where
-        L: WritableLeaf<H>,
+        L: WritableLeaf,
     {
         Self {
             at,
             records: RecordRead::Members(
                 entries
                     .iter()
-                    .map(|entry| *<L as WritableLeaf<H>>::entry_member(entry))
+                    .map(|entry| *L::entry_member(entry))
                     .collect(),
             ),
             inserts: entries.len() as u64,
@@ -50,10 +50,10 @@ impl<L: StoredLeaf> TreeRead<L> {
         }
     }
 
-    pub async fn load<C: ConnectionTrait, const H: usize>(
+    pub async fn load<C: ConnectionTrait>(
         self,
         store: &RegistryStore<'_, C, L>,
-    ) -> anyhow::Result<LoadedRegistry<L, H>> {
+    ) -> anyhow::Result<LoadedRegistry<L>> {
         let applied = self.at.version;
         let mut reads = Vec::new();
         let mut leaves = BTreeSet::new();
@@ -82,8 +82,8 @@ impl<L: StoredLeaf> TreeRead<L> {
             }
         }
         let next_index = self.at.next_index;
-        let appended = next_index..(next_index + self.inserts).min(1 << (2 * H));
-        let mut keys = node_keys::<H>(leaves.into_iter().chain(appended))?;
+        let appended = next_index..(next_index + self.inserts).min(QUAD_CAPACITY);
+        let mut keys = node_keys(leaves.into_iter().chain(appended))?;
         keys.extend(self.canopy.into_iter().flat_map(Canopy::positions));
         let nodes = store.nodes(&keys, applied).await?;
         let rows = ReadRows {
@@ -97,10 +97,10 @@ impl<L: StoredLeaf> TreeRead<L> {
     }
 }
 
-pub(crate) async fn plant_tree<C: ConnectionTrait, L: StoredLeaf, const H: usize>(
+pub(crate) async fn plant_tree<C: ConnectionTrait, L: StoredLeaf>(
     store: &RegistryStore<'_, C, L>,
 ) -> anyhow::Result<()> {
-    let rows = WrittenRows::<L>::fresh::<H>()?;
+    let rows = WrittenRows::<L>::fresh()?;
     let records = rows.records.values().copied().collect::<Vec<_>>();
     store.save_records(&records, 0).await?;
     store.save_nodes(&rows.nodes, 0).await
@@ -108,7 +108,7 @@ pub(crate) async fn plant_tree<C: ConnectionTrait, L: StoredLeaf, const H: usize
 
 /// A proven batch, its rows save only once it reaches the root the program recorded.
 #[must_use]
-pub(crate) struct AppliedBatch<'a, L: WritableLeaf<H>, const H: usize> {
+pub(crate) struct AppliedBatch<'a, L: WritableLeaf> {
     pub at: TreeVersion,
     pub chain_start: [u8; 32],
     pub entries: &'a [L::Entry],
@@ -117,16 +117,17 @@ pub(crate) struct AppliedBatch<'a, L: WritableLeaf<H>, const H: usize> {
     pub revision: u64,
 }
 
-impl<L: StoredLeaf + WritableLeaf<H>, const H: usize> AppliedBatch<'_, L, H>
+impl<L: StoredLeaf + WritableLeaf> AppliedBatch<'_, L>
 where
     L::Entry: Sync,
     L::WriteProof: Send,
 {
+    /// The proof inputs the saved rows reach, in entry order.
     pub async fn save<C: ConnectionTrait>(
         self,
         store: &RegistryStore<'_, C, L>,
-    ) -> Result<(), ApplyError> {
-        let loaded: LoadedRegistry<L, H> = TreeRead::batch::<H>(self.at, self.entries)
+    ) -> Result<ApplyProofInputs<L::WriteProof>, ApplyError> {
+        let loaded: LoadedRegistry<L> = TreeRead::batch(self.at, self.entries)
             .load(store)
             .await
             .map_err(from_storage)?;
@@ -150,6 +151,6 @@ where
         let records = batch.rows.records.values().copied().collect::<Vec<_>>();
         store.save_records(&records, self.revision).await?;
         store.save_nodes(&batch.rows.nodes, self.revision).await?;
-        Ok(())
+        Ok(batch.inputs)
     }
 }

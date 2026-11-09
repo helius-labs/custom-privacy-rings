@@ -1,26 +1,36 @@
+//! Projects a tracking registry from its instructions alone, the program emits no event and the projection reads no account.
+//!
+//! A successful `Enroll` appends its instruction data at the queue's tail, outer or inner, so every
+//! queued field is one the program verified. `ApplyEnrollments` consumes `count` entries from the
+//! head through the member registry's apply rule and faults on any root other than the one the
+//! program recorded. Sequences follow successful `Enroll` instructions in block order, as the
+//! program assigns them.
+//!
+//! Read after `program-libs/interface/src/accounts/tracking.rs`, `program-libs/member-registry/src/tracking.rs`.
+//! Read before `services/ring-indexer/src/rpc/tracking.rs`.
+
 use custom_ring_interface::{
     storage::StorageError,
     storage_instruction::{tag, ApplyEnrollmentsIxData, EnrollRequest, InitializeTrackingIxData},
     tracking::{
-        tracking_chain_start, TrackingAuthorization, TrackingEntry, TrackingRegistry,
-        TrackingRootUpdate, TRACKING_QUAD_HEIGHT,
+        tracking_chain_start, TrackingRegistry, TrackingRootUpdate, ENROLLMENT_QUEUE_CAPACITY,
     },
 };
 use sea_orm::ConnectionTrait;
 use solana_address::Address;
-use zolana_ring_indexer::tree::TrackingRecord;
+use zolana_ring_indexer::tree::{TrackingRecord, TrackingWriteProofInput};
 
 use crate::{
     block::Instruction,
     indexer::{fault, from_storage, ApplyError, Projection, RegistryCall, RegistryInstruction},
     member_registry::{plant_tree, AppliedBatch},
-    storage::{Enrollment, StorageRoot, TrackingState, TrackingStore},
+    storage::{LeafStamp, QueuedEnrollment, StorageRoot, TrackingState, TrackingStore},
 };
 
 pub(crate) enum TrackingCall<'a> {
     Initialize(TrackingInit<'a>),
     Enroll(EnrollCall<'a>),
-    Apply(ApplyCall<'a>),
+    Apply(&'a ApplyEnrollmentsIxData),
 }
 
 pub(crate) struct TrackingInit<'a> {
@@ -30,14 +40,7 @@ pub(crate) struct TrackingInit<'a> {
 
 pub(crate) struct EnrollCall<'a> {
     pub owner: Address,
-    pub authorization: Address,
     pub request: EnrollRequest<'a>,
-}
-
-pub(crate) struct ApplyCall<'a> {
-    pub data: &'a ApplyEnrollmentsIxData,
-    /// In chain order.
-    pub authorizations: &'a [Address],
 }
 
 /// Account order the tags document in `storage_instruction`.
@@ -61,11 +64,10 @@ pub(crate) fn decode(instruction: &Instruction) -> Option<RegistryInstruction<Tr
             }),
         },
         tag::ENROLL => RegistryInstruction {
-            registry: registry(2)?,
-            call: account(1).and_then(|owner| {
+            registry: registry(1)?,
+            call: account(0).and_then(|owner| {
                 Ok(TrackingCall::Enroll(EnrollCall {
                     owner,
-                    authorization: account(3)?,
                     request: EnrollRequest::parse(data)?,
                 }))
             }),
@@ -73,15 +75,8 @@ pub(crate) fn decode(instruction: &Instruction) -> Option<RegistryInstruction<Tr
         tag::APPLY_ENROLLMENTS => RegistryInstruction {
             registry: registry(0)?,
             call: bytemuck::try_from_bytes(data)
-                .map_err(|_| StorageError::InvalidInstructionData)
-                .and_then(|data| {
-                    let authorizations = &instruction.accounts[1..];
-                    ApplyEnrollmentsIxData::check_count(authorizations.len())?;
-                    Ok(TrackingCall::Apply(ApplyCall {
-                        data,
-                        authorizations,
-                    }))
-                }),
+                .map(TrackingCall::Apply)
+                .map_err(|_| StorageError::InvalidInstructionData),
         },
         _ => return None,
     };
@@ -105,7 +100,7 @@ impl RegistryCall<TrackingRegistry> for TrackingCall<'_> {
         store: &TrackingStore<'_, C>,
         state: &TrackingState,
     ) -> anyhow::Result<()> {
-        plant_tree::<_, _, TRACKING_QUAD_HEIGHT>(store.tree()).await?;
+        plant_tree(store.tree()).await?;
         store
             .save_root(&StorageRoot::current(&*state.account))
             .await?;
@@ -120,88 +115,55 @@ impl RegistryCall<TrackingRegistry> for TrackingCall<'_> {
         match self {
             Self::Initialize(_) => Err(fault("initialized twice")),
             Self::Enroll(enroll) => projection.enroll(enroll).await,
-            Self::Apply(apply) => projection.apply(apply).await,
+            Self::Apply(data) => projection.apply(data).await,
         }
     }
 }
 
 impl<C: ConnectionTrait> Projection<'_, '_, C, TrackingRegistry> {
+    /// The program's data and capacity checks, the proof itself verified on chain.
     async fn enroll(self, call: EnrollCall<'_>) -> Result<(), ApplyError> {
-        let held = self
-            .store
-            .enrollment(&call.owner.to_bytes())
-            .await
-            .map_err(from_storage)?;
-        match held {
-            None => self.first_enrollment(call).await,
-            Some(held) => self.rotation(call, held).await,
+        let EnrollCall { owner, request } = call;
+        request
+            .ix
+            .check()
+            .map_err(|error| fault(format!("enrollment refused ({error})")))?;
+        let bounds = self.store.queue_bounds().await.map_err(from_storage)?;
+        if bounds.tail - bounds.head >= ENROLLMENT_QUEUE_CAPACITY as u64 {
+            return Err(fault("the enrollment queue is full"));
         }
-    }
-
-    /// Final fields read from the account at any later slot.
-    async fn first_enrollment(self, call: EnrollCall<'_>) -> Result<(), ApplyError> {
-        let EnrollCall {
-            owner,
-            authorization,
-            request,
-        } = call;
-        if request.proof.is_none() {
-            return Err(fault("a first enrollment carries no proof"));
-        }
-        let held = self.authorization(&authorization).await?;
-        if held.registry.to_bytes() != self.state.registry || held.owner != owner {
-            return Err(fault("the authorization names another owner"));
-        }
-        let entry = held
-            .entry()
-            .map_err(|error| fault(format!("entry hash failed ({error})")))?;
-        let first = Enrollment {
+        let queued = QueuedEnrollment {
+            sequence: bounds.tail,
             owner: owner.to_bytes(),
-            authorization: authorization.to_bytes(),
-            member: entry.member,
-            nullifier_pk: held.nullifier_pk,
-            ct_hash: entry.ct_hash,
-            list_tag: held.list_tag,
-            eph_u: held.eph_u,
-            ciphertext: held.ciphertext,
-            applied: false,
+            proven: request.proof.is_some(),
+            ix: *request.ix,
         };
         self.store
-            .save_first(&first, self.slot)
+            .enqueue(&queued, self.slot)
             .await
             .map_err(from_storage)
     }
 
-    /// The program's final field check, a rotation moves no root and leaves no pending row.
-    async fn rotation(self, call: EnrollCall<'_>, held: Enrollment) -> Result<(), ApplyError> {
-        let EnrollCall { request, .. } = call;
-        if request.proof.is_some() {
-            return Err(fault("a rotation carries a proof"));
+    async fn apply(self, data: &ApplyEnrollmentsIxData) -> Result<(), ApplyError> {
+        // 1. The program's count checks, an apply consumes the oldest entries and never names them.
+        ApplyEnrollmentsIxData::check_count(data.count)
+            .map_err(|error| fault(format!("apply refused ({error})")))?;
+        let count = usize::from(data.count);
+        let bounds = self.store.queue_bounds().await.map_err(from_storage)?;
+        let rows = self
+            .store
+            .queued(bounds.head, count as u64)
+            .await
+            .map_err(from_storage)?;
+        if rows.len() != count {
+            return Err(fault("an apply consumes more entries than the queue holds"));
         }
-        held.account(self.state.registry)
-            .rotate(request.ix)
-            .map_err(|error| fault(format!("rotation refused ({error})")))
-    }
-
-    /// An absent account retries, a stale read or a fork.
-    async fn authorization(&self, address: &Address) -> Result<TrackingAuthorization, ApplyError> {
-        self.rpc
-            .get_multiple_accounts_from_slot(&[*address], self.slot)
-            .await?
-            .into_iter()
-            .flatten()
-            .next()
-            .and_then(|account| TrackingAuthorization::decode(&account.owner, &account.data))
-            .ok_or_else(|| {
-                ApplyError::Retry(anyhow::anyhow!("no tracking authorization at {address}"))
-            })
-    }
-
-    async fn apply(self, call: ApplyCall<'_>) -> Result<(), ApplyError> {
-        let ApplyCall {
-            data,
-            authorizations,
-        } = call;
+        let entries = rows
+            .iter()
+            .map(QueuedEnrollment::entry)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| fault(format!("entry hash failed ({error})")))?;
+        // 2. The roots rotate as the program rotates them, the refusal is the program's own.
         let root = StorageRoot::current(&*self.state.account);
         let mut rotated = *self.state.account;
         rotated
@@ -213,11 +175,11 @@ impl<C: ConnectionTrait> Projection<'_, '_, C, TrackingRegistry> {
             })
             .map_err(|error| fault(format!("apply refused ({error})")))?;
         let revision = rotated.newest().revision.value();
-        let entries = self.applied_entries(authorizations).await?;
         let registry = Address::new_from_array(self.state.registry);
         let chain_start = tracking_chain_start(&registry, data.revision)
             .map_err(|error| fault(format!("chain start failed ({error})")))?;
-        AppliedBatch::<TrackingRecord, TRACKING_QUAD_HEIGHT> {
+        // 3. The rule replays every entry, the rows save only at the root the program recorded.
+        let inputs = AppliedBatch::<TrackingRecord> {
             at: root.tree(),
             chain_start,
             entries: &entries,
@@ -227,36 +189,32 @@ impl<C: ConnectionTrait> Projection<'_, '_, C, TrackingRegistry> {
         }
         .save(self.store.tree())
         .await?;
+        // 4. Each written leaf version keeps the key its `viewing_hash` commits to.
+        self.store
+            .stamp_leaves(revision, &leaf_stamps(&rows, &inputs.writes))
+            .await
+            .map_err(from_storage)?;
+        self.store
+            .mark_applied(bounds.head, count as u64, self.slot)
+            .await
+            .map_err(from_storage)?;
         *self.state.account = rotated;
         self.store
             .save_root(&StorageRoot::current(&rotated))
             .await?;
         Ok(())
     }
+}
 
-    /// Each named owner's entry in the order the apply names it.
-    async fn applied_entries(
-        &self,
-        authorizations: &[Address],
-    ) -> Result<Vec<TrackingEntry>, ApplyError> {
-        let mut entries = Vec::with_capacity(authorizations.len());
-        for authorization in authorizations {
-            let held = self
-                .store
-                .enrollment_at(&authorization.to_bytes())
-                .await
-                .map_err(from_storage)?
-                .ok_or_else(|| fault("an apply names no enrollment"))?;
-            let entry = held
-                .account(self.state.registry)
-                .apply()
-                .map_err(|error| fault(format!("apply refused ({error})")))?;
-            self.store
-                .mark_applied(&held.owner, self.slot)
-                .await
-                .map_err(from_storage)?;
-            entries.push(entry);
-        }
-        Ok(entries)
-    }
+/// In sequence order, an unproven entry of an absent owner leaves no leaf.
+fn leaf_stamps(rows: &[QueuedEnrollment], writes: &[TrackingWriteProofInput]) -> Vec<LeafStamp> {
+    rows.iter()
+        .zip(writes)
+        .filter(|(row, write)| write.present || row.proven)
+        .map(|(row, write)| LeafStamp {
+            member: write.entry.member,
+            viewing_u: row.ix.viewing_u,
+            inserted: (!write.present).then_some(row.sequence),
+        })
+        .collect()
 }

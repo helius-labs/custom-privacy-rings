@@ -7,14 +7,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytemuck::Pod;
 use custom_ring_interface::{
     check_member,
     key_catalog::{RecordPools, RING_KEYS},
     mint_policy_write,
     storage::{chain_start, Revision, StorageRegistry},
-    tracking::TrackingRegistry,
+    tracking::{EnrollmentQueue, TrackingRegistry},
     CustomRingError, RecordWrite, RecordWriteData, WriteRecordsIxData, APPLY_BATCH, QUAD_ARITY,
-    QUAD_HEIGHT, STORAGE_PROGRAM_ID,
+    STORAGE_PROGRAM_ID,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction};
 use solana_address::Address;
@@ -51,7 +52,7 @@ use crate::{
 mod tracking;
 
 pub(crate) use tracking::{
-    pending_enrollments, tracking_apply_proof_inputs, tracking_openings, tracking_record_pool,
+    enrollment_queue, tracking_apply_proof_inputs, tracking_openings, tracking_record_pool,
     tracking_records,
 };
 
@@ -59,27 +60,48 @@ pub(crate) use tracking::{
 pub(crate) const CONFIRMATION_AGE: Duration = Duration::from_millis(DEFAULT_MS_PER_SLOT);
 
 pub(crate) trait ChainSource {
-    /// Fails unless `tip` is canonical and the registry account is no older.
+    /// Fails unless `tip` is canonical and the account is no older.
     fn confirmation<A: CachedAccount>(
         &self,
         tip: &BlockMetadata,
-        registry: &[u8; 32],
+        address: &[u8; 32],
     ) -> impl Future<Output = Result<Confirmation<A>, RingApiError>> + Send;
 }
 
-pub(crate) trait CachedAccount: ProjectedAccount + 'static {
+/// A storage program account a served read confirms at the tip.
+pub(crate) trait CachedAccount: Pod + Send + Sync + 'static {
+    fn from_chain(data: &[u8]) -> Option<&Self>;
+
     fn cache(chain: &CachedChain) -> &ReadCache<Self>;
 }
 
 impl CachedAccount for StorageRegistry {
+    fn from_chain(data: &[u8]) -> Option<&Self> {
+        Self::from_data(data)
+    }
+
     fn cache(chain: &CachedChain) -> &ReadCache<Self> {
         &chain.storage
     }
 }
 
 impl CachedAccount for TrackingRegistry {
+    fn from_chain(data: &[u8]) -> Option<&Self> {
+        Self::from_data(data)
+    }
+
     fn cache(chain: &CachedChain) -> &ReadCache<Self> {
         &chain.tracking
+    }
+}
+
+impl CachedAccount for EnrollmentQueue {
+    fn from_chain(data: &[u8]) -> Option<&Self> {
+        Self::from_data(data)
+    }
+
+    fn cache(chain: &CachedChain) -> &ReadCache<Self> {
+        &chain.queues
     }
 }
 
@@ -93,6 +115,7 @@ pub(crate) struct CachedChain {
     rpc: Arc<SolanaRpc>,
     storage: ReadCache<StorageRegistry>,
     tracking: ReadCache<TrackingRegistry>,
+    queues: ReadCache<EnrollmentQueue>,
 }
 
 pub(crate) struct ReadCache<T> {
@@ -122,6 +145,7 @@ impl CachedChain {
             rpc,
             storage: ReadCache::default(),
             tracking: ReadCache::default(),
+            queues: ReadCache::default(),
         }
     }
 }
@@ -165,10 +189,10 @@ impl ChainSource for CachedChain {
     async fn confirmation<A: CachedAccount>(
         &self,
         tip: &BlockMetadata,
-        registry: &[u8; 32],
+        address: &[u8; 32],
     ) -> Result<Confirmation<A>, RingApiError> {
-        let fetch = self.rpc.confirmation(tip, registry);
-        A::cache(self).read(*registry, tip, fetch).await
+        let fetch = self.rpc.confirmation(tip, address);
+        A::cache(self).read(*address, tip, fetch).await
     }
 }
 
@@ -176,19 +200,19 @@ impl ChainSource for SolanaRpc {
     async fn confirmation<A: CachedAccount>(
         &self,
         tip: &BlockMetadata,
-        registry: &[u8; 32],
+        address: &[u8; 32],
     ) -> Result<Confirmation<A>, RingApiError> {
         let context = canonical_context(self, tip).await.map_err(out_of_sync)?;
         let read = self
-            .get_multiple_accounts_from_slot(&[Address::new_from_array(*registry)], tip.slot)
+            .get_multiple_accounts_from_slot(&[Address::new_from_array(*address)], tip.slot)
             .await
             .map_err(out_of_sync)?;
         let chain = read
             .into_iter()
             .flatten()
             .find(|account| account.owner == STORAGE_PROGRAM_ID)
-            .and_then(|account| A::from_image(&account.data).copied())
-            .ok_or_else(|| out_of_sync("the registry is not an initialized account"))?;
+            .and_then(|account| A::from_chain(&account.data).copied())
+            .ok_or_else(|| out_of_sync("the account is not initialized"))?;
         Ok(Confirmation {
             context,
             chain: Arc::new(chain),
@@ -253,7 +277,7 @@ pub(crate) async fn storage_member_records(
         at: root.tree(),
         leaves: request.start_index..end,
     }
-    .read::<QUAD_HEIGHT>()
+    .read()
     .await?
     .iter()
     .map(indexed_member_view)
@@ -312,7 +336,7 @@ pub(crate) async fn storage_apply_proof_inputs(
     let snapshot = Snapshot::<StorageState>::registry(db, &request.registry).await?;
     let root = StorageRoot::current(&*snapshot.state.account);
     let chain_start = chain_start(&request.registry.0, root.revision.into()).map_err(internal)?;
-    let loaded: LoadedRegistry = TreeRead::batch::<QUAD_HEIGHT>(root.tree(), &entries)
+    let loaded: LoadedRegistry = TreeRead::batch(root.tree(), &entries)
         .load(snapshot.store().tree())
         .await
         .map_err(internal)?;
@@ -443,7 +467,7 @@ struct LeafPage<'a, C, L> {
 }
 
 impl<C: ConnectionTrait, L: StoredLeaf> LeafPage<'_, C, L> {
-    async fn read<const H: usize>(self) -> Result<Vec<OpenedLeaf<L>>, RingApiError> {
+    async fn read(self) -> Result<Vec<OpenedLeaf<L>>, RingApiError> {
         let rows = self
             .store
             .records_by_index(self.leaves.clone(), self.at.version)
@@ -462,7 +486,7 @@ impl<C: ConnectionTrait, L: StoredLeaf> LeafPage<'_, C, L> {
             inserts: 0,
             canopy: None,
         };
-        let loaded: LoadedRegistry<L, H> = read.load(self.store).await.map_err(internal)?;
+        let loaded: LoadedRegistry<L> = read.load(self.store).await.map_err(internal)?;
         members
             .iter()
             .map(|member| loaded.opening(self.root, member))
@@ -470,7 +494,7 @@ impl<C: ConnectionTrait, L: StoredLeaf> LeafPage<'_, C, L> {
     }
 }
 
-impl<A: CachedAccount> Snapshot<RegistryState<A>> {
+impl<A: CachedAccount + ProjectedAccount> Snapshot<RegistryState<A>> {
     /// Fails before any RPC while the projection catches up or holds the registry quarantined.
     async fn registry(
         db: &DatabaseConnection,
@@ -530,12 +554,12 @@ impl<A: CachedAccount> Snapshot<RegistryState<A>> {
     }
 }
 
-impl<A: CachedAccount> RootRead<A> {
-    async fn load<const H: usize>(
+impl<A: CachedAccount + ProjectedAccount> RootRead<A> {
+    async fn load(
         &self,
         members: &[Hash],
         canopy: Option<Canopy>,
-    ) -> Result<LoadedRegistry<A::Leaf, H>, RingApiError> {
+    ) -> Result<LoadedRegistry<A::Leaf>, RingApiError> {
         let read = TreeRead {
             at: self.root.tree(),
             records: RecordRead::Members(members.iter().map(|member| member.0).collect()),
@@ -552,8 +576,6 @@ enum Served<'r> {
     Root(&'r StorageRoot),
     /// Apply proof inputs hold while the current root stays.
     Current(&'r StorageRoot),
-    /// Pending state names no root.
-    Tip,
 }
 
 impl Served<'_> {
@@ -561,12 +583,11 @@ impl Served<'_> {
         match self {
             Self::Root(root) => chain.root_at(Revision::from(root.revision), slot) == Ok(root.root),
             Self::Current(root) => StorageRoot::current(chain) == **root,
-            Self::Tip => true,
         }
     }
 }
 
-impl<L: IndexedLeaf + Default, const H: usize> LoadedRegistry<L, H> {
+impl<L: IndexedLeaf + Default> LoadedRegistry<L> {
     fn pool(
         &self,
         root: &[u8; 32],

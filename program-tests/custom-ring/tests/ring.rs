@@ -83,7 +83,7 @@ use custom_ring_sdk::{
 use custom_ring_test_validator::{
     cli::{merged, RingProject, RingToml},
     policy::{
-        enroll_actors, owner_enrollment, owner_member, policy_registry, EnrollOwners,
+        enroll_actors, owner_enrollment, owner_leaf, owner_member, policy_registry, EnrollOwners,
         RegistryWrite, RingNotes, StorageRecords, EMPTY, LIMIT_CAP, LIMIT_COSIGN_ABOVE,
     },
     ring_rpc::RingRpcSpec,
@@ -115,7 +115,7 @@ use spr_interface::{
     },
     SHIELDED_POOL_PROGRAM_ID, ZERO_NULLIFIER_PUBKEY,
 };
-use spr_keypair::{random_blinding, ShieldedAddress, ShieldedKeypair, X25519Keypair, X25519Pubkey};
+use spr_keypair::{random_blinding, ShieldedAddress, ShieldedKeypair, X25519Keypair};
 use spr_program::instruction::{
     AssetDeposit, Deposit as SppDeposit, DepositAsset, DepositSplAccounts,
     TransactInterfaceTransferAccounts, TransactSplWithdrawalAccounts, UpdateRingConfig,
@@ -142,7 +142,7 @@ use zolana_ring_client::{
     auditor_view_tag,
     rpc::{write_auditor_key, CreateAuditorKeyRequest},
     AuditedTransaction, AuditedUtxo, KnownUtxo, OutputOpening, RecoveryStep, RingRecovery,
-    RingScan, SealedNullifierKey, SourceMember, ViewingHistory,
+    RingScan, SourceMember, ViewingHistory,
 };
 use zolana_ring_keys::{RingAddress, RingPaymentRequest};
 use zolana_ring_policy::{ListId, Member, Rule, RuleTable, Subject};
@@ -821,13 +821,8 @@ impl AuditedSpends<'_> {
             .owners
             .iter()
             .map(|owner| {
-                let enrolled = owner_enrollment(env, self.ring, *owner)?
-                    .context("the owner holds an enrollment")?;
-                Ok(SealedNullifierKey {
-                    eph_pk: X25519Pubkey::from_u(enrolled.eph_u)?,
-                    ciphertext: enrolled.ciphertext,
-                }
-                .open(self.auditor)?)
+                let leaf = owner_leaf(env, self.ring, *owner)?.context("the owner holds a leaf")?;
+                Ok(leaf.nullifier_key(self.auditor)?)
             })
             .collect::<Result<Vec<_>>>()?;
         let mut spent = HashMap::new();

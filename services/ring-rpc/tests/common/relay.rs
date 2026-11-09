@@ -127,8 +127,6 @@ pub struct RecordingChain {
     pub outcome: Mutex<Option<Option<ChainOutcome>>>,
     pub slot: AtomicU64,
     pub accounts: Mutex<Vec<Address>>,
-    /// Live accounts that hold data, an enrolled owner's tracking authorization.
-    pub filled: Mutex<Vec<Address>>,
     pub simulation_refusal: Mutex<Option<String>>,
 }
 
@@ -142,7 +140,6 @@ impl Default for RecordingChain {
             outcome: Mutex::new(None),
             slot: AtomicU64::new(SLOT),
             accounts: Mutex::default(),
-            filled: Mutex::default(),
             simulation_refusal: Mutex::default(),
         }
     }
@@ -173,9 +170,6 @@ impl ChainSubmit for RecordingChain {
     }
 
     async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, RingRpcError> {
-        if self.filled.lock().expect("filled").contains(&address) {
-            return Ok(Some(vec![1]));
-        }
         Ok(self
             .accounts
             .lock()

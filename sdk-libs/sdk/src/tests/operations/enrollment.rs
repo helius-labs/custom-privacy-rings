@@ -2,18 +2,17 @@ use std::sync::{Arc, Mutex};
 
 use bytemuck::Zeroable;
 use custom_ring_interface::{
-    tracking::FirstEnrollment, CustomRingProof, RingMode, REGISTER_KEY_CIPHERTEXT_LEN,
+    tracking::EnrollmentQueue, CustomRingProof, RingMode, REGISTER_KEY_CIPHERTEXT_LEN,
     STORAGE_PROGRAM_ID,
 };
-use solana_account::Account;
 use solana_message::Hash;
 use solana_transaction_status_client_types::{TransactionConfirmationStatus, TransactionStatus};
 use spr_client::{AsyncProverClient, AsyncSprClient, ClientError};
-use spr_keypair::ShieldedKeypair;
+use spr_keypair::{ShieldedKeypair, X25519Keypair};
 
 use super::*;
 use crate::tests::support::{
-    keypair, owner_record, ring, Chain, Registry, RingSettings, SLOT, TRACKING,
+    keypair, owner_record, queued, ring, Chain, Registry, RingSettings, ServedLeaf, SLOT, TRACKING,
 };
 use crate::MemberRecords;
 
@@ -74,8 +73,9 @@ async fn member_records_come_back_in_member_order() {
     assert_eq!(reads[1].record().unwrap().lists, 1);
 }
 
+/// `Enroll` moves no lamports, the payer signs the message alone.
 #[test]
-fn an_enrollment_writes_the_owner_authorization_on_the_pinned_registry() {
+fn an_enrollment_queues_on_the_pinned_registry_and_names_no_payer() {
     let owner = Address::new_from_array([3; 32]);
     let payer = Address::new_from_array([7; 32]);
     let rotation = enroll_instruction(owner, payer, None).instruction();
@@ -84,12 +84,109 @@ fn an_enrollment_writes_the_owner_authorization_on_the_pinned_registry() {
     assert_eq!(rotation.data[0], tag::ENROLL);
     assert_eq!(rotation.data.len(), 1 + EnrollIxData::SIZE);
     assert!(first.data.len() > rotation.data.len());
-    let (authorization, _) = TrackingAuthorization::find_address(&TRACKING, &owner);
-    assert_eq!(rotation.accounts[0].pubkey, payer);
-    assert_eq!(rotation.accounts[1].pubkey, owner);
-    assert!(rotation.accounts[1].is_signer);
-    assert_eq!(rotation.accounts[2].pubkey, TRACKING);
-    assert_eq!(rotation.accounts[3].pubkey, authorization);
+    let (queue, _) = EnrollmentQueue::find_address(&TRACKING);
+    let accounts: Vec<_> = rotation
+        .accounts
+        .iter()
+        .map(|meta| (meta.pubkey, meta.is_signer, meta.is_writable))
+        .collect();
+    assert_eq!(
+        accounts,
+        [
+            (owner, true, false),
+            (TRACKING, false, false),
+            (queue, false, true)
+        ]
+    );
+    assert_eq!(first.accounts, rotation.accounts);
+}
+
+const SALT: [u8; 32] = [8; 32];
+
+fn held(owner: &ShieldedKeypair) -> ServedLeaf {
+    ServedLeaf::sealed(owner.pubkey(), &owner.nullifier_key, &SALT)
+}
+
+async fn read(chain: Chain, owner: Address) -> Option<EnrollIxData> {
+    EnrollmentRead {
+        tracking_registry: TRACKING,
+        owner,
+    }
+    .read(chain.client().zolana())
+    .await
+    .unwrap()
+}
+
+/// A queued entry applies in sequence order, a rotation ahead of the first proven entry moves nothing.
+#[tokio::test]
+async fn an_enrollment_reads_the_leaf_or_a_queued_proven_entry_under_the_newest_queued_key() {
+    let owner = keypair(70);
+    let leaf = held(&owner);
+    let rotated = X25519Keypair::new().pubkey().u();
+    let rotation = EnrollIxData {
+        viewing_u: rotated,
+        ..leaf.enroll()
+    };
+    let chain = || Chain::ring(RingSettings::new(RingMode::Confidential));
+    assert_eq!(read(chain(), owner.pubkey()).await, None);
+    let unproven = chain().with_queued(vec![queued(0, owner.pubkey(), &leaf.enroll(), false)]);
+    assert_eq!(read(unproven, owner.pubkey()).await, None);
+    let applied = chain().with_tracking_leaves(&[leaf]);
+    assert_eq!(read(applied, owner.pubkey()).await, Some(leaf.enroll()));
+    let queued_first = chain().with_queued(vec![
+        queued(0, owner.pubkey(), &rotation, false),
+        queued(1, owner.pubkey(), &leaf.enroll(), true),
+        queued(2, keypair(71).pubkey(), &rotation, true),
+    ]);
+    assert_eq!(
+        read(queued_first, owner.pubkey()).await,
+        Some(leaf.enroll())
+    );
+    let rotated_after = chain()
+        .with_tracking_leaves(&[leaf])
+        .with_queued(vec![queued(0, owner.pubkey(), &rotation, false)]);
+    assert_eq!(read(rotated_after, owner.pubkey()).await, Some(rotation));
+}
+
+fn enroll(owner: &ShieldedKeypair, viewing_u: [u8; 32]) -> Enroll<'_> {
+    Enroll {
+        ring: ring(),
+        payer: keypair(2).pubkey(),
+        owner: owner.pubkey(),
+        nullifier_key: &owner.nullifier_key,
+        viewing_pubkey: spr_keypair::X25519Pubkey::from_u(viewing_u).unwrap(),
+        list_salt: SALT,
+    }
+}
+
+/// The held key, tag and seal repeat unproven, only the viewing key moves.
+#[tokio::test]
+async fn an_enrolled_owner_proves_a_rotation_and_another_key_is_refused() {
+    let owner = keypair(72);
+    let leaf = held(&owner);
+    let client = Chain::ring(RingSettings::new(RingMode::Confidential))
+        .with_tracking_leaves(&[leaf])
+        .client();
+    let viewing_u = X25519Keypair::new().pubkey().u();
+    let rotation = enroll(&owner, viewing_u).prove(&client).await.unwrap();
+    let parsed = rotation.parsed().unwrap();
+    assert!(parsed.proof.is_none());
+    assert_eq!(
+        *parsed.ix,
+        EnrollIxData {
+            viewing_u,
+            ..leaf.enroll()
+        }
+    );
+    let stranger = keypair(73);
+    let other_key = ServedLeaf::sealed(owner.pubkey(), &stranger.nullifier_key, &SALT);
+    let client = Chain::ring(RingSettings::new(RingMode::Confidential))
+        .with_tracking_leaves(&[other_key])
+        .client();
+    assert!(matches!(
+        enroll(&owner, viewing_u).prove(&client).await,
+        Err(RingError::AlreadyEnrolled { owner: refused }) if refused == owner.pubkey()
+    ));
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -102,7 +199,6 @@ enum Landing {
 struct LedgerState {
     sent: Vec<VersionedTransaction>,
     landing: Landing,
-    reserved: bool,
     expired: bool,
     preflight_refuses: bool,
 }
@@ -115,7 +211,6 @@ impl Ledger {
         Self(Arc::new(Mutex::new(LedgerState {
             sent: Vec::new(),
             landing: Landing::Absent,
-            reserved: false,
             expired: false,
             preflight_refuses: false,
         })))
@@ -140,24 +235,6 @@ impl Ledger {
 
 #[async_trait]
 impl AsyncRpc for Ledger {
-    /// A reserved owner's authorization holds the fixture key and viewing key.
-    async fn get_account(&self, address: Address) -> Result<Option<Account>, ClientError> {
-        let reserved = self.0.lock().unwrap().reserved;
-        let enrolled = FirstEnrollment {
-            registry: TRACKING,
-            owner: keypair(1).pubkey(),
-            ix: &sealed(),
-        }
-        .account();
-        Ok((reserved
-            && address == instruction(keypair(1).pubkey(), keypair(2).pubkey()).authorization())
-        .then(|| Account {
-            data: bytemuck::bytes_of(&enrolled).to_vec(),
-            owner: STORAGE_PROGRAM_ID,
-            ..Account::default()
-        }))
-    }
-
     async fn get_latest_blockhash(&self) -> Result<(Hash, u64), ClientError> {
         Ok((Hash::new_unique(), VALID_UNTIL))
     }
@@ -318,11 +395,7 @@ async fn an_in_doubt_attempt_reconciles_from_its_record_after_a_restart() {
             .await,
         Err(RingError::AttemptNotExpired(EnrollmentOutcome::Pending))
     ));
-    ledger.set(|state| state.reserved = true);
-    assert_eq!(outcome().await, EnrollmentOutcome::Reserved);
     ledger.set(|state| state.landing = Landing::Failed);
-    assert_eq!(outcome().await, EnrollmentOutcome::Reserved);
-    ledger.set(|state| state.reserved = false);
     assert_eq!(
         outcome().await,
         EnrollmentOutcome::Failed(TransactionError::AccountNotFound)
@@ -333,7 +406,7 @@ async fn an_in_doubt_attempt_reconciles_from_its_record_after_a_restart() {
 }
 
 #[tokio::test]
-async fn only_an_expired_attempt_with_no_reservation_goes_again_with_the_same_request() {
+async fn only_an_expired_attempt_goes_again_with_the_same_request() {
     let ledger = Ledger::new();
     let journal = Journal::new(&ledger);
     let (owner, payer) = wallets();
@@ -342,18 +415,14 @@ async fn only_an_expired_attempt_with_no_reservation_goes_again_with_the_same_re
         .submit(&client, &[&payer, &owner], &journal)
         .await
         .unwrap();
-    ledger.set(|state| {
-        state.expired = true;
-        state.reserved = true;
-    });
     assert!(matches!(
         first
             .clone()
             .resubmit(&client, &[&payer, &owner], &journal)
             .await,
-        Err(RingError::AttemptNotExpired(EnrollmentOutcome::Reserved))
+        Err(RingError::AttemptNotExpired(EnrollmentOutcome::Pending))
     ));
-    ledger.set(|state| state.reserved = false);
+    ledger.set(|state| state.expired = true);
     assert_eq!(
         first.reconcile(&client).await.unwrap(),
         EnrollmentOutcome::Expired

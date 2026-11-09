@@ -1,6 +1,6 @@
 //! Member record views as record tree types, every opening checked against its root.
 
-use custom_ring_interface::{storage::StorageRegistry, RecordWrite, QUAD_ARITY};
+use custom_ring_interface::{storage::StorageRegistry, RecordWrite, QUAD_ARITY, QUAD_HEIGHT};
 use solana_address::Address;
 use spr_indexer_api::Hash;
 use zolana_ring_indexer::rpc::{
@@ -10,8 +10,8 @@ use zolana_ring_indexer::rpc::{
     RingRecordWriteView, MAX_RING_MEMBER_PAGE_LIMIT,
 };
 use zolana_ring_member_registry::{
-    ApplyProofInputs, Canopy, MemberRecord, OpeningCheck, PoolSubject, QuadPath, QuadPathOf,
-    RecordOpening, RecordPool, RecordWriteProofInput, SharedPath, SharedProof,
+    ApplyProofInputs, Canopy, MemberRecord, OpeningCheck, PoolSubject, QuadPath, RecordOpening,
+    RecordPool, RecordWriteProofInput, SharedPath, SharedProof,
 };
 use zolana_ring_policy::{ListId, Member, MemberError};
 
@@ -191,7 +191,7 @@ impl MemberOpeningRead {
         member: &[u8; 32],
     ) -> Result<Self, AuditError> {
         let record = member_record(&view.record);
-        let path = quad_path(&view.path)?;
+        let path = path_of(&view.path)?;
         let opening = match view.present {
             true => RecordOpening::Present { record, path },
             false => RecordOpening::Absent { low: record, path },
@@ -221,22 +221,18 @@ impl MemberOpeningRead {
 }
 
 /// Leaf level first.
-pub fn path_of<const H: usize>(view: &RingRecordPathView) -> Result<QuadPathOf<H>, AuditError> {
-    let levels: [[_; QUAD_ARITY - 1]; H] = view
+pub fn path_of(view: &RingRecordPathView) -> Result<QuadPath, AuditError> {
+    let levels: [[_; QUAD_ARITY - 1]; QUAD_HEIGHT] = view
         .siblings
         .iter()
         .map(|level| level.clone().map(|sibling| sibling.0))
         .collect::<Vec<_>>()
         .try_into()
         .map_err(|_| AuditError::InvalidMemberRegistry)?;
-    Ok(QuadPathOf {
+    Ok(QuadPath {
         index: view.index,
         siblings: levels,
     })
-}
-
-pub fn quad_path(view: &RingRecordPathView) -> Result<QuadPath, AuditError> {
-    path_of(view)
 }
 
 pub fn member_record(view: &RingMemberRecordView) -> MemberRecord {
@@ -279,8 +275,8 @@ fn record_write(view: &RingRecordWriteView) -> Result<RecordWriteProofInput, Aud
         old_next: view.old_next.0,
         old_lists: view.old_lists,
         old_mint_policy: view.old_mint_policy,
-        slot: quad_path(&view.slot)?,
+        slot: path_of(&view.slot)?,
         low: member_record(&view.low),
-        low_path: quad_path(&view.low_path)?,
+        low_path: path_of(&view.low_path)?,
     })
 }

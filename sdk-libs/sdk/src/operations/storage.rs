@@ -19,7 +19,7 @@ use custom_ring_interface::{
         tag, ApplyEnrollmentsIxData, AssetWrite, InitializeIxData, RecordWriteClassification,
         StorageUpdateIxData,
     },
-    tracking::{TrackingAuthorization, TrackingEntry},
+    tracking::{EnrollmentQueue, TrackingEntry},
     ApplyRecordsIxData, ApplyRecordsStatement, CustomRingError, GRACE_SLOTS, STORAGE_PROGRAM_ID,
     SYSTEM_PROGRAM_ID,
 };
@@ -30,7 +30,7 @@ use spr_hasher::primitives::solana_owner_identity;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use zolana_ring_client::{records::path_of, resolver::tracking_record, AsyncRingIndexer};
 use zolana_ring_indexer::tracking::{
-    GetPendingEnrollmentsRequest, GetTrackingApplyProofInputsRequest,
+    GetEnrollmentQueueRequest, GetTrackingApplyProofInputsRequest,
     GetTrackingApplyProofInputsResponse,
 };
 use zolana_ring_member_registry::{
@@ -412,14 +412,12 @@ async fn prove_apply<R: AsyncRpc, I: RingIndexerBackend>(
     })
 }
 
-/// Anyone may send it.
+/// Anyone may send it, it consumes `inputs.writes.len()` entries from the queue's head.
 #[must_use]
 pub struct ApplyEnrollments<'a> {
     pub tracking_registry: Address,
     /// The registry revision `chain_start` binds.
     pub revision: Revision,
-    /// In chain order.
-    pub owners: &'a [Address],
     pub inputs: &'a ApplyProofInputs<TrackingWriteProofInput>,
 }
 
@@ -460,21 +458,20 @@ impl ApplyEnrollments<'_> {
             proof: to_instruction_proof(proof)?,
             new_root: statement.new_root,
             new_next_index: statement.new_next_index.to_le_bytes(),
+            count: body.count,
         };
-        let mut accounts = vec![AccountMeta::new(self.tracking_registry, false)];
-        accounts.extend(self.owners.iter().map(|owner| {
-            let (authorization, _) =
-                TrackingAuthorization::find_address(&self.tracking_registry, owner);
-            AccountMeta::new(authorization, false)
-        }));
+        let (queue, _) = EnrollmentQueue::find_address(&self.tracking_registry);
         Ok(storage_ix(
-            accounts,
+            vec![
+                AccountMeta::new(self.tracking_registry, false),
+                AccountMeta::new(queue, false),
+            ],
             [&[tag::APPLY_ENROLLMENTS][..], bytemuck::bytes_of(&data)].concat(),
         ))
     }
 }
 
-/// Oldest first, up to one apply key's batch.
+/// The oldest queued entries, up to one apply key's batch.
 #[must_use]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnrollPending {
@@ -482,41 +479,36 @@ pub struct EnrollPending {
 }
 
 impl EnrollPending {
-    /// `None` when nothing is pending, a pending enrollment grants nothing until its root lands.
+    /// `None` when the queue is empty, a queued entry grants nothing until its root lands.
     pub async fn prove<R: AsyncRpc, I: RingIndexerBackend>(
         self,
         client: &RingClient<R, I>,
     ) -> Result<Option<Instruction>, RingError> {
         let policy = self.ring.require_policy(client.zolana()).await?;
         let registry = policy.tracking;
-        let pending = client
+        let queue = client
             .zolana()
-            .get_pending_enrollments(GetPendingEnrollmentsRequest {
+            .get_enrollment_queue(GetEnrollmentQueueRequest {
                 registry: registry.into(),
                 after: None,
-                limit: u64::from(APPLY_BATCH as u32),
+                limit: 1,
             })
             .await?;
-        if pending.enrollments.is_empty() {
+        let count = (queue.tail - queue.head).min(APPLY_BATCH as u64);
+        if count == 0 {
             return Ok(None);
         }
-        let owners: Vec<Address> = pending
-            .enrollments
-            .iter()
-            .map(|enrollment| enrollment.owner.0)
-            .collect();
         let response = client
             .zolana()
             .get_tracking_apply_proof_inputs(GetTrackingApplyProofInputsRequest {
                 registry: registry.into(),
-                owners: owners.iter().copied().map(Into::into).collect(),
+                count,
             })
             .await?;
         let inputs = tracking_apply_inputs(&response)?;
         let instruction = ApplyEnrollments {
             tracking_registry: registry,
             revision: Revision(response.revision.to_le_bytes()),
-            owners: &owners,
             inputs: &inputs,
         }
         .prove(client)
@@ -538,10 +530,13 @@ pub fn tracking_apply_inputs(
                     nullifier_pk: write.nullifier_pk.0,
                     ct_hash: write.ct_hash.0,
                     list_tag: write.list_tag.0,
+                    viewing_hash: write.viewing_hash.0,
+                    proven: write.proven,
                 },
-                slot: path_of(&write.slot)?,
+                present: write.present,
                 low: tracking_record(&write.low),
                 low_path: path_of(&write.low_path)?,
+                slot: path_of(&write.slot)?,
             })
         })
         .collect::<Result<_, RingError>>()?;
