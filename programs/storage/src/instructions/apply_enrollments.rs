@@ -108,7 +108,8 @@ pub fn process_apply_enrollments_ix(
     RingProof {
         proof: &ix.proof,
         statement: statement.hash().map_err(|_| StorageError::HashingFailed)?,
-        key: verifying_key(RingCircuit::apply_enrollments(count))
+        key: RingCircuit::apply_enrollments(count)
+            .and_then(verifying_key)
             .ok_or(StorageError::UnsupportedBatch)?,
     }
     .verify()

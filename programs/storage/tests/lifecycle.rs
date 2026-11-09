@@ -444,8 +444,8 @@ fn through_cpi_owner(mut instruction: Instruction) -> Instruction {
 }
 
 /// A zero proof's refusal, a circuit with no key yet refuses earlier and never passes.
-fn key_refusal(circuit: RingCircuit) -> StorageError {
-    match verifying_key(circuit) {
+fn key_refusal(circuit: Option<RingCircuit>) -> StorageError {
+    match circuit.and_then(verifying_key) {
         Some(_) => StorageError::ProofVerificationFailed,
         None => StorageError::UnsupportedBatch,
     }
@@ -1127,7 +1127,7 @@ fn the_program_rotates_roots_as_the_indexer_projects_them() {
 }
 
 fn private_key_refusal() -> StorageError {
-    key_refusal(RingCircuit::apply_records(1, ApplyMode::Private))
+    key_refusal(Some(RingCircuit::apply_records(1, ApplyMode::Private)))
 }
 
 #[test]

@@ -8,7 +8,10 @@
 
 use spr_interface::{shape::MAX_TRANSACTION_ADDRESSES, N_PUBLIC_SLOTS};
 
-use crate::{audit_stream::AuditKey, member_registry::APPLY_BATCH, transact::RingRail};
+use crate::{
+    audit_stream::AuditKey, member_registry::APPLY_BATCH, storage_instruction::ENROLLMENT_BATCH,
+    transact::RingRail,
+};
 
 pub use crate::ring_keys::RING_KEYS;
 
@@ -327,10 +330,14 @@ impl RingCircuit {
         }
     }
 
-    pub const fn apply_enrollments(pending: u64) -> Self {
-        Self::ApplyEnrollments {
-            writes: apply_width(pending),
+    /// `None` outside `1..=ENROLLMENT_BATCH`, the counts `check_count` refuses.
+    pub const fn apply_enrollments(pending: u64) -> Option<Self> {
+        if pending == 0 || pending > ENROLLMENT_BATCH as u64 {
+            return None;
         }
+        Some(Self::ApplyEnrollments {
+            writes: apply_width(pending),
+        })
     }
 }
 

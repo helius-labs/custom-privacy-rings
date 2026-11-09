@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 use custom_ring_interface::{
     key_catalog::{ApplyMode, RecordPools, RingCircuit, TransferSpend, RING_KEYS},
+    storage_instruction::ENROLLMENT_BATCH,
     verifying_key, RingRail, APPLY_BATCH, PROVING_KEY_SHA256S,
 };
 use spr_interface::{shape::SPP_SUPPORTED_SHAPES, MAX_INTERFACE_TRANSFERS};
@@ -85,7 +86,7 @@ fn selectable_circuits() -> BTreeSet<String> {
         circuits
             .extend((1..=APPLY_BATCH as u64).map(|count| RingCircuit::apply_records(count, mode)));
     }
-    circuits.extend((1..=APPLY_BATCH as u64).map(RingCircuit::apply_enrollments));
+    circuits.extend((1..=ENROLLMENT_BATCH as u64).filter_map(RingCircuit::apply_enrollments));
     circuits.push(RingCircuit::Merge);
     circuits
         .iter()

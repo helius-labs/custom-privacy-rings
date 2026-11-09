@@ -481,9 +481,12 @@ impl EnrollBatch<'_> {
         let inputs = tracking_apply_inputs(&response)?;
         let revision = Revision::from(response.revision);
         let statement = inputs.statement();
-        let circuit = RingCircuit::apply_enrollments(statement.count);
-        let RingCircuit::ApplyEnrollments { writes: batch } = circuit else {
-            return Err(RingError::UnpinnedProvingKey(circuit));
+        let Some(circuit @ RingCircuit::ApplyEnrollments { writes: batch }) =
+            RingCircuit::apply_enrollments(statement.count)
+        else {
+            return Err(RingError::EnrollmentBatchSize {
+                writes: usize::try_from(statement.count).unwrap_or(usize::MAX),
+            });
         };
         let public_input_hash = statement.hash()?;
         let mut proof_writes: Vec<_> = inputs

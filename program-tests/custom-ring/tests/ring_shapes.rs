@@ -620,7 +620,7 @@ impl<'a> ColumnSetup<'a> {
             .send()?;
         }
         coverage.cover(RingCircuit::RegisterKey);
-        coverage.cover(RingCircuit::apply_enrollments(1));
+        coverage.cover(RingCircuit::ApplyEnrollments { writes: 1 });
         if self.column == Column::Delegate {
             DelegateAppointment {
                 ring,
@@ -664,7 +664,9 @@ impl<'a> ColumnSetup<'a> {
                 env,
             }
             .send_in_one_batch()?;
-            coverage.cover_proved(gate, RingCircuit::apply_enrollments(u64::try_from(width)?))?;
+            let circuit = RingCircuit::apply_enrollments(u64::try_from(width)?)
+                .context("no apply key holds the batch")?;
+            coverage.cover_proved(gate, circuit)?;
             enrolled.extend(batch);
         }
         Ok(enrolled)
