@@ -1,7 +1,7 @@
-import { address, type Address } from "@solana/kit";
-import { describe, expect, it } from "vitest";
+import { address } from "@solana/kit";
+import { beforeAll, describe, expect, it } from "vitest";
 
-import { addressBytes } from "@heliuslabs/spr/internal";
+import { initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes16, Bytes32 } from "@heliuslabs/spr/interface";
 import { ShieldedKeypair, SigningKey, ViewingKey } from "@heliuslabs/spr/keypair";
 
@@ -11,13 +11,12 @@ import {
   rotateViewingKey,
   updateViewingKey,
 } from "../../../src/operations/management/viewing-rotation.js";
-import { STORAGE_PROGRAM_ID, trackingAuthorizationPda } from "../../../src/protocol/pda/index.js";
+import { viewingKeyHash } from "../../../src/protocol/membership/tracking.js";
 import { LocalRingKeys } from "../../../src/state/ring-keys.js";
 import { ViewingHistory } from "../../../src/state/viewing-history.js";
-import { withConfirmedReads } from "../../helpers/clients.js";
+import { enrolledEntry } from "../../helpers/member-registry.js";
+import { trackingClient, type TrackingFixture } from "../../helpers/tracking-client.js";
 
-const OWNER = address("7xKqmYUZ7pQHXcQnaZaZzR1oPjQb8kk8gA7XN3XxKzKq");
-const PAYER = address("4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi");
 const REGISTRY = address("9EwHno8C1T1vVGjasGnDH1GubiEu8qbgLX9qDjBshFhz");
 const SALT = new Uint8Array(16).fill(5) as Bytes16;
 
@@ -26,26 +25,41 @@ const wallet = (seed: number) =>
     SigningKey.fromEd25519Bytes(new Uint8Array(32).fill(seed) as Bytes32),
   );
 
-/** `OWNER`'s tracking authorization for `holder`, `enroll` lands a rotation. */
-async function enrolled(holder: ShieldedKeypair, applied = 1) {
-  const [pda] = await trackingAuthorizationPda(REGISTRY, OWNER);
-  const data = new Uint8Array(258);
-  data[0] = 4;
-  data.set(addressBytes(REGISTRY), 1);
-  data.set(addressBytes(OWNER), 33);
-  data.set(holder.nullifierPublicKey(), 65);
-  data.fill(0x11, 97, 129);
-  data.set(holder.viewingPublicKey().u(), 129);
-  data.fill(0x22, 161, 193);
-  data.fill(0x33, 193, 257);
-  data[257] = applied;
-  const client = withConfirmedReads({
-    getAccount: async (read: Address) =>
-      read === pda ? { owner: STORAGE_PROGRAM_ID, data: data.slice(), lamports: 1n } : undefined,
-  });
-  // A rotation writes the key alone, the applied flag stays.
-  const enroll = (viewingU: Uint8Array) => data.set(viewingU, 129);
-  return { client, enroll };
+beforeAll(initializePoseidon);
+
+/** `holder`'s leaf under the newest root, or its queued proven entry, `apply` moves the leaf. */
+function enrolled(holder: ShieldedKeypair, applied = true) {
+  const owner = holder.shieldedAddress();
+  const entry = enrolledEntry(owner);
+  const fixture: TrackingFixture = applied
+    ? { applied: [entry], pending: [] }
+    : {
+        applied: [],
+        pending: [
+          {
+            sequence: 0n,
+            owner: owner.solanaAddress(),
+            member: entry.member,
+            proven: true,
+            nullifierPk: entry.nullifierPk,
+            listTag: entry.listTag,
+            viewingU: owner.viewingPublicKey.u(),
+            ephPk: entry.seal?.ephPk ?? new Uint8Array(33),
+            ciphertext: entry.seal?.ciphertext ?? new Uint8Array(64),
+          },
+        ],
+      };
+  // An apply of a present owner's entry moves only its viewing key.
+  const apply = (viewingU: Bytes32) => {
+    const seal = entry.seal;
+    if (seal === undefined) throw new Error("no seal");
+    fixture.applied.splice(0, 1, {
+      ...entry,
+      viewingHash: viewingKeyHash(viewingU),
+      seal: { ...seal, viewingU },
+    });
+  };
+  return { owner: owner.solanaAddress(), client: trackingClient(REGISTRY, fixture), apply };
 }
 
 function rotation(holder: ShieldedKeypair, next: ViewingKey) {
@@ -58,22 +72,21 @@ function rotation(holder: ShieldedKeypair, next: ViewingKey) {
 }
 
 describe("viewing key rotation through the tracking row", () => {
-  it("enrolls the new key without a proof and confirms it once the rotation lands", async () => {
+  it("enrolls the new key without a proof and confirms it once an apply moves the leaf", async () => {
     const holder = wallet(1);
-    const { client, enroll } = await enrolled(holder);
+    const { owner, client, apply } = enrolled(holder);
     const rotated = rotation(holder, ViewingKey.generate());
     const current = rotated.keys.address().viewingPublicKey.u();
     const update = () =>
       updateViewingKey({
         client,
-        payer: PAYER,
-        owner: OWNER,
+        owner,
         trackingRegistry: REGISTRY,
         keys: rotated.keys,
         history: rotated.history,
       });
     const confirm = () =>
-      confirmViewingKey({ client, owner: OWNER, trackingRegistry: REGISTRY, keys: rotated.keys });
+      confirmViewingKey({ client, owner, trackingRegistry: REGISTRY, keys: rotated.keys });
 
     // 1. The rotation repeats the seal, carries the new key and no proof.
     const instruction = await update();
@@ -82,19 +95,19 @@ describe("viewing key rotation through the tracking row", () => {
     expect(instruction?.data?.subarray(65, 97)).toEqual(current);
     await expect(confirm()).rejects.toMatchObject({ code: "RING_VIEWING_KEY_NOT_PUBLISHED" });
 
-    // 2. The landed rotation confirms without an apply.
-    enroll(current);
+    // 2. A queued rotation confirms nothing until an apply moves the leaf.
+    apply(current);
     expect((await confirm()).viewingU).toEqual(current);
     expect(await update()).toBeUndefined();
   });
 
   it("confirms nothing for a first enrollment no apply has inserted", async () => {
     const holder = wallet(5);
-    const { client } = await enrolled(holder, 0);
+    const { owner, client } = enrolled(holder, false);
     await expect(
       confirmViewingKey({
         client,
-        owner: OWNER,
+        owner,
         trackingRegistry: REGISTRY,
         keys: LocalRingKeys.fromKeypair(holder),
       }),
@@ -129,9 +142,9 @@ describe("viewing key rotation through the tracking row", () => {
 
   it("refuses a holder of another nullifier key and one ahead of its history", async () => {
     const holder = wallet(3);
-    const { client } = await enrolled(holder);
+    const { owner, client } = enrolled(holder);
     const stranger = rotation(wallet(4), ViewingKey.generate());
-    const input = { client, payer: PAYER, owner: OWNER, trackingRegistry: REGISTRY };
+    const input = { client, owner, trackingRegistry: REGISTRY };
     await expect(
       updateViewingKey({ ...input, keys: stranger.keys, history: stranger.history }),
     ).rejects.toMatchObject({ code: "RING_ENROLLMENT_KEY_MISMATCH" });

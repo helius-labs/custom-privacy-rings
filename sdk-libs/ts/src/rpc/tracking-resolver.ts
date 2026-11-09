@@ -1,36 +1,32 @@
-import { getBase64Encoder, type Address } from "@solana/kit";
+import type { Address } from "@solana/kit";
 
-import type { ChainReader, SprClient } from "@heliuslabs/spr/client";
-import { equalBytes, runKitRpc, ZERO_NULLIFIER_PK } from "@heliuslabs/spr/internal";
+import type { ChainReader } from "@heliuslabs/spr/client";
+import { equalBytes, ZERO_NULLIFIER_PK } from "@heliuslabs/spr/internal";
 import type { Bytes32, RequestContext } from "@heliuslabs/spr/interface";
-import type { ShieldedAddress, X25519PublicKey } from "@heliuslabs/spr/keypair";
+import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
 
 import { listTagOf } from "../crypto/keys/list-salt.js";
 import type { RingAddress } from "../crypto/keys/ring-address.js";
 import { x25519FromU } from "../crypto/keys/x25519.js";
+import type { StorageRegistryRoot } from "../protocol/codec/ring-codecs.js";
 import { RingError } from "../protocol/error.js";
+import { sealViewingKey, type ServedTrackingOpening } from "../protocol/indexer/tracking-codec.js";
 import {
-  decodeTrackingAuthorization,
   decodeTrackingRegistry,
   verifyTrackingOpening,
-  type TrackingAuthorization,
+  type TrackingRecord,
   type TrackingRegistry,
 } from "../protocol/membership/tracking.js";
-import { STORAGE_PROGRAM_ID, trackingAuthorizationPda } from "../protocol/pda/index.js";
 import type { BoundRoot } from "./registered-record.js";
 import type { TrackingReader } from "./ports.js";
 
-/** Reads a tracking authorization at `confirmed` whatever the client reads at, Rust `AsyncRpc::get_account`. */
-export type AuthorizationReader = Pick<SprClient, "solanaRpc">;
-
 export type RingRecipientClient = Pick<ChainReader, "getAccount"> &
-  AuthorizationReader &
   Pick<TrackingReader, "getTrackingOpenings">;
 
 export type TrackingRoot = BoundRoot;
 
 export type ResolvedRecipient =
-  /** The authorization's viewing key, an address from before a rotation resolves to the current one, Rust `RecipientResolver`. */
+  /** The leaf's viewing key, an address from before a rotation resolves to the current one, Rust `RecipientResolver`. */
   | Readonly<{
       kind: "enrolled";
       root: TrackingRoot;
@@ -58,8 +54,8 @@ export type ResolvedRecipient =
 /**
  * Zero key resolution defers enrollment checks to payment validation.
  *
- * Reads the authorization at `confirmed`. A rotation that lands after the read leaves the payment
- * sealed to the key read, no program check reads a viewing key.
+ * A rotation applied after the read leaves the payment sealed to the key read, no program check
+ * reads a viewing key.
  */
 export async function resolveRingRecipient(
   input: Readonly<{
@@ -88,11 +84,7 @@ export async function resolveRingRecipient(
   const named = to.recipient.nullifierPublicKey;
   if (equalBytes(named, ZERO_NULLIFIER_PK)) {
     const viewingPublicKey =
-      row === undefined
-        ? to.recipient.viewingPublicKey
-        : x25519FromU(
-            await enrolledViewingKey({ client, trackingRegistry, owner: to.recipient }, context),
-          );
+      row === undefined ? to.recipient.viewingPublicKey : leafViewingKey(opening, row);
     return Object.freeze({ kind: "zeroKey", root, viewingPublicKey });
   }
   // A nonzero key pays an owner the opening proved absent under `root`.
@@ -111,79 +103,13 @@ export async function resolveRingRecipient(
     throw new RingError("RING_ADDRESS_MISMATCH", {
       details: { field: "listSalt" },
     });
-  const viewingU = await enrolledViewingKey(
-    { client, trackingRegistry, owner: to.recipient },
-    context,
-  );
   return Object.freeze({
     kind: "enrolled",
     root,
     nullifierPk: row.nullifierPk,
-    viewingPublicKey: x25519FromU(viewingU),
+    viewingPublicKey: leafViewingKey(opening, row),
     listTag: row.listTag,
   });
-}
-
-/** The viewing key an enrolled owner's authorization holds, its row present under the read root. */
-export async function enrolledViewingKey(
-  input: Readonly<{
-    client: AuthorizationReader;
-    trackingRegistry: Address;
-    owner: ShieldedAddress;
-  }>,
-  context?: RequestContext,
-): Promise<Bytes32> {
-  const authorization = await readTrackingAuthorization(
-    {
-      client: input.client,
-      trackingRegistry: input.trackingRegistry,
-      owner: input.owner.solanaAddress(),
-    },
-    context,
-  );
-  // A present row was inserted from the account, so a missing one is a forged or stale read.
-  if (authorization === undefined)
-    throw new RingError("RING_TRACKING_INVALID", {
-      details: { reason: "authorization" },
-    });
-  return authorization.viewingU;
-}
-
-/** `undefined` before the owner's first enrollment, an account another program, registry or owner holds refuses. */
-export async function readTrackingAuthorization(
-  input: Readonly<{
-    client: AuthorizationReader;
-    trackingRegistry: Address;
-    owner: Address;
-  }>,
-  context?: RequestContext,
-): Promise<TrackingAuthorization | undefined> {
-  const [address] = await trackingAuthorizationPda(input.trackingRegistry, input.owner);
-  const { value: account } = await runKitRpc("getAccountInfo", context, (abortSignal) =>
-    input.client.solanaRpc
-      .getAccountInfo(address, {
-        commitment: "confirmed",
-        encoding: "base64",
-      })
-      .send({ abortSignal }),
-  );
-  if (account === null) return undefined;
-  if (account.owner !== STORAGE_PROGRAM_ID)
-    throw new RingError("RING_TRACKING_INVALID", {
-      details: { reason: "authorization program" },
-    });
-  const authorization = decodeTrackingAuthorization(
-    getBase64Encoder().encode(account.data[0]) as Uint8Array,
-  );
-  if (authorization.registry !== input.trackingRegistry)
-    throw new RingError("RING_TRACKING_INVALID", {
-      details: { reason: "authorization registry" },
-    });
-  if (authorization.owner !== input.owner)
-    throw new RingError("RING_TRACKING_INVALID", {
-      details: { reason: "authorization owner" },
-    });
-  return authorization;
 }
 
 export async function newestTrackingRoot(
@@ -195,17 +121,21 @@ export async function newestTrackingRoot(
   context?: RequestContext,
 ): Promise<TrackingRoot> {
   const registry = await fetchTrackingRegistry(input.client, input.trackingRegistry, context);
-  const newest = registry.roots[0];
-  if (newest === undefined)
-    throw new RingError("RING_TRACKING_INVALID", {
-      details: { reason: "no root" },
-    });
+  const newest = currentTrackingRoot(registry);
   return Object.freeze({
     ringProgramId: input.ring,
     registry: input.trackingRegistry,
     revision: newest.revision,
     root: newest.hash,
   });
+}
+
+/** The newest root, a registry with none refuses. */
+export function currentTrackingRoot(registry: TrackingRegistry): StorageRegistryRoot {
+  const newest = registry.roots[0];
+  if (newest === undefined)
+    throw new RingError("RING_TRACKING_INVALID", { details: { reason: "no root" } });
+  return newest;
 }
 
 export async function fetchTrackingRegistry(
@@ -219,4 +149,11 @@ export async function fetchTrackingRegistry(
       details: { reason: "registry" },
     });
   return decodeTrackingRegistry(account.data);
+}
+
+/** A present leaf names the current viewing key, the address may predate a rotation. */
+function leafViewingKey(opening: ServedTrackingOpening, record: TrackingRecord): X25519PublicKey {
+  if (opening.kind !== "present" || opening.seal === undefined)
+    throw new RingError("RING_TRACKING_INVALID", { details: { reason: "seal" } });
+  return x25519FromU(sealViewingKey(opening.seal, record));
 }

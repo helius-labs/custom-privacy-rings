@@ -1,6 +1,7 @@
 import { EMPTY_MINT_POLICY, type MintPolicy } from "../../src/protocol/membership/mint-policy.js";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
-import { ZERO_32, bytesToBigInt, poseidon } from "@heliuslabs/spr/internal";
+import { ZERO_32, bytesToBigInt, hashBytes, poseidon } from "@heliuslabs/spr/internal";
+import { X25519Keypair, type ShieldedAddress } from "@heliuslabs/spr/keypair";
 import {
   QUAD_ARITY,
   QUAD_HEIGHT,
@@ -9,13 +10,36 @@ import {
   type QuadPath,
 } from "../../src/protocol/membership/member-registry.js";
 import { FIELD_MAX, memberRecordHash } from "../../src/protocol/membership/member-opening.js";
+import type { TrackingSeal } from "../../src/protocol/indexer/tracking-codec.js";
 import {
-  TRACKING_QUAD_HEIGHT,
   TRACKING_SENTINEL,
   trackingRecordHash,
-  type TrackingEntry,
+  viewingKeyHash,
+  type TrackingFields,
   type TrackingRecord,
 } from "../../src/protocol/membership/tracking.js";
+
+/** A leaf the fixture tracking tree holds, with the seal the indexer serves beside it. */
+export type FixtureTrackingEntry = TrackingFields & Readonly<{ seal?: TrackingSeal }>;
+
+const FIXTURE_EPH_PK = X25519Keypair.fromBytes(new Uint8Array(32).fill(0x22)).publicKey().toBytes();
+
+/** `owner`'s applied enrollment, its leaf binding the served viewing key and ciphertext. */
+export function enrolledEntry(
+  owner: ShieldedAddress,
+  listTag: Bytes32 = ZERO_32,
+): FixtureTrackingEntry {
+  const ciphertext = new Uint8Array(64).fill(0x33);
+  const viewingU = owner.viewingPublicKey.u();
+  return {
+    member: owner.signingPublicKey.ownerProofInputHash(),
+    nullifierPk: owner.nullifierPublicKey,
+    ctHash: hashBytes(ciphertext) as Bytes32,
+    listTag,
+    viewingHash: viewingKeyHash(viewingU),
+    seal: { owner: owner.solanaAddress(), viewingU, ephPk: FIXTURE_EPH_PK, ciphertext },
+  };
+}
 
 /** One record the fixture holds. */
 export interface FixtureRecord {
@@ -98,7 +122,7 @@ function indexedTree<Row extends Readonly<{ member: Bytes32; next: Bytes32 }>>(
     );
     return { records, canopy, subjects };
   };
-  return { root, nextIndex: rows.length, rows, path, opening, pool };
+  return { root, nextIndex: BigInt(rows.length), rows, path, opening, pool };
 }
 
 function ascending<Entry extends Readonly<{ member: Bytes32 }>>(
@@ -126,14 +150,30 @@ export function recordTree(records: readonly FixtureRecord[] = []) {
   return indexedTree(rows, memberRecordHash, QUAD_HEIGHT);
 }
 
-export function trackingTree(entries: readonly TrackingEntry[] = []) {
+/** Present openings carry their entry's seal, as the indexer serves them. */
+export function trackingTree(entries: readonly FixtureTrackingEntry[] = []) {
   const sorted = ascending(entries);
   const rows: TrackingRecord[] = [
     { ...TRACKING_SENTINEL, next: sorted[0]?.member ?? FIELD_MAX },
     ...sorted.map((entry, index) => ({
-      ...entry,
+      member: entry.member,
+      nullifierPk: entry.nullifierPk,
+      ctHash: entry.ctHash,
+      listTag: entry.listTag,
+      viewingHash: entry.viewingHash,
       next: sorted[index + 1]?.member ?? FIELD_MAX,
     })),
   ];
-  return indexedTree(rows, trackingRecordHash, TRACKING_QUAD_HEIGHT);
+  const tree = indexedTree(rows, trackingRecordHash, QUAD_HEIGHT);
+  const seals = new Map(
+    entries.flatMap(({ member, seal }) =>
+      seal === undefined ? [] : [[bytesToBigInt(member), seal] as const],
+    ),
+  );
+  const opening = (member: Bytes32) => {
+    const read = tree.opening(member);
+    const seal = read.kind === "present" ? seals.get(bytesToBigInt(member)) : undefined;
+    return seal === undefined ? read : { ...read, seal };
+  };
+  return { ...tree, opening };
 }

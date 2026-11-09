@@ -18,6 +18,7 @@ import {
   ringCoSignerAddress,
   ringPolicyAddress,
   STORAGE_PROGRAM_ID,
+  enrollmentQueuePda,
   trackingRegistryPda,
 } from "../../protocol/pda/index.js";
 import { isSmallOrder } from "../../crypto/keys/x25519.js";
@@ -86,7 +87,7 @@ function ringKindByte(kind: RingKind): number {
   return RING_KIND_BYTES[kind];
 }
 
-/** Rust `Initialize`, the upgrade authority signs and names the four roles, storage creates the tracking registry and the pool registers the ring in the same instruction. */
+/** Rust `Initialize`, the upgrade authority signs and names the four roles, storage creates the tracking registry with its enrollment queue and the pool registers the ring in the same instruction. */
 export async function initializeRingInstruction(
   input: Readonly<{
     ringProgramId: Address;
@@ -109,6 +110,7 @@ export async function initializeRingInstruction(
     ringAuthAddress(input.ringProgramId),
     trackingRegistryPda(input.ringProgramId),
   ]);
+  const [queue] = await enrollmentQueuePda(tracking);
   const writer = new Writer()
     .u8(RingInstructionTag.initialize, "tag")
     .bytes(input.auditorPublicKey.toBytes(), 33, "auditorPubkey")
@@ -125,6 +127,7 @@ export async function initializeRingInstruction(
     meta(ringAuth, false, true),
     meta(SHIELDED_POOL_PROGRAM_ID, false, false),
     meta(tracking, false, true),
+    meta(queue, false, true),
     meta(STORAGE_PROGRAM_ID, false, false),
   ];
   const { policy } = input;

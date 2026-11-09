@@ -71,7 +71,11 @@ import { openRingMerge } from "./audit-merge.js";
 import { ringBlindingSeed, ringOutputBlinding } from "../../crypto/derivation/blinding.js";
 import { dummyUtxoHash, fieldUtxoHash } from "../../protocol/membership/utxo-hash.js";
 import { outputTreeId } from "../../protocol/membership/trees.js";
-import { readRegisteredKeys, type OwnerNullifierKey } from "./owner-keys.js";
+import {
+  readRegisteredKeys,
+  type OwnerNullifierKey,
+  type RegisteredKeysClient,
+} from "./owner-keys.js";
 
 /**
  * Rust `AuditedUtxo`, a proven record under its published commitment. The ring proof binds every
@@ -315,7 +319,9 @@ export interface RingAuditPage {
   readonly nextCursor?: string;
 }
 
-export type RingAuditReader = KitRpcAccess & Pick<IndexerReader, "getShieldedTransactionsByTags">;
+export type RingAuditReader = KitRpcAccess &
+  Pick<IndexerReader, "getShieldedTransactionsByTags"> &
+  RegisteredKeysClient;
 
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_MAX_PAGES = 32;
@@ -866,10 +872,10 @@ function openedSlot(
 /**
  * The ring proof binds every record field to the slot's published commitment, so a verified frame's
  * record stands whatever its payload holds. A ring output omits its nullifier key, the bit names the
- * zero key and the owner's tracking authorization names any other. The key and the payload's data
- * hashes join the opening only when they rebuild that commitment, else the slot reports a payload
- * error beside its record. An owner with no authorization yet leaves the output unresolved, no
- * payload error. Spend tracing reads the published commitment, the record's blinding and the
+ * zero key and the owner's tracking leaf names any other. The key and the payload's data hashes join
+ * the opening only when they rebuild that commitment, else the slot reports a payload error beside
+ * its record. An owner with no leaf under the newest root leaves the output unresolved, no payload
+ * error. Spend tracing reads the published commitment, the record's blinding and the
  * owner's secret, never the data hashes.
  */
 function openSlot(

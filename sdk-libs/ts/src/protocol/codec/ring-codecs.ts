@@ -3,7 +3,7 @@ import { Reader, encodeBase58, ZERO_32, equalBytes } from "@heliuslabs/spr/inter
 import type { Address, Bytes32, Bytes33 } from "@heliuslabs/spr/interface";
 import { X25519PublicKey } from "@heliuslabs/spr/keypair";
 import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../../rpc/prover/types.js";
-import { MEMBER_REGISTRY_CAPACITY, ROOT_HISTORY } from "../membership/member-registry.js";
+import { QUAD_CAPACITY, ROOT_HISTORY } from "../membership/member-registry.js";
 
 import { RingError } from "../error.js";
 
@@ -78,7 +78,8 @@ export interface StorageRegistryRoot {
 export interface StorageRegistry {
   readonly authority: Address;
   readonly graceSlots: bigint;
-  readonly nextIndex: number;
+  /** u64, at most `QUAD_CAPACITY`. */
+  readonly nextIndex: bigint;
   /** Immutable, zero serves as a curator only. */
   readonly ringId: Bytes32;
   /** Immutable, the zero address on a public source. */
@@ -128,7 +129,7 @@ const RING_COSIGN_CLASSES = [RING_COSIGN_TRANSFERS, RING_COSIGN_DEPOSITS, RING_C
 export const RING_POLICY_DISCRIMINATOR = 15;
 export const RING_POLICY_SIZE = 1125;
 export const STORAGE_REGISTRY_DISCRIMINATOR = 1;
-export const STORAGE_REGISTRY_SIZE = 1653;
+export const STORAGE_REGISTRY_SIZE = 1657;
 
 /** Mirrors Rust `CoSigner::valid`, a nonzero signer under a valid scope. */
 export function decodeRingCoSigner(data: Uint8Array): RingCoSigner & Readonly<{ bump: number }> {
@@ -213,7 +214,7 @@ export function decodeStorageRegistry(data: Uint8Array): StorageRegistry {
   });
   const authority = encodeBase58(reader.bytes(32, "authority"));
   const graceSlots = reader.u64("graceSlots");
-  const nextIndex = reader.u32("nextIndex");
+  const nextIndex = reader.u64("nextIndex");
   const ringId = reader.bytes(32, "ringId") as Bytes32;
   const trackingRegistry = encodeBase58(reader.bytes(32, "trackingRegistry"));
   const trackingFloor = reader.u64("trackingFloor");
@@ -224,8 +225,10 @@ export function decodeStorageRegistry(data: Uint8Array): StorageRegistry {
     return equalBytes(hash, ZERO_32) ? undefined : Object.freeze({ hash, revision, expiresAt });
   });
   reader.done();
-  if (nextIndex < 1 || BigInt(nextIndex) > MEMBER_REGISTRY_CAPACITY)
-    throw new RingError("RING_MEMBER_REGISTRY_INVALID", { details: { nextIndex } });
+  if (nextIndex < 1n || nextIndex > QUAD_CAPACITY)
+    throw new RingError("RING_MEMBER_REGISTRY_INVALID", {
+      details: { nextIndex: nextIndex.toString() },
+    });
   return Object.freeze({
     authority,
     graceSlots,

@@ -767,7 +767,7 @@ export async function expectedEnroll(
 ): Promise<ExpectedEnroll> {
   const [policy, proved] = await Promise.all([
     ringPolicyAddress(inputs.ringProgramId),
-    relayEnrollInstruction(inputs, feePayer),
+    relayEnrollInstruction(inputs),
   ]);
   return Object.freeze({
     kind: "enroll",

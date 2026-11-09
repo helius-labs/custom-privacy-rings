@@ -28,11 +28,11 @@ import {
   type RecordOpening,
 } from "../protocol/membership/member-registry.js";
 import {
-  getPendingEnrollmentsMethod,
+  getEnrollmentQueueMethod,
   getTrackingOpeningsMethod,
   getTrackingRecordPoolMethod,
-  type PendingEnrollments,
-  type PendingEnrollmentsRequest,
+  type EnrollmentQueuePage,
+  type EnrollmentQueueRequest,
   type TrackingOpenings,
   type TrackingOpeningsRequest,
   type TrackingRecordPoolRequest,
@@ -120,13 +120,13 @@ export class RingIndexer implements RingRecordReader, TrackingReader {
     }
   }
 
-  async getPendingEnrollments(
-    request: PendingEnrollmentsRequest,
+  async getEnrollmentQueue(
+    request: EnrollmentQueueRequest,
     context?: RequestContext,
-  ): Promise<PendingEnrollments> {
-    const method = "getPendingEnrollments";
+  ): Promise<EnrollmentQueuePage> {
+    const method = "getEnrollmentQueue";
     try {
-      return await this.#api.call(getPendingEnrollmentsMethod, request, context);
+      return await this.#api.call(getEnrollmentQueueMethod, request, context);
     } catch (cause) {
       throw ringIndexerError(cause, method);
     }
@@ -233,7 +233,7 @@ function storageRoot(root: WireStorageRootView): StorageRoot {
   return Object.freeze({
     root: hashBytes(root.root),
     revision: root.revision,
-    nextIndex: Number(root.nextIndex),
+    nextIndex: root.nextIndex,
   });
 }
 

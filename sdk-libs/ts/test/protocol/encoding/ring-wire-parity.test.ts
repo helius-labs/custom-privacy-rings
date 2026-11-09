@@ -25,11 +25,12 @@ import {
   fittedSpend,
   ringTransferCircuit,
 } from "../../../src/protocol/proof/transfer-shapes.js";
+import { chainLink } from "../../../src/protocol/membership/member-registry.js";
 import {
-  trackingEntryChained,
   trackingEntryHash,
   trackingRecordHash,
   type TrackingEntry,
+  type TrackingFields,
   type TrackingRecord,
 } from "../../../src/protocol/membership/tracking.js";
 import {
@@ -241,6 +242,7 @@ interface TrackingRow {
   readonly nullifier_pk: string;
   readonly ct_hash: string;
   readonly list_tag: string;
+  readonly viewing_hash: string;
   readonly leaf_hash: string;
 }
 
@@ -255,21 +257,25 @@ interface TrackingApplication {
   readonly count: number;
   readonly statement_hash: string;
   readonly writes: readonly Readonly<{
-    entry: Omit<TrackingRow, "next" | "leaf_hash"> & Readonly<{ entry_hash: string }>;
+    entry: Omit<TrackingRow, "next" | "leaf_hash"> &
+      Readonly<{ proven: boolean; entry_hash: string }>;
     low: TrackingRow;
   }>[];
 }
 
 describe("tracking-records.json", () => {
-  const entryOf = (row: Omit<TrackingRow, "next" | "leaf_hash">) =>
+  const fieldsOf = (row: Omit<TrackingRow, "next" | "leaf_hash">) =>
     ({
       member: field(row.member),
       nullifierPk: field(row.nullifier_pk),
       ctHash: field(row.ct_hash),
       listTag: field(row.list_tag),
-    }) satisfies TrackingEntry;
+      viewingHash: field(row.viewing_hash),
+    }) satisfies TrackingFields;
+  const entryOf = (row: TrackingApplication["writes"][number]["entry"]) =>
+    ({ ...fieldsOf(row), proven: row.proven }) satisfies TrackingEntry;
   const recordOf = (row: TrackingRow) =>
-    ({ ...entryOf(row), next: field(row.next) }) satisfies TrackingRecord;
+    ({ ...fieldsOf(row), next: field(row.next) }) satisfies TrackingRecord;
 
   it("hashes, chains and states every application as Rust does", () => {
     const tracking = JSON.parse(
@@ -287,7 +293,7 @@ describe("tracking-records.json", () => {
         expect(hex(trackingRecordHash(recordOf(write.low))), application.name).toBe(
           write.low.leaf_hash,
         );
-        chain = trackingEntryChained(chain, entryOf(write.entry));
+        chain = chainLink(chain, trackingEntryHash(entryOf(write.entry)));
       }
       expect(hex(chain), application.name).toBe(application.chain_end);
       expect(

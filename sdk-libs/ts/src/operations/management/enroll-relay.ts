@@ -2,7 +2,6 @@ import { getBase58Decoder, getBase64Decoder, type MessagePartialSigner } from "@
 import type { RequestContext, Signature } from "@heliuslabs/spr/interface";
 import { signerAddress } from "@heliuslabs/spr/internal";
 
-import { RingError } from "../../protocol/error.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
 import {
   encodeRelayEnrollInputs,
@@ -48,11 +47,6 @@ export async function prepareEnrollmentRelay(
   context?: RequestContext,
 ): Promise<PreparedRelay> {
   const { ringProgramId, enroll, owner, quote } = input;
-  const payer = signerAddress(enroll.payer);
-  if (payer !== quote.feePayer)
-    throw new RingError("RING_RELAY_PAYER_MISMATCH", {
-      details: { payer, feePayer: quote.feePayer },
-    });
   const { tracking } = await fetchRingPolicy(client, ringProgramId, context);
   const proved = await enrollInstruction(
     { ...enroll, trackingRegistry: tracking },

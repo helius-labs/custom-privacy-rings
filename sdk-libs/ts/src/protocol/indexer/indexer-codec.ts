@@ -3,7 +3,7 @@ import type { indexerTypes } from "@heliuslabs/spr/internal";
 import { U64_MAX, indexerCodec, indexerScalars } from "@heliuslabs/spr/internal";
 
 import {
-  MEMBER_REGISTRY_CAPACITY,
+  QUAD_CAPACITY,
   QUAD_ARITY,
   QUAD_HEIGHT,
   canopyLevels,
@@ -67,7 +67,7 @@ export function encodeStorageMemberRecordsRequest(value: StorageMemberRecordsReq
   return {
     registry: checkedAddress(value.registry, "registry"),
     expectedRoot: checkedHash(value.expectedRoot, "expectedRoot"),
-    startIndex: toWireInteger(value.startIndex, "startIndex", 1n, MEMBER_REGISTRY_CAPACITY),
+    startIndex: toWireInteger(value.startIndex, "startIndex", 1n, QUAD_CAPACITY),
     limit: toWireInteger(BigInt(value.limit), "limit", 1n, BigInt(MAX_RING_MEMBER_BATCH)),
   };
 }
@@ -99,7 +99,7 @@ function recordPath(value: unknown, path: string, levels = QUAD_HEIGHT): RingRec
       row["siblings"],
     );
   return {
-    index: wireInteger(row["index"], `${path}.index`, 0n, MEMBER_REGISTRY_CAPACITY - 1n),
+    index: wireInteger(row["index"], `${path}.index`, 0n, QUAD_CAPACITY - 1n),
     siblings,
   };
 }
@@ -109,7 +109,7 @@ function storageRoot(value: unknown, path: string): StorageRootView {
   return {
     root: checkedHash(row["root"], `${path}.root`),
     revision: unboundedU64(row["revision"], `${path}.revision`),
-    nextIndex: wireInteger(row["nextIndex"], `${path}.nextIndex`, 1n, MEMBER_REGISTRY_CAPACITY),
+    nextIndex: wireInteger(row["nextIndex"], `${path}.nextIndex`, 1n, QUAD_CAPACITY),
   };
 }
 
@@ -307,8 +307,8 @@ function applyProofInputs(row: WireObject): Omit<StorageApplyProofInputsResponse
     context: context(row["context"], "context"),
     oldRoot: checkedHash(row["oldRoot"], "oldRoot"),
     newRoot: checkedHash(row["newRoot"], "newRoot"),
-    oldNextIndex: wireInteger(row["oldNextIndex"], "oldNextIndex", 1n, MEMBER_REGISTRY_CAPACITY),
-    newNextIndex: wireInteger(row["newNextIndex"], "newNextIndex", 1n, MEMBER_REGISTRY_CAPACITY),
+    oldNextIndex: wireInteger(row["oldNextIndex"], "oldNextIndex", 1n, QUAD_CAPACITY),
+    newNextIndex: wireInteger(row["newNextIndex"], "newNextIndex", 1n, QUAD_CAPACITY),
     chainStart: checkedHash(row["chainStart"], "chainStart"),
     chainEnd: checkedHash(row["chainEnd"], "chainEnd"),
     writes: array(row["writes"], "writes", recordWrite),

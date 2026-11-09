@@ -21,10 +21,13 @@ import {
 } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
 import {
-  MEMBER_REGISTRY_CAPACITY,
   QUAD_ARITY,
+  QUAD_CAPACITY,
   QUAD_HEIGHT,
   canopyLevels,
+  chainLink,
+  coveredPaths,
+  foldQuadPath,
   type ApplyProofInputs,
   type MemberRecord,
   type QuadPath,
@@ -44,12 +47,11 @@ import { applyKeyWidth } from "../proof/proving-keys.js";
 export const FIELD_MAX = bigIntBytes(BN254_SCALAR_ORDER - 1n) as Bytes32;
 /** Rust `MEMBER_REGISTRY_EMPTY_ROOT`, the tree holding only the sentinel, a registry's first root. */
 export const MEMBER_REGISTRY_EMPTY_ROOT = hexToBytes(
-  "053b2136ce0e6cffb89cb76c7a81b6d7e1bd424159ff4579f284a7e5f198956d",
+  "295ec16f1ff587f0269eb21ddf079a2b44cb3e0c6852f35431ab02f7651ac967",
 ) as Bytes32;
 
 const U64_MAX = 0xffff_ffff_ffff_ffffn;
 const CURVE25519_FIELD = 2n ** 255n - 19n;
-const CAPACITY = Number(MEMBER_REGISTRY_CAPACITY);
 
 /** Leaf 0, every member sorts strictly between it and `FIELD_MAX`. */
 export const SENTINEL_RECORD: MemberRecord = Object.freeze({
@@ -119,17 +121,7 @@ export function unopenedRecordPool(openings: number): RecordPool {
 
 /** The root `leaf` folds to along `path`, Rust `QuadPath::root`. */
 export function quadPathRoot(path: QuadPath, leaf: Bytes32): Bytes32 {
-  checkedIndex(path.index);
-  if (path.siblings.length !== QUAD_HEIGHT) invalid("PathHeight");
-  let node = leaf;
-  path.siblings.forEach((siblings, level) => {
-    if (siblings.length !== QUAD_ARITY - 1) invalid("PathArity");
-    const digit = (path.index >>> (2 * level)) & 3;
-    const children = siblings.map((sibling) => checkedBytes<Bytes32>(sibling, 32, "sibling"));
-    children.splice(digit, 0, node);
-    node = poseidon(children);
-  });
-  return node;
+  return foldQuadPath(path, leaf, invalid);
 }
 
 /** The member's record under `root`, `undefined` for an absent member, Rust `RecordOpening::verify`. */
@@ -183,42 +175,19 @@ export function verifyRecordPool(
   members: readonly Bytes32[],
   openings: number,
 ): readonly MemberOpeningRead[] {
-  const levels = canopyLevels(openings);
   if (
-    pool.canopy.length !== QUAD_ARITY ** levels ||
     pool.records.length < 1 ||
     pool.records.length > openings ||
     pool.subjects.length !== members.length
   )
     invalid("PoolShape");
-  const canopy = [pool.canopy.map((node) => checkedBytes<Bytes32>(node, 32, "canopy"))];
-  for (let level = 0; level < levels; level += 1) {
-    const below = canopy[level] ?? [];
-    canopy.push(
-      Array.from({ length: below.length / QUAD_ARITY }, (_, parent) =>
-        poseidon(below.slice(parent * QUAD_ARITY, (parent + 1) * QUAD_ARITY)),
-      ),
-    );
-  }
-  if (!equalBytes(canopy[levels]?.[0] ?? ZERO_32, root)) invalid("RootMismatch");
-  const height = QUAD_HEIGHT - levels;
-  const paths = pool.records.map(({ record, path }) => {
-    if (path.siblings.length !== height) invalid("PathHeight");
-    const full: QuadPath = {
-      index: path.index,
-      siblings: [
-        ...path.siblings,
-        ...canopy.slice(0, levels).map((nodes, level) => {
-          const node = path.index >>> (2 * (height + level));
-          const first = node - (node % QUAD_ARITY);
-          return nodes
-            .slice(first, first + QUAD_ARITY)
-            .filter((_, child) => first + child !== node);
-        }),
-      ],
-    };
-    if (!equalBytes(quadPathRoot(full, memberRecordHash(record)), root)) invalid("RootMismatch");
-    return full;
+  const paths = coveredPaths(
+    { paths: pool.records.map(({ path }) => path), canopy: pool.canopy, openings, root },
+    invalid,
+  );
+  pool.records.forEach(({ record }, at) => {
+    if (!equalBytes(quadPathRoot(paths[at] as QuadPath, memberRecordHash(record)), root))
+      invalid("RootMismatch");
   });
   return members.map((member, subject) => {
     const at = pool.subjects[subject];
@@ -246,7 +215,7 @@ export function recordWriteHash(entry: RecordWrite): Bytes32 {
 
 /** `chain(p) = Poseidon(chain(p - 1), entry_p)` from `chain_start` of the registry and revision. */
 export function writeChain(previous: Bytes32, entry: RecordWrite): Bytes32 {
-  return poseidon([checkedBytes<Bytes32>(previous, 32, "chain"), recordWriteHash(entry)]);
+  return chainLink(previous, recordWriteHash(entry));
 }
 
 /**
@@ -256,7 +225,7 @@ export function writeChain(previous: Bytes32, entry: RecordWrite): Bytes32 {
 export function replayRecordWrites(
   input: Readonly<{
     oldRoot: Bytes32;
-    oldNextIndex: number;
+    oldNextIndex: bigint;
     chainStart: Bytes32;
     writes: readonly RecordWriteProofInput[];
   }>,
@@ -332,8 +301,8 @@ function writtenRecord(record: MemberRecord, entry: RecordWrite): MemberRecord {
 function replayWrite(
   write: RecordWriteProofInput,
   root: Bytes32,
-  nextIndex: number,
-): readonly [Bytes32, number] {
+  nextIndex: bigint,
+): readonly [Bytes32, bigint] {
   const { entry } = write;
   if (write.exists) {
     const record: MemberRecord = {
@@ -371,11 +340,11 @@ function replayWrite(
     checkedIndex(write.slot.index);
     return [root, nextIndex];
   }
-  if (nextIndex >= CAPACITY) throw new RingError("RING_REGISTRY_FULL");
-  if (write.slot.index !== nextIndex) invalid("SlotIndex");
+  if (nextIndex >= QUAD_CAPACITY) throw new RingError("RING_REGISTRY_FULL");
+  if (BigInt(write.slot.index) !== nextIndex) invalid("SlotIndex");
   const relinked = quadPathRoot(write.lowPath, memberRecordHash({ ...low, next: entry.member }));
   if (!equalBytes(quadPathRoot(write.slot, ZERO_32), relinked)) invalid("RootMismatch");
-  return [quadPathRoot(write.slot, memberRecordHash(inserted)), nextIndex + 1];
+  return [quadPathRoot(write.slot, memberRecordHash(inserted)), nextIndex + 1n];
 }
 
 /** An entry the program refuses fails before the first write. */
@@ -391,11 +360,12 @@ function brackets(record: MemberRecord, member: Bytes32): boolean {
 }
 
 function checkedIndex(index: number): void {
-  if (!Number.isInteger(index) || index < 0 || index >= CAPACITY) invalid("IndexOutOfRange");
+  if (!Number.isSafeInteger(index) || index < 0 || BigInt(index) >= QUAD_CAPACITY)
+    invalid("IndexOutOfRange");
 }
 
-function checkedNextIndex(index: number): number {
-  if (!Number.isInteger(index) || index < 1 || index > CAPACITY) invalid("IndexOutOfRange");
+function checkedNextIndex(index: bigint): bigint {
+  if (typeof index !== "bigint" || index < 1n || index > QUAD_CAPACITY) invalid("IndexOutOfRange");
   return index;
 }
 

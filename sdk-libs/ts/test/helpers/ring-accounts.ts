@@ -7,9 +7,13 @@ import type { Bytes32 } from "@heliuslabs/spr/interface";
 import {
   ringAuthAddress,
   ringCoSignerPda,
+  enrollmentQueuePda,
   STORAGE_PROGRAM_ID,
-  trackingAuthorizationPda,
 } from "../../src/protocol/pda/index.js";
+import {
+  ENROLLMENT_QUEUE_CAPACITY,
+  TRACKING_ROOT_HISTORY,
+} from "../../src/protocol/membership/tracking.js";
 import { ROOT_HISTORY } from "../../src/protocol/membership/member-registry.js";
 import type {
   RingCoSigner,
@@ -23,7 +27,7 @@ import {
   RING_ROLES,
   STORAGE_REGISTRY_DISCRIMINATOR,
 } from "../../src/protocol/codec/ring-codecs.js";
-import { X25519Keypair, type ShieldedAddress } from "@heliuslabs/spr/keypair";
+import { X25519Keypair } from "@heliuslabs/spr/keypair";
 import {
   LIST_IDS,
   encodeRule,
@@ -87,7 +91,7 @@ export function trackingRegistryAccount(
   input: Readonly<{
     root: Bytes32;
     revision: bigint;
-    nextIndex: number;
+    nextIndex: bigint;
     auditorPubkey: Uint8Array;
   }>,
 ): RpcAccount {
@@ -95,8 +99,8 @@ export function trackingRegistryAccount(
     .u8(3, "discriminator")
     .bytes(new Uint8Array(32), 32, "ringId")
     .bytes(input.auditorPubkey, 33, "auditorPubkey")
-    .u64(BigInt(input.nextIndex), "nextIndex");
-  for (let slot = 0; slot < ROOT_HISTORY; slot += 1)
+    .u64(input.nextIndex, "nextIndex");
+  for (let slot = 0; slot < TRACKING_ROOT_HISTORY; slot += 1)
     writer
       .bytes(slot === 0 ? input.root : new Uint8Array(32), 32, "hash")
       .u64(slot === 0 ? input.revision : 0n, "revision")
@@ -104,49 +108,27 @@ export function trackingRegistryAccount(
   return ownedAccount(STORAGE_PROGRAM_ID, writer.finish());
 }
 
-/** Rust `TrackingAuthorization` of an applied enrollment at its PDA, the seal fields filled. */
-export async function trackingAuthorizationAccount(
-  input: Readonly<{
-    registry: Address;
-    owner: Address;
-    nullifierPk: Uint8Array;
-    listTag: Uint8Array;
-    viewingU: Uint8Array;
-  }>,
+/** Rust `EnrollmentQueue` of `registry` at its PDA, `entries` from sequence `head`. */
+export async function enrollmentQueueAccount(
+  input: Readonly<{ registry: Address; head?: bigint; entries?: readonly Uint8Array[] }>,
 ): Promise<readonly [Address, RpcAccount]> {
-  const data = new Writer()
+  const head = input.head ?? 0n;
+  const entries = input.entries ?? [];
+  const slots: Uint8Array[] = Array.from(
+    { length: ENROLLMENT_QUEUE_CAPACITY },
+    () => new Uint8Array(32),
+  );
+  entries.forEach((entry, offset) => {
+    slots[Number((head + BigInt(offset)) % BigInt(ENROLLMENT_QUEUE_CAPACITY))] = entry;
+  });
+  const writer = new Writer()
     .u8(4, "discriminator")
     .bytes(addressBytes(input.registry))
-    .bytes(addressBytes(input.owner))
-    .bytes(input.nullifierPk, 32, "nullifierPk")
-    .bytes(input.listTag, 32, "listTag")
-    .bytes(input.viewingU, 32, "viewingU")
-    .bytes(new Uint8Array(32).fill(0x22), 32, "ephU")
-    .bytes(new Uint8Array(64).fill(0x33), 64, "ciphertext")
-    .u8(1, "applied")
-    .finish();
-  const [address] = await trackingAuthorizationPda(input.registry, input.owner);
-  return [address, ownedAccount(STORAGE_PROGRAM_ID, data)];
-}
-
-/** Each enrolled owner's authorization at its PDA, keyed by address, the zero list tag. */
-export async function trackingAuthorizations(
-  registry: Address,
-  owners: readonly ShieldedAddress[],
-): Promise<ReadonlyMap<Address, RpcAccount>> {
-  return new Map(
-    await Promise.all(
-      owners.map((owner) =>
-        trackingAuthorizationAccount({
-          registry,
-          owner: owner.solanaAddress(),
-          nullifierPk: owner.nullifierPublicKey,
-          listTag: new Uint8Array(32),
-          viewingU: owner.viewingPublicKey.u(),
-        }),
-      ),
-    ),
-  );
+    .u64(head, "head")
+    .u64(head + BigInt(entries.length), "tail");
+  for (const slot of slots) writer.bytes(slot, 32, "entry");
+  const [address] = await enrollmentQueuePda(input.registry);
+  return [address, ownedAccount(STORAGE_PROGRAM_ID, writer.finish())];
 }
 
 /** Rust `StorageRegistry` owned by the storage program, `roots` newest first. */
@@ -162,7 +144,7 @@ export function storageRegistryAccount(
     .u8(STORAGE_REGISTRY_DISCRIMINATOR, "discriminator")
     .bytes(addressBytes(authority))
     .u64(0n, "graceSlots")
-    .u32(1, "nextIndex")
+    .u64(1n, "nextIndex")
     .bytes(new Uint8Array(32), 32, "ringId")
     .bytes(addressBytes(source.trackingRegistry ?? ZERO_ADDRESS))
     .u64(source.trackingFloor ?? 0n, "trackingFloor");

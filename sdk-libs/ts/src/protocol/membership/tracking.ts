@@ -3,9 +3,11 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import type { Address } from "@solana/kit";
 
 import {
+  bigIntBytes,
   checkedBytes,
   encodeBase58,
   equalBytes,
+  hashBytes,
   poseidon,
   Reader,
   ZERO_32,
@@ -16,48 +18,48 @@ import { domainField, RingDomain } from "../../crypto/derivation/ring-domain.js"
 import { RingError } from "../error.js";
 import type { StorageRegistryRoot } from "../codec/ring-codecs.js";
 import {
-  QUAD_ARITY,
-  ROOT_HISTORY,
-  canopyLevels,
+  QUAD_CAPACITY,
+  coveredPaths,
+  foldQuadPath,
   type PoolSubject,
   type QuadPath,
 } from "./member-registry.js";
 import { FIELD_MAX } from "./member-opening.js";
 
-export const TRACKING_QUAD_HEIGHT = 16;
-export const TRACKING_CAPACITY = 1n << BigInt(2 * TRACKING_QUAD_HEIGHT);
 export const TRACKING_GRACE_SLOTS = 750n;
+/** Rust `TRACKING_ROOT_HISTORY`, the roots a tracking registry keeps. */
+export const TRACKING_ROOT_HISTORY = 128;
+/** Rust `ENROLLMENT_QUEUE_CAPACITY`, the entries a queue holds before `Enroll` refuses. */
+export const ENROLLMENT_QUEUE_CAPACITY = 256;
 /** The sentinel at leaf 0 under zero subtrees. */
 export const TRACKING_EMPTY_ROOT = hexToBytes(
-  "2425fb189630d5f84bcc34f42804377d8564a55959c92ad1fa6fee86a590614e",
+  "197ce7e4cc6e23ed6f4d5b32303dd91e032f9afdc7f8dd424ab2638d245e4559",
 ) as Bytes32;
 
 const REGISTRY_DISCRIMINATOR = 3;
-const AUTHORIZATION_DISCRIMINATOR = 4;
+const QUEUE_DISCRIMINATOR = 4;
 const OWNER_GRANT_DISCRIMINATOR = 5;
-const REGISTRY_SIZE = 1610;
-const AUTHORIZATION_SIZE = 258;
+const REGISTRY_SIZE = 74 + 48 * TRACKING_ROOT_HISTORY;
+const QUEUE_SIZE = 49 + 32 * ENROLLMENT_QUEUE_CAPACITY;
 const OWNER_GRANT_SIZE = 2;
 
 export interface TrackingRegistry {
   readonly ringId: Bytes32;
   readonly auditorPubkey: Bytes33;
-  /** At most `TRACKING_CAPACITY`, the last leaf index is `TRACKING_CAPACITY - 1`. */
+  /** At most `QUAD_CAPACITY`, the last leaf index is `QUAD_CAPACITY - 1`. */
   readonly nextIndex: bigint;
   /** Newest first. */
   readonly roots: readonly (StorageRegistryRoot | undefined)[];
 }
 
-export interface TrackingAuthorization {
+/** Rust `EnrollmentQueue`, sequence `s` holds its entry hash at `s % ENROLLMENT_QUEUE_CAPACITY`. */
+export interface EnrollmentQueue {
   readonly registry: Address;
-  readonly owner: Address;
-  readonly nullifierPk: Bytes32;
-  readonly listTag: Bytes32;
-  readonly viewingU: Bytes32;
-  readonly ephU: Bytes32;
-  readonly ciphertext: Bytes64;
-  /** Set once an apply inserts the owner's row, a rotation leaves it. */
-  readonly applied: boolean;
+  /** The oldest sequence no apply consumed. */
+  readonly head: bigint;
+  /** The sequence the next `Enroll` takes. */
+  readonly tail: bigint;
+  readonly entries: readonly Bytes32[];
 }
 
 /** The address names the registry, the owner and the reader. */
@@ -65,15 +67,22 @@ export interface OwnerGrant {
   readonly active: boolean;
 }
 
-/** The write an apply proof chains, the program computes it from the owner's account. */
-export interface TrackingEntry {
+export interface TrackingFields {
   readonly member: Bytes32;
   readonly nullifierPk: Bytes32;
   readonly ctHash: Bytes32;
   readonly listTag: Bytes32;
+  /** `hash_bytes(viewing_u)`, an X25519 `u` can exceed the field. */
+  readonly viewingHash: Bytes32;
 }
 
-export interface TrackingRecord extends TrackingEntry {
+/** One queued `Enroll`, Rust `TrackingEntry`. */
+export interface TrackingEntry extends TrackingFields {
+  /** Set when the `Enroll` verified `RegisterKey`, a rotation carries none. */
+  readonly proven: boolean;
+}
+
+export interface TrackingRecord extends TrackingFields {
   readonly next: Bytes32;
 }
 
@@ -88,21 +97,22 @@ export const TRACKING_SENTINEL: TrackingRecord = Object.freeze({
   nullifierPk: ZERO_32,
   ctHash: ZERO_32,
   listTag: ZERO_32,
+  viewingHash: ZERO_32,
 });
 
 export function decodeTrackingRegistry(data: Uint8Array): TrackingRegistry {
-  const reader = account(data, REGISTRY_DISCRIMINATOR, REGISTRY_SIZE, "RING_TRACKING_INVALID");
+  const reader = account(data, REGISTRY_DISCRIMINATOR, REGISTRY_SIZE);
   const ringId = reader.bytes(32, "ringId") as Bytes32;
   const auditorPubkey = reader.bytes(33, "auditorPubkey") as Bytes33;
   const nextIndex = reader.u64("nextIndex");
-  const roots = Array.from({ length: ROOT_HISTORY }, () => {
+  const roots = Array.from({ length: TRACKING_ROOT_HISTORY }, () => {
     const hash = reader.bytes(32, "root.hash") as Bytes32;
     const revision = reader.u64("root.revision");
     const expiresAt = reader.u64("root.expiresAt");
     return equalBytes(hash, ZERO_32) ? undefined : Object.freeze({ hash, revision, expiresAt });
   });
   reader.done();
-  if (nextIndex < 1n || nextIndex > TRACKING_CAPACITY)
+  if (nextIndex < 1n || nextIndex > QUAD_CAPACITY)
     throw new RingError("RING_TRACKING_INVALID", { details: { nextIndex: nextIndex.toString() } });
   return Object.freeze({
     ringId,
@@ -112,34 +122,50 @@ export function decodeTrackingRegistry(data: Uint8Array): TrackingRegistry {
   });
 }
 
-export function decodeTrackingAuthorization(data: Uint8Array): TrackingAuthorization {
-  const reader = account(
-    data,
-    AUTHORIZATION_DISCRIMINATOR,
-    AUTHORIZATION_SIZE,
-    "RING_TRACKING_INVALID",
+/** Mirrors Rust `EnrollmentQueue::from_data`, at most `ENROLLMENT_QUEUE_CAPACITY` entries pending. */
+export function decodeEnrollmentQueue(data: Uint8Array): EnrollmentQueue {
+  const reader = account(data, QUEUE_DISCRIMINATOR, QUEUE_SIZE);
+  const registry = encodeBase58(reader.bytes(32, "registry"));
+  const head = reader.u64("head");
+  const tail = reader.u64("tail");
+  const entries = Array.from(
+    { length: ENROLLMENT_QUEUE_CAPACITY },
+    () => reader.bytes(32, "entry") as Bytes32,
   );
-  const authorization = Object.freeze({
-    registry: encodeBase58(reader.bytes(32, "registry")),
-    owner: encodeBase58(reader.bytes(32, "owner")),
-    nullifierPk: reader.bytes(32, "nullifierPk") as Bytes32,
-    listTag: reader.bytes(32, "listTag") as Bytes32,
-    viewingU: reader.bytes(32, "viewingU") as Bytes32,
-    ephU: reader.bytes(32, "ephU") as Bytes32,
-    ciphertext: reader.bytes(64, "ciphertext") as Bytes64,
-    applied: reader.u8("applied") !== 0,
-  });
   reader.done();
-  return authorization;
+  if (tail < head || tail - head > BigInt(ENROLLMENT_QUEUE_CAPACITY))
+    throw new RingError("RING_TRACKING_INVALID", {
+      details: { reason: "queue", head: head.toString(), tail: tail.toString() },
+    });
+  return Object.freeze({ registry, head, tail, entries: Object.freeze(entries) });
+}
+
+/** Rust `EnrollmentQueue::push` refuses a full queue with nothing written. */
+export function checkEnrollmentQueueOpen(queue: EnrollmentQueue): void {
+  if (queue.tail - queue.head >= BigInt(ENROLLMENT_QUEUE_CAPACITY))
+    throw new RingError("RING_ENROLLMENT_QUEUE_FULL");
+}
+
+/** The hashes of sequences `head .. head + count`, Rust `EnrollmentQueue::take`. */
+export function queuedEntryHashes(queue: EnrollmentQueue, count: number): readonly Bytes32[] {
+  if (count < 1) throw new RingError("RING_ENROLLMENT_NONE_NAMED");
+  if (BigInt(count) > queue.tail - queue.head)
+    throw new RingError("RING_ENROLLMENT_QUEUE_SHORT", {
+      details: { count, pending: (queue.tail - queue.head).toString() },
+    });
+  return Object.freeze(
+    Array.from(
+      { length: count },
+      (_, offset) =>
+        queue.entries[
+          Number((queue.head + BigInt(offset)) % BigInt(ENROLLMENT_QUEUE_CAPACITY))
+        ] as Bytes32,
+    ),
+  );
 }
 
 export function decodeOwnerGrant(data: Uint8Array): OwnerGrant {
-  const reader = account(
-    data,
-    OWNER_GRANT_DISCRIMINATOR,
-    OWNER_GRANT_SIZE,
-    "RING_TRACKING_INVALID",
-  );
+  const reader = account(data, OWNER_GRANT_DISCRIMINATOR, OWNER_GRANT_SIZE);
   const grant = Object.freeze({
     active: reader.u8("active") === 1,
   });
@@ -147,38 +173,49 @@ export function decodeOwnerGrant(data: Uint8Array): OwnerGrant {
   return grant;
 }
 
-export function isEnrollmentPending(authorization: TrackingAuthorization): boolean {
-  return !authorization.applied;
+/** Rust `TrackingEntry::from_enroll`, the entry an `Enroll` of `member` queues. */
+export function trackingEntryOf(
+  input: Readonly<{
+    member: Bytes32;
+    nullifierPk: Bytes32;
+    listTag: Bytes32;
+    viewingU: Bytes32;
+    ciphertext: Bytes64;
+    proven: boolean;
+  }>,
+): TrackingEntry {
+  return Object.freeze({
+    member: input.member,
+    nullifierPk: input.nullifierPk,
+    ctHash: hashBytes(checkedBytes<Bytes64>(input.ciphertext, 64, "ciphertext")) as Bytes32,
+    listTag: input.listTag,
+    viewingHash: viewingKeyHash(input.viewingU),
+    proven: input.proven,
+  });
 }
 
-/** `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag)`. */
+/** `hash_bytes(viewing_u)`, the leaf field a sender checks a served viewing key against. */
+export function viewingKeyHash(viewingU: Bytes32): Bytes32 {
+  return hashBytes(checkedBytes<Bytes32>(viewingU, 32, "viewing key")) as Bytes32;
+}
+
+/** `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, proven)`. */
 export function trackingEntryHash(entry: TrackingEntry): Bytes32 {
   return poseidon([
     domainField(RingDomain.trackingEntry),
-    checkedBytes<Bytes32>(entry.member, 32, "member"),
-    checkedBytes<Bytes32>(entry.nullifierPk, 32, "nullifier pk"),
-    checkedBytes<Bytes32>(entry.ctHash, 32, "ct hash"),
-    checkedBytes<Bytes32>(entry.listTag, 32, "list tag"),
+    ...trackingFields(entry),
+    bigIntBytes(entry.proven ? 1n : 0n) as Bytes32,
   ]) as Bytes32;
 }
 
-/** `Poseidon(previous, entry)`. */
-export function trackingEntryChained(previous: Bytes32, entry: TrackingEntry): Bytes32 {
-  return poseidon([
-    checkedBytes<Bytes32>(previous, 32, "chain"),
-    trackingEntryHash(entry),
-  ]) as Bytes32;
-}
-
-/** `Poseidon(CRTK, member, next, nullifier_pk, ct_hash, list_tag)`. */
+/** `Poseidon(CRTK, member, next, nullifier_pk, ct_hash, list_tag, viewing_hash)`. */
 export function trackingRecordHash(record: TrackingRecord): Bytes32 {
+  const [member, ...keys] = trackingFields(record);
   return poseidon([
     domainField(RingDomain.trackingLeaf),
-    checkedBytes<Bytes32>(record.member, 32, "member"),
+    member as Bytes32,
     checkedBytes<Bytes32>(record.next, 32, "next"),
-    checkedBytes<Bytes32>(record.nullifierPk, 32, "nullifier pk"),
-    checkedBytes<Bytes32>(record.ctHash, 32, "ct hash"),
-    checkedBytes<Bytes32>(record.listTag, 32, "list tag"),
+    ...keys,
   ]) as Bytes32;
 }
 
@@ -194,7 +231,7 @@ export function verifyTrackingOpening(
       ? equalBytes(leaf.member, member)
       : fieldBelow(leaf.member, member) && fieldBelow(member, leaf.next);
   if (!held) throw invalid("NotBracketed");
-  if (!equalBytes(trackingPathRoot(opening.path, trackingRecordHash(leaf)), root))
+  if (!equalBytes(foldQuadPath(opening.path, trackingRecordHash(leaf), refuse), root))
     throw invalid("RootMismatch");
   return opening.kind === "present" ? opening.record : undefined;
 }
@@ -234,45 +271,17 @@ export function verifyTrackingPool(
   }>,
 ): VerifiedTrackingPool {
   const { pool, root, members, openings } = input;
-  const levels = canopyLevels(openings);
   if (
-    pool.canopy.length !== QUAD_ARITY ** levels ||
     pool.records.length < 1 ||
     pool.records.length > openings ||
     pool.subjects.length !== members.length ||
     members.length > openings
   )
     throw invalid("PoolShape");
-  const canopy: Bytes32[][] = [
-    pool.canopy.map((node) => checkedBytes<Bytes32>(node, 32, "canopy")),
-  ];
-  for (let level = 0; level < levels; level += 1) {
-    const below = canopy[level] ?? [];
-    canopy.push(
-      Array.from(
-        { length: below.length / QUAD_ARITY },
-        (_, parent) =>
-          poseidon(below.slice(parent * QUAD_ARITY, (parent + 1) * QUAD_ARITY)) as Bytes32,
-      ),
-    );
-  }
-  const height = TRACKING_QUAD_HEIGHT - levels;
-  const fullPaths = pool.records.map(({ path }): QuadPath => {
-    if (path.siblings.length !== height) throw invalid("PathHeight");
-    return {
-      index: path.index,
-      siblings: [
-        ...path.siblings,
-        ...canopy.slice(0, levels).map((nodes, level) => {
-          const node = Math.floor(path.index / QUAD_ARITY ** (height + level));
-          const first = node - (node % QUAD_ARITY);
-          return nodes
-            .slice(first, first + QUAD_ARITY)
-            .filter((_, child) => first + child !== node);
-        }),
-      ],
-    };
-  });
+  const fullPaths = coveredPaths(
+    { paths: pool.records.map(({ path }) => path), canopy: pool.canopy, openings, root },
+    refuse,
+  );
   const rows = members.map((member, subject) => {
     const at = pool.subjects[subject];
     const served = at === undefined ? undefined : pool.records[at];
@@ -304,23 +313,14 @@ function cyclic<T>(values: readonly T[], length: number): readonly T[] {
   return Array.from({ length }, (_, index) => values[index % values.length] as T);
 }
 
-function trackingPathRoot(path: QuadPath, leaf: Bytes32): Bytes32 {
-  if (path.siblings.length !== TRACKING_QUAD_HEIGHT) throw invalid("PathHeight");
-  if (
-    !Number.isSafeInteger(path.index) ||
-    path.index < 0 ||
-    BigInt(path.index) >= TRACKING_CAPACITY
-  )
-    throw invalid("PathIndex");
-  let node = leaf;
-  path.siblings.forEach((siblings, level) => {
-    if (siblings.length !== QUAD_ARITY - 1) throw invalid("PathArity");
-    const digit = Math.floor(path.index / QUAD_ARITY ** level) % QUAD_ARITY;
-    const children = siblings.map((sibling) => checkedBytes<Bytes32>(sibling, 32, "sibling"));
-    children.splice(digit, 0, node);
-    node = poseidon(children) as Bytes32;
-  });
-  return node;
+function trackingFields(fields: TrackingFields): readonly Bytes32[] {
+  return [
+    checkedBytes<Bytes32>(fields.member, 32, "member"),
+    checkedBytes<Bytes32>(fields.nullifierPk, 32, "nullifier pk"),
+    checkedBytes<Bytes32>(fields.ctHash, 32, "ct hash"),
+    checkedBytes<Bytes32>(fields.listTag, 32, "list tag"),
+    checkedBytes<Bytes32>(fields.viewingHash, 32, "viewing hash"),
+  ];
 }
 
 function fieldBelow(left: Bytes32, right: Bytes32): boolean {
@@ -331,14 +331,11 @@ function fieldBelow(left: Bytes32, right: Bytes32): boolean {
   return false;
 }
 
-function account(
-  data: Uint8Array,
-  discriminator: number,
-  size: number,
-  code: "RING_TRACKING_INVALID",
-): Reader {
+function account(data: Uint8Array, discriminator: number, size: number): Reader {
   if (data.length !== size || data[0] !== discriminator)
-    throw new RingError(code, { details: { length: data.length, discriminator: data[0] } });
+    throw new RingError("RING_TRACKING_INVALID", {
+      details: { length: data.length, discriminator: data[0] },
+    });
   const reader = new Reader(data);
   reader.u8("discriminator");
   return reader;
@@ -346,4 +343,8 @@ function account(
 
 function invalid(reason: string): RingError {
   return new RingError("RING_TRACKING_INVALID", { details: { reason } });
+}
+
+function refuse(reason: string): never {
+  throw invalid(reason);
 }

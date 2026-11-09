@@ -1,5 +1,5 @@
 /** The policy section of a ring transfer, every record read under a root the statement binds. */
-import type { ShieldedAddress, ShieldedPublicKey } from "@heliuslabs/spr/keypair";
+import type { ShieldedPublicKey } from "@heliuslabs/spr/keypair";
 import { EMPTY_MINT_POLICY, type MintPolicy } from "../protocol/membership/mint-policy.js";
 import type { RecordPool } from "../protocol/membership/member-registry.js";
 import {
@@ -68,13 +68,13 @@ import {
   type RuleRefusal,
   type SourceView,
 } from "../protocol/membership/policy.js";
-import { verifyTrackingPool, type TrackingRecord } from "../protocol/membership/tracking.js";
-import { fetchBoundRoot, readRecordPool, type BoundRoot } from "../rpc/registered-record.js";
 import {
-  enrolledViewingKey,
-  newestTrackingRoot,
-  type AuthorizationReader,
-} from "../rpc/tracking-resolver.js";
+  verifyTrackingPool,
+  viewingKeyHash,
+  type TrackingRecord,
+} from "../protocol/membership/tracking.js";
+import { fetchBoundRoot, readRecordPool, type BoundRoot } from "../rpc/registered-record.js";
+import { newestTrackingRoot } from "../rpc/tracking-resolver.js";
 import type { TransferRoots } from "../protocol/proof/statement.js";
 import {
   transferPoolCapacity,
@@ -100,7 +100,6 @@ export interface BoundPolicy {
 
 /** Rust `GetTrackingRecordPool`, the pool's canopy needs nodes no single opening's path holds. */
 export type PolicyReadClient = Pick<ChainReader, "getAccount"> &
-  AuthorizationReader &
   Pick<RingRecordReader, "getStorageRecordPool"> &
   Pick<TrackingReader, "getTrackingRecordPool">;
 
@@ -630,27 +629,7 @@ async function readTracking(
     pool.rows[position.get(bytesKey(member)) ?? -1];
   checkInputKeys({ inputs: publishedNotes(proofInputs), rowOf });
   const spenders = publishedNotes(proofInputs).map((note) => note.utxo.owner);
-  const viewingKeys = await readPayeeViewingKeys(
-    {
-      client,
-      trackingRegistry: config.tracking,
-      owners: ringOutputs.flatMap((output) => {
-        const owner = output?.ownerAddress;
-        return owner === undefined ||
-          rowOf(owner.signingPublicKey.ownerProofInputHash()) === undefined ||
-          spenders.some((spender) => owner.signingPublicKey.equals(spender))
-          ? []
-          : [owner];
-      }),
-    },
-    context,
-  );
-  checkOutputKeys({
-    outputs: ringOutputs,
-    rowOf,
-    viewingKeyOf: (member) => viewingKeys.get(bytesKey(member)),
-    spenders,
-  });
+  checkOutputKeys({ outputs: ringOutputs, rowOf, spenders });
   const trackingEntry = (member: Bytes32 | undefined): number =>
     member === undefined || isZero(member) ? 0 : (position.get(bytesKey(member)) ?? 0);
   return {
@@ -700,13 +679,14 @@ export function checkInputKeys(
   }
 }
 
-/** Zero key recipients require absence at the accepted tracking root. */
+/**
+ * Zero key recipients require absence at the accepted tracking root, a present payee's viewing key
+ * must hash to its leaf's `viewingHash`, a check no circuit makes.
+ */
 export function checkOutputKeys(
   input: Readonly<{
     outputs: readonly (ProofOutputUtxo | undefined)[];
     rowOf: (member: Bytes32) => TrackingRecord | undefined;
-    /** The key the owner's authorization held when read, `readPayeeViewingKeys`. */
-    viewingKeyOf: (member: Bytes32) => Bytes32 | undefined;
     /** A spending owner holds every key it ever enrolled. */
     spenders: readonly ShieldedPublicKey[];
   }>,
@@ -726,46 +706,9 @@ export function checkOutputKeys(
       input.spenders.some((spender) => owner.signingPublicKey.equals(spender))
     )
       continue;
-    const current = input.viewingKeyOf(member);
-    if (current === undefined)
-      throw new RingError("RING_TRACKING_INVALID", { details: { reason: "authorization" } });
-    if (!equalBytes(current, owner.viewingPublicKey.u())) throw staleViewingKey(member);
+    if (!equalBytes(viewingKeyHash(owner.viewingPublicKey.u()), row.viewingHash))
+      throw staleViewingKey(member);
   }
-}
-
-/**
- * Each payee's viewing key from its authorization, keyed by member.
- *
- * Reads at `confirmed` as `resolveRingRecipient` does. A rotation that lands after the read leaves the
- * payment sealed to the key read, no program check reads a viewing key.
- */
-export async function readPayeeViewingKeys(
-  input: Readonly<{
-    client: AuthorizationReader;
-    trackingRegistry: Address;
-    owners: readonly ShieldedAddress[];
-  }>,
-  context?: RequestContext,
-): Promise<ReadonlyMap<string, Bytes32>> {
-  const distinct = new Map(
-    input.owners.map(
-      (owner) => [bytesKey(owner.signingPublicKey.ownerProofInputHash()), owner] as const,
-    ),
-  );
-  return new Map(
-    await Promise.all(
-      [...distinct].map(
-        async ([member, owner]) =>
-          [
-            member,
-            await enrolledViewingKey(
-              { client: input.client, trackingRegistry: input.trackingRegistry, owner },
-              context,
-            ),
-          ] as const,
-      ),
-    ),
-  );
 }
 
 /**

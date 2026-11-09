@@ -1,7 +1,6 @@
 import { EMPTY_MINT_POLICY } from "../../../src/protocol/membership/mint-policy.js";
 import {
   TRACKING_EMPTY_ROOT,
-  trackingEntryChained,
   trackingEntryHash,
 } from "../../../src/protocol/membership/tracking.js";
 import { describe, expect, it } from "vitest";
@@ -22,6 +21,7 @@ import {
 import {
   APPLY_BATCH,
   QUAD_HEIGHT,
+  chainLink,
   type MemberRecord,
   type QuadPath,
   type RecordWrite,
@@ -134,12 +134,12 @@ describe("ring-records.json", () => {
       expect(writes.length).toBeLessThanOrEqual(APPLY_BATCH);
       const inputs = replayRecordWrites({
         oldRoot: field(update.old_root),
-        oldNextIndex: update.old_next_index,
+        oldNextIndex: BigInt(update.old_next_index),
         chainStart: field(update.chain_start),
         writes,
       });
       expect(hex(inputs.newRoot)).toBe(update.new_root);
-      expect(inputs.newNextIndex).toBe(update.new_next_index);
+      expect(inputs.newNextIndex).toBe(BigInt(update.new_next_index));
       expect(hex(inputs.chainEnd)).toBe(update.chain_end);
       const statement = applyRecordsStatement(inputs);
       expect(statement.count).toBe(BigInt(update.count));
@@ -190,7 +190,7 @@ describe("ring-records.json", () => {
     expect(() =>
       replayRecordWrites({
         oldRoot: field(update.old_root),
-        oldNextIndex: update.old_next_index,
+        oldNextIndex: BigInt(update.old_next_index),
         chainStart: field(update.chain_start),
         writes: [
           {
@@ -342,8 +342,8 @@ describe("ring-statements.json", () => {
     const applyStatement = {
       oldRoot: field(apply.old_root),
       newRoot: field(apply.new_root),
-      oldNextIndex: apply.old_next_index,
-      newNextIndex: apply.new_next_index,
+      oldNextIndex: BigInt(apply.old_next_index),
+      newNextIndex: BigInt(apply.new_next_index),
       chainStart: field(apply.chain_start),
       chainEnd: field(apply.chain_end),
       count: BigInt(apply.count),
@@ -359,8 +359,8 @@ describe("ring-statements.json", () => {
     const publicStatement = {
       oldRoot: field(pub.old_root),
       newRoot: field(pub.new_root),
-      oldNextIndex: pub.old_next_index,
-      newNextIndex: pub.new_next_index,
+      oldNextIndex: BigInt(pub.old_next_index),
+      newNextIndex: BigInt(pub.new_next_index),
       chainStart: field(pub.chain_start),
       chainEnd: field(pub.chain_end),
       count: BigInt(pub.count),
@@ -398,15 +398,19 @@ describe("ring-statements.json", () => {
   });
 
   it("hashes a tracking entry and chains it as the program does", () => {
-    const tracking = statements.tracking;
+    // The Rust vector export writes `viewing_hash` and `proven`.
+    const tracking = statements.tracking as typeof statements.tracking &
+      Readonly<{ viewing_hash: string; proven: boolean }>;
     const entry = {
       member: field(tracking.member),
       nullifierPk: field(tracking.nullifier_pk),
       ctHash: field(tracking.ct_hash),
       listTag: field(tracking.list_tag),
+      viewingHash: field(tracking.viewing_hash),
+      proven: tracking.proven,
     };
     expect(hex(trackingEntryHash(entry))).toBe(tracking.entry_hash);
-    expect(hex(trackingEntryChained(ZERO_32, entry))).toBe(tracking.chain_from_zero);
+    expect(hex(chainLink(ZERO_32, trackingEntryHash(entry)))).toBe(tracking.chain_from_zero);
     expect(hex(TRACKING_EMPTY_ROOT)).toBe(tracking.empty_root);
   });
 });

@@ -62,7 +62,6 @@ export function ringTransferClient(
     treeId: TREE_ID,
     getLatestBlockhash: async () => BLOCKHASH,
     getAccount,
-    solanaRpc: confirmedAccountReads(getAccount),
     getStorageRecordPool: notImplemented("getStorageRecordPool"),
     getTrackingRecordPool: notImplemented("getTrackingRecordPool"),
     proveRing: notImplemented("proveRing"),
@@ -77,11 +76,15 @@ export function ringAuditReader(
     getShieldedTransactionsByTags: RingAuditReader["getShieldedTransactionsByTags"];
     solanaRpc?: object;
     commitment?: Commitment;
+    getAccount?: RingAuditReader["getAccount"];
+    getTrackingOpenings?: RingAuditReader["getTrackingOpenings"];
   }>,
 ): RingAuditReader {
   return {
     getShieldedTransactionsByTags: input.getShieldedTransactionsByTags,
     solanaRpc: solanaRpcReads(input.solanaRpc ?? {}),
     commitment: input.commitment ?? "confirmed",
+    getAccount: input.getAccount ?? (async () => undefined),
+    getTrackingOpenings: input.getTrackingOpenings ?? notImplemented("getTrackingOpenings"),
   };
 }

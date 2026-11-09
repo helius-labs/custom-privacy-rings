@@ -82,15 +82,17 @@ import {
   retainedRecovery,
   type RingRecoveryStep,
 } from "../../../src/operations/workflow/recover.js";
-import { confirmedAccountReads, ringAuditReader } from "../../helpers/clients.js";
+import { notImplemented, ringAuditReader } from "../../helpers/clients.js";
 import { clampedSecret } from "../../helpers/ring-frame.js";
 import {
   ownedAccount,
   ringPolicyData,
-  trackingAuthorizationAccount,
+  trackingRegistryAccount,
 } from "../../helpers/ring-accounts.js";
-import { ringPolicyAddress, trackingAuthorizationPda } from "../../../src/protocol/pda/index.js";
-import type { RpcAccount } from "@heliuslabs/spr/client";
+import { trackingTree } from "../../helpers/member-registry.js";
+import { memberOfTag } from "../../../src/protocol/membership/policy.js";
+import { ringPolicyPda } from "../../../src/protocol/pda/index.js";
+import type { RingAuditReader } from "../../../src/operations/audit/audit.js";
 import { transactionsPage } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import { x25519FromU } from "../../../src/crypto/keys/x25519.js";
 import { transactionItems } from "../../../../../zolana/sdk-libs/ts/test/helpers/pages.js";
@@ -189,42 +191,53 @@ function fullRecord(record: RecordFields, blinding: Bytes32): OutputRecord {
 
 const TRACKING = encodeBase58(new Uint8Array(32).fill(0x0c));
 
-/** The ring's policy and an authorization per owner, the accounts an auditor reads for a key. */
+type AuditFixture = Pick<RingAuditReader, "getAccount" | "getTrackingOpenings">;
+
+/** The ring's policy, its tracking registry and a leaf per owner under the registry's root. */
 async function auditAccounts(
   keys: ReadonlyMap<Bytes32, Bytes32>,
-  registry: Address = TRACKING,
-): Promise<ReadonlyMap<Address, RpcAccount>> {
-  const authorizations = await Promise.all(
-    [...keys].map(([owner, nullifierPk]) =>
-      trackingAuthorizationAccount({
-        registry,
-        owner: encodeBase58(owner),
-        nullifierPk,
-        listTag: new Uint8Array(32),
-        viewingU: new Uint8Array(32).fill(9),
-      }),
-    ),
+  served: (root: Bytes32) => Bytes32 = (root) => root,
+): Promise<AuditFixture> {
+  const tracked = trackingTree(
+    [...keys].map(([owner, nullifierPk]) => ({
+      member: memberOfTag(owner),
+      nullifierPk,
+      ctHash: ZERO_32,
+      listTag: ZERO_32,
+      viewingHash: ZERO_32,
+    })),
   );
-  return new Map([
+  const [policy, bump] = await ringPolicyPda(RING);
+  const accounts = new Map([
+    [policy, ownedAccount(RING, ringPolicyData({ bump, tracking: TRACKING }))],
     [
-      await ringPolicyAddress(RING),
-      ownedAccount(RING, ringPolicyData({ bump: 255, tracking: TRACKING })),
+      TRACKING,
+      trackingRegistryAccount({
+        root: served(tracked.root),
+        revision: 1n,
+        nextIndex: tracked.nextIndex,
+        auditorPubkey: new Uint8Array(33),
+      }),
     ],
-    ...authorizations,
   ]);
+  return {
+    getAccount: async (address) => accounts.get(address),
+    getTrackingOpenings: async (request) => ({
+      slot: 1n,
+      root: request.expectedRoot,
+      revision: 1n,
+      openings: request.members.map((member) => tracked.opening(member)),
+    }),
+  };
 }
 
-/** The audit reader over `accounts`, every other account absent. */
 function auditClient(
   getShieldedTransactionsByTags: Parameters<
     typeof ringAuditReader
   >[0]["getShieldedTransactionsByTags"],
-  accounts: ReadonlyMap<Address, RpcAccount>,
+  fixture: AuditFixture,
 ) {
-  return ringAuditReader({
-    getShieldedTransactionsByTags,
-    solanaRpc: confirmedAccountReads(async (address) => accounts.get(address)),
-  });
+  return ringAuditReader({ getShieldedTransactionsByTags, ...fixture });
 }
 
 const otherRecords: readonly RecordFields[] = [
@@ -419,14 +432,14 @@ describe("auditRing", () => {
   const ring = RING;
   const transfers = TRANSFERS;
 
-  /** `OTHER_OWNER` holds an authorization for its key unless `accounts` says otherwise. */
+  /** `OTHER_OWNER` holds a leaf for its key unless `accounts` says otherwise. */
   async function scan(
     transactions: readonly IndexedShieldedTransaction[],
     origin: TransactionOrigin,
     extra: Readonly<{
       auditor: X25519Keypair;
       knownUtxos?: KnownUtxos;
-      accounts?: ReadonlyMap<Address, RpcAccount>;
+      accounts?: AuditFixture;
       secrets?: NullifierSecrets;
     }>,
   ) {
@@ -567,7 +580,7 @@ describe("auditRing", () => {
     expect(traced(ringOutput, blindings[0]!)).toBeUndefined();
   });
 
-  it("keeps a ring output unresolved before its owner's authorization and resolves it once after", async () => {
+  it("keeps a ring output unresolved before its owner's leaf and resolves it once a root holds it", async () => {
     const auditor = X25519Keypair.generate();
     const { transaction } = sealedTransfer({ auditor: auditor.publicKey() });
     const early = (
@@ -707,8 +720,15 @@ describe("auditRing", () => {
       auditor: auditor.publicKey(),
       records: [{ ...otherRecords[0]!, nullifierPk: ZERO_NULLIFIER_PK as Bytes32 }],
     });
-    const audited = (await scan([transaction], TRANSFERS, { auditor, accounts: new Map() }))
-      .transactions[0]!;
+    const audited = (
+      await scan([transaction], TRANSFERS, {
+        auditor,
+        accounts: {
+          getAccount: notImplemented("getAccount"),
+          getTrackingOpenings: notImplemented("getTrackingOpenings"),
+        },
+      })
+    ).transactions[0]!;
     expect(audited.payloadErrors).toEqual([]);
     expect(audited.outputs[0]?.opening).toMatchObject({
       kind: "ring",
@@ -716,7 +736,7 @@ describe("auditRing", () => {
     });
   });
 
-  it("reports a payload error when the authorization's key rebuilds no commitment", async () => {
+  it("reports a payload error when the leaf's key rebuilds no commitment", async () => {
     const auditor = X25519Keypair.generate();
     const { transaction } = sealedTransfer({ auditor: auditor.publicKey() });
     const otherKey = field(`${"00".repeat(31)}22`);
@@ -735,34 +755,16 @@ describe("auditRing", () => {
     expect(ringOutput.opening.utxo).not.toHaveProperty("dataHash");
   });
 
-  it("refuses an authorization of another program, registry or owner at the owner's address", async () => {
+  it("refuses a served leaf that folds to another root than the registry names", async () => {
     const auditor = X25519Keypair.generate();
     const { transaction } = sealedTransfer({ auditor: auditor.publicKey() });
-    const [at] = await trackingAuthorizationPda(TRACKING, encodeBase58(OTHER_OWNER));
-    const authorization = async (registry: Address, owner: Bytes32) =>
-      (
-        await trackingAuthorizationAccount({
-          registry,
-          owner: encodeBase58(owner),
-          nullifierPk: OTHER_NULLIFIER_PK,
-          listTag: new Uint8Array(32),
-          viewingU: new Uint8Array(32).fill(9),
-        })
-      )[1];
-    const placed = async (account: RpcAccount) =>
-      new Map([...(await auditAccounts(new Map())), [at, account]]);
-    const cases: readonly (readonly [string, RpcAccount])[] = [
-      ["authorization program", { ...(await authorization(TRACKING, OTHER_OWNER)), owner: RING }],
-      ["authorization registry", await authorization(OTHER_RING, OTHER_OWNER)],
-      [
-        "authorization owner",
-        await authorization(TRACKING, new Uint8Array(32).fill(0xb3) as Bytes32),
-      ],
-    ];
-    for (const [reason, account] of cases)
-      await expect(
-        scan([transaction], TRANSFERS, { auditor, accounts: await placed(account) }),
-      ).rejects.toThrow(ringError("RING_TRACKING_INVALID", { reason }));
+    const accounts = await auditAccounts(
+      new Map([[OTHER_OWNER, OTHER_NULLIFIER_PK]]),
+      () => new Uint8Array(32).fill(0x3c) as Bytes32,
+    );
+    await expect(scan([transaction], TRANSFERS, { auditor, accounts })).rejects.toThrow(
+      ringError("RING_TRACKING_INVALID", { reason: "RootMismatch" }),
+    );
   });
 
   it("resolves a merged input before tracing its later transfer in either history order", async () => {

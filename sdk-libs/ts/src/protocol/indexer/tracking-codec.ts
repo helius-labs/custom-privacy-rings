@@ -1,18 +1,28 @@
 /** Rust `zolana_ring_indexer::tracking`. */
-import { indexerCodec, indexerScalars, type MethodDescriptor } from "@heliuslabs/spr/internal";
+import {
+  equalBytes,
+  indexerCodec,
+  indexerScalars,
+  type MethodDescriptor,
+} from "@heliuslabs/spr/internal";
 import type { Address, Bytes32 } from "@heliuslabs/spr/interface";
 
-import { QUAD_ARITY, type QuadPath } from "../membership/member-registry.js";
+import { RingError } from "../error.js";
 import {
-  TRACKING_CAPACITY,
-  TRACKING_QUAD_HEIGHT,
+  QUAD_ARITY,
+  QUAD_CAPACITY,
+  QUAD_HEIGHT,
+  type QuadPath,
+} from "../membership/member-registry.js";
+import {
+  viewingKeyHash,
   type ServedTrackingPool,
   type TrackingOpening,
   type TrackingRecord,
 } from "../membership/tracking.js";
 import { MAX_RING_MEMBER_BATCH } from "./indexer-limits.js";
 
-const { array, context, object, wireInteger } = indexerCodec;
+const { array, context, object, toWireInteger, wireInteger } = indexerCodec;
 const { checkedAddress, checkedBase64, checkedHash, hash, hashBytes, schemaFailure } =
   indexerScalars;
 
@@ -24,8 +34,10 @@ export interface TrackingOpeningsRequest {
   readonly expectedRoot: Bytes32;
 }
 
+/** The inserting entry's seal beside the leaf's current `viewingU`, unauthenticated until `sealViewingKey`. */
 export interface TrackingSeal {
   readonly owner: Address;
+  readonly viewingU: Bytes32;
   readonly ephPk: Uint8Array;
   readonly ciphertext: Uint8Array;
 }
@@ -40,25 +52,40 @@ export interface TrackingOpenings {
   readonly openings: readonly ServedTrackingOpening[];
 }
 
-export interface PendingEnrollmentsRequest {
+export interface EnrollmentQueueRequest {
   readonly registry: Address;
-  readonly after?: Address;
+  /** Exclusive, the page starts at `head` when absent. */
+  readonly after?: bigint;
   readonly limit: number;
 }
 
-/** A first enrollment no apply has inserted, pending state grants nothing. */
-export interface PendingEnrollment {
+/** One `Enroll` no apply consumed, it grants nothing and resolves nothing. */
+export interface QueuedEnrollment {
+  readonly sequence: bigint;
   readonly owner: Address;
   readonly member: Bytes32;
+  /** The `Enroll` verified `RegisterKey`, unset on a rotation. */
+  readonly proven: boolean;
   readonly nullifierPk: Bytes32;
-  readonly ctHash: Bytes32;
   readonly listTag: Bytes32;
+  readonly viewingU: Bytes32;
+  readonly ephPk: Uint8Array;
+  readonly ciphertext: Uint8Array;
 }
 
-export interface PendingEnrollments {
+/** `head` and `tail` as the queue account held them at `slot`. */
+export interface EnrollmentQueuePage {
   readonly slot: bigint;
-  readonly enrollments: readonly PendingEnrollment[];
-  readonly nextAfter?: Address;
+  readonly head: bigint;
+  readonly tail: bigint;
+  readonly entries: readonly QueuedEnrollment[];
+}
+
+/** The seal's viewing key, refused unless its hash is the verified leaf's `viewingHash`. */
+export function sealViewingKey(seal: TrackingSeal, record: TrackingRecord): Bytes32 {
+  if (!equalBytes(viewingKeyHash(seal.viewingU), record.viewingHash))
+    throw new RingError("RING_VIEWING_KEY_MISMATCH");
+  return seal.viewingU;
 }
 
 export const getTrackingOpeningsMethod: MethodDescriptor<
@@ -127,23 +154,29 @@ export const getTrackingRecordPoolMethod: MethodDescriptor<
   },
 };
 
-export const getPendingEnrollmentsMethod: MethodDescriptor<
-  PendingEnrollmentsRequest,
-  PendingEnrollments
+export const getEnrollmentQueueMethod: MethodDescriptor<
+  EnrollmentQueueRequest,
+  EnrollmentQueuePage
 > = {
-  name: "getPendingEnrollments",
+  name: "getEnrollmentQueue",
   encodeRequest: (request) => ({
     registry: checkedAddress(request.registry, "registry"),
-    ...(request.after === undefined ? {} : { after: checkedAddress(request.after, "after") }),
-    limit: request.limit,
+    ...(request.after === undefined
+      ? {}
+      : { after: toWireInteger(request.after, "after", 0n, U64_MAX) }),
+    limit: toWireInteger(BigInt(request.limit), "limit", 1n, BigInt(MAX_RING_MEMBER_BATCH)),
   }),
   decodeResponse: (value) => {
-    const row = object(value, "$", ["context", "enrollments", "nextAfter"]);
-    const nextAfter = row["nextAfter"];
+    const row = object(value, "$", ["context", "head", "tail", "entries"]);
+    const head = u64(row["head"], "head");
+    const tail = u64(row["tail"], "tail");
+    if (tail < head)
+      schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", "$.tail", "at least head", row["tail"]);
     return Object.freeze({
       slot: context(row["context"], "context").slot,
-      enrollments: Object.freeze(array(row["enrollments"], "enrollments", pendingEnrollment)),
-      ...(nextAfter == null ? {} : { nextAfter: checkedAddress(nextAfter, "nextAfter") }),
+      head,
+      tail,
+      entries: Object.freeze(array(row["entries"], "entries", queuedEnrollment)),
     });
   },
 };
@@ -166,7 +199,15 @@ function servedRecord(
   value: unknown,
   path: string,
 ): Readonly<{ record: TrackingRecord; seal?: TrackingSeal }> {
-  const row = object(value, path, ["member", "next", "nullifierPk", "ctHash", "listTag", "seal"]);
+  const row = object(value, path, [
+    "member",
+    "next",
+    "nullifierPk",
+    "ctHash",
+    "listTag",
+    "viewingHash",
+    "seal",
+  ]);
   const seal = row["seal"];
   return {
     record: Object.freeze({
@@ -175,27 +216,29 @@ function servedRecord(
       nullifierPk: field(row["nullifierPk"], `${path}.nullifierPk`),
       ctHash: field(row["ctHash"], `${path}.ctHash`),
       listTag: field(row["listTag"], `${path}.listTag`),
+      viewingHash: field(row["viewingHash"], `${path}.viewingHash`),
     }),
     ...(seal == null ? {} : { seal: sealOf(seal, `${path}.seal`) }),
   };
 }
 
 function sealOf(value: unknown, path: string): TrackingSeal {
-  const row = object(value, path, ["owner", "ephPk", "ciphertext"]);
+  const row = object(value, path, ["owner", "viewingU", "ephPk", "ciphertext"]);
   return Object.freeze({
     owner: checkedAddress(row["owner"], `${path}.owner`),
-    ephPk: indexerScalars.base64Bytes(checkedBase64(row["ephPk"], `${path}.ephPk`)),
-    ciphertext: indexerScalars.base64Bytes(checkedBase64(row["ciphertext"], `${path}.ciphertext`)),
+    viewingU: viewingKey(row["viewingU"], `${path}.viewingU`),
+    ephPk: bytes(row["ephPk"], `${path}.ephPk`),
+    ciphertext: bytes(row["ciphertext"], `${path}.ciphertext`),
   });
 }
 
 function quadPath(value: unknown, path: string): QuadPath {
   const read = poolPath(value, path);
-  if (read.siblings.length !== TRACKING_QUAD_HEIGHT)
+  if (read.siblings.length !== QUAD_HEIGHT)
     return schemaFailure(
       "INDEXER_SCHEMA_INVALID_TYPE",
       `${path}.siblings`,
-      `${String(TRACKING_QUAD_HEIGHT)} levels`,
+      `${String(QUAD_HEIGHT)} levels`,
       read.siblings,
     );
   return read;
@@ -211,20 +254,49 @@ function poolPath(value: unknown, path: string): QuadPath {
     return Object.freeze(hashes);
   });
   return Object.freeze({
-    index: Number(wireInteger(row["index"], `${path}.index`, 0n, TRACKING_CAPACITY - 1n)),
+    index: Number(wireInteger(row["index"], `${path}.index`, 0n, QUAD_CAPACITY - 1n)),
     siblings: Object.freeze(siblings),
   });
 }
 
-function pendingEnrollment(value: unknown, path: string): PendingEnrollment {
-  const row = object(value, path, ["owner", "member", "nullifierPk", "ctHash", "listTag"]);
+function queuedEnrollment(value: unknown, path: string): QueuedEnrollment {
+  const row = object(value, path, [
+    "sequence",
+    "owner",
+    "member",
+    "proven",
+    "nullifierPk",
+    "listTag",
+    "viewingU",
+    "ephPk",
+    "ciphertext",
+  ]);
+  const proven = row["proven"];
+  if (typeof proven !== "boolean")
+    return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", `${path}.proven`, "a boolean", proven);
   return Object.freeze({
+    sequence: u64(row["sequence"], `${path}.sequence`),
     owner: checkedAddress(row["owner"], `${path}.owner`),
     member: field(row["member"], `${path}.member`),
+    proven,
     nullifierPk: field(row["nullifierPk"], `${path}.nullifierPk`),
-    ctHash: field(row["ctHash"], `${path}.ctHash`),
     listTag: field(row["listTag"], `${path}.listTag`),
+    viewingU: viewingKey(row["viewingU"], `${path}.viewingU`),
+    ephPk: bytes(row["ephPk"], `${path}.ephPk`),
+    ciphertext: bytes(row["ciphertext"], `${path}.ciphertext`),
   });
+}
+
+/** Base64, an X25519 `u` can exceed the field a hash holds. */
+function viewingKey(value: unknown, path: string): Bytes32 {
+  const key = bytes(value, path);
+  if (key.length !== 32)
+    return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", path, "32 bytes", value);
+  return key as Bytes32;
+}
+
+function bytes(value: unknown, path: string): Uint8Array {
+  return indexerScalars.base64Bytes(checkedBase64(value, path));
 }
 
 function field(value: unknown, path: string): Bytes32 {

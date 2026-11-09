@@ -590,10 +590,12 @@ export {
   enrollmentState,
   ownerGrantInstruction,
   proveEnrollment,
+  readEnrollmentQueue,
   type ApplyEnrollments,
   type Enroll,
   type EnrollmentReadClient,
   type EnrollmentSeal,
+  type EnrollmentState,
   type WriteOwnerGrant,
 } from "../operations/management/enrollment.js";
 export {
@@ -607,23 +609,26 @@ export {
   type ViewingRotation,
 } from "../operations/management/viewing-rotation.js";
 export {
-  TRACKING_CAPACITY,
+  ENROLLMENT_QUEUE_CAPACITY,
   TRACKING_EMPTY_ROOT,
   TRACKING_GRACE_SLOTS,
-  TRACKING_QUAD_HEIGHT,
+  TRACKING_ROOT_HISTORY,
+  checkEnrollmentQueueOpen,
+  decodeEnrollmentQueue,
   decodeOwnerGrant,
-  decodeTrackingAuthorization,
   decodeTrackingRegistry,
-  isEnrollmentPending,
-  trackingEntryChained,
+  queuedEntryHashes,
   trackingEntryHash,
+  trackingEntryOf,
   trackingRecordHash,
   verifyTrackingOpening,
+  viewingKeyHash,
+  type EnrollmentQueue,
   type OwnerGrant,
   type ServedTrackingPool,
   type ServedTrackingRecord,
-  type TrackingAuthorization,
   type TrackingEntry,
+  type TrackingFields,
   type TrackingOpening,
   type TrackingRecord,
   type TrackingRegistry,
@@ -664,22 +669,22 @@ export {
   fetchTrackingRegistry,
   newestTrackingRoot,
   resolveRingRecipient,
-  type AuthorizationReader,
   type ResolvedRecipient,
   type RingRecipientClient,
   type TrackingRoot,
 } from "../rpc/tracking-resolver.js";
+export { sealViewingKey } from "../protocol/indexer/tracking-codec.js";
 export type {
-  PendingEnrollment,
-  PendingEnrollments,
-  PendingEnrollmentsRequest,
+  EnrollmentQueuePage,
+  EnrollmentQueueRequest,
+  QueuedEnrollment,
   ServedTrackingOpening,
   TrackingOpenings,
   TrackingOpeningsRequest,
   TrackingRecordPoolRequest,
   TrackingSeal,
 } from "../protocol/indexer/tracking-codec.js";
-export { ownerGrantPda, trackingAuthorizationPda } from "../protocol/pda/index.js";
+export { enrollmentQueuePda, ownerGrantPda } from "../protocol/pda/index.js";
 export type { ReplyMetadata } from "../protocol/codec/anonymous-delivery.js";
 export {
   checkCoOwnerKeys,

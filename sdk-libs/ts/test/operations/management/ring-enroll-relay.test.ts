@@ -28,7 +28,7 @@ import {
 import type { RelayStatus } from "../../../src/protocol/ring-rpc/ring-rpc-types.js";
 import { PendingRelaySignature, type RingRelayClient } from "../../../src/rpc/relay.js";
 import { filled, ringFixture } from "../../helpers/ring-pipeline.js";
-import { withConfirmedReads } from "../../helpers/clients.js";
+import { trackingClient } from "../../helpers/tracking-client.js";
 
 const address = (byte: number): Address => encodeBase58(new Uint8Array(32).fill(byte)) as Address;
 const FEE_PAYER = address(0x44);
@@ -78,7 +78,7 @@ async function signed(answer: (honest: Instruction) => Instruction, units?: numb
   const owner = await ownerSigner();
   const inputs = inputsOf(owner.address);
   const prepared = await prepareEnrollRelay({ inputs, owner, quote });
-  const message = messageOf(answer(await relayEnrollInstruction(inputs, FEE_PAYER)), units);
+  const message = messageOf(answer(await relayEnrollInstruction(inputs)), units);
   const relay = relayAnswering(message, prepared.relayId());
   const pending = await prepared.send(relay);
   if (!(pending instanceof PendingRelaySignature)) throw new Error("the owner signs");
@@ -95,7 +95,7 @@ describe("relayed enrollment", () => {
     const owner = await ownerSigner();
     const inputs = inputsOf(owner.address);
     const prepared = await prepareEnrollRelay({ inputs, owner, quote });
-    const message = messageOf(await relayEnrollInstruction(inputs, FEE_PAYER));
+    const message = messageOf(await relayEnrollInstruction(inputs));
     const relay = relayAnswering(message, prepared.relayId());
     const pending = await prepared.send(relay);
     if (!(pending instanceof PendingRelaySignature)) throw new Error("the owner signs");
@@ -114,15 +114,14 @@ describe("relayed enrollment", () => {
     const owner = await ownerSigner();
     const built = await enrollInstruction(
       {
-        payer: FEE_PAYER,
         owner: owner.address,
         trackingRegistry: REGISTRY,
         seal: SEAL,
         viewingU: filled(5),
       },
-      withConfirmedReads({ getAccount: async () => undefined }),
+      trackingClient(REGISTRY, { applied: [], pending: [] }),
     );
-    const relayed = await relayEnrollInstruction(inputsOf(owner.address), FEE_PAYER);
+    const relayed = await relayEnrollInstruction(inputsOf(owner.address));
     expect(relayed.accounts).toEqual(built.accounts);
     expect(relayed.programAddress).toBe(built.programAddress);
   });
@@ -164,27 +163,6 @@ describe("relayed enrollment", () => {
     ).rejects.toMatchObject(refused("Signer"));
   });
 
-  it("refuses a payer the quote does not name", async () => {
-    const owner = await ownerSigner();
-    await expect(
-      prepareEnrollmentRelay(
-        {
-          ringProgramId: address(0x90),
-          enroll: {
-            payer: address(0x45),
-            owner: owner.address,
-            trackingRegistry: REGISTRY,
-            seal: SEAL,
-            viewingU: filled(5),
-          },
-          owner,
-          quote,
-        },
-        withConfirmedReads({ getAccount: async () => undefined }),
-      ),
-    ).rejects.toMatchObject({ code: "RING_RELAY_PAYER_MISMATCH" });
-  });
-
   it("carries a built enrollment to the relay under the ring's registry", async () => {
     const owner = await ownerSigner();
     const fixture = await ringFixture();
@@ -192,7 +170,6 @@ describe("relayed enrollment", () => {
       {
         ringProgramId: fixture.ringProgramId,
         enroll: {
-          payer: FEE_PAYER,
           owner: owner.address,
           trackingRegistry: REGISTRY,
           seal: SEAL,

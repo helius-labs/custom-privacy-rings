@@ -50,8 +50,12 @@ import {
 import { ownerSignerCapacity } from "../../src/protocol/proof/transfer-shapes.js";
 import { ApprovalMask } from "../../src/protocol/transaction/transact.js";
 import { RING_SOURCE_SLOTS } from "../../src/rpc/prover/types.js";
-import { canopyLevels, QUAD_ARITY } from "../../src/protocol/membership/member-registry.js";
-import { TRACKING_QUAD_HEIGHT } from "../../src/protocol/membership/tracking.js";
+import {
+  canopyLevels,
+  QUAD_ARITY,
+  QUAD_HEIGHT,
+} from "../../src/protocol/membership/member-registry.js";
+import { viewingKeyHash } from "../../src/protocol/membership/tracking.js";
 import { unopenedRecordPool } from "../../src/protocol/membership/member-opening.js";
 import { transferPoolCapacity } from "../../src/protocol/proof/transfer-shapes.js";
 import { ringStreamLayout } from "../../src/protocol/transaction/transact.js";
@@ -348,6 +352,7 @@ describe("merge.json", () => {
         nullifierPk: field(row["nullifierPk"] ?? ""),
         ctHash: field(row["ctHash"] ?? ""),
         listTag: field(row["listTag"] ?? ""),
+        viewingHash: field(row["viewingHash"] ?? ""),
       };
       const quad = { index: path.index, siblings: path.siblings.map((level) => level.map(field)) };
       return tracking.present
@@ -529,6 +534,7 @@ describe("tracking predicates", () => {
     next: fill(2),
     nullifierPk,
     ctHash: fill(3),
+    viewingHash: viewingKeyHash(fill(4)),
     listTag: fill(5),
   });
   const zero = ZERO_NULLIFIER_PK as Bytes32;
@@ -567,7 +573,6 @@ describe("tracking predicates", () => {
       checkOutputKeys({
         outputs,
         rowOf: () => served,
-        viewingKeyOf: () => fill(4),
         spenders: [],
       });
     checked([output(fill(9)), undefined], row(fill(9)));
@@ -583,7 +588,7 @@ describe("tracking predicates", () => {
     );
   });
 
-  it("refuses a recipient address sealing to a viewing key its authorization retired", () => {
+  it("refuses a recipient address sealing to a viewing key its leaf no longer hashes", () => {
     const spender = {} as ShieldedPublicKey;
     const output = {
       ownerAddress: {
@@ -595,21 +600,17 @@ describe("tracking predicates", () => {
         viewingPublicKey: { u: () => fill(8) },
       },
     } as unknown as ProofOutputUtxo;
+    const current = row(fill(9));
     const stale = refusal(() =>
-      checkOutputKeys({
-        outputs: [output],
-        rowOf: () => row(fill(9)),
-        viewingKeyOf: () => fill(4),
-        spenders: [],
-      }),
+      checkOutputKeys({ outputs: [output], rowOf: () => current, spenders: [] }),
     );
     expect(stale.code).toBe("RING_RECIPIENT_VIEWING_KEY_STALE");
     checkOutputKeys({
       outputs: [output],
-      rowOf: () => row(fill(9)),
-      viewingKeyOf: () => undefined,
-      spenders: [spender],
+      rowOf: () => ({ ...current, viewingHash: viewingKeyHash(fill(8)) }),
+      spenders: [],
     });
+    checkOutputKeys({ outputs: [output], rowOf: () => current, spenders: [spender] });
   });
 });
 
@@ -698,7 +699,7 @@ describe("prover/ring/params.go", () => {
         paths: repeat(capacity.tracking, {
           index: 0,
           siblings: repeat(
-            TRACKING_QUAD_HEIGHT - canopyLevels(capacity.tracking),
+            QUAD_HEIGHT - canopyLevels(capacity.tracking),
             repeat(QUAD_ARITY - 1, zero),
           ),
         }),
@@ -749,5 +750,6 @@ function row0(): TrackingRecord {
     nullifierPk: zero,
     ctHash: zero,
     listTag: zero,
+    viewingHash: zero,
   };
 }

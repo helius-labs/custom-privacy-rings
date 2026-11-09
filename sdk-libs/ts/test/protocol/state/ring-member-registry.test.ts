@@ -25,12 +25,12 @@ import {
   sealNullifierKeyWith,
 } from "../../../src/operations/management/register-key.js";
 import {
-  TRACKING_QUAD_HEIGHT,
   TRACKING_SENTINEL,
   trackingRecordHash,
+  viewingKeyHash,
   type TrackingRecord,
 } from "../../../src/protocol/membership/tracking.js";
-import { QUAD_ARITY } from "../../../src/protocol/membership/member-registry.js";
+import { QUAD_ARITY, QUAD_HEIGHT } from "../../../src/protocol/membership/member-registry.js";
 import type {
   ServedTrackingOpening,
   TrackingOpeningsRequest,
@@ -79,11 +79,11 @@ function actor(seed: number) {
 function trackingTree(row: TrackingRecord) {
   const sentinel: TrackingRecord = { ...TRACKING_SENTINEL, next: row.member };
   const zeros: Bytes32[] = [new Uint8Array(32) as Bytes32];
-  for (let level = 0; level < TRACKING_QUAD_HEIGHT; level += 1) {
+  for (let level = 0; level < QUAD_HEIGHT; level += 1) {
     const below = zeros[level] as Bytes32;
     zeros.push(poseidon(Array.from({ length: QUAD_ARITY }, () => below)) as Bytes32);
   }
-  const above = zeros.slice(1, TRACKING_QUAD_HEIGHT).map((zero) => [zero, zero, zero]);
+  const above = zeros.slice(1, QUAD_HEIGHT).map((zero) => [zero, zero, zero]);
   const zero = zeros[0] as Bytes32;
   const path = (index: number, neighbour: TrackingRecord) => ({
     index,
@@ -128,7 +128,7 @@ async function ring(who: ReturnType<typeof enrolled>, seal: TrackingSeal | null 
       trackingRegistryAccount({
         root,
         revision: REVISION,
-        nextIndex: 2,
+        nextIndex: 2n,
         auditorPubkey: AUDITOR.publicKey().toBytes(),
       }),
     ],
@@ -162,8 +162,10 @@ function enrolled(seed: number) {
   const who = actor(seed);
   const envelope = sealNullifierKey(who.keypair.nullifierKey(), LIST_SALT, AUDITOR.publicKey());
   envelope.ephemeralSecret.fill(0);
+  const viewingU = who.shielded.viewingPublicKey.u();
   const seal: TrackingSeal = {
     owner: who.signer,
+    viewingU,
     ephPk: envelope.sealed.ephemeralPublicKey.toBytes(),
     ciphertext: envelope.sealed.ciphertext,
   };
@@ -173,6 +175,7 @@ function enrolled(seed: number) {
     nullifierPk: envelope.nullifierPublicKey,
     ctHash: hashBytes(envelope.sealed.ciphertext) as Bytes32,
     listTag: new Uint8Array(32).fill(3) as Bytes32,
+    viewingHash: viewingKeyHash(viewingU),
   };
   return { ...who, seal, row, envelope };
 }

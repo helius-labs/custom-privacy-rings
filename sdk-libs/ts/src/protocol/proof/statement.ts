@@ -24,7 +24,7 @@ import {
   type RingOutput,
 } from "../transaction/transact.js";
 import { N_PUBLIC_SLOTS } from "../transaction/spp.js";
-import { TRACKING_CAPACITY } from "../membership/tracking.js";
+import { QUAD_CAPACITY } from "../membership/member-registry.js";
 
 /** The values every transfer statement opens with, Rust `AuditHead`. */
 export interface AuditHead {
@@ -111,8 +111,9 @@ export type StatementOutput = Pick<RingOutput, "record">;
 export interface ApplyRecordsStatement {
   readonly oldRoot: Bytes32;
   readonly newRoot: Bytes32;
-  readonly oldNextIndex: number;
-  readonly newNextIndex: number;
+  /** u64, at most `QUAD_CAPACITY`. */
+  readonly oldNextIndex: bigint;
+  readonly newNextIndex: bigint;
   /** `chain_start` of the registry and revision. */
   readonly chainStart: Bytes32;
   /** The chain past the last write. */
@@ -136,7 +137,7 @@ export interface PrivateWrites {
 export interface ApplyEnrollmentsStatement {
   readonly oldRoot: Bytes32;
   readonly newRoot: Bytes32;
-  /** u64, at most `TRACKING_CAPACITY`. */
+  /** u64, at most `QUAD_CAPACITY`. */
   readonly oldNextIndex: bigint;
   readonly newNextIndex: bigint;
   /** `chain_start` of the registry and revision. */
@@ -306,13 +307,8 @@ export function signerBinding(identities: readonly Bytes32[], slots: number): Si
 export function applyRecordsStatementElements(
   statement: ApplyRecordsStatement,
 ): readonly Bytes32[] {
-  const head = {
-    ...statement,
-    oldNextIndex: BigInt(statement.oldNextIndex),
-    newNextIndex: BigInt(statement.newNextIndex),
-  };
   return [
-    ...applyStatementHead(RingDomain.applyRecords, head, U32_MAX),
+    ...applyStatementHead(RingDomain.applyRecords, statement),
     u64Field(statement.restrictive ? 1n : 0n, "restrictive"),
     ...(statement.private === undefined
       ? []
@@ -331,7 +327,7 @@ export function applyRecordsStatementHash(statement: ApplyRecordsStatement): Byt
 export function applyEnrollmentsStatementElements(
   statement: ApplyEnrollmentsStatement,
 ): readonly Bytes32[] {
-  return applyStatementHead(RingDomain.applyEnrollments, statement, TRACKING_CAPACITY);
+  return applyStatementHead(RingDomain.applyEnrollments, statement);
 }
 
 export function applyEnrollmentsStatementHash(statement: ApplyEnrollmentsStatement): Bytes32 {
@@ -341,14 +337,13 @@ export function applyEnrollmentsStatementHash(statement: ApplyEnrollmentsStateme
 function applyStatementHead(
   domain: RingDomain,
   statement: ApplyEnrollmentsStatement,
-  indexMax: bigint,
 ): readonly Bytes32[] {
   return [
     domainField(domain),
     checkedBytes<Bytes32>(statement.oldRoot, 32, "old root"),
     checkedBytes<Bytes32>(statement.newRoot, 32, "new root"),
-    u64Field(statement.oldNextIndex, "old next index", indexMax),
-    u64Field(statement.newNextIndex, "new next index", indexMax),
+    u64Field(statement.oldNextIndex, "old next index", QUAD_CAPACITY),
+    u64Field(statement.newNextIndex, "new next index", QUAD_CAPACITY),
     checkedBytes<Bytes32>(statement.chainStart, 32, "chain start"),
     checkedBytes<Bytes32>(statement.chainEnd, 32, "chain end"),
     u64Field(statement.count, "count"),
@@ -375,7 +370,6 @@ export function registerKeyStatementHash(statement: RegisterKeyStatement): Bytes
 
 const ZERO_FIELD = new Uint8Array(32) as Bytes32;
 const U16_MAX = 0xffffn;
-const U32_MAX = 0xffff_ffffn;
 const U64_MAX = 0xffff_ffff_ffff_ffffn;
 
 /** `[CRTX, n0, ring_id, txpk0, txpk1, aud0, aud1, envelope_digest, salt, layout]`. */

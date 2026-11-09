@@ -99,7 +99,7 @@ import { ViewingHistory } from "../../../src/state/viewing-history.js";
 import { checkRetainedEntries } from "../../../src/operations/workflow/submission.js";
 import { zeroKeyNullifier } from "../../../src/state/exposed-notes.js";
 import type { TrackingOpeningsRequest } from "../../../src/protocol/indexer/tracking-codec.js";
-import type { TrackingEntry } from "../../../src/protocol/membership/tracking.js";
+import type { FixtureTrackingEntry } from "../../helpers/member-registry.js";
 import type { RingMergeTransactionParams } from "../../../src/operations/payments/merge.js";
 import { BLOCKHASH } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import { stateTree } from "../../helpers/state-tree.js";
@@ -384,7 +384,7 @@ async function ringMergeParams({
   mode?: RingMode;
   enrolled?: "own" | "foreign" | "none";
   /** Tracking rows of an owner other than the shared fixture owner. */
-  rows?: readonly TrackingEntry[];
+  rows?: readonly FixtureTrackingEntry[];
 }>) {
   const tracked = trackingTree(rows);
   const [policy, policyBump] = await ringPolicyPda(RING);

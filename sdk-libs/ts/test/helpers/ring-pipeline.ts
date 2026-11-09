@@ -101,16 +101,21 @@ import {
   transactionsPage,
 } from "../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import { treeAccount } from "../../../../zolana/sdk-libs/ts/test/helpers/tree-account.js";
-import { confirmedAccountReads } from "./clients.js";
-import type { TrackingEntry } from "../../src/protocol/membership/tracking.js";
-import { recordTree, trackingTree, type FixtureRecord } from "./member-registry.js";
+
+import {
+  enrolledEntry,
+  recordTree,
+  trackingTree,
+  type FixtureRecord,
+  type FixtureTrackingEntry,
+} from "./member-registry.js";
 import {
   ownedAccount,
   ringCoSignerAccount,
   ringPolicyData,
   sppRingRegistration,
   storageRegistryAccount,
-  trackingAuthorizationAccount,
+  enrollmentQueueAccount,
   trackingRegistryAccount,
 } from "./ring-accounts.js";
 import { settlementAccounts } from "../../src/protocol/transaction/spp.js";
@@ -175,14 +180,7 @@ export interface RingFixtureOptions {
   readonly registration?: Readonly<{ activated: boolean; paused: boolean }>;
 }
 
-export function trackingEntry(owner: ShieldedAddress, listTag: Bytes32 = ZERO_32): TrackingEntry {
-  return {
-    member: owner.signingPublicKey.ownerProofInputHash(),
-    nullifierPk: owner.nullifierPublicKey,
-    ctHash: filled(0x11),
-    listTag,
-  };
-}
+export const trackingEntry = enrolledEntry;
 
 /** The pinned rails beside SPP's anonymous one, where an in-proof owner also proves. */
 export type SppCircuit =
@@ -240,7 +238,7 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
     accounts.set(...(await ringCoSignerAccount(ringProgramId, options.coSigner)));
   const ownRegistry = randomAddress();
   const trackingRegistry = randomAddress();
-  const enrolled = new Map<string, TrackingEntry>();
+  const enrolled = new Map<string, FixtureTrackingEntry>();
   let tracked = trackingTree();
   const publishTracking = (): void => {
     tracked = trackingTree([...enrolled.values()]);
@@ -255,6 +253,7 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
     );
   };
   publishTracking();
+  accounts.set(...(await enrollmentQueueAccount({ registry: trackingRegistry })));
   const trees = new Map<
     Address,
     Readonly<{ tree: ReturnType<typeof recordTree>; revision: bigint }>
@@ -335,22 +334,11 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
       ownedAccount(ringProgramId, ringPolicyData({ bump: ringBump, ...config })),
     );
   }
-  // Authorization writes derive a PDA, `getAccount` waits for each before it reads.
-  const authorizations: Promise<void>[] = [];
-  /** Applies the owner's enrollment, a repeat rotates its authorization's viewing key. */
+  /** Applies the owner's enrollment, a repeat moves its leaf to the address's viewing key. */
   const enroll = (owner: ShieldedAddress, listTag: Bytes32 = ZERO_32): void => {
     const entry = trackingEntry(owner, listTag);
     enrolled.set(hex(entry.member), entry);
     publishTracking();
-    authorizations.push(
-      trackingAuthorizationAccount({
-        registry: trackingRegistry,
-        owner: owner.solanaAddress(),
-        nullifierPk: entry.nullifierPk,
-        listTag,
-        viewingU: owner.viewingPublicKey.u(),
-      }).then(([at, account]) => void accounts.set(at, account)),
-    );
   };
   const slot = options.slot ?? 1n;
   const context = Object.freeze({ slot, blockTime: 0n });
@@ -365,11 +353,8 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
   };
   const reader: Pick<ChainReader, "getAccount"> &
     Pick<RingRecordReader, "getStorageMemberOpenings" | "getStorageRecordPool"> &
-    Pick<TrackingReader, "getTrackingOpenings" | "getTrackingRecordPool"> = {
-    getAccount: async (address) => {
-      await Promise.all(authorizations);
-      return accounts.get(address);
-    },
+    Pick<TrackingReader, "getTrackingOpenings" | "getTrackingRecordPool" | "getEnrollmentQueue"> = {
+    getAccount: async (address) => accounts.get(address),
     getStorageMemberOpenings: async (request): Promise<StorageMemberOpenings> => {
       const { tree, revision } = treeAt(request.registry, request.expectedRoot);
       return {
@@ -401,6 +386,7 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
         throw new Error("tracking pool under an unknown root");
       return tracked.pool(request.members, request.openings);
     },
+    getEnrollmentQueue: async () => ({ slot, head: 0n, tail: 0n, entries: [] }),
   };
   const spp = (
     proofInputs: SppProofInputs,
@@ -462,7 +448,6 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
     tree: TREE,
     treeId: TREE_ID,
     ...reader,
-    solanaRpc: confirmedAccountReads(reader.getAccount),
     proveRing: async (request: RingProofRequest): Promise<Uint8Array> => {
       ringRequests.push(structuredClone(request));
       proofs += 1;

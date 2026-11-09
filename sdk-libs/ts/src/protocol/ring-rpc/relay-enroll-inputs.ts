@@ -5,14 +5,13 @@ import {
   instruction,
   meta,
   sha256,
-  SYSTEM_PROGRAM,
   Writer,
   type SignerAccount,
 } from "@heliuslabs/spr/internal";
 import type { Address, Bytes32 } from "@heliuslabs/spr/interface";
 import type { AccountMeta, Instruction } from "@solana/kit";
 
-import { STORAGE_PROGRAM_ID, trackingAuthorizationPda } from "../pda/index.js";
+import { enrollmentQueuePda, STORAGE_PROGRAM_ID } from "../pda/index.js";
 
 export interface RelayEnrollInputs {
   readonly ringProgramId: Address;
@@ -50,30 +49,19 @@ export function enrollRequestDigest(value: RelayEnrollInputs): Bytes32 {
   ) as Bytes32;
 }
 
+/** Rust `Enroll` accounts, the owner signs and the queue alone is written. */
 export async function enrollAccounts(
-  input: Readonly<{ payer: SignerAccount; owner: SignerAccount; trackingRegistry: Address }>,
-  owner: Address,
+  input: Readonly<{ owner: SignerAccount; trackingRegistry: Address }>,
 ): Promise<readonly AccountMeta[]> {
-  const [authorization] = await trackingAuthorizationPda(input.trackingRegistry, owner);
+  const [queue] = await enrollmentQueuePda(input.trackingRegistry);
   return [
-    meta(input.payer, true, true),
     meta(input.owner, true, false),
-    meta(input.trackingRegistry, false, true),
-    meta(authorization, false, true),
-    meta(SYSTEM_PROGRAM, false, false),
+    meta(input.trackingRegistry, false, false),
+    meta(queue, false, true),
   ];
 }
 
-export async function relayEnrollInstruction(
-  value: RelayEnrollInputs,
-  feePayer: Address,
-): Promise<Instruction> {
-  return instruction(
-    value.instructionData,
-    await enrollAccounts(
-      { payer: feePayer, owner: value.owner, trackingRegistry: value.trackingRegistry },
-      value.owner,
-    ),
-    STORAGE_PROGRAM_ID,
-  );
+/** The relay pays the fee as the message's fee payer, the instruction names no payer. */
+export async function relayEnrollInstruction(value: RelayEnrollInputs): Promise<Instruction> {
+  return instruction(value.instructionData, await enrollAccounts(value), STORAGE_PROGRAM_ID);
 }

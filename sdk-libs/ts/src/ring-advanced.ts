@@ -1,10 +1,11 @@
 export * from "./ring/advanced.js";
 export {
   APPLY_BATCH,
-  MEMBER_REGISTRY_CAPACITY,
+  QUAD_CAPACITY,
   ROOT_HISTORY,
   QUAD_ARITY,
   QUAD_HEIGHT,
+  chainLink,
 } from "./protocol/membership/member-registry.js";
 export type {
   ApplyProofInputs,

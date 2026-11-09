@@ -42,9 +42,8 @@ import type {
 } from "../../src/protocol/membership/member-registry.js";
 import {
   TRACKING_EMPTY_ROOT,
-  TRACKING_QUAD_HEIGHT,
   TRACKING_SENTINEL,
-  type TrackingEntry,
+  type TrackingFields,
   type TrackingOpening,
   type TrackingRecord,
 } from "../../src/protocol/membership/tracking.js";
@@ -305,11 +304,12 @@ function trackingRecord(value: unknown): TrackingRecord {
   };
 }
 
-function trackingFields(item: Json): Omit<TrackingEntry, "member"> {
+function trackingFields(item: Json): Omit<TrackingFields, "member"> {
   return {
     nullifierPk: field(item["nullifierPk"]),
     ctHash: field(item["ctHash"]),
     listTag: field(item["listTag"]),
+    viewingHash: field(item["viewingHash"]),
   };
 }
 
@@ -418,7 +418,8 @@ function write(value: unknown): RecordWriteProofInput {
 function trackingWrite(value: unknown): TrackingWriteProofInput {
   const item = record(value);
   return {
-    entry: { member: field(item["member"]), ...trackingFields(item) },
+    entry: { member: field(item["member"]), ...trackingFields(item), proven: flag(item["proven"]) },
+    present: flag(item["present"]),
     slot: quadPath(item["index"], item["path"]),
     lowRecord: trackingRecord(item["lowRecord"]),
     lowPath: quadPath(item["lowIndex"], item["lowPath"]),
@@ -433,8 +434,8 @@ function request(item: Json): RingProofRequest {
     publicInputHash,
     oldRoot: field(item["oldRoot"]),
     newRoot: field(item["newRoot"]),
-    oldNextIndex: count(item["oldNextIndex"]),
-    newNextIndex: count(item["newNextIndex"]),
+    oldNextIndex: BigInt(count(item["oldNextIndex"])),
+    newNextIndex: BigInt(count(item["newNextIndex"])),
     chainStart: field(item["chainStart"]),
     chainEnd: field(item["chainEnd"]),
   });
@@ -495,8 +496,6 @@ function request(item: Json): RingProofRequest {
     return {
       kind: "applyEnrollments",
       ...applied(),
-      oldNextIndex: BigInt(count(item["oldNextIndex"])),
-      newNextIndex: BigInt(count(item["newNextIndex"])),
       writes: list(item["writes"]).slice(0, count(item["count"])).map(trackingWrite),
     };
   if (circuitType === "custom-ring-register-key")
@@ -1083,14 +1082,14 @@ describe("tracking apply requests", () => {
   const OWNER = {
     listSalt: ZERO_32,
     record: TRACKING_SENTINEL,
-    path: ZERO_PATH(TRACKING_QUAD_HEIGHT),
+    path: ZERO_PATH(QUAD_HEIGHT),
   };
   const privateApply = (privateWrites: number, owners: readonly (typeof OWNER | undefined)[]) =>
     ({
       kind: "applyRecords",
       ...head,
-      oldNextIndex: 1,
-      newNextIndex: 2,
+      oldNextIndex: 1n,
+      newNextIndex: 2n,
       writes: [WRITE, WRITE],
       private: { privateWrites, trackingRoot: TRACKING_EMPTY_ROOT, owners },
     }) satisfies RingProofRequest;
@@ -1105,7 +1104,7 @@ describe("tracking apply requests", () => {
     const owners = list(body["owners"]);
     expect(owners[0]).toBeNull();
     expect(Object.keys(record(owners[1]))).toEqual(["listSalt", "record", "index", "path"]);
-    expect(list(record(owners[1])["path"])).toHaveLength(3 * TRACKING_QUAD_HEIGHT);
+    expect(list(record(owners[1])["path"])).toHaveLength(3 * QUAD_HEIGHT);
     expect(body).not.toHaveProperty("credentialWrites");
   });
 
@@ -1116,7 +1115,7 @@ describe("tracking apply requests", () => {
     );
   });
 
-  it("states enrollment indices as u64 up to the tree's capacity", () => {
+  it("states both families' next indices as u64 up to the tree's capacity", () => {
     const enrollments = (newNextIndex: bigint) =>
       ({
         kind: "applyEnrollments",
@@ -1125,10 +1124,11 @@ describe("tracking apply requests", () => {
         newNextIndex,
         writes: [
           {
-            entry: TRACKING_SENTINEL,
-            slot: ZERO_PATH(TRACKING_QUAD_HEIGHT),
+            entry: { ...TRACKING_SENTINEL, proven: true },
+            present: false,
+            slot: ZERO_PATH(QUAD_HEIGHT),
             lowRecord: TRACKING_SENTINEL,
-            lowPath: ZERO_PATH(TRACKING_QUAD_HEIGHT),
+            lowPath: ZERO_PATH(QUAD_HEIGHT),
           },
         ],
       }) satisfies RingProofRequest;
@@ -1146,6 +1146,14 @@ describe("tracking apply requests", () => {
     ]);
     expect(full["newNextIndex"]).toBe(2 ** 32);
     expect(() => ringProofRequestBody(enrollments((1n << 32n) + 1n))).toThrow(
+      expect.objectContaining({ details: { field: "newNextIndex", length: 8 } }),
+    );
+    const records = (newNextIndex: bigint) => ({
+      ...privateApply(0b10, [undefined, OWNER]),
+      newNextIndex,
+    });
+    expect(ringProofRequestBody(records(1n << 32n))["newNextIndex"]).toBe(2 ** 32);
+    expect(() => ringProofRequestBody(records((1n << 32n) + 1n))).toThrow(
       expect.objectContaining({ details: { field: "newNextIndex", length: 8 } }),
     );
   });

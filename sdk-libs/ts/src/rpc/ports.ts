@@ -20,8 +20,8 @@ import type {
 import type { RingTransactInstructionData } from "../protocol/proof/circuit.js";
 import type { RingMergeDisclosureRequest } from "../crypto/audit/merge-disclosure.js";
 import type {
-  PendingEnrollments,
-  PendingEnrollmentsRequest,
+  EnrollmentQueuePage,
+  EnrollmentQueueRequest,
   TrackingOpenings,
   TrackingOpeningsRequest,
   TrackingRecordPoolRequest,
@@ -45,7 +45,7 @@ export type RingMemberOpening = RecordOpening;
 export interface StorageRoot {
   readonly root: Bytes32;
   readonly revision: bigint;
-  readonly nextIndex: number;
+  readonly nextIndex: bigint;
 }
 
 /** At most `MAX_RING_MEMBER_BATCH` members of one `StorageRegistry`, all under `expectedRoot`. */
@@ -120,10 +120,10 @@ export interface TrackingReader {
     request: TrackingOpeningsRequest,
     context?: RequestContext,
   ): Promise<TrackingOpenings>;
-  getPendingEnrollments(
-    request: PendingEnrollmentsRequest,
+  getEnrollmentQueue(
+    request: EnrollmentQueueRequest,
     context?: RequestContext,
-  ): Promise<PendingEnrollments>;
+  ): Promise<EnrollmentQueuePage>;
   getTrackingRecordPool(
     request: TrackingRecordPoolRequest,
     context?: RequestContext,
