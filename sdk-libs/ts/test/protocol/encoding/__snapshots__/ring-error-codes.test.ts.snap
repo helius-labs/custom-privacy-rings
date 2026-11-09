@@ -210,5 +210,6 @@ exports[`ring error codes > pins the public codes and their order 1`] = `
   "RING_ZERO_KEY_MERGE_UNAVAILABLE",
   "RING_EXIT_PROOF_UNAVAILABLE",
   "RING_RECIPIENT_LITERAL_ZERO_KEY",
+  "RING_DEPOSIT_PROOF_DATA_SOURCE",
 ]
 `;

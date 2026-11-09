@@ -46,9 +46,13 @@ beforeAll(async () => {
   await initializePoseidon();
 });
 
-function depositClient(fixture: Fixture): RingDepositClient {
+function depositClient(
+  fixture: Fixture,
+  proofDataSource: RingDepositClient["proofDataSource"] = "prover",
+): RingDepositClient {
   return {
     ...fixture.client,
+    proofDataSource,
     proofService: PROOF_SERVICE,
     getLatestBlockhash: async () => BLOCKHASH,
   };
@@ -115,6 +119,26 @@ describe("ring deposit", () => {
     await expect(prepared.prove(client)).rejects.toMatchObject({
       causeCode: "RING_DEPOSIT_FRAME_REUSED",
     });
+  });
+
+  it("refuses a client that assembles proof data itself before any proof", async () => {
+    const fixture = await ringFixture();
+    const recipient = ShieldedKeypair.generate();
+    fixture.enroll(recipient.shieldedAddress());
+    await expect(
+      PreparedRingDeposit.prepare({
+        client: depositClient(fixture, "client"),
+        ringProgramId: fixture.ringProgramId,
+        feePayer: fixture.authority,
+        recipient: { kind: "confidential", address: recipient.shieldedAddress() },
+        amount: 25n,
+      }),
+    ).rejects.toMatchObject({
+      code: "RING_BUILD_DEPOSIT",
+      causeCode: "RING_DEPOSIT_PROOF_DATA_SOURCE",
+    });
+    expect(fixture.sppCalls).toEqual([]);
+    expect(fixture.ringRequests).toEqual([]);
   });
 
   it("pays an anonymous recipient a plan slot it finds through its normal sync", async () => {

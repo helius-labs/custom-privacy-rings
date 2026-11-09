@@ -11,7 +11,7 @@ import {
 } from "@solana/kit";
 
 import { initializePoseidon } from "@heliuslabs/spr";
-import type { ProofService } from "@heliuslabs/spr/client";
+import type { ProofDataSourceContext, ProofService } from "@heliuslabs/spr/client";
 import { LocalKeys } from "@heliuslabs/spr/client";
 import {
   checkIntentApproval,
@@ -93,7 +93,9 @@ export type RingDepositRecipient =
   | Readonly<{ kind: "anonymousPayment"; to: RingAddress | RingPaymentRequest }>;
 
 /** The frame's fresh sender proves through `proofService`. */
-export type RingDepositClient = RingTransferClient & Readonly<{ proofService: ProofService }>;
+export type RingDepositClient = RingTransferClient &
+  ProofDataSourceContext &
+  Readonly<{ proofService: ProofService }>;
 
 export interface RingDepositParams {
   readonly client: RingDepositClient;
@@ -172,6 +174,11 @@ export class PreparedRingDeposit {
     context?: RequestContext,
   ): Promise<PreparedRingDeposit> {
     try {
+      // Zolana assembles an all-dummy frame on the prover route alone.
+      if (params.client.proofDataSource !== "prover")
+        throw new RingError("RING_DEPOSIT_PROOF_DATA_SOURCE", {
+          details: { proofDataSource: params.client.proofDataSource },
+        });
       return await PreparedRingDeposit.#frame(
         {
           ...params,

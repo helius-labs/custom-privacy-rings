@@ -216,6 +216,7 @@ export const RING_ERROR_CODES = [
   "RING_ZERO_KEY_MERGE_UNAVAILABLE",
   "RING_EXIT_PROOF_UNAVAILABLE",
   "RING_RECIPIENT_LITERAL_ZERO_KEY",
+  "RING_DEPOSIT_PROOF_DATA_SOURCE",
 ] as const;
 import { extractCauseCodes, hideCause, sanitizeDetails } from "@heliuslabs/spr/internal";
 import type { ErrorEnvelope } from "@heliuslabs/spr";

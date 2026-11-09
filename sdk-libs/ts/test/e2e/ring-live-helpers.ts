@@ -195,7 +195,8 @@ export async function readableRing(
     | Readonly<{ kind: "auditOnly" | "anonymous" }>
     | Readonly<{ kind: "anonymousPolicy"; table: RuleTable }>,
 ): Promise<ReadableRing> {
-  const { client } = await liveHarness("client");
+  // Ring deposits need the prover route.
+  const { client } = await liveHarness("prover");
   const ringRpc = new RingRpc(requiredEnv("RING_RPC_URL"), { allowInsecureHttp: true });
   if ((await ringRpc.health()).mode !== "derived")
     throw new Error("the ring suites need a ring rpc that derives each ring's auditor key");
