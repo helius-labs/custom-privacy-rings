@@ -624,6 +624,17 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
     fee_payer="$("$ring_rpc" keygen --kind fee-payer --out "$ring_dir/fee-payer.secret" \
       | sed -n 's/^fee payer *//p')"
     solana airdrop 100 "$fee_payer" --url {{localnet-rpc-url}} >/dev/null
+    # Ring RPC applies enrollments only for --enrollment-apply-ring, the suites deploy rings at these reserved keys.
+    enrollment_writer="$("$ring_rpc" keygen --kind enrollment-applier \
+      --out "$ring_dir/enrollment-writer.key" | sed -n 's/^enrollment applier *//p')"
+    solana airdrop 100 "$enrollment_writer" --url {{localnet-rpc-url}} >/dev/null
+    e2e_programs=()
+    e2e_rings=()
+    for index in 1 2; do
+      solana-keygen new --no-bip39-passphrase --silent --force -o "$ring_dir/e2e-ring-$index.json"
+      e2e_programs+=("$PWD/$ring_dir/e2e-ring-$index.json")
+      e2e_rings+=("$(solana-keygen pubkey "$ring_dir/e2e-ring-$index.json")")
+    done
     serve_ring_rpc() {
       local reader_grants="$1" port={{localnet-ring-rpc-port}}
       held() { lsof -t -i "tcp:$port" -s tcp:listen 2>/dev/null; }
@@ -645,6 +656,8 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
         --store-url "sqlite://$PWD/$workdir/ring-rpc.sqlite?mode=rwc" \
         --prover-url {{localnet-prover-url}} --reader-grants "$reader_grants" \
         --fee-payer-key-file "$ring_dir/fee-payer.secret" \
+        --enrollment-applier-key-file "$ring_dir/enrollment-writer.key" \
+        --enrollment-apply-ring "$(IFS=,; echo "${e2e_rings[*]}")" \
         > "$workdir/ring-rpc-$reader_grants.log" 2>&1 &
       printf 'waiting for ring rpc %s ' "$ring_rpc_url"
       for _ in $(seq 1 60); do
@@ -683,9 +696,10 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
       ZOLANA_TEST_TOKEN_2022_MINT="$token_2022_mint" \
       ZOLANA_TEST_TOKEN_2022_ACCOUNT="$token_2022_account" \
       ZOLANA_CLI_BIN="$PWD/$bin" \
-      RING_CLI_BIN="$PWD/$ring_cli" \
       RING_PROGRAM_ID="$ring_program_id" \
       RING_RPC_URL="$ring_rpc_url" \
+      RING_E2E_PROGRAM_KEYPAIRS="$(IFS=,; echo "${e2e_programs[*]}")" \
+      RING_ENROLLMENT_WRITER="$enrollment_writer" \
       RING_AUTHORITY_KEYPAIR="$PWD/$ring_dir/authority.json" \
       RING_ORIGIN="$ring_origin" \
       RING_PROGRAM_SO="$PWD/target/deploy/custom_ring_program.so" \

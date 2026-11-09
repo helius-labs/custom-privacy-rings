@@ -107,7 +107,7 @@ async function depositor(ring: AnonymousRing): Promise<Member> {
   await sendInstruction(ring.client, instruction, ring.funder, RING_DEPOSIT_COMPUTE_UNIT_LIMIT);
   await syncRing(ring, sender);
   expect(ringHoldings(sender, ring.ringProgramId)).toBe(DEPOSIT);
-  await enroll({ ring, payer: ring.funder, owner: sender });
+  await enroll({ ring, owner: sender });
   return sender;
 }
 

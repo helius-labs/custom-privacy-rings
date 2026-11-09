@@ -33,7 +33,7 @@ describe("confidential audit-only ring", () => {
     await signSendAndConfirm(client, deposit, [sender.signer]);
     await sync(client, sender);
     expect(ringHoldings(sender, ringProgramId)).toBe(DEPOSIT);
-    await enroll({ ring, payer: sender.signer, owner: sender });
+    await enroll({ ring, owner: sender });
 
     const transfer = await buildRingTransferTransaction({
       client,
