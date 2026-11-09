@@ -52,11 +52,7 @@ impl ContextSetup {
             prover_tee_policy,
             fee_payer_keypair,
         } = self;
-        let root = config_path
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
+        let root = config_root(&config_path);
         config.resolve_keypair_paths(|path| resolve(&root, path));
         let urls = config.urls();
         let zolana = ZolanaServices {
@@ -177,24 +173,8 @@ impl Context {
         Ok(payer)
     }
 
-    /// The policy role reads `policy_authority_keypair`.
     pub fn role_keypair_path(&self, role: RingRole) -> Result<PathBuf> {
-        let (configured, default) = match role {
-            RingRole::Policy => {
-                return config::expand_tilde(self.config.policy_authority_keypair())
-            }
-            RingRole::Admin => (&self.config.admin_keypair, ADMIN_KEYPAIR_FILE),
-            RingRole::Pauser => (&self.config.pauser_keypair, PAUSER_KEYPAIR_FILE),
-            RingRole::CosignAdmin => (&self.config.cosign_admin_keypair, COSIGN_ADMIN_KEYPAIR_FILE),
-            RingRole::EnrollmentWriter => (
-                &self.config.enrollment_writer_keypair,
-                ENROLLMENT_WRITER_KEYPAIR_FILE,
-            ),
-        };
-        match configured {
-            Some(path) => config::expand_tilde(path),
-            None => Ok(self.path(Path::new(default))),
-        }
+        self.config.role_keypair_path(&self.root, role)
     }
 
     pub fn role_keypair(&self, role: RingRole) -> Result<Keypair> {
@@ -359,6 +339,14 @@ impl Context {
                 compute_unit_limit,
             )
     }
+}
+
+pub(crate) fn config_root(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
 }
 
 pub(crate) fn resolve(root: &Path, path: &Path) -> PathBuf {

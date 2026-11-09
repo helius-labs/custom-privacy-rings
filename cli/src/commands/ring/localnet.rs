@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use custom_ring_interface::STORAGE_PROGRAM_ID;
+use custom_ring_interface::{RingRole, STORAGE_PROGRAM_ID};
 use serde::Deserialize;
 use solana_address::Address;
 use zolana_cli_common::{
@@ -18,10 +18,11 @@ use zolana_cli_common::{
     process::{answers, process_scope, spawn_owned, stop_owned_listener, wait_until},
     release::{host_platform, make_executable, Asset},
 };
+use zolana_secret_file::{create_key32, read_key32, Access};
 
 use crate::{
     config::{RingConfig, Target, Urls},
-    file, keys, line, probe,
+    context, file, keys, line, probe,
     release::{RingKey, RingRelease, RING_KEYS},
     tool::{Tool, SOLANA_TEST_VALIDATOR, ZOLANA},
     ui::{self, icon},
@@ -70,7 +71,7 @@ struct ProverHealth {
 pub fn run(config_path: &Path, config: &RingConfig, args: LocalnetArgs) -> Result<()> {
     probe::print_urls(config);
     if !args.no_start {
-        bring_up(config, &config_path.with_file_name(AUDITOR_KEY_FILE), true)?;
+        bring_up(config, &context::config_root(config_path), true)?;
         println!("\nlocalnet ready, next `zolana-ring pipeline`");
     }
     Ok(())
@@ -79,15 +80,18 @@ pub fn run(config_path: &Path, config: &RingConfig, args: LocalnetArgs) -> Resul
 /// Localnet only, `devnet` probes its services instead of starting them.
 pub fn ensure(ctx: &Context) -> Result<()> {
     if ctx.config.target == Target::Localnet {
-        bring_up(&ctx.config, &ctx.path(Path::new(AUDITOR_KEY_FILE)), false)?;
+        bring_up(&ctx.config, &ctx.root, false)?;
     }
     Ok(())
 }
 
 /// A live validator keeps its ledger, the ring rpc is replaced only on request.
-fn bring_up(config: &RingConfig, auditor_key: &Path, replace: bool) -> Result<()> {
+fn bring_up(config: &RingConfig, root: &Path, replace: bool) -> Result<()> {
+    let auditor_key = &context::resolve(root, Path::new(AUDITOR_KEY_FILE));
+    let enrollment_writer =
+        &ring_rpc_seed_file(&config.role_keypair_path(root, RingRole::EnrollmentWriter)?)?;
     if let Some(workspace) = Workspace::from_env()? {
-        return bring_up_workspace(&workspace, config, auditor_key, replace);
+        return bring_up_workspace(&workspace, config, auditor_key, enrollment_writer, replace);
     }
     let urls = config.urls();
     let [rpc, photon, prover, ring_rpc] = ports(urls)?;
@@ -123,7 +127,14 @@ fn bring_up(config: &RingConfig, auditor_key: &Path, replace: bool) -> Result<()
         auditor_key,
     }
     .ensure()?;
-    let command = serve(&binary, config, ring_rpc, auditor_key);
+    let command = RingRpcServe {
+        binary: &binary,
+        config,
+        port: ring_rpc,
+        auditor_key,
+        enrollment_writer,
+    }
+    .command();
     start_ring_rpc(command, config, ring_rpc, &scope()?)
 }
 
@@ -132,6 +143,7 @@ fn bring_up_workspace(
     workspace: &Workspace,
     config: &RingConfig,
     auditor_key: &Path,
+    enrollment_writer: &Path,
     replace: bool,
 ) -> Result<()> {
     ensure!(config.target == Target::Localnet, WRONG_TARGET);
@@ -208,7 +220,15 @@ fn bring_up_workspace(
         auditor_key,
     }
     .ensure()?;
-    RING_RPC.run(&mut serve(&ring_rpc_binary, config, ring_rpc, auditor_key))
+    let mut command = RingRpcServe {
+        binary: &ring_rpc_binary,
+        config,
+        port: ring_rpc,
+        auditor_key,
+        enrollment_writer,
+    }
+    .command();
+    RING_RPC.run(&mut command)
 }
 
 struct RingIndexer<'a> {
@@ -340,18 +360,33 @@ impl ReleaseDevStart {
 }
 
 /// Local mode, `init` pins the key from `keys/`.
-fn serve(binary: &Path, config: &RingConfig, port: u16, auditor_key: &Path) -> Command {
-    let urls = config.urls();
-    let mut command = Command::new(binary);
-    command
-        .args(["serve", "--port", &port.to_string()])
-        .args(["--indexer-url", &urls.indexer, "--rpc-url", &urls.rpc])
-        .arg("--auditor-key-file")
-        .arg(auditor_key)
-        .arg("--service-key-file")
-        .arg(service_key_file(auditor_key))
-        .args(["--ring-program-id", &config.program_id.to_string()]);
-    command
+struct RingRpcServe<'a> {
+    binary: &'a Path,
+    config: &'a RingConfig,
+    port: u16,
+    auditor_key: &'a Path,
+    enrollment_writer: &'a Path,
+}
+
+impl RingRpcServe<'_> {
+    fn command(self) -> Command {
+        let urls = self.config.urls();
+        let program_id = self.config.program_id.to_string();
+        let mut command = Command::new(self.binary);
+        command
+            .args(["serve", "--port", &self.port.to_string()])
+            .args(["--indexer-url", &urls.indexer, "--rpc-url", &urls.rpc])
+            .args(["--prover-url", &urls.prover])
+            .arg("--auditor-key-file")
+            .arg(self.auditor_key)
+            .arg("--service-key-file")
+            .arg(service_key_file(self.auditor_key))
+            .args(["--ring-program-id", &program_id])
+            .arg("--enrollment-applier-key-file")
+            .arg(self.enrollment_writer)
+            .args(["--enrollment-apply-ring", &program_id]);
+        command
+    }
 }
 
 /// Kept across runs, a new key breaks every pin of the old one.
@@ -372,6 +407,23 @@ impl ServiceKey<'_> {
                 .arg(service_key),
         )
     }
+}
+
+/// The ring rpc takes a raw seed file, not a keypair file.
+fn ring_rpc_seed_file(keypair_path: &Path) -> Result<PathBuf> {
+    let keypair = file::read_or_create_keypair(keypair_path)?;
+    let seed_path = keypair_path.with_extension("key");
+    if !seed_path.is_file() {
+        create_key32(&seed_path, keypair.secret_bytes())?;
+    }
+    let held = read_key32(&seed_path, Access::OwnerOnly)?;
+    ensure!(
+        *held == *keypair.secret_bytes(),
+        "{} holds another key than {}",
+        seed_path.display(),
+        keypair_path.display()
+    );
+    Ok(seed_path)
 }
 
 fn service_key_file(auditor_key: &Path) -> PathBuf {
@@ -458,12 +510,14 @@ mod tests {
         .expect("ring.toml");
         let scope = env::temp_dir().join(format!("ring-localnet-scope-{}", std::process::id()));
         file::create_dir_all(&scope).expect("scope");
-        let command = serve(
-            Path::new("/nonexistent/ring-rpc"),
-            &config,
-            addr.port(),
-            Path::new("k"),
-        );
+        let command = RingRpcServe {
+            binary: Path::new("/nonexistent/ring-rpc"),
+            config: &config,
+            port: addr.port(),
+            auditor_key: Path::new("k"),
+            enrollment_writer: Path::new("w"),
+        }
+        .command();
         let error =
             start_ring_rpc(command, &config, addr.port(), &scope).expect_err("foreign listener");
         assert_eq!(

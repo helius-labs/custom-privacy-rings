@@ -27,9 +27,9 @@ use zolana_ring_client::rpc::{
     GET_RELAY_STATUS, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY, SET_MERGE_SETTINGS, SUBMIT_RELAY,
 };
 use zolana_ring_rpc::{
-    run_server, BindPolicy, ChainSource, ClientLimits, Hub, LiveStorageChain, ManagedMerge,
-    RelayBudget, RelayServices, RelayServicesInit, ServerOptions, ServiceIdentity, Store,
-    TransactionSource, Upstreams, STORE_CONNECTIONS,
+    run_server, BindPolicy, ChainSource, ClientLimits, EnrollmentApplierParts, Hub,
+    LiveStorageChain, ManagedMerge, RelayBudget, RelayServices, RelayServicesInit, ServerOptions,
+    ServiceIdentity, Store, TransactionSource, Upstreams, RECORD_FLUSH_INTERVAL, STORE_CONNECTIONS,
 };
 
 use crate::shared::{prover_url, TestEnv, ACTOR_AIRDROP};
@@ -151,7 +151,21 @@ impl RingRpcSpec<'_> {
             genesis_hash,
             service: Keypair::new(),
         };
+        // Every ring of the tests names the payer as its `EnrollmentWriter`, harness and `init` alike.
+        let enrollments = Arc::new(
+            EnrollmentApplierParts {
+                chain: Arc::new(
+                    LiveStorageChain::connect(upstreams, &prover_url())
+                        .map_err(|e| anyhow!("enrollment chain {e:?}"))?,
+                ),
+                payer: self.env.payer.insecure_clone(),
+                rings: vec![self.ring],
+            }
+            .applier(),
+        );
+        runtime.spawn(enrollments.clone().run(RECORD_FLUSH_INTERVAL));
         let mut builder = Hub::builder(source, identity)
+            .with_enrollment_applier(enrollments)
             .with_store(store)
             .with_storage_chain(Arc::new(storage_chain), Keypair::new())
             .with_co_signer(Keypair::new());

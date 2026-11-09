@@ -1,6 +1,6 @@
 use anyhow::Result;
 use custom_ring_interface::storage_instruction::EnrollIxData;
-use custom_ring_sdk::{CustomRing, Enroll, EnrollmentRead};
+use custom_ring_sdk::{CustomRing, Enroll, EnrollmentRead, RingError};
 use solana_signer::Signer;
 use spr_client::{BlockingIndexer, BlockingRpc};
 use spr_keypair::ShieldedKeypair;
@@ -61,8 +61,13 @@ impl KeyEnrollment<'_> {
         // The writer lands held enrollments in its next batch.
         wait_for("every member key applied", || {
             for member in self.members {
-                if !applied(ctx.ring, &ctx.zolana, member)? {
-                    return Ok(Probe::NotYet);
+                match applied(ctx.ring, &ctx.zolana, member) {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(Probe::NotYet),
+                    Err(error) if error.is_projection_lag() => {
+                        return Ok(Probe::Retry(error.into()))
+                    }
+                    Err(error) => return Err(error.into()),
                 }
             }
             Ok(Probe::Ready(()))
@@ -107,11 +112,11 @@ pub(crate) fn applied<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
     ring: CustomRing,
     zolana: &Zolana<R, I>,
     keys: &ShieldedKeypair,
-) -> Result<bool> {
+) -> Result<bool, RingError> {
     let chain = zolana.as_async();
-    let policy = zolana.block_on(ring.require_policy(chain.rpc()))?;
     let owner = keys.pubkey().to_bytes();
     zolana.block_on(async {
+        let policy = ring.require_policy(chain.rpc()).await?;
         let leaves = RegisteredKeys {
             registry: policy.tracking,
             owners: &[owner],

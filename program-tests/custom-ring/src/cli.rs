@@ -108,7 +108,8 @@ impl RingProject {
             self.dir.join("ring.toml"),
             format!(
                 "name = \"cli\"\ntarget = \"localnet\"\nprogram_id = \"{}\"\nmode = \"{}\"\n\
-                 authority_keypair = \"{}\"\npolicy_authority_keypair = \"{}\"\n\n{policy}\
+                 authority_keypair = \"{}\"\npolicy_authority_keypair = \"{}\"\n\
+                 enrollment_writer_keypair = \"{}\"\n\n{policy}\
                  [localnet]\nrpc = \"{}\"\nindexer = \"{}\"\nprover = \"{}\"\nring_rpc = \"{}\"\n\n\
                  [devnet]\nrpc = \"https://api.devnet.solana.com\"\nindexer = \"http://indexer.invalid\"\n\
                  prover = \"http://prover.invalid\"\nring_rpc = \"http://ring.invalid\"\n",
@@ -116,6 +117,7 @@ impl RingProject {
                 toml.mode,
                 self.dir.join("upgrade.json").display(),
                 self.dir.join("policy.json").display(),
+                self.dir.join("upgrade.json").display(),
                 toml.env.rpc_url,
                 toml.env.indexer_url,
                 prover_url(),

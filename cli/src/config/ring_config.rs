@@ -341,6 +341,24 @@ impl Urls {
 }
 
 impl RingConfig {
+    /// The policy role reads `policy_authority_keypair`.
+    pub fn role_keypair_path(&self, root: &Path, role: RingRole) -> Result<PathBuf> {
+        let (configured, default) = match role {
+            RingRole::Policy => return expand_tilde(self.policy_authority_keypair()),
+            RingRole::Admin => (&self.admin_keypair, crate::ADMIN_KEYPAIR_FILE),
+            RingRole::Pauser => (&self.pauser_keypair, crate::PAUSER_KEYPAIR_FILE),
+            RingRole::CosignAdmin => (&self.cosign_admin_keypair, crate::COSIGN_ADMIN_KEYPAIR_FILE),
+            RingRole::EnrollmentWriter => (
+                &self.enrollment_writer_keypair,
+                crate::ENROLLMENT_WRITER_KEYPAIR_FILE,
+            ),
+        };
+        match configured {
+            Some(path) => expand_tilde(path),
+            None => Ok(crate::context::resolve(root, Path::new(default))),
+        }
+    }
+
     /// `.env` next to ring.toml fills `${NAME}` placeholders, the environment wins.
     pub fn load(path: &Path) -> Result<Self> {
         let mut config: Self = parse_ring_toml(path)?;

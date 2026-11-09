@@ -15,8 +15,8 @@ use zolana_ring_policy::{ListId, RuleTable};
 
 use crate::{
     catalogue,
-    config::{expand_tilde, ModeName},
-    deploy, file, line,
+    config::{expand_tilde, ModeName, Target},
+    deploy, file, fund, line,
     policy::{self, CompiledPolicy, PolicySpec},
     status, Context, InitArgs, Trust,
 };
@@ -243,6 +243,10 @@ impl ConfigCreation<'_> {
             cosign_admin: role_key(RingRole::CosignAdmin)?,
             enrollment_writer: role_key(RingRole::EnrollmentWriter)?,
         };
+        // The ring rpc pays every enrollment batch from the writer's balance.
+        if ctx.config.target == Target::Localnet {
+            ctx.fund(roles.enrollment_writer, fund::MIN_AUTHORITY_BALANCE)?;
+        }
         let kind = match (self.mode, self.policy.is_some()) {
             (ModeName::Confidential, false) => RingKind::AuditOnly,
             (ModeName::Confidential, true) => RingKind::Policy,
