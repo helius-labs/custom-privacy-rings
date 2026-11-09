@@ -20,6 +20,49 @@ use spr_client::{Shape, SPP_SUPPORTED_SHAPES};
 use spr_test_utils::wallet::create_associated_token_account;
 use zolana_ring_keys::ListSaltHolder;
 
+/// The prover holds one key's cache at a time, a restart drops it when the next key differs.
+struct LoadedKey<K>(Option<K>);
+
+impl<K> Default for LoadedKey<K> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<K: PartialEq> LoadedKey<K> {
+    fn load(&mut self, key: K) -> Result<()> {
+        if self.0.as_ref() != Some(&key) {
+            restart_prover()?;
+            self.0 = Some(key);
+        }
+        Ok(())
+    }
+}
+
+struct Keyed<T, K> {
+    item: T,
+    key: K,
+}
+
+/// Items sharing a key run back to back, first-seen key order and item order kept.
+fn grouped<T, K: PartialEq + Copy>(
+    items: impl IntoIterator<Item = T>,
+    key: impl Fn(&T) -> K,
+) -> Vec<Keyed<T, K>> {
+    let mut groups: Vec<(K, Vec<T>)> = Vec::new();
+    for item in items {
+        let item_key = key(&item);
+        match groups.iter_mut().find(|(group, _)| *group == item_key) {
+            Some((_, members)) => members.push(item),
+            None => groups.push((item_key, vec![item])),
+        }
+    }
+    groups
+        .into_iter()
+        .flat_map(|(key, members)| members.into_iter().map(move |item| Keyed { item, key }))
+        .collect()
+}
+
 /// Merge widths whose full nullifier list fits one v1 transaction.
 const MERGE_WIDTHS: [usize; 2] = [8, 24];
 const UTXO_AMOUNT: u64 = 1_000_000;
@@ -676,11 +719,26 @@ impl<'a> ColumnSetup<'a> {
 impl ShapeRing<'_> {
     fn sweep(&self, coverage: &mut Coverage) -> Result<()> {
         let (mut settled, mut too_large) = (Vec::new(), Vec::new());
-        for shape in SPP_SUPPORTED_SHAPES
-            .into_iter()
-            .filter(|shape| self.column.keyed(*shape))
-        {
-            restart_prover()?;
+        let rail = self.column.rail();
+        let shapes = grouped(
+            SPP_SUPPORTED_SHAPES
+                .into_iter()
+                .filter(|shape| self.column.keyed(*shape)),
+            |shape| {
+                FrameKey {
+                    rail,
+                    inputs: shape.n_inputs(),
+                    outputs: shape.n_outputs(),
+                    spends_default_ring: false,
+                    wide: false,
+                }
+                .shape()
+            },
+        );
+        let mut loaded = LoadedKey::default();
+        for shape in shapes {
+            loaded.load(shape.key)?;
+            let shape = shape.item;
             let transfer = ShapeTransfer {
                 shape,
                 inputs: self.utxos(1)?,
@@ -718,8 +776,10 @@ impl ShapeRing<'_> {
     }
 
     fn run_cases(&self, cases: &[KeyCase], coverage: &mut Coverage) -> Result<()> {
-        for case in cases {
-            restart_prover()?;
+        let mut loaded = LoadedKey::default();
+        for case in grouped(cases, |case| case.key) {
+            loaded.load(case.key)?;
+            let case = case.item;
             let inputs = match case.spends_default_ring() {
                 true => self.default_ring_notes(LegKind::Sol, case.notes)?,
                 false => self.utxos(case.notes)?,
