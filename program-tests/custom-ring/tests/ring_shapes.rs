@@ -928,7 +928,7 @@ impl ShapeRing<'_> {
                     }
                 }
                 if payout_cap.is_some() {
-                    // 1. One more input past the cap is refused before proving at no leg.
+                    // 1. The key's full input width is refused before proving at no leg.
                     let past = usize::from(shape.inputs);
                     let notes = self.spendable(family, kind, past)?;
                     let refused = self.settle(
@@ -980,7 +980,7 @@ impl ShapeRing<'_> {
         let mut wider: Option<(usize, usize)> = None;
         loop {
             let settlement = match self.settle(load(legs), coverage) {
-                // The catalog keys no frame at this load, a load with fewer legs may select one.
+                // The catalog keys no frame at the load, a load with fewer legs may select one.
                 Err(error)
                     if matches!(
                         error.downcast_ref::<RingError>(),
