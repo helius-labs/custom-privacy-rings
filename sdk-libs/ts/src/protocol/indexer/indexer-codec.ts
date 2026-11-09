@@ -188,7 +188,7 @@ export function decodeStorageRecordPool(value: unknown): StorageRecordPoolRespon
 function decodeRecordPool<Root>(value: unknown, root: (value: unknown, path: string) => Root) {
   const row = object(value, "$", ["context", "root", "records", "canopy", "subjects"]);
   const canopy = array(row["canopy"], "canopy", checkedHash);
-  const levels = canopyLevels(canopy.length);
+  const levels = canopyLevels(canopy.length, QUAD_HEIGHT);
   if (canopy.length !== QUAD_ARITY ** levels)
     return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", "canopy", "a power of 4", row["canopy"]);
   const records = array(row["records"], "records", (entry, path) => {

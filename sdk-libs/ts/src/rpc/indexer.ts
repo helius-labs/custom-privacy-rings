@@ -22,6 +22,7 @@ import type {
 } from "../protocol/indexer/indexer-types.js";
 import {
   QUAD_ARITY,
+  QUAD_HEIGHT,
   canopyLevels,
   type MemberRecord,
   type QuadPath,
@@ -202,7 +203,7 @@ function servedPool(
     response.root.root !== wire.expectedRoot ||
     response.records.length < 1 ||
     response.records.length > wire.openings ||
-    response.canopy.length !== QUAD_ARITY ** canopyLevels(wire.openings) ||
+    response.canopy.length !== QUAD_ARITY ** canopyLevels(wire.openings, QUAD_HEIGHT) ||
     response.subjects.length !== wire.members.length
   )
     throw new ClientError("CLIENT_INVALID_RPC_RESPONSE", { details: { method, path: "$" } });

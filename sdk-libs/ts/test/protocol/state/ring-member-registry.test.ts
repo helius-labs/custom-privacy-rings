@@ -30,7 +30,8 @@ import {
   viewingKeyHash,
   type TrackingRecord,
 } from "../../../src/protocol/membership/tracking.js";
-import { QUAD_ARITY, QUAD_HEIGHT } from "../../../src/protocol/membership/member-registry.js";
+import { QUAD_ARITY } from "../../../src/protocol/membership/member-registry.js";
+import { TRACKING_QUAD_HEIGHT } from "../../../src/protocol/membership/tracking.js";
 import type {
   ServedTrackingOpening,
   TrackingOpeningsRequest,
@@ -79,11 +80,11 @@ function actor(seed: number) {
 function trackingTree(row: TrackingRecord) {
   const sentinel: TrackingRecord = { ...TRACKING_SENTINEL, next: row.member };
   const zeros: Bytes32[] = [new Uint8Array(32) as Bytes32];
-  for (let level = 0; level < QUAD_HEIGHT; level += 1) {
+  for (let level = 0; level < TRACKING_QUAD_HEIGHT; level += 1) {
     const below = zeros[level] as Bytes32;
     zeros.push(poseidon(Array.from({ length: QUAD_ARITY }, () => below)) as Bytes32);
   }
-  const above = zeros.slice(1, QUAD_HEIGHT).map((zero) => [zero, zero, zero]);
+  const above = zeros.slice(1, TRACKING_QUAD_HEIGHT).map((zero) => [zero, zero, zero]);
   const zero = zeros[0] as Bytes32;
   const path = (index: number, neighbour: TrackingRecord) => ({
     index,

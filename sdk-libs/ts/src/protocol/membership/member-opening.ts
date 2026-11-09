@@ -47,7 +47,7 @@ import { applyKeyWidth } from "../proof/proving-keys.js";
 export const FIELD_MAX = bigIntBytes(BN254_SCALAR_ORDER - 1n) as Bytes32;
 /** Rust `MEMBER_REGISTRY_EMPTY_ROOT`, the tree holding only the sentinel, a registry's first root. */
 export const MEMBER_REGISTRY_EMPTY_ROOT = hexToBytes(
-  "295ec16f1ff587f0269eb21ddf079a2b44cb3e0c6852f35431ab02f7651ac967",
+  "17202a46b2fa553cc388a3acc58cec7fcf588e5349816f74bf85fa81a3943de2",
 ) as Bytes32;
 
 const U64_MAX = 0xffff_ffff_ffff_ffffn;
@@ -92,7 +92,7 @@ export function checkedViewingU(viewingU: Bytes32): Bytes32 {
 
 /** The pool of a key whose queries are all inactive, its canopy admits the zero record and binds no root, Rust `RecordPool::unopened`. */
 export function unopenedRecordPool(openings: number): RecordPool {
-  const levels = canopyLevels(openings);
+  const levels = canopyLevels(openings, QUAD_HEIGHT);
   const siblings = Array.from({ length: QUAD_HEIGHT - levels }, () =>
     Object.freeze(Array.from({ length: QUAD_ARITY - 1 }, () => ZERO_32)),
   );
@@ -121,7 +121,7 @@ export function unopenedRecordPool(openings: number): RecordPool {
 
 /** The root `leaf` folds to along `path`, Rust `QuadPath::root`. */
 export function quadPathRoot(path: QuadPath, leaf: Bytes32): Bytes32 {
-  return foldQuadPath(path, leaf, invalid);
+  return foldQuadPath(path, leaf, invalid, QUAD_HEIGHT);
 }
 
 /** The member's record under `root`, `undefined` for an absent member, Rust `RecordOpening::verify`. */
@@ -182,7 +182,13 @@ export function verifyRecordPool(
   )
     invalid("PoolShape");
   const paths = coveredPaths(
-    { paths: pool.records.map(({ path }) => path), canopy: pool.canopy, openings, root },
+    {
+      paths: pool.records.map(({ path }) => path),
+      canopy: pool.canopy,
+      openings,
+      root,
+      height: QUAD_HEIGHT,
+    },
     invalid,
   );
   pool.records.forEach(({ record }, at) => {

@@ -32,6 +32,7 @@ import type {
   TrackingOpening,
   TrackingRecord,
 } from "../../protocol/membership/tracking.js";
+import { TRACKING_CAPACITY, TRACKING_QUAD_HEIGHT } from "../../protocol/membership/tracking.js";
 import {
   applyKeyWidth,
   enrollmentKeyWidth,
@@ -369,7 +370,7 @@ export function ringProofRequestBody(request: RingProofRequest): Readonly<Record
       const capacity = applyCapacity(request.writes.length);
       return {
         ...head,
-        ...applyHeadJson(request),
+        ...applyHeadJson(request, QUAD_CAPACITY),
         count: request.writes.length,
         writes: paddedWrites(request.writes, capacity, writeJson),
         ...(request.private === undefined ? {} : privateApplyJson(request.private, capacity)),
@@ -379,7 +380,7 @@ export function ringProofRequestBody(request: RingProofRequest): Readonly<Record
       const capacity = enrollmentCapacity(request.writes.length);
       return {
         ...head,
-        ...applyHeadJson(request),
+        ...applyHeadJson(request, TRACKING_CAPACITY),
         count: request.writes.length,
         writes: paddedWrites(request.writes, capacity, trackingWriteJson),
       };
@@ -425,7 +426,6 @@ const U8_MAX = 0xff;
 const U32_MAX = 0xffff_ffff;
 /** Go `[2]Field`, the two `hash_bytes_32` halves of a mint. */
 const MINT_CHUNKS = 2;
-const MAX_LEAF_INDEX = Number(QUAD_CAPACITY) - 1;
 
 /** A count no apply key holds keeps its own width and fails the catalog lookup. */
 function applyCapacity(count: number): number {
@@ -557,7 +557,7 @@ function entryOpeningJson(entry: EntryOpeningProofInput, name: string): Json {
 function trackingJson(tracking: TrackingProofInputs, shape: PolicySectionShape): Json {
   const capacity = shape.pools.tracking;
   const { trackingPool: pool } = tracking;
-  const levels = canopyLevels(capacity);
+  const levels = canopyLevels(capacity, TRACKING_QUAD_HEIGHT);
   const entry = (index: number, name: string): number => integer(index, name, 0, capacity - 1);
   return {
     trackingRoot: field(tracking.trackingRoot, "trackingRoot"),
@@ -567,7 +567,7 @@ function trackingJson(tracking: TrackingProofInputs, shape: PolicySectionShape):
     trackingProof: {
       canopy: fields(pool.canopy, QUAD_ARITY ** levels, "trackingProof.canopy"),
       paths: sized(pool.paths, capacity, "trackingProof.paths").map((path, i) =>
-        sharedPathJson(path, QUAD_HEIGHT - levels, `trackingProof.paths[${i}]`),
+        sharedPathJson(path, TRACKING_QUAD_HEIGHT, levels, `trackingProof.paths[${i}]`),
       ),
     },
     trackingSubjects: subjectsJson(pool.subjects, capacity, "trackingSubjects"),
@@ -605,15 +605,15 @@ function trackingOpeningJson(opening: TrackingOpening | undefined, name: string)
   return {
     present,
     record: trackingRecordJson(present ? opening.record : opening.low, `${name}.record`),
-    path: sharedPathJson(opening.path, QUAD_HEIGHT, `${name}.path`),
+    path: sharedPathJson(opening.path, TRACKING_QUAD_HEIGHT, 0, `${name}.path`),
   };
 }
 
-/** Go `SharedRegistryPath`. */
-function sharedPathJson(path: QuadPath, height: number, name: string): Json {
+/** Go `SharedRegistryPath`, cut `levels` below the root of a `height` tree. */
+function sharedPathJson(path: QuadPath, height: number, levels: number, name: string): Json {
   return {
-    index: integer(path.index, `${name}.index`, 0, MAX_LEAF_INDEX),
-    siblings: sized(path.siblings, height, `${name}.siblings`).map((level, l) =>
+    index: integer(path.index, `${name}.index`, 0, maxLeafIndex(height)),
+    siblings: sized(path.siblings, height - levels, `${name}.siblings`).map((level, l) =>
       fields(level, QUAD_ARITY - 1, `${name}.siblings[${l}]`),
     ),
   };
@@ -699,7 +699,7 @@ type PoolJson = Readonly<{
 
 /** Go `PooledRecord`, `SharedRegistryProof` and `PooledSubject` rows at the key's capacity. */
 function poolJson(pool: RecordPool, capacity: number, name: string): PoolJson {
-  const levels = canopyLevels(capacity);
+  const levels = canopyLevels(capacity, QUAD_HEIGHT);
   return {
     records: sized(pool.records, capacity, `${name}.records`).map((record, i) => ({
       member: field(record.member, `${name}.records[${i}].member`),
@@ -708,7 +708,7 @@ function poolJson(pool: RecordPool, capacity: number, name: string): PoolJson {
     proof: {
       canopy: fields(pool.canopy, QUAD_ARITY ** levels, `${name}.canopy`),
       paths: sized(pool.paths, capacity, `${name}.paths`).map((path, i) =>
-        sharedPathJson(path, QUAD_HEIGHT - levels, `${name}.paths[${i}]`),
+        sharedPathJson(path, QUAD_HEIGHT, levels, `${name}.paths[${i}]`),
       ),
     },
     subjects: subjectsJson(pool.subjects, capacity, `${name}.subjects`),
@@ -764,14 +764,14 @@ function privateApplyJson(input: PrivateApplyProofInput, capacity: number): Json
       (owner, name) => ({
         listSalt: field(owner.listSalt, `${name}.listSalt`),
         record: trackingRecordJson(owner.record, `${name}.record`),
-        ...quadPathJson(owner.path, name, "index", "path"),
+        ...quadPathJson(owner.path, TRACKING_QUAD_HEIGHT, name, "index", "path"),
       }),
       "owners",
     ),
   };
 }
 
-/** Go field order, both families take a u64 next index up to `QUAD_CAPACITY`. */
+/** Go field order, a u64 next index up to the `capacity` of the family's tree. */
 function applyHeadJson(
   request: Readonly<{
     oldRoot: Bytes32;
@@ -781,12 +781,13 @@ function applyHeadJson(
     chainStart: Bytes32;
     chainEnd: Bytes32;
   }>,
+  capacity: bigint,
 ): Json {
   return {
     oldRoot: field(request.oldRoot, "oldRoot"),
     newRoot: field(request.newRoot, "newRoot"),
-    oldNextIndex: nextIndexJson(request.oldNextIndex, "oldNextIndex"),
-    newNextIndex: nextIndexJson(request.newNextIndex, "newNextIndex"),
+    oldNextIndex: nextIndexJson(request.oldNextIndex, capacity, "oldNextIndex"),
+    newNextIndex: nextIndexJson(request.newNextIndex, capacity, "newNextIndex"),
     chainStart: field(request.chainStart, "chainStart"),
     chainEnd: field(request.chainEnd, "chainEnd"),
   };
@@ -816,12 +817,12 @@ function writeJson(write: RecordWriteProofInput, name: string): Json {
     oldNext: field(write.oldNext, `${name}.oldNext`),
     oldLists: u64(write.oldLists, `${name}.oldLists`),
     ...mintPolicyJson(write.oldMintPolicy, name, "old"),
-    ...quadPathJson(write.slot, name, "index", "path"),
+    ...quadPathJson(write.slot, QUAD_HEIGHT, name, "index", "path"),
     lowMember: field(write.low.member, `${name}.lowMember`),
     lowNext: field(write.low.next, `${name}.lowNext`),
     lowLists: u64(write.low.lists, `${name}.lowLists`),
     ...mintPolicyJson(write.low.mintPolicy, name, "low"),
-    ...quadPathJson(write.lowPath, name, "lowIndex", "lowPath"),
+    ...quadPathJson(write.lowPath, QUAD_HEIGHT, name, "lowIndex", "lowPath"),
   };
 }
 
@@ -832,15 +833,15 @@ function trackingWriteJson(write: TrackingWriteProofInput, name: string): Json {
     priorViewingHash: field(write.entry.priorViewingHash, `${name}.priorViewingHash`),
     proven: flag(write.entry.proven),
     present: flag(write.present),
-    ...quadPathJson(write.slot, name, "index", "path"),
+    ...quadPathJson(write.slot, TRACKING_QUAD_HEIGHT, name, "index", "path"),
     lowRecord: trackingRecordJson(write.lowRecord, `${name}.lowRecord`),
-    ...quadPathJson(write.lowPath, name, "lowIndex", "lowPath"),
+    ...quadPathJson(write.lowPath, TRACKING_QUAD_HEIGHT, name, "lowIndex", "lowPath"),
   };
 }
 
 /** Go `uint64`, a next index stops at the tree's capacity. */
-function nextIndexJson(value: bigint, name: string): number {
-  if (value > QUAD_CAPACITY)
+function nextIndexJson(value: bigint, capacity: bigint, name: string): number {
+  if (value > capacity)
     throw new ClientError("CLIENT_INVALID_INTEGER", { details: { field: name, length: 8 } });
   return u64(value, name);
 }
@@ -863,11 +864,21 @@ function limitsJson(limits: AssetLimits, name: string): string[] {
   return assetLimitsFields(limits).map((limit, index) => field(limit, `${name}[${String(index)}]`));
 }
 
+function maxLeafIndex(height: number): number {
+  return Number(1n << BigInt(2 * height)) - 1;
+}
+
 /** Go keeps the index and the flat siblings, leaf level first, three per level in child order. */
-function quadPathJson(path: QuadPath, name: string, index: string, siblings: string): Json {
-  const levels = sized(path.siblings, QUAD_HEIGHT, `${name}.${siblings}`);
+function quadPathJson(
+  path: QuadPath,
+  height: number,
+  name: string,
+  index: string,
+  siblings: string,
+): Json {
+  const levels = sized(path.siblings, height, `${name}.${siblings}`);
   return {
-    [index]: integer(path.index, `${name}.${index}`, 0, MAX_LEAF_INDEX),
+    [index]: integer(path.index, `${name}.${index}`, 0, maxLeafIndex(height)),
     [siblings]: levels.flatMap((level, l) =>
       fields(level, QUAD_ARITY - 1, `${name}.${siblings}[${l}]`),
     ),

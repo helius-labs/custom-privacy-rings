@@ -15,6 +15,7 @@ import {
   quadPathRoot,
 } from "../../../src/protocol/membership/member-opening.js";
 import { QUAD_HEIGHT, chainLink } from "../../../src/protocol/membership/member-registry.js";
+import { TRACKING_QUAD_HEIGHT } from "../../../src/protocol/membership/tracking.js";
 import {
   TRACKING_EMPTY_ROOT,
   TRACKING_SENTINEL,
@@ -101,7 +102,7 @@ beforeAll(initializePoseidon);
 describe("empty_root.json", () => {
   it("folds the sentinel over the zero subtrees to the registry's first root", () => {
     expect(hex(memberRecordHash(SENTINEL_RECORD))).toBe(empty.sentinel.leaf_hash);
-    expect(empty.zero_subtrees).toHaveLength(QUAD_HEIGHT + 1);
+    expect(empty.zero_subtrees).toHaveLength(TRACKING_QUAD_HEIGHT + 1);
     empty.zero_subtrees.slice(1).forEach((node, level) => {
       const below = field(empty.zero_subtrees[level] ?? "");
       expect(hex(poseidon([below, below, below, below]))).toBe(node);
@@ -119,7 +120,7 @@ describe("empty_root.json", () => {
     const sentinel = trackingRecordHash(TRACKING_SENTINEL);
     expect(hex(sentinel)).toBe(empty.tracking_sentinel.leaf_hash);
     const siblings = empty.zero_subtrees
-      .slice(0, QUAD_HEIGHT)
+      .slice(0, TRACKING_QUAD_HEIGHT)
       .map((node) => [field(node), field(node), field(node)]);
     const root = siblings.reduce<Bytes32>(
       (node, level) => poseidon([node, ...level]) as Bytes32,

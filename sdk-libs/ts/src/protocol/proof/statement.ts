@@ -25,6 +25,7 @@ import {
 } from "../transaction/transact.js";
 import { N_PUBLIC_SLOTS } from "../transaction/spp.js";
 import { QUAD_CAPACITY } from "../membership/member-registry.js";
+import { TRACKING_CAPACITY } from "../membership/tracking.js";
 
 /** The values every transfer statement opens with, Rust `AuditHead`. */
 export interface AuditHead {
@@ -137,7 +138,7 @@ export interface PrivateWrites {
 export interface ApplyEnrollmentsStatement {
   readonly oldRoot: Bytes32;
   readonly newRoot: Bytes32;
-  /** u64, at most `QUAD_CAPACITY`. */
+  /** u64, at most `TRACKING_CAPACITY`. */
   readonly oldNextIndex: bigint;
   readonly newNextIndex: bigint;
   /** `chain_start` of the registry and revision. */
@@ -308,7 +309,7 @@ export function applyRecordsStatementElements(
   statement: ApplyRecordsStatement,
 ): readonly Bytes32[] {
   return [
-    ...applyStatementHead(RingDomain.applyRecords, statement),
+    ...applyStatementHead(RingDomain.applyRecords, statement, QUAD_CAPACITY),
     u64Field(statement.restrictive ? 1n : 0n, "restrictive"),
     ...(statement.private === undefined
       ? []
@@ -327,7 +328,7 @@ export function applyRecordsStatementHash(statement: ApplyRecordsStatement): Byt
 export function applyEnrollmentsStatementElements(
   statement: ApplyEnrollmentsStatement,
 ): readonly Bytes32[] {
-  return applyStatementHead(RingDomain.applyEnrollments, statement);
+  return applyStatementHead(RingDomain.applyEnrollments, statement, TRACKING_CAPACITY);
 }
 
 export function applyEnrollmentsStatementHash(statement: ApplyEnrollmentsStatement): Bytes32 {
@@ -337,13 +338,14 @@ export function applyEnrollmentsStatementHash(statement: ApplyEnrollmentsStateme
 function applyStatementHead(
   domain: RingDomain,
   statement: ApplyEnrollmentsStatement,
+  capacity: bigint,
 ): readonly Bytes32[] {
   return [
     domainField(domain),
     checkedBytes<Bytes32>(statement.oldRoot, 32, "old root"),
     checkedBytes<Bytes32>(statement.newRoot, 32, "new root"),
-    u64Field(statement.oldNextIndex, "old next index", QUAD_CAPACITY),
-    u64Field(statement.newNextIndex, "new next index", QUAD_CAPACITY),
+    u64Field(statement.oldNextIndex, "old next index", capacity),
+    u64Field(statement.newNextIndex, "new next index", capacity),
     checkedBytes<Bytes32>(statement.chainStart, 32, "chain start"),
     checkedBytes<Bytes32>(statement.chainEnd, 32, "chain end"),
     u64Field(statement.count, "count"),

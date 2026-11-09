@@ -30,7 +30,10 @@ import {
   signedWrite,
   enrollmentWriteEntry,
 } from "../../../src/protocol/ring-rpc/enrollment-write.js";
-import { QUAD_CAPACITY, QUAD_HEIGHT } from "../../../src/protocol/membership/member-registry.js";
+import {
+  TRACKING_CAPACITY,
+  TRACKING_QUAD_HEIGHT,
+} from "../../../src/protocol/membership/tracking.js";
 import { memberOfTag } from "../../../src/protocol/membership/policy.js";
 import {
   TRACKING_EMPTY_ROOT,
@@ -128,9 +131,9 @@ describe("tracking accounts", () => {
     expect(decoded.roots[1]).toBeUndefined();
     expect(decoded.roots[TRACKING_ROOT_HISTORY - 1]?.hash).toEqual(field(0x22));
     // A full tree's next index is its capacity, the u64 field holds no index past it.
-    nextIndex(QUAD_CAPACITY);
+    nextIndex(TRACKING_CAPACITY);
     expect(decodeTrackingRegistry(data).nextIndex).toBe(1n << 32n);
-    nextIndex(QUAD_CAPACITY + 1n);
+    nextIndex(TRACKING_CAPACITY + 1n);
     expect(() => decodeTrackingRegistry(data)).toThrow("RING_TRACKING_INVALID");
     nextIndex(0n);
     expect(() => decodeTrackingRegistry(data)).toThrow("RING_TRACKING_INVALID");
@@ -167,7 +170,7 @@ describe("tracking accounts", () => {
 describe("tracking openings", () => {
   const paths = () => {
     const zeros: Bytes32[] = [ZERO_32];
-    for (let level = 0; level < QUAD_HEIGHT; level += 1) {
+    for (let level = 0; level < TRACKING_QUAD_HEIGHT; level += 1) {
       const below = zeros[level] as Bytes32;
       zeros.push(poseidon([below, below, below, below]) as Bytes32);
     }
@@ -177,7 +180,7 @@ describe("tracking openings", () => {
   /** The tree holding only `leaf` at index 0. */
   function single(leaf: TrackingRecord) {
     const zeros = paths();
-    const siblings = zeros.slice(0, QUAD_HEIGHT).map((zero) => [zero, zero, zero]);
+    const siblings = zeros.slice(0, TRACKING_QUAD_HEIGHT).map((zero) => [zero, zero, zero]);
     let root = trackingRecordHash(leaf);
     for (const level of siblings) root = poseidon([root, ...level]) as Bytes32;
     return { root, path: { index: 0, siblings } };

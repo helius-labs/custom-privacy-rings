@@ -50,12 +50,8 @@ import {
 import { ownerSignerCapacity } from "../../src/protocol/proof/transfer-shapes.js";
 import { ApprovalMask } from "../../src/protocol/transaction/transact.js";
 import { RING_SOURCE_SLOTS } from "../../src/rpc/prover/types.js";
-import {
-  canopyLevels,
-  QUAD_ARITY,
-  QUAD_HEIGHT,
-} from "../../src/protocol/membership/member-registry.js";
-import { viewingKeyHash } from "../../src/protocol/membership/tracking.js";
+import { canopyLevels, QUAD_ARITY } from "../../src/protocol/membership/member-registry.js";
+import { TRACKING_QUAD_HEIGHT, viewingKeyHash } from "../../src/protocol/membership/tracking.js";
 import { unopenedRecordPool } from "../../src/protocol/membership/member-opening.js";
 import { transferPoolCapacity } from "../../src/protocol/proof/transfer-shapes.js";
 import { ringStreamLayout } from "../../src/protocol/transaction/transact.js";
@@ -695,11 +691,11 @@ describe("prover/ring/params.go", () => {
       trackingRoot: zero,
       trackingPool: {
         records: repeat(capacity.tracking, row0()),
-        canopy: repeat(QUAD_ARITY ** canopyLevels(capacity.tracking), zero),
+        canopy: repeat(QUAD_ARITY ** canopyLevels(capacity.tracking, TRACKING_QUAD_HEIGHT), zero),
         paths: repeat(capacity.tracking, {
           index: 0,
           siblings: repeat(
-            QUAD_HEIGHT - canopyLevels(capacity.tracking),
+            TRACKING_QUAD_HEIGHT - canopyLevels(capacity.tracking, TRACKING_QUAD_HEIGHT),
             repeat(QUAD_ARITY - 1, zero),
           ),
         }),

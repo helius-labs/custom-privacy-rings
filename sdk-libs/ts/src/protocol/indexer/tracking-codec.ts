@@ -8,13 +8,10 @@ import {
 import type { Address, Bytes32 } from "@heliuslabs/spr/interface";
 
 import { RingError } from "../error.js";
+import { QUAD_ARITY, type QuadPath } from "../membership/member-registry.js";
 import {
-  QUAD_ARITY,
-  QUAD_CAPACITY,
-  QUAD_HEIGHT,
-  type QuadPath,
-} from "../membership/member-registry.js";
-import {
+  TRACKING_CAPACITY,
+  TRACKING_QUAD_HEIGHT,
   viewingKeyHash,
   type ServedTrackingPool,
   type TrackingOpening,
@@ -178,11 +175,11 @@ function sealOf(value: unknown, path: string): TrackingSeal {
 
 function quadPath(value: unknown, path: string): QuadPath {
   const read = poolPath(value, path);
-  if (read.siblings.length !== QUAD_HEIGHT)
+  if (read.siblings.length !== TRACKING_QUAD_HEIGHT)
     return schemaFailure(
       "INDEXER_SCHEMA_INVALID_TYPE",
       `${path}.siblings`,
-      `${String(QUAD_HEIGHT)} levels`,
+      `${String(TRACKING_QUAD_HEIGHT)} levels`,
       read.siblings,
     );
   return read;
@@ -198,7 +195,7 @@ function poolPath(value: unknown, path: string): QuadPath {
     return Object.freeze(hashes);
   });
   return Object.freeze({
-    index: Number(wireInteger(row["index"], `${path}.index`, 0n, QUAD_CAPACITY - 1n)),
+    index: Number(wireInteger(row["index"], `${path}.index`, 0n, TRACKING_CAPACITY - 1n)),
     siblings: Object.freeze(siblings),
   });
 }

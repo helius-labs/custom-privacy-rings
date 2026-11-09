@@ -13,6 +13,7 @@ import { FIELD_MAX, memberRecordHash } from "../../src/protocol/membership/membe
 import type { TrackingSeal } from "../../src/protocol/indexer/tracking-codec.js";
 import {
   TRACKING_SENTINEL,
+  TRACKING_QUAD_HEIGHT,
   trackingRecordHash,
   viewingKeyHash,
   type TrackingFields,
@@ -104,7 +105,7 @@ function indexedTree<Row extends Readonly<{ member: Bytes32; next: Bytes32 }>>(
   };
   /** The record pool response, distinct leaves in first use order. */
   const pool = (members: readonly Bytes32[], openings: number) => {
-    const levels = canopyLevels(openings);
+    const levels = canopyLevels(openings, height);
     const cut = height - levels;
     const records: { record: Row; path: QuadPath }[] = [];
     const subjects = members.map((member) => {
@@ -164,7 +165,7 @@ export function trackingTree(entries: readonly FixtureTrackingEntry[] = []) {
       next: sorted[index + 1]?.member ?? FIELD_MAX,
     })),
   ];
-  const tree = indexedTree(rows, trackingRecordHash, QUAD_HEIGHT);
+  const tree = indexedTree(rows, trackingRecordHash, TRACKING_QUAD_HEIGHT);
   const seals = new Map(
     entries.flatMap(({ member, seal }) =>
       seal === undefined ? [] : [[bytesToBigInt(member), seal] as const],

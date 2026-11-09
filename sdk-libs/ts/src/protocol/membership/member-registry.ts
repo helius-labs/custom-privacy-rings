@@ -3,10 +3,10 @@ import type { Bytes32 } from "@heliuslabs/spr/interface";
 
 import type { MintPolicy } from "./mint-policy.js";
 
-/** Rust `QUAD_ARITY` and `QUAD_HEIGHT`, the 4-ary shape of the member registry and the tracking tree. */
+/** Rust `QUAD_ARITY` and `QUAD_HEIGHT`, the 4-ary shape of the member registry. */
 export const QUAD_ARITY = 4;
-export const QUAD_HEIGHT = 16;
-/** Rust `QUAD_CAPACITY`, `4^16` leaves, a u64 next index holds it. */
+export const QUAD_HEIGHT = 13;
+/** Rust `QUAD_CAPACITY`. */
 export const QUAD_CAPACITY = 1n << BigInt(2 * QUAD_HEIGHT);
 /** Rust `ROOT_HISTORY`, the roots a registry keeps. */
 export const ROOT_HISTORY = 32;
@@ -27,20 +27,29 @@ export interface QuadPath {
   readonly siblings: readonly (readonly Bytes32[])[];
 }
 
-/** The least `levels` with `4^levels >= openings`, at most `QUAD_HEIGHT`. */
-export function canopyLevels(openings: number): number {
+/** The least `levels` with `4^levels >= openings`, at most `height`. */
+export function canopyLevels(openings: number, height: number): number {
   let levels = 0;
-  while (levels < QUAD_HEIGHT && QUAD_ARITY ** levels < openings) levels += 1;
+  while (levels < height && QUAD_ARITY ** levels < openings) levels += 1;
   return levels;
 }
 
 export type TreeRefusal = (reason: string) => never;
 
-/** The root `leaf` folds to along `path`, Rust `QuadPath::root`. */
-export function foldQuadPath(path: QuadPath, leaf: Bytes32, refuse: TreeRefusal): Bytes32 {
-  if (!Number.isSafeInteger(path.index) || path.index < 0 || BigInt(path.index) >= QUAD_CAPACITY)
+/** The root `leaf` folds to along `path` in a tree of `height`, Rust `QuadPathOf::root`. */
+export function foldQuadPath(
+  path: QuadPath,
+  leaf: Bytes32,
+  refuse: TreeRefusal,
+  height: number,
+): Bytes32 {
+  if (
+    !Number.isSafeInteger(path.index) ||
+    path.index < 0 ||
+    BigInt(path.index) >= 1n << BigInt(2 * height)
+  )
     refuse("IndexOutOfRange");
-  if (path.siblings.length !== QUAD_HEIGHT) refuse("PathHeight");
+  if (path.siblings.length !== height) refuse("PathHeight");
   let node = leaf;
   path.siblings.forEach((siblings, level) => {
     if (siblings.length !== QUAD_ARITY - 1) refuse("PathArity");
@@ -59,10 +68,11 @@ export function coveredPaths(
     canopy: readonly Bytes32[];
     openings: number;
     root: Bytes32;
+    height: number;
   }>,
   refuse: TreeRefusal,
 ): readonly QuadPath[] {
-  const levels = canopyLevels(input.openings);
+  const levels = canopyLevels(input.openings, input.height);
   if (input.canopy.length !== QUAD_ARITY ** levels) refuse("PoolShape");
   const canopy = [input.canopy.map((node) => checkedBytes<Bytes32>(node, 32, "canopy"))];
   for (let level = 0; level < levels; level += 1) {
@@ -76,7 +86,7 @@ export function coveredPaths(
     );
   }
   if (!equalBytes(canopy[levels]?.[0] ?? ZERO_32, input.root)) refuse("RootMismatch");
-  const height = QUAD_HEIGHT - levels;
+  const height = input.height - levels;
   return input.paths.map((path) => {
     if (path.siblings.length !== height) refuse("PathHeight");
     return Object.freeze({

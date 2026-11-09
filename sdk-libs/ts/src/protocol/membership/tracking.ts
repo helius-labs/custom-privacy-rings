@@ -18,16 +18,14 @@ import type { Bytes32, Bytes33, Bytes64 } from "@heliuslabs/spr/interface";
 import { domainField, RingDomain } from "../../crypto/derivation/ring-domain.js";
 import { RingError } from "../error.js";
 import type { StorageRegistryRoot } from "../codec/ring-codecs.js";
-import {
-  QUAD_CAPACITY,
-  coveredPaths,
-  foldQuadPath,
-  type PoolSubject,
-  type QuadPath,
-} from "./member-registry.js";
+import { coveredPaths, foldQuadPath, type PoolSubject, type QuadPath } from "./member-registry.js";
 import { FIELD_MAX } from "./member-opening.js";
 
 export const TRACKING_GRACE_SLOTS = 750n;
+/** Rust `TRACKING_QUAD_HEIGHT`. */
+export const TRACKING_QUAD_HEIGHT = 16;
+/** Rust `TRACKING_CAPACITY`. */
+export const TRACKING_CAPACITY = 1n << BigInt(2 * TRACKING_QUAD_HEIGHT);
 /** Rust `TRACKING_ROOT_HISTORY`. */
 export const TRACKING_ROOT_HISTORY = 128;
 /** The sentinel at leaf 0 under zero subtrees. */
@@ -45,7 +43,7 @@ export interface TrackingRegistry {
   readonly authority: Address;
   readonly ringId: Bytes32;
   readonly auditorPubkey: Bytes33;
-  /** At most `QUAD_CAPACITY`. */
+  /** At most `TRACKING_CAPACITY`. */
   readonly nextIndex: bigint;
   /** Newest first. */
   readonly roots: readonly (StorageRegistryRoot | undefined)[];
@@ -104,7 +102,7 @@ export function decodeTrackingRegistry(data: Uint8Array): TrackingRegistry {
     return equalBytes(hash, ZERO_32) ? undefined : Object.freeze({ hash, revision, expiresAt });
   });
   reader.done();
-  if (nextIndex < 1n || nextIndex > QUAD_CAPACITY)
+  if (nextIndex < 1n || nextIndex > TRACKING_CAPACITY)
     throw new RingError("RING_TRACKING_INVALID", { details: { nextIndex: nextIndex.toString() } });
   return Object.freeze({
     authority,
@@ -198,7 +196,12 @@ export function verifyTrackingOpening(
       ? equalBytes(leaf.member, member)
       : fieldBelow(leaf.member, member) && fieldBelow(member, leaf.next);
   if (!held) throw invalid("NotBracketed");
-  if (!equalBytes(foldQuadPath(opening.path, trackingRecordHash(leaf), refuse), root))
+  if (
+    !equalBytes(
+      foldQuadPath(opening.path, trackingRecordHash(leaf), refuse, TRACKING_QUAD_HEIGHT),
+      root,
+    )
+  )
     throw invalid("RootMismatch");
   return opening.kind === "present" ? opening.record : undefined;
 }
@@ -246,7 +249,13 @@ export function verifyTrackingPool(
   )
     throw invalid("PoolShape");
   const fullPaths = coveredPaths(
-    { paths: pool.records.map(({ path }) => path), canopy: pool.canopy, openings, root },
+    {
+      paths: pool.records.map(({ path }) => path),
+      canopy: pool.canopy,
+      openings,
+      root,
+      height: TRACKING_QUAD_HEIGHT,
+    },
     refuse,
   );
   const rows = members.map((member, subject) => {

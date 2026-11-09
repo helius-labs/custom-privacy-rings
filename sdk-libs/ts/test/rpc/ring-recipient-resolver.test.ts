@@ -13,7 +13,7 @@ import { checkOutputKeys } from "../../src/proof/policy-proof.js";
 import type { ProofOutputUtxo } from "@heliuslabs/spr/transaction";
 import { listSaltOf, listTagOf } from "../../src/crypto/keys/list-salt.js";
 import type { TrackingSeal } from "../../src/protocol/indexer/tracking-codec.js";
-import { QUAD_HEIGHT } from "../../src/protocol/membership/member-registry.js";
+import { TRACKING_QUAD_HEIGHT } from "../../src/protocol/membership/tracking.js";
 import {
   TRACKING_SENTINEL,
   trackingRecordHash,
@@ -33,7 +33,7 @@ const holder = () =>
 function zeroSiblings(): readonly (readonly Bytes32[])[] {
   const levels: Bytes32[][] = [];
   let zero: Bytes32 = ZERO_32;
-  for (let level = 0; level < QUAD_HEIGHT; level += 1) {
+  for (let level = 0; level < TRACKING_QUAD_HEIGHT; level += 1) {
     levels.push([zero, zero, zero]);
     zero = poseidon([zero, zero, zero, zero]) as Bytes32;
   }

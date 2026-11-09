@@ -48,6 +48,7 @@ import {
   type TrackingRecord,
 } from "../../src/protocol/membership/tracking.js";
 import { QUAD_HEIGHT } from "../../src/protocol/membership/member-registry.js";
+import { TRACKING_QUAD_HEIGHT } from "../../src/protocol/membership/tracking.js";
 import { EMPTY_MINT_POLICY } from "../../src/protocol/membership/mint-policy.js";
 import {
   RING_KEYS,
@@ -1087,7 +1088,7 @@ describe("tracking apply requests", () => {
   const OWNER = {
     listSalt: ZERO_32,
     record: TRACKING_SENTINEL,
-    path: ZERO_PATH(QUAD_HEIGHT),
+    path: ZERO_PATH(TRACKING_QUAD_HEIGHT),
   };
   const privateApply = (privateWrites: number, owners: readonly (typeof OWNER | undefined)[]) =>
     ({
@@ -1109,7 +1110,7 @@ describe("tracking apply requests", () => {
     const owners = list(body["owners"]);
     expect(owners[0]).toBeNull();
     expect(Object.keys(record(owners[1]))).toEqual(["listSalt", "record", "index", "path"]);
-    expect(list(record(owners[1])["path"])).toHaveLength(3 * QUAD_HEIGHT);
+    expect(list(record(owners[1])["path"])).toHaveLength(3 * TRACKING_QUAD_HEIGHT);
     expect(body).not.toHaveProperty("credentialWrites");
   });
 
@@ -1131,9 +1132,9 @@ describe("tracking apply requests", () => {
           {
             entry: { ...TRACKING_SENTINEL, priorViewingHash: ZERO_32, proven: true },
             present: false,
-            slot: ZERO_PATH(QUAD_HEIGHT),
+            slot: ZERO_PATH(TRACKING_QUAD_HEIGHT),
             lowRecord: TRACKING_SENTINEL,
-            lowPath: ZERO_PATH(QUAD_HEIGHT),
+            lowPath: ZERO_PATH(TRACKING_QUAD_HEIGHT),
           },
         ],
       }) satisfies RingProofRequest;
@@ -1166,8 +1167,8 @@ describe("tracking apply requests", () => {
       ...privateApply(0b10, [undefined, OWNER]),
       newNextIndex,
     });
-    expect(ringProofRequestBody(records(1n << 32n))["newNextIndex"]).toBe(2 ** 32);
-    expect(() => ringProofRequestBody(records((1n << 32n) + 1n))).toThrow(
+    expect(ringProofRequestBody(records(1n << 26n))["newNextIndex"]).toBe(2 ** 26);
+    expect(() => ringProofRequestBody(records((1n << 26n) + 1n))).toThrow(
       expect.objectContaining({ details: { field: "newNextIndex", length: 8 } }),
     );
   });
