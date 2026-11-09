@@ -85,6 +85,7 @@ pub struct EnrollIxData {
     /// Canonical and nonzero, the owner's signature alone authorizes it.
     pub viewing_u: [u8; 32],
     pub eph_u: [u8; 32],
+    /// The auditor derives every nullifier of the owner from the sealed secret and its private list key from the salt.
     pub ciphertext: [u8; REGISTER_KEY_CIPHERTEXT_LEN],
 }
 

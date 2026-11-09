@@ -109,6 +109,7 @@ pub struct SealedMergeCiphertexts<'a> {
 }
 
 /// `DeliveredSlot` with the ephemeral key as the transaction key, a zero salt and index zero.
+/// `n0` and a fresh ephemeral stand in for the omitted salt and index.
 fn record_secret(
     ephemeral: &X25519Keypair,
     recipient: &X25519Pubkey,

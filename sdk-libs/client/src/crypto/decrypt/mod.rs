@@ -96,7 +96,7 @@ impl<'a> TransactionAudit<'a> {
         }
     }
 
-    /// Reads no mint registry, earlier note or authorization, a ring output under a nonzero key
+    /// Reads no mint registry, earlier note or tracking leaf, a ring output under a nonzero key
     /// stays unresolved until [`AuditedTransaction::resolve_owners`].
     pub fn run(self, auditor: &X25519Keypair) -> Result<AuditedTransaction, AuditError> {
         let tx = self.transaction;

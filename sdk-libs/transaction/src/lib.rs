@@ -180,7 +180,7 @@ impl RingOutputRail {
 
     /// `V_i` of every slot of a key's `capacity`, a slot past the published outputs takes the
     /// auditor's.
-    /// A slot past them holds no note and publishes no byte, so any contributory key serves.
+    /// Any contributory key serves on a slot past them.
     pub fn recipient_keys(
         &self,
         outputs: &[SppProofOutputUtxo],

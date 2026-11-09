@@ -800,7 +800,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
         Ok(())
     }
 
-    /// Each key beside its slot, a zero key reads exit or dummy.
+    /// Each key beside its slot, an exit carries no ring body.
     fn record_sent(
         &mut self,
         body: &Body<'_>,
