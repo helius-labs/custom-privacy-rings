@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use custom_ring_interface::{domain, tracking::TrackingAuthorization, STORAGE_PROGRAM_ID};
 use solana_account::Account;
 use solana_address::Address;
+use solana_rpc_client_api::request::MAX_MULTIPLE_ACCOUNTS;
 use spr_client::{AsyncRpc, ClientError};
 use spr_hasher::HasherError;
 use spr_indexer_api::Hash;
@@ -62,6 +63,8 @@ pub enum ResolveError {
     AuthorizationRegistry,
     #[error("the tracking authorization names another owner")]
     AuthorizationOwner,
+    #[error("the rpc answered {got} authorizations for {want} owners")]
+    AuthorizationCount { got: usize, want: usize },
 }
 
 /// `registry` is the one the ring's policy names.
@@ -237,35 +240,41 @@ impl RegisteredKeys<'_> {
         self,
         rpc: &(impl AsyncRpc + ?Sized),
     ) -> Result<HashMap<[u8; 32], [u8; 32]>, ResolveError> {
-        if self.owners.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let owners: Vec<Address> = self
-            .owners
-            .iter()
-            .copied()
-            .map(Address::new_from_array)
-            .collect();
-        let addresses = owners
-            .iter()
-            .map(|owner| TrackingAuthorization::find_address(&self.registry, owner).0)
-            .collect();
-        let accounts = rpc
-            .get_multiple_accounts(addresses)
-            .await
-            .map_err(|error| ResolveError::Rpc(Box::new(error)))?;
-        let mut keys = HashMap::with_capacity(owners.len());
-        for (index, owner) in owners.into_iter().enumerate() {
-            let Some(account) = accounts.get(index).and_then(Option::as_ref) else {
-                continue;
-            };
-            let nullifier_pk = AuthorizationCheck {
-                registry: self.registry,
-                owner,
-                account: Some(account),
+        let mut keys = HashMap::with_capacity(self.owners.len());
+        // The RPC answers at most `MAX_MULTIPLE_ACCOUNTS` accounts per request, in request order.
+        for owners in self.owners.chunks(MAX_MULTIPLE_ACCOUNTS) {
+            let owners: Vec<Address> = owners
+                .iter()
+                .copied()
+                .map(Address::new_from_array)
+                .collect();
+            let addresses = owners
+                .iter()
+                .map(|owner| TrackingAuthorization::find_address(&self.registry, owner).0)
+                .collect();
+            let accounts = rpc
+                .get_multiple_accounts(addresses)
+                .await
+                .map_err(|error| ResolveError::Rpc(Box::new(error)))?;
+            // A short or long answer would pair an account with another owner's PDA.
+            if accounts.len() != owners.len() {
+                return Err(ResolveError::AuthorizationCount {
+                    got: accounts.len(),
+                    want: owners.len(),
+                });
             }
-            .nullifier_pk()?;
-            keys.insert(owner.to_bytes(), nullifier_pk);
+            for (owner, account) in owners.into_iter().zip(&accounts) {
+                let Some(account) = account else {
+                    continue;
+                };
+                let nullifier_pk = AuthorizationCheck {
+                    registry: self.registry,
+                    owner,
+                    account: Some(account),
+                }
+                .nullifier_pk()?;
+                keys.insert(owner.to_bytes(), nullifier_pk);
+            }
         }
         Ok(keys)
     }
@@ -567,6 +576,107 @@ mod tests {
         assert!(matches!(
             read(Some(foreign)).await,
             Err(ResolveError::AuthorizationProgramOwner)
+        ));
+    }
+
+    /// Each authorization at its own PDA, every request capped as a Solana RPC caps it.
+    struct ManyOwners {
+        accounts: HashMap<Address, Account>,
+        requests: std::sync::Mutex<Vec<usize>>,
+    }
+
+    #[async_trait]
+    impl AsyncRpc for ManyOwners {
+        async fn get_multiple_accounts(
+            &self,
+            addresses: Vec<Address>,
+        ) -> Result<Vec<Option<Account>>, ClientError> {
+            assert!(addresses.len() <= MAX_MULTIPLE_ACCOUNTS);
+            self.requests.lock().unwrap().push(addresses.len());
+            Ok(addresses
+                .iter()
+                .map(|address| self.accounts.get(address).cloned())
+                .collect())
+        }
+    }
+
+    /// Owner `i` at position `i` of every chunk reads its own account, every third holds none.
+    #[tokio::test]
+    async fn registered_keys_read_more_owners_than_one_request_takes_each_beside_its_own() {
+        let owners: Vec<[u8; 32]> = (0..2 * MAX_MULTIPLE_ACCOUNTS + 5)
+            .map(|index| {
+                let mut owner = [0; 32];
+                owner[..8].copy_from_slice(&(index as u64).to_le_bytes());
+                owner
+            })
+            .collect();
+        let key_of = |owner: &[u8; 32]| {
+            let mut key = *owner;
+            key[31] = 0x5a;
+            key
+        };
+        let viewing = ViewingKey::new().pubkey();
+        let accounts = owners
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| index % 3 != 0)
+            .map(|(_, owner)| {
+                let owner = Address::new_from_array(*owner);
+                let mut held = authorization(REGISTRY, owner, viewing);
+                let mut stored = *TrackingAuthorization::from_data(&held.data).unwrap();
+                stored.nullifier_pk = key_of(&owner.to_bytes());
+                held.data = bytemuck::bytes_of(&stored).to_vec();
+                (
+                    TrackingAuthorization::find_address(&REGISTRY, &owner).0,
+                    held,
+                )
+            })
+            .collect();
+        let rpc = ManyOwners {
+            accounts,
+            requests: std::sync::Mutex::new(Vec::new()),
+        };
+        let keys = RegisteredKeys {
+            registry: REGISTRY,
+            owners: &owners,
+        }
+        .read(&rpc)
+        .await
+        .unwrap();
+        let expected: HashMap<[u8; 32], [u8; 32]> = owners
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| index % 3 != 0)
+            .map(|(_, owner)| (*owner, key_of(owner)))
+            .collect();
+        assert_eq!(keys, expected);
+        assert_eq!(
+            *rpc.requests.lock().unwrap(),
+            [MAX_MULTIPLE_ACCOUNTS, MAX_MULTIPLE_ACCOUNTS, 5]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_answer_of_another_length_is_refused() {
+        let owner = solana_owner(&wallet(3)).to_bytes();
+        struct Short;
+        #[async_trait]
+        impl AsyncRpc for Short {
+            async fn get_multiple_accounts(
+                &self,
+                _addresses: Vec<Address>,
+            ) -> Result<Vec<Option<Account>>, ClientError> {
+                Ok(Vec::new())
+            }
+        }
+        assert!(matches!(
+            RegisteredKeys {
+                registry: REGISTRY,
+                owners: &[owner],
+            }
+            .read(&Short)
+            .await,
+            Err(ResolveError::AuthorizationCount { got: 0, want: 1 })
         ));
     }
 
