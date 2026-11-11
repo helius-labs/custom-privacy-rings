@@ -55,6 +55,7 @@ import {
   type OutputPayloadErrorKind,
 } from "../operations/audit/audit.js";
 import { RingError } from "../protocol/error.js";
+import { decodeRingRpcHealth, type RingRpcHealth } from "../protocol/ring-rpc/health.js";
 import { ringRecordsAddress } from "../protocol/pda/index.js";
 import {
   checkedReaderKey,
@@ -1038,12 +1039,11 @@ export class RingAuditorKeyRequest {
   }
 }
 
-export type RingKeyMode = "local" | "derived";
-
-export interface RingRpcHealth {
-  readonly mode: RingKeyMode;
-  readonly servicePublicKey: Address;
-}
+export type {
+  RingKeyMode,
+  RingReaderGrantMode,
+  RingRpcHealth,
+} from "../protocol/ring-rpc/health.js";
 
 /** Mirrors Rust `CreateAuditorKeyResponse`, the signature covers `auditorKeyAttestation`. */
 export interface RingAuditorKey {
@@ -1409,13 +1409,7 @@ export class RingRpc {
   }
 
   async health(context?: RequestContext): Promise<RingRpcHealth> {
-    const wire = record(await this.#call("health", undefined, context), "result");
-    const mode = wire["mode"];
-    if (mode !== "local" && mode !== "derived") throw invalid("result.mode");
-    return Object.freeze({
-      mode,
-      servicePublicKey: address(wire["servicePubkey"], "result.servicePubkey"),
-    });
+    return decodeRingRpcHealth(await this.#call("health", undefined, context));
   }
 
   /** Verified under the pinned `servicePublicKey` before the key is returned. */

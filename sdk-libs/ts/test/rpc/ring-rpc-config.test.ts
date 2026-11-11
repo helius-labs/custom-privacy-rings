@@ -17,7 +17,14 @@ function strictFetch() {
         JSON.stringify({
           jsonrpc: "2.0",
           id: 1,
-          result: { mode: "local", servicePubkey: "11111111111111111111111111111111" },
+          result: {
+            mode: "local",
+            servicePubkey: "11111111111111111111111111111111",
+            relay: false,
+            recordWriter: false,
+            enrollmentWrites: false,
+            readerGrants: "tree",
+          },
         }),
         {
           headers: { "content-type": "application/json" },

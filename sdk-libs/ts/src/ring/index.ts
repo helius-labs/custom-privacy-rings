@@ -540,6 +540,7 @@ export type {
   RingDepositsPage,
   RingKeyMode,
   RingPagedRead,
+  RingReaderGrantMode,
   RingReadSigner,
   RingReadTarget,
   RingRpcHealth,

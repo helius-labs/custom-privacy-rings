@@ -37,6 +37,7 @@ Breaking
 
 Added
 
+- `RingRpc.health` returns the `coSignerPublicKey`, `storageAuthorityPublicKey`, `feePayerPublicKey` and `enrollmentWriterPublicKey` the service runs with, its `relay`, `recordWriter` and `enrollmentWrites` switches and its `RingReaderGrantMode` as `readerGrants`, and refuses a result without the switches.
 - The `anonymous` ring mode hides each spend's owner, `AnonymousSync` and `AnonymousWallet` scan and hold a wallet's ring notes under a `ViewingHistory`, a `RingAddress` or `RingPaymentRequest` names a recipient, and the `anonymous` rail of the spend builders proves the hidden owner.
 - `prepareRingTransferRelay`, `prepareRingExitRelay`, `prepareRingEntryRelay`, `prepareRingWithdrawalRelay`, `prepareRingMergeRelay` and `prepareEnrollRelay` send an operation through the Ring RPC relay, the `create*Submission` builders prove and send one with no relay, and `TransactionFit` and `decideAddressCeiling` refuse a transaction past 4,096 bytes or 64 accounts before any proof.
 - `CoSignerApproval`, `OwnerApproval` and `FunderApproval` let a co-signer, a public owner and a public funder check their own part of a relayed transaction, and `ProvenRingTransfer.chargedOutflows` lists each owner's charged outflow per asset before signing.

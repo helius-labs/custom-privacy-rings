@@ -248,7 +248,14 @@ describe("ring rpc gateway", () => {
       calls.push({ url: new URL(String(input)), method: body["method"] });
       const result =
         body["method"] === "health"
-          ? { mode: "derived", servicePubkey: addressOf(22) }
+          ? {
+              mode: "derived",
+              servicePubkey: addressOf(22),
+              relay: false,
+              recordWriter: false,
+              enrollmentWrites: false,
+              readerGrants: "tree",
+            }
           : { ringProgramId: addressOf(7), state: "uninitialized", servicePubkey: addressOf(22) };
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), JSON_HEADERS);
     });
