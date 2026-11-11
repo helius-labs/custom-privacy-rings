@@ -43,7 +43,12 @@ import { frameKeyShape } from "../../protocol/proof/transfer-shapes.js";
 import type { ReplyMetadata } from "../../protocol/codec/anonymous-delivery.js";
 import { RingAddress, RingPaymentRequest } from "../../crypto/keys/ring-address.js";
 
-import { carriesNoData, type AnonymousPayment, type AnonymousSpendSigner } from "./anonymous.js";
+import {
+  carriesNoData,
+  type AnonymousPayment,
+  type AnonymousSpendSigner,
+  type OwnerExposure,
+} from "./anonymous.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
 import { RingError, wrapRingError } from "../../protocol/error.js";
 import type { ProvenRingTransfer } from "../workflow/pipeline.js";
@@ -93,6 +98,8 @@ export interface AnonymousSpendOwner {
   readonly reply?: ReplyMetadata | null;
   /** A missing SPL exit token account must be the owner's associated token account. */
   readonly exitTokenOwner?: Address;
+  /** `AnonymousTransfer.withOwnerExposure`, `refused` when unset. */
+  readonly ownerExposure?: OwnerExposure;
 }
 
 export interface AnonymousRingSpend extends RingRelaySpend, AnonymousSpendOwner {}
@@ -771,9 +778,11 @@ function anonymousTransfer(staged: StagedSpend, owner: AnonymousSpendOwner): Ano
   const signed = staged.rail.withAnonymousSigner(owner.signer);
   const paying =
     staged.anonymousPayment === undefined ? signed : signed.withPayment(staged.anonymousPayment);
+  const exposed =
+    owner.ownerExposure === undefined ? paying : paying.withOwnerExposure(owner.ownerExposure);
   return owner.exitTokenOwner === undefined
-    ? paying
-    : paying.withExitTokenOwner(owner.exitTokenOwner);
+    ? exposed
+    : exposed.withExitTokenOwner(owner.exitTokenOwner);
 }
 
 /** Each route's refusal on a ring whose mode it does not serve, public owners serve either. */
