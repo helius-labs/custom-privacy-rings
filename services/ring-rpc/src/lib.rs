@@ -33,6 +33,8 @@ mod frame_repairs;
 mod grant_rows;
 #[path = "security/grants.rs"]
 mod grants;
+#[path = "rpc/health.rs"]
+mod health;
 #[path = "operations/hub.rs"]
 mod hub;
 #[path = "operations/keyed_tasks.rs"]

@@ -109,11 +109,37 @@ pub enum KeyMode {
     Derived,
 }
 
+/// Where the service reads reader grants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReaderGrantMode {
+    /// `Reader` lists of the ring's own storage tree.
+    Tree,
+    /// Sealed rows of the service store, written through `setReaderGrant`.
+    Database,
+}
+
+/// Public keys and switches only, a role key is absent when the service runs without its role.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct HealthResponse {
     pub mode: KeyMode,
     pub service_pubkey: SerializablePubkey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub co_signer_pubkey: Option<SerializablePubkey>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage_authority_pubkey: Option<SerializablePubkey>,
+    /// Pays every relayed transaction and managed merge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_payer_pubkey: Option<SerializablePubkey>,
+    /// Signs and pays every `EnrollBatch`, null without the enrollment writer.
+    #[serde(default)]
+    pub enrollment_writer_pubkey: Option<SerializablePubkey>,
+    pub relay: bool,
+    pub record_writer: bool,
+    /// The enrollment writer runs with a nonzero fee budget.
+    pub enrollment_writes: bool,
+    pub reader_grants: ReaderGrantMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

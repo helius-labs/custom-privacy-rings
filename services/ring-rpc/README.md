@@ -41,7 +41,7 @@ All wire fields use camel case.
 
 | Method | Request | Result |
 | --- | --- | --- |
-| `health` | none | Service mode and service public key |
+| `health` | none | `mode`, `servicePubkey`, the optional `coSignerPubkey`, `storageAuthorityPubkey` and `feePayerPubkey` of each role the service runs, `enrollmentWriterPubkey` or null, the `relay`, `recordWriter`, `enrollmentWrites` flags, and `readerGrants` (`tree` or `database`). It returns public keys only. `enrollmentWrites` is true when the enrollment writer runs with a budget above zero |
 | `createAuditorKey` | Ring program ID and authority authorization | Auditor key and service attestation |
 | `ringStatus` | Ring program ID | Whether the ring account names the key held here (`served`), another one (`foreignAuditor`), or does not exist yet (`uninitialized`), with the ring account's key when it exists |
 | `getDecryptedTransactions` | Ring, page, and read authorization | Decrypted transaction page |

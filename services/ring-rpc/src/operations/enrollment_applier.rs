@@ -163,6 +163,11 @@ impl EnrollmentApplier {
         self.payer.pubkey()
     }
 
+    /// A zero budget refuses every write.
+    pub const fn writes(&self) -> bool {
+        self.budget.total > 0
+    }
+
     /// Holds the write once every check storage runs on it passes.
     pub async fn submit(
         &self,
