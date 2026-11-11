@@ -37,6 +37,7 @@ Breaking
 
 Added
 
+- The `advanced` entry exports `nullifierKeyMergeSealer`, `completeRingMerge` and `seededMergeOutputBlinding`, so a holder of the nullifier key seals and proves its own ring merge.
 - `AnonymousSpendOwner.ownerExposure` reaches `AnonymousTransfer.withOwnerExposure`, so the anonymous rail of the transfer, exit, entry and withdrawal builders and relays admits a hidden owner that funds a leg, receives an exit or spends a zero-key note when the caller passes `"accepted"`.
 - `RingRpc.health` returns the `coSignerPublicKey`, `storageAuthorityPublicKey`, `feePayerPublicKey` and `enrollmentWriterPublicKey` the service runs with, its `relay`, `recordWriter` and `enrollmentWrites` switches and its `RingReaderGrantMode` as `readerGrants`, and refuses a result without the switches.
 - The `anonymous` ring mode hides each spend's owner, `AnonymousSync` and `AnonymousWallet` scan and hold a wallet's ring notes under a `ViewingHistory`, a `RingAddress` or `RingPaymentRequest` names a recipient, and the `anonymous` rail of the spend builders proves the hidden owner.

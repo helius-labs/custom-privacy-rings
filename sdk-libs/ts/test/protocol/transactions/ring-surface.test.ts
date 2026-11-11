@@ -10,6 +10,7 @@ import {
 } from "../../../src/protocol/proof/proving-keys.js";
 import { RingError, wrapRingError } from "../../../src/protocol/error.js";
 import * as entry from "../../../src/index.js";
+import * as advanced from "../../../src/ring-advanced.js";
 
 const ZERO_POINT = ["0x0", "0x0"];
 const ZERO_PROOF = {
@@ -66,6 +67,17 @@ describe("relayer-free wallet surface", () => {
       "confirmReplyClaim",
     ])
       expect(entry, name).not.toHaveProperty(name);
+  });
+});
+
+describe("holder merge seal surface", () => {
+  it("lets a holder seal its own merge from the advanced entry", () => {
+    for (const name of [
+      "nullifierKeyMergeSealer",
+      "completeRingMerge",
+      "seededMergeOutputBlinding",
+    ] as const)
+      expect(typeof advanced[name], name).toBe("function");
   });
 });
 

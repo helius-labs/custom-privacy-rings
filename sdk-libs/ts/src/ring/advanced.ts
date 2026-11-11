@@ -278,6 +278,8 @@ export type {
   SubmitEnrollmentRequest,
 } from "../protocol/ring-rpc/ring-rpc-types.js";
 export { RingMergeSettingsRequest, mergeSettingsAttestation } from "../rpc/ring-rpc.js";
+export { completeRingMerge, nullifierKeyMergeSealer } from "../crypto/audit/merge-disclosure.js";
+export { seededMergeOutputBlinding } from "../crypto/derivation/merge-seed.js";
 export {
   decodeStorageApplyProofInputs,
   encodeStorageApplyProofInputsRequest,
