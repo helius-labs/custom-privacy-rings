@@ -37,6 +37,7 @@ Breaking
 
 Added
 
+- The main entry exports `STORAGE_PROGRAM_ID`, the Storage program that holds each ring's records and tracking registry.
 - The `advanced` entry exports `nullifierKeyMergeSealer`, `completeRingMerge` and `seededMergeOutputBlinding`, so a holder of the nullifier key seals and proves its own ring merge.
 - `AnonymousSpendOwner.ownerExposure` reaches `AnonymousTransfer.withOwnerExposure`, so the anonymous rail of the transfer, exit, entry and withdrawal builders and relays admits a hidden owner that funds a leg, receives an exit or spends a zero-key note when the caller passes `"accepted"`.
 - `RingRpc.health` returns the `coSignerPublicKey`, `storageAuthorityPublicKey`, `feePayerPublicKey` and `enrollmentWriterPublicKey` the service runs with, its `relay`, `recordWriter` and `enrollmentWrites` switches and its `RingReaderGrantMode` as `readerGrants`, and refuses a result without the switches.

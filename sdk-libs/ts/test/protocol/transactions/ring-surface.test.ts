@@ -79,6 +79,10 @@ describe("holder merge seal surface", () => {
     ] as const)
       expect(typeof advanced[name], name).toBe("function");
   });
+
+  it("names the Storage program from the main entry", () => {
+    expect(entry.STORAGE_PROGRAM_ID).toBe("rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL");
+  });
 });
 
 describe("ring error envelope", () => {

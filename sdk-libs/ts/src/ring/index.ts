@@ -682,7 +682,7 @@ export type {
   TrackingRecordPoolRequest,
   TrackingSeal,
 } from "../protocol/indexer/tracking-codec.js";
-export { ownerGrantPda } from "../protocol/pda/index.js";
+export { STORAGE_PROGRAM_ID, ownerGrantPda } from "../protocol/pda/index.js";
 export type { ReplyMetadata } from "../protocol/codec/anonymous-delivery.js";
 export {
   checkCoOwnerKeys,
