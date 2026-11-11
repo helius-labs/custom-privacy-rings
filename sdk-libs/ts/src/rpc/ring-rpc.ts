@@ -1126,7 +1126,7 @@ export interface DecryptedRingTransaction {
   /** Ordinal of the confirmed SPP event within this Solana transaction. */
   readonly eventIndex: number;
   readonly txViewingPublicKey: X25519PublicKey;
-  /** Published order, every slot sits here or in `payloadErrors` exactly once. */
+  /** Published order, a slot sits here, in `payloadErrors`, or in both when its record stands and its payload failed. */
   readonly outputs: readonly DecryptedRingOutput[];
   readonly payloadErrors: readonly OutputPayloadError[];
   /** `R`, the notes the proof spent, their nullifiers sit among `nullifiers` at unnamed positions. */
@@ -2307,10 +2307,10 @@ export async function signMessage(
 function decodeTransaction(wire: Record<string, unknown>): DecryptedRingTransaction {
   const outputs = decodeOutputs(wire["outputs"]);
   const payloadErrors = decodePayloadErrors(wire["payloadErrors"]);
-  checkSlotCoverage([
-    ...outputs.map((output) => output.slotIndex),
-    ...payloadErrors.map((error) => error.slotIndex),
-  ]);
+  checkSlotCoverage(
+    outputs.map((output) => output.slotIndex),
+    payloadErrors.map((error) => error.slotIndex),
+  );
   const nullifiers = list(wire["nullifiers"], "nullifiers").map((nullifier, index) =>
     hash(nullifier, `nullifiers[${index}]`),
   );
@@ -2528,11 +2528,12 @@ function decodeWithdrawals(
   );
 }
 
-/** Rust `TransactionAudit` records every published slot as an output or as one payload error. */
-function checkSlotCoverage(indexes: readonly number[]): void {
-  const seen = new Set(indexes);
-  if (seen.size !== indexes.length || indexes.some((index) => index >= indexes.length))
-    throw invalid("payloadErrors");
+/** Rust `AuditedTransaction::place`, a kept record whose payload failed sits in both lists. */
+function checkSlotCoverage(outputs: readonly number[], errors: readonly number[]): void {
+  if (new Set(outputs).size !== outputs.length) throw invalid("outputs");
+  if (new Set(errors).size !== errors.length) throw invalid("payloadErrors");
+  const slots = new Set([...outputs, ...errors]);
+  if ([...slots].some((index) => index >= slots.size)) throw invalid("payloadErrors");
 }
 
 function decodeOutput(wire: Record<string, unknown>, path: string): DecryptedRingOutput {

@@ -1374,6 +1374,28 @@ describe("ring read request", () => {
     expect(item.payloadErrors).toEqual(RUST_PAYLOAD_ERRORS.commitment_and_disclosure);
   });
 
+  it("reads a kept record beside the payload error of its slot", async () => {
+    const item = await readItem(
+      erroredItem([
+        { slotIndex: 1, kind: "payload" },
+        { slotIndex: 2, kind: "disclosure" },
+        { slotIndex: 5, kind: "commitment" },
+      ]),
+    );
+    expect(item.outputs.map((output) => output.slotIndex)).toEqual([0, 1, 3, 4]);
+    expect(item.payloadErrors.map((error) => error.slotIndex)).toEqual([1, 2, 5]);
+  });
+
+  it("refuses one slot twice among the outputs", async () => {
+    const item = erroredItem(RUST_PAYLOAD_ERRORS.commitment_and_disclosure);
+    const outputs = item["outputs"] as Record<string, unknown>[];
+    outputs[1] = { ...outputs[1], slotIndex: 0 };
+    await expect(readItem(item)).rejects.toMatchObject({
+      code: "RING_RPC",
+      details: { path: "outputs" },
+    });
+  });
+
   it.each<readonly [string, readonly unknown[]]>([
     [
       "an unknown kind",
