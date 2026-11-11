@@ -56,6 +56,7 @@ Changed
 
 Fixed
 
+- A spend of a zero-key or co-owner note on an `SprClient` whose prover reads the proof data, the default, raised `CLIENT_INVALID_PROOF_AUTHORITY`, now the ring spend authority also proves through `proveIndexed` and fills those slots there.
 - A confidential withdrawal of an SPL asset on a ring whose policy reads withdrawals raised `RING_ANONYMOUS_EXIT_TOKEN_ACCOUNT_INVALID` while the recipient had no token account, now the withdrawal builders name the recipient as its owner and `CustomRingTransfer.withWithdrawalAccounts` takes that owner.
 - A relayed spend on a ring reading a salted list left the sender's list salt out of the relay payload, and Ring RPC refused it with `transferRefused`, now the payload carries the sender's salt with the other owners'.
 - `RingRpc.getDecryptedTransactions` refused a transaction whose slot kept its record in `outputs` beside a `payload` error, as Ring RPC serves it, now a slot may sit once in each list and a slot twice in one list stays refused.

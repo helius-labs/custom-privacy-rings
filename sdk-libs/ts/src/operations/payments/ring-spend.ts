@@ -1,7 +1,11 @@
 /** A spend of co-owner and zero key notes the core transfer builder refuses. */
 import type { Address } from "@solana/kit";
 
-import type { ProofAuthority } from "@heliuslabs/spr/client";
+import type {
+  IndexedProofAuthority,
+  IndexedProofInputs,
+  ProofAuthority,
+} from "@heliuslabs/spr/client";
 import {
   bigIntBytes,
   bytesToBigInt,
@@ -78,7 +82,32 @@ export function ringSpendAuthority(
       ),
     proveMerge: (inputs, context) => keys.proveMerge(inputs, context),
   };
-  return Object.freeze(authority);
+  // A client whose prover reads the proof data proves only through `proveIndexed`.
+  const indexed = indexedAuthority(keys);
+  if (indexed === undefined) return Object.freeze(authority);
+  const proveIndexed: IndexedProofAuthority["proveIndexed"] = (request, context) =>
+    indexed.proveIndexed(completedRequest(request, held), context);
+  return Object.freeze({ ...authority, proveIndexed });
+}
+
+function indexedAuthority(keys: ProofAuthority): IndexedProofAuthority | undefined {
+  const candidate = keys as Partial<IndexedProofAuthority>;
+  return typeof candidate.proveIndexed === "function"
+    ? { proveIndexed: candidate.proveIndexed.bind(keys) }
+    : undefined;
+}
+
+/** A merge proves under its one owner's key, every other circuit lists its transfer slots. */
+function completedRequest(
+  request: IndexedProofInputs,
+  held: readonly NullifierKey[],
+): IndexedProofInputs {
+  if (request.circuit === "merge") return request;
+  const payload = request.payload as Readonly<{ inputs: readonly TransferSlot[] }>;
+  return {
+    ...request,
+    payload: { ...payload, inputs: payload.inputs.map((slot) => completed(slot, held)) },
+  } as unknown as IndexedProofInputs;
 }
 
 /** Every input outside the sender's signing key needs its owner's secret before any proof. */
@@ -113,7 +142,13 @@ export function checkZeroKeyInputs(
   if (index >= 0) throw new RingError("RING_ZERO_KEY_INPUT_UNNAMED", { details: { index } });
 }
 
-type TransferSlot = Parameters<ProofAuthority["prove"]>[0]["payload"]["inputs"][number];
+/** The fields of a transfer slot both proving paths carry, the secret absent until its holder fills it. */
+type TransferSlot = Readonly<{
+  nullifierSecret?: bigint;
+  isDummy: bigint;
+  ownerPublicKeyHash: bigint;
+  circuit: Readonly<{ owner: bigint }>;
+}>;
 
 const ZERO_NULLIFIER_KEY = NullifierKey.fromSecret(new Uint8Array(31) as Bytes31);
 
