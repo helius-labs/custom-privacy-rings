@@ -22,6 +22,7 @@ export const RingRpcMethod = Object.freeze({
   getPendingListApprovals: "getPendingListApprovals",
   refuseListApproval: "refuseListApproval",
   createRecordsRegistry: "createRecordsRegistry",
+  registerEnrollmentRing: "registerEnrollmentRing",
   setReaderGrant: "setReaderGrant",
   submitEnrollment: "submitEnrollment",
 } as const);
@@ -178,6 +179,12 @@ export interface RefuseListApprovalRequest {
 
 /** Rust `CreateRecordsRegistryRequest`, signed by the policy authority or, before `Initialize`, the upgrade authority. */
 export interface CreateRecordsRegistryRequest {
+  readonly ring: Address;
+  readonly auth: PolicyAuthorityAuth;
+}
+
+/** Rust `RegisterEnrollmentRingRequest`, signed by the policy authority alone. */
+export interface RegisterEnrollmentRingRequest {
   readonly ring: Address;
   readonly auth: PolicyAuthorityAuth;
 }

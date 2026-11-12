@@ -70,6 +70,7 @@ import {
   decodePendingListApprovalsPage,
   decodeRecordsRegistry,
   decodeRecordUpdateStatus,
+  decodeRegisterEnrollmentRingResponse,
   decodeRelayQuote,
   decodeRelayStatus,
   decodeReaderGrantAction,
@@ -83,6 +84,7 @@ import {
   encodePrepareRelayRequest,
   encodeRecordUpdateStatusRequest,
   encodeRefuseListApprovalRequest,
+  encodeRegisterEnrollmentRingRequest,
   encodeRelayQuoteRequest,
   encodeRelayStatusRequest,
   encodeSetMergeSettingsRequest,
@@ -107,6 +109,7 @@ import {
   type RecordsRegistry,
   type RecordUpdateStatus,
   type RefuseListApprovalRequest,
+  type RegisterEnrollmentRingRequest,
   type RelayQuote,
   type RelayQuoteRequest,
   type RelayStatus,
@@ -548,11 +551,12 @@ export class RingListSaltRequest {
   }
 }
 
-/** Rust `ListPendingApprovals`, `RefuseListApproval` or `CreateRecords`, the action the policy authority signs. */
+/** Rust `ListPendingApprovals`, `RefuseListApproval`, `CreateRecords` or `RegisterEnrollment`, the action the policy authority signs. */
 export type PolicyAuthorityAction =
   | Readonly<{ kind: "list"; registry: Address; cursor?: Hash }>
   | Readonly<{ kind: "refuse"; registry: Address; updateId: Hash }>
-  | Readonly<{ kind: "createRecords" }>;
+  | Readonly<{ kind: "createRecords" }>
+  | Readonly<{ kind: "registerEnrollment"; writer: Address }>;
 
 export type ListApprovalTarget = RingReadTarget & Readonly<{ registry: Address }>;
 
@@ -585,6 +589,8 @@ function policyAuthorityActionLine(action: PolicyAuthorityAction): string {
       return `refuse ${address(action.registry, "registry")} ${indexerScalars.checkedHash(action.updateId, "updateId")}`;
     case "createRecords":
       return "create records";
+    case "registerEnrollment":
+      return `register enrollments by ${address(action.writer, "writer")}`;
     case "list":
       return action.cursor === undefined
         ? `list ${address(action.registry, "registry")}`
@@ -642,6 +648,25 @@ export async function signCreateRecordsRegistryRequest(
   return Object.freeze({
     ring: checked.ringProgramId,
     auth: await policyAuthorityAuth(checked, authority, { kind: "createRecords" }, timestamp),
+  });
+}
+
+/** Rust `RegisterEnrollmentRingRequest::register` signed by the policy authority, `writer` is the `enrollmentWriterPublicKey` of the service's health. */
+export async function signRegisterEnrollmentRingRequest(
+  target: RingReadTarget,
+  authority: MessagePartialSigner,
+  writer: Address,
+  timestamp?: bigint,
+): Promise<RegisterEnrollmentRingRequest> {
+  const checked = checkedReadTarget(target);
+  return Object.freeze({
+    ring: checked.ringProgramId,
+    auth: await policyAuthorityAuth(
+      checked,
+      authority,
+      { kind: "registerEnrollment", writer: address(writer, "writer") },
+      timestamp,
+    ),
   });
 }
 
@@ -1646,6 +1671,20 @@ export class RingRpc {
       });
     }
     return records;
+  }
+
+  /** Ring RPC's enrollment writer serves the ring from then on, while the ring policy names its key. */
+  async registerEnrollmentRing(
+    request: RegisterEnrollmentRingRequest,
+    context?: RequestContext,
+  ): Promise<void> {
+    decodeRegisterEnrollmentRingResponse(
+      await this.#call(
+        RingRpcMethod.registerEnrollmentRing,
+        encodeRegisterEnrollmentRingRequest(request),
+        context,
+      ),
+    );
   }
 
   /** Each page is signed again, the attestation binds the nonce, the cursor and the time. */

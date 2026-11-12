@@ -37,6 +37,7 @@ Breaking
 
 Added
 
+- `signRegisterEnrollmentRingRequest` signs a ring's registration with the enrollment writer `RingRpc.health` names, `RingRpc.registerEnrollmentRing` sends it under the ring's policy authority so Ring RPC writes the ring's enrollments, and `RingRpcRefusal` names `enrollmentRingsFull` at -32186.
 - The main entry exports `STORAGE_PROGRAM_ID`, the Storage program that holds each ring's records and tracking registry.
 - The `advanced` entry exports `nullifierKeyMergeSealer`, `completeRingMerge` and `seededMergeOutputBlinding`, so a holder of the nullifier key seals and proves its own ring merge.
 - `AnonymousSpendOwner.ownerExposure` reaches `AnonymousTransfer.withOwnerExposure`, so the anonymous rail of the transfer, exit, entry and withdrawal builders and relays admits a hidden owner that funds a leg, receives an exit or spends a zero-key note when the caller passes `"accepted"`.

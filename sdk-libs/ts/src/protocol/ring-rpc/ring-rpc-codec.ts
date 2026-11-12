@@ -13,6 +13,7 @@ import type {
   AuthorityPayment,
   PolicyAuthorityAuth,
   CreateRecordsRegistryRequest,
+  RegisterEnrollmentRingRequest,
   GetPendingListApprovalsRequest,
   MergeSettings,
   PendingListApproval,
@@ -383,6 +384,21 @@ export function encodeCreateRecordsRegistryRequest(
     ring: checkedAddress(value.ring, "ring"),
     auth: encodePolicyAuthorityAuth(value.auth),
   };
+}
+
+/** Rust `RegisterEnrollmentRingRequest`. */
+export function encodeRegisterEnrollmentRingRequest(
+  value: RegisterEnrollmentRingRequest,
+): WireObject {
+  return {
+    ring: checkedAddress(value.ring, "ring"),
+    auth: encodePolicyAuthorityAuth(value.auth),
+  };
+}
+
+/** Rust `RegisterEnrollmentRingResponse`, empty. */
+export function decodeRegisterEnrollmentRingResponse(value: unknown): void {
+  object(value, "$", []);
 }
 
 /** Rust `CreateRecordsRegistryResponse`. */

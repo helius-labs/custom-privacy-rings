@@ -28,6 +28,7 @@ import {
   encodePrepareAuthorityTransferRequest,
   encodePrepareRelayRequest,
   encodeRefuseListApprovalRequest,
+  encodeRegisterEnrollmentRingRequest,
   encodeSetReaderGrantRequest,
 } from "../../../src/protocol/ring-rpc/ring-rpc-codec.js";
 import {
@@ -46,6 +47,7 @@ import {
   signCreateRecordsRegistryRequest,
   signPendingListApprovalsRequest,
   signRefuseListApprovalRequest,
+  signRegisterEnrollmentRingRequest,
   type PolicyAuthorityAction,
 } from "../../../src/rpc/ring-rpc.js";
 
@@ -270,6 +272,7 @@ describe("policy authority requests", () => {
       listAfter: Signed;
       refuse: Signed & { updateId: indexerTypes.Hash };
       createRecords: Signed;
+      registerEnrollment: Signed;
     };
     const authority = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(8));
     const target = {
@@ -297,6 +300,8 @@ describe("policy authority requests", () => {
       vector.refuse.message,
     );
     expect(message({ kind: "createRecords" })).toBe(vector.createRecords.message);
+    const writer = filled(5, 32) as Address;
+    expect(message({ kind: "registerEnrollment", writer })).toBe(vector.registerEnrollment.message);
     const nonce = vi.spyOn(globalThis.crypto, "getRandomValues").mockImplementation((array) => {
       (array as Uint8Array).fill(4);
       return array;
@@ -332,6 +337,15 @@ describe("policy authority requests", () => {
       );
       expect(JSON.stringify(encodeCreateRecordsRegistryRequest(createRecords))).toBe(
         vector.createRecords.wire,
+      );
+      const registerEnrollment = await signRegisterEnrollmentRingRequest(
+        target,
+        authority,
+        writer,
+        1_700_000_000n,
+      );
+      expect(JSON.stringify(encodeRegisterEnrollmentRingRequest(registerEnrollment))).toBe(
+        vector.registerEnrollment.wire,
       );
     } finally {
       nonce.mockRestore();
@@ -543,14 +557,17 @@ describe("ring rpc refusals", () => {
     expect(ringRpcRefusalName(-32216)).toBe("oversized");
   });
 
-  it("names -32180 to -32185 as the enrollment refusals and frees the relayed enrollment codes", () => {
-    expect([-32180, -32181, -32182, -32183, -32184, -32185].map(ringRpcRefusalName)).toEqual([
+  it("names -32180 to -32186 as the enrollment refusals and frees the relayed enrollment codes", () => {
+    expect(
+      [-32180, -32181, -32182, -32183, -32184, -32185, -32186].map(ringRpcRefusalName),
+    ).toEqual([
       "enrollmentNotServed",
       "enrollmentRingMissing",
       "invalidEnrollmentWrite",
       "registerKeyProof",
       "enrollmentsFull",
       "enrollmentBudget",
+      "enrollmentRingsFull",
     ]);
     expect(
       [-32202, -32205, -32213, -32214, -32215].map(ringRpcRefusalName).filter(Boolean),

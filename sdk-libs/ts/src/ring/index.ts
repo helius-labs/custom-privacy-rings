@@ -288,6 +288,7 @@ export type {
   AuthorityTransfer,
   PolicyAuthorityAuth,
   CreateRecordsRegistryRequest,
+  RegisterEnrollmentRingRequest,
   GetPendingListApprovalsRequest,
   PendingListApproval,
   PendingListApprovalsPage,
@@ -513,6 +514,7 @@ export {
   delegateNotesAttestation,
   delegateSnapshotReleaseAttestation,
   signCreateRecordsRegistryRequest,
+  signRegisterEnrollmentRingRequest,
   signPendingListApprovalsRequest,
   signRefuseListApprovalRequest,
 } from "../rpc/ring-rpc.js";
