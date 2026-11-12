@@ -4,7 +4,8 @@ Ring RPC writes a ring's policy records when it holds the storage authority key.
 
 ## A record update
 
-- The signer signs one hash over the cluster, the ring, the registry, every entry, an expiry slot and the awaited lists. That hash is the update id.
+- One hash covers the cluster, the ring, the registry, every entry, an expiry slot and the awaited lists. That hash is the update id.
+- The signer signs a `zolana/ring-rpc-record-update` text that names the cluster, the ring, the registry, the signer, the update id and the expiry slot.
 - Each entry hashes as the tree entry the update proof chains, so the signature binds every write that reaches the tree.
 - A wallet writes its own member lists and its wallet grants.
 - The policy authority writes the authority lists and the mint settings of any record.
