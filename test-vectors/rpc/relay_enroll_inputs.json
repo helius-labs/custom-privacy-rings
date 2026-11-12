@@ -1,5 +1,5 @@
 {
-  "description": "One RelayEnrollInputs with its ring program id of bytes 0x01, owner of 0x02, tracking registry of 0x03 and instruction data 06 07 08, encoded in wincode, with the digest its owner signs. enroll_wire, delegate_wire, deposit_wire and merge_wire are prepareRelay requests carrying proofInputs 03 04 05 and a signature of 64 bytes of 0x07, deposit_request_digest and merge_request_digest are what the depositor and the owner sign over those proofInputs. Produced by sdk-libs/client/tests/relay_enroll_vector.rs.",
+  "description": "One RelayEnrollInputs with its ring program id of bytes 0x01, owner of 0x02, tracking registry of 0x03 and instruction data 06 07 08, encoded in wincode, with the digest its owner signs. enroll_wire, delegate_wire, deposit_wire and merge_wire are prepareRelay requests carrying proofInputs 03 04 05 and a signature of 64 bytes of 0x07, deposit_request_digest and merge_request_digest are the request lines of the texts the depositor and the owner sign over those proofInputs. Produced by sdk-libs/client/tests/relay_enroll_vector.rs.",
   "ring_program_id": "0101010101010101010101010101010101010101010101010101010101010101",
   "owner": "0202020202020202020202020202020202020202020202020202020202020202",
   "tracking_registry": "0303030303030303030303030303030303030303030303030303030303030303",

@@ -1326,6 +1326,103 @@ fn relay_merge_inputs_encode_to_the_shared_vector() {
     assert_eq!(read.inputs[0].nullifier, spend.nullifier);
 }
 
+/// The TypeScript `relayRequestAttestation` writes the same text. `UPDATE_RING_VECTORS=1` rewrites it.
+#[test]
+fn relay_request_attestations_match_the_shared_vector() {
+    use spr_instruction::instruction::{
+        TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
+    };
+    use spr_transaction::{instructions::transact::SettlementTransfer, utxo::SppProofInputUtxo};
+    let file = "relay_request_attestation.json";
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../test-vectors/rpc/relay_request_attestation.json"
+    ))
+    .expect("vector");
+    let merge_vector: PayloadVector = serde_json::from_str(include_str!(
+        "../../../../test-vectors/rpc/relay_merge_inputs.json"
+    ))
+    .expect("vector");
+    let stored = |pointer: &str| {
+        vector
+            .pointer(pointer)
+            .and_then(|value| value.as_str())
+            .expect("field")
+            .to_owned()
+    };
+    let readable = |message: &[u8]| {
+        let text = String::from_utf8(message.to_vec()).expect("utf8");
+        assert!(text
+            .bytes()
+            .all(|byte| byte == b'\n' || (b' '..=b'~').contains(&byte)));
+        assert!(!text.ends_with('\n'));
+        text
+    };
+    let target = ReadTarget {
+        ring: Address::new_from_array([6; 32]),
+        ..target()
+    };
+    let depositor = Keypair::new_from_array([8; 32]);
+    let mut inputs = relay_proof_inputs();
+    inputs.rail = RelayRail::Deposit { plan: None };
+    inputs.inputs = vec![SppProofInputUtxo::dummy_with_blinding([29; 32], 4).expect("dummy")];
+    inputs.external_data.interface_transfers = vec![SettlementTransfer::Sol {
+        is_deposit: true,
+        amount: 1_000_000,
+        user_sol_account: depositor.pubkey(),
+    }];
+    inputs.interface_transfer_accounts = vec![TransactInterfaceTransferAccounts::Sol(
+        TransactSolTransferAccounts {
+            recipient: depositor.pubkey(),
+        },
+    )];
+    let proof_inputs = ProofInputBytes::new(inputs.encode().expect("encode"));
+    pinned(
+        file,
+        "/deposit/proofInputs",
+        &base64(proof_inputs.as_bytes()),
+        &stored("/deposit/proofInputs"),
+    );
+    let deposit =
+        RelayRequestAttestation::deposit(target, depositor.pubkey(), &inputs, &proof_inputs)
+            .message();
+    pinned(
+        file,
+        "/deposit/message",
+        &readable(&deposit),
+        &stored("/deposit/message"),
+    );
+    pinned(
+        file,
+        "/deposit/signature",
+        &depositor.sign_message(&deposit).to_string(),
+        &stored("/deposit/signature"),
+    );
+    let owner = Keypair::new_from_array([5; 32]);
+    let sender = relay_proof_inputs().sender;
+    assert_eq!(
+        owner.pubkey().to_bytes(),
+        sender.signing_pubkey.as_ed25519().expect("ed25519")
+    );
+    let merge = RelayRequestAttestation::merge(
+        target,
+        owner.pubkey(),
+        &ProofInputBytes::new(Zeroizing::new(merge_vector.proof_inputs.0)),
+    )
+    .message();
+    pinned(
+        file,
+        "/merge/message",
+        &readable(&merge),
+        &stored("/merge/message"),
+    );
+    pinned(
+        file,
+        "/merge/signature",
+        &owner.sign_message(&merge).to_string(),
+        &stored("/merge/signature"),
+    );
+}
+
 /// The TypeScript signer writes the same message and wire bytes.
 #[test]
 fn a_signed_authority_transfer_matches_the_shared_vector() {

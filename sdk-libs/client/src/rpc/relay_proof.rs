@@ -22,7 +22,7 @@ use wincode::{containers, len::FixIntLen, SchemaRead, SchemaWrite};
 use zeroize::{Zeroize, Zeroizing};
 use zolana_ring_transaction::AnonymousPlan;
 
-use super::{RelayOperation, TokenAccountSetup};
+use super::{RelayLeg, RelayOperation, TokenAccountSetup};
 
 pub struct RelayProofInputs {
     pub rail: RelayRail,
@@ -156,6 +156,19 @@ impl RelayProofInputs {
             .filter_map(|(transfer, accounts)| {
                 deposit_funder(&transfer.interface_transfer(), accounts)
             })
+    }
+
+    /// In leg order, the lines a depositor reads beside the request digest.
+    pub fn relay_legs(&self) -> Vec<RelayLeg> {
+        self.external_data
+            .interface_transfers
+            .iter()
+            .map(|transfer| RelayLeg {
+                deposit: transfer.is_deposit(),
+                mint: transfer.asset(),
+                amount: transfer.amount(),
+            })
+            .collect()
     }
 
     pub fn encode(&self) -> Result<Zeroizing<Vec<u8>>, RelayProofInputsError> {
