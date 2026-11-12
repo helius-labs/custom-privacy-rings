@@ -78,6 +78,7 @@ pub const PREPARE_AUTHORITY_TRANSFER: &str = "prepareAuthorityTransfer";
 pub const GET_PENDING_LIST_APPROVALS: &str = "getPendingListApprovals";
 pub const REFUSE_LIST_APPROVAL: &str = "refuseListApproval";
 pub const CREATE_RECORDS_REGISTRY: &str = "createRecordsRegistry";
+pub const REGISTER_ENROLLMENT_RING: &str = "registerEnrollmentRing";
 /// The most UTXO hashes one `getAuditedUtxos` request names.
 pub const AUDITED_UTXOS_LIMIT: usize = 100;
 pub const AUDIT_CURSOR_LIMIT: usize = 256;

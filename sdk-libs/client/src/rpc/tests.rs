@@ -1444,6 +1444,7 @@ fn the_policy_authority_requests_match_the_shared_vector() {
         list_after: Signed,
         refuse: Refuse,
         create_records: Signed,
+        register_enrollment: Signed,
     }
     let vector: Vector = serde_json::from_str(include_str!(
         "../../../../test-vectors/rpc/policy_authority_attestation.json"
@@ -1550,6 +1551,30 @@ fn the_policy_authority_requests_match_the_shared_vector() {
         "/createRecords/wire",
         &serde_json::to_string(&create_records).expect("json"),
         &vector.create_records.wire,
+    );
+    let register = RegisterEnrollmentRingRequest::register(
+        target(),
+        authority.pubkey(),
+        Address::new_from_array([5; 32]),
+    );
+    pinned(
+        file,
+        "/registerEnrollment/message",
+        &message(register.attestation.message(1_700_000_000, &[4; 32])),
+        &vector.register_enrollment.message,
+    );
+    let register = SignedRequest {
+        timestamp: Some(1_700_000_000),
+        nonce: [4; 32],
+        ..register
+    }
+    .sign(&authority)
+    .expect("sign the registration");
+    pinned(
+        file,
+        "/registerEnrollment/wire",
+        &serde_json::to_string(&register).expect("json"),
+        &vector.register_enrollment.wire,
     );
 }
 

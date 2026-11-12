@@ -1,4 +1,4 @@
-//! Ring RPC requests the ring policy authority signs, over wallet updates pending list approval and the records registry.
+//! Ring RPC requests the ring policy authority signs, over wallet updates pending list approval, the records registry and the enrollment writer.
 
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -46,6 +46,18 @@ pub struct CreateRecordsRegistryRequest {
     pub ring: SerializablePubkey,
     pub auth: PolicyAuthorityAuth,
 }
+
+/// Signed by the policy authority alone, it names the enrollment writer the service runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RegisterEnrollmentRingRequest {
+    pub ring: SerializablePubkey,
+    pub auth: PolicyAuthorityAuth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct RegisterEnrollmentRingResponse {}
 
 /// `registry` is the ring's records PDA under `storage_authority`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +111,12 @@ pub struct RefuseListApproval {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CreateRecords;
 
+/// `writer` is the service's `EnrollmentWriter` key, read from its health.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegisterEnrollment {
+    pub writer: Address,
+}
+
 /// The service rebuilds it from its own target and the request fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolicyAuthorityAttestation<A> {
@@ -121,6 +139,7 @@ mod sealed {
     impl Sealed for super::ListPendingApprovals {}
     impl Sealed for super::RefuseListApproval {}
     impl Sealed for super::CreateRecords {}
+    impl Sealed for super::RegisterEnrollment {}
 }
 
 impl PolicyAuthorityAction for ListPendingApprovals {
@@ -169,6 +188,21 @@ impl PolicyAuthorityAction for CreateRecords {
 
     fn request(self, ring: Address, auth: PolicyAuthorityAuth) -> CreateRecordsRegistryRequest {
         CreateRecordsRegistryRequest {
+            ring: ring.into(),
+            auth,
+        }
+    }
+}
+
+impl PolicyAuthorityAction for RegisterEnrollment {
+    type Request = RegisterEnrollmentRingRequest;
+
+    fn line(&self) -> String {
+        format!("register enrollments by {}", self.writer)
+    }
+
+    fn request(self, ring: Address, auth: PolicyAuthorityAuth) -> RegisterEnrollmentRingRequest {
+        RegisterEnrollmentRingRequest {
             ring: ring.into(),
             auth,
         }
@@ -259,6 +293,20 @@ impl CreateRecordsRegistryRequest {
             target,
             authority,
             action: CreateRecords,
+        })
+    }
+}
+
+impl RegisterEnrollmentRingRequest {
+    pub fn register(
+        target: ReadTarget,
+        authority: Address,
+        writer: Address,
+    ) -> SignedRequest<PolicyAuthorityAttestation<RegisterEnrollment>> {
+        SignedRequest::new(PolicyAuthorityAttestation {
+            target,
+            authority,
+            action: RegisterEnrollment { writer },
         })
     }
 }
