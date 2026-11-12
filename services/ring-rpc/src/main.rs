@@ -77,6 +77,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         fee_payer,
         enrollment_applier,
     } = args.read_keys()?;
+    let enrollment_ring_budget = args.enrollment_ring_budget();
     let upstreams = Upstreams {
         indexer_url: &args.indexer_url,
         rpc_url: &args.rpc_url,
@@ -143,7 +144,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             principal_wallet: args.wallet_snapshots_per_principal,
         })
         .with_relay_budget(relay_budget);
-    if let Some(store) = store {
+    if let Some(store) = store.clone() {
         builder = builder.with_store(store);
     }
     if let (Some(prover_url), Some(payer)) = (&args.prover_url, enrollment_applier) {
@@ -153,8 +154,13 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 payer,
                 rings: args.enrollment_apply_rings.clone(),
                 budget_lamports: args.enrollment_budget_lamports,
+                ring_budget_lamports: enrollment_ring_budget,
+                max_rings: args.enrollment_max_rings,
+                store,
             }
-            .applier(),
+            .applier()
+            .await
+            .context("loading the registered enrollment rings")?,
         );
         info!("enrollment writer {}", applier.payer());
         if args.enrollment_budget_lamports == 0 {

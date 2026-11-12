@@ -152,17 +152,22 @@ impl RingRpcSpec<'_> {
             service: Keypair::new(),
         };
         // Every ring of the tests names the payer as its `EnrollmentWriter`, harness and `init` alike.
+        let enrollments = EnrollmentApplierParts {
+            chain: Arc::new(
+                LiveStorageChain::connect(upstreams, &prover_url())
+                    .map_err(|e| anyhow!("enrollment chain {e:?}"))?,
+            ),
+            payer: self.env.payer.insecure_clone(),
+            rings: vec![self.ring],
+            budget_lamports: u64::MAX,
+            ring_budget_lamports: u64::MAX,
+            max_rings: 0,
+            store: None,
+        };
         let enrollments = Arc::new(
-            EnrollmentApplierParts {
-                chain: Arc::new(
-                    LiveStorageChain::connect(upstreams, &prover_url())
-                        .map_err(|e| anyhow!("enrollment chain {e:?}"))?,
-                ),
-                payer: self.env.payer.insecure_clone(),
-                rings: vec![self.ring],
-                budget_lamports: u64::MAX,
-            }
-            .applier(),
+            runtime
+                .block_on(enrollments.applier())
+                .map_err(|e| anyhow!("enrollment writer {e:?}"))?,
         );
         runtime.spawn(enrollments.clone().run(RECORD_FLUSH_INTERVAL));
         let mut builder = Hub::builder(source, identity)

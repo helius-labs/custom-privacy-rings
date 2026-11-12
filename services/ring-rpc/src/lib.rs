@@ -22,6 +22,8 @@ mod cosign_usage;
 mod database;
 #[path = "operations/enrollment_applier.rs"]
 mod enrollment_applier;
+#[path = "storage/enrollment_rings.rs"]
+mod enrollment_rings;
 mod error;
 #[path = "operations/escrow_merge.rs"]
 mod escrow_merge;

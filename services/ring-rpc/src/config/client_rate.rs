@@ -30,13 +30,13 @@ use tower::{Layer, Service};
 
 use zolana_ring_client::rpc::{
     CreateRecordsRegistryRequest, PrepareAuthorityTransferRequest, RefuseListApprovalRequest,
-    SetMergeSettingsRequest, SetReaderGrantRequest, SubmitRecordUpdateRequest, SubmitRelayRequest,
-    CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY, GET_AUDITED_MERGES, GET_AUDITED_UTXOS,
-    GET_DECRYPTED_TRANSACTIONS, GET_DELEGATE_NOTES, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS,
-    GET_RECORD_UPDATE_STATUS, GET_RELAY_QUOTE, GET_RELAY_STATUS, GET_SPEND_COVERAGE,
-    GET_WALLET_ACTIVITY, GET_WALLET_STATUS, HEALTH, PREPARE_AUTHORITY_TRANSFER,
-    REFUSE_LIST_APPROVAL, RING_STATUS, SET_MERGE_SETTINGS, SET_READER_GRANT, SUBMIT_RECORD_UPDATE,
-    SUBMIT_RELAY,
+    RegisterEnrollmentRingRequest, SetMergeSettingsRequest, SetReaderGrantRequest,
+    SubmitRecordUpdateRequest, SubmitRelayRequest, CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY,
+    GET_AUDITED_MERGES, GET_AUDITED_UTXOS, GET_DECRYPTED_TRANSACTIONS, GET_DELEGATE_NOTES,
+    GET_LIST_SALT, GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS, GET_RELAY_QUOTE,
+    GET_RELAY_STATUS, GET_SPEND_COVERAGE, GET_WALLET_ACTIVITY, GET_WALLET_STATUS, HEALTH,
+    PREPARE_AUTHORITY_TRANSFER, REFUSE_LIST_APPROVAL, REGISTER_ENROLLMENT_RING, RING_STATUS,
+    SET_MERGE_SETTINGS, SET_READER_GRANT, SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
 };
 
 use crate::{
@@ -546,6 +546,12 @@ impl RatedCall {
             CREATE_RECORDS_REGISTRY => write(
                 params
                     .parse::<CreateRecordsRegistryRequest>()
+                    .ok()
+                    .map(|request| request.auth.authority.0),
+            ),
+            REGISTER_ENROLLMENT_RING => write(
+                params
+                    .parse::<RegisterEnrollmentRingRequest>()
                     .ok()
                     .map(|request| request.auth.authority.0),
             ),

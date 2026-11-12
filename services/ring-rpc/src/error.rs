@@ -365,6 +365,34 @@ mod tests {
     }
 
     #[test]
+    fn enrollment_refusal_codes_are_stable() {
+        use EnrollmentRefusal::*;
+        for refusal in [
+            NotServed,
+            RingMissing,
+            InvalidWrite,
+            RegisterKeyProof,
+            Full,
+            Budget,
+            RingsFull,
+        ] {
+            let code = match refusal {
+                NotServed => -32180,
+                RingMissing => -32181,
+                InvalidWrite => -32182,
+                RegisterKeyProof => -32183,
+                Full => -32184,
+                Budget => -32185,
+                RingsFull => -32186,
+            };
+            assert_eq!(
+                ErrorObjectOwned::from(RingRpcError::Enrollment(refusal)).code(),
+                code
+            );
+        }
+    }
+
+    #[test]
     fn exhausted_merge_scan_has_an_explicit_rpc_error() {
         let response =
             ErrorObjectOwned::from(RingRpcError::Origin(AuditError::MergeAuditWorkBudget));

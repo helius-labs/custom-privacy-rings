@@ -157,7 +157,7 @@ pub struct ServeArgs {
     #[arg(
         long,
         env = "RING_RPC_ENROLLMENT_APPLIER_KEY_FILE",
-        requires_all = ["prover_url", "enrollment_apply_rings"]
+        requires = "prover_url"
     )]
     pub enrollment_applier_key_file: Option<PathBuf>,
     /// Lamports the enrollment writer spends on batch fees over the process life, zero refuses every write.
@@ -168,7 +168,22 @@ pub struct ServeArgs {
         requires = "enrollment_applier_key_file"
     )]
     pub enrollment_budget_lamports: u64,
-    /// A ring whose pending enrollments the applier sends.
+    /// Lamports one ring's batches spend over the process life, a tenth of the budget when unset.
+    #[arg(
+        long,
+        env = "RING_RPC_ENROLLMENT_RING_BUDGET_LAMPORTS",
+        requires = "enrollment_applier_key_file"
+    )]
+    pub enrollment_ring_budget_lamports: Option<u64>,
+    /// Rings `registerEnrollmentRing` adds, the rings of `--enrollment-apply-ring` aside.
+    #[arg(
+        long,
+        env = "RING_RPC_ENROLLMENT_MAX_RINGS",
+        default_value_t = 256,
+        requires = "enrollment_applier_key_file"
+    )]
+    pub enrollment_max_rings: usize,
+    /// A ring whose pending enrollments the applier sends without a registration.
     #[arg(
         long = "enrollment-apply-ring",
         env = "RING_RPC_ENROLLMENT_APPLY_RINGS",
@@ -283,6 +298,11 @@ pub enum ServeKeyError {
 pub struct GrantRowsSecret(Zeroizing<[u8; 32]>);
 
 impl ServeArgs {
+    pub fn enrollment_ring_budget(&self) -> u64 {
+        self.enrollment_ring_budget_lamports
+            .unwrap_or(self.enrollment_budget_lamports / 10)
+    }
+
     pub fn origin_transport(&self) -> OriginTransport {
         if self.insecure_public_bind {
             OriginTransport::InsecureHttp
@@ -532,7 +552,17 @@ mod tests {
         let parsed = parse_serve(dir, &[&keys[..], &applier].concat()).expect("applier alone");
         assert_eq!(parsed.enrollment_apply_rings.len(), 1);
         assert!(parse_serve(dir, &[&keys[..], &applier[..2]].concat()).is_err());
-        assert!(parse_serve(dir, &[&keys[..], &applier[..4]].concat()).is_err());
+        let budget = ["--enrollment-budget-lamports", "1000"];
+        let registered = parse_serve(dir, &[&keys[..], &applier[..4], &budget].concat())
+            .expect("an applier without named rings");
+        assert!(registered.enrollment_apply_rings.is_empty());
+        assert_eq!(registered.enrollment_ring_budget(), 100);
+        assert_eq!(registered.enrollment_max_rings, 256);
+        let capped = ["--enrollment-ring-budget-lamports", "7"];
+        let parsed =
+            parse_serve(dir, &[&keys[..], &applier[..4], &capped].concat()).expect("a ring budget");
+        assert_eq!(parsed.enrollment_ring_budget(), 7);
+        assert!(parse_serve(dir, &[&keys[..], &capped].concat()).is_err());
     }
 
     fn temp_dir(label: &str) -> PathBuf {

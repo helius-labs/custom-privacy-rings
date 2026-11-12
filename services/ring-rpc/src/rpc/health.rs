@@ -65,15 +65,20 @@ mod tests {
         Hub::builder(ChainSource::connect(UPSTREAMS).expect("source"), identity)
     }
 
-    fn enrollment_writer(budget_lamports: u64) -> Arc<EnrollmentApplier> {
+    async fn enrollment_writer(budget_lamports: u64) -> Arc<EnrollmentApplier> {
         Arc::new(
             EnrollmentApplierParts {
                 chain: chain(),
                 payer: key(5),
                 rings: Vec::new(),
                 budget_lamports,
+                ring_budget_lamports: budget_lamports,
+                max_rings: 1,
+                store: None,
             }
-            .applier(),
+            .applier()
+            .await
+            .expect("applier"),
         )
     }
 
@@ -102,7 +107,7 @@ mod tests {
             .with_reader_grants(ReaderGrantStore::Database)
             .with_grant_rows_key(GrantRowsSecret::from_bytes([6; 32]))
             .with_relay_services(relay)
-            .with_enrollment_applier(enrollment_writer(1));
+            .with_enrollment_applier(enrollment_writer(1).await);
         assert_eq!(
             body(full),
             json!({
@@ -119,7 +124,7 @@ mod tests {
             })
         );
 
-        let unfunded = body(builder().with_enrollment_applier(enrollment_writer(0)));
+        let unfunded = body(builder().with_enrollment_applier(enrollment_writer(0).await));
         assert_eq!(
             unfunded["enrollmentWriterPubkey"],
             json!(key(5).pubkey().to_string())
