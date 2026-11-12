@@ -23,8 +23,9 @@ use spr_test_utils::localnet::isolated_temp_path;
 use zolana_ring_client::rpc::{
     GetRelayQuoteRequest, GetRelayStatusRequest, PrepareAuthorityTransferRequest,
     PrepareRelayRequest, ReadTarget, RelayId, RelayOperation, RelayQuote, RelayStatus, RelayStep,
-    SetMergeSettingsRequest, SetMergeSettingsResponse, SubmitRelayRequest, GET_RELAY_QUOTE,
-    GET_RELAY_STATUS, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY, SET_MERGE_SETTINGS, SUBMIT_RELAY,
+    ServiceTarget, SetMergeSettingsRequest, SetMergeSettingsResponse, SubmitRelayRequest,
+    GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY,
+    SET_MERGE_SETTINGS, SUBMIT_RELAY,
 };
 use zolana_ring_rpc::{
     run_server, BindPolicy, ChainSource, ClientLimits, EnrollmentApplierParts, Hub,
@@ -228,6 +229,13 @@ impl RingRpcSpec<'_> {
 }
 
 impl RelayedRingRpc {
+    pub const fn service(&self) -> ServiceTarget {
+        ServiceTarget {
+            cluster: self.target.cluster,
+            service: self.target.service,
+        }
+    }
+
     pub fn quote(&self, env: &TestEnv, operation: RelayOperation) -> Result<RelayQuote> {
         Ok(env.run(self.relay.get_relay_quote(GetRelayQuoteRequest {
             ring: self.target.ring.into(),

@@ -125,7 +125,8 @@ fn a_relayed_deposit_lands_the_note_the_auditor_recovers() -> Result<()> {
     };
     let quote = ring_rpc.quote(env, RelayOperation::Deposit)?;
 
-    let prepared = env.run(deposit.prepare_relay(env.client.as_async(), quote))?;
+    let prepared =
+        env.run(deposit.prepare_relay(env.client.as_async(), ring_rpc.service(), quote))?;
     let RelaySent::SignMessage(pending) = env.run(prepared.send(&ring_rpc.relay))? else {
         bail!("the depositor signs its funding");
     };
@@ -167,6 +168,7 @@ fn a_relayed_user_merge_lands_one_note_of_the_merged_value() -> Result<()> {
 
     let prepared = MergeRelay {
         ring: relayed.ring,
+        service: ring_rpc.service(),
         sender: owner.shielded_address()?,
         owner,
         nullifier_key: owner.nullifier_key.clone(),

@@ -31,7 +31,10 @@ use spr_transaction::{
 };
 use zeroize::Zeroizing;
 use zolana_ring_client::{
-    rpc::{PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayMergeInputs, RelayQuote},
+    rpc::{
+        PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayMergeInputs, RelayQuote,
+        RelayRequestAttestation, ServiceTarget,
+    },
     MergeRecordSeal,
 };
 use zolana_ring_keys::{MergeSeedHolder, MergeSeedRequest};
@@ -665,6 +668,7 @@ impl CustomRingMergeInstruction {
 #[must_use]
 pub struct MergeRelay<'a> {
     pub ring: CustomRing,
+    pub service: ServiceTarget,
     /// Owns every input.
     pub sender: ShieldedAddress,
     /// Signs the request, the relay proves nothing for a stranger.
@@ -677,7 +681,8 @@ impl MergeRelay<'_> {
     /// Ring RPC derives the merged note from the nullifier key, no signed message follows.
     pub fn prepare(self, quote: RelayQuote) -> Result<PreparedRelay, RingError> {
         let ring = self.ring.program_id();
-        if self.owner.try_pubkey()?.to_bytes() != self.sender.signing_pubkey.as_ed25519()? {
+        let owner = self.owner.try_pubkey()?;
+        if owner.to_bytes() != self.sender.signing_pubkey.as_ed25519()? {
             return Err(MessageMismatch::Signer.into());
         }
         let proof_inputs = RelayMergeInputs {
@@ -688,10 +693,9 @@ impl MergeRelay<'_> {
         }
         .encode()?;
         let proof_inputs = ProofInputBytes::new(proof_inputs);
-        let owner_signature = self
-            .owner
-            .try_sign_message(&proof_inputs.merge_request_digest())?
-            .into();
+        let attestation =
+            RelayRequestAttestation::merge(self.service.ring(ring), owner, &proof_inputs);
+        let owner_signature = self.owner.try_sign_message(&attestation.message())?.into();
         Ok(PreparedRelay::new(PrepareRelayRequest {
             ring: SerializablePubkey(ring),
             quote,

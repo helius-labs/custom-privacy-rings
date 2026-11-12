@@ -3,7 +3,9 @@ use solana_address::Address;
 use solana_signer::Signer;
 use spr_indexer_api::SerializablePubkey;
 use spr_interface::pda;
-use zolana_ring_client::rpc::{RelayIntent, RelayProofInputs, RelayQuote, RelayRail};
+use zolana_ring_client::rpc::{
+    RelayIntent, RelayProofInputs, RelayQuote, RelayRail, RelayRequestAttestation, ServiceTarget,
+};
 use zolana_ring_keys::RingAddress;
 
 use super::DepositTransfer;
@@ -269,6 +271,10 @@ mod relay {
     use super::*;
 
     const FEE_PAYER: Address = Address::new_from_array([0x7e; 32]);
+    const SERVICE: ServiceTarget = ServiceTarget {
+        cluster: [0x7c; 32],
+        service: Address::new_from_array([0x7d; 32]),
+    };
 
     fn quote() -> RelayQuote {
         RelayQuote {
@@ -277,7 +283,7 @@ mod relay {
         }
     }
 
-    /// The depositor signs the request digest, the relay stages the same frame on the deposit rail.
+    /// The depositor signs the request text, the relay stages the same frame on the deposit rail.
     #[tokio::test]
     async fn a_relayed_deposit_carries_a_dummy_frame_its_funder_signs() {
         let (member, payer) = (keypair(1), keypair(9));
@@ -300,7 +306,7 @@ mod relay {
         mode: RingMode,
     ) {
         let prepared = deposit(payer, target)
-            .prepare_relay(&chain, quote())
+            .prepare_relay(&chain, SERVICE, quote())
             .await
             .unwrap();
         let RelayIntent::Deposit {
@@ -310,11 +316,15 @@ mod relay {
         else {
             panic!("a deposit intent");
         };
-        assert!(depositor_signature.0.verify(
-            payer.pubkey().as_ref(),
-            &proof_inputs.deposit_request_digest()
-        ));
         let inputs = RelayProofInputs::decode(proof_inputs.as_bytes()).unwrap();
+        let text = RelayRequestAttestation::deposit(
+            SERVICE.ring(ring().program_id()),
+            payer.pubkey(),
+            &inputs,
+            proof_inputs,
+        )
+        .message();
+        assert!(depositor_signature.0.verify(payer.pubkey().as_ref(), &text));
         assert!(matches!(
             &inputs.rail,
             RelayRail::Deposit { plan } if plan.is_some() == (mode == RingMode::Anonymous)
@@ -345,7 +355,7 @@ mod relay {
         let recipient = DepositRecipient::Confidential(member.shielded_address().unwrap());
         assert!(matches!(
             deposit(&fee_payer, recipient)
-                .prepare_relay(&chain, quote)
+                .prepare_relay(&chain, SERVICE, quote)
                 .await,
             Err(RingError::RelayFeePayerFundsDeposit)
         ));
@@ -359,7 +369,7 @@ mod relay {
         let chain =
             Chain::ring(RingSettings::new(RingMode::Confidential)).with_tracking(&[recipient]);
         let prepared = deposit(&payer, DepositRecipient::Confidential(recipient))
-            .prepare_relay(&chain, quote())
+            .prepare_relay(&chain, SERVICE, quote())
             .await
             .unwrap();
         let mut inputs =
