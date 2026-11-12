@@ -117,7 +117,7 @@ async fn a_signer_other_than_the_policy_role_is_refused() {
     assert!(
         matches!(
             refused,
-            Err(RingRpcError::Unauthorized(Unauthorized::NotRingAuthority))
+            Err(RingRpcError::Unauthorized(Unauthorized::NotPolicyAuthority))
         ),
         "{refused:?}"
     );

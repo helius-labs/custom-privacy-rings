@@ -238,7 +238,7 @@ impl EnrollmentApplier {
             .await?
             .ok_or(EnrollmentRefusal::RingMissing)?;
         if tracking.policy != signer {
-            return Err(Unauthorized::NotRingAuthority.into());
+            return Err(Unauthorized::NotPolicyAuthority.into());
         }
         if tracking.writer != self.payer.pubkey() {
             return Err(EnrollmentRefusal::RingMissing.into());

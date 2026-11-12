@@ -51,6 +51,8 @@ pub enum Unauthorized {
     ClusterMismatch,
     #[error("signer is neither the program upgrade authority nor the policy authority")]
     NotRingAuthority,
+    #[error("signer is not the policy authority")]
+    NotPolicyAuthority,
 }
 
 /// The service rebuilds the attestation from its own cluster, key and ring.
