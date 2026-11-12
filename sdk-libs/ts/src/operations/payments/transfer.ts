@@ -43,7 +43,12 @@ import { frameKeyShape } from "../../protocol/proof/transfer-shapes.js";
 import type { ReplyMetadata } from "../../protocol/codec/anonymous-delivery.js";
 import { RingAddress, RingPaymentRequest } from "../../crypto/keys/ring-address.js";
 
-import { carriesNoData, type AnonymousPayment, type AnonymousSpendSigner } from "./anonymous.js";
+import {
+  carriesNoData,
+  type AnonymousPayment,
+  type AnonymousSpendSigner,
+  type OwnerExposure,
+} from "./anonymous.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
 import { RingError, wrapRingError } from "../../protocol/error.js";
 import type { ProvenRingTransfer } from "../workflow/pipeline.js";
@@ -93,6 +98,8 @@ export interface AnonymousSpendOwner {
   readonly reply?: ReplyMetadata | null;
   /** A missing SPL exit token account must be the owner's associated token account. */
   readonly exitTokenOwner?: Address;
+  /** `AnonymousTransfer.withOwnerExposure`, `refused` when unset. */
+  readonly ownerExposure?: OwnerExposure;
 }
 
 export interface AnonymousRingSpend extends RingRelaySpend, AnonymousSpendOwner {}
@@ -565,6 +572,7 @@ function withdrawalStrategy(params: WithdrawalParams): RingSpendStrategy<
         },
         summary: `public withdrawal of ${String(params.amount)} ${assetLabel(asset)} from ring ${params.ringProgramId} to ${params.recipient}`,
         withdrawal: resolved.settlement.accounts,
+        withdrawalOwner: params.recipient,
         setupInstructions: resolved.setupInstructions,
         ...(resolved.setupInstructions.length === 0
           ? {}
@@ -578,6 +586,8 @@ interface RingSpendPlan {
   readonly intent: RingTransactionIntent;
   readonly summary: string;
   readonly withdrawal?: TransactWithdrawal;
+  /** The wallet whose token account receives the withdrawal. */
+  readonly withdrawalOwner?: Address;
   readonly setupInstructions?: readonly Instruction[];
   /** The accounts Ring RPC creates in place of `setupInstructions`. */
   readonly tokenAccountSetup?: readonly TokenAccountSetup[];
@@ -768,9 +778,11 @@ function anonymousTransfer(staged: StagedSpend, owner: AnonymousSpendOwner): Ano
   const signed = staged.rail.withAnonymousSigner(owner.signer);
   const paying =
     staged.anonymousPayment === undefined ? signed : signed.withPayment(staged.anonymousPayment);
+  const exposed =
+    owner.ownerExposure === undefined ? paying : paying.withOwnerExposure(owner.ownerExposure);
   return owner.exitTokenOwner === undefined
-    ? paying
-    : paying.withExitTokenOwner(owner.exitTokenOwner);
+    ? exposed
+    : exposed.withExitTokenOwner(owner.exitTokenOwner);
 }
 
 /** Each route's refusal on a ring whose mode it does not serve, public owners serve either. */
@@ -861,7 +873,9 @@ async function stageRingSpend<R>(
   return Object.freeze({
     selected,
     rail:
-      plan.withdrawal === undefined ? ownerRail : ownerRail.withWithdrawalAccounts(plan.withdrawal),
+      plan.withdrawal === undefined
+        ? ownerRail
+        : ownerRail.withWithdrawalAccounts(plan.withdrawal, plan.withdrawalOwner),
     plan,
     planned,
     anonymousPayment,

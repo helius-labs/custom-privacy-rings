@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use bytemuck::Zeroable;
 use custom_ring_interface::{
     storage::{Revision, StorageRegistry},
-    storage_instruction::EnrollIxData,
+    storage_instruction::{EnrollIxData, EnrollmentWrite},
     tracking::viewing_hash,
-    ApplyRecordsIxData, CustomRingProof, RING_POLICY, STORAGE_PROGRAM_ID,
+    ApplyRecordsIxData, CustomRingProof, RingRoles, RING_POLICY, STORAGE_PROGRAM_ID,
 };
 use custom_ring_sdk::{OwnedChange, OwnerEnrollment};
 use solana_account::Account;
@@ -66,15 +66,21 @@ impl StubChain {
     fn new() -> Arc<Self> {
         let chain = Self::default();
         chain.slot.store(SLOT, Ordering::Relaxed);
+        chain.policy(RING, RingRoles::zeroed());
+        chain.tracking(|_| {});
+        Arc::new(chain)
+    }
+
+    /// The ring's policy over the shared tracking registry.
+    fn policy(&self, ring: Address, roles: RingRoles) {
         let mut policy = RingPolicy::zeroed();
         policy.discriminator = RING_POLICY;
         policy.tracking = REGISTRY;
-        chain.accounts.lock().unwrap().insert(
-            CustomRing::new(RING).policy_pda(),
-            stored(RING, bytemuck::bytes_of(&policy)),
+        policy.roles = roles;
+        self.accounts.lock().unwrap().insert(
+            CustomRing::new(ring).policy_pda(),
+            stored(ring, bytemuck::bytes_of(&policy)),
         );
-        chain.tracking(|_| {});
-        Arc::new(chain)
     }
 
     fn tracking(&self, write: impl FnOnce(&mut TrackingRegistry)) {
@@ -241,18 +247,35 @@ impl StorageChain for StubChain {
     }
 }
 
-fn applier(chain: &Arc<StubChain>) -> EnrollmentApplier {
-    budgeted(chain, u64::MAX)
-}
-
-fn budgeted(chain: &Arc<StubChain>, budget_lamports: u64) -> EnrollmentApplier {
+fn parts(chain: &Arc<StubChain>) -> EnrollmentApplierParts {
     EnrollmentApplierParts {
         chain: chain.clone(),
-        payer: Keypair::new_from_array([9; 32]),
+        payer: payer(),
         rings: vec![RING, UNINITIALIZED_RING],
+        budget_lamports: u64::MAX,
+        ring_budget_lamports: u64::MAX,
+        max_rings: 2,
+        store: None,
+    }
+}
+
+async fn applier(chain: &Arc<StubChain>) -> EnrollmentApplier {
+    parts(chain).applier().await.expect("applier")
+}
+
+async fn budgeted(chain: &Arc<StubChain>, budget_lamports: u64) -> EnrollmentApplier {
+    EnrollmentApplierParts {
         budget_lamports,
+        ring_budget_lamports: budget_lamports,
+        ..parts(chain)
     }
     .applier()
+    .await
+    .expect("applier")
+}
+
+fn payer() -> Keypair {
+    Keypair::new_from_array([9; 32])
 }
 
 fn owner(seed: u8) -> Keypair {
@@ -270,6 +293,10 @@ fn enrollment(owner: &Keypair, change: OwnedChange) -> OwnerEnrollment {
 
 /// A rotation needs no proof, the owner's signature alone authorizes it.
 fn rotation(seed: u8) -> SubmitEnrollmentRequest {
+    rotation_in(RING, seed)
+}
+
+fn rotation_in(ring: Address, seed: u8) -> SubmitEnrollmentRequest {
     let viewing_u = X25519Keypair::from_bytes(&[seed; 32]).pubkey().u();
     let owner = owner(seed);
     let change = OwnedChange::Rotate {
@@ -277,7 +304,12 @@ fn rotation(seed: u8) -> SubmitEnrollmentRequest {
         prior_viewing_u: [seed; 32],
         prior_seq: [0; 8],
     };
-    enrollment(&owner, change).sign(&owner).expect("signed")
+    OwnerEnrollment {
+        ring: CustomRing::new(ring),
+        ..enrollment(&owner, change)
+    }
+    .sign(&owner)
+    .expect("signed")
 }
 
 /// The viewing hash the owner's leaf holds before the rotation, a field element as every leaf hash is.
@@ -285,7 +317,7 @@ fn prior_viewing_hash(seed: u8) -> [u8; 32] {
     viewing_hash(&[seed; 32], 0).expect("viewing hash")
 }
 
-fn refusal(result: Result<SubmitEnrollmentResponse, RingRpcError>) -> EnrollmentRefusal {
+fn refusal<T: std::fmt::Debug>(result: Result<T, RingRpcError>) -> EnrollmentRefusal {
     match result {
         Err(RingRpcError::Enrollment(refusal)) => refusal,
         other => panic!("an enrollment refusal, not {other:?}"),
@@ -302,7 +334,7 @@ fn refused(chain: &StubChain) {
 #[tokio::test]
 async fn a_write_the_program_would_refuse_is_never_held() {
     let chain = StubChain::new();
-    let applier = applier(&chain);
+    let applier = applier(&chain).await;
     let unserved = SubmitEnrollmentRequest {
         ring: Address::new_from_array([12; 32]).into(),
         ..rotation(3)
@@ -354,15 +386,41 @@ async fn a_write_the_program_would_refuse_is_never_held() {
     assert!(chain.proved().is_empty());
 }
 
+/// The owner signs the enrollment text, a signature over the binary `CRING/enr` message is refused.
+#[tokio::test]
+async fn a_write_signed_over_the_binary_message_is_refused() {
+    let chain = StubChain::new();
+    let applier = applier(&chain).await;
+    let request = rotation(3);
+    let (write, _) = EnrollmentWrite::parse(&request.write.0).expect("write");
+    let entry = write.signed(&REGISTRY).expect("signed").entry_hash;
+    let binary = [
+        &b"CRING/enr"[..],
+        REGISTRY.as_ref(),
+        write.owner.as_ref(),
+        &entry,
+    ]
+    .concat();
+    let stale = SubmitEnrollmentRequest {
+        signature: owner(3).sign_message(&binary).into(),
+        ..request.clone()
+    };
+    assert_eq!(
+        refusal(applier.submit(stale).await),
+        EnrollmentRefusal::InvalidWrite
+    );
+    applier.submit(request).await.expect("held");
+}
+
 #[tokio::test]
 async fn the_budget_pays_batch_fees_and_a_spent_one_refuses_the_next_write() {
     let chain = StubChain::new();
     chain.enrolled([3, 4]);
     assert_eq!(
-        refusal(budgeted(&chain, 0).submit(rotation(3)).await),
+        refusal(budgeted(&chain, 0).await.submit(rotation(3)).await),
         EnrollmentRefusal::Budget
     );
-    let applier = budgeted(&chain, signature_fees(2));
+    let applier = budgeted(&chain, signature_fees(2)).await;
     applier.submit(rotation(3)).await.expect("held");
     applier.flush().await;
     assert_eq!(chain.sent.lock().unwrap().len(), 1);
@@ -375,7 +433,7 @@ async fn the_budget_pays_batch_fees_and_a_spent_one_refuses_the_next_write() {
 #[tokio::test]
 async fn a_full_ring_refuses_and_a_resubmission_is_held_once() {
     let chain = StubChain::new();
-    let applier = applier(&chain);
+    let applier = applier(&chain).await;
     applier.submit(rotation(0)).await.expect("held");
     applier.submit(rotation(0)).await.expect("held once");
     for seed in 1..MAX_HELD_ENROLLMENTS as u8 {
@@ -390,7 +448,7 @@ async fn a_full_ring_refuses_and_a_resubmission_is_held_once() {
 #[tokio::test]
 async fn a_pass_proves_one_batch_under_the_payer_alone_and_waits_for_its_landing() {
     let chain = StubChain::new();
-    let applier = applier(&chain);
+    let applier = applier(&chain).await;
     chain.enrolled(0..ENROLLMENT_BATCH as u8 + 2);
     for seed in 0..ENROLLMENT_BATCH as u8 + 2 {
         applier.submit(rotation(seed)).await.expect("held");
@@ -420,7 +478,7 @@ async fn a_pass_proves_one_batch_under_the_payer_alone_and_waits_for_its_landing
 async fn a_failed_batch_requeues_its_writes_until_their_attempts_run_out() {
     let chain = StubChain::new();
     chain.enrolled([3]);
-    let applier = applier(&chain);
+    let applier = applier(&chain).await;
     applier.submit(rotation(3)).await.expect("held");
     applier.flush().await;
     for attempt in 1..MAX_ENROLLMENT_ATTEMPTS {
@@ -446,7 +504,7 @@ async fn a_pass_waits_out_the_grace_of_the_oldest_root() {
         registry.roots[TRACKING_ROOT_HISTORY - 1].expires_at = (SLOT + 1).to_le_bytes()
     });
     chain.enrolled([3]);
-    let applier = applier(&chain);
+    let applier = applier(&chain).await;
     applier.submit(rotation(3)).await.expect("held");
     applier.flush().await;
     assert!(chain.proved().is_empty());
@@ -459,7 +517,7 @@ async fn a_root_moved_during_the_proof_sends_nothing() {
         chain.tracking(|registry| registry.roots[0].revision = Revision::from(1))
     }));
     chain.enrolled([3]);
-    let applier = applier(&chain);
+    let applier = applier(&chain).await;
     applier.submit(rotation(3)).await.expect("held");
 
     applier.flush().await;
@@ -479,10 +537,13 @@ async fn a_pass_drops_a_rotation_the_running_leaves_refuse() {
         .lock()
         .unwrap()
         .insert(owner(4).pubkey().to_bytes(), [0x44; 32]);
-    let applier = applier(&chain);
+    let applier = applier(&chain).await;
     for seed in [3, 4, 5] {
         applier.submit(rotation(seed)).await.expect("held");
     }
     applier.flush().await;
     assert_eq!(chain.proved(), [(REGISTRY, 1)]);
 }
+
+#[path = "enrollment_registration_tests.rs"]
+mod enrollment_registration_tests;

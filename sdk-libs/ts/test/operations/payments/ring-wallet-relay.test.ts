@@ -1,5 +1,7 @@
 import {
   generateKeyPairSigner,
+  getBase58Decoder,
+  getBase58Encoder,
   getBase64Decoder,
   getBase64Encoder,
   type Address,
@@ -18,7 +20,7 @@ import {
   type ApprovalHandler,
   type ApprovalRequest,
 } from "@heliuslabs/spr/transaction";
-import type { Bytes32 } from "@heliuslabs/spr/interface";
+import type { Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 
 import { PreparedRingDeposit } from "../../../src/operations/payments/deposit.js";
 import { prepareRingMergeRelay } from "../../../src/operations/payments/merge.js";
@@ -28,11 +30,14 @@ import {
   prepareRingWithdrawalRelay,
 } from "../../../src/operations/payments/transfer.js";
 import { buildRuleTable } from "../../../src/protocol/membership/policy.js";
-import { decodeRelayProofInputs } from "../../../src/protocol/ring-rpc/relay-proof-inputs.js";
+import {
+  decodeRelayProofInputs,
+  mergeRequestDigest,
+} from "../../../src/protocol/ring-rpc/relay-proof-inputs.js";
 import { CustomRingClient } from "../../../src/rpc/client.js";
 import type { PreparedRelay, RingRelayClient } from "../../../src/rpc/relay.js";
 import type { RelayStatus } from "../../../src/protocol/ring-rpc/ring-rpc-types.js";
-import { RingRpc } from "../../../src/rpc/ring-rpc.js";
+import { RingRpc, relayRequestAttestation } from "../../../src/rpc/ring-rpc.js";
 
 import {
   TREE,
@@ -47,6 +52,10 @@ await initializePoseidon();
 
 const CHAIN_READS = new Set(["getAccountInfo"]);
 const base64 = getBase64Decoder();
+const RING_RPC = {
+  cluster: new Uint8Array(32).fill(1) as Bytes32,
+  service: getBase58Decoder().decode(new Uint8Array(32).fill(2)) as Address,
+};
 
 function walletNetwork(fixture: Fixture) {
   const methods: string[] = [];
@@ -347,6 +356,7 @@ describe("wallet relay", () => {
         depositorSigner,
         recipient: { kind: "confidential", address: recipient },
         amount: 5n,
+        ringRpc: RING_RPC,
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
       }),
     ).rejects.toThrow();
@@ -357,6 +367,7 @@ describe("wallet relay", () => {
       depositorSigner,
       recipient: { kind: "confidential", address: recipient },
       amount: 5n,
+      ringRpc: RING_RPC,
       quote: { feePayer: fixture.authority, validUntilSlot: 100n },
       approve: (request) => {
         approvals.push(request);
@@ -393,6 +404,7 @@ describe("wallet relay", () => {
         wallet: sender.wallet,
         nullifierKey: sender.keypair.nullifierKey(),
         signer: signingKeySpendSigner(sender.signing),
+        ringRpc: RING_RPC,
         quote: { feePayer, validUntilSlot: 100n },
         approve,
       });
@@ -407,6 +419,7 @@ describe("wallet relay", () => {
         wallet: sender.wallet,
         nullifierKey: sender.keypair.nullifierKey(),
         signer: signingKeySpendSigner(SigningKey.generate()),
+        ringRpc: RING_RPC,
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
         approve: recorded,
       }),
@@ -422,6 +435,18 @@ describe("wallet relay", () => {
     expect(approvals).toMatchObject([
       { intent: { kind: "ringMerge", numInputs: 3, mergedAmount: 30n, outputTree: TREE } },
     ]);
+    const { intent } = relay.request;
+    if (intent.operation !== "merge") throw new Error("a merge relay");
+    const text = relayRequestAttestation({
+      target: { ...RING_RPC, ringProgramId: fixture.ringProgramId },
+      signer: sender.keypair.shieldedAddress().solanaAddress(),
+      request: {
+        kind: "merge",
+        digest: mergeRequestDigest(new Uint8Array(getBase64Encoder().encode(intent.proofInputs))),
+      },
+    });
+    const signature = new Uint8Array(getBase58Encoder().encode(intent.ownerSignature));
+    expect(sender.signing.verify(text, signature as Bytes64)).toBe(true);
     expect(await network.send(relay)).toEqual(["prepareRelay"]);
     await expect(merge(fixture.authority)).rejects.toMatchObject({
       cause: { code: "RING_NOTHING_TO_MERGE" },

@@ -184,6 +184,7 @@ dcap-qvl = { version = "0.6.5", default-features = false, features = ["std", "ru
 darling = "0.21"
 dialoguer = { version = "0.12", default-features = false }
 env_logger = "0.11"
+five8 = "1.0.0"
 flate2 = "1"
 futures = "0.3.31"
 governor = "0.8.0"

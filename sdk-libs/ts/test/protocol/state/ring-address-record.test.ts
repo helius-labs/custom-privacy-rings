@@ -25,7 +25,6 @@ import {
 import {
   encodeEnrollmentRecord,
   encodeEnrollmentWrite,
-  signedWrite,
   enrollmentWriteEntry,
 } from "../../../src/protocol/ring-rpc/enrollment-write.js";
 import { recordTree } from "../../helpers/member-registry.js";
@@ -55,17 +54,14 @@ const enroll = JSON.parse(
     | "owner"
     | "enroll_write"
     | "enroll_entry_hash"
-    | "enroll_message"
     | "rotate_write"
     | "rotate_entry_hash"
-    | "rotate_message"
     | "chain_start"
     | "chain_end",
     string
   >
 >;
 
-const REGISTRY = address(encodeBase58(field(enroll.registry)));
 const OWNER = address(encodeBase58(field(enroll.owner)));
 const bytesOf = (written: string, from: number, length: number) =>
   Uint8Array.from(Buffer.from(written.slice(2 * from, 2 * (from + length)), "hex"));
@@ -140,11 +136,6 @@ describe("tracking_enroll.json", () => {
       enroll.enroll_write.slice(2 * 33, 2 * 225),
     );
     expect(hex(encodeEnrollmentWrite(rotate()))).toBe(enroll.rotate_write);
-  });
-
-  it("signs each entry hash under the registry", () => {
-    expect(hex(signedWrite(WRITE, REGISTRY).message)).toBe(enroll.enroll_message);
-    expect(hex(signedWrite(rotate(), REGISTRY).message)).toBe(enroll.rotate_message);
   });
 
   it("hashes both entries and chains them from the apply's start", () => {

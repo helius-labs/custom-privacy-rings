@@ -71,4 +71,26 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&directory);
     }
+
+    #[tokio::test]
+    async fn a_store_from_before_the_enrollment_rings_upgrades() {
+        let directory = std::env::temp_dir().join(format!("store-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).expect("directory");
+        let url = format!(
+            "sqlite://{}?mode=rwc",
+            directory.join("store.sqlite").display()
+        );
+        let first = Database::connect(url.as_str()).await.expect("connect");
+        Migrator::up(&first, Some(1))
+            .await
+            .expect("first migration");
+        let writer = solana_address::Address::new_from_array([9; 32]);
+        let ring = solana_address::Address::new_from_array([13; 32]);
+        let store = Store::open(&url, 1).await.expect("upgraded");
+        let book = crate::enrollment_rings::EnrollmentRingBook::new(store.connection(), writer);
+        book.insert(ring).await.expect("insert");
+        assert_eq!(book.rings().await.expect("rings"), [ring]);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 }

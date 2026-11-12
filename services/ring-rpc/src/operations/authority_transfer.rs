@@ -20,7 +20,7 @@ use zolana_ring_client::rpc::{
 use crate::{
     audit::{AuditService, WALLET_NOTE_PAGE_LIMIT},
     authorize::WalletCheck,
-    error::RingRpcError,
+    error::{redacted, RingRpcError},
     hub::Hub,
     relay_prover::{DelegateSeal, SealedSource},
     replay::ReplayCheck,
@@ -350,7 +350,15 @@ impl<S: TransactionSource> Hub<S> {
                 })
                 .await?;
         }
-        // 3. Each source key is the public zero key or its escrowed key, its own notes alone fill
+        // 3. The backfill reads only rings a read opened, so a first request projects the history
+        //    its notes come from.
+        if let Err(error) = service.backfill_utxos().await {
+            log::warn!(
+                "UTXO backfill of ring {ring} failed because {}",
+                redacted(&error)
+            );
+        }
+        // 4. Each source key is the public zero key or its escrowed key, its own notes alone fill
         //    the allowed set the sealed inputs answer to.
         let assets = shared.due_assets().await;
         let mut mints: Vec<Mint> = Vec::new();

@@ -286,7 +286,7 @@ A deposit moves SOL or tokens from a wallet's public balance into up to 8 ring n
 1. **Wallet:**
    1. Chooses the token, amount and recipient.
    2. Prepares the deposit notes and seals one record per note.
-   3. Sends the deposit request to **Ring RPC** on the deposit relay rail. The funder signs `deposit_request_digest`, the SHA-256 of `"zolana/ring-rpc-relay-deposit"` and the proof input bytes. No owner signs.
+   3. Sends the deposit request to **Ring RPC** on the deposit relay rail. The funder signs a text that names the cluster, the Ring RPC service, the ring, the funder, each leg's mint and amount, and `deposit_request_digest`, the SHA-256 of `"zolana/ring-rpc-relay-deposit"` and the proof input bytes. No owner signs.
 2. **Ring RPC:**
    1. Checks that the ring is active. Refuses a frame with a real input, with two funders, with the fee payer as funder, or with a signature the funder did not make.
    2. Generates the transfer proof. It shows the owner and asset rules hold for each recipient and asset. It also proves each zero-key recipient absent at the accepted tracking root.

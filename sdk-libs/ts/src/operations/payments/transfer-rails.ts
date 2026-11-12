@@ -47,6 +47,8 @@ import {
 } from "@heliuslabs/spr/transaction";
 import {
   encodeRelayProofInputs,
+  relayLegs,
+  type RelayLeg,
   type RelayLegAccounts,
 } from "../../protocol/ring-rpc/relay-proof-inputs.js";
 import type {
@@ -148,6 +150,8 @@ export interface CustomRingTransferInput {
   readonly extensions?: Omit<FrameExtensions, "approvalTotals" | "cache">;
   /** The frame carries a digest of its totals, Rust `with_exact_approval`. */
   readonly exactApproval?: boolean;
+  /** The owner of the withdrawal's token account, the policy read names it while the transaction creates that account. */
+  readonly withdrawalOwner?: Address;
   /** The settlement accounts of each deposit leg `transfer` names, in leg order. */
   readonly deposits?: readonly TransactDeposit[];
 }
@@ -188,8 +192,9 @@ export class CustomRingTransfer {
   }
 
   /** The settlement accounts of the transfer's public withdrawal, Rust `with_interface_transfer_accounts`. */
-  withWithdrawalAccounts(withdrawal: TransactWithdrawal): CustomRingTransfer {
-    return new CustomRingTransfer(this.#input, withdrawal, this.#inProofOwner, this.#coOwners);
+  withWithdrawalAccounts(withdrawal: TransactWithdrawal, owner?: Address): CustomRingTransfer {
+    const input = owner === undefined ? this.#input : { ...this.#input, withdrawalOwner: owner };
+    return new CustomRingTransfer(input, withdrawal, this.#inProofOwner, this.#coOwners);
   }
 
   /** The sender's signing key signs inside the proof, any fee payer sends the transaction, Rust `with_in_proof_owner`. */
@@ -486,6 +491,9 @@ export class CustomRingTransfer {
           ownerSigners,
           ...stagedDeposits(this.#input),
           ...(this.#withdrawal === undefined ? {} : { withdrawal: this.#withdrawal }),
+          ...(this.#input.withdrawalOwner === undefined
+            ? {}
+            : { withdrawalOwner: this.#input.withdrawalOwner }),
           ...(this.#input.extensions === undefined ? {} : { extensions: this.#input.extensions }),
         },
       };
@@ -1601,6 +1609,7 @@ export interface DepositRelayInput {
 /** A sealed deposit frame, the caller wipes `payload`. */
 export interface DepositRelayFrame {
   readonly payload: Uint8Array;
+  readonly legs: readonly RelayLeg[];
   readonly expected: ExpectedSealed;
 }
 
@@ -1653,6 +1662,7 @@ function depositRelayFrame(
         listSalts: relayListSalts(config, owner.listSalts ?? []),
         coOwners: [],
       }),
+      legs: relayLegs(legs),
       expected: Object.freeze({
         kind: "sealed",
         terms: [],

@@ -354,7 +354,7 @@ ring-localnet: check-custom-ring-keys build-programs zolana::build-cli build-pho
     export ZOLANA_PHOTON_BIN="$photon_bin"
     export ZOLANA_PROVER_KEYS_DIR="{{spp-keys-dir}}"
     for port in {{localnet-rpc-port}} {{localnet-photon-port}} {{localnet-prover-port}} {{localnet-ring-indexer-port}}; do
-      lsof -ti "tcp:$port" 2>/dev/null | xargs kill -9 2>/dev/null || true
+      lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     done
     sleep 2
     accounts_dir="$workdir/accounts"
@@ -382,11 +382,11 @@ ring-localnet: check-custom-ring-keys build-programs zolana::build-cli build-pho
 
 # Stops the validator, photon, the ring indexer, the prover and a ring RPC a ring's `just pipeline` left.
 ring-localnet-stop:
-    lsof -ti "tcp:{{localnet-rpc-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-    lsof -ti "tcp:{{localnet-photon-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-    lsof -ti "tcp:{{localnet-ring-indexer-port}}" 2>/dev/null | xargs kill 2>/dev/null || true
-    lsof -ti "tcp:{{localnet-prover-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-    lsof -ti "tcp:{{localnet-ring-rpc-port}}" 2>/dev/null | xargs kill 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-photon-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-ring-indexer-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-prover-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-ring-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
     {{stop-localnet-backends}}
 
 # Photon, the ring indexer and the prover against a cluster from its current slot, RING_INDEXER_START_SLOT moves the ring indexer start.
@@ -397,8 +397,8 @@ ring-devnet-services rpc_url: check-custom-ring-keys build-prover-server build-p
     mkdir -p "$workdir"
     photon_bin="{{photon-bin}}"
     [[ "$photon_bin" = /* ]] || photon_bin="$PWD/$photon_bin"
-    lsof -ti "tcp:{{localnet-photon-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-    lsof -ti "tcp:{{localnet-prover-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-photon-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-prover-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     sleep 1
     nohup "$photon_bin" --rpc-url "{{rpc_url}}" --port {{localnet-photon-port}} --start-slot latest \
       > "$workdir/photon.log" 2>&1 &
@@ -432,10 +432,10 @@ ring-devnet-services rpc_url: check-custom-ring-keys build-prover-server build-p
 
 # Stops photon, the ring indexer, the prover and a ring RPC started for devnet.
 ring-devnet-services-stop:
-    lsof -ti "tcp:{{localnet-photon-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-    lsof -ti "tcp:{{localnet-ring-indexer-port}}" 2>/dev/null | xargs kill 2>/dev/null || true
-    lsof -ti "tcp:{{localnet-prover-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-    lsof -ti "tcp:{{localnet-ring-rpc-port}}" 2>/dev/null | xargs kill 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-photon-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-ring-indexer-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-prover-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+    lsof -ti "tcp:{{localnet-ring-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
 
 # Foreground ring RPC in derived mode, one key per ring.
 ring-rpc-derived:
@@ -504,11 +504,11 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
       if (( status != 0 )); then
         find "$workdir" test-ledger -name '*.log' -exec tail -n 200 {} + 2>/dev/null || true
       fi
-      lsof -ti "tcp:{{localnet-rpc-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-      lsof -ti "tcp:{{localnet-photon-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-      lsof -ti "tcp:{{localnet-ring-indexer-port}}" 2>/dev/null | xargs kill 2>/dev/null || true
-      lsof -ti "tcp:{{localnet-prover-port}}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-      lsof -ti "tcp:{{localnet-ring-rpc-port}}" 2>/dev/null | xargs kill 2>/dev/null || true
+      lsof -ti "tcp:{{localnet-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+      lsof -ti "tcp:{{localnet-photon-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+      lsof -ti "tcp:{{localnet-ring-indexer-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
+      lsof -ti "tcp:{{localnet-prover-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
+      lsof -ti "tcp:{{localnet-ring-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
     }
     trap cleanup EXIT
     rm -rf "$workdir"

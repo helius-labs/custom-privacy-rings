@@ -96,7 +96,10 @@ confidential relay cannot spend a default-ring note, so an entry on a
 confidential Ring proves and sends through `createRingEntrySubmission`.
 `PreparedRingDeposit.prepareRelay` relays a deposit, whose request and message
 the depositor signs, and `prepareRingMergeRelay` relays a merge of the wallet's
-smallest notes under the owner's signed request. `RingRpc` reads
+smallest notes under the owner's signed request. Each request is a readable
+`relayRequestAttestation` text naming the `ringRpc` target, the signer, each
+deposit leg and the request digest, which a browser wallet signs through
+`signMessage`. `RingRpc` reads
 decrypted Ring transactions for a granted reader.
 
 Without Ring RPC the `CustomRingClient` reads the records and Merkle paths
@@ -133,9 +136,9 @@ disclosure is acceptable.
 
 On a ring reading a salted list, a relayed transfer or deposit gives Ring RPC the
 salt of every enrolled owner the policy screens, and Ring RPC can then read those
-owners' list status on that Ring. A transfer names other owners in `listSalts`
-and Ring RPC derives the sender's from the nullifier key it holds. A deposit
-carries the recipient's.
+owners' list status on that Ring. A transfer names the sender and the other
+owners in `listSalts`, since Ring RPC reads every salt it screens from the
+relay. A deposit carries the recipient's.
 
 On an anonymous Ring the transfer proof binds each live recipient slot's
 ciphertext and its recipient, no proof binds a discovery tag. A bad tag costs the

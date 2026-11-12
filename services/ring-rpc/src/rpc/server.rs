@@ -34,15 +34,15 @@ use zolana_ring_client::rpc::{
     GetDecryptedTransactionsResponse, GetDelegateNotesRequest, GetListSaltRequest,
     GetPendingListApprovalsRequest, GetRecordUpdateStatusRequest, GetRelayQuoteRequest,
     GetRelayStatusRequest, GetSpendCoverageRequest, GetWalletActivityResponse,
-    GetWalletStatusRequest, HealthResponse, PagedRead, PrepareAuthorityTransferRequest,
-    PrepareRelayRequest, RefuseListApprovalRequest, RingState, RingStatusRequest,
+    GetWalletStatusRequest, PagedRead, PrepareAuthorityTransferRequest, PrepareRelayRequest,
+    RefuseListApprovalRequest, RegisterEnrollmentRingRequest, RingState, RingStatusRequest,
     RingStatusResponse, SetMergeSettingsRequest, SetReaderGrantRequest, SubmitEnrollmentRequest,
     SubmitRecordUpdateRequest, SubmitRelayRequest, CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY,
     GET_AUDITED_UTXOS, GET_DELEGATE_NOTES, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS,
     GET_RECORD_UPDATE_STATUS, GET_RELAY_QUOTE, GET_RELAY_STATUS, GET_SPEND_COVERAGE,
     GET_WALLET_STATUS, HEALTH, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY, REFUSE_LIST_APPROVAL,
-    RELEASE_DELEGATE_SNAPSHOT, RELEASE_WALLET_SNAPSHOT, RING_STATUS, SET_MERGE_SETTINGS,
-    SET_READER_GRANT, SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
+    REGISTER_ENROLLMENT_RING, RELEASE_DELEGATE_SNAPSHOT, RELEASE_WALLET_SNAPSHOT, RING_STATUS,
+    SET_MERGE_SETTINGS, SET_READER_GRANT, SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
 };
 
 use crate::{
@@ -50,6 +50,7 @@ use crate::{
     client_identity::PeerAddress,
     client_rate::{ClientLayer, ClientLimits, ClientRate, ClientRateLimiter},
     error::RingRpcError,
+    health::health,
     hub::{Hub, Lane, ReadinessStatus},
     origins::{OriginError, Origins},
     relay::Relay,
@@ -184,10 +185,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
     let relay = hub.relay().cloned();
     let mut module = RpcModule::new(hub);
     module.register_async_method(HEALTH, |_, hub, _| async move {
-        Ok::<_, ErrorObjectOwned>(HealthResponse {
-            mode: hub.mode(),
-            service_pubkey: hub.service_pubkey().into(),
-        })
+        Ok::<_, ErrorObjectOwned>(health(&hub))
     })?;
     method(
         &mut module,
@@ -344,6 +342,14 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: CreateRecordsRegistryRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             hub.create_records_registry(&request).await
+        },
+    )?;
+    method(
+        &mut module,
+        REGISTER_ENROLLMENT_RING,
+        |hub, request: RegisterEnrollmentRingRequest| async move {
+            let _authentication = hub.admit(Lane::Authentication)?;
+            hub.register_enrollment_ring(&request).await
         },
     )?;
     method(
@@ -532,7 +538,7 @@ mod tests {
     use spr_keypair::X25519Keypair;
     use zolana_ring_client::RingIndexerError;
     use zolana_ring_client::{
-        rpc::{KeyMode, RingChainStatus, GET_DECRYPTED_TRANSACTIONS},
+        rpc::{HealthResponse, KeyMode, RingChainStatus, GET_DECRYPTED_TRANSACTIONS},
         AuditError, RingOrigin,
     };
     use zolana_ring_transaction::RingAssets;

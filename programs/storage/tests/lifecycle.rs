@@ -779,6 +779,59 @@ fn a_batch_applies_only_what_each_owner_signed_over_its_registry() {
     ));
 }
 
+/// The owner signs the enrollment text, a signature over the binary `CRING/enr` message is refused.
+#[test]
+fn an_owner_signs_the_enrollment_text_and_a_binary_message_is_refused() {
+    let mut store = Store::new();
+    store.initialize_tracking();
+    let owners = Owners::new();
+    let writes = owners.rotations();
+    let text = store.apply_batch(Batch {
+        registry: store.tracking,
+        revision: 0,
+        new_next_index: 1,
+        writes: &writes,
+        signers: &owners.signers(),
+    });
+    let message = writes[0].signed(&store.tracking).unwrap().message;
+    assert!(std::str::from_utf8(&message)
+        .unwrap()
+        .starts_with("zolana/ring-enrollment\nregistry: "));
+    past_every_apply_check(&mut store, &text, 2);
+    let binary: Vec<_> = writes
+        .iter()
+        .zip(owners.signers())
+        .map(|(write, signer)| {
+            let entry = write.signed(&store.tracking).unwrap().entry_hash;
+            let message = [
+                &b"CRING/enr"[..],
+                store.tracking.as_ref(),
+                write.owner.as_ref(),
+                &entry,
+            ]
+            .concat();
+            let signature = <[u8; 64]>::from(signer.sign_message(&message));
+            (*write.owner, signature, message)
+        })
+        .collect();
+    let signatures: Vec<_> = binary
+        .iter()
+        .map(|(owner, signature, message)| OwnerSignature {
+            owner,
+            signature,
+            message,
+        })
+        .collect();
+    let precompile = Instruction {
+        data: Ed25519Signatures::encode(&signatures).unwrap(),
+        ..text[0].clone()
+    };
+    assert_eq!(
+        store.send_batch(&[precompile, text[1].clone()]),
+        refusal_at(1, StorageError::OwnerSignatureMismatch)
+    );
+}
+
 #[test]
 fn an_apply_needs_the_registry_authority_and_the_storage_program() {
     let mut store = Store::new();

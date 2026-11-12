@@ -162,12 +162,15 @@ struct Worker {
 
 impl Worker {
     fn start(self, fixture: &Fixture) -> Arc<Relay> {
-        let relay = Relay::new(RelayParts {
-            store: fixture.store.clone(),
-            prover: fixture.prover.clone(),
-            fee_payer: Keypair::new_from_array([31; 32]),
-            chain: self.chain,
-        })
+        let relay = Relay::new(
+            RelayParts {
+                store: fixture.store.clone(),
+                prover: fixture.prover.clone(),
+                fee_payer: Keypair::new_from_array([31; 32]),
+                chain: self.chain,
+            },
+            SERVICE,
+        )
         .with_rings(Arc::new(OneRing(RING)))
         .with_budget(RelayBudget {
             total_lamports: self.budget,
@@ -184,7 +187,7 @@ async fn signed_deposit(fixture: &Fixture, relay: &Relay) -> SubmitRelayRequest 
     let depositor = Keypair::new_from_array([41; 32]);
     let quote = fixture.quote(RelayOperation::Deposit).await;
     let step = relay
-        .prepare(&deposit_request(quote, RING, &depositor, 700))
+        .prepare(&deposit_request(SERVICE.ring(RING), quote, &depositor, 700))
         .await
         .expect("prepared deposit");
     let RelayStep::SignMessage { relay_id, message } = step else {

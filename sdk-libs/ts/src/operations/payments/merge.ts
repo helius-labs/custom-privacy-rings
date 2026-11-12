@@ -72,6 +72,7 @@ import {
 import type { RelayIntent, RelayQuote } from "../../protocol/ring-rpc/ring-rpc-types.js";
 import { PreparedRelay } from "../../rpc/relay.js";
 import type { RingMergeClient, TrackingReader } from "../../rpc/ports.js";
+import { relayRequestAttestation, type RingServiceTarget } from "../../rpc/ring-rpc.js";
 import { ringAuthAddress, ringPolicyAddress } from "../../protocol/pda/index.js";
 import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/proof/custom-ring-proof.js";
 import {
@@ -160,8 +161,10 @@ export interface RingMergeRelayParams extends Pick<
   readonly client: TreeContext;
   /** Ring RPC proves with it and so links every spend of the owner. */
   readonly nullifierKey: NullifierKey;
-  /** The owner's key, Ring RPC proves nothing for an unsigned request. */
+  /** The owner's key, it signs the request text, Ring RPC proves nothing for an unsigned request. */
   readonly signer: AnonymousSpendSigner;
+  /** The Ring RPC the owner's request text names, its service key pinned by the caller. */
+  readonly ringRpc: RingServiceTarget;
   readonly quote: RelayQuote;
 }
 
@@ -173,8 +176,9 @@ export async function prepareRingMergeRelay(params: RingMergeRelayParams): Promi
     await initializePoseidon();
     const sender = params.wallet.identity;
     const { feePayer } = params.quote;
+    const owner = checkAnonymousSigner({ signer: params.signer, sender });
     // The merge circuit admits a hidden owner as payer, the wallet keeps one off it.
-    checkHiddenParties(checkAnonymousSigner({ signer: params.signer, sender }), [feePayer]);
+    checkHiddenParties(owner, [feePayer]);
     const asset = params.asset ?? SOL_MINT;
     const notes = selectMergeNotes({
       wallet: params.wallet,
@@ -207,8 +211,13 @@ export async function prepareRingMergeRelay(params: RingMergeRelayParams): Promi
       leafIndexes: notes.map((note) => note.outputContext.leafIndex),
       assets: params.wallet.registry,
     });
+    const request = relayRequestAttestation({
+      target: { ...params.ringRpc, ringProgramId: params.ringProgramId },
+      signer: getBase58Decoder().decode(owner) as Address,
+      request: { kind: "merge", digest: mergeRequestDigest(payload) },
+    });
     const ownerSignature = getBase58Decoder().decode(
-      await params.signer.sign(mergeRequestDigest(payload)),
+      await params.signer.sign(request),
     ) as Signature;
     return new PreparedRelay({
       ring: params.ringProgramId,

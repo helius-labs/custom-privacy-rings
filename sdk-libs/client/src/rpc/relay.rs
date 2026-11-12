@@ -1,12 +1,17 @@
+use std::fmt::Write as _;
+
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
+use solana_address::Address;
 use spr_indexer_api::{Base64String, Hash, SerializablePubkey, SerializableSignature};
 use zeroize::Zeroizing;
 
+use super::{ReadTarget, RelayProofInputs};
+
 const RELAY_DOMAIN: &[u8] = b"zolana/ring-rpc-relay";
-const DEPOSIT_REQUEST_DOMAIN: &[u8] = b"zolana/ring-rpc-relay-deposit";
-const MERGE_REQUEST_DOMAIN: &[u8] = b"zolana/ring-rpc-relay-merge";
+const DEPOSIT_REQUEST_DOMAIN: &str = "zolana/ring-rpc-relay-deposit";
+const MERGE_REQUEST_DOMAIN: &str = "zolana/ring-rpc-relay-merge";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,16 +77,53 @@ pub enum RelayIntent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         token_account_setup: Vec<TokenAccountSetup>,
     },
-    /// `proof_inputs` is a deposit rail `RelayProofInputs`, its one funder signs the digest here and the returned message later.
+    /// `proof_inputs` is a deposit rail `RelayProofInputs`, its one funder signs the `RelayRequestAttestation` here and the returned message later.
     Deposit {
         proof_inputs: ProofInputBytes,
         depositor_signature: SerializableSignature,
     },
-    /// `proof_inputs` is a `RelayMergeInputs`, the owner signs its digest here.
+    /// `proof_inputs` is a `RelayMergeInputs`, the owner signs its `RelayRequestAttestation` here.
     Merge {
         proof_inputs: ProofInputBytes,
         owner_signature: SerializableSignature,
     },
+}
+
+/// One ring rpc on one cluster, a relayed deposit or merge names it beside the ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceTarget {
+    /// The genesis hash.
+    pub cluster: [u8; 32],
+    /// The ring rpc's signing key.
+    pub service: Address,
+}
+
+/// One interface transfer of a deposit frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayLeg {
+    pub deposit: bool,
+    pub mint: Address,
+    pub amount: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayRequest {
+    /// `legs` in frame order.
+    Deposit {
+        digest: [u8; 32],
+        legs: Vec<RelayLeg>,
+    },
+    Merge {
+        digest: [u8; 32],
+    },
+}
+
+/// The text a depositor or a merge owner signs, raw Ed25519 over `message`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayRequestAttestation {
+    pub target: ReadTarget,
+    pub signer: Address,
+    pub request: RelayRequest,
 }
 
 /// The fee payer creates the associated token account a withdrawal of `mint` pays.
@@ -193,6 +235,59 @@ impl RelayIntent {
     }
 }
 
+impl ServiceTarget {
+    pub const fn ring(self, ring: Address) -> ReadTarget {
+        ReadTarget {
+            cluster: self.cluster,
+            service: self.service,
+            ring,
+        }
+    }
+}
+
+impl RelayRequestAttestation {
+    /// `proof_inputs` encodes `inputs`.
+    pub fn deposit(
+        target: ReadTarget,
+        depositor: Address,
+        inputs: &RelayProofInputs,
+        proof_inputs: &ProofInputBytes,
+    ) -> Self {
+        Self {
+            target,
+            signer: depositor,
+            request: RelayRequest::Deposit {
+                digest: proof_inputs.deposit_request_digest(),
+                legs: inputs.relay_legs(),
+            },
+        }
+    }
+
+    pub fn merge(target: ReadTarget, owner: Address, proof_inputs: &ProofInputBytes) -> Self {
+        Self {
+            target,
+            signer: owner,
+            request: RelayRequest::Merge {
+                digest: proof_inputs.merge_request_digest(),
+            },
+        }
+    }
+
+    pub fn message(&self) -> Vec<u8> {
+        let (domain, digest, legs) = match &self.request {
+            RelayRequest::Deposit { digest, legs } => (DEPOSIT_REQUEST_DOMAIN, digest, &legs[..]),
+            RelayRequest::Merge { digest } => (MERGE_REQUEST_DOMAIN, digest, &[][..]),
+        };
+        let mut text = format!("{domain}\n{}\nsigner: {}", self.target.lines(), self.signer);
+        for leg in legs {
+            let kind = if leg.deposit { "deposit" } else { "withdrawal" };
+            let _ = write!(text, "\n{kind}: {} {}", leg.mint, leg.amount);
+        }
+        let _ = write!(text, "\nrequest: {}", Hash(*digest).to_base58());
+        text.into_bytes()
+    }
+}
+
 impl PrepareRelayRequest {
     /// SHA-256 over the domain and the request's own serialization, a retry names the same relay.
     pub fn relay_id(&self) -> Result<RelayId, serde_json::Error> {
@@ -219,20 +314,20 @@ impl ProofInputBytes {
         &self.0
     }
 
-    /// The depositor's signature over it spends the relay's proving, it names no quote so a retry keeps it.
+    /// It names no quote, so a retry keeps the depositor's signature.
     pub fn deposit_request_digest(&self) -> [u8; 32] {
         self.request_digest(DEPOSIT_REQUEST_DOMAIN)
     }
 
-    /// The owner's signature over it spends the relay's proving, it names no quote so a retry keeps it.
+    /// It names no quote, so a retry keeps the owner's signature.
     pub fn merge_request_digest(&self) -> [u8; 32] {
         self.request_digest(MERGE_REQUEST_DOMAIN)
     }
 
     /// Every byte the relay would prove from, the secrets among them stay behind SHA-256.
-    fn request_digest(&self, domain: &[u8]) -> [u8; 32] {
+    fn request_digest(&self, domain: &str) -> [u8; 32] {
         Sha256::new()
-            .chain_update(domain)
+            .chain_update(domain.as_bytes())
             .chain_update(&*self.0)
             .finalize()
             .into()

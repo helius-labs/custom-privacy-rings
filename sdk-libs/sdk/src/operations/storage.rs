@@ -16,8 +16,8 @@ use custom_ring_interface::{
     owner_signature::{Ed25519Signatures, OwnerSignature},
     storage::{RegistryId, Revision, StorageRegistry},
     storage_instruction::{
-        tag, ApplyEnrollmentsIxData, ApplyEnrollmentsRequest, AssetWrite, InitializeIxData,
-        RecordWriteClassification, StorageUpdateIxData,
+        tag, ApplyEnrollmentsIxData, ApplyEnrollmentsRequest, AssetWrite, EnrollmentWrite,
+        InitializeIxData, RecordWriteClassification, StorageUpdateIxData,
     },
     tag as ring_tag,
     tracking::TrackingEntry,
@@ -441,33 +441,8 @@ impl EnrollBatch<'_> {
         self,
         client: &RingClient<R, I>,
     ) -> Result<ProvenEnrollBatch, RingError> {
-        // 1. Each write verifies again, a write whose signature fails would refuse the whole batch.
-        let writes_len = self.writes.len() as u64;
-        let writes = self
-            .writes
-            .iter()
-            .map(|request| request.verify(&self.tracking_registry))
-            .collect::<Result<Vec<_>, _>>()?;
-        let signed = writes
-            .iter()
-            .map(|write| write.signed(&self.tracking_registry))
-            .collect::<Result<Vec<_>, _>>()?;
-        let raw: Vec<[u8; 64]> = self
-            .writes
-            .iter()
-            .map(|request| request.signature.0.into())
-            .collect();
-        let signatures: Vec<_> = writes
-            .iter()
-            .zip(&raw)
-            .zip(&signed)
-            .map(|((write, signature), signed)| OwnerSignature {
-                owner: write.owner,
-                signature,
-                message: &signed.message,
-            })
-            .collect();
-        // 2. The apply proof covers the entries in write order from the current root.
+        let writes = self.verified()?;
+        // The apply proof covers the entries in write order from the current root.
         let entries = writes
             .iter()
             .map(|write| Ok(entry_view(&write.entry()?)))
@@ -519,8 +494,49 @@ impl EnrollBatch<'_> {
             new_next_index: statement.new_next_index.to_le_bytes(),
             count: body.count,
         };
-        let data = ApplyEnrollmentsRequest { ix: &ix, writes }.encode();
-        // 3. Storage reads the signatures from the instruction just before the top level one.
+        Ok(ProvenEnrollBatch {
+            instructions: self.instructions(&ix, writes)?,
+            revision,
+        })
+    }
+
+    /// Each write verifies again, a write whose signature fails would refuse the whole batch.
+    pub(crate) fn verified(&self) -> Result<Vec<EnrollmentWrite<'_>>, RingError> {
+        Ok(self
+            .writes
+            .iter()
+            .map(|request| request.verify(&self.tracking_registry))
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The ed25519 precompile instruction, then the ring `EnrollBatch` it must directly precede.
+    pub(crate) fn instructions(
+        &self,
+        ix: &ApplyEnrollmentsIxData,
+        writes: Vec<EnrollmentWrite<'_>>,
+    ) -> Result<[Instruction; 2], RingError> {
+        let writes_len = writes.len() as u64;
+        let signed = writes
+            .iter()
+            .map(|write| write.signed(&self.tracking_registry))
+            .collect::<Result<Vec<_>, _>>()?;
+        let raw: Vec<[u8; 64]> = self
+            .writes
+            .iter()
+            .map(|request| request.signature.0.into())
+            .collect();
+        let signatures: Vec<_> = writes
+            .iter()
+            .zip(&raw)
+            .zip(&signed)
+            .map(|((write, signature), signed)| OwnerSignature {
+                owner: write.owner,
+                signature,
+                message: &signed.message,
+            })
+            .collect();
+        let data = ApplyEnrollmentsRequest { ix, writes }.encode();
+        // Storage reads the signatures from the instruction just before the top level one.
         let precompile = Instruction {
             program_id: ed25519_program::ID,
             accounts: Vec::new(),
@@ -537,10 +553,7 @@ impl EnrollBatch<'_> {
             AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),
         ];
         let batch = ring.ix(accounts, [&[ring_tag::ENROLL_BATCH][..], &data].concat());
-        Ok(ProvenEnrollBatch {
-            instructions: [precompile, batch],
-            revision,
-        })
+        Ok([precompile, batch])
     }
 }
 

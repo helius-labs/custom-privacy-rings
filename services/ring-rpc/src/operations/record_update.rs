@@ -10,11 +10,13 @@ use custom_ring_interface::{
     ListRegistry, RecordWrite, RecordWriteData, RingPolicy, APPLY_BATCH,
 };
 use solana_address::Address;
-use spr_indexer_api::Hash;
 use thiserror::Error;
 use zolana_ring_client::{
     owner_record_key,
-    rpc::{RecordUpdateEntry, RecordUpdateId, SubmitRecordUpdateRequest, AWAITABLE_LISTS},
+    rpc::{
+        RecordUpdateEntry, RecordUpdateError, RecordUpdateId, SubmitRecordUpdateRequest,
+        AWAITABLE_LISTS,
+    },
     storage_apply_proof_inputs,
 };
 use zolana_ring_indexer::rpc::{GetStorageApplyProofInputsResponse, RingListWriteView};
@@ -212,15 +214,12 @@ impl RecordUpdateCheck<'_> {
         if request.update.genesis_hash.0 != *context.genesis_hash {
             return Err(RecordUpdateRefusal::WrongCluster);
         }
-        // 1. The signature binds the cluster, the ring, the registry, the ordered entries and the awaited lists.
-        let hash = request
-            .statement()
-            .and_then(|statement| Ok(statement.hash()?))
-            .map_err(invalid_entry)?;
+        // 1. The signed text names the hash over the cluster, the ring, the registry, the ordered entries and the awaited lists.
+        let id = request.verify().map_err(|error| match error {
+            RecordUpdateError::Signature => RecordUpdateRefusal::Signature,
+            other => invalid_entry(other),
+        })?;
         let signer = request.signer.0;
-        if !request.signature.0.verify(signer.as_ref(), &hash) {
-            return Err(RecordUpdateRefusal::Signature);
-        }
         if context.slot > request.update.valid_until_slot {
             return Err(RecordUpdateRefusal::Expired);
         }
@@ -272,7 +271,7 @@ impl RecordUpdateCheck<'_> {
             return Err(RecordUpdateRefusal::ReaderGrantsInDatabase);
         }
         Ok(CheckedUpdate {
-            id: RecordUpdateId(Hash(hash)),
+            id,
             writes,
             entries: queued,
             signer: update_signer,

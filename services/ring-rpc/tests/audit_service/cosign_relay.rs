@@ -315,7 +315,12 @@ impl CappedRelay {
             .module
             .call(
                 PREPARE_RELAY,
-                as_object(deposit_request(self.quote.clone(), RING, depositor, amount)),
+                as_object(deposit_request(
+                    target(RING),
+                    self.quote.clone(),
+                    depositor,
+                    amount,
+                )),
             )
             .await
             .expect("prepared deposit");

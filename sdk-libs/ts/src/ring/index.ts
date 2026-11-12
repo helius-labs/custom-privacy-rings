@@ -288,6 +288,7 @@ export type {
   AuthorityTransfer,
   PolicyAuthorityAuth,
   CreateRecordsRegistryRequest,
+  RegisterEnrollmentRingRequest,
   GetPendingListApprovalsRequest,
   PendingListApproval,
   PendingListApprovalsPage,
@@ -506,6 +507,7 @@ export {
   policyAuthorityAttestation,
   messageSignerReader,
   readerGrantAttestation,
+  relayRequestAttestation,
   ringReadAttestation,
   walletStatusAttestation,
   walletSnapshotReleaseAttestation,
@@ -513,6 +515,7 @@ export {
   delegateNotesAttestation,
   delegateSnapshotReleaseAttestation,
   signCreateRecordsRegistryRequest,
+  signRegisterEnrollmentRingRequest,
   signPendingListApprovalsRequest,
   signRefuseListApprovalRequest,
 } from "../rpc/ring-rpc.js";
@@ -520,9 +523,12 @@ export type {
   DelegateNotesAttestationInput,
   ListApprovalTarget,
   PolicyAuthorityAction,
+  RelayRequest,
   RingReaderGrant,
+  RingServiceTarget,
   WalletStatusAttestationInput,
 } from "../rpc/ring-rpc.js";
+export type { RelayLeg } from "../protocol/ring-rpc/relay-proof-inputs.js";
 export type {
   AuditedMergesPage,
   AuditedRingMerge,
@@ -540,6 +546,7 @@ export type {
   RingDepositsPage,
   RingKeyMode,
   RingPagedRead,
+  RingReaderGrantMode,
   RingReadSigner,
   RingReadTarget,
   RingRpcHealth,
@@ -627,9 +634,9 @@ export { privateListKey, publicListKey } from "../protocol/membership/private-li
 export { listSaltOf, listTagOf } from "../crypto/keys/list-salt.js";
 export {
   ENROLLMENT_BATCH,
-  ENROLLMENT_SIGNATURE_LABEL,
+  ENROLLMENT_SIGNATURE_DOMAIN,
   EnrollmentKind,
-  SIGNED_MESSAGE_LEN,
+  SIGNED_MESSAGE_MAX_LEN,
   encodeEnrollmentRecord,
   encodeEnrollmentWrite,
   signedWrite,
@@ -681,7 +688,7 @@ export type {
   TrackingRecordPoolRequest,
   TrackingSeal,
 } from "../protocol/indexer/tracking-codec.js";
-export { ownerGrantPda } from "../protocol/pda/index.js";
+export { STORAGE_PROGRAM_ID, ownerGrantPda } from "../protocol/pda/index.js";
 export type { ReplyMetadata } from "../protocol/codec/anonymous-delivery.js";
 export {
   checkCoOwnerKeys,

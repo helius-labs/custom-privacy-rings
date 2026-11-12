@@ -1,19 +1,17 @@
 //! The ring's sole enrollment writer, it holds owner-signed writes and lands them as `EnrollBatch` batches.
 //!
-//! An owner hands over one signed write, a first enrollment with its `RegisterKey` proof or a
-//! rotation. The writer admits a write only once its signature, its fields and its proof pass the
-//! checks storage runs, so a held write never refuses a batch it rides in. Each ring runs on its own
-//! task under the shared bound of `keyed_tasks`, so a ring whose proof stalls holds one slot and never
-//! the batch of another ring.
+//! The writer serves each ring the operator names and each ring its policy role registers. An owner
+//! hands over one signed write, a first enrollment with its `RegisterKey` proof or a rotation. The
+//! writer admits a write only once its signature, its fields and its proof pass the checks storage
+//! runs, so a held write never refuses a batch it rides in. Each ring runs on its own task under the
+//! shared bound of `keyed_tasks`, so a ring whose proof stalls holds one slot and never the batch of
+//! another ring.
 //!
 //! Read after `sdk-libs/client/src/rpc/enrollment.rs` and `sdk-libs/sdk/src/operations/storage.rs`.
 
 use std::{
-    collections::{HashMap, VecDeque},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex, PoisonError,
-    },
+    collections::{HashMap, HashSet, VecDeque},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::Duration,
 };
 
@@ -34,6 +32,9 @@ use tokio::sync::Mutex as AsyncMutex;
 use zolana_ring_client::rpc::{SubmitEnrollmentRequest, SubmitEnrollmentResponse};
 
 use crate::{
+    authorize::Unauthorized,
+    database::Store,
+    enrollment_rings::EnrollmentRingBook,
     error::{redacted, RingRpcError},
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
     landing::{signature_fees, Attempt, ChainOutcome, Landing},
@@ -50,7 +51,7 @@ pub const MAX_ENROLLMENT_ATTEMPTS: u8 = 3;
 pub enum EnrollmentRefusal {
     #[error("enrollments are not written for the ring")]
     NotServed = -32180,
-    #[error("the ring holds no initialized policy or tracking registry")]
+    #[error("the ring holds no initialized policy or tracking registry, or names another writer")]
     RingMissing = -32181,
     #[error("the enrollment write is malformed or its signature does not verify")]
     InvalidWrite = -32182,
@@ -60,15 +61,21 @@ pub enum EnrollmentRefusal {
         "the ring holds {MAX_HELD_ENROLLMENTS} enrollments, submit again after its next batch"
     )]
     Full = -32184,
-    #[error("the enrollment writer's fee budget is spent, the operator raises it")]
+    #[error("the enrollment writer's fee budget or the ring's share of it is spent, the operator raises it")]
     Budget = -32185,
+    #[error("the enrollment writer serves its most registered rings, the operator raises the cap")]
+    RingsFull = -32186,
 }
 
-/// Applies the held writes of each named ring, the payer is the ring's `EnrollmentWriter`.
+/// Applies the held writes of each served ring, the payer is the ring's `EnrollmentWriter`.
 pub struct EnrollmentApplier {
     chain: Arc<dyn StorageChain>,
     payer: Keypair,
-    rings: Vec<Address>,
+    /// Served without a registration and never dropped.
+    named: Vec<Address>,
+    registered: Mutex<HashSet<Address>>,
+    max_rings: usize,
+    store: Option<Store>,
     budget: EnrollmentBudget,
     held: Mutex<HashMap<Address, Arc<AsyncMutex<RingState>>>>,
 }
@@ -79,12 +86,31 @@ pub struct EnrollmentApplierParts {
     pub payer: Keypair,
     pub rings: Vec<Address>,
     pub budget_lamports: u64,
+    pub ring_budget_lamports: u64,
+    /// Registered rings, the named rings stay outside it.
+    pub max_rings: usize,
+    /// Keeps the registered rings across a restart.
+    pub store: Option<Store>,
 }
 
-/// Charged at send, a batch that never lands keeps its charge.
+/// Charged at send over the process life, a batch that never lands keeps its charge.
 struct EnrollmentBudget {
     total: u64,
-    spent: AtomicU64,
+    per_ring: u64,
+    spent: Mutex<SpentFees>,
+}
+
+#[derive(Default)]
+struct SpentFees {
+    total: u64,
+    rings: HashMap<Address, u64>,
+}
+
+/// The writer role a batch pass reads from the ring policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WriterRole {
+    Held,
+    Moved,
 }
 
 #[derive(Default)]
@@ -107,8 +133,10 @@ struct InFlight {
     writes: Vec<HeldWrite>,
 }
 
-/// One ring's tracking registry as its policy pins it.
+/// One ring's roles and tracking registry as its policy pins them.
 struct RingTracking {
+    policy: Address,
+    writer: Address,
     registry: Address,
     account: TrackingRegistry,
 }
@@ -118,21 +146,36 @@ struct RingPass<'a> {
     payer: &'a Keypair,
     budget: &'a EnrollmentBudget,
     ring: CustomRing,
+    /// A registered ring ends its pass once its policy names another writer.
+    registered: bool,
     state: &'a mut RingState,
 }
 
 impl EnrollmentApplierParts {
-    pub fn applier(self) -> EnrollmentApplier {
-        EnrollmentApplier {
+    /// Loads the registered rings from the store.
+    pub async fn applier(self) -> Result<EnrollmentApplier, RingRpcError> {
+        let registered = match &self.store {
+            Some(store) => {
+                EnrollmentRingBook::new(store.connection(), self.payer.pubkey())
+                    .rings()
+                    .await?
+            }
+            None => Vec::new(),
+        };
+        Ok(EnrollmentApplier {
             chain: self.chain,
             payer: self.payer,
-            rings: self.rings,
+            named: self.rings,
+            registered: Mutex::new(registered.into_iter().collect()),
+            max_rings: self.max_rings,
+            store: self.store,
             budget: EnrollmentBudget {
                 total: self.budget_lamports,
-                spent: AtomicU64::new(0),
+                per_ring: self.ring_budget_lamports,
+                spent: Mutex::default(),
             },
             held: Mutex::default(),
-        }
+        })
     }
 }
 
@@ -142,19 +185,40 @@ impl EnrollmentBudget {
         signature_fees(writes.saturating_add(1))
     }
 
-    fn holds(&self, fee: u64) -> bool {
-        self.spent
-            .load(Ordering::Relaxed)
-            .checked_add(fee)
-            .is_some_and(|spent| spent <= self.total)
+    fn holds(&self, ring: Address, fee: u64) -> bool {
+        self.spent().after(ring, fee, self).is_some()
     }
 
-    fn charge(&self, fee: u64) -> bool {
-        self.spent
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |spent| {
-                spent.checked_add(fee).filter(|spent| *spent <= self.total)
-            })
-            .is_ok()
+    fn charge(&self, ring: Address, fee: u64) -> bool {
+        let mut spent = self.spent();
+        let Some((total, ring_total)) = spent.after(ring, fee, self) else {
+            return false;
+        };
+        spent.total = total;
+        spent.rings.insert(ring, ring_total);
+        true
+    }
+
+    fn spent(&self) -> MutexGuard<'_, SpentFees> {
+        self.spent.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl SpentFees {
+    /// The total and the ring's spend once `fee` is charged, `None` past either cap.
+    fn after(&self, ring: Address, fee: u64, budget: &EnrollmentBudget) -> Option<(u64, u64)> {
+        let total = self
+            .total
+            .checked_add(fee)
+            .filter(|total| *total <= budget.total)?;
+        let ring_total = self
+            .rings
+            .get(&ring)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(fee)
+            .filter(|spent| *spent <= budget.per_ring)?;
+        Some((total, ring_total))
     }
 }
 
@@ -163,22 +227,65 @@ impl EnrollmentApplier {
         self.payer.pubkey()
     }
 
+    /// A zero budget or ring budget refuses every write.
+    pub const fn writes(&self) -> bool {
+        self.budget.total > 0 && self.budget.per_ring > 0
+    }
+
+    /// Serves the ring once its policy role signed and its policy names the payer as `EnrollmentWriter`.
+    pub async fn register(&self, ring: Address, signer: Address) -> Result<(), RingRpcError> {
+        let tracking = ring_tracking(self.chain.as_ref(), ring)
+            .await?
+            .ok_or(EnrollmentRefusal::RingMissing)?;
+        if tracking.policy != signer {
+            return Err(Unauthorized::NotPolicyAuthority.into());
+        }
+        if tracking.writer != self.payer.pubkey() {
+            return Err(EnrollmentRefusal::RingMissing.into());
+        }
+        if self.named.contains(&ring) {
+            return Ok(());
+        }
+        {
+            let mut registered = self.registered();
+            if registered.contains(&ring) {
+                return Ok(());
+            }
+            if registered.len() >= self.max_rings {
+                return Err(EnrollmentRefusal::RingsFull.into());
+            }
+            registered.insert(ring);
+        }
+        if let Some(book) = self.book() {
+            if let Err(error) = book.insert(ring).await {
+                self.registered().remove(&ring);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
     /// Holds the write once every check storage runs on it passes.
     pub async fn submit(
         &self,
         request: SubmitEnrollmentRequest,
     ) -> Result<SubmitEnrollmentResponse, RingRpcError> {
         let ring = request.ring.0;
-        if !self.rings.contains(&ring) {
+        let named = self.named.contains(&ring);
+        if !named && !self.registered().contains(&ring) {
             return Err(EnrollmentRefusal::NotServed.into());
         }
-        if !self.budget.holds(EnrollmentBudget::batch_fee(1)) {
+        if !self.budget.holds(ring, EnrollmentBudget::batch_fee(1)) {
             return Err(EnrollmentRefusal::Budget.into());
         }
         // 1. The registry the ring pins, its ring id and auditor key bind every proof.
         let tracking = ring_tracking(self.chain.as_ref(), ring)
             .await?
             .ok_or(EnrollmentRefusal::RingMissing)?;
+        if !named && tracking.writer != self.payer.pubkey() {
+            self.unregister(ring).await;
+            return Err(EnrollmentRefusal::RingMissing.into());
+        }
         // 2. The write parses exactly, passes the field checks and carries its owner's signature.
         let write = request
             .verify(&tracking.registry)
@@ -225,17 +332,60 @@ impl EnrollmentApplier {
         let mut ticks = tokio::time::interval(interval);
         loop {
             ticks.tick().await;
-            rings.spawn_idle(self.rings.iter().copied(), |ring| {
+            rings.spawn_idle(self.served(), |ring| {
                 let applier = self.clone();
                 async move { applier.apply_logged(ring).await }
             });
         }
     }
 
-    /// One pass over the named rings in turn, a failing ring never holds up another.
+    /// One pass over the served rings in turn, a failing ring never holds up another.
     pub async fn flush(&self) {
-        for ring in &self.rings {
-            self.apply_logged(*ring).await;
+        for ring in self.served() {
+            self.apply_logged(ring).await;
+        }
+    }
+
+    fn served(&self) -> Vec<Address> {
+        let mut rings = self.named.clone();
+        rings.extend(
+            self.registered()
+                .iter()
+                .filter(|ring| !self.named.contains(ring)),
+        );
+        rings
+    }
+
+    fn registered(&self) -> MutexGuard<'_, HashSet<Address>> {
+        self.registered
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn book(&self) -> Option<EnrollmentRingBook<'_>> {
+        self.store
+            .as_ref()
+            .map(|store| EnrollmentRingBook::new(store.connection(), self.payer.pubkey()))
+    }
+
+    /// Drops a registered ring and its held writes, a failed delete drops it again after a restart.
+    async fn unregister(&self, ring: Address) {
+        if !self.registered().remove(&ring) {
+            return;
+        }
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&ring);
+        warn!("enrollment writer dropped ring {ring}, its policy names another writer");
+        let Some(book) = self.book() else {
+            return;
+        };
+        if let Err(error) = book.remove(ring).await {
+            warn!(
+                "enrollment writer kept the row of ring {ring} because {}",
+                redacted(&error)
+            );
         }
     }
 
@@ -250,13 +400,18 @@ impl EnrollmentApplier {
             payer: &self.payer,
             budget: &self.budget,
             ring: CustomRing::new(ring),
+            registered: !self.named.contains(&ring),
             state: &mut state,
         };
-        if let Err(error) = pass.run().await {
-            warn!(
+        let role = pass.run().await;
+        drop(state);
+        match role {
+            Ok(WriterRole::Held) => {}
+            Ok(WriterRole::Moved) => self.unregister(ring).await,
+            Err(error) => warn!(
                 "enrollment batch of ring {ring} failed because {}",
                 redacted(&error)
-            );
+            ),
         }
     }
 
@@ -271,13 +426,13 @@ impl EnrollmentApplier {
 }
 
 impl RingPass<'_> {
-    async fn run(mut self) -> Result<(), RingRpcError> {
+    async fn run(mut self) -> Result<WriterRole, RingRpcError> {
         // 1. One batch at a time, a second proof from the same root could not land.
         if let Some(in_flight) = self.state.in_flight.take() {
             match in_flight.attempt.landing(self.chain).await? {
                 Landing::Pending => {
                     self.state.in_flight = Some(in_flight);
-                    return Ok(());
+                    return Ok(WriterRole::Held);
                 }
                 Landing::Landed(ChainOutcome::Confirmed { .. }) => {}
                 Landing::Landed(ChainOutcome::Failed { .. }) | Landing::Expired => {
@@ -286,19 +441,22 @@ impl RingPass<'_> {
             }
         }
         if self.state.queued.is_empty() {
-            return Ok(());
+            return Ok(WriterRole::Held);
         }
         let Some(tracking) = ring_tracking(self.chain, self.ring.program_id()).await? else {
-            return Ok(());
+            return Ok(WriterRole::Held);
         };
+        if self.registered && tracking.writer != self.payer.pubkey() {
+            return Ok(WriterRole::Moved);
+        }
         // 2. The program refuses a batch that would evict a root inside its grace, waiting spends no proof.
         let slot = self.chain.slot().await?;
         if slot < tracking.account.roots[TRACKING_ROOT_HISTORY - 1].expires_at() {
-            return Ok(());
+            return Ok(WriterRole::Held);
         }
         let writes = self.applicable(tracking.registry).await?;
         if writes.is_empty() {
-            return Ok(());
+            return Ok(WriterRole::Held);
         }
         let requests: Vec<_> = writes.iter().map(|held| held.request.clone()).collect();
         // 3. Proving takes long, a batch landed meanwhile moves the root and leaves the proof unsent.
@@ -321,9 +479,10 @@ impl RingPass<'_> {
         let current = ring_tracking(self.chain, self.ring.program_id()).await?;
         if current.is_none_or(|current| current.account.newest().revision != proven.revision) {
             self.requeue(writes);
-            return Ok(());
+            return Ok(WriterRole::Held);
         }
-        self.send(proven, writes).await
+        self.send(proven, writes).await?;
+        Ok(WriterRole::Held)
     }
 
     async fn send(
@@ -331,10 +490,10 @@ impl RingPass<'_> {
         proven: ProvenEnrollBatch,
         writes: Vec<HeldWrite>,
     ) -> Result<(), RingRpcError> {
-        if !self
-            .budget
-            .charge(EnrollmentBudget::batch_fee(writes.len()))
-        {
+        if !self.budget.charge(
+            self.ring.program_id(),
+            EnrollmentBudget::batch_fee(writes.len()),
+        ) {
             self.requeue(writes);
             return Err(EnrollmentRefusal::Budget.into());
         }
@@ -416,6 +575,8 @@ async fn ring_tracking(
         .await?
         .and_then(|account| TrackingRegistry::decode(&account.owner, &account.data));
     Ok(account.map(|account| RingTracking {
+        policy: policy.roles.policy,
+        writer: policy.roles.enrollment_writer,
         registry: policy.tracking,
         account,
     }))

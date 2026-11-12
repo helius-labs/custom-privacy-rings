@@ -171,6 +171,8 @@ export interface StagedTransfer {
   /** One per deposit leg in leg order, each funder signs. */
   readonly deposits?: readonly TransactDeposit[];
   readonly withdrawal?: TransactWithdrawal;
+  /** The owner of the withdrawal's token account, named while the transaction creates it. */
+  readonly withdrawalOwner?: Address;
   /** Empty unless the caller sets them. */
   readonly extensions?: FrameExtensions;
   /** The frame discloses its totals under it, the digest waits for the selected key's `N`. */
@@ -395,6 +397,11 @@ export function sealedTransferTerms(
   });
 }
 
+/** A missing withdrawal token account reads as the associated account of this owner. */
+function tokenOwnerHint(owner: Address | undefined): Readonly<{ tokenOwnerHint?: Address }> {
+  return owner === undefined ? {} : { tokenOwnerHint: owner };
+}
+
 /** The key a staged transfer selects, every stream counter follows it. */
 async function selectStagedKey(input: StagedTransferInput, context: RequestContext | undefined) {
   const { client, config, staged } = input;
@@ -410,9 +417,7 @@ async function selectStagedKey(input: StagedTransferInput, context: RequestConte
     proofInputs: staged.proofInputs,
     publicSlots: publicSlots(transfers),
     listSalts: input.listSalts ?? [],
-    ...(spend.anonymous?.tokenOwner === undefined
-      ? {}
-      : { tokenOwnerHint: spend.anonymous.tokenOwner }),
+    ...tokenOwnerHint(spend.anonymous?.tokenOwner ?? staged.withdrawalOwner),
   };
   const demand = await policyDemand({ ...demandInput, rows: liveRows }, context);
   const shape = staged.proofInputs.checkShape();

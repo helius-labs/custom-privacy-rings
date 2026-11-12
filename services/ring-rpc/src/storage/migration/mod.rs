@@ -10,12 +10,15 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(Schema)]
+        vec![Box::new(Schema), Box::new(EnrollmentRings)]
     }
 }
 
 #[derive(DeriveMigrationName)]
 struct Schema;
+
+/// Named by hand, a derived name is the file stem `Schema` already holds.
+struct EnrollmentRings;
 
 const TABLES: [&str; 24] = [
     "records_update_members",
@@ -123,6 +126,37 @@ impl MigrationTrait for Schema {
                 .execute_unprepared(&format!("DROP TABLE {table}"))
                 .await?;
         }
+        Ok(())
+    }
+}
+
+impl MigrationName for EnrollmentRings {
+    fn name(&self) -> &str {
+        "enrollment_rings"
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationTrait for EnrollmentRings {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let blob = match manager.get_database_backend() {
+            DatabaseBackend::Postgres => "BYTEA",
+            _ => "BLOB",
+        };
+        manager
+            .get_connection()
+            .execute_unprepared(&format!(
+                "CREATE TABLE enrollment_rings (writer {blob} NOT NULL, ring {blob} NOT NULL, PRIMARY KEY(writer, ring))"
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute_unprepared("DROP TABLE enrollment_rings")
+            .await?;
         Ok(())
     }
 }

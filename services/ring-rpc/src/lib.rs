@@ -22,6 +22,8 @@ mod cosign_usage;
 mod database;
 #[path = "operations/enrollment_applier.rs"]
 mod enrollment_applier;
+#[path = "storage/enrollment_rings.rs"]
+mod enrollment_rings;
 mod error;
 #[path = "operations/escrow_merge.rs"]
 mod escrow_merge;
@@ -33,6 +35,8 @@ mod frame_repairs;
 mod grant_rows;
 #[path = "security/grants.rs"]
 mod grants;
+#[path = "rpc/health.rs"]
+mod health;
 #[path = "operations/hub.rs"]
 mod hub;
 #[path = "operations/keyed_tasks.rs"]

@@ -28,7 +28,10 @@ use spr_transaction::{
     instructions::transact::ConfidentialTransaction, Data, Mint, SppProofOutputUtxo, Utxo,
     SOL_ASSET_ID, SOL_MINT,
 };
-use zolana_ring_client::rpc::{PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayQuote};
+use zolana_ring_client::rpc::{
+    PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayQuote, RelayRequestAttestation,
+    ServiceTarget,
+};
 use zolana_ring_keys::RingAddress;
 use zolana_ring_policy::Member;
 
@@ -179,9 +182,10 @@ impl<'a> RingDeposit<'a> {
     pub async fn prepare_relay(
         &self,
         rpc: &(impl AsyncRpc + ?Sized),
+        service: ServiceTarget,
         quote: RelayQuote,
     ) -> Result<PreparedRelay, RingError> {
-        self.batch().prepare_relay(rpc, quote).await
+        self.batch().prepare_relay(rpc, service, quote).await
     }
 
     pub async fn send<R: AsyncRpc + SignatureHistory, I: RingIndexerBackend>(
@@ -213,10 +217,11 @@ impl<'a> RingDepositBatch<'a> {
         self.prepare_paid(rpc, self.payer.pubkey()).await
     }
 
-    /// Ring RPC's fee payer pays, the depositor signs the request digest now and its legs later.
+    /// Ring RPC's fee payer pays, the depositor signs the request now and its legs later.
     pub async fn prepare_relay(
         &self,
         rpc: &(impl AsyncRpc + ?Sized),
+        service: ServiceTarget,
         quote: RelayQuote,
     ) -> Result<PreparedRelay, RingError> {
         let fee_payer = quote.fee_payer.0;
@@ -231,10 +236,13 @@ impl<'a> RingDepositBatch<'a> {
             DepositTransfer::Anonymous(transfer) => transfer.deposit_relay(rpc).await?,
         };
         let proof_inputs = ProofInputBytes::new(inputs.encode()?);
-        let depositor_signature = self
-            .payer
-            .try_sign_message(&proof_inputs.deposit_request_digest())?
-            .into();
+        let attestation = RelayRequestAttestation::deposit(
+            service.ring(self.ring.program_id()),
+            self.payer.pubkey(),
+            &inputs,
+            &proof_inputs,
+        );
+        let depositor_signature = self.payer.try_sign_message(&attestation.message())?.into();
         Ok(PreparedRelay::new(PrepareRelayRequest {
             ring: SerializablePubkey(self.ring.program_id()),
             quote,

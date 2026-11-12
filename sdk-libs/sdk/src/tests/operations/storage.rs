@@ -72,3 +72,60 @@ fn a_private_write_reads_the_pinned_tracking_registry() {
     );
     assert!(!accounts[2].is_writable && !accounts[2].is_signer);
 }
+
+/// Ring RPC sends this transaction with its writer as the fee payer, each text at its widest.
+#[test]
+fn a_full_batch_of_first_enrollments_fits_one_transaction() {
+    use custom_ring_interface::{
+        compute_unit_limit,
+        storage_instruction::{ENROLLMENT_BATCH, SIGNED_MESSAGE_MAX_LEN},
+        CustomRingProof, InstructionTag,
+    };
+    use solana_message::v1::MAX_TRANSACTION_SIZE;
+    use solana_signer::Signer;
+    use spr_client::ComputeBudgetConfig;
+
+    use crate::{
+        tests::support::{keypair, ServedLeaf},
+        FitSigners, OwnedChange, OwnerEnrollment, TransactionFit,
+    };
+
+    let requests: Vec<_> = (0..ENROLLMENT_BATCH as u8)
+        .map(|seed| {
+            let owner = keypair(seed + 90);
+            let leaf = ServedLeaf::sealed(owner.pubkey(), &owner.nullifier_key, &[8; 32]);
+            OwnerEnrollment {
+                ring: ring(),
+                tracking_registry: TRACKING,
+                owner: owner.pubkey(),
+                change: OwnedChange::Enroll {
+                    ix: leaf.enroll(),
+                    proof: Box::new(CustomRingProof::zeroed()),
+                },
+            }
+            .sign(&owner)
+            .unwrap()
+        })
+        .collect();
+    let batch = EnrollBatch {
+        ring: ring(),
+        writer: AUTHORITY,
+        tracking_registry: TRACKING,
+        writes: &requests,
+    };
+    let writes = batch.verified().unwrap();
+    let widening: usize = writes
+        .iter()
+        .map(|write| SIGNED_MESSAGE_MAX_LEN - write.signed(&TRACKING).unwrap().message.len())
+        .sum();
+    let [precompile, enroll] = batch
+        .instructions(&ApplyEnrollmentsIxData::zeroed(), writes)
+        .unwrap();
+    let fit = TransactionFit::of(
+        &enroll,
+        FitSigners::new(AUTHORITY).with_setup(core::slice::from_ref(&precompile)),
+        ComputeBudgetConfig::new(compute_unit_limit(InstructionTag::EnrollBatch)),
+    )
+    .unwrap();
+    assert!(fit.bytes + widening <= MAX_TRANSACTION_SIZE);
+}

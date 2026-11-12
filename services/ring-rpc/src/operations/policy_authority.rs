@@ -1,12 +1,14 @@
 //! The Ring RPC methods the ring policy authority signs.
-//! Read `record_update` after for the pending state, and `record_writer` for how an approval lands.
+//! Read `record_update` after for the pending state, `record_writer` for how an approval lands, and
+//! `enrollment_applier` for the rings a registration serves.
 
 use solana_address::Address;
 use zolana_ring_client::rpc::{
     CreateRecords, CreateRecordsRegistryRequest, CreateRecordsRegistryResponse,
     GetPendingListApprovalsRequest, GetPendingListApprovalsResponse, ListPendingApprovals,
     PolicyAuthorityAction, PolicyAuthorityAttestation, PolicyAuthorityAuth, ReadTarget,
-    RecordUpdateStatus, RefuseListApproval, RefuseListApprovalRequest,
+    RecordUpdateStatus, RefuseListApproval, RefuseListApprovalRequest, RegisterEnrollment,
+    RegisterEnrollmentRingRequest, RegisterEnrollmentRingResponse,
 };
 
 use crate::{
@@ -66,6 +68,23 @@ impl<S: TransactionSource> Hub<S> {
             registry: writer.create_records(ring).await?.into(),
             storage_authority: writer.authority().into(),
         })
+    }
+
+    /// The policy authority alone, the signed action names this service's enrollment writer.
+    pub async fn register_enrollment_ring(
+        &self,
+        request: &RegisterEnrollmentRingRequest,
+    ) -> Result<RegisterEnrollmentRingResponse, RingRpcError> {
+        let ring = request.ring.0;
+        let applier = self.enrollment_applier()?;
+        let action = RegisterEnrollment {
+            writer: applier.payer(),
+        };
+        let authority = self
+            .authorize_policy_action(ring, &request.auth, action)
+            .await?;
+        applier.register(ring, authority).await?;
+        Ok(RegisterEnrollmentRingResponse {})
     }
 
     /// Signature and nonce only, the writer checks the policy authority.

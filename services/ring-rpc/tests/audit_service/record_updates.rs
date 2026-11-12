@@ -464,19 +464,7 @@ fn signed_until(
 }
 
 fn signed_update(signer: &Keypair, update: RecordUpdate) -> SubmitRecordUpdateRequest {
-    let mut request = SubmitRecordUpdateRequest {
-        registry: REGISTRY.into(),
-        update,
-        signer: signer.pubkey().into(),
-        signature: Signature::default().into(),
-    };
-    let hash = request
-        .statement()
-        .expect("statement")
-        .hash()
-        .expect("statement hash");
-    request.signature = signer.sign_message(&hash).into();
-    request
+    update.sign(REGISTRY, signer).expect("sign")
 }
 
 /// An update pending list approval that sets ring-viewing on the wallet's own record.
@@ -517,6 +505,29 @@ async fn an_update_pending_approval_past_its_window_is_refused() {
     assert_eq!(
         refusal(records.submit(late).await),
         RecordUpdateRefusal::ListApprovalWindow.code()
+    );
+}
+
+#[tokio::test]
+async fn a_signature_over_the_bare_statement_hash_is_refused_and_one_over_its_text_admitted() {
+    let records = Records::new().await;
+    let member = [0x0c; 32];
+    let text = signed(&authority(), vec![list_write(member, ListId::Allow)]);
+    let statement = text.statement().expect("statement");
+    let mut bare = text.clone();
+    bare.signature = authority()
+        .sign_message(&statement.hash().expect("hash"))
+        .into();
+
+    assert_eq!(
+        refusal(records.submit(bare).await),
+        RecordUpdateRefusal::Signature.code()
+    );
+    let admitted = records.submit(text).await.expect("admitted");
+    assert_eq!(
+        admitted.update_id,
+        statement.id().expect("id"),
+        "the update keeps its statement hash as its id"
     );
 }
 

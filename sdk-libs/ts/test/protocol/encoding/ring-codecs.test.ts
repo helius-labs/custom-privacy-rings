@@ -248,7 +248,14 @@ describe("ring rpc gateway", () => {
       calls.push({ url: new URL(String(input)), method: body["method"] });
       const result =
         body["method"] === "health"
-          ? { mode: "derived", servicePubkey: addressOf(22) }
+          ? {
+              mode: "derived",
+              servicePubkey: addressOf(22),
+              relay: false,
+              recordWriter: false,
+              enrollmentWrites: false,
+              readerGrants: "tree",
+            }
           : { ringProgramId: addressOf(7), state: "uninitialized", servicePubkey: addressOf(22) };
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), JSON_HEADERS);
     });
@@ -1372,6 +1379,28 @@ describe("ring read request", () => {
     expect(RUST_PAYLOAD_ERRORS.kinds).toEqual(RING_PAYLOAD_ERROR_KINDS);
     const item = await readItem(erroredItem(RUST_PAYLOAD_ERRORS.commitment_and_disclosure));
     expect(item.payloadErrors).toEqual(RUST_PAYLOAD_ERRORS.commitment_and_disclosure);
+  });
+
+  it("reads a kept record beside the payload error of its slot", async () => {
+    const item = await readItem(
+      erroredItem([
+        { slotIndex: 1, kind: "payload" },
+        { slotIndex: 2, kind: "disclosure" },
+        { slotIndex: 5, kind: "commitment" },
+      ]),
+    );
+    expect(item.outputs.map((output) => output.slotIndex)).toEqual([0, 1, 3, 4]);
+    expect(item.payloadErrors.map((error) => error.slotIndex)).toEqual([1, 2, 5]);
+  });
+
+  it("refuses one slot twice among the outputs", async () => {
+    const item = erroredItem(RUST_PAYLOAD_ERRORS.commitment_and_disclosure);
+    const outputs = item["outputs"] as Record<string, unknown>[];
+    outputs[1] = { ...outputs[1], slotIndex: 0 };
+    await expect(readItem(item)).rejects.toMatchObject({
+      code: "RING_RPC",
+      details: { path: "outputs" },
+    });
   });
 
   it.each<readonly [string, readonly unknown[]]>([

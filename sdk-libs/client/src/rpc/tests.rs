@@ -780,23 +780,40 @@ fn signed_wallet_update() -> SubmitRecordUpdateRequest {
     .expect("sign")
 }
 
-/// The TypeScript signer writes the same wire bytes.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordUpdateVector {
+    message: String,
+    wire: String,
+    update_id: RecordUpdateId,
+}
+
+fn record_update_message(request: &SubmitRecordUpdateRequest) -> String {
+    let message = request
+        .statement()
+        .expect("statement")
+        .message(&request.signer.0)
+        .expect("message");
+    String::from_utf8(message).expect("text")
+}
+
+/// The TypeScript signer writes the same text and wire bytes.
 #[test]
 fn a_signed_wallet_update_verifies_from_the_shared_vector() {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Vector {
-        wire: String,
-        update_id: RecordUpdateId,
-    }
-    let vector: Vector = serde_json::from_str(include_str!(
+    let vector: RecordUpdateVector = serde_json::from_str(include_str!(
         "../../../../test-vectors/rpc/record_update.json"
     ))
     .expect("vector");
     let signed = signed_wallet_update();
+    assert_eq!(record_update_message(&signed), vector.message);
     assert_eq!(serde_json::to_string(&signed).expect("json"), vector.wire);
     let read: SubmitRecordUpdateRequest = serde_json::from_str(&vector.wire).expect("read");
     assert_eq!(read.verify(), Ok(vector.update_id));
+    // A wallet signs the text, a signature over the bare statement hash never verifies.
+    let mut bare = read.clone();
+    let hash = bare.statement().expect("statement").hash().expect("hash");
+    bare.signature = Keypair::new_from_array([7; 32]).sign_message(&hash).into();
+    assert_eq!(bare.verify(), Err(RecordUpdateError::Signature));
     // The signature covers the slot bound, a later one names another statement.
     let mut extended = read;
     extended.update.valid_until_slot += 1;
@@ -820,6 +837,7 @@ fn write_record_update_vectors() {
         );
         let mut vector: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("vector");
+        vector["message"] = record_update_message(&signed).into();
         vector["wire"] = serde_json::to_string(&signed).expect("json").into();
         vector["updateId"] = serde_json::to_value(signed.verify().expect("verify")).expect("id");
         let json = serde_json::to_string_pretty(&vector).expect("json") + "\n";
@@ -1308,6 +1326,103 @@ fn relay_merge_inputs_encode_to_the_shared_vector() {
     assert_eq!(read.inputs[0].nullifier, spend.nullifier);
 }
 
+/// The TypeScript `relayRequestAttestation` writes the same text. `UPDATE_RING_VECTORS=1` rewrites it.
+#[test]
+fn relay_request_attestations_match_the_shared_vector() {
+    use spr_instruction::instruction::{
+        TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
+    };
+    use spr_transaction::{instructions::transact::SettlementTransfer, utxo::SppProofInputUtxo};
+    let file = "relay_request_attestation.json";
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../test-vectors/rpc/relay_request_attestation.json"
+    ))
+    .expect("vector");
+    let merge_vector: PayloadVector = serde_json::from_str(include_str!(
+        "../../../../test-vectors/rpc/relay_merge_inputs.json"
+    ))
+    .expect("vector");
+    let stored = |pointer: &str| {
+        vector
+            .pointer(pointer)
+            .and_then(|value| value.as_str())
+            .expect("field")
+            .to_owned()
+    };
+    let readable = |message: &[u8]| {
+        let text = String::from_utf8(message.to_vec()).expect("utf8");
+        assert!(text
+            .bytes()
+            .all(|byte| byte == b'\n' || (b' '..=b'~').contains(&byte)));
+        assert!(!text.ends_with('\n'));
+        text
+    };
+    let target = ReadTarget {
+        ring: Address::new_from_array([6; 32]),
+        ..target()
+    };
+    let depositor = Keypair::new_from_array([8; 32]);
+    let mut inputs = relay_proof_inputs();
+    inputs.rail = RelayRail::Deposit { plan: None };
+    inputs.inputs = vec![SppProofInputUtxo::dummy_with_blinding([29; 32], 4).expect("dummy")];
+    inputs.external_data.interface_transfers = vec![SettlementTransfer::Sol {
+        is_deposit: true,
+        amount: 1_000_000,
+        user_sol_account: depositor.pubkey(),
+    }];
+    inputs.interface_transfer_accounts = vec![TransactInterfaceTransferAccounts::Sol(
+        TransactSolTransferAccounts {
+            recipient: depositor.pubkey(),
+        },
+    )];
+    let proof_inputs = ProofInputBytes::new(inputs.encode().expect("encode"));
+    pinned(
+        file,
+        "/deposit/proofInputs",
+        &base64(proof_inputs.as_bytes()),
+        &stored("/deposit/proofInputs"),
+    );
+    let deposit =
+        RelayRequestAttestation::deposit(target, depositor.pubkey(), &inputs, &proof_inputs)
+            .message();
+    pinned(
+        file,
+        "/deposit/message",
+        &readable(&deposit),
+        &stored("/deposit/message"),
+    );
+    pinned(
+        file,
+        "/deposit/signature",
+        &depositor.sign_message(&deposit).to_string(),
+        &stored("/deposit/signature"),
+    );
+    let owner = Keypair::new_from_array([5; 32]);
+    let sender = relay_proof_inputs().sender;
+    assert_eq!(
+        owner.pubkey().to_bytes(),
+        sender.signing_pubkey.as_ed25519().expect("ed25519")
+    );
+    let merge = RelayRequestAttestation::merge(
+        target,
+        owner.pubkey(),
+        &ProofInputBytes::new(Zeroizing::new(merge_vector.proof_inputs.0)),
+    )
+    .message();
+    pinned(
+        file,
+        "/merge/message",
+        &readable(&merge),
+        &stored("/merge/message"),
+    );
+    pinned(
+        file,
+        "/merge/signature",
+        &owner.sign_message(&merge).to_string(),
+        &stored("/merge/signature"),
+    );
+}
+
 /// The TypeScript signer writes the same message and wire bytes.
 #[test]
 fn a_signed_authority_transfer_matches_the_shared_vector() {
@@ -1399,20 +1514,15 @@ fn signed_update_pending_approval() -> SubmitRecordUpdateRequest {
     .expect("sign")
 }
 
-/// The TypeScript signer writes the same wire bytes.
+/// The TypeScript signer writes the same text and wire bytes.
 #[test]
 fn a_signed_update_pending_approval_verifies_from_the_shared_vector() {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Vector {
-        wire: String,
-        update_id: RecordUpdateId,
-    }
-    let vector: Vector = serde_json::from_str(include_str!(
+    let vector: RecordUpdateVector = serde_json::from_str(include_str!(
         "../../../../test-vectors/rpc/list_approval_update.json"
     ))
     .expect("vector");
     let signed = signed_update_pending_approval();
+    assert_eq!(record_update_message(&signed), vector.message);
     assert_eq!(serde_json::to_string(&signed).expect("json"), vector.wire);
     let read: SubmitRecordUpdateRequest = serde_json::from_str(&vector.wire).expect("read");
     assert_eq!(read.verify(), Ok(vector.update_id));
@@ -1444,6 +1554,7 @@ fn the_policy_authority_requests_match_the_shared_vector() {
         list_after: Signed,
         refuse: Refuse,
         create_records: Signed,
+        register_enrollment: Signed,
     }
     let vector: Vector = serde_json::from_str(include_str!(
         "../../../../test-vectors/rpc/policy_authority_attestation.json"
@@ -1550,6 +1661,30 @@ fn the_policy_authority_requests_match_the_shared_vector() {
         "/createRecords/wire",
         &serde_json::to_string(&create_records).expect("json"),
         &vector.create_records.wire,
+    );
+    let register = RegisterEnrollmentRingRequest::register(
+        target(),
+        authority.pubkey(),
+        Address::new_from_array([5; 32]),
+    );
+    pinned(
+        file,
+        "/registerEnrollment/message",
+        &message(register.attestation.message(1_700_000_000, &[4; 32])),
+        &vector.register_enrollment.message,
+    );
+    let register = SignedRequest {
+        timestamp: Some(1_700_000_000),
+        nonce: [4; 32],
+        ..register
+    }
+    .sign(&authority)
+    .expect("sign the registration");
+    pinned(
+        file,
+        "/registerEnrollment/wire",
+        &serde_json::to_string(&register).expect("json"),
+        &vector.register_enrollment.wire,
     );
 }
 

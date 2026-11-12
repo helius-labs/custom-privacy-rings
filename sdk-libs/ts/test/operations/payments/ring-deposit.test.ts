@@ -25,6 +25,7 @@ import {
   decodeRelayProofInputs,
   depositRequestDigest,
 } from "../../../src/protocol/ring-rpc/relay-proof-inputs.js";
+import { relayRequestAttestation } from "../../../src/rpc/ring-rpc.js";
 import { RingInstructionTag } from "../../../src/protocol/transaction/instruction-tag.js";
 import { AnonymousSync } from "../../../src/state/anonymous-sync.js";
 import { ViewingHistory } from "../../../src/state/viewing-history.js";
@@ -207,7 +208,7 @@ describe("ring deposit", () => {
     expect([...confidential.sppCalls, ...anonymous.sppCalls]).toEqual([]);
   });
 
-  it("relays a deposit on the deposit rail under the funder's request signature and refuses a funding fee payer", async () => {
+  it("relays a deposit on the deposit rail under the funder's request text and refuses a funding fee payer", async () => {
     const fixture = await ringFixture({ mode: "anonymous" });
     const owner = ShieldedKeypair.generate();
     fixture.enroll(owner.shieldedAddress());
@@ -225,6 +226,10 @@ describe("ring deposit", () => {
       depositorSigner,
       recipient: { kind: "anonymous", keys: walletKeys(owner), listSalt: SALT } as const,
       amount: 9n,
+      ringRpc: {
+        cluster: new Uint8Array(32).fill(1) as Bytes32,
+        service: getBase58Decoder().decode(new Uint8Array(32).fill(2)) as Address,
+      },
     };
     const { relay } = await PreparedRingDeposit.prepareRelay({
       ...params,
@@ -237,8 +242,19 @@ describe("ring deposit", () => {
     const decoded = await decodeRelayProofInputs(payload, new AssetRegistry());
     expect(decoded.rail.kind).toBe("deposit");
     expect(decoded.inputs.every((spent) => spent.isDummy())).toBe(true);
+    const text = relayRequestAttestation({
+      target: { ...params.ringRpc, ringProgramId: fixture.ringProgramId },
+      signer: funder,
+      request: {
+        kind: "deposit",
+        digest: depositRequestDigest(payload),
+        legs: [{ isDeposit: true, mint: SOL_MINT, amount: 9n }],
+      },
+    });
+    expect(new TextDecoder().decode(text)).toContain(`\ndeposit: ${SOL_MINT} 9\n`);
     const signature = new Uint8Array(getBase58Encoder().encode(intent.depositorSignature));
-    expect(signing.verify(depositRequestDigest(payload), signature as Bytes64)).toBe(true);
+    expect(signing.verify(text, signature as Bytes64)).toBe(true);
+    expect(signing.verify(depositRequestDigest(payload), signature as Bytes64)).toBe(false);
     expect(fixture.sppCalls).toEqual([]);
 
     await expect(

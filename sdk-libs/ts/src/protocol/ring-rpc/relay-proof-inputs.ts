@@ -36,6 +36,7 @@ import {
 } from "@heliuslabs/spr/keypair";
 import {
   ProofInputUtxo,
+  SOL_MINT,
   Utxo,
   createExternalData,
   createProofOutput,
@@ -95,7 +96,7 @@ export interface RelayProofInputs {
   /** The owner sealed under the wide key, the relayer proves on it. */
   readonly wideOwners: boolean;
   readonly assets: AssetRegistry;
-  /** Encoding drops the sender's, Ring RPC derives it from `nullifierKey`. */
+  /** The sender's among them, Ring RPC reads the salts it screens from these alone. */
   readonly listSalts: readonly RingListSalt[];
   /** The public co-owners whose keys the seal holds, encoding sends only those a spend names. */
   readonly coOwners: readonly CoOwner[];
@@ -103,13 +104,8 @@ export interface RelayProofInputs {
   readonly approvalBlinder?: Bytes32;
 }
 
-export function writeRelayListSalts(
-  writer: Writer,
-  salts: readonly RingListSalt[],
-  sender: ShieldedAddress,
-): Writer {
-  const senderOwner = sender.signingPublicKey.ownerProofInputHash();
-  const sent = salts.filter(({ owner, salt }) => !isZero(salt) && !equalBytes(owner, senderOwner));
+export function writeRelayListSalts(writer: Writer, salts: readonly RingListSalt[]): Writer {
+  const sent = salts.filter(({ salt }) => !isZero(salt));
   writer.u8(sent.length, "listSalts.length");
   for (const { owner, salt } of sent)
     writer.bytes(owner, 32, "listSalts.owner").bytes(salt, 32, "listSalts.salt");
@@ -145,7 +141,7 @@ export function encodeRelayProofInputs(value: RelayProofInputs): Uint8Array {
   writer.bytes(value.blindingSeed, 32, "blindingSeed").u16(value.outputTreeId, "outputTreeId");
   // 2. A held co-owner no spend names keeps its nullifier secret from the relayer.
   const disclosed = value.coOwners.filter((coOwner) => spending.has(coOwner));
-  writeRelayListSalts(writer, value.listSalts, value.sender)
+  writeRelayListSalts(writer, value.listSalts)
     .u8(value.wideOwners ? 1 : 0, "wideOwners")
     .u8(disclosed.length, "coOwners.length");
   for (const { owner, nullifierKey } of disclosed) {
@@ -172,16 +168,34 @@ export interface RelayMergeInputs {
   readonly assets: AssetRegistry;
 }
 
+/** Rust `RelayLeg`, one interface transfer of a deposit frame. */
+export interface RelayLeg {
+  readonly isDeposit: boolean;
+  readonly mint: Address;
+  readonly amount: bigint;
+}
+
+/** Rust `RelayProofInputs::relay_legs`, in leg order. */
+export function relayLegs(transfers: readonly SettlementTransfer[]): readonly RelayLeg[] {
+  return transfers.map((transfer) =>
+    Object.freeze({
+      isDeposit: transfer.isDeposit,
+      mint: transfer.kind === "sol" ? SOL_MINT : transfer.mint,
+      amount: transfer.amount,
+    }),
+  );
+}
+
 const DEPOSIT_REQUEST_DOMAIN = new TextEncoder().encode("zolana/ring-rpc-relay-deposit");
 
-/** Rust `ProofInputBytes::deposit_request_digest`, the funder signs it over a deposit rail's bytes. */
+/** Rust `ProofInputBytes::deposit_request_digest`, the `request` line of the funder's text. */
 export function depositRequestDigest(encoded: Uint8Array): Bytes32 {
   return sha256(concatBytes(DEPOSIT_REQUEST_DOMAIN, encoded)) as Bytes32;
 }
 
 const MERGE_REQUEST_DOMAIN = new TextEncoder().encode("zolana/ring-rpc-relay-merge");
 
-/** Rust `ProofInputBytes::merge_request_digest`, over the bytes `encodeRelayMergeInputs` returns. */
+/** Rust `ProofInputBytes::merge_request_digest`, the `request` line of the owner's text. */
 export function mergeRequestDigest(encoded: Uint8Array): Bytes32 {
   return sha256(concatBytes(MERGE_REQUEST_DOMAIN, encoded)) as Bytes32;
 }

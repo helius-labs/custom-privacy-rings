@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 
-import { getBase58Decoder, getBase64Encoder, type Address } from "@solana/kit";
+import {
+  createKeyPairSignerFromPrivateKeyBytes,
+  getBase58Decoder,
+  getBase64Encoder,
+  type Address,
+} from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
@@ -19,12 +24,16 @@ import {
 import { AnonymousPlan } from "../../../src/operations/payments/output-rail.js";
 import {
   decodeRelayProofInputs,
+  depositRequestDigest,
   encodeRelayMergeInputs,
   encodeRelayProofInputs,
+  mergeRequestDigest,
+  relayLegs,
   writeRelayListSalts,
   type RelayProofInputs,
   type RelayRail,
 } from "../../../src/protocol/ring-rpc/relay-proof-inputs.js";
+import { relayRequestAttestation, signMessage } from "../../../src/rpc/ring-rpc.js";
 
 await initializePoseidon();
 
@@ -127,21 +136,18 @@ function anonymousPayload() {
 }
 
 describe("relay proof inputs", () => {
-  it("names other owners' salts, the sender's and a zero-key salt left out", () => {
+  it("names the sender's and other owners' salts, a zero-key salt left out", () => {
     const { sender } = ownerSpend();
     const senderOwner = sender.signingPublicKey.ownerProofInputHash();
     const owner = filled(70) as Bytes32;
     const salt = filled(71) as Bytes32;
-    const written = writeRelayListSalts(
-      new Writer(),
-      [
-        { owner: senderOwner, salt },
-        { owner, salt },
-        { owner: filled(72) as Bytes32, salt: filled(0) as Bytes32 },
-      ],
-      sender,
-    ).finish();
-    expect(written).toEqual(Uint8Array.of(1, ...owner, ...salt));
+    const written = writeRelayListSalts(new Writer(), [
+      { owner: senderOwner, salt },
+      { owner, salt },
+      { owner: filled(72) as Bytes32, salt: filled(0) as Bytes32 },
+    ]).finish();
+    // Ring RPC reads every salt it screens from the payload, the sender's too.
+    expect(written).toEqual(Uint8Array.of(2, ...senderOwner, ...salt, ...owner, ...salt));
   });
 
   it("encodes the anonymous payload byte for byte as the Rust vector and derives its spend on decode", async () => {
@@ -347,5 +353,91 @@ describe("relay proof inputs", () => {
       expect(read.rail.kind).toBe("deposit");
       expect(encodeRelayProofInputs(read)).toEqual(wire);
     }
+  });
+});
+
+describe("relay_request_attestation.json", () => {
+  type Signed = { message: string; signature: string };
+  const read = (name: string) =>
+    JSON.parse(
+      readFileSync(new URL(`../../../../../test-vectors/rpc/${name}`, import.meta.url), "utf8"),
+    ) as unknown;
+  const vector = read("relay_request_attestation.json") as {
+    deposit: Signed & { proofInputs: string };
+    merge: Signed;
+  };
+  const target = {
+    cluster: filled(1) as Bytes32,
+    service: address(2),
+    ringProgramId: address(6),
+  };
+  const bytes = (encoded: string) => new Uint8Array(getBase64Encoder().encode(encoded));
+  const signed = async (seed: number, message: Uint8Array) => {
+    const signer = await createKeyPairSignerFromPrivateKeyBytes(filled(seed));
+    return { signer, signature: base58.decode(await signMessage(signer, message)) };
+  };
+
+  it("writes the funder's text and signature byte for byte as Rust", async () => {
+    const payload = bytes(vector.deposit.proofInputs);
+    const decoded = await decodeRelayProofInputs(payload, new AssetRegistry());
+    const funder = await createKeyPairSignerFromPrivateKeyBytes(filled(8));
+    const message = relayRequestAttestation({
+      target,
+      signer: funder.address,
+      request: {
+        kind: "deposit",
+        digest: depositRequestDigest(payload),
+        legs: relayLegs(decoded.externalData.interfaceTransfers),
+      },
+    });
+    expect(new TextDecoder().decode(message)).toBe(vector.deposit.message);
+    expect((await signed(8, message)).signature).toBe(vector.deposit.signature);
+  });
+
+  it("writes the merge owner's text and signature byte for byte as Rust", async () => {
+    const payload = bytes((read("relay_merge_inputs.json") as { proofInputs: string }).proofInputs);
+    const owner = await createKeyPairSignerFromPrivateKeyBytes(filled(5));
+    const message = relayRequestAttestation({
+      target,
+      signer: owner.address,
+      request: { kind: "merge", digest: mergeRequestDigest(payload) },
+    });
+    expect(new TextDecoder().decode(message)).toBe(vector.merge.message);
+    expect((await signed(5, message)).signature).toBe(vector.merge.signature);
+  });
+
+  it("refuses a malformed signer, mint, amount or digest", () => {
+    const request = (overrides: Readonly<Record<string, unknown>>) => () =>
+      relayRequestAttestation({
+        target,
+        signer: address(8),
+        request: {
+          kind: "deposit",
+          digest: filled(3) as Bytes32,
+          legs: [{ isDeposit: true, mint: SOL_MINT, amount: 1n }],
+        },
+        ...overrides,
+      } as Parameters<typeof relayRequestAttestation>[0]);
+    expect(request({})).not.toThrow();
+    expect(request({ signer: "not an address" })).toThrow();
+    expect(
+      request({
+        request: {
+          kind: "deposit",
+          digest: filled(3),
+          legs: [{ isDeposit: true, mint: "x", amount: 1n }],
+        },
+      }),
+    ).toThrow();
+    expect(
+      request({
+        request: {
+          kind: "deposit",
+          digest: filled(3),
+          legs: [{ isDeposit: true, mint: SOL_MINT, amount: -1n }],
+        },
+      }),
+    ).toThrow();
+    expect(request({ request: { kind: "merge", digest: filled(3, 31) } })).toThrow();
   });
 });

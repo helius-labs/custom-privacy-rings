@@ -31,6 +31,9 @@ import type {
 
 const base58Decoder = getBase58Decoder();
 const base58Encoder = getBase58Encoder();
+const encoder = new TextEncoder();
+
+const RECORD_UPDATE_DOMAIN = "zolana/ring-rpc-record-update";
 
 /** Rust `ListSet::STORAGE_WRITES`. */
 const STORAGE_WRITE_BITS = [...AUTHORITY_WRITABLE_LISTS, ...MEMBER_WRITABLE_LISTS].reduce(
@@ -104,12 +107,17 @@ export function recordUpdateStatementHash(input: UnsignedRecordUpdate): Bytes32 
   ]);
 }
 
+/** Rust `RecordUpdateStatement::message`, the text `signer` signs. */
+export function recordUpdateMessage(input: UnsignedRecordUpdate, signer: Address): Uint8Array {
+  return messageText(input, signer, recordUpdateStatementHash(input));
+}
+
 /** Rust `RecordUpdate::sign`, the writer refuses a signer that does not hold every entry. */
 export async function signRecordUpdate(
   input: UnsignedRecordUpdate,
   signer: MessagePartialSigner,
 ): Promise<SubmitRecordUpdateRequest> {
-  const signature = await signMessage(signer, recordUpdateStatementHash(input));
+  const signature = await signMessage(signer, recordUpdateMessage(input, signer.address));
   return Object.freeze({
     registry: input.registry,
     update: input.update,
@@ -122,9 +130,24 @@ export async function signRecordUpdate(
 export function verifyRecordUpdate(request: SubmitRecordUpdateRequest): Bytes32 {
   const hash = recordUpdateStatementHash(request);
   const signature = base58Encoder.encode(request.signature);
-  if (!ed25519.verify(new Uint8Array(signature), hash, addressBytes(request.signer, "signer")))
+  const message = messageText(request, request.signer, hash);
+  if (!ed25519.verify(new Uint8Array(signature), message, addressBytes(request.signer, "signer")))
     throw invalid("Signature");
   return hash;
+}
+
+function messageText(input: UnsignedRecordUpdate, signer: Address, hash: Bytes32): Uint8Array {
+  return encoder.encode(
+    [
+      RECORD_UPDATE_DOMAIN,
+      `cluster: ${base58Decoder.decode(indexerScalars.hashBytes(input.update.genesisHash))}`,
+      `ring: ${input.update.ring}`,
+      `registry: ${input.registry}`,
+      `signer: ${signer}`,
+      `update: ${base58Decoder.decode(hash)}`,
+      `valid until slot: ${input.update.validUntilSlot}`,
+    ].join("\n"),
+  );
 }
 
 function invalid(reason: string): RingError {

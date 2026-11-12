@@ -2,7 +2,13 @@ import { generateKeyPairSigner, type Address } from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
-import type { ProofAuthority, ProverInputs } from "@heliuslabs/spr/client";
+import type {
+  IndexedProofAuthority,
+  IndexedProofInputs,
+  IndexedProofResult,
+  ProofAuthority,
+  ProverInputs,
+} from "@heliuslabs/spr/client";
 import {
   bigIntBytes,
   bytesToBigInt,
@@ -145,6 +151,45 @@ describe("a spend of notes the core builder refuses", () => {
     expect(secrets[0]).toBeUndefined();
     expect(secrets[1]).toBe(bytesToBigInt(coOwnerKey.secretBytes()));
     expect(secrets[2]).toBe(0n);
+  });
+
+  it("completes a zero key input on the prover's indexed path", async () => {
+    const hash = 5n;
+    const slot = (key: Bytes32) => ({
+      circuit: { owner: bytesToBigInt(poseidon([bigIntBytes(hash) as Bytes32, key])) },
+      ownerPublicKeyHash: hash,
+      isDummy: 0n,
+    });
+    let seen: IndexedProofInputs | undefined;
+    const keys = {
+      prove: async () => ({}) as Awaited<ReturnType<ProofAuthority["prove"]>>,
+      proveMerge: async () => ({}) as Awaited<ReturnType<ProofAuthority["proveMerge"]>>,
+      proveIndexed: async (request: IndexedProofInputs) => {
+        seen = request;
+        return {} as IndexedProofResult;
+      },
+    };
+    const sender = ShieldedKeypair.generate();
+    const zeroNote = ringProofInput(
+      note(sender, ZERO_NULLIFIER_PK, 5n, ZERO_NULLIFIER_PK),
+      sender.shieldedAddress(),
+      CLIENT,
+    );
+    const authority = ringSpendAuthority({
+      keys,
+      coOwners: [],
+      proofInputs: { inputUtxos: [zeroNote] } as unknown as SppProofInputs,
+      sender: sender.shieldedAddress(),
+    }) as ProofAuthority & Partial<IndexedProofAuthority>;
+    expect(authority.proveIndexed).toBeTypeOf("function");
+    await authority.proveIndexed?.({
+      circuit: "transferRing",
+      payload: { inputs: [slot(new Uint8Array(32).fill(1) as Bytes32), slot(ZERO_NULLIFIER_PK)] },
+    } as unknown as IndexedProofInputs);
+    const secrets = (
+      seen as unknown as { payload: { inputs: { nullifierSecret?: bigint }[] } }
+    ).payload.inputs.map((input) => input.nullifierSecret);
+    expect(secrets).toEqual([undefined, 0n]);
   });
 
   it("refuses a foreign input without its owner's key before any proof", () => {
