@@ -36,6 +36,7 @@ import {
 } from "@heliuslabs/spr/keypair";
 import {
   ProofInputUtxo,
+  SOL_MINT,
   Utxo,
   createExternalData,
   createProofOutput,
@@ -167,16 +168,34 @@ export interface RelayMergeInputs {
   readonly assets: AssetRegistry;
 }
 
+/** Rust `RelayLeg`, one interface transfer of a deposit frame. */
+export interface RelayLeg {
+  readonly isDeposit: boolean;
+  readonly mint: Address;
+  readonly amount: bigint;
+}
+
+/** Rust `RelayProofInputs::relay_legs`, in leg order. */
+export function relayLegs(transfers: readonly SettlementTransfer[]): readonly RelayLeg[] {
+  return transfers.map((transfer) =>
+    Object.freeze({
+      isDeposit: transfer.isDeposit,
+      mint: transfer.kind === "sol" ? SOL_MINT : transfer.mint,
+      amount: transfer.amount,
+    }),
+  );
+}
+
 const DEPOSIT_REQUEST_DOMAIN = new TextEncoder().encode("zolana/ring-rpc-relay-deposit");
 
-/** Rust `ProofInputBytes::deposit_request_digest`, the funder signs it over a deposit rail's bytes. */
+/** Rust `ProofInputBytes::deposit_request_digest`, the `request` line of the funder's text. */
 export function depositRequestDigest(encoded: Uint8Array): Bytes32 {
   return sha256(concatBytes(DEPOSIT_REQUEST_DOMAIN, encoded)) as Bytes32;
 }
 
 const MERGE_REQUEST_DOMAIN = new TextEncoder().encode("zolana/ring-rpc-relay-merge");
 
-/** Rust `ProofInputBytes::merge_request_digest`, over the bytes `encodeRelayMergeInputs` returns. */
+/** Rust `ProofInputBytes::merge_request_digest`, the `request` line of the owner's text. */
 export function mergeRequestDigest(encoded: Uint8Array): Bytes32 {
   return sha256(concatBytes(MERGE_REQUEST_DOMAIN, encoded)) as Bytes32;
 }

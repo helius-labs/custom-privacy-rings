@@ -507,6 +507,7 @@ export {
   policyAuthorityAttestation,
   messageSignerReader,
   readerGrantAttestation,
+  relayRequestAttestation,
   ringReadAttestation,
   walletStatusAttestation,
   walletSnapshotReleaseAttestation,
@@ -522,9 +523,12 @@ export type {
   DelegateNotesAttestationInput,
   ListApprovalTarget,
   PolicyAuthorityAction,
+  RelayRequest,
   RingReaderGrant,
+  RingServiceTarget,
   WalletStatusAttestationInput,
 } from "../rpc/ring-rpc.js";
+export type { RelayLeg } from "../protocol/ring-rpc/relay-proof-inputs.js";
 export type {
   AuditedMergesPage,
   AuditedRingMerge,

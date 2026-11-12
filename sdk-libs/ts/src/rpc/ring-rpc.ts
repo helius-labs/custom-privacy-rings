@@ -121,6 +121,7 @@ import {
   type SubmitRelayRequest,
 } from "../protocol/ring-rpc/ring-rpc-types.js";
 import { ringRpcRefusalName } from "../protocol/ring-rpc/ring-rpc-refusal.js";
+import type { RelayLeg } from "../protocol/ring-rpc/relay-proof-inputs.js";
 
 type Hash = indexerTypes.Hash;
 
@@ -154,6 +155,8 @@ const LIST_SALT_DOMAIN = "zolana/ring-rpc-list-salt";
 const MERGE_SETTINGS_DOMAIN = "zolana/ring-rpc-merge-settings";
 const POLICY_AUTHORITY_DOMAIN = "zolana/ring-rpc-policy-authority";
 const READER_GRANT_DOMAIN = "zolana/ring-rpc-reader-grant";
+const RELAY_DEPOSIT_DOMAIN = "zolana/ring-rpc-relay-deposit";
+const RELAY_MERGE_DOMAIN = "zolana/ring-rpc-relay-merge";
 const WALLET_STATUS_DOMAIN = "zolana/ring-rpc-wallet-status";
 const SPEND_COVERAGE_DOMAIN = "zolana/ring-rpc-spend-coverage";
 /** Rust `AUDIT_PAGE_LIMIT`. */
@@ -173,6 +176,40 @@ export interface RingReadTarget {
   /** The service key the caller pinned, never one the service reports. */
   readonly service: Address;
   readonly ringProgramId: Address;
+}
+
+/** Rust `ServiceTarget`, one ring rpc on one cluster, a relayed deposit or merge names it beside the ring. */
+export type RingServiceTarget = Omit<RingReadTarget, "ringProgramId">;
+
+/** Rust `RelayRequest`, `digest` is `depositRequestDigest` or `mergeRequestDigest` of the proof inputs. */
+export type RelayRequest =
+  | Readonly<{ kind: "deposit"; digest: Bytes32; legs: readonly RelayLeg[] }>
+  | Readonly<{ kind: "merge"; digest: Bytes32 }>;
+
+/** Mirrors Rust `RelayRequestAttestation::message`, the depositor or merge owner signs these bytes raw. */
+export function relayRequestAttestation(
+  input: Readonly<{ target: RingReadTarget; signer: Address; request: RelayRequest }>,
+): Uint8Array {
+  const { request } = input;
+  const legs = request.kind === "deposit" ? request.legs : [];
+  return encoder.encode(
+    [
+      request.kind === "deposit" ? RELAY_DEPOSIT_DOMAIN : RELAY_MERGE_DOMAIN,
+      ...targetLines(checkedReadTarget(input.target)),
+      `signer: ${requestAddress(input.signer, "signer")}`,
+      ...legs.map(
+        (leg) =>
+          `${leg.isDeposit ? "deposit" : "withdrawal"}: ${requestAddress(leg.mint, "mint")} ${checkedU64(leg.amount, "amount")}`,
+      ),
+      `request: ${base58Decoder.decode(copyBytes(request.digest, 32, "digest"))}`,
+    ].join("\n"),
+  );
+}
+
+function checkedU64(value: bigint, field: string): bigint {
+  if (typeof value !== "bigint" || value < 0n || value > 0xffff_ffff_ffff_ffffn)
+    throw invalidRequest(field);
+  return value;
 }
 
 /** Rust `ReadTarget::lines`. */

@@ -96,7 +96,10 @@ confidential relay cannot spend a default-ring note, so an entry on a
 confidential Ring proves and sends through `createRingEntrySubmission`.
 `PreparedRingDeposit.prepareRelay` relays a deposit, whose request and message
 the depositor signs, and `prepareRingMergeRelay` relays a merge of the wallet's
-smallest notes under the owner's signed request. `RingRpc` reads
+smallest notes under the owner's signed request. Each request is a readable
+`relayRequestAttestation` text naming the `ringRpc` target, the signer, each
+deposit leg and the request digest, which a browser wallet signs through
+`signMessage`. `RingRpc` reads
 decrypted Ring transactions for a granted reader.
 
 Without Ring RPC the `CustomRingClient` reads the records and Merkle paths

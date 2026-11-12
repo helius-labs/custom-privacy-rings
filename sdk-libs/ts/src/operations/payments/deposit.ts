@@ -55,7 +55,11 @@ import type { RelayIntent, RelayQuote } from "../../protocol/ring-rpc/ring-rpc-t
 import type { RingListSalt } from "../../proof/policy-proof.js";
 import { PreparedRelay } from "../../rpc/relay.js";
 import { mismatch } from "../../rpc/relay-message.js";
-import { signMessage } from "../../rpc/ring-rpc.js";
+import {
+  relayRequestAttestation,
+  signMessage,
+  type RingServiceTarget,
+} from "../../rpc/ring-rpc.js";
 import type { RingKeys } from "../../state/ring-keys.js";
 import { ringComputeUnitLimit } from "../management/admin.js";
 import {
@@ -122,6 +126,8 @@ export interface RingDepositRelayParams extends Omit<
   /** Funds the deposit and signs its request and message. */
   readonly depositor: SignerAccount;
   readonly depositorSigner: MessagePartialSigner;
+  /** The Ring RPC the depositor's request text names, its service key pinned by the caller. */
+  readonly ringRpc: RingServiceTarget;
   readonly quote: RelayQuote;
   readonly approve?: ApprovalHandler;
 }
@@ -219,8 +225,13 @@ export class PreparedRingDeposit {
         context,
       );
       payload = frame.payload;
+      const request = relayRequestAttestation({
+        target: { ...params.ringRpc, ringProgramId: params.ringProgramId },
+        signer: params.depositorSigner.address,
+        request: { kind: "deposit", digest: depositRequestDigest(payload), legs: frame.legs },
+      });
       const depositorSignature = base58.decode(
-        await signMessage(params.depositorSigner, depositRequestDigest(payload)),
+        await signMessage(params.depositorSigner, request),
       ) as Signature;
       return Object.freeze({
         relay: new PreparedRelay(

@@ -47,6 +47,8 @@ import {
 } from "@heliuslabs/spr/transaction";
 import {
   encodeRelayProofInputs,
+  relayLegs,
+  type RelayLeg,
   type RelayLegAccounts,
 } from "../../protocol/ring-rpc/relay-proof-inputs.js";
 import type {
@@ -1607,6 +1609,7 @@ export interface DepositRelayInput {
 /** A sealed deposit frame, the caller wipes `payload`. */
 export interface DepositRelayFrame {
   readonly payload: Uint8Array;
+  readonly legs: readonly RelayLeg[];
   readonly expected: ExpectedSealed;
 }
 
@@ -1659,6 +1662,7 @@ function depositRelayFrame(
         listSalts: relayListSalts(config, owner.listSalts ?? []),
         coOwners: [],
       }),
+      legs: relayLegs(legs),
       expected: Object.freeze({
         kind: "sealed",
         terms: [],

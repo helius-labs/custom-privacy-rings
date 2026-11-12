@@ -38,7 +38,7 @@ import type { ReplyMetadata } from "../../protocol/codec/anonymous-delivery.js";
 /** The hidden owner's Ed25519 key, the signature lives inside the proof so the key may live in a wallet. */
 export interface AnonymousSpendSigner {
   publicKey(): ShieldedPublicKey;
-  /** RFC 8032 Ed25519 over the transfer's 32-byte `messageHash`. */
+  /** RFC 8032 Ed25519 over the transfer's 32-byte `messageHash` or a relayed merge's request text. */
   sign(message: Uint8Array, context?: RequestContext): Promise<Bytes64>;
 }
 

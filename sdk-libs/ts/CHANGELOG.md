@@ -7,6 +7,7 @@ The custom ring surface of `@heliuslabs/zolana` 0.4.0-alpha moves into `@heliusl
 Breaking
 
 - Zero-key transfer recipients must be absent at the selected tracking root. An enrolled recipient must receive under its registered nullifier key.
+- `PreparedRingDeposit.prepareRelay` and `prepareRingMergeRelay` take `ringRpc`, a `RingServiceTarget` of the cluster and the pinned service key, and the depositor and the merge owner sign the readable `relayRequestAttestation` text that names the ring, the signer, each deposit leg and the request digest, and Ring RPC refuses a signature over the bare digest → pass `ringRpc` and run Ring RPC of the same revision.
 - `AnonymousTransfer.prepareRelay` sends the `withOwnerExposure` choice to Ring RPC, and Ring RPC refuses a hidden owner that funds a leg, receives an exit or spends a zero-key note unless the choice is `"accepted"` → run Ring RPC of the same revision.
 - `WalletRecordUpdate.sign`, `AuthorityRecordUpdate.sign` and `signRecordUpdate` sign the `recordUpdateMessage` text that names the cluster, ring, registry, signer, update id and valid until slot in place of the bare update id, and `verifyRecordUpdate` checks a signature over that text → run Ring RPC of the same revision, which refuses a signature over the bare update id.
 
