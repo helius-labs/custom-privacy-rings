@@ -780,23 +780,40 @@ fn signed_wallet_update() -> SubmitRecordUpdateRequest {
     .expect("sign")
 }
 
-/// The TypeScript signer writes the same wire bytes.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordUpdateVector {
+    message: String,
+    wire: String,
+    update_id: RecordUpdateId,
+}
+
+fn record_update_message(request: &SubmitRecordUpdateRequest) -> String {
+    let message = request
+        .statement()
+        .expect("statement")
+        .message(&request.signer.0)
+        .expect("message");
+    String::from_utf8(message).expect("text")
+}
+
+/// The TypeScript signer writes the same text and wire bytes.
 #[test]
 fn a_signed_wallet_update_verifies_from_the_shared_vector() {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Vector {
-        wire: String,
-        update_id: RecordUpdateId,
-    }
-    let vector: Vector = serde_json::from_str(include_str!(
+    let vector: RecordUpdateVector = serde_json::from_str(include_str!(
         "../../../../test-vectors/rpc/record_update.json"
     ))
     .expect("vector");
     let signed = signed_wallet_update();
+    assert_eq!(record_update_message(&signed), vector.message);
     assert_eq!(serde_json::to_string(&signed).expect("json"), vector.wire);
     let read: SubmitRecordUpdateRequest = serde_json::from_str(&vector.wire).expect("read");
     assert_eq!(read.verify(), Ok(vector.update_id));
+    // A wallet signs the text, a signature over the bare statement hash never verifies.
+    let mut bare = read.clone();
+    let hash = bare.statement().expect("statement").hash().expect("hash");
+    bare.signature = Keypair::new_from_array([7; 32]).sign_message(&hash).into();
+    assert_eq!(bare.verify(), Err(RecordUpdateError::Signature));
     // The signature covers the slot bound, a later one names another statement.
     let mut extended = read;
     extended.update.valid_until_slot += 1;
@@ -820,6 +837,7 @@ fn write_record_update_vectors() {
         );
         let mut vector: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("vector");
+        vector["message"] = record_update_message(&signed).into();
         vector["wire"] = serde_json::to_string(&signed).expect("json").into();
         vector["updateId"] = serde_json::to_value(signed.verify().expect("verify")).expect("id");
         let json = serde_json::to_string_pretty(&vector).expect("json") + "\n";
@@ -1399,20 +1417,15 @@ fn signed_update_pending_approval() -> SubmitRecordUpdateRequest {
     .expect("sign")
 }
 
-/// The TypeScript signer writes the same wire bytes.
+/// The TypeScript signer writes the same text and wire bytes.
 #[test]
 fn a_signed_update_pending_approval_verifies_from_the_shared_vector() {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Vector {
-        wire: String,
-        update_id: RecordUpdateId,
-    }
-    let vector: Vector = serde_json::from_str(include_str!(
+    let vector: RecordUpdateVector = serde_json::from_str(include_str!(
         "../../../../test-vectors/rpc/list_approval_update.json"
     ))
     .expect("vector");
     let signed = signed_update_pending_approval();
+    assert_eq!(record_update_message(&signed), vector.message);
     assert_eq!(serde_json::to_string(&signed).expect("json"), vector.wire);
     let read: SubmitRecordUpdateRequest = serde_json::from_str(&vector.wire).expect("read");
     assert_eq!(read.verify(), Ok(vector.update_id));

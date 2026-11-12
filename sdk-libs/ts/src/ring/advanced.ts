@@ -260,6 +260,7 @@ export {
 } from "../protocol/membership/policy.js";
 export {
   AWAITABLE_LISTS,
+  recordUpdateMessage,
   recordUpdateWrite,
   recordUpdateStatementHash,
   signRecordUpdate,

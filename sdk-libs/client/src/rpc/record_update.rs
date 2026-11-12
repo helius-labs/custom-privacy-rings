@@ -16,6 +16,8 @@ use zolana_ring_policy::{registry_field, ring_id_field, ListId, ListSet, Member,
 
 use super::{GET_RECORD_UPDATE_STATUS, SUBMIT_RECORD_UPDATE};
 
+const RECORD_UPDATE_DOMAIN: &str = "zolana/ring-rpc-record-update";
+
 /// Slots a graced update waits for more writes before it goes out short.
 pub const BATCH_WINDOW_SLOTS: u64 = 40;
 /// Outlives signing, the batch window and one more window for the pass that sends the batch.
@@ -69,7 +71,7 @@ pub struct SubmitRecordUpdateRequest {
     pub registry: SerializablePubkey,
     pub update: RecordUpdate,
     pub signer: SerializablePubkey,
-    /// Raw Ed25519 over the 32 bytes of [`RecordUpdateStatement::hash`].
+    /// Raw Ed25519 over [`RecordUpdateStatement::message`].
     pub signature: SerializableSignature,
 }
 
@@ -215,9 +217,9 @@ impl RecordUpdate {
         registry: Address,
         signer: &S,
     ) -> Result<SubmitRecordUpdateRequest, RecordUpdateError> {
-        let hash = self.statement(registry)?.hash()?;
+        let message = self.statement(registry)?.message(&signer.pubkey())?;
         let signature = signer
-            .try_sign_message(&hash)
+            .try_sign_message(&message)
             .map_err(RecordUpdateError::Signing)?;
         Ok(SubmitRecordUpdateRequest {
             registry: registry.into(),
@@ -235,11 +237,13 @@ impl SubmitRecordUpdateRequest {
 
     /// Signature only, the writer checks what `signer` may write.
     pub fn verify(&self) -> Result<RecordUpdateId, RecordUpdateError> {
-        let id = self.statement()?.id()?;
-        if !self.signature.0.verify(self.signer.0.as_ref(), &id.0 .0) {
+        let statement = self.statement()?;
+        let hash = statement.hash()?;
+        let message = statement.text(&self.signer.0, &hash);
+        if !self.signature.0.verify(self.signer.0.as_ref(), &message) {
             return Err(RecordUpdateError::Signature);
         }
-        Ok(id)
+        Ok(RecordUpdateId(Hash(hash)))
     }
 }
 
@@ -264,6 +268,23 @@ impl RecordUpdateStatement {
 
     pub fn id(&self) -> Result<RecordUpdateId, CustomRingError> {
         Ok(RecordUpdateId(Hash(self.hash()?)))
+    }
+
+    /// The text `signer` signs, mirrored by `recordUpdateMessage` in `sdk-libs/ts/src/protocol/ring-rpc/record-update.ts`.
+    pub fn message(&self, signer: &Address) -> Result<Vec<u8>, CustomRingError> {
+        Ok(self.text(signer, &self.hash()?))
+    }
+
+    fn text(&self, signer: &Address, hash: &[u8; 32]) -> Vec<u8> {
+        format!(
+            "{RECORD_UPDATE_DOMAIN}\ncluster: {}\nring: {}\nregistry: {}\nsigner: {signer}\nupdate: {}\nvalid until slot: {}",
+            Hash(self.genesis_hash).to_base58(),
+            self.ring,
+            self.registry,
+            Hash(*hash).to_base58(),
+            self.valid_until_slot,
+        )
+        .into_bytes()
     }
 }
 

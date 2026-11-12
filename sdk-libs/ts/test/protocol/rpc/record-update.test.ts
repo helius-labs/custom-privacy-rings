@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { createKeyPairSignerFromPrivateKeyBytes, getBase58Decoder } from "@solana/kit";
+import { createKeyPairSignerFromPrivateKeyBytes, getBase58Decoder, signBytes } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
 import type { Address, Bytes32, Bytes33 } from "@heliuslabs/spr/interface";
@@ -9,10 +9,17 @@ import { P256ReaderKey } from "../../../src/operations/management/reader-access.
 import { WalletRecordUpdate } from "../../../src/operations/management/record-updates.js";
 import { listWrite } from "../../../src/operations/management/record-writes.js";
 import { ListId } from "../../../src/protocol/membership/policy.js";
-import { verifyRecordUpdate } from "../../../src/protocol/ring-rpc/record-update.js";
+import {
+  recordUpdateMessage,
+  recordUpdateStatementHash,
+  verifyRecordUpdate,
+} from "../../../src/protocol/ring-rpc/record-update.js";
 import { encodeSubmitRecordUpdateRequest } from "../../../src/protocol/ring-rpc/ring-rpc-codec.js";
 
 const base58 = getBase58Decoder();
+const decoder = new TextDecoder();
+
+type RecordUpdateVector = { message: string; wire: string; updateId: string };
 
 function filled(byte: number): Address {
   return base58.decode(new Uint8Array(32).fill(byte)) as Address;
@@ -25,7 +32,7 @@ describe("submitRecordUpdate", () => {
         new URL("../../../../../test-vectors/rpc/record_update.json", import.meta.url),
         "utf8",
       ),
-    ) as { wire: string; updateId: string };
+    ) as RecordUpdateVector;
     const wallet = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(7));
     const signed = await new WalletRecordUpdate({
       genesisHash: new Uint8Array(32).fill(3) as Bytes32,
@@ -47,10 +54,19 @@ describe("submitRecordUpdate", () => {
         "granted",
       )
       .sign(wallet);
+    expect(decoder.decode(recordUpdateMessage(signed, signed.signer))).toBe(vector.message);
     expect(JSON.stringify(encodeSubmitRecordUpdateRequest(signed))).toBe(vector.wire);
     expect(verifyRecordUpdate(signed)).toEqual(
       indexerScalars.hashBytes(vector.updateId as Parameters<typeof indexerScalars.hashBytes>[0]),
     );
+    // A wallet signs the text, a signature over the bare statement hash never verifies.
+    const bare = {
+      ...signed,
+      signature: base58.decode(
+        await signBytes(wallet.keyPair.privateKey, recordUpdateStatementHash(signed)),
+      ) as typeof signed.signature,
+    };
+    expect(() => verifyRecordUpdate(bare)).toThrow();
     // The signature covers the slot bound, a later one names another statement.
     const extended = { ...signed, update: { ...signed.update, validUntilSlot: 4243n } };
     expect(() => verifyRecordUpdate(extended)).toThrow();
@@ -64,7 +80,7 @@ describe("list approval", () => {
         new URL("../../../../../test-vectors/rpc/list_approval_update.json", import.meta.url),
         "utf8",
       ),
-    ) as { wire: string; updateId: string };
+    ) as RecordUpdateVector;
     const wallet = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(7));
     const signed = await new WalletRecordUpdate({
       genesisHash: new Uint8Array(32).fill(3) as Bytes32,
@@ -76,6 +92,7 @@ describe("list approval", () => {
       .withLists(listWrite({ set: [ListId.ringViewing] }))
       .awaitingListApproval([ListId.allow])
       .sign(wallet);
+    expect(decoder.decode(recordUpdateMessage(signed, signed.signer))).toBe(vector.message);
     expect(JSON.stringify(encodeSubmitRecordUpdateRequest(signed))).toBe(vector.wire);
     expect(verifyRecordUpdate(signed)).toEqual(
       indexerScalars.hashBytes(vector.updateId as Parameters<typeof indexerScalars.hashBytes>[0]),
