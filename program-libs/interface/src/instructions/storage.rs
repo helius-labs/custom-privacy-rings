@@ -8,6 +8,7 @@
 //! Read after `program-libs/interface/src/accounts/storage.rs`, `program-libs/interface/src/accounts/tracking.rs`.
 //! Read before `programs/storage/src/instructions/update.rs`.
 
+use arrayvec::ArrayVec;
 use bytemuck::{Pod, Zeroable};
 use solana_address::Address;
 use zolana_ring_policy::{ListSet, Member};
@@ -50,8 +51,21 @@ pub mod enrollment_kind {
 
 /// Most writes per `ApplyEnrollments`, as many first enrollments and their signatures as one transaction holds.
 pub const ENROLLMENT_BATCH: usize = 5;
-/// `ENROLLMENT_SIGNATURE_LABEL || registry || owner || TrackingEntry::hash`.
-pub const SIGNED_MESSAGE_LEN: usize = 105;
+/// The longest `EnrollmentWrite::signed` text, each base58 value at its widest.
+pub const SIGNED_MESSAGE_MAX_LEN: usize = domain::ENROLLMENT_SIGNATURE_DOMAIN.len()
+    + REGISTRY_LINE.len()
+    + BASE58_MAX_LEN
+    + ENTRY_LINE.len()
+    + BASE58_MAX_LEN
+    + ACTION_LINE.len()
+    + ENROLL_ACTION.len();
+
+const REGISTRY_LINE: &[u8] = b"\nregistry: ";
+const ENTRY_LINE: &[u8] = b"\nentry: ";
+const ACTION_LINE: &[u8] = b"\naction: ";
+const ENROLL_ACTION: &[u8; 6] = b"enroll";
+const ROTATE_ACTION: &[u8; 6] = b"rotate";
+const BASE58_MAX_LEN: usize = five8::BASE58_ENCODED_32_MAX_LEN;
 
 /// The creator signs and becomes the authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
@@ -125,10 +139,11 @@ pub enum EnrollmentChange<'a> {
 }
 
 /// The chain and the signature check read the same entry hash.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SignedWrite {
     pub entry_hash: [u8; 32],
-    pub message: [u8; SIGNED_MESSAGE_LEN],
+    /// The exact bytes a wallet's `signMessage` signs.
+    pub message: ArrayVec<u8, SIGNED_MESSAGE_MAX_LEN>,
 }
 
 /// Tag 7 data.
@@ -292,23 +307,34 @@ impl<'a> EnrollmentWrite<'a> {
         }
     }
 
-    /// The entry hash the apply chains, and the owner's message binding it to the registry so no other ring applies the signature.
+    /// The entry hash the apply chains, and the text binding it to the registry so no other ring applies the signature.
+    /// Values are base58, and the owner is the signing key the entry hash also binds.
     pub fn signed(&self, registry: &Address) -> Result<SignedWrite, StorageError> {
         let entry_hash = self
             .entry()?
             .hash()
             .map_err(|_| StorageError::HashingFailed)?;
-        let mut message = [0; SIGNED_MESSAGE_LEN];
-        let parts: [&[u8]; 4] = [
-            domain::ENROLLMENT_SIGNATURE_LABEL,
-            registry.as_ref(),
-            self.owner.as_ref(),
-            &entry_hash,
+        let action = match self.change {
+            EnrollmentChange::Enroll { .. } => ENROLL_ACTION,
+            EnrollmentChange::Rotate { .. } => ROTATE_ACTION,
+        };
+        let (mut registry_text, mut entry_text) = ([0; BASE58_MAX_LEN], [0; BASE58_MAX_LEN]);
+        let registry_len = usize::from(five8::encode_32(registry.as_array(), &mut registry_text));
+        let entry_len = usize::from(five8::encode_32(&entry_hash, &mut entry_text));
+        let parts: [&[u8]; 7] = [
+            domain::ENROLLMENT_SIGNATURE_DOMAIN.as_bytes(),
+            REGISTRY_LINE,
+            &registry_text[..registry_len],
+            ENTRY_LINE,
+            &entry_text[..entry_len],
+            ACTION_LINE,
+            &action[..],
         ];
-        let mut at = 0;
+        let mut message = ArrayVec::new();
         for part in parts {
-            message[at..at + part.len()].copy_from_slice(part);
-            at += part.len();
+            message
+                .try_extend_from_slice(part)
+                .map_err(|_| StorageError::InvalidInstructionData)?;
         }
         Ok(SignedWrite {
             entry_hash,
@@ -576,6 +602,6 @@ const _: () = assert!(core::mem::align_of::<ApplyEnrollmentsIxData>() == 1);
 const _: () = assert!(ApplyEnrollmentsIxData::SIZE == 241);
 const _: () = assert!(core::mem::align_of::<EnrollmentsAppliedEvent>() == 1);
 const _: () = assert!(core::mem::size_of::<EnrollmentsAppliedEvent>() == 81);
-const _: () = assert!(SIGNED_MESSAGE_LEN == 9 + 32 + 32 + 32);
+const _: () = assert!(SIGNED_MESSAGE_MAX_LEN == 144);
 const _: () = assert!(core::mem::align_of::<OwnerGrantIxData>() == 1);
 const _: () = assert!(OwnerGrantIxData::SIZE == 35);

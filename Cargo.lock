@@ -1534,6 +1534,7 @@ dependencies = [
  "arrayvec",
  "borsh",
  "bytemuck",
+ "five8",
  "groth16-solana",
  "hex",
  "serde",

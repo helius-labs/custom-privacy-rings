@@ -8,7 +8,7 @@ use custom_ring_interface::{
         event_kind, tag, ApplyEnrollmentsIxData, ApplyEnrollmentsRequest, AssetWrite, EnrollIxData,
         EnrollmentChange, EnrollmentWrite, EnrollmentsAppliedEvent, InitializeIxData,
         InitializeTrackingIxData, OwnerGrantIxData, StorageEvent, StorageUpdateIxData,
-        ENROLLMENT_BATCH,
+        ENROLLMENT_BATCH, SIGNED_MESSAGE_MAX_LEN,
     },
     tracking::{
         tracking_chain_start, viewing_hash, TrackingEntry, TrackingRegistry, TrackingRootUpdate,
@@ -31,6 +31,10 @@ const PROGRAM: Address = Address::new_from_array([7; 32]);
 const ENROLL_VECTOR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../test-vectors/registry/tracking_enroll.json"
+);
+const SIGNATURE_VECTOR: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../test-vectors/rpc/enrollment_signature.json"
 );
 fn key(byte: u8) -> Address {
     Address::new_from_array([byte; 32])
@@ -373,7 +377,7 @@ fn a_request_parses_exactly_its_count_of_writes() {
 }
 
 #[test]
-fn a_signed_message_names_the_registry_the_owner_and_the_entry() {
+fn a_signed_text_names_the_registry_the_entry_and_the_action() {
     let (ix, proof, owners) = (
         enroll_ix([9; 32]),
         CustomRingProof::zeroed(),
@@ -389,19 +393,21 @@ fn a_signed_message_names_the_registry_the_owner_and_the_entry() {
             .hash()
             .unwrap()
     );
+    let entry = Address::new_from_array(signed.entry_hash);
     assert_eq!(
-        signed.message.to_vec(),
-        [
-            &domain::ENROLLMENT_SIGNATURE_LABEL[..],
-            registry.as_ref(),
-            owners[0].as_ref(),
-            &signed.entry_hash,
-        ]
-        .concat()
+        std::str::from_utf8(&signed.message).unwrap(),
+        format!("zolana/ring-enrollment\nregistry: {registry}\nentry: {entry}\naction: enroll")
     );
-    // Another registry or another write gives another message.
+    let rotated = rotate.signed(&registry).unwrap();
+    let entry = Address::new_from_array(rotated.entry_hash);
+    assert_eq!(
+        std::str::from_utf8(&rotated.message).unwrap(),
+        format!("zolana/ring-enrollment\nregistry: {registry}\nentry: {entry}\naction: rotate")
+    );
+    // Another registry gives another text, and every value at its widest still fits.
     assert_ne!(enroll.signed(&key(0x12)).unwrap().message, signed.message);
-    assert_ne!(rotate.signed(&registry).unwrap().message, signed.message);
+    let widest = enroll.signed(&key(0xff)).unwrap().message;
+    assert!(widest.len() <= SIGNED_MESSAGE_MAX_LEN);
 }
 
 #[test]
@@ -1093,15 +1099,13 @@ fn enrollment_vector() -> Value {
         hex::encode(data)
     };
     json!({
-        "description": "One first enrollment and one rotation of the same owner. A write is owner || kind || body, kind 0 an EnrollIxData and a RegisterKey proof, kind 1 the new viewing key, the prior key and its seq (u64 le). viewing_hash(u, seq) is Poseidon(CRVH, u in two big endian limbs of 31 and 1 bytes, seq), a first enrollment takes seq 0 and each rotation prior_seq + 1. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven), a rotation's sealed fields zero, a first enrollment's prior zero. message is CRING/enr || registry || owner || entry_hash, the bytes the owner signs. chain_start is the hash chain of [CRTA, registry field, revision], chain_end folds Poseidon(chain, entry_hash) over both writes. Produced by program-libs/interface/tests/accounts.rs.",
+        "description": "One first enrollment and one rotation of the same owner. A write is owner || kind || body, kind 0 an EnrollIxData and a RegisterKey proof, kind 1 the new viewing key, the prior key and its seq (u64 le). viewing_hash(u, seq) is Poseidon(CRVH, u in two big endian limbs of 31 and 1 bytes, seq), a first enrollment takes seq 0 and each rotation prior_seq + 1. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven), a rotation's sealed fields zero, a first enrollment's prior zero. test-vectors/rpc/enrollment_signature.json pins the text each owner signs. chain_start is the hash chain of [CRTA, registry field, revision], chain_end folds Poseidon(chain, entry_hash) over both writes. Produced by program-libs/interface/tests/accounts.rs.",
         "registry": hex::encode(registry),
         "owner": hex::encode(owner),
         "enroll_write": encoded(enroll),
         "rotate_write": encoded(rotate),
         "enroll_entry_hash": hex::encode(signed_enroll.entry_hash),
-        "enroll_message": hex::encode(signed_enroll.message),
         "rotate_entry_hash": hex::encode(signed_rotate.entry_hash),
-        "rotate_message": hex::encode(signed_rotate.message),
         "chain_start": hex::encode(chain_start),
         "chain_end": hex::encode(
             [signed_enroll, signed_rotate]
@@ -1125,4 +1129,69 @@ fn the_enrollment_is_the_shared_vector() {
 fn write_tracking_enroll_vector() {
     let json = serde_json::to_string_pretty(&enrollment_vector()).expect("json");
     std::fs::write(ENROLL_VECTOR, json + "\n").expect("write vector file");
+}
+
+/// The writes of `enrollment_vector`, and the enroll under a registry whose base58 starts with ones.
+fn signature_vector() -> Value {
+    let owner = key(0x32);
+    let ix = EnrollIxData {
+        nullifier_pk: [0x23; 32],
+        list_tag: [0x24; 32],
+        viewing_u: [0x34; 32],
+        eph_u: [0x35; 32],
+        ciphertext: [0x36; 64],
+    };
+    let proof = CustomRingProof::zeroed();
+    let enroll = EnrollmentWrite {
+        owner: &owner,
+        change: EnrollmentChange::Enroll {
+            ix: &ix,
+            proof: &proof,
+        },
+    };
+    let rotate = EnrollmentWrite {
+        owner: &owner,
+        change: EnrollmentChange::Rotate {
+            viewing_u: &[0x37; 32],
+            prior_viewing_u: &ix.viewing_u,
+            prior_seq: &FIRST_SEQ,
+        },
+    };
+    let mut leading_zeros = [0x31; 32];
+    leading_zeros[..4].fill(0);
+    let case = |write: EnrollmentWrite<'_>, registry: Address| {
+        let signed = write.signed(&registry).unwrap();
+        let mut data = Vec::new();
+        write.encode_into(&mut data);
+        json!({
+            "registry": registry.to_string(),
+            "write": hex::encode(data),
+            "entry_hash": Address::new_from_array(signed.entry_hash).to_string(),
+            "message": String::from_utf8(signed.message.to_vec()).unwrap(),
+        })
+    };
+    json!({
+        "description": "The text an owner signs for one enrollment write, printable ASCII lines joined by \\n with no trailing newline: zolana/ring-enrollment, registry: <base58>, entry: <base58 of TrackingEntry::hash of the write>, action: enroll or rotate. The owner is the signing key, and the entry hash binds it. The signature is raw Ed25519 over these bytes, a wallet's signMessage, and the storage program checks it through the ed25519 precompile. Produced by program-libs/interface/tests/accounts.rs.",
+        "owner": owner.to_string(),
+        "cases": [
+            case(enroll, key(0x31)),
+            case(rotate, key(0x31)),
+            case(enroll, Address::new_from_array(leading_zeros)),
+        ],
+    })
+}
+
+#[test]
+fn the_enrollment_signature_is_the_shared_vector() {
+    let committed: Value =
+        serde_json::from_str(&std::fs::read_to_string(SIGNATURE_VECTOR).expect("vector file"))
+            .expect("vector json");
+    assert_eq!(committed, signature_vector());
+}
+
+#[test]
+#[ignore = "rewrites test-vectors/rpc/enrollment_signature.json"]
+fn write_enrollment_signature_vector() {
+    let json = serde_json::to_string_pretty(&signature_vector()).expect("json");
+    std::fs::write(SIGNATURE_VECTOR, json + "\n").expect("write vector file");
 }

@@ -634,9 +634,9 @@ export { privateListKey, publicListKey } from "../protocol/membership/private-li
 export { listSaltOf, listTagOf } from "../crypto/keys/list-salt.js";
 export {
   ENROLLMENT_BATCH,
-  ENROLLMENT_SIGNATURE_LABEL,
+  ENROLLMENT_SIGNATURE_DOMAIN,
   EnrollmentKind,
-  SIGNED_MESSAGE_LEN,
+  SIGNED_MESSAGE_MAX_LEN,
   encodeEnrollmentRecord,
   encodeEnrollmentWrite,
   signedWrite,

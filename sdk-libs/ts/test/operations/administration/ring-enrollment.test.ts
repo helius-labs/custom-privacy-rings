@@ -9,6 +9,7 @@ import {
   ZERO_32,
   ZERO_NULLIFIER_PK,
   addressBytes,
+  encodeBase58,
   hashBytes,
 } from "@heliuslabs/spr/internal";
 import type { Bytes32, Bytes33, Bytes64 } from "@heliuslabs/spr/interface";
@@ -246,7 +247,7 @@ describe("enrollment requests", () => {
     data.done();
   });
 
-  it("signs a 105-byte message over the registry, the owner and the proven entry hash", () => {
+  it("signs text naming the registry, the proven entry hash and the action", () => {
     const enroll = {
       owner: OWNER,
       change: { kind: "enroll", record: { ...SEAL, viewingU: VIEWING_U }, proof: PROOF },
@@ -256,11 +257,9 @@ describe("enrollment requests", () => {
     const signed = signedWrite(enroll, REGISTRY);
     expect(signed.entryHash).toEqual(trackingEntryHash(entry));
     const { message } = signed;
-    expect(message).toHaveLength(105);
-    expect(new TextDecoder().decode(message.subarray(0, 9))).toBe("CRING/enr");
-    expect(message.subarray(9, 41)).toEqual(addressBytes(REGISTRY, "registry"));
-    expect(message.subarray(41, 73)).toEqual(addressBytes(OWNER, "owner"));
-    expect(message.subarray(73)).toEqual(trackingEntryHash(entry));
+    expect(new TextDecoder().decode(message)).toBe(
+      `zolana/ring-enrollment\nregistry: ${REGISTRY}\nentry: ${encodeBase58(signed.entryHash)}\naction: enroll`,
+    );
     // A write signed for one registry applies to no other.
     expect(signedWrite(enroll, RING).message).not.toEqual(message);
     expect(entry.priorViewingHash).toEqual(ZERO_32);
@@ -282,7 +281,9 @@ describe("enrollment requests", () => {
       priorViewingHash: viewingKeyHash(priorU, 2n),
       proven: false,
     });
-    expect(signedWrite(rotate, REGISTRY).message).not.toEqual(message);
+    expect(new TextDecoder().decode(signedWrite(rotate, REGISTRY).message)).toMatch(
+      /\naction: rotate$/,
+    );
     // A key that returns takes a new hash, so a saved rotation names a hash the leaf left.
     expect(viewingKeyHash(priorU, 0n)).not.toEqual(viewingKeyHash(priorU, 2n));
     const replay = { ...rotate, change: { ...rotate.change, priorSeq: 0n } };

@@ -39,7 +39,7 @@ function rotationOf(owner: Address): SignedEnrollment {
 beforeAll(initializePoseidon);
 
 describe("enrollment submission", () => {
-  it("signs the write's message with the owner's key and carries the write's bytes", async () => {
+  it("signs the write's text with the owner's key and carries the write's bytes", async () => {
     const owner = await ownerSigner();
     const signed = rotationOf(owner.address);
     const request = await signEnrollment(signed, owner);
@@ -47,11 +47,13 @@ describe("enrollment submission", () => {
     expect(new Uint8Array(getBase64Encoder().encode(request.write))).toEqual(
       encodeEnrollmentWrite(signed.write),
     );
+    const { message } = signedWrite(signed.write, REGISTRY);
+    expect(new TextDecoder().decode(message)).toMatch(/^zolana\/ring-enrollment\nregistry: /);
     expect(
       await verifySignature(
         owner.keyPair.publicKey,
         new Uint8Array(getBase58Encoder().encode(request.signature)) as never,
-        signedWrite(signed.write, REGISTRY).message,
+        message,
       ),
     ).toBe(true);
     expect(Object.keys(encodeSubmitEnrollmentRequest(request))).toEqual([
