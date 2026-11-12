@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use bytemuck::Zeroable;
 use custom_ring_interface::{
     storage::{Revision, StorageRegistry},
-    storage_instruction::EnrollIxData,
+    storage_instruction::{EnrollIxData, EnrollmentWrite},
     tracking::viewing_hash,
     ApplyRecordsIxData, CustomRingProof, RingRoles, RING_POLICY, STORAGE_PROGRAM_ID,
 };
@@ -384,6 +384,32 @@ async fn a_write_the_program_would_refuse_is_never_held() {
     );
     applier.flush().await;
     assert!(chain.proved().is_empty());
+}
+
+/// The owner signs the enrollment text, a signature over the binary `CRING/enr` message is refused.
+#[tokio::test]
+async fn a_write_signed_over_the_binary_message_is_refused() {
+    let chain = StubChain::new();
+    let applier = applier(&chain).await;
+    let request = rotation(3);
+    let (write, _) = EnrollmentWrite::parse(&request.write.0).expect("write");
+    let entry = write.signed(&REGISTRY).expect("signed").entry_hash;
+    let binary = [
+        &b"CRING/enr"[..],
+        REGISTRY.as_ref(),
+        write.owner.as_ref(),
+        &entry,
+    ]
+    .concat();
+    let stale = SubmitEnrollmentRequest {
+        signature: owner(3).sign_message(&binary).into(),
+        ..request.clone()
+    };
+    assert_eq!(
+        refusal(applier.submit(stale).await),
+        EnrollmentRefusal::InvalidWrite
+    );
+    applier.submit(request).await.expect("held");
 }
 
 #[tokio::test]
