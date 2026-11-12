@@ -26,9 +26,10 @@ use thiserror::Error;
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
 use zolana_ring_client::rpc::{
-    GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, RelayId, RelayIntent,
-    RelayMergeInputs, RelayProofInputs, RelayProofInputsError, RelayQuote, RelayRail, RelayStatus,
-    RelayStep, SubmitRelayRequest, TokenAccountSetupError,
+    GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, ReadTarget, RelayId,
+    RelayIntent, RelayMergeInputs, RelayProofInputs, RelayProofInputsError, RelayQuote, RelayRail,
+    RelayRequestAttestation, RelayStatus, RelayStep, ServiceTarget, SubmitRelayRequest,
+    TokenAccountSetupError,
 };
 use zolana_ring_transaction::ClassifiedInput;
 
@@ -150,6 +151,7 @@ pub struct RelayParts {
 
 /// One stored record per `relayId`.
 pub struct Relay {
+    service: ServiceTarget,
     store: Store,
     prover: Arc<dyn RelayProver>,
     fee_payer: Keypair,
@@ -171,6 +173,7 @@ pub(crate) struct HeldMerge {
 
 #[must_use]
 struct PrepareCheck<'a> {
+    target: ReadTarget,
     request: &'a PrepareRelayRequest,
     payload: &'a RelayPayload,
     fee_payer: Address,
@@ -288,8 +291,10 @@ impl ServedRings for NoRings {
 }
 
 impl Relay {
-    pub fn new(parts: RelayParts) -> Self {
+    /// A deposit or merge request signs `service` into its attestation.
+    pub fn new(parts: RelayParts, service: ServiceTarget) -> Self {
         Self {
+            service,
             store: parts.store,
             prover: parts.prover,
             fee_payer: parts.fee_payer,
@@ -369,6 +374,7 @@ impl Relay {
             signer,
             setup,
         } = PrepareCheck {
+            target: self.service.ring(ring),
             request,
             payload: &payload,
             fee_payer: parties.fee_payer,
@@ -1471,6 +1477,7 @@ impl From<WriteError> for RingRpcError {
 impl PrepareCheck<'_> {
     fn check(self) -> Result<Checked, RingRpcError> {
         let Self {
+            target,
             request,
             payload,
             fee_payer,
@@ -1500,7 +1507,7 @@ impl PrepareCheck<'_> {
                 if !matches!(deposit.rail, RelayRail::Deposit { .. }) {
                     return Err(RelayError::RailMismatch.into());
                 }
-                // One funder signs every leg, the request digest spends the relay's proving.
+                // One funder signs every leg, its request attestation spends the relay's proving.
                 let mut funders = deposit.deposit_funders();
                 let depositor = funders.next().ok_or(RelayError::DepositorSignature)?;
                 if funders.any(|funder| funder != depositor) {
@@ -1516,9 +1523,11 @@ impl PrepareCheck<'_> {
                 else {
                     return Err(RelayError::DepositorSignature.into());
                 };
+                let attestation =
+                    RelayRequestAttestation::deposit(target, depositor, deposit, proof_inputs);
                 if !depositor_signature
                     .0
-                    .verify(depositor.as_ref(), &proof_inputs.deposit_request_digest())
+                    .verify(depositor.as_ref(), &attestation.message())
                 {
                     return Err(RelayError::DepositorSignature.into());
                 }
@@ -1535,19 +1544,22 @@ impl PrepareCheck<'_> {
                 else {
                     return Err(RelayError::OwnerSignature.into());
                 };
-                if !merge.sender.signing_pubkey.verify_message(
-                    &proof_inputs.merge_request_digest(),
-                    &<[u8; 64]>::from(owner_signature.0),
-                ) {
+                let owner = merge
+                    .sender
+                    .signing_pubkey
+                    .as_ed25519()
+                    .map(Address::new_from_array)
+                    .map_err(|_| RelayError::OwnerSignature)?;
+                let attestation = RelayRequestAttestation::merge(target, owner, proof_inputs);
+                if !merge
+                    .sender
+                    .signing_pubkey
+                    .verify_message(&attestation.message(), &<[u8; 64]>::from(owner_signature.0))
+                {
                     return Err(RelayError::OwnerSignature.into());
                 }
                 return Ok(Checked {
-                    signer: merge
-                        .sender
-                        .signing_pubkey
-                        .as_ed25519()
-                        .ok()
-                        .map(Address::new_from_array),
+                    signer: Some(owner),
                     ..unsigned
                 });
             }

@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio::sync::{watch, Mutex as AsyncMutex, Semaphore, SemaphorePermit};
 use zolana_ring_client::{
     auditor_view_tag,
-    rpc::{unix_now, KeyMode},
+    rpc::{unix_now, KeyMode, ServiceTarget},
     ReaderKey,
 };
 use zolana_ring_transaction::RingAssets;
@@ -871,10 +871,16 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         };
         let relay = self.relay.map(|parts| {
             Arc::new(
-                Relay::new(parts)
-                    .with_budget(self.relay_budget)
-                    .with_co_signer(co_signer.clone())
-                    .with_rings(Arc::new(HubRings(shared.clone()))),
+                Relay::new(
+                    parts,
+                    ServiceTarget {
+                        cluster: shared.genesis_hash,
+                        service: shared.service,
+                    },
+                )
+                .with_budget(self.relay_budget)
+                .with_co_signer(co_signer.clone())
+                .with_rings(Arc::new(HubRings(shared.clone()))),
             )
         });
         Ok(Hub {

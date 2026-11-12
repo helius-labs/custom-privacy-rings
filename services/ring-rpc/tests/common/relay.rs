@@ -28,7 +28,8 @@ use spr_transaction::{
     Data, Mint, SppProofOutputUtxo, Utxo,
 };
 use zolana_ring_client::rpc::{
-    PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayProofInputs, RelayQuote, RelayRail,
+    PrepareRelayRequest, ProofInputBytes, ReadTarget, RelayIntent, RelayProofInputs, RelayQuote,
+    RelayRail, RelayRequestAttestation,
 };
 use zolana_ring_rpc::{
     ChainOutcome, ChainSubmit, DelegateSeal, LatestBlockhash, ProvenRelay, RelayError,
@@ -314,11 +315,12 @@ pub fn proof_inputs(ring: Address, rail: RelayRail) -> RelayProofInputs {
 
 /// A SOL deposit to the owner, the depositor signs the request and later its funding.
 pub fn deposit_request(
+    target: ReadTarget,
     quote: RelayQuote,
-    ring: Address,
     depositor: &solana_keypair::Keypair,
     amount: u64,
 ) -> PrepareRelayRequest {
+    let ring = target.ring;
     let mut deposit = proof_inputs(ring, RelayRail::Deposit { plan: None });
     deposit.inputs = vec![SppProofInputUtxo::dummy_with_blinding([47; 32], 4).expect("dummy")];
     deposit.outputs[0].amount = amount;
@@ -333,9 +335,9 @@ pub fn deposit_request(
         },
     )];
     let proof_inputs = ProofInputBytes::new(deposit.encode().expect("encode"));
-    let depositor_signature = depositor
-        .sign_message(&proof_inputs.deposit_request_digest())
-        .into();
+    let attestation =
+        RelayRequestAttestation::deposit(target, depositor.pubkey(), &deposit, &proof_inputs);
+    let depositor_signature = depositor.sign_message(&attestation.message()).into();
     PrepareRelayRequest {
         ring: ring.into(),
         quote,

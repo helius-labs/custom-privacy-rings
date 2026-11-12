@@ -32,9 +32,9 @@ use spr_transaction::{
 };
 use zolana_ring_client::rpc::{
     GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, ProofInputBytes, RelayIntent,
-    RelayMergeInputs, RelayOperation, RelayProofInputs, RelayQuote, RelayRail, RelayStatus,
-    RelayStep, SubmitRelayRequest, TokenAccountSetup, GET_RELAY_QUOTE, GET_RELAY_STATUS,
-    PREPARE_RELAY, SUBMIT_RELAY,
+    RelayMergeInputs, RelayOperation, RelayProofInputs, RelayQuote, RelayRail,
+    RelayRequestAttestation, RelayStatus, RelayStep, ServiceTarget, SubmitRelayRequest,
+    TokenAccountSetup, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
 };
 use zolana_ring_rpc::{
     relay_module, Migrator, Relay, RelayBudget, RelayError, RelayParts, RingRpcError, ServedRings,
@@ -49,6 +49,11 @@ use relay_fixture::{
 };
 
 const RING: Address = Address::new_from_array([6; 32]);
+/// The relay under test runs as this service.
+const SERVICE: ServiceTarget = ServiceTarget {
+    cluster: [61; 32],
+    service: Address::new_from_array([62; 32]),
+};
 
 struct OneRing(Address);
 
@@ -98,12 +103,15 @@ impl Fixture {
         let fee_payer = Keypair::new_from_array([31; 32]);
         let fee_payer_address = fee_payer.pubkey();
         let store = store_fixture::test_store().await;
-        let relay = Relay::new(RelayParts {
-            store: store.clone(),
-            prover: prover.clone(),
-            fee_payer,
-            chain: chain.clone(),
-        })
+        let relay = Relay::new(
+            RelayParts {
+                store: store.clone(),
+                prover: prover.clone(),
+                fee_payer,
+                chain: chain.clone(),
+            },
+            SERVICE,
+        )
         .with_rings(Arc::new(OneRing(RING)))
         .with_budget(budget);
         let relay = Arc::new(relay);
@@ -283,7 +291,7 @@ async fn a_deposit_relays_through_the_depositors_signature() {
     let fixture = Fixture::new().await;
     let quote = fixture.quote(RelayOperation::Deposit).await;
     let depositor = Keypair::new_from_array([41; 32]);
-    let request = deposit_request(quote, RING, &depositor, 700);
+    let request = deposit_request(SERVICE.ring(RING), quote, &depositor, 700);
 
     let step: RelayStep = fixture.call(PREPARE_RELAY, &request).await;
 
@@ -324,26 +332,78 @@ async fn an_unsigned_deposit_reaches_no_prover_and_stores_nothing() {
     let fixture = Fixture::new().await;
     let quote = fixture.quote(RelayOperation::Deposit).await;
     let depositor = Keypair::new_from_array([41; 32]);
-    let mut request = deposit_request(quote, RING, &depositor, 700);
-    let RelayIntent::Deposit {
-        proof_inputs,
-        depositor_signature,
-    } = &mut request.intent
-    else {
-        panic!("a deposit request");
+    let honest = deposit_request(SERVICE.ring(RING), quote, &depositor, 700);
+    let proof_inputs = honest.intent.proof_inputs().clone();
+    let inputs = RelayProofInputs::decode(proof_inputs.as_bytes()).expect("decode");
+    let signed = |signer: &Keypair, message: &[u8]| PrepareRelayRequest {
+        intent: RelayIntent::Deposit {
+            proof_inputs: proof_inputs.clone(),
+            depositor_signature: signer.sign_message(message).into(),
+        },
+        ..honest.clone()
     };
-    *depositor_signature = Keypair::new_from_array([43; 32])
-        .sign_message(&proof_inputs.deposit_request_digest())
-        .into();
+    let text = |service: ServiceTarget| {
+        RelayRequestAttestation::deposit(
+            service.ring(RING),
+            depositor.pubkey(),
+            &inputs,
+            &proof_inputs,
+        )
+        .message()
+    };
+    let other_service = ServiceTarget {
+        service: Address::new_from_array([63; 32]),
+        ..SERVICE
+    };
+    let other_cluster = ServiceTarget {
+        cluster: [64; 32],
+        ..SERVICE
+    };
 
-    let refused = fixture.prepare(&request).await;
-
-    assert!(
-        refused_with(&refused, RelayError::DepositorSignature),
-        "{refused:?}"
-    );
+    for request in [
+        signed(&Keypair::new_from_array([43; 32]), &text(SERVICE)),
+        signed(&depositor, &proof_inputs.deposit_request_digest()),
+        signed(&depositor, &text(other_service)),
+        signed(&depositor, &text(other_cluster)),
+    ] {
+        let refused = fixture.prepare(&request).await;
+        assert!(
+            refused_with(&refused, RelayError::DepositorSignature),
+            "{refused:?}"
+        );
+    }
     assert!(fixture.prover.requests.lock().expect("requests").is_empty());
     assert_eq!(fixture.row_count().await, 0);
+}
+
+/// The depositor reads its leg and the request digest in the text it signs.
+#[test]
+fn a_deposit_request_text_names_its_leg_and_digest() {
+    let depositor = Keypair::new_from_array([41; 32]);
+    let quote = RelayQuote {
+        fee_payer: Address::new_from_array([31; 32]).into(),
+        valid_until_slot: SLOT,
+    };
+    let request = deposit_request(SERVICE.ring(RING), quote, &depositor, 700);
+    let proof_inputs = request.intent.proof_inputs();
+    let inputs = RelayProofInputs::decode(proof_inputs.as_bytes()).expect("decode");
+    let text = RelayRequestAttestation::deposit(
+        SERVICE.ring(RING),
+        depositor.pubkey(),
+        &inputs,
+        proof_inputs,
+    )
+    .message();
+    let digest = spr_indexer_api::Hash(proof_inputs.deposit_request_digest()).to_base58();
+    assert_eq!(
+        String::from_utf8(text).expect("text"),
+        format!(
+            "zolana/ring-rpc-relay-deposit\ncluster: {}\nservice: {}\nring: {RING}\nsigner: {}\ndeposit: 11111111111111111111111111111111 700\nrequest: {digest}",
+            spr_indexer_api::Hash(SERVICE.cluster).to_base58(),
+            SERVICE.service,
+            depositor.pubkey(),
+        )
+    );
 }
 
 /// A deposit frame names one funder that is not the fee payer and rides the deposit rail.
@@ -354,18 +414,22 @@ async fn a_deposit_frame_off_the_deposit_rail_or_its_one_funder_is_refused() {
     let depositor = Keypair::new_from_array([41; 32]);
     let resigned = |inputs: &RelayProofInputs, signer: &Keypair| {
         let proof_inputs = ProofInputBytes::new(inputs.encode().expect("encode"));
-        let depositor_signature = signer
-            .sign_message(&proof_inputs.deposit_request_digest())
-            .into();
+        let attestation = RelayRequestAttestation::deposit(
+            SERVICE.ring(RING),
+            signer.pubkey(),
+            inputs,
+            &proof_inputs,
+        );
+        let depositor_signature = signer.sign_message(&attestation.message()).into();
         PrepareRelayRequest {
             intent: RelayIntent::Deposit {
                 proof_inputs,
                 depositor_signature,
             },
-            ..deposit_request(quote.clone(), RING, &depositor, 700)
+            ..deposit_request(SERVICE.ring(RING), quote.clone(), &depositor, 700)
         }
     };
-    let honest = deposit_request(quote.clone(), RING, &depositor, 700);
+    let honest = deposit_request(SERVICE.ring(RING), quote.clone(), &depositor, 700);
     let inputs = RelayProofInputs::decode(honest.intent.proof_inputs().as_bytes()).expect("decode");
 
     let mut confidential =
@@ -389,8 +453,12 @@ async fn a_deposit_frame_off_the_deposit_rail_or_its_one_funder_is_refused() {
                 recipient: second.pubkey(),
             },
         ));
-    let fee_payer_funds =
-        deposit_request(quote.clone(), RING, &Keypair::new_from_array([31; 32]), 700);
+    let fee_payer_funds = deposit_request(
+        SERVICE.ring(RING),
+        quote.clone(),
+        &Keypair::new_from_array([31; 32]),
+        700,
+    );
 
     for (request, error) in [
         (
@@ -559,9 +627,11 @@ async fn a_merge_relays_with_one_wallet_call() {
         inputs: spends.inputs.iter().map(note).collect(),
     };
     let proof_inputs = ProofInputBytes::new(merge.encode().expect("encode"));
-    let owner_signature = owner_wallet()
-        .sign_message(&proof_inputs.merge_request_digest())
-        .into();
+    let text = |service: ServiceTarget| {
+        RelayRequestAttestation::merge(service.ring(RING), owner_wallet().pubkey(), &proof_inputs)
+            .message()
+    };
+    let owner_signature = owner_wallet().sign_message(&text(SERVICE)).into();
     let signed_by = |owner_signature| PrepareRelayRequest {
         ring: RING.into(),
         quote: quote.clone(),
@@ -571,15 +641,22 @@ async fn a_merge_relays_with_one_wallet_call() {
         },
         co_signers: Vec::new(),
     };
-    let stranger = Keypair::new_from_array([43; 32])
-        .sign_message(&proof_inputs.merge_request_digest())
-        .into();
+    let other_service = ServiceTarget {
+        service: Address::new_from_array([63; 32]),
+        ..SERVICE
+    };
 
-    let refused = fixture.prepare(&signed_by(stranger)).await;
-    assert!(
-        refused_with(&refused, RelayError::OwnerSignature),
-        "{refused:?}"
-    );
+    for refused in [
+        Keypair::new_from_array([43; 32]).sign_message(&text(SERVICE)),
+        owner_wallet().sign_message(&proof_inputs.merge_request_digest()),
+        owner_wallet().sign_message(&text(other_service)),
+    ] {
+        let refused = fixture.prepare(&signed_by(refused.into())).await;
+        assert!(
+            refused_with(&refused, RelayError::OwnerSignature),
+            "{refused:?}"
+        );
+    }
     assert!(fixture.prover.requests.lock().expect("requests").is_empty());
 
     let step: RelayStep = fixture
