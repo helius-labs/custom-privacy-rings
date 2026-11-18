@@ -8,10 +8,9 @@ use async_trait::async_trait;
 use custom_ring_interface::CoSignScope;
 use sea_orm::{ConnectionTrait, DbErr, TransactionTrait};
 use solana_address::Address;
-use solana_keypair::Keypair;
 use solana_message::VersionedMessage;
 use solana_signature::Signature;
-use solana_signer::Signer;
+use zolana_operator_custody::SigningIdentity;
 use zolana_ring_policy::{
     ApprovalInputs, ApprovalMask, Member, MintPolicy, OwnerDebit, PublicGross,
 };
@@ -82,7 +81,7 @@ pub struct TransferRead {
 pub(crate) struct RecordLimits<S>(pub(crate) Arc<Shared<S>>);
 
 pub struct LimitedCoSignerInit<L> {
-    pub signer: Keypair,
+    pub signer: SigningIdentity,
     pub limits: L,
     pub store: Arc<Store>,
     pub approval: CoSignerApproval,
@@ -149,7 +148,7 @@ struct WindowCap {
 impl<L: AssetLimitSource> LimitedCoSignerInit<L> {
     pub fn build(self) -> LimitedCoSigner<L> {
         let rule = WindowRule {
-            signer: self.signer.pubkey(),
+            signer: self.signer.address(),
             limits: self.limits,
             store: self.store,
             approval: self.approval,
@@ -625,6 +624,9 @@ mod tests {
     use solana_message::Message;
     use zolana_ring_policy::AssetLimits;
 
+    use solana_keypair::Keypair;
+    use solana_signer::Signer;
+
     use super::cosign_window_tests::clear_usage;
     use super::*;
     use crate::cosign::{ApproveClass, CoSignPolicy, CoSignRequest};
@@ -918,7 +920,7 @@ mod tests {
         approval: CoSignerApproval,
     ) -> LimitedCoSigner<FixedLimits> {
         LimitedCoSignerInit {
-            signer: Keypair::new_from_array([5; 32]),
+            signer: Arc::new(Keypair::new_from_array([5; 32])),
             limits,
             store: Arc::new(store),
             approval,
@@ -1279,7 +1281,7 @@ mod tests {
         slots: impl IntoIterator<Item = u64>,
     ) -> LimitedCoSigner<TimedLimits> {
         LimitedCoSignerInit {
-            signer: Keypair::new_from_array([5; 32]),
+            signer: Arc::new(Keypair::new_from_array([5; 32])),
             limits: TimedLimits {
                 limits: within_limits(),
                 slots: Mutex::new(slots.into_iter().collect()),

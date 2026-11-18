@@ -19,6 +19,8 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum RingRpcError {
+    #[error("operator signing failed")]
+    Custody(#[from] zolana_operator_custody::CustodyError),
     #[error("ring_program_id is required when keys are derived per ring")]
     RingRequired,
     #[error("ring is not served by the local auditor key")]
@@ -226,6 +228,7 @@ impl From<RingRpcError> for ErrorObjectOwned {
                 error!("indexer returned data outside the audit bounds");
                 (ErrorCode::InternalError, "indexer response is invalid")
             }
+            Custody(_) => (ErrorCode::InternalError, "operator signing failed"),
             Derivation(_) | AuditorKey(_) => {
                 error!("auditor key derivation failed");
                 (ErrorCode::InternalError, "auditor key is unavailable")

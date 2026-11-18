@@ -14,7 +14,6 @@ use custom_ring_test_validator::{
         owner_member, policy_registry, PolicyTransfer, RegistryWrite, RingNotes, DEPOSIT, RELEASED,
         TRANSFER_AMOUNT,
     },
-    ring_rpc::{LocalRingRpc, RingRpcSpec},
     shared::{custom_ring_program_id, setup, RegisterRing, TestEnv, Tier, ACTOR_AIRDROP},
 };
 use solana_signer::Signer;
@@ -146,8 +145,7 @@ fn the_cli_pins_the_released_rows_and_governs_its_demo_transfers() -> Result<()>
         .run(ring.config(env.client.as_async()))?
         .ok_or_else(|| anyhow!("config after init"))?;
     assert_eq!(
-        config.roles.policy,
-        demo.project.policy_authority.pubkey(),
+        config.roles.policy, demo.project.policy_authority,
         "the `policy_authority` key holds the policy role"
     );
     assert!(config.has_policy, "policy tier");
@@ -243,25 +241,16 @@ impl<'a> Egress<'a> {
 struct DemoRing<'a> {
     env: &'a TestEnv,
     ring: CustomRing,
-    auditor: X25519Keypair,
     project: RingProject,
-    _ring_rpc: LocalRingRpc,
 }
 
 impl<'a> DemoRing<'a> {
     fn init(env: &'a TestEnv, policy: &str) -> Result<Self> {
         let ring = CustomRing::new(custom_ring_program_id()?);
-        let auditor = X25519Keypair::new();
-        let ring_rpc = RingRpcSpec {
-            env,
-            ring: ring.program_id(),
-            auditor: auditor.clone(),
-        }
-        .serve()?;
-        let project = RingProject::create(env, &auditor.pubkey())?;
+        let project = RingProject::create(env)?;
         project.write_config(RingToml {
             env,
-            ring_rpc: &ring_rpc.url,
+            ring_rpc: &project.ring_rpc.url,
             policy: Some(policy),
             mode: ModeName::Confidential,
         })?;
@@ -269,20 +258,14 @@ impl<'a> DemoRing<'a> {
         for line in ["policy      created", "spp ring    registered"] {
             assert!(init.contains(line), "{line} in\n{init}");
         }
-        Ok(Self {
-            env,
-            ring,
-            auditor,
-            project,
-            _ring_rpc: ring_rpc,
-        })
+        Ok(Self { env, ring, project })
     }
 
     fn grant_reader(&self) -> Result<()> {
         self.project.run(&[
             "reader",
             "grant",
-            &self.project.policy_authority.pubkey().to_string(),
+            &self.project.policy_authority.to_string(),
         ])?;
         Ok(())
     }
@@ -290,12 +273,12 @@ impl<'a> DemoRing<'a> {
     /// Each demo deposit is an audited transfer of dummies, only spends count here.
     fn audited_transfers(&self) -> Result<Vec<AuditedTransaction>> {
         let client = self.env.client.as_async();
-        let scan = RingScan::new(self.ring.program_id(), self.auditor.pubkey())
+        let scan = RingScan::new(self.ring.program_id(), self.project.auditor.pubkey())
             .with_tracking_registry(self.ring.tracking_registry()?);
         let mut transactions = self
             .env
             .client
-            .block_on(scan.audit(&self.auditor, client.indexer(), client.rpc()))?
+            .block_on(scan.audit(&self.project.auditor, client.indexer(), client.rpc()))?
             .transactions;
         transactions.retain(|transaction| transaction.real_inputs > 0);
         Ok(transactions)

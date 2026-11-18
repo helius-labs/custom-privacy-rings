@@ -1,24 +1,21 @@
 //! The ring's operating controls, each read back from the chain after a change.
 
-use std::path::Path;
-
 use anyhow::{anyhow, bail, ensure, Context as _, Result};
 use custom_ring_interface::RingRole;
 use custom_ring_sdk::{
     ClearCoSigner, CoSignScope, CustomRingCoSigner, RingRegistration, SetCoSigner, SetDelegate,
 };
 use solana_address::Address;
-use solana_signer::Signer;
 use spr_keypair::X25519Keypair;
 use zolana_ring_policy::ListId;
 
 use crate::{
     config::{Base58Address, CoSignClass, CoSignerSpec},
-    file, keys, line,
+    line,
     list::{ListChange, ListUpdate, Subject},
     policy,
     ui::{self, icon},
-    CoSignerCommand, Context, DelegateCommand, ReaderCommand, AUDITOR_KEY_FILE,
+    CoSignerCommand, Context, DelegateCommand, ReaderCommand,
 };
 
 #[must_use]
@@ -66,11 +63,11 @@ pub fn cosigner(ctx: &Context, command: CoSignerCommand) -> Result<()> {
             }
             .check()?;
             let payer = ctx.funded_authority()?;
-            let cosign_admin = ctx.role_keypair(RingRole::CosignAdmin)?;
+            let cosign_admin = ctx.role_signer(RingRole::CosignAdmin)?;
             let set = SetCoSigner {
                 ring: ctx.ring,
-                payer: payer.pubkey(),
-                authority: cosign_admin.pubkey(),
+                payer: payer.address(),
+                authority: cosign_admin.address(),
                 signer: spec.key.0,
                 scope,
             }
@@ -90,7 +87,7 @@ pub fn cosigner(ctx: &Context, command: CoSignerCommand) -> Result<()> {
                 *policy != current.get(member).copied().unwrap_or_default()
             });
             // Set the co-signer before applying its threshold records.
-            ctx.send(&[payer, &cosign_admin], &[set])?;
+            ctx.send_operator(&[payer.as_ref(), cosign_admin.as_ref()], &[set])?;
             crate::records::write_mint_policies(ctx, &desired)?;
             line("co-signer", format_args!("{} set", spec.key));
             print_cosigners(ctx, Some(spec.key.0))
@@ -103,15 +100,15 @@ pub fn cosigner(ctx: &Context, command: CoSignerCommand) -> Result<()> {
                 "{signer} holds no co-signer record"
             );
             let payer = ctx.funded_authority()?;
-            let cosign_admin = ctx.role_keypair(RingRole::CosignAdmin)?;
+            let cosign_admin = ctx.role_signer(RingRole::CosignAdmin)?;
             let clear = ClearCoSigner {
                 ring: ctx.ring,
-                authority: cosign_admin.pubkey(),
+                authority: cosign_admin.address(),
                 signer,
-                rent_recipient: payer.pubkey(),
+                rent_recipient: payer.address(),
             }
             .instruction();
-            ctx.send(&[payer, &cosign_admin], &[clear])?;
+            ctx.send_operator(&[payer.as_ref(), cosign_admin.as_ref()], &[clear])?;
             line("co-signer", format_args!("{signer} cleared"));
             print_cosigners(ctx, None)
         }
@@ -189,7 +186,6 @@ pub fn reader(ctx: &Context, command: ReaderCommand) -> Result<()> {
         label: format!("reader {reader}"),
     };
     let outcomes = ListUpdate {
-        authority: ctx.authority()?,
         list_id: ListId::Reader,
         subjects: core::slice::from_ref(&subject),
         change,
@@ -207,12 +203,12 @@ pub fn pause(ctx: &Context, paused: bool) -> Result<()> {
         (true, false) => "already open",
         (false, _) => {
             let payer = ctx.funded_authority()?;
-            let pauser = ctx.role_keypair(RingRole::Pauser)?;
+            let pauser = ctx.role_signer(RingRole::Pauser)?;
             let set = match paused {
-                true => ctx.ring.pause(pauser.pubkey())?,
-                false => ctx.ring.resume(pauser.pubkey())?,
+                true => ctx.ring.pause(pauser.address())?,
+                false => ctx.ring.resume(pauser.address())?,
             };
-            ctx.send(&[payer, &pauser], &[set])?;
+            ctx.send_operator(&[payer.as_ref(), pauser.as_ref()], &[set])?;
             ["resumed", "paused"][usize::from(paused)]
         }
     };
@@ -230,27 +226,30 @@ pub fn pause(ctx: &Context, paused: bool) -> Result<()> {
 
 pub fn delegate(ctx: &Context, command: DelegateCommand) -> Result<()> {
     match command {
-        DelegateCommand::Set { delegate_keypair } => {
-            let delegate = file::read_keypair(&ctx.path(&delegate_keypair))?;
+        DelegateCommand::Set => {
+            let delegate = ctx.delegate_signer()?;
             let config = ctx.ring_config()?;
             if let Some(current) = config.delegate {
                 bail!("the ring's delegate {current} is permanent");
             }
             DualControl {
                 cosigner: ctx.config.cosigner.as_ref().map(|spec| spec.key.0),
-                delegate: Some(delegate.pubkey()),
+                delegate: Some(delegate.address()),
             }
             .check()?;
-            ring_auditor_key(ctx, Path::new(AUDITOR_KEY_FILE))?;
+            ring_auditor_key(ctx)?;
             let payer = ctx.funded_authority()?;
-            let admin = ctx.role_keypair(RingRole::Admin)?;
+            let admin = ctx.role_signer(RingRole::Admin)?;
             let set = SetDelegate {
                 ring: ctx.ring,
-                authority: admin.pubkey(),
-                delegate: delegate.pubkey(),
+                authority: admin.address(),
+                delegate: delegate.address(),
             };
-            ctx.send(&[payer, &admin, &delegate], &[set.instruction()])?;
-            line("delegate", format_args!("{} set", delegate.pubkey()));
+            ctx.send_operator(
+                &[payer.as_ref(), admin.as_ref(), delegate.as_ref()],
+                &[set.instruction()],
+            )?;
+            line("delegate", format_args!("{} set", delegate.address()));
         }
         DelegateCommand::Show => {}
         DelegateCommand::Move(args) => return crate::delegate::run_move(ctx, *args),
@@ -263,14 +262,12 @@ pub fn delegate(ctx: &Context, command: DelegateCommand) -> Result<()> {
 }
 
 /// The auditor read key opens recovery material, it cannot authorize a transfer.
-pub(crate) fn ring_auditor_key(ctx: &Context, path: &Path) -> Result<X25519Keypair> {
+pub(crate) fn ring_auditor_key(ctx: &Context) -> Result<X25519Keypair> {
     let config = ctx.ring_config()?;
-    let path = ctx.path(path);
-    let auditor = keys::read(&path)?;
+    let auditor = ctx.audit_key()?;
     ensure!(
         auditor.pubkey() == config.auditor_pubkey,
-        "{} does not hold the ring auditor read key {}",
-        path.display(),
+        "the KMS auditor key differs from the ring auditor {}",
         hex::encode(config.auditor_pubkey.as_bytes())
     );
     Ok(auditor)

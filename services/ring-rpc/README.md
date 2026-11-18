@@ -4,34 +4,74 @@ Ring RPC holds an auditor viewing key and opens custom ring transfer outputs. It
 
 ## Keys
 
-Local mode serves one ring with one auditor key file. Generate the key before `Initialize` creates the ring account.
+Provision the auditor before ring initialization. Use an AWS KMS signing key
+with key spec `ECC_NIST_EDWARDS25519` and usage `SIGN_VERIFY` for the service.
+Use a symmetric KMS encryption key to wrap the auditor secret. Supply full key
+ARNs. Export `AWS_REGION` and a stable `RING_RPC_DEPLOYMENT` name.
+For a single ring, export its program address as `RING_RPC_RING_PROGRAM_ID`.
+Set `GENESIS_HASH` to the cluster genesis hash from a trusted source.
 
 ```bash
-cargo run -p zolana-ring-rpc -- keygen --out keys/auditor.key
-cargo run -p zolana-ring-rpc -- keygen --kind service --out keys/service.key
-cargo run -p zolana-ring-rpc -- serve \
-  --indexer-url http://127.0.0.1:8784 \
-  --rpc-url http://127.0.0.1:8899 \
-  --auditor-key-file keys/auditor.key \
-  --service-key-file keys/service.key \
-  --ring-program-id <program-id>
+set -eu -o noclobber
+service="$(ring-rpc signer-ref --key-arn "$SERVICE_KEY_ARN")"
+auditor="$(ring-rpc provision --wrapping-key-arn "$WRAPPING_KEY_ARN" \
+  --purpose auditor --genesis-hash "$GENESIS_HASH" --ring-program-id "$RING_RPC_RING_PROGRAM_ID")"
+jq -n --argjson service "$service" --argjson auditor "$auditor" \
+  '{service:$service,auditor:$auditor}' > custody.json
+ring-rpc serve --custody custody.json --rpc-url "$SOLANA_RPC_URL" --indexer-url "$INDEXER_URL"
 ```
 
-The command writes the secret with owner access only. It writes the X25519 public key to `keys/auditor.key.pub`.
+The manifest holds public signing identities and KMS ciphertext. Back it up
+and restrict who can replace it. For derived mode, provision `auditor-root`
+and omit the ring program ID from provisioning and serving. A replacement
+root changes the auditor address of every ring derived from it. Keep the
+wrapping key, encryption context and original ciphertext for the life of the
+ring.
 
-Derived mode serves a stable key for each ring and cluster, for as many rings as ask. Generate a root secret with `keygen --kind root`. Protect one root as carefully as all keys derived from it. The root yields auditor keys and no other key. The key comes from the root, the cluster genesis hash and the ring program id, so a new ring needs no configuration, no restart, and nothing stored. Repointing the service at another cluster changes every derived key and orphans every ring already registered.
+The Rust SDK skips SSO session names that contain spaces. For an existing
+AWS CLI session with such a name, add this profile to the same AWS config file.
+Replace `operator-sso` with the signed-in CLI profile name and export
+`AWS_PROFILE=ring-operator`. The SDK reads temporary credentials from the CLI through a pipe.
 
-Every other role reads its own secret file, and `keygen --kind <role>` writes each one. The service key of `--service-key-file` signs the `createAuditorKey` answers, and every read and grant signature binds its public key. Every `serve` needs it. The storage authority of `--storage-authority-key-file` signs and pays for every records write, and `--store-url` needs it. The co-signer of `--co-signer-key-file` turns co-signing on and needs `--store-url`. The 32-byte secret of `--grant-rows-key-file` keys the reader grant rows, and `--reader-grants database` needs it. A missing file stops `serve` with an error that names its flag.
+```ini
+[profile ring-operator]
+credential_process = aws configure export-credentials --profile "operator-sso" --format process
+```
 
-A relay pays fees with its own Ed25519 key, apart from the auditor and service keys. Generate it with `keygen --kind fee-payer`, fund it, and pass it with `--fee-payer-key-file`, a `--store-url` for the relay records and the ring prover's `--prover-url`.
+The provisioning identity needs `kms:GetPublicKey` on the signing key and
+`kms:GenerateDataKeyWithoutPlaintext` on the wrapping key. Give the service
+workload `kms:GetPublicKey` and `kms:Sign` on its signing keys and
+`kms:Decrypt` on the wrapping key. Restrict signing to
+`ED25519_SHA_512`. Restrict decryption to the encryption context
+`application=zolana-custom-rings-v1`, `deployment`, `genesis` and `purpose`.
+A single-ring auditor also binds `ring`. The service opens auditor secrets in
+process memory. Disable host swap, core dumps and request body logging on the
+RPC and prover hosts. Disable Redis snapshots and append-only files for proof
+queues.
 
-The enrollment writer of `--enrollment-applier-key-file` holds the ring's `EnrollmentWriter` role, signs and pays every `EnrollBatch`, and needs `--prover-url`. It writes for each ring of `--enrollment-apply-ring` and for each ring registered through `registerEnrollmentRing`. `--enrollment-budget-lamports` caps the batch fees it spends over the process life. It defaults to zero, and while it is zero `submitEnrollment` refuses with `-32185`. `--enrollment-ring-budget-lamports` caps the fees of one ring over the process life, a tenth of the budget by default, and a ring past it refuses with `-32185` too. `--enrollment-max-rings` caps the registered rings, 256 by default, and a registration past it refuses with `-32186`.
+Use a distinct KMS signing key for each optional role. Set
+`storage_authority` to the funded records writer when using `--store-url`.
+Set `--prover-url` for the writer. To enable co-signing, configure the store,
+the `co_signer` key and its permitted operation classes with `--co-signer-approve`.
+Set `fee_payer` to the funded relay identity and configure its prover URL and store.
+For database reader grants, provision `grant-rows` with the same deployment
+and genesis and put its ciphertext reference in `grant_rows`.
+
+The ECS test deployment uses a derived auditor. Grant the deployer `iam:PassRole`
+on the task and execution roles. Set `RINGS_TEST_GENESIS_HASH`,
+`RINGS_TEST_SERVICE_KEY_ARN` and `RINGS_TEST_WRAPPING_KEY_ARN`. Run
+`tools/rings-test-deploy.sh provision` once, then set `RINGS_TEST_INDEXER_URL`
+and run `tools/rings-test-deploy.sh up`. Each RPC task uses version 1 of the custody
+record in Parameter Store. Teardown retains the record and both KMS keys.
+The test load balancer accepts plain HTTP. For production, terminate TLS on
+a trusted ingress and restrict access to the RPC and prover origins.
+
+The signer in `enrollment_applier` must hold the ring's `EnrollmentWriter` role.
+It signs and pays for each `EnrollBatch` and needs `--prover-url`. It writes for each ring of `--enrollment-apply-ring` and for each ring registered through `registerEnrollmentRing`. `--enrollment-budget-lamports` caps the batch fees it spends over the process life. It defaults to zero, and while it is zero `submitEnrollment` refuses with `-32185`. `--enrollment-ring-budget-lamports` caps the fees of one ring over the process life, a tenth of the budget by default, and a ring past it refuses with `-32185` too. `--enrollment-max-rings` caps the registered rings, 256 by default, and a registration past it refuses with `-32186`.
 
 `registerEnrollmentRing` takes a ring and the authorization of the policy authority its ring policy names, with no fallback to the upgrade authority. The action line is `register enrollments by <writer>`, the writer key `health` names. The service accepts the ring once its policy names that key as `EnrollmentWriter` and its tracking registry exists, and a repeated registration answers the same. With `--store-url` the registered rings stay across a restart, without a store they live in process memory. A batch pass reads the writer role again, and a registered ring that names another key drops with its stored row.
 
 Token account creates stay off until the operator funds them. A token account the relay creates spends the fee payer's lamports, and the relay budget bounds it. `--relay-budget-lamports` caps the lamports reserved and spent over the store's life, and `--relay-signer-budget-lamports` caps what one signer holds outstanding at once. Both default to zero. While either is zero, `serve` logs that token account creates are off and `prepareRelay` refuses one with `-32210`. To turn them on, set both and fund the fee payer with at least the total. Raise the total to fund more. Any other relay pays only its fee and needs no budget.
-
-`serve` refuses to start when two role files hold the same secret, the auditor key file and the root secret included. It compares the secrets in constant time.
 
 A ring must take its auditor key from the service before `Initialize` creates its ring account. The ring account fixes the auditor for the life of the ring, so a ring registered with any other key can never be read here, whatever the service derives for it. `ringStatus` reports which of the three cases a ring is in.
 
@@ -74,7 +114,7 @@ In `tree` mode a reader holds its grant in the ring's own storage tree, the `Sto
 
 `getWalletActivity` names a `wallet` and returns one `WalletActivity` for each transaction that wallet is a party to, and no skipped rows. The sender of an anonymous transfer sees its inputs, every output, the payload errors and the withdrawals. A confidential spender is an owner signer or the owner the SPP proof verifies. It sees every output, the payload errors and the withdrawals. An owner the SPP proof verifies also sees its inputs. The owner of an output sees only its own outputs and the withdrawals it receives. A fee payer or co-signer outside the owner signers is no party. A delegate transfer has no spender. `getAuditedMerges` and `getAuditedUtxos` with a `wallet` return the merges and notes it owns. `getDecryptedTransactions` serves whole transactions to a ring-wide read only, and a granted read whose method and wallet disagree fails with `-32270`. A ring-wide grant covers every wallet, a wallet grant only its own wallet. The wallet joins the signed attestation as a last `wallet:` line, and a read without one signs no such line.
 
-`database` mode needs `--store-url`. The service keeps both grants in its own database and never reads the storage tree for a grant, so a ring without a records registry still serves its readers. `setReaderGrant` writes a wallet grant under the wallet's raw Ed25519 signature, and a ring-wide grant with no wallet under the signature of the policy authority the ring policy names. The signature covers `zolana/ring-rpc-reader-grant`, the cluster, service, ring, the wallet when named, reader, action, timestamp and nonce, under the skew and nonce set of a read. Each accepted call appends one row, sealed with AES-256-GCM under a key HKDF-SHA256 derives with `zolana/ring-rpc-grant-rows` from the secret of `--grant-rows-key-file`. Beside its insert id, a row keeps in plaintext only the HMAC-SHA256 of the reader key under the same derivation, also the associated data. The row with the latest signed timestamp holds, the later write on a tie. A ring-wide row holds for every wallet. The record writer refuses an update that writes or awaits a `reader` list with `-32230`, because no read checks it. Write access to the database can drop a revocation row, so protect it like the service key.
+`database` mode needs `--store-url`. The service keeps both grants in its own database and never reads the storage tree for a grant, so a ring without a records registry still serves its readers. `setReaderGrant` writes a wallet grant under the wallet's raw Ed25519 signature, and a ring-wide grant with no wallet under the signature of the policy authority the ring policy names. The signature covers `zolana/ring-rpc-reader-grant`, the cluster, service, ring, the wallet when named, reader, action, timestamp and nonce, under the skew and nonce set of a read. Each accepted call appends a row sealed with AES-256-GCM. HKDF-SHA256 derives its key from the unwrapped `grant_rows` secret with the label `zolana/ring-rpc-grant-rows`. Beside its insert id, a row keeps in plaintext only the HMAC-SHA256 of the reader key under the same derivation, also the associated data. The row with the latest signed timestamp holds, the later write on a tie. A ring-wide row holds for every wallet. The record writer refuses an update that writes or awaits a `reader` list with `-32230`, because no read checks it. Write access to the database can drop a revocation row, so protect it like the service key.
 
 Allowed WebAuthn origins need an explicit RP ID. The RP ID can be the origin host or a valid parent domain. Cross origin assertions are rejected.
 
@@ -138,7 +178,7 @@ Errors are `-32220` the signer is not the ring delegate, `-32221` the ring seals
 
 `--store-url` turns the record writer on. The store takes a `postgres://` or `sqlite://` URL. The writer proves every storage update, so the service refuses to start with a store and no `--prover-url`, or with a prover and no store. The prover must serve the ring apply keys.
 
-The writer signs and pays for every storage update with the storage authority key of `--storage-authority-key-file`. `keygen --kind storage-authority` prints its address, and the service logs it at start. Fund it before the first ring. A registry the writer serves names the key as its authority, and the ring policy account names the registry as its records.
+The writer signs and pays for every storage update with the signing key pinned in `storage_authority`. Fund it before the first ring. A registry the writer serves names the key as its authority, and the ring policy account names the registry as its records.
 
 `createRecordsRegistry` creates a ring's records, the `StorageRegistry` of the storage authority under the ring program id, and pays for them. The ring's policy authority signs the request, or the program's upgrade authority before `Initialize`, over `zolana/ring-rpc-policy-authority` with the `action:` line `create records`. A repeated request returns the same registry. The service answers once the creation confirms and fails with `-32260` when it does not land. `zolana-ring init` binds these records at `Initialize` with the storage authority the answer names.
 
@@ -178,11 +218,11 @@ The ring program reads every root from the live registry account a transfer or m
 
 ## Co-signer limits
 
-`LimitedCoSigner` implements the `CoSignPolicy` trait the relay calls before it submits a transaction that demands the co-signer. It reads each asset's `AssetLimits` from the asset's record in the ring's own storage registry, checks the opening against the newest root of that registry, and signs only when every limit holds. Window limits are optional service policy and never a ring limit. They bind only a transaction that needs Ring RPC's signature, and the ring program checks only the co-signature. They bind every operation of a class, such as Transfers, only when Ring RPC is the one co-signer that covers that class. Otherwise a transfer below the co-sign bound, or one another co-signer signs, can pass uncounted. The co-sign bound and the withdrawal threshold cap nothing. Above one a transfer needs an approver's signature, and any co-signer whose scope covers that approval can give it. No proof carries a window limit. A proof of one would need authenticated usage state that every transaction updates. With `--co-signer-key-file`, `serve` gives it to the relay, and a host that spawns `ManagedMerge` takes it from `Hub::co_signer`. Without a co-signer key `Hub::co_signer` refuses every co-signature, and a hub with a co-signer key and no store refuses to build. [Co-signing](../../docs/design/co-signing.md#window-limits-in-ring-rpc) gives each limit and its window.
+`LimitedCoSigner` implements the `CoSignPolicy` trait the relay calls before it submits a transaction that demands the co-signer. It reads each asset's `AssetLimits` from the asset's record in the ring's own storage registry, checks the opening against the newest root of that registry, and signs only when every limit holds. Window limits are optional service policy and never a ring limit. They bind only a transaction that needs Ring RPC's signature, and the ring program checks only the co-signature. They bind every operation of a class, such as Transfers, only when Ring RPC is the one co-signer that covers that class. Otherwise a transfer below the co-sign bound, or one another co-signer signs, can pass uncounted. The co-sign bound and the withdrawal threshold cap nothing. Above one a transfer needs an approver's signature, and any co-signer whose scope covers that approval can give it. No proof carries a window limit. A proof of one would need authenticated usage state that every transaction updates. The relay applies the policy for the signing identity in `co_signer`. Without a co-signer key `Hub::co_signer` refuses every co-signature, and a hub with a co-signer key and no store refuses to build. [Co-signing](../../docs/design/co-signing.md#window-limits-in-ring-rpc) gives each limit and its window.
 
 A transfer's flows come from the frame the co-signer signs, opened with the auditor key. The message must be version 1, so a lookup table refuses. It must hold exactly one instruction that names the ring or SPP program, as its program or as an account, and that instruction must be the transfer. Any other message refuses with `-32164`, and an input the service has not opened refuses with `-32163`. A signature reserves each owner and asset once. Window totals use an indexed sum. Finalized success confirms the reservation, and finalized failure or expiry releases its totals. A released signature cannot reserve again. Repeating settlement changes nothing. Replicas using the same co-signer key must share one store. Different signing keys cannot share one message allowance. The relay passes the co-signature to `settle`, since it names the transaction before the fee payer signs. A reservation the relay never settles counts until its window passes. A decision first writes the `cosign_admission` row of its ring and each asset, and holds the write locks until its transaction ends. Concurrent decisions therefore grant each allowance once. The decision reads its slot after the asset locks and before the window totals. A backward slot or a changed slot at the final read rolls back admission. The final read precedes commit. Commit delay and transaction landing do not move the reservation's slot.
 
-`keygen --kind co-signer` prints the co-signer public key for the ring's `CoSigner` record, and `serve` logs it at start.
+Use the pinned `co_signer.address` in the ring's `CoSigner` record.
 
 Co-signer errors are `-32160` disabled, `-32161` over a limit, `-32162` an asset named twice, `-32163` unreadable limits, `-32164` a message with anything but one readable ring transfer, `-32165` no approved class the operation demands, `-32166` a released reservation and `-32296` an asset with no record.
 
@@ -246,7 +286,7 @@ The check runs before RPC execution and nonce consumption, so a gateway forwards
 
 `GET /health` reports the service identity. `GET /ready` checks Photon and Solana RPC. In local mode it also checks that the ring policy still names the auditor key held here. In derived mode it re-reads the cluster genesis hash and fails when it differs from the one captured at boot, because that hash binds every derived key. A failed probe names the check in the response body.
 
-Three lanes admit every JSON RPC method but `health` and the relay methods, which the relay bounds by its proof concurrency, and each lane has its own one-second request window. `ringStatus` takes the public lane, the one lane without a concurrency cap. `createAuditorKey` and `getAuditedUtxos` take an authentication slot, since they verify a signature and read the chain. `getDecryptedTransactions`, `getWalletActivity` and `getAuditedMerges` release the authentication slot after the read authorization and hold a read slot for the page. A reader runs one read request at a time on each ring. `GET /ready` takes no lane, runs one upstream probe at a time and answers from its last result for one second. Key files must have owner access only unless the operator selects the shared file option.
+Three lanes admit every JSON RPC method but `health` and the relay methods, which the relay bounds by its proof concurrency, and each lane has its own one-second request window. `ringStatus` takes the public lane, the one lane without a concurrency cap. `createAuditorKey` and `getAuditedUtxos` take an authentication slot, since they verify a signature and read the chain. `getDecryptedTransactions`, `getWalletActivity` and `getAuditedMerges` release the authentication slot after the read authorization and hold a read slot for the page. A reader runs one read request at a time on each ring. `GET /ready` takes no lane, runs one upstream probe at a time and answers from its last result for one second.
 
 ## Rate limiting
 

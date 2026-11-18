@@ -5,6 +5,7 @@ use std::{
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use sea_orm::{ConnectionTrait, Statement};
+use solana_keypair::Keypair;
 use solana_message::Message;
 use zolana_ring_policy::AssetLimits;
 
@@ -112,7 +113,7 @@ impl Window {
     fn over(store: Store, frame: Vec<OwnerFlow>) -> Self {
         let slot = Arc::new(AtomicU64::new(START_SLOT));
         let co_signer = LimitedCoSignerInit {
-            signer: Keypair::new_from_array([5; 32]),
+            signer: Arc::new(Keypair::new_from_array([5; 32])),
             limits: Clocked {
                 slot: slot.clone(),
                 limits: std::sync::Mutex::new(SENDER_LIMITS),

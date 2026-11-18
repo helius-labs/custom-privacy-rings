@@ -11,7 +11,8 @@ import {
   lamports,
   type Address,
   type Instruction,
-  type KeyPairSigner,
+  type MessagePartialSigner,
+  type TransactionPartialSigner,
 } from "@solana/kit";
 
 import type { CustomRingClient } from "../../src/rpc/client.js";
@@ -44,19 +45,16 @@ import {
 import type { RingSubmissionTransport } from "../../src/rpc/ports.js";
 import {
   currentSlot,
-  liveHarness,
+  liveClient,
+  requiredEnv,
   signSendAndConfirm,
   waitForSignature,
   type Actor,
 } from "./live-helpers.js";
 
-const SETTLE_MS = 180_000;
+import { authoritySigner, reservedProgram, type LocalnetSigner } from "./localnet-kms.js";
 
-export function requiredEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`the ring live test requires ${name}`);
-  return value;
-}
+const SETTLE_MS = 180_000;
 
 export async function freshActor(client: CustomRingClient): Promise<Actor> {
   const seed = new Uint8Array(32);
@@ -80,16 +78,13 @@ export async function airdrop(client: CustomRingClient, recipient: Address): Pro
   await waitForSignature(client.solanaRpc, signature);
 }
 
-export async function keypairSignerFromFile(path: string): Promise<KeyPairSigner> {
-  const bytes = Uint8Array.from(JSON.parse(await readFile(path, "utf8")) as number[]);
-  return createKeyPairSignerFromBytes(bytes);
-}
-
 /** A proof-carrying ring instruction declares its tag's budget, any other the default, the first signer pays. */
 export async function sendInstruction(
   client: CustomRingClient,
   instruction: Instruction,
-  signer: KeyPairSigner | readonly [KeyPairSigner, ...KeyPairSigner[]],
+  signer:
+    | TransactionPartialSigner
+    | readonly [TransactionPartialSigner, ...TransactionPartialSigner[]],
   computeUnitLimit = 200_000,
 ): Promise<void> {
   const signers = "address" in signer ? [signer] : signer;
@@ -105,8 +100,8 @@ export async function sendInstruction(
 
 /** A ring deployed from `RING_PROGRAM_SO`, only a policy kind pins a table. */
 export type FreshRing = Readonly<{
-  program: KeyPairSigner;
-  authority: KeyPairSigner;
+  program: TransactionPartialSigner;
+  authority: LocalnetSigner;
   /** A derived-mode ring rpc releases the key once the program exists. */
   auditor: X25519PublicKey | Readonly<{ releasedBy: RingRpc }>;
   /** Lets the delegate rail transact. */
@@ -194,7 +189,7 @@ export async function createRing(client: CustomRingClient, ring: FreshRing): Pro
 export interface ReadableRing {
   readonly client: CustomRingClient;
   readonly ringProgramId: Address;
-  readonly authority: KeyPairSigner;
+  readonly authority: LocalnetSigner;
   readonly ringRpc: RingRpc;
   readonly target: RingReadTarget;
 }
@@ -205,11 +200,11 @@ export async function readableRing(
     | Readonly<{ kind: "anonymousPolicy"; table: RuleTable }>,
 ): Promise<ReadableRing> {
   // Ring deposits need the prover route.
-  const { client } = await liveHarness("prover");
+  const client = await liveClient("prover");
   const ringRpc = new RingRpc(requiredEnv("RING_RPC_URL"), { allowInsecureHttp: true });
   if ((await ringRpc.health()).mode !== "derived")
     throw new Error("the ring suites need a ring rpc that derives each ring's auditor key");
-  const authority = (await freshActor(client)).signer;
+  const authority = authoritySigner();
   const program = await reservedProgram(client);
   const ringProgramId = program.address;
   for (let i = 0; i < 6; i++) await airdrop(client, authority.address);
@@ -229,18 +224,6 @@ export async function readableRing(
     }).sign(authority),
   );
   return { client, ringProgramId, authority, ringRpc, target };
-}
-
-/** Ring RPC applies enrollments only for rings the live recipe reserves. */
-async function reservedProgram(client: CustomRingClient): Promise<KeyPairSigner> {
-  for (const path of requiredEnv("RING_E2E_PROGRAM_KEYPAIRS").split(",")) {
-    const program = await keypairSignerFromFile(path);
-    const { value } = await client.solanaRpc
-      .getAccountInfo(program.address, { encoding: "base64" })
-      .send();
-    if (value === null) return program;
-  }
-  throw new Error("every reserved ring program is deployed, the live recipe reserves too few");
 }
 
 /** A ring note spends only under an applied tracking row. */
@@ -331,7 +314,7 @@ export async function ringReadTarget(
 export async function waitForAudited(
   ringRpc: RingRpc,
   target: RingReadTarget,
-  signer: KeyPairSigner,
+  signer: MessagePartialSigner,
   signature: string,
 ) {
   for (let attempt = 0; attempt < 120; attempt++) {
@@ -349,7 +332,7 @@ export async function waitForAudited(
 export async function settle(
   submission: RingTransactionSubmission,
   client: CustomRingClient,
-  signers: readonly KeyPairSigner[],
+  signers: readonly TransactionPartialSigner[],
 ) {
   return settleWithTransport(submission, createKitRingSubmissionTransport(client, signers));
 }

@@ -12,11 +12,10 @@ use custom_ring_test_validator::{
         owner_member, policy_registry, CuratedRings, PolicyTransfer, RegistryWrite, RingNotes,
         APPROVED_AND_UNBLOCKED, BLOCK_ONLY, DEPOSIT, TRANSFER_AMOUNT,
     },
-    ring_rpc::{LocalRingRpc, RingRpcSpec},
     shared::{send_expecting_rejection, ExpectRejection, TestEnv},
 };
 use solana_signer::Signer;
-use spr_keypair::{ShieldedKeypair, X25519Keypair};
+use spr_keypair::ShieldedKeypair;
 use spr_program_test::Rejection;
 use spr_transaction::Utxo;
 use zolana_ring_policy::ListId;
@@ -65,13 +64,13 @@ fn the_policy_authority_re_pins_the_table_of_a_live_ring() -> Result<()> {
     let egress = Egress { ring, sender, env };
 
     // 1. `init` pins the Block row from `ring.toml` at generation 1.
-    let Subscriber { project, ring_rpc } = init_subscriber(&rings, FORBID_BLOCK_TOML)?;
+    let project = init_subscriber(&rings, FORBID_BLOCK_TOML)?;
     custom_ring_test_validator::policy::EnrollOwners {
         ring,
         owners: &[sender, blocked, &clean],
         env,
     }
-    .send()?;
+    .submit(&project.enrollment_rpc())?;
     let pinned = policy_registry(ring, env)?;
     assert_eq!(pinned.rule_table()?, BLOCK_ONLY);
     assert_eq!(pinned.generation(), 1);
@@ -106,7 +105,7 @@ fn the_policy_authority_re_pins_the_table_of_a_live_ring() -> Result<()> {
     let both = APPROVED_AND_UNBLOCKED_TOML;
     project.write_config(RingToml {
         env,
-        ring_rpc: &ring_rpc.url,
+        ring_rpc: &project.ring_rpc.url,
         policy: Some(both),
         mode: ModeName::Confidential,
     })?;
@@ -236,11 +235,13 @@ fn a_curated_block_list_binds_beside_the_subscribers_own_approval_list() -> Resu
     };
 
     // 1. The subscriber pins both rules with Block read from the curator.
-    let Subscriber {
-        project,
-        ring_rpc: _ring_rpc,
-    } = init_subscriber(&rings, &block(CURATED_BLOCK_TOML, &rings))?;
-    custom_ring_test_validator::policy::enroll_actors(env, ring)?;
+    let project = init_subscriber(&rings, &block(CURATED_BLOCK_TOML, &rings))?;
+    custom_ring_test_validator::policy::EnrollOwners {
+        ring,
+        owners: &[&env.sender.keypair, &env.recipient.keypair],
+        env,
+    }
+    .submit(&project.enrollment_rpc())?;
     let pinned = policy_registry(ring, env)?;
     assert_eq!(pinned.rule_table()?, APPROVED_AND_UNBLOCKED);
     assert_eq!(pinned.generation(), 1);
@@ -301,18 +302,11 @@ fn block(literal: &str, rings: &CuratedRings) -> String {
 }
 
 /// After `init` the project's `policy_authority` key holds the policy role.
-fn init_subscriber(rings: &CuratedRings, policy: &str) -> Result<Subscriber> {
-    let auditor = X25519Keypair::new();
-    let ring_rpc = RingRpcSpec {
-        env: &rings.env,
-        ring: rings.subscriber.program_id(),
-        auditor: auditor.clone(),
-    }
-    .serve()?;
-    let project = RingProject::create(&rings.env, &auditor.pubkey())?;
+fn init_subscriber(rings: &CuratedRings, policy: &str) -> Result<RingProject> {
+    let project = RingProject::create(&rings.env)?;
     project.write_config(RingToml {
         env: &rings.env,
-        ring_rpc: &ring_rpc.url,
+        ring_rpc: &project.ring_rpc.url,
         policy: Some(policy),
         mode: ModeName::Confidential,
     })?;
@@ -320,13 +314,7 @@ fn init_subscriber(rings: &CuratedRings, policy: &str) -> Result<Subscriber> {
     for line in ["policy      created", "spp ring    registered"] {
         assert!(init.contains(line), "{line} in\n{init}");
     }
-    Ok(Subscriber { project, ring_rpc })
-}
-
-/// `ring_rpc` serves until the subscriber drops.
-struct Subscriber {
-    project: RingProject,
-    ring_rpc: LocalRingRpc,
+    Ok(project)
 }
 
 struct Egress<'a> {

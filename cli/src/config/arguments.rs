@@ -23,7 +23,7 @@ pub struct Cli {
         env = "RING_PROVER_TEE_POLICY"
     )]
     pub prover_tee_policy: Option<PathBuf>,
-    /// Pays the member operations of an anonymous ring, never the hidden owner.
+    /// Anonymous rings require a fee payer with a different address from the owner.
     #[arg(
         long,
         value_name = "FILE",
@@ -37,7 +37,7 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Create the ring directory with ring.toml and the program keypair.
+    /// Create `ring.toml` with the program address from the operator manifest.
     New(NewArgs),
     /// Recorded answers and on-chain state.
     Status,
@@ -55,7 +55,7 @@ pub enum Command {
     /// Create the config with the auditor key, pin the policy and register the ring with SPP.
     Init(InitArgs),
     /// Deploy, init, check the ring rpc, grant the authority and transact.
-    Pipeline(DeployArgs),
+    Pipeline(ProgramArgs),
     /// Two ring deposits and one custom-ring transfer, read back from the ring RPC.
     Transact(TransactArgs),
     /// Pay recipients inside the ring from fresh deposits or from the sender's notes.
@@ -90,8 +90,8 @@ pub enum Command {
     /// Read, check and replace the pinned rule table.
     #[command(subcommand)]
     Policy(PolicyCommand),
-    /// Print the local auditor key's public key, or create the key file.
-    AuditorKey(AuditorKeyArgs),
+    /// Print the auditor's X25519 public key in hex.
+    AuditorKey,
     /// Open the ring's transactions with the auditor key, read from the indexer.
     Audit(AuditArgs),
     /// Mint a `zolana:` payment request for the member on an anonymous ring.
@@ -184,12 +184,8 @@ pub enum CoSignerCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum DelegateCommand {
-    /// Set the delegate once, signed by the delegate and the admin, with the ring auditor key at hand.
-    Set {
-        /// The delegate's keypair, it signs the set and every later move.
-        #[arg(long)]
-        delegate_keypair: PathBuf,
-    },
+    /// Set the permanent delegate from the operator manifest.
+    Set,
     Show,
     /// Move a source member's ring balance to shielded addresses over the delegate rail.
     Move(Box<DelegateMoveArgs>),
@@ -208,21 +204,14 @@ pub struct DelegateMoveArgs {
     /// The mint moved, `sol` by default.
     #[arg(long)]
     pub mint: Option<Mint>,
-    #[arg(long)]
-    pub delegate_keypair: PathBuf,
-    /// The X25519 auditor read key, separate from the Solana delegate signer.
-    #[arg(long, default_value = AUDITOR_KEY_FILE)]
-    pub auditor_key: PathBuf,
-    #[command(flatten)]
-    pub cosigner: CosignerArg,
 }
 
 /// The co-signer of a ring whose scope covers the operation.
 #[derive(Debug, Default, Args)]
 pub struct CosignerArg {
-    /// The co-signer keypair when the ring's co-signer scope covers the operation.
+    /// Request a signature from the Ring RPC co-signer with the given public key.
     #[arg(long)]
-    pub cosigner_keypair: Option<PathBuf>,
+    pub cosigner: Option<Address>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -251,18 +240,15 @@ pub enum ReaderCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum AuthorityCommand {
-    /// Hand the program to another key, then set `upgrade_authority_keypair`.
+    /// Transfer the program upgrade authority to the signer named in a JSON file.
     Transfer {
-        new_authority: Address,
+        new_signer: PathBuf,
         /// Confirms the new key, nobody else can hand the program back.
         #[arg(long)]
         yes: bool,
     },
-    /// Hand one ring role to another keypair, the admin and the new key sign.
-    UpdateRole {
-        role: RoleName,
-        new_keypair: PathBuf,
-    },
+    /// Transfer one ring role to the KMS signer named in a JSON file.
+    UpdateRole { role: RoleName, new_signer: PathBuf },
     /// Stop every deposit, transfer and merge of the ring.
     Pause,
     /// Open the ring again after a pause.
@@ -288,9 +274,9 @@ pub struct NewArgs {
     /// Answer every question with its default.
     #[arg(long)]
     pub silent: bool,
-    /// Recorded in ring.toml, `~` stays literal for other machines.
-    #[arg(long, default_value = new::DEFAULT_AUTHORITY_KEYPAIR)]
-    pub authority_keypair: String,
+    /// Load the KMS signer references from a JSON file.
+    #[arg(long)]
+    pub operator_manifest: PathBuf,
     /// A `ring.toml` or any toml file with a `[policy]` table, replaces the policy questions.
     #[arg(long)]
     pub policy_from: Option<PathBuf>,
@@ -305,22 +291,9 @@ pub struct LocalnetArgs {
 
 #[derive(Debug, Args)]
 pub struct AuditArgs {
-    /// The X25519 auditor read key the ring config pins.
-    #[arg(long, default_value = AUDITOR_KEY_FILE)]
-    pub auditor_key: PathBuf,
     /// Continue from the cursor an earlier run printed.
     #[arg(long)]
     pub cursor: Option<String>,
-}
-
-#[derive(Debug, Args)]
-pub struct AuditorKeyArgs {
-    /// The auditor secret a local ring rpc serves, its `.pub` sits beside it.
-    #[arg(long, default_value = AUDITOR_KEY_FILE)]
-    pub key_file: PathBuf,
-    /// Create the key and its `.pub` instead of reading it, refuses to overwrite.
-    #[arg(long)]
-    pub create: bool,
 }
 
 #[derive(Debug, Args)]
@@ -348,12 +321,19 @@ pub struct ReplyClaimsArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct DeployArgs {
+pub struct ProgramArgs {
     /// A local binary instead of the released ring program.
     #[arg(long)]
     pub program_so: Option<PathBuf>,
-    #[arg(long, default_value = PROGRAM_KEYPAIR_FILE)]
-    pub program_keypair: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct DeployArgs {
+    #[command(flatten)]
+    pub program: ProgramArgs,
+    /// Refund the upload buffer for the selected program binary.
+    #[arg(long)]
+    pub close_buffer: bool,
 }
 
 #[derive(Debug, Args)]
@@ -364,20 +344,16 @@ pub struct InitArgs {
     /// Accept the ring RPC's auditor key without a pinned service key in ring.toml.
     #[arg(long)]
     pub trust_ring_rpc: bool,
-    /// Pin the key in `keys/` even though the ring RPC is not on this machine.
-    /// Only a ring RPC holding that key can ever open the ring.
-    #[arg(long)]
-    pub local_auditor: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct TransactArgs {
-    /// Lamports the recipient receives, deposited twice by the authority.
+    /// Lamports per deposit and per payment to the recipient.
     #[arg(long, default_value_t = DEFAULT_TRANSACT_AMOUNT)]
     pub amount: u64,
     #[command(flatten)]
     pub cosigner: CosignerArg,
-    /// `in-proof` signs the spend inside the proof and the authority pays, on a confidential ring.
+    /// Use `in-proof` on a confidential ring to authorize the spend inside the proof.
     #[arg(long, value_enum, default_value_t = OwnerRail::Signer)]
     pub owner_rail: OwnerRail,
     /// Localnet only, the authority lists both demo parties on the ring's own allow list.
@@ -419,7 +395,7 @@ pub struct TransferArgs {
     pub default_ring: bool,
     #[command(flatten)]
     pub cosigner: CosignerArg,
-    /// `in-proof` signs the spend inside the proof and the authority pays, on a confidential ring.
+    /// Use `in-proof` on a confidential ring to authorize the spend inside the proof.
     #[arg(long, value_enum, default_value_t = OwnerRail::Signer)]
     pub owner_rail: OwnerRail,
     /// Wallet that signs in public and spends its zero-key notes, each note's sender learns the spend.
@@ -436,7 +412,7 @@ pub struct BalanceArgs {
 
 #[derive(Debug, Args)]
 pub struct DepositArgs {
-    /// Base units the authority deposits into the sender's ring balance.
+    /// Base units the wallet fee payer deposits into the sender's ring balance.
     #[arg(
         long,
         default_value_t = DEFAULT_TRANSACT_AMOUNT,

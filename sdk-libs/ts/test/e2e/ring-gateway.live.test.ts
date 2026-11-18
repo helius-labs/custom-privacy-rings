@@ -4,7 +4,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { RingRpc } from "../../src/ring/index.js";
-import { requiredEnv } from "./ring-live-helpers.js";
+import { requiredEnv } from "./live-helpers.js";
 
 describe.skipIf(process.env["RING_GATEWAY_URL"] === undefined)("ring gateway", () => {
   let endpoint: URL;

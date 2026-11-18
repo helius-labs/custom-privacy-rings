@@ -63,7 +63,6 @@ mod transfers;
 use std::{
     collections::HashMap,
     net::{TcpStream, ToSocketAddrs},
-    path::PathBuf,
     time::Duration,
 };
 
@@ -123,7 +122,6 @@ use spr_program::instruction::{
 use spr_program_test::Rejection;
 use spr_test_utils::wallet::Wallet;
 use spr_test_utils::{
-    localnet::isolated_temp_path,
     smart_account,
     spl::{create_token_account, mint_to},
     test_validator_asserts::{
@@ -139,10 +137,8 @@ use spr_transaction::{
 use spr_tree::TreeAccount;
 use spr_user_registry_interface::user_registry_program_id;
 use zolana_ring_client::{
-    auditor_view_tag,
-    rpc::{write_auditor_key, CreateAuditorKeyRequest},
-    AuditedTransaction, AuditedUtxo, KnownUtxo, OutputOpening, RecoveryStep, RingRecovery,
-    RingScan, SourceMember, ViewingHistory,
+    auditor_view_tag, rpc::CreateAuditorKeyRequest, AuditedTransaction, AuditedUtxo, KnownUtxo,
+    OutputOpening, RecoveryStep, RingRecovery, RingScan, SourceMember, ViewingHistory,
 };
 use zolana_ring_keys::{RingAddress, RingPaymentRequest};
 use zolana_ring_policy::{ListId, Member, Rule, RuleTable, Subject};
@@ -215,17 +211,10 @@ fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
     let env = setup()?;
     let tree = env.register_default_tree()?;
     let ring = CustomRing::new(custom_ring_program_id()?);
-    let auditor = X25519Keypair::new();
-    let ring_rpc = RingRpcSpec {
-        env: &env,
-        ring: ring.program_id(),
-        auditor: auditor.clone(),
-    }
-    .serve()?;
-    let project = RingProject::create(&env, &auditor.pubkey())?;
+    let project = RingProject::create(&env)?;
     project.write_config(RingToml {
         env: &env,
-        ring_rpc: &ring_rpc.url,
+        ring_rpc: &project.ring_rpc.url,
         policy: None,
         mode: ModeName::Anonymous,
     })?;
@@ -246,7 +235,7 @@ fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
         owners: &[&sender],
         env: &env,
     }
-    .send()?;
+    .submit(&project.enrollment_rpc())?;
     for &amount in amounts {
         let deposit = RingDeposit {
             ring,
@@ -264,7 +253,7 @@ fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
 
     let output = project.run(&[
         "--fee-payer-keypair",
-        "upgrade.json",
+        project.member_fee_payer()?,
         "merge",
         "--count",
         &count,

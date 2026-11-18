@@ -1,30 +1,27 @@
+import { address } from "@solana/kit";
 import type { ProofDataSource } from "@heliuslabs/spr/client";
-import { createCustomRingClient, type CustomRingClient } from "../../src/rpc/client.js";
-import { liveHarness as sppLiveHarness } from "../../../../zolana/sdk-libs/ts/test/e2e/live-helpers.js";
-import type { LiveHarness } from "../../../../zolana/sdk-libs/ts/test/e2e/live-helpers.js";
+import { createCustomRingClient } from "../../src/rpc/client.js";
 
 export {
-  actor,
   currentSlot,
-  fund,
   signSendAndConfirm,
-  sync,
   waitForSignature,
   type Actor,
 } from "../../../../zolana/sdk-libs/ts/test/e2e/live-helpers.js";
 
-/** The zolana harness whose client also proves and reads the ring circuits. */
-export async function liveHarness(
-  proofDataSource?: ProofDataSource,
-): Promise<LiveHarness & Readonly<{ client: CustomRingClient }>> {
-  const harness = await sppLiveHarness();
-  const client = await createCustomRingClient({
-    solanaRpcUrl: harness.rpcUrl,
-    indexerUrl: harness.indexerUrl,
-    proverUrl: harness.proverUrl,
-    tree: harness.tree,
+export function requiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`the ring live test requires ${name}`);
+  return value;
+}
+
+export function liveClient(proofDataSource?: ProofDataSource) {
+  return createCustomRingClient({
+    solanaRpcUrl: requiredEnv("ZOLANA_LOCALNET_URL"),
+    indexerUrl: requiredEnv("ZOLANA_INDEXER_URL"),
+    proverUrl: requiredEnv("ZOLANA_PROVER_URL"),
+    tree: address(requiredEnv("ZOLANA_TREE")),
     ...(proofDataSource === undefined ? {} : { proofDataSource }),
-    indexerConfig: harness.client.indexerConfig,
+    indexerConfig: { poll: { numRetries: 120, delayMs: 250n, maxDelayMs: 2_000n } },
   });
-  return { ...harness, client };
 }

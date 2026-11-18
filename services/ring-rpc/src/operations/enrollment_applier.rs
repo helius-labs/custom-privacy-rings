@@ -24,11 +24,10 @@ use custom_ring_interface::{
 use custom_ring_sdk::{CustomRing, EnrollBatch, ProvenEnrollBatch};
 use log::warn;
 use solana_address::Address;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
-use spr_client::{compile_message, sign_transaction, ComputeBudgetConfig};
+use spr_client::{compile_message, ComputeBudgetConfig};
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
+use zolana_operator_custody::{signed_transaction, OperatorSigner, SigningIdentity};
 use zolana_ring_client::rpc::{SubmitEnrollmentRequest, SubmitEnrollmentResponse};
 
 use crate::{
@@ -70,7 +69,7 @@ pub enum EnrollmentRefusal {
 /// Applies the held writes of each served ring, the payer is the ring's `EnrollmentWriter`.
 pub struct EnrollmentApplier {
     chain: Arc<dyn StorageChain>,
-    payer: Keypair,
+    payer: SigningIdentity,
     /// Served without a registration and never dropped.
     named: Vec<Address>,
     registered: Mutex<HashSet<Address>>,
@@ -83,7 +82,7 @@ pub struct EnrollmentApplier {
 #[must_use]
 pub struct EnrollmentApplierParts {
     pub chain: Arc<dyn StorageChain>,
-    pub payer: Keypair,
+    pub payer: SigningIdentity,
     pub rings: Vec<Address>,
     pub budget_lamports: u64,
     pub ring_budget_lamports: u64,
@@ -143,7 +142,7 @@ struct RingTracking {
 
 struct RingPass<'a> {
     chain: &'a dyn StorageChain,
-    payer: &'a Keypair,
+    payer: &'a dyn OperatorSigner,
     budget: &'a EnrollmentBudget,
     ring: CustomRing,
     /// A registered ring ends its pass once its policy names another writer.
@@ -156,7 +155,7 @@ impl EnrollmentApplierParts {
     pub async fn applier(self) -> Result<EnrollmentApplier, RingRpcError> {
         let registered = match &self.store {
             Some(store) => {
-                EnrollmentRingBook::new(store.connection(), self.payer.pubkey())
+                EnrollmentRingBook::new(store.connection(), self.payer.address())
                     .rings()
                     .await?
             }
@@ -224,7 +223,7 @@ impl SpentFees {
 
 impl EnrollmentApplier {
     pub fn payer(&self) -> Address {
-        self.payer.pubkey()
+        self.payer.address()
     }
 
     /// A zero budget or ring budget refuses every write.
@@ -240,7 +239,7 @@ impl EnrollmentApplier {
         if tracking.policy != signer {
             return Err(Unauthorized::NotPolicyAuthority.into());
         }
-        if tracking.writer != self.payer.pubkey() {
+        if tracking.writer != self.payer.address() {
             return Err(EnrollmentRefusal::RingMissing.into());
         }
         if self.named.contains(&ring) {
@@ -282,7 +281,7 @@ impl EnrollmentApplier {
         let tracking = ring_tracking(self.chain.as_ref(), ring)
             .await?
             .ok_or(EnrollmentRefusal::RingMissing)?;
-        if !named && tracking.writer != self.payer.pubkey() {
+        if !named && tracking.writer != self.payer.address() {
             self.unregister(ring).await;
             return Err(EnrollmentRefusal::RingMissing.into());
         }
@@ -365,7 +364,7 @@ impl EnrollmentApplier {
     fn book(&self) -> Option<EnrollmentRingBook<'_>> {
         self.store
             .as_ref()
-            .map(|store| EnrollmentRingBook::new(store.connection(), self.payer.pubkey()))
+            .map(|store| EnrollmentRingBook::new(store.connection(), self.payer.address()))
     }
 
     /// Drops a registered ring and its held writes, a failed delete drops it again after a restart.
@@ -397,7 +396,7 @@ impl EnrollmentApplier {
         };
         let pass = RingPass {
             chain: self.chain.as_ref(),
-            payer: &self.payer,
+            payer: self.payer.as_ref(),
             budget: &self.budget,
             ring: CustomRing::new(ring),
             registered: !self.named.contains(&ring),
@@ -446,7 +445,7 @@ impl RingPass<'_> {
         let Some(tracking) = ring_tracking(self.chain, self.ring.program_id()).await? else {
             return Ok(WriterRole::Held);
         };
-        if self.registered && tracking.writer != self.payer.pubkey() {
+        if self.registered && tracking.writer != self.payer.address() {
             return Ok(WriterRole::Moved);
         }
         // 2. The program refuses a batch that would evict a root inside its grace, waiting spends no proof.
@@ -464,7 +463,7 @@ impl RingPass<'_> {
             .chain
             .prove_enrollments(EnrollBatch {
                 ring: self.ring,
-                writer: self.payer.pubkey(),
+                writer: self.payer.address(),
                 tracking_registry: tracking.registry,
                 writes: &requests,
             })
@@ -490,6 +489,22 @@ impl RingPass<'_> {
         proven: ProvenEnrollBatch,
         writes: Vec<HeldWrite>,
     ) -> Result<(), RingRpcError> {
+        let latest = self.chain.latest_blockhash().await?;
+        let message = compile_message(
+            &self.payer.address(),
+            &proven.instructions,
+            latest.blockhash,
+            ComputeBudgetConfig::new(compute_unit_limit(InstructionTag::EnrollBatch)),
+        )?;
+        let transaction = match signed_transaction(&message, &[self.payer]).await {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                for write in writes.into_iter().rev() {
+                    self.state.queued.push_front(write);
+                }
+                return Err(error.into());
+            }
+        };
         if !self.budget.charge(
             self.ring.program_id(),
             EnrollmentBudget::batch_fee(writes.len()),
@@ -497,14 +512,6 @@ impl RingPass<'_> {
             self.requeue(writes);
             return Err(EnrollmentRefusal::Budget.into());
         }
-        let latest = self.chain.latest_blockhash().await?;
-        let message = compile_message(
-            &self.payer.pubkey(),
-            &proven.instructions,
-            latest.blockhash,
-            ComputeBudgetConfig::new(compute_unit_limit(InstructionTag::EnrollBatch)),
-        )?;
-        let transaction = sign_transaction(message, &[self.payer])?;
         self.chain.send(&transaction).await?;
         self.state.in_flight = Some(InFlight {
             attempt: Attempt {

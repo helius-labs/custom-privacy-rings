@@ -304,7 +304,7 @@ impl RecordsSetup<'_> {
         let hub = Hub::builder(self.source, identity(GENESIS))
             .with_origins(origins())
             .with_store(store)
-            .with_storage_chain(chain.clone(), storage_authority())
+            .with_storage_chain(chain.clone(), Arc::new(storage_authority()))
             .with_reader_grants(self.reader_grants)
             .with_grant_rows_key(grant_rows_key())
             .local(RING, self.fixture.auditor.clone())

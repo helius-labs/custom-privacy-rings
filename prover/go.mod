@@ -8,6 +8,7 @@ require (
 	github.com/helius-labs/zolana/prover/server v0.0.0
 	github.com/iden3/go-iden3-crypto v0.0.17
 	github.com/reilabs/gnark-lean-extractor/v3 v3.0.0
+	github.com/rs/zerolog v1.35.1
 	golang.org/x/crypto v0.57.0
 )
 
@@ -42,7 +43,6 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/redis/go-redis/v9 v9.22.0 // indirect
 	github.com/ronanh/intcomp v1.1.1 // indirect
-	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/urfave/cli/v2 v2.27.7 // indirect

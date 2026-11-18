@@ -3,9 +3,9 @@
 
 name = "private-blocklist"
 target = "localnet"
-# Replace with the id of keys/program-keypair.json, `zolana-ring new` writes one.
+# Set program_id to the program address in the operator manifest.
 program_id = "71xpmf2e94nEd9T1S32trTQnhY39xfSUeNW7GH4quTw6"
-authority_keypair = "~/.config/solana/id.json"
+operator_manifest = "operator.json"
 
 [localnet]
 rpc = "http://127.0.0.1:8899"

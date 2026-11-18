@@ -4,8 +4,9 @@ use std::fmt::Display;
 
 use anyhow::{bail, ensure, Context as _, Result};
 use custom_ring_interface::RingPolicy;
-use custom_ring_sdk::{live_registry, AuthorityRecordUpdate, MemberRecords, RingError};
-use solana_signer::Signer;
+use custom_ring_sdk::{
+    live_registry, AuthorityRecordUpdate, MemberRecords, RecordUpdateTarget, RingError,
+};
 use spr_client::{BlockingIndexer, BlockingRpc};
 use spr_indexer_api::Hash;
 use zolana_ring_client::{records::MemberOpeningRead, RingIndexer};
@@ -147,14 +148,23 @@ pub(crate) fn write_mint_policies(
     if desired.is_empty() {
         return Ok(());
     }
-    let authority = ctx.authority()?;
-    let update = desired.iter().try_fold(
-        AuthorityRecordUpdate::new(ctx.record_update_target()?, authority.pubkey()),
-        |update, (member, policy)| {
-            Ok::<_, anyhow::Error>(update.with_mint_policy(Member::from_bytes(*member)?, *policy))
-        },
-    )?;
-    ctx.ring_rpc()
-        .apply_record_update(update.sign(authority)?)?;
+    ctx.apply_authority_update(ctx.record_update_target()?, |update| {
+        desired.iter().try_fold(update, |update, (member, policy)| {
+            Ok(update.with_mint_policy(Member::from_bytes(*member)?, *policy))
+        })
+    })?;
     Ok(())
+}
+
+impl Context {
+    pub(crate) fn apply_authority_update(
+        &self,
+        target: RecordUpdateTarget,
+        build: impl FnOnce(AuthorityRecordUpdate) -> Result<AuthorityRecordUpdate>,
+    ) -> Result<u64> {
+        let authority = self.authority()?;
+        let update = build(AuthorityRecordUpdate::new(target, authority.address()))?;
+        self.ring_rpc()
+            .apply_record_update(update.sign(&self.request_signer(authority.as_ref()))?)
+    }
 }

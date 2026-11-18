@@ -6,20 +6,10 @@ use super::*;
 fn cli_pays_an_anonymous_ring_address_end_to_end() -> Result<()> {
     let env = setup()?;
     let ring = CustomRing::new(custom_ring_program_id()?);
-    let keys = PathBuf::from(isolated_temp_path("zolana-ring-anonymous"));
-    std::fs::create_dir_all(&keys)?;
-    let auditor_key = keys.join("auditor.key");
-    let auditor = write_auditor_key(&auditor_key)?;
-    let ring_rpc = RingRpcSpec {
-        env: &env,
-        ring: ring.program_id(),
-        auditor: auditor.clone(),
-    }
-    .serve()?;
-    let project = RingProject::create(&env, &auditor.pubkey())?;
+    let project = RingProject::create(&env)?;
     project.write_config(RingToml {
         env: &env,
-        ring_rpc: &ring_rpc.url,
+        ring_rpc: &project.ring_rpc.url,
         policy: None,
         mode: ModeName::Anonymous,
     })?;
@@ -44,13 +34,10 @@ fn cli_pays_an_anonymous_ring_address_end_to_end() -> Result<()> {
         owners: &[&project.demo_sender()?, &recipient],
         env: &env,
     }
-    .send()?;
+    .submit(&project.enrollment_rpc())?;
 
     // 2. The fee payer funds two deposits into the hidden balance and the payment.
-    let fee_payer = keys.join("fee-payer.json");
-    solana_keypair::write_keypair_file(&Keypair::new(), &fee_payer)
-        .map_err(|e| anyhow!("write the fee payer keypair {e}"))?;
-    let fee_payer = fee_payer.to_str().context("the fee payer path is utf-8")?;
+    let fee_payer = project.member_fee_payer()?;
     let paid = project.run(&[
         "--fee-payer-keypair",
         fee_payer,
@@ -76,10 +63,7 @@ fn cli_pays_an_anonymous_ring_address_end_to_end() -> Result<()> {
         .find_map(|line| line.strip_prefix("transact")?.trim().parse().ok())
         .context("transfer CLI did not print its confirmed signature")?;
     custom_ring_cli::wait_for_indexed_transaction(&env.client, signature)?;
-    let auditor_key = auditor_key
-        .to_str()
-        .context("the auditor key path is utf-8")?;
-    let audited = project.run(&["audit", "--auditor-key", auditor_key])?;
+    let audited = project.run(&["audit"])?;
     for line in [
         format!("hidden sender {}", sender.pubkey()),
         format!("ring to {}", recipient.pubkey()),
@@ -87,7 +71,6 @@ fn cli_pays_an_anonymous_ring_address_end_to_end() -> Result<()> {
         assert!(audited.contains(&line), "{line} in\n{audited}");
     }
     project.remove()?;
-    std::fs::remove_dir_all(keys)?;
     Ok(())
 }
 

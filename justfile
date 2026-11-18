@@ -13,6 +13,7 @@ localnet-rpc-port := env_var_or_default("ZOLANA_LOCALNET_RPC_PORT", `echo $((889
 localnet-photon-port := env_var_or_default("ZOLANA_LOCALNET_PHOTON_PORT", `echo $((8784 + ${ZOLANA_PORT_OFFSET:-0}))`)
 localnet-prover-port := env_var_or_default("ZOLANA_LOCALNET_PROVER_PORT", `echo $((3001 + ${ZOLANA_PORT_OFFSET:-0}))`)
 localnet-ring-rpc-port := env_var_or_default("ZOLANA_LOCALNET_RING_RPC_PORT", `echo $((8785 + ${ZOLANA_PORT_OFFSET:-0}))`)
+localnet-kms-port := env_var_or_default("ZOLANA_LOCALNET_KMS_PORT", `echo $((8787 + ${ZOLANA_PORT_OFFSET:-0}))`)
 localnet-ring-indexer-port := env_var_or_default("ZOLANA_LOCALNET_RING_INDEXER_PORT", `echo $((8786 + ${ZOLANA_PORT_OFFSET:-0}))`)
 stop-localnet-backends := "for port in " + localnet-rpc-port + " $((" + localnet-rpc-port + " + 1)); do lsof -t -i tcp:$port -s tcp:listen 2>/dev/null | xargs kill -9 2>/dev/null || true; done"
 localnet-rpc-url := env_var_or_default("ZOLANA_LOCALNET_URL", "http://127.0.0.1:" + localnet-rpc-port)
@@ -336,7 +337,7 @@ check-custom-ring-keys: fetch-custom-ring-keys build-prover-server
 
 # === Rings ===
 
-# Create a ring directory, ring.toml and the program keypair.
+# Create a ring directory from an operator manifest.
 ring-new *args:
     cargo run -q -p custom-ring-cli -- new {{args}}
 
@@ -378,7 +379,9 @@ ring-localnet: check-custom-ring-keys build-programs zolana::build-cli build-pho
     echo "  rpc       {{localnet-rpc-url}}"
     echo "  indexer   {{localnet-ring-indexer-url}}  (the ring indexer in front of photon {{localnet-photon-url}})"
     echo "  prover    {{localnet-prover-url}}"
-    echo "  ring rpc  http://127.0.0.1:{{localnet-ring-rpc-port}}  (started by 'just ring-rpc-derived')"
+    echo "  ring rpc  http://127.0.0.1:{{localnet-ring-rpc-port}}"
+    echo "run 'just ring-localnet-kms' in a second terminal"
+    echo "use 'just ring-localnet-custody single-ring' for a writable ring or 'just ring-localnet-custody derived' for 'just ring-rpc-derived'"
 
 # Stops the validator, photon, the ring indexer, the prover and a ring RPC a ring's `just pipeline` left.
 ring-localnet-stop:
@@ -437,22 +440,44 @@ ring-devnet-services-stop:
     lsof -ti "tcp:{{localnet-prover-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti "tcp:{{localnet-ring-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
 
-# Foreground ring RPC in derived mode, one key per ring.
-ring-rpc-derived:
+# Stopping the local KMS discards its keys.
+ring-localnet-kms:
+    #!/usr/bin/env bash
+    ulimit -c 0
+    exec node tools/localnet-kms.mjs {{localnet-kms-port}}
+
+# Use single-ring for zolana-ring localnet and derived for ring-rpc-derived.
+ring-localnet-custody mode="derived" dir="target/ring-localnet/custody": build-ring-rpc
     #!/usr/bin/env bash
     set -euo pipefail
-    mkdir -p target/ring-localnet
-    secret="target/ring-localnet/root.secret"
-    service_key="target/ring-localnet/service.key"
-    if [ ! -f "$secret" ]; then
-        cargo run -q -p zolana-ring-rpc -- keygen --out "$secret" --kind root
+    export RING_LOCALNET_KMS="127.0.0.1:{{localnet-kms-port}}"
+    export RING_RPC_DEPLOYMENT=localnet
+    mode="{{mode}}"
+    dir="{{dir}}"
+    [[ "$mode" == single-ring || "$mode" == derived ]] || { echo "expected single-ring or derived" >&2; exit 1; }
+    [[ ! -e "$dir" ]] || { echo "$dir exists" >&2; exit 1; }
+    genesis="$(solana genesis-hash --url {{localnet-rpc-url}})"
+    custody=tools/localnet-custody.sh
+    operator=
+    if [[ "$mode" == derived ]]; then
+        rpc_manifest="$("$custody" rpc "$genesis" derived null)"
+    else
+        program="$("$custody" signer)"
+        upgrade="$("$custody" signer)"
+        writer="$("$custody" signer)"
+        ring="$(jq -er .address <<<"$program")"
+        rpc_manifest="$("$custody" rpc "$genesis" "$ring" "$writer" records)"
+        auditor="$(jq -ec .auditor <<<"$rpc_manifest")"
+        operator="$("$custody" operator "$program" "$upgrade" "$writer" "$auditor")"
     fi
-    if [ ! -f "$service_key" ]; then
-        cargo run -q -p zolana-ring-rpc -- keygen --out "$service_key" --kind service
-    fi
-    cargo run -q -p zolana-ring-rpc -- serve --port {{localnet-ring-rpc-port}} \
-        --indexer-url {{localnet-ring-indexer-url}} --rpc-url {{localnet-rpc-url}} \
-        --root-secret-file "$secret" --service-key-file "$service_key"
+    mkdir "$dir"
+    echo "$rpc_manifest" >"$dir/rpc-custody.json"
+    [[ -z "$operator" ]] || echo "$operator" >"$dir/operator.json"
+
+ring-rpc-derived dir="target/ring-localnet/custody": build-ring-rpc
+    target/debug/ring-rpc serve --port {{localnet-ring-rpc-port}} --custody "{{dir}}/rpc-custody.json" \
+        --localnet-kms 127.0.0.1:{{localnet-kms-port}} --deployment localnet \
+        --indexer-url {{localnet-ring-indexer-url}} --rpc-url {{localnet-rpc-url}}
 
 # === Release and deploy ===
 
@@ -464,8 +489,7 @@ release tag *args: build-programs check-custom-ring-keys
 publish-image service *args:
     zolana/tools/publish-image.sh {{service}} {{args}}
 
-# Isolated ECS test deployment of the prover and one ring RPC, every resource
-# named zolana-rings-test-*, `RINGS_TEST_INDEXER_URL=... just rings-test up`.
+# Manage the ECS test deployment.
 rings-test command *args:
     tools/rings-test-deploy.sh {{command}} {{args}}
 
@@ -494,15 +518,16 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
     : "${SHIELDED_POOL_PROGRAM_ID:?xtask did not emit SHIELDED_POOL_PROGRAM_ID}"
     : "${USER_REGISTRY_PROGRAM_ID:?xtask did not emit USER_REGISTRY_PROGRAM_ID}"
     : "${DEFAULT_TREE_ADDRESS:?xtask did not emit DEFAULT_TREE_ADDRESS}"
-    ring_program_id="{{CUSTOM_RING_PROGRAM_ID}}"
     bin="zolana/target/debug/zolana"
     ring_cli="target/debug/zolana-ring"
     ring_rpc="target/debug/ring-rpc"
     workdir="target/ts-sdk-e2e"
+    kms_pid=""
     cleanup() {
       local status=$?
+      if [[ -n "$kms_pid" ]]; then kill "$kms_pid" 2>/dev/null || true; fi
       if (( status != 0 )); then
-        find "$workdir" test-ledger -name '*.log' -exec tail -n 200 {} + 2>/dev/null || true
+        tail -n 200 "$workdir"/ring-rpc-*.log 2>/dev/null || true
       fi
       lsof -ti "tcp:{{localnet-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
       lsof -ti "tcp:{{localnet-photon-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
@@ -542,8 +567,16 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
     ring_origin="http://localhost:3000"
     ring_rpc_url="http://127.0.0.1:{{localnet-ring-rpc-port}}"
     mkdir -p "$ring_dir"
-    solana-keygen new --no-bip39-passphrase --silent --force -o "$ring_dir/authority.json"
-    ring_authority="$(solana-keygen pubkey "$ring_dir/authority.json")"
+    custody=tools/localnet-custody.sh
+    source tools/localnet-custody.sh
+    start_localnet_kms "$workdir/kms-endpoint"
+    export RING_RPC_DEPLOYMENT=localnet
+    program="$("$custody" signer)"
+    authority="$("$custody" signer)"
+    writer="$("$custody" signer)"
+    ring_authority="$(jq -er .address <<<"$authority")"
+    ring_program_id="$(jq -er .address <<<"$program")"
+    "$custody" operator "$program" "$authority" "$writer" >"$ring_dir/operator.json"
 
     # The ring program is loaded upgradeable, only its upgrade authority may
     # create the ring config.
@@ -562,26 +595,11 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
       --indexer-url {{localnet-ring-indexer-url}}
     "$bin" config set --rpc-url {{localnet-rpc-url}} \
       --indexer-url {{localnet-ring-indexer-url}} --prover-url {{localnet-prover-url}} >/dev/null
-    "$bin" wallet new --outfile "$workdir/authority.json"
-    mint_output="$("$bin" dev pool test-mint --keypair "$workdir/authority.json" \
-      --authority-path "$workdir/authority.json" --airdrop-lamports 20000000000 \
-      --amount 1000000)"
-    mint="$(sed -n 's/^ok test_mint mint=\([^ ]*\).*/\1/p' <<<"$mint_output")"
-    token_account="$(sed -n 's/^ok test_mint .* token_account=\([^ ]*\).*/\1/p' <<<"$mint_output")"
-    test -n "$mint"
-    test -n "$token_account"
-    token_2022_output="$("$bin" dev pool test-mint --keypair "$workdir/authority.json" \
-      --authority-path "$workdir/authority.json" --token-program token2022 --amount 1000000)"
-    token_2022_mint="$(sed -n 's/^ok test_mint mint=\([^ ]*\).*/\1/p' <<<"$token_2022_output")"
-    token_2022_account="$(sed -n 's/^ok test_mint .* token_account=\([^ ]*\).*/\1/p' <<<"$token_2022_output")"
-    test -n "$token_2022_mint"
-    test -n "$token_2022_account"
-
     # The ring CLI parses both targets even though this ring only acts on localnet.
     cat > "$ring_dir/ring.toml" <<TOML
     name = "ts-sdk-e2e-ring"
     program_id = "$ring_program_id"
-    authority_keypair = "$PWD/$ring_dir/authority.json"
+    operator_manifest = "operator.json"
     target = "localnet"
 
     [localnet]
@@ -613,29 +631,19 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
     subject = "sender"
     forbid = "frozen"
     TOML
-    # Derived mode, the suites deploy their own rings and take each auditor key from the service.
-    "$ring_rpc" keygen --kind root --out "$ring_dir/root.secret"
-    "$ring_rpc" keygen --kind service --out "$ring_dir/service.key" >/dev/null
-    "$ring_rpc" keygen --kind grant-rows --out "$ring_dir/grant-rows.key" >/dev/null
-    # The record writer pays every records write from the storage authority.
-    storage_authority="$("$ring_rpc" keygen --kind storage-authority \
-      --out "$ring_dir/storage-authority.key" | sed -n 's/^storage authority *//p')"
-    solana airdrop 100 "$storage_authority" --url {{localnet-rpc-url}} >/dev/null
-    # The anonymous suite pays one transfer through the relay.
-    fee_payer="$("$ring_rpc" keygen --kind fee-payer --out "$ring_dir/fee-payer.secret" \
-      | sed -n 's/^fee payer *//p')"
-    solana airdrop 100 "$fee_payer" --url {{localnet-rpc-url}} >/dev/null
-    # Ring RPC applies enrollments only for --enrollment-apply-ring, the suites deploy rings at these reserved keys.
-    enrollment_writer="$("$ring_rpc" keygen --kind enrollment-applier \
-      --out "$ring_dir/enrollment-writer.key" | sed -n 's/^enrollment applier *//p')"
-    solana airdrop 100 "$enrollment_writer" --url {{localnet-rpc-url}} >/dev/null
-    e2e_programs=()
-    e2e_rings=()
-    for index in 1 2; do
-      solana-keygen new --no-bip39-passphrase --silent --force -o "$ring_dir/e2e-ring-$index.json"
-      e2e_programs+=("$PWD/$ring_dir/e2e-ring-$index.json")
-      e2e_rings+=("$(solana-keygen pubkey "$ring_dir/e2e-ring-$index.json")")
+    genesis="$(solana genesis-hash --url {{localnet-rpc-url}})"
+    "$custody" rpc "$genesis" derived "$writer" relay >"$ring_dir/rpc-custody.json"
+    enrollment_writer="$(jq -er .address <<<"$writer")"
+    for role in storage_authority fee_payer enrollment_applier; do
+      payee="$(jq -er --arg role "$role" '.[$role].address' "$ring_dir/rpc-custody.json")"
+      solana airdrop 100 "$payee" --url {{localnet-rpc-url}} >/dev/null
     done
+    e2e_programs=()
+    for _ in 1 2 3; do
+      e2e_programs+=("$("$custody" signer)")
+    done
+    e2e_programs_json="$(printf '%s\n' "${e2e_programs[@]}" | jq -sc .)"
+    e2e_rings="$(jq -er 'map(.address) | join(",")' <<<"$e2e_programs_json")"
     serve_ring_rpc() {
       local reader_grants="$1" port={{localnet-ring-rpc-port}}
       held() { lsof -t -i "tcp:$port" -s tcp:listen 2>/dev/null; }
@@ -650,15 +658,11 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
       fi
       nohup "$ring_rpc" serve --port "$port" \
         --indexer-url {{localnet-ring-indexer-url}} --rpc-url {{localnet-rpc-url}} \
-        --root-secret-file "$ring_dir/root.secret" --service-key-file "$ring_dir/service.key" \
-        --storage-authority-key-file "$ring_dir/storage-authority.key" \
-        --grant-rows-key-file "$ring_dir/grant-rows.key" \
+        --custody "$ring_dir/rpc-custody.json" --localnet-kms "$RING_LOCALNET_KMS" \
         --allow-origin "$ring_origin" --webauthn-rp-id localhost \
         --store-url "sqlite://$PWD/$workdir/ring-rpc.sqlite?mode=rwc" \
         --prover-url {{localnet-prover-url}} --reader-grants "$reader_grants" \
-        --fee-payer-key-file "$ring_dir/fee-payer.secret" \
-        --enrollment-applier-key-file "$ring_dir/enrollment-writer.key" \
-        --enrollment-apply-ring "$(IFS=,; echo "${e2e_rings[*]}")" \
+        --enrollment-apply-ring "$e2e_rings" \
         --enrollment-budget-lamports 1000000000 \
         > "$workdir/ring-rpc-$reader_grants.log" 2>&1 &
       printf 'waiting for ring rpc %s ' "$ring_rpc_url"
@@ -676,9 +680,8 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
     }
     # `init` creates the ring's records through the record writer.
     serve_ring_rpc tree
-    # This recipe started the service, its key needs no pin.
     "$ring_cli" --config "$ring_dir/ring.toml" \
-      init --auditor-pubkey-file "auditor.key.pub" --trust-ring-rpc
+      init --auditor-pubkey-file "auditor.key.pub"
     # Reads are grant only, the ring authority included.
     "$ring_cli" --config "$ring_dir/ring.toml" \
       reader grant "$ring_authority"
@@ -693,20 +696,15 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
       ZOLANA_INDEXER_URL="{{localnet-ring-indexer-url}}" \
       ZOLANA_PROVER_URL="{{localnet-prover-url}}" \
       ZOLANA_TREE="$DEFAULT_TREE_ADDRESS" \
-      ZOLANA_TEST_MINT="$mint" \
-      ZOLANA_TEST_TOKEN_ACCOUNT="$token_account" \
-      ZOLANA_TEST_TOKEN_2022_MINT="$token_2022_mint" \
-      ZOLANA_TEST_TOKEN_2022_ACCOUNT="$token_2022_account" \
       ZOLANA_CLI_BIN="$PWD/$bin" \
       RING_PROGRAM_ID="$ring_program_id" \
       RING_RPC_URL="$ring_rpc_url" \
-      RING_E2E_PROGRAM_KEYPAIRS="$(IFS=,; echo "${e2e_programs[*]}")" \
+      RING_E2E_PROGRAM_SIGNERS="$e2e_programs_json" \
       RING_ENROLLMENT_WRITER="$enrollment_writer" \
-      RING_AUTHORITY_KEYPAIR="$PWD/$ring_dir/authority.json" \
+      RING_AUTHORITY_SIGNER="$authority" \
       RING_ORIGIN="$ring_origin" \
       RING_PROGRAM_SO="$PWD/target/deploy/custom_ring_program.so" \
       USER_REGISTRY_PROGRAM_SO="$registry_so" \
-      ZOLANA_TEST_AUTHORITY_WALLET="$PWD/$workdir/authority.json" \
       npm run "{{test-script}}" {{ if args == "" { "" } else { "-- -- " + args } }}
 
 # === Formatting and linting ===

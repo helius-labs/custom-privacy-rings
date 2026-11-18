@@ -1,18 +1,18 @@
 //! `authority`, the program's upgrade authority and the ring roles.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{Context as _, Result};
 use custom_ring_interface::RingRole;
 use custom_ring_sdk::UpdateAuthority;
-use solana_address::Address;
 use solana_loader_v3_interface::instruction as loader;
-use solana_signer::Signer;
+use zolana_operator_custody::{OperatorSigner, SignerRef, SigningIdentity};
 
 use crate::{
     config::expand_tilde,
     controls::{self, require_initialized},
     deploy::{self, ProgramBinary},
+    file,
     release::RingProgram,
     AuthorityCommand, Context,
 };
@@ -21,7 +21,9 @@ pub fn run(ctx: &Context, command: AuthorityCommand) -> Result<()> {
     let program = ctx.ring.program_id();
     let declined = format!("{program} keeps its upgrade authority, the change was not confirmed");
     match command {
-        AuthorityCommand::Transfer { new_authority, yes } => {
+        AuthorityCommand::Transfer { new_signer, yes } => {
+            let signer = read_signer(ctx, &new_signer)?;
+            let new_authority = signer.address();
             let target = ctx.config.target;
             ctx.confirm(
                 yes,
@@ -30,33 +32,32 @@ pub fn run(ctx: &Context, command: AuthorityCommand) -> Result<()> {
                 declined,
             )?;
             require_initialized(ctx)?;
-            set_upgrade_authority(ctx, Some(new_authority))?;
+            set_upgrade_authority(ctx, Some(signer.as_ref()))?;
             println!(
-                "upgrade authority of {program} is now {new_authority}, set upgrade_authority_keypair in {}",
-                ctx.config_path.display()
+                "upgrade authority of {program} is now {new_authority}, update upgrade_authority in {}",
+                ctx.config.operator_manifest.display()
             );
         }
-        AuthorityCommand::UpdateRole { role, new_keypair } => {
+        AuthorityCommand::UpdateRole { role, new_signer } => {
             let payer = ctx.funded_authority()?;
-            let admin = ctx.role_keypair(RingRole::Admin)?;
-            let path = expand_tilde(&ctx.path(&new_keypair))?;
-            let new_authority = solana_keypair::read_keypair_file(&path)
-                .map_err(|_| anyhow!("cannot read the new {role} keypair {}", path.display()))?;
+            let admin = ctx.role_signer(RingRole::Admin)?;
+            let new_authority = read_signer(ctx, &new_signer)?;
             let hand_over = UpdateAuthority {
                 ring: ctx.ring,
-                admin: admin.pubkey(),
-                new_authority: new_authority.pubkey(),
+                admin: admin.address(),
+                new_authority: new_authority.address(),
                 role: role.role(),
             }
             .instruction()?;
-            ctx.send(&[payer, &admin, &new_authority], &[hand_over])
-                .context("sending update_authority failed")?;
+            ctx.send_operator(
+                &[payer.as_ref(), admin.as_ref(), new_authority.as_ref()],
+                &[hand_over],
+            )
+            .context("sending update_authority failed")?;
             println!(
-                "{role} of {program} is now {}, set {} in {} to {}",
-                new_authority.pubkey(),
-                role.keypair_field(),
-                ctx.config_path.display(),
-                new_keypair.display()
+                "{role} of {program} is now {}, update the role in {}",
+                new_authority.address(),
+                ctx.config.operator_manifest.display()
             );
         }
         AuthorityCommand::Pause => controls::pause(ctx, true)?,
@@ -94,15 +95,33 @@ fn expected_binary(ctx: &Context, program_so: Option<PathBuf>) -> Result<Program
 }
 
 /// `None` renounces, the program stays as deployed for good.
-fn set_upgrade_authority(ctx: &Context, new_authority: Option<Address>) -> Result<()> {
-    let authority = ctx.config.upgrade_authority()?;
+fn set_upgrade_authority(ctx: &Context, new_authority: Option<&dyn OperatorSigner>) -> Result<()> {
+    let authority = ctx.upgrade_authority_signer()?;
     let program = ctx.ring.program_id();
     let current = deploy::program_data(ctx)?.with_context(|| {
         format!("program {program} is not deployed under the upgradeable loader")
     })?;
-    deploy::check_upgrade_authority(program, &current, authority.pubkey())?;
-    let instruction =
-        loader::set_upgrade_authority(&program, &authority.pubkey(), new_authority.as_ref());
-    ctx.send(&[&authority], &[instruction])?;
+    deploy::check_upgrade_authority(program, &current, authority.address())?;
+    match new_authority {
+        Some(incoming) => {
+            let rotate = loader::set_upgrade_authority_checked(
+                &program,
+                &authority.address(),
+                &incoming.address(),
+            );
+            ctx.send_operator(&[authority.as_ref(), incoming], &[rotate])?;
+        }
+        None => {
+            let renounce = loader::set_upgrade_authority(&program, &authority.address(), None);
+            ctx.send_operator(&[authority.as_ref()], &[renounce])?;
+        }
+    }
     Ok(())
+}
+
+fn read_signer(ctx: &Context, path: &Path) -> Result<SigningIdentity> {
+    let path = ctx.path(&expand_tilde(path)?);
+    let reference: SignerRef = serde_json::from_str(&file::read(&path)?)
+        .with_context(|| format!("invalid signer reference {}", path.display()))?;
+    ctx.signer(&reference)
 }

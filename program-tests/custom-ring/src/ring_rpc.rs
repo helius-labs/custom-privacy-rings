@@ -20,6 +20,7 @@ use solana_signer::Signer;
 use spr_client::ClientError;
 use spr_keypair::X25519Keypair;
 use spr_test_utils::localnet::isolated_temp_path;
+use zolana_operator_custody::SigningIdentity;
 use zolana_ring_client::rpc::{
     GetRelayQuoteRequest, GetRelayStatusRequest, PrepareAuthorityTransferRequest,
     PrepareRelayRequest, ReadTarget, RelayId, RelayOperation, RelayQuote, RelayStatus, RelayStep,
@@ -53,6 +54,7 @@ pub struct RingRpcSpec<'a> {
 
 pub struct LocalRingRpc {
     pub url: String,
+    pub service: Address,
     runtime: tokio::runtime::Runtime,
 }
 
@@ -70,6 +72,25 @@ pub struct RingRpcRelay {
     http: reqwest::Client,
 }
 
+struct ServerParts {
+    runtime: tokio::runtime::Runtime,
+    store: Store,
+    writer: SigningIdentity,
+    relay: Option<RelayServices>,
+}
+
+impl ServerParts {
+    fn new(writer: SigningIdentity) -> Result<Self> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        Ok(Self {
+            store: open_store(&runtime)?,
+            runtime,
+            writer,
+            relay: None,
+        })
+    }
+}
+
 struct Served {
     rpc: LocalRingRpc,
     hub: Arc<Hub<ChainSource>>,
@@ -84,9 +105,12 @@ struct JsonRpcResponse<T> {
 
 impl RingRpcSpec<'_> {
     pub fn serve(self) -> Result<LocalRingRpc> {
-        let runtime = tokio::runtime::Runtime::new()?;
-        let store = open_store(&runtime)?;
-        Ok(self.start(runtime, store, None)?.rpc)
+        let writer = Arc::new(self.env.payer.insecure_clone());
+        self.serve_with_writer(writer)
+    }
+
+    pub fn serve_with_writer(self, writer: SigningIdentity) -> Result<LocalRingRpc> {
+        Ok(self.start(ServerParts::new(writer)?)?.rpc)
     }
 
     pub fn serve_relayed(self) -> Result<RelayedRingRpc> {
@@ -94,25 +118,27 @@ impl RingRpcSpec<'_> {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
             .try_init();
-        let runtime = tokio::runtime::Runtime::new()?;
+        let mut server = ServerParts::new(Arc::new(self.env.payer.insecure_clone()))?;
         let fee_payer = Keypair::new();
         let fee_payer_address = fee_payer.pubkey();
         self.env.fund(fee_payer_address, ACTOR_AIRDROP)?;
-        let store = open_store(&runtime)?;
-        let services = RelayServicesInit {
-            fee_payer,
-            store: store.clone(),
-            rpc_url: &self.env.rpc_url,
-            indexer_url: &self.env.indexer_url,
-            prover_url: &prover_url(),
-        }
-        .build();
+        let store = server.store.clone();
+        server.relay = Some(
+            RelayServicesInit {
+                fee_payer: Arc::new(fee_payer),
+                store: store.clone(),
+                rpc_url: &self.env.rpc_url,
+                indexer_url: &self.env.indexer_url,
+                prover_url: &prover_url(),
+            }
+            .build(),
+        );
         let ring = self.ring;
         let Served {
             rpc,
             hub,
             genesis_hash,
-        } = self.start(runtime, store.clone(), Some(services))?;
+        } = self.start(server)?;
         let merge = hub
             .managed_merge()
             .context("relay services run the managed merge")?;
@@ -130,12 +156,13 @@ impl RingRpcSpec<'_> {
         })
     }
 
-    fn start(
-        self,
-        runtime: tokio::runtime::Runtime,
-        store: Store,
-        relay: Option<RelayServices>,
-    ) -> Result<Served> {
+    fn start(self, server: ServerParts) -> Result<Served> {
+        let ServerParts {
+            runtime,
+            store,
+            writer,
+            relay,
+        } = server;
         let upstreams = Upstreams {
             indexer_url: &self.env.indexer_url,
             rpc_url: &self.env.rpc_url,
@@ -150,15 +177,14 @@ impl RingRpcSpec<'_> {
             .map_err(|e| anyhow!("storage chain {e:?}"))?;
         let identity = ServiceIdentity {
             genesis_hash,
-            service: Keypair::new(),
+            service: Arc::new(Keypair::new()),
         };
-        // Every ring of the tests names the payer as its `EnrollmentWriter`, harness and `init` alike.
         let enrollments = EnrollmentApplierParts {
             chain: Arc::new(
                 LiveStorageChain::connect(upstreams, &prover_url())
                     .map_err(|e| anyhow!("enrollment chain {e:?}"))?,
             ),
-            payer: self.env.payer.insecure_clone(),
+            payer: writer,
             rings: vec![self.ring],
             budget_lamports: u64::MAX,
             ring_budget_lamports: u64::MAX,
@@ -174,8 +200,8 @@ impl RingRpcSpec<'_> {
         let mut builder = Hub::builder(source, identity)
             .with_enrollment_applier(enrollments)
             .with_store(store)
-            .with_storage_chain(Arc::new(storage_chain), Keypair::new())
-            .with_co_signer(Keypair::new());
+            .with_storage_chain(Arc::new(storage_chain), Arc::new(Keypair::new()))
+            .with_co_signer(Arc::new(Keypair::new()));
         if let Some(services) = relay {
             builder = builder
                 .with_relay_services(services)
@@ -219,6 +245,7 @@ impl RingRpcSpec<'_> {
         }
         Ok(Served {
             rpc: LocalRingRpc {
+                service: hub.service_pubkey(),
                 url: format!("http://127.0.0.1:{port}"),
                 runtime,
             },

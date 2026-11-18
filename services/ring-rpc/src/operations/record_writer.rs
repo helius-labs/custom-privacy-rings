@@ -28,10 +28,9 @@ use custom_ring_sdk::{
 use log::warn;
 use sea_orm::DbErr;
 use solana_address::Address;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
-use spr_client::{compile_message, sign_transaction, ComputeBudgetConfig};
+use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_indexer_api::Hash;
+use zolana_operator_custody::{signed_transaction, SigningIdentity};
 use zolana_ring_client::{
     rpc::{
         GetPendingListApprovalsRequest, GetPendingListApprovalsResponse,
@@ -91,7 +90,7 @@ pub trait PrivateWrites: Send + Sync {
 pub struct RecordWriter {
     store: Store,
     chain: Arc<dyn StorageChain>,
-    authority: Keypair,
+    authority: SigningIdentity,
     genesis_hash: [u8; 32],
     reader_grants: ReaderGrantStore,
     /// Holds the queue check and the insert of one update together.
@@ -110,7 +109,7 @@ enum BatchProof {
 pub(crate) struct WriterParts {
     pub store: Store,
     pub chain: Arc<dyn StorageChain>,
-    pub authority: Keypair,
+    pub authority: SigningIdentity,
     pub genesis_hash: [u8; 32],
     pub reader_grants: ReaderGrantStore,
 }
@@ -132,7 +131,7 @@ impl WriterParts {
 
 impl RecordWriter {
     pub fn authority(&self) -> Address {
-        self.authority.pubkey()
+        self.authority.address()
     }
 
     /// Set once, a second source is returned.
@@ -158,7 +157,7 @@ impl RecordWriter {
             latest.blockhash,
             ComputeBudgetConfig::new(CREATE_COMPUTE_UNITS),
         )?;
-        let transaction = sign_transaction(message, &[&self.authority])?;
+        let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
         let attempt = Attempt {
             signature: transaction.signatures[0],
             last_valid_block_height: latest.last_valid_block_height,
@@ -471,6 +470,7 @@ impl RecordWriter {
             latest.blockhash,
             ComputeBudgetConfig::new(PROOF_UNITS),
         )?;
+        let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
         let policies = self.queued_authorities(batch.iter()).await?;
         let slot = self.chain.slot().await?;
         let mut rejected = false;
@@ -493,7 +493,6 @@ impl RecordWriter {
         if rejected {
             return Ok(());
         }
-        let transaction = sign_transaction(message, &[&self.authority])?;
         // 4. The batch is durable before it is sent, a restart settles it by its signature.
         self.queue()
             .record_batch(NewBatch {

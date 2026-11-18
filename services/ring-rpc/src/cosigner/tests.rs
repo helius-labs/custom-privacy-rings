@@ -106,7 +106,7 @@ async fn an_admitted_message_carries_the_signers_signature() {
     let signer = Keypair::new_from_array([5; 32]);
     let key = signer.pubkey();
     let (rule, _) = recorded(Verdict::Admitted);
-    let co_signer = CoSigner::new(signer, rule);
+    let co_signer = CoSigner::new(Arc::new(signer), rule);
     let request = request();
     let CoSignDecision::Signed(signature) = co_signer.decide(&request).await.expect("decision")
     else {
@@ -122,7 +122,7 @@ async fn a_later_refusal_releases_the_earlier_rule_and_signs_nothing() {
     let signer = Keypair::new_from_array([5; 32]);
     let request = request();
     let ticket = signer.sign_message(&request.message.serialize());
-    let decision = CoSigner::new(signer, reserving.then(refusing))
+    let decision = CoSigner::new(Arc::new(signer), reserving.then(refusing))
         .decide(&request)
         .await
         .expect("decision");
@@ -137,7 +137,7 @@ async fn a_later_refusal_releases_the_earlier_rule_and_signs_nothing() {
 async fn an_earlier_refusal_stops_the_chain() {
     let (refusing, _) = recorded(Verdict::Refused(CoSignRefusal::Custom));
     let (later, settled) = recorded(Verdict::Refused(CoSignRefusal::OverLimit));
-    let decision = CoSigner::new(Keypair::new(), refusing.then(later))
+    let decision = CoSigner::new(Arc::new(Keypair::new()), refusing.then(later))
         .decide(&request())
         .await
         .expect("decision");
@@ -150,7 +150,7 @@ async fn an_absent_rule_admits_and_a_settlement_reaches_every_rule() {
     let (first, first_settled) = recorded(Verdict::Admitted);
     let (last, last_settled) = recorded(Verdict::Admitted);
     let absent: Option<Arc<dyn CoSignRule>> = None;
-    let co_signer = CoSigner::new(Keypair::new(), first.then(absent).then(last));
+    let co_signer = CoSigner::new(Arc::new(Keypair::new()), first.then(absent).then(last));
     let CoSignDecision::Signed(signature) = co_signer.decide(&request()).await.expect("decision")
     else {
         panic!("refused");
@@ -164,7 +164,7 @@ async fn an_absent_rule_admits_and_a_settlement_reaches_every_rule() {
 
 async fn listed(entries: &[(Address, ListEntry)]) -> CoSignDecision {
     let rule = ListRule::new(Named(payment()), lists(entries).await);
-    CoSigner::new(Keypair::new(), rule)
+    CoSigner::new(Arc::new(Keypair::new()), rule)
         .decide(&request())
         .await
         .expect("decision")
@@ -224,7 +224,7 @@ async fn another_rings_entry_and_a_removed_entry_refuse_nothing() {
 async fn a_delegate_frame_passes_the_lists() {
     let block = entry(List::Block, Subject::owner(owner(1)));
     let rule = ListRule::new(DelegateFrame, lists(&[(RING, block)]).await);
-    let decision = CoSigner::new(Keypair::new(), rule)
+    let decision = CoSigner::new(Arc::new(Keypair::new()), rule)
         .decide(&request())
         .await
         .expect("decision");

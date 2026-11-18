@@ -11,10 +11,8 @@ use sea_orm::{
 use sha2::{Digest, Sha256};
 use solana_address::Address;
 use solana_instruction::Instruction;
-use solana_keypair::Keypair;
 use solana_message::VersionedMessage;
 use solana_signature::Signature;
-use solana_signer::Signer;
 use spl_token_2022_interface::{
     extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions},
     state::{Account, Mint},
@@ -25,6 +23,7 @@ use spr_interface::{SPL_TOKEN_ACCOUNT_LEN, SPL_TOKEN_PROGRAM_ID};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
+use zolana_operator_custody::SigningIdentity;
 use zolana_ring_client::rpc::{
     CoSignTransactionRequest, CoSignTransactionResponse, GetRelayQuoteRequest,
     GetRelayStatusRequest, PrepareRelayRequest, ReadTarget, RelayId, RelayIntent, RelayMergeInputs,
@@ -146,7 +145,7 @@ pub struct RelayParts {
     pub store: Store,
     pub prover: Arc<dyn RelayProver>,
     /// The SPP payer every relayed message names.
-    pub fee_payer: Keypair,
+    pub fee_payer: SigningIdentity,
     pub chain: Arc<dyn ChainSubmit>,
 }
 
@@ -155,7 +154,7 @@ pub struct Relay {
     service: ServiceTarget,
     store: Store,
     prover: Arc<dyn RelayProver>,
-    fee_payer: Keypair,
+    fee_payer: SigningIdentity,
     chain: Arc<dyn ChainSubmit>,
     rings: Arc<dyn ServedRings>,
     co_signer: Arc<dyn CoSignPolicy>,
@@ -328,7 +327,7 @@ impl Relay {
     }
 
     pub fn fee_payer(&self) -> Address {
-        self.fee_payer.pubkey()
+        self.fee_payer.address()
     }
 
     fn parties(&self, named: &[spr_indexer_api::SerializablePubkey]) -> RelayParties {
@@ -883,7 +882,7 @@ impl Relay {
         // A merge awaits no wallet signer and demands no co-signer.
         let closing = Closing {
             co_signature: None,
-            fee_payer: self.fee_payer_signs(&merge.message),
+            fee_payer: self.fee_payer_signature(&merge.message).await?,
         };
         let unsigned = Awaiting {
             signatures: Vec::new(),
@@ -1090,19 +1089,20 @@ impl Relay {
         Ok(RelayState::open(awaiting, closing)?)
     }
 
-    /// The fee payer signs only after the co-sign decision, every later send repeats both signatures.
+    /// A payer failure must leave the co-signer allowance available.
     async fn closing(
         &self,
         message: &VersionedMessage,
         co_sign: Option<&PendingCoSign>,
     ) -> Result<Closing, RingRpcError> {
+        let fee_payer = self.fee_payer_signature(message).await?;
         let co_signature = match co_sign {
             Some(pending) => Some(self.co_sign(message, pending).await?),
             None => None,
         };
         Ok(Closing {
             co_signature,
-            fee_payer: self.fee_payer_signs(message),
+            fee_payer,
         })
     }
 
@@ -1147,11 +1147,14 @@ impl Relay {
         }
     }
 
-    fn fee_payer_signs(&self, message: &VersionedMessage) -> CollectedSignature {
-        CollectedSignature {
+    async fn fee_payer_signature(
+        &self,
+        message: &VersionedMessage,
+    ) -> Result<CollectedSignature, RingRpcError> {
+        Ok(CollectedSignature {
             signer: self.fee_payer(),
-            signature: self.fee_payer.sign_message(&message.serialize()),
-        }
+            signature: self.fee_payer.sign(&message.serialize()).await?,
+        })
     }
 
     async fn first_send(

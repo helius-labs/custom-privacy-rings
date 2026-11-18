@@ -57,7 +57,7 @@ fn store_url(label: &str) -> (PathBuf, String) {
 
 async fn stored(chain: &Arc<StubChain>, url: &str, payer: Keypair) -> EnrollmentApplier {
     EnrollmentApplierParts {
-        payer,
+        payer: Arc::new(payer),
         store: Some(Store::open(url, STORE_CONNECTIONS).await.expect("store")),
         ..parts(chain)
     }
@@ -237,7 +237,7 @@ async fn the_hub_spends_each_nonce_once_and_binds_the_writer() {
     };
     let identity = ServiceIdentity {
         genesis_hash: CLUSTER,
-        service: service.insecure_clone(),
+        service: Arc::new(service.insecure_clone()),
     };
     let hub = Hub::builder(ChainSource::connect(upstreams).expect("source"), identity)
         .with_clock(Clock::Fixed(NOW))

@@ -12,8 +12,9 @@ use solana_address::Address;
 use solana_commitment_config::CommitmentLevel;
 use solana_instruction::Instruction;
 use solana_instruction_error::InstructionError;
+use solana_message::VersionedMessage;
 use solana_signature::Signature;
-use solana_signer::Signer;
+use solana_signer::{Signer, SignerError};
 use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction_error::TransactionError;
 use solana_transaction_status_client_types::{TransactionConfirmationStatus, TransactionStatus};
@@ -287,6 +288,7 @@ struct Proved {
 
 /// One transaction the submission owes, held from before its broadcast until its signature resolves.
 struct Attempt {
+    payer: Address,
     proved: Proved,
     sent: Option<Sent>,
 }
@@ -307,6 +309,41 @@ pub(crate) enum Outcome {
     Failed(TransactionError),
     /// A fresh proof fixes the failure.
     Stale(TransactionError),
+}
+
+pub trait SubmissionSigners: Sync {
+    fn payer(&self) -> Address;
+    fn additional(&self) -> impl Iterator<Item = Address>;
+    fn sign(
+        &self,
+        message: &VersionedMessage,
+    ) -> impl std::future::Future<Output = Result<Vec<Signature>, RingError>> + Send;
+}
+
+pub struct LocalSigners<'a> {
+    pub payer: &'a (dyn Signer + Sync),
+    pub signers: &'a [&'a (dyn Signer + Sync)],
+}
+
+impl LocalSigners<'_> {
+    pub fn all(&self) -> impl Iterator<Item = &(dyn Signer + Sync)> {
+        core::iter::once(self.payer).chain(self.signers.iter().copied())
+    }
+}
+
+impl SubmissionSigners for LocalSigners<'_> {
+    fn payer(&self) -> Address {
+        self.payer.pubkey()
+    }
+
+    fn additional(&self) -> impl Iterator<Item = Address> {
+        self.signers.iter().map(|signer| signer.pubkey())
+    }
+
+    async fn sign(&self, message: &VersionedMessage) -> Result<Vec<Signature>, RingError> {
+        let signers: Vec<_> = self.all().map(|signer| signer as &dyn Signer).collect();
+        Ok(sign_transaction(message.clone(), &signers)?.signatures)
+    }
 }
 
 #[must_use]
@@ -360,8 +397,17 @@ impl<'a> RingSubmission<'a> {
         payer: &(dyn Signer + Sync),
         signers: &[&(dyn Signer + Sync)],
     ) -> Result<&[OwnerDebit], RingError> {
+        self.prove_with(client, &LocalSigners { payer, signers })
+            .await
+    }
+
+    pub async fn prove_with<R: AsyncRpc, I: RingIndexerBackend>(
+        &mut self,
+        client: &RingClient<R, I>,
+        signers: &impl SubmissionSigners,
+    ) -> Result<&[OwnerDebit], RingError> {
         if self.pending.is_none() && self.terminal.is_none() {
-            let attempt = boxed(|| self.prepare(client, payer, signers)).await?;
+            let attempt = boxed(|| self.prepare(client, signers)).await?;
             self.pending = Some(attempt);
         }
         Ok(self
@@ -377,6 +423,15 @@ impl<'a> RingSubmission<'a> {
         payer: &(dyn Signer + Sync),
         signers: &[&(dyn Signer + Sync)],
     ) -> Result<SubmissionStatus, RingError> {
+        self.send_with(client, &LocalSigners { payer, signers })
+            .await
+    }
+
+    async fn send_with<R: AsyncRpc + SignatureHistory, I: RingIndexerBackend>(
+        &mut self,
+        client: &RingClient<R, I>,
+        signers: &impl SubmissionSigners,
+    ) -> Result<SubmissionStatus, RingError> {
         if let Some(terminal) = &self.terminal {
             return Ok(terminal.clone());
         }
@@ -389,7 +444,7 @@ impl<'a> RingSubmission<'a> {
             let attempt = match self.pending.take() {
                 Some(attempt) => attempt,
                 None if self.attempts == 0 => return Err(RingError::SubmissionUnproved),
-                None => boxed(|| self.prepare(client, payer, signers)).await?,
+                None => boxed(|| self.prepare(client, signers)).await?,
             };
             let attempt = self.pending.insert(attempt);
             // 2. The signature enters the held state ahead of the bytes, a broadcast whose future
@@ -401,18 +456,19 @@ impl<'a> RingSubmission<'a> {
                     let (blockhash, last_valid_block_height) =
                         client.get_latest_blockhash().await?;
                     let message = compile_message(
-                        &payer.pubkey(),
+                        &attempt.payer,
                         core::slice::from_ref(&attempt.proved.instruction),
                         blockhash,
                         attempt.proved.budget,
                     )?;
-                    // The signer list is not `Send`, it ends before the next await.
-                    let transaction = {
-                        let all: Vec<&dyn Signer> = core::iter::once(payer as &dyn Signer)
-                            .chain(signers.iter().map(|signer| *signer as &dyn Signer))
-                            .collect();
-                        sign_transaction(message, &all)?
+                    let signatures = signers.sign(&message).await?;
+                    let transaction = VersionedTransaction {
+                        signatures,
+                        message,
                     };
+                    transaction.sanitize().map_err(|_| {
+                        SignerError::TransactionError(TransactionError::SanitizeFailure)
+                    })?;
                     let sent = unsent.insert(Sent {
                         transaction,
                         last_valid_block_height,
@@ -464,8 +520,17 @@ impl<'a> RingSubmission<'a> {
         payer: &(dyn Signer + Sync),
         signers: &[&(dyn Signer + Sync)],
     ) -> Result<SettledSubmission, RingError> {
+        self.send_until_settled_with(client, &LocalSigners { payer, signers })
+            .await
+    }
+
+    pub async fn send_until_settled_with<R: AsyncRpc + SignatureHistory, I: RingIndexerBackend>(
+        &mut self,
+        client: &RingClient<R, I>,
+        signers: &impl SubmissionSigners,
+    ) -> Result<SettledSubmission, RingError> {
         loop {
-            match boxed(|| self.send(client, payer, signers)).await? {
+            match boxed(|| self.send_with(client, signers)).await? {
                 SubmissionStatus::Settled(settled) => return Ok(settled),
                 SubmissionStatus::Pending { .. } => tokio::time::sleep(PENDING_POLL).await,
             }
@@ -476,24 +541,32 @@ impl<'a> RingSubmission<'a> {
     async fn prepare<R: AsyncRpc, I: RingIndexerBackend>(
         &mut self,
         client: &RingClient<R, I>,
-        payer: &(dyn Signer + Sync),
-        signers: &[&(dyn Signer + Sync)],
+        signers: &impl SubmissionSigners,
     ) -> Result<Attempt, RingError> {
         self.operation.refresh_for_retry()?;
-        let public: Vec<Address> = core::iter::once(payer.pubkey())
-            .chain(signers.iter().map(|signer| signer.pubkey()))
+        let payer = signers.payer();
+        let public: Vec<_> = core::iter::once(payer)
+            .chain(signers.additional())
             .collect();
         self.operation
             .check_public_signers(client.zolana(), &public)
             .await?;
-        let proved = boxed(|| {
-            self.operation
-                .prove(client, payer.pubkey(), self.priority_fee)
-        })
-        .await?;
-        check_transaction_size(&payer.pubkey(), &proved.instruction, proved.budget)?;
+        let proved = boxed(|| self.operation.prove(client, payer, self.priority_fee)).await?;
+        if proved
+            .instruction
+            .accounts
+            .iter()
+            .any(|account| account.is_signer && !public.contains(&account.pubkey))
+        {
+            return Err(SignerError::NotEnoughSigners.into());
+        }
+        check_transaction_size(&payer, &proved.instruction, proved.budget)?;
         self.attempts += 1;
-        Ok(Attempt { proved, sent: None })
+        Ok(Attempt {
+            payer,
+            proved,
+            sent: None,
+        })
     }
 
     /// `None` continues the loop and releases a stale failure below the attempt limit to a new proof.

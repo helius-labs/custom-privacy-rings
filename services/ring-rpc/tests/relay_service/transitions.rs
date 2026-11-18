@@ -166,7 +166,7 @@ impl Worker {
             RelayParts {
                 store: fixture.store.clone(),
                 prover: fixture.prover.clone(),
-                fee_payer: Keypair::new_from_array([31; 32]),
+                fee_payer: Arc::new(Keypair::new_from_array([31; 32])),
                 chain: self.chain,
             },
             SERVICE,

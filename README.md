@@ -74,11 +74,16 @@ validator, Photon, the ring indexer and the ring prover.
 
 ## Use
 
-`zolana-ring new`, `deploy` and `init` create a ring, deploy its program and
-fix its auditor key, tier and policy. `init` creates any missing admin,
-pauser and co-signer admin key file, by default in `keys/` beside `ring.toml`,
-so the role split holds only once each key leaves that machine. Members pay
-with `zolana-ring transfer` and `merge`, or through the Rust and TypeScript
+`zolana-ring new NAME --operator-manifest ./operator.json` takes its program
+address from the manifest. Provision a separate AWS KMS Ed25519 key for each
+signer. Use `ring-rpc signer-ref` to populate the `program`, `upgrade_authority`,
+`admin`, `policy`, `pauser`, `cosign_admin` and `enrollment_writer` entries.
+Set `region` and `deployment`. Fund the upgrade authority for `deploy` and the
+policy authority for `init`. Confirm the service signing address out of band
+before accepting its auditor key. The ring fixes the auditor at initialization.
+See [Ring RPC custody](services/ring-rpc/README.md#keys).
+
+Members pay with `zolana-ring transfer` and `merge`, or through the Rust and TypeScript
 SDKs.
 
 ## Limits

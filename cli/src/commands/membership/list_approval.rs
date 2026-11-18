@@ -2,9 +2,7 @@
 //! Approval is the authority's own record update, the off chain check behind it stays with the authority.
 
 use anyhow::{ensure, Context as _, Result};
-use custom_ring_sdk::AuthorityRecordUpdate;
 use solana_address::Address;
-use solana_signer::Signer;
 use zolana_ring_client::{
     owner_record_key,
     rpc::{ListApprovalScope, PendingListApproval},
@@ -52,17 +50,14 @@ fn approve(ctx: &Context, wallet: Address) -> Result<()> {
         !lists.is_empty(),
         "no update of {wallet} is pending list approval"
     );
-    let authority = ctx.authority()?;
     let write = ListChange {
         set: lists,
         clear: ListSet::EMPTY,
     }
     .check()?;
-    let update = AuthorityRecordUpdate::new(target, authority.pubkey())
-        .with_write(owner_record_key(wallet.as_array())?, write)?;
-    let revision = ctx
-        .ring_rpc()
-        .apply_record_update(update.sign(authority)?)?;
+    let member = owner_record_key(wallet.as_array())?;
+    let revision =
+        ctx.apply_authority_update(target, |update| Ok(update.with_write(member, write)?))?;
     line(
         "approved",
         format_args!("{wallet} {} at revision {revision}", list_names(lists)),
@@ -75,10 +70,10 @@ fn read_pending(ctx: &Context, registry: Address) -> Result<Vec<PendingListAppro
     ctx.ring_rpc().pending_list_approvals(
         ListApprovalScope {
             target: ctx.ring_rpc_target()?,
-            authority: authority.pubkey(),
+            authority: authority.address(),
             registry,
         },
-        authority,
+        &ctx.request_signer(authority.as_ref()),
     )
 }
 

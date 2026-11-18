@@ -107,7 +107,7 @@ impl Fixture {
             RelayParts {
                 store: store.clone(),
                 prover: prover.clone(),
-                fee_payer,
+                fee_payer: Arc::new(fee_payer),
                 chain: chain.clone(),
             },
             SERVICE,

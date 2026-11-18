@@ -4,7 +4,6 @@ use anyhow::Result;
 use custom_ring_interface::{RingPolicy, RingRoles};
 use custom_ring_sdk::{live_registry, RingError, RingMode};
 use solana_address::Address;
-use solana_signer::Signer;
 use spr_client::Rpc;
 
 use crate::{
@@ -25,11 +24,17 @@ pub fn run(ctx: &Context) -> Result<()> {
     line("target", config.target);
     line("program id", config.program_id);
     for (label, key) in [
-        ("policy key", config.policy_authority()),
-        ("upgrade key", config.upgrade_authority()),
+        (
+            "policy key",
+            ctx.operator_manifest().map(|m| m.policy.address),
+        ),
+        (
+            "upgrade key",
+            ctx.operator_manifest().map(|m| m.upgrade_authority.address),
+        ),
     ] {
         match key {
-            Ok(key) => line(label, key.pubkey()),
+            Ok(key) => line(label, key),
             Err(error) => line(label, format_args!("unavailable ({error})")),
         }
     }
@@ -95,8 +100,8 @@ fn percent_encode(text: &str) -> String {
 
 fn print_chain(ctx: &Context) -> Result<()> {
     let (ring, chain) = (ctx.ring, ctx.chain());
-    if let Ok(authority) = ctx.authority() {
-        let lamports = ctx.rpc().get_balance(authority.pubkey())?;
+    if let Ok(manifest) = ctx.operator_manifest() {
+        let lamports = ctx.rpc().get_balance(manifest.policy.address)?;
         let sol = lamports as f64 / 1e9;
         line("balance", format_args!("{sol} SOL ({lamports} lamports)"));
     }
@@ -201,7 +206,7 @@ fn program_state(ctx: &Context) -> Result<String> {
     let Some(data) = deploy::program_data(ctx)? else {
         return Ok("deployed (not upgradeable)".to_owned());
     };
-    let configured = ctx.config.upgrade_authority().map(|key| key.pubkey());
+    let configured = ctx.operator_manifest().map(|m| m.upgrade_authority.address);
     let relation = match (data.upgrade_authority, &configured) {
         (Some(authority), Ok(configured)) if authority == *configured => "matches",
         _ => "differs from",
@@ -226,7 +231,7 @@ mod tests {
 name = "x"
 target = "devnet"
 program_id = "11111111111111111111111111111111"
-authority_keypair = "a.json"
+operator_manifest = "operator.json"
 
 [localnet]
 rpc = "http://127.0.0.1:8899"

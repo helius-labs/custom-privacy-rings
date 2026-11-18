@@ -60,7 +60,7 @@ mod tests {
     fn builder() -> HubBuilder<ChainSource> {
         let identity = ServiceIdentity {
             genesis_hash: [1; 32],
-            service: key(1),
+            service: Arc::new(key(1)),
         };
         Hub::builder(ChainSource::connect(UPSTREAMS).expect("source"), identity)
     }
@@ -69,7 +69,7 @@ mod tests {
         Arc::new(
             EnrollmentApplierParts {
                 chain: chain(),
-                payer: key(5),
+                payer: Arc::new(key(5)),
                 rings: Vec::new(),
                 budget_lamports,
                 ring_budget_lamports: budget_lamports,
@@ -93,7 +93,7 @@ mod tests {
     async fn health_names_each_configured_role_key_and_no_secret() {
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
         let relay = RelayServicesInit {
-            fee_payer: key(4),
+            fee_payer: Arc::new(key(4)),
             store: store.clone(),
             rpc_url: UNREACHABLE,
             indexer_url: UNREACHABLE,
@@ -102,8 +102,8 @@ mod tests {
         .build();
         let full = builder()
             .with_store(store)
-            .with_storage_chain(chain(), key(2))
-            .with_co_signer(key(3))
+            .with_storage_chain(chain(), Arc::new(key(2)))
+            .with_co_signer(Arc::new(key(3)))
             .with_reader_grants(ReaderGrantStore::Database)
             .with_grant_rows_key(GrantRowsSecret::from_bytes([6; 32]))
             .with_relay_services(relay)

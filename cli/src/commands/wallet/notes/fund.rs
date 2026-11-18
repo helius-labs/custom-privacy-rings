@@ -29,6 +29,9 @@ pub(crate) struct TopUp<'a> {
 impl TopUp<'_> {
     /// Sends only what `who` lacks of `lamports`.
     pub(crate) fn send(self, ctx: &Context) -> Result<()> {
+        if self.funder.pubkey() == self.who {
+            return ctx.fund(self.who, self.lamports);
+        }
         let short = self
             .lamports
             .saturating_sub(ctx.rpc().get_balance(self.who)?);

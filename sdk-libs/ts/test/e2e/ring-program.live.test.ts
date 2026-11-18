@@ -1,10 +1,9 @@
 import { X25519Keypair } from "@heliuslabs/spr/keypair";
-import { createCustomRingClient } from "../../src/rpc/client.js";
 // Deploys a fresh ring program from the built binaries, upgrades it in place
 // and initializes its ring account. Reads RING_PROGRAM_SO and USER_REGISTRY_PROGRAM_SO.
 import { readFile } from "node:fs/promises";
 
-import { address, generateKeyPairSigner } from "@solana/kit";
+import { generateKeyPairSigner } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -14,21 +13,18 @@ import {
   RingProgramBinary,
   verifyRingProgram,
 } from "../../src/ring/index.js";
-import { airdrop, requiredEnv, sendInstruction } from "./ring-live-helpers.js";
+import { liveClient, requiredEnv } from "./live-helpers.js";
+import { authoritySigner, reservedProgram } from "./localnet-kms.js";
+import { airdrop, sendInstruction } from "./ring-live-helpers.js";
 
 describe("ring program", () => {
   it("deploys, upgrades and registers a ring under the sdk", async () => {
-    const client = await createCustomRingClient({
-      solanaRpcUrl: requiredEnv("ZOLANA_LOCALNET_URL"),
-      indexerUrl: requiredEnv("ZOLANA_INDEXER_URL"),
-      proverUrl: requiredEnv("ZOLANA_PROVER_URL"),
-      tree: address(requiredEnv("ZOLANA_TREE")),
-    });
+    const client = await liveClient();
     // The registry binary first, the larger ring binary upgrades over it and extends the account.
     const first = RingProgramBinary.parse(await readFile(requiredEnv("USER_REGISTRY_PROGRAM_SO")));
     const ring = RingProgramBinary.parse(await readFile(requiredEnv("RING_PROGRAM_SO")));
-    const operator = await generateKeyPairSigner();
-    const program = await generateKeyPairSigner();
+    const operator = authoritySigner();
+    const program = await reservedProgram(client);
 
     for (const _ of [1, 2, 3]) await airdrop(client, operator.address);
     const deployed = await deployRingProgram({

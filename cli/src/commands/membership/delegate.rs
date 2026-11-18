@@ -5,15 +5,14 @@ use custom_ring_sdk::{
     DelegateMove, DelegatePayment, DelegateSource, DelegateSourceError, ResolvedSource,
     TrackingEnrollment,
 };
-use solana_signer::Signer;
 use spr_client::{IndexerRpcConfig, Rpc};
 use spr_transaction::SOL_MINT;
 use zolana_ring_client::{RecoveryStep, RingRecovery, SourceMember};
 
 use crate::{
     assets,
-    controls::{ring_auditor_key, DualControl},
-    file, line,
+    controls::ring_auditor_key,
+    line,
     transact::{PAYER_FEE_BUDGET, SENDER_FEE_BUDGET},
     Context, DelegateMoveArgs,
 };
@@ -24,20 +23,14 @@ pub fn run_move(ctx: &Context, args: DelegateMoveArgs) -> Result<()> {
     ensure!(amount > 0, "the move amount must be greater than zero");
     let mint = args.mint.map_or(SOL_MINT, |mint| mint.0);
     let config = ctx.ring_config()?;
-    let delegate = file::read_keypair(&ctx.path(&args.delegate_keypair))?;
+    let delegate = ctx.delegate_signer()?;
     let stored = config.delegate.context("the ring has no delegate")?;
     ensure!(
-        stored == delegate.pubkey(),
-        "the delegate keypair {} is not the ring's delegate {stored}",
-        delegate.pubkey()
+        stored == delegate.address(),
+        "the operator manifest names delegate {}, the ring pins {stored}",
+        delegate.address()
     );
-    DualControl {
-        cosigner: None,
-        delegate: Some(stored),
-    }
-    .check()?;
-    // The auditor key decrypts recovery material, only the delegate signs.
-    let auditor = ring_auditor_key(ctx, &args.auditor_key)?;
+    let auditor = ring_auditor_key(ctx)?;
     let chain = ctx.chain();
     let enrollment = TrackingEnrollment {
         rpc: ctx.zolana.as_async(),
@@ -82,8 +75,8 @@ pub fn run_move(ctx: &Context, args: DelegateMoveArgs) -> Result<()> {
             exits: Vec::new(),
             withdrawals: Vec::new(),
             ring: ctx.ring,
-            delegate: delegate.pubkey(),
-            payer: authority.pubkey(),
+            delegate: delegate.address(),
+            payer: authority.address(),
             sources: vec![DelegateSource {
                 address: source,
                 nullifier_key: resolved.nullifier_key(),
@@ -103,10 +96,9 @@ pub fn run_move(ctx: &Context, args: DelegateMoveArgs) -> Result<()> {
         }
         .select(ctx.ring_client()),
     )?;
-    ctx.require_balance(authority.pubkey(), SENDER_FEE_BUDGET + PAYER_FEE_BUDGET)?;
+    ctx.require_balance(authority.address(), SENDER_FEE_BUDGET + PAYER_FEE_BUDGET)?;
     ctx.ring_rpc().check_serves(ctx.ring.program_id())?;
-    let signers = [&delegate as &(dyn Signer + Sync)];
-    let moved = ctx.submit(transfer, authority, &signers)?;
+    let moved = ctx.submit_operator(transfer, authority.as_ref(), &[delegate.as_ref()])?;
     for to in &args.to {
         line("to", to);
     }

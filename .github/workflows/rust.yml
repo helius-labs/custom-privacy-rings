@@ -451,10 +451,9 @@ jobs:
           solana: "true"
       - uses: ./.github/actions/stack
       - run: just ${{ matrix.recipe }}
-      - name: Dump prover, photon and ring indexer logs on failure
+      - name: Show Photon and ring indexer logs on failure
         if: failure()
         run: |
-          find . -name prover-server.log -print -exec tail -200 {} \; 2>/dev/null || echo "(no prover log)"
           find . -name photon.log -print -exec tail -100 {} \; 2>/dev/null || echo "(no photon log)"
           find . -name ring-indexer.log -print -exec tail -100 {} \; 2>/dev/null || echo "(no ring indexer log)"
 
@@ -538,10 +537,6 @@ jobs:
       - uses: ./.github/actions/stack
       - run: npm ci
       - run: just ${{ matrix.recipe }}
-      - name: Dump service logs on failure
-        if: failure()
-        run: |
-          find target/ts-sdk-e2e -name '*.log' -print -exec tail -200 {} \; 2>/dev/null || echo "(no logs)"
 
   result:
     name: ${{ needs.changes.outputs.sanity == 'true' && 'ci sanity result' || 'ci result' }}

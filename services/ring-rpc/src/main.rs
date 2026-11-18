@@ -3,22 +3,19 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Parser;
 use log::{info, warn};
-use solana_signer::Signer;
-use zolana_ring_client::{
-    auditor_view_tag,
-    rpc::{public_key_path, write_auditor_key, KeyMode},
-};
+use zolana_ring_client::rpc::KeyMode;
 use zolana_ring_rpc::{
-    live_ring_client, run_server, write_grant_rows_secret, write_keypair, write_root_secret,
-    ChainSource, Cli, CoSignerApproval, Command, EnrollmentApplierParts, Hub, KeyKind, KeySource,
-    KeygenArgs, LiveStorageChain, OriginPolicy, RelayBudget, RelayServicesInit, ServeArgs,
-    ServeKeys, ServerOptions, ServiceIdentity, Store, TransactionSource, Upstreams,
-    WalletSnapshotLimits, MANAGED_MERGE_INTERVAL, RECORD_FLUSH_INTERVAL, STORE_CONNECTIONS,
+    live_ring_client, run_server, ChainSource, Cli, CoSignerApproval, Command,
+    EnrollmentApplierParts, Hub, KeySource, LiveStorageChain, OriginPolicy, RelayBudget,
+    RelayServicesInit, ServeArgs, ServeKeys, ServerOptions, ServiceIdentity, Store,
+    TransactionSource, Upstreams, WalletSnapshotLimits, MANAGED_MERGE_INTERVAL,
+    RECORD_FLUSH_INTERVAL, STORE_CONNECTIONS,
 };
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -26,57 +23,18 @@ async fn main() -> anyhow::Result<()> {
         .init();
     match Cli::parse().command {
         Command::Serve(args) => serve(*args).await,
-        Command::Keygen(args) => keygen(args),
-    }
-}
-
-fn keygen(args: KeygenArgs) -> anyhow::Result<()> {
-    match args.kind {
-        KeyKind::Auditor => {
-            let key = write_auditor_key(&args.out)
-                .with_context(|| format!("writing {}", args.out.display()))?;
-            println!("secret      {}", args.out.display());
-            println!("public key  {}", public_key_path(&args.out)?.display());
-            println!("auditor pk  {}", hex::encode(key.pubkey().as_bytes()));
-            println!(
-                "view tag    {}",
-                hex::encode(auditor_view_tag(&key.pubkey()))
-            );
+        Command::Provision(args) => {
+            println!("{}", serde_json::to_string(&args.provision().await?)?);
+            Ok(())
         }
-        KeyKind::Root => {
-            write_root_secret(&args.out)
-                .with_context(|| format!("writing {}", args.out.display()))?;
-            println!("root secret {}", args.out.display());
-        }
-        KeyKind::GrantRows => {
-            write_grant_rows_secret(&args.out)
-                .with_context(|| format!("writing {}", args.out.display()))?;
-            println!("{:<11} {}", args.kind.role(), args.out.display());
-        }
-        KeyKind::FeePayer
-        | KeyKind::Service
-        | KeyKind::StorageAuthority
-        | KeyKind::CoSigner
-        | KeyKind::EnrollmentApplier => {
-            let key = write_keypair(&args.out)
-                .with_context(|| format!("writing {}", args.out.display()))?;
-            println!("secret      {}", args.out.display());
-            println!("{:<11} {}", args.kind.role(), key.pubkey());
+        Command::SignerRef(args) => {
+            println!("{}", serde_json::to_string(&args.resolve().await?)?);
+            Ok(())
         }
     }
-    Ok(())
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
-    let ServeKeys {
-        auditor,
-        service,
-        storage_authority,
-        co_signer,
-        grant_rows,
-        fee_payer,
-        enrollment_applier,
-    } = args.read_keys()?;
     let enrollment_ring_budget = args.enrollment_ring_budget();
     let upstreams = Upstreams {
         indexer_url: &args.indexer_url,
@@ -88,6 +46,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         .genesis_hash()
         .await
         .context("reading the cluster genesis hash")?;
+    let ServeKeys {
+        auditor,
+        service,
+        storage_authority,
+        co_signer,
+        grant_rows,
+        fee_payer,
+        enrollment_applier,
+    } = args.read_keys(&genesis_hash).await?;
     let options = ServerOptions {
         bind: args.bind,
         bind_policy: args.bind_policy(),
@@ -111,7 +78,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let relay_services = fee_payer
         .map(|fee_payer| {
             let (Some(store), Some(prover_url)) = (store.clone(), &args.prover_url) else {
-                anyhow::bail!("--fee-payer-key-file needs --store-url and --prover-url");
+                anyhow::bail!("the fee payer needs a store and a prover");
             };
             Ok(RelayServicesInit {
                 fee_payer,
@@ -193,7 +160,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     info!("service pubkey {}", hub.service_pubkey());
     match hub.relay() {
         None => {
-            warn!("relay off, token account creates need --fee-payer-key-file and a relay budget")
+            warn!("relay off, token account creation needs a fee payer and a relay budget")
         }
         Some(relay) => {
             info!("relay fee payer {}", relay.fee_payer());

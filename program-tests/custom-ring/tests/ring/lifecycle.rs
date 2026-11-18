@@ -198,7 +198,7 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
         .map_err(|e| anyhow!("genesis hash {e:?}"))?;
     let identity = ServiceIdentity {
         genesis_hash,
-        service: Keypair::new(),
+        service: std::sync::Arc::new(Keypair::new()),
     };
     let hub = Hub::builder(source, identity)
         .derived(RootSecret::from_bytes([7; 32])?)
@@ -275,21 +275,12 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
 fn cli_init_names_the_roles_and_reruns_from_the_chain() -> Result<()> {
     let env = setup()?;
     let ring = CustomRing::new(custom_ring_program_id()?);
-    let auditor = X25519Keypair::new();
-    let ring_rpc = RingRpcSpec {
-        env: &env,
-        ring: ring.program_id(),
-        auditor: auditor.clone(),
-    }
-    .serve()?;
-    let project = RingProject::create(&env, &auditor.pubkey())?;
+    let project = RingProject::create(&env)?;
     let init = || project.run(&["init"]);
 
-    // 1. A local ring rpc lets the key file through, the deployer creates the
-    //    ring naming the `policy_authority` key as its policy authority.
     project.write_config(RingToml {
         env: &env,
-        ring_rpc: &ring_rpc.url,
+        ring_rpc: &project.ring_rpc.url,
         policy: None,
         mode: ModeName::Confidential,
     })?;
@@ -298,11 +289,9 @@ fn cli_init_names_the_roles_and_reruns_from_the_chain() -> Result<()> {
     let config = env
         .run(ring.config(env.client.as_async()))?
         .ok_or_else(|| anyhow!("config after init"))?;
-    assert_eq!(config.roles.policy, project.policy_authority.pubkey());
-    assert_eq!(config.auditor_pubkey, auditor.pubkey());
+    assert_eq!(config.roles.policy, project.policy_authority);
+    assert_eq!(config.auditor_pubkey, project.auditor.pubkey());
 
-    // 2. The rerun takes the key from the chain, so the hosted-looking rpc is
-    //    never asked and the key file is not mistaken for a local key.
     project.write_config(RingToml {
         env: &env,
         ring_rpc: "http://ring.invalid:1",

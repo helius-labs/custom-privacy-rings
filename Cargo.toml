@@ -11,6 +11,7 @@ members = [
     "sdk-libs/client",
     "sdk-libs/indexer",
     "sdk-libs/keys",
+    "sdk-libs/operator-custody",
     "sdk-libs/sdk",
     "sdk-libs/secret-file",
     "sdk-libs/transaction",
@@ -34,6 +35,7 @@ tools-version = "v1.54"
 custom-ring-interface = { path = "program-libs/interface", version = "0.1.0" }
 zolana-ring-policy = { path = "program-libs/policy", version = "0.1.0" }
 zolana-ring-member-registry = { path = "program-libs/member-registry", version = "0.1.0" }
+zolana-operator-custody = { path = "sdk-libs/operator-custody" }
 zolana-secret-file = { path = "sdk-libs/secret-file", version = "0.1.0" }
 zolana-cli-common = { path = "cli/common" }
 zolana-ring-indexer = { path = "sdk-libs/indexer", version = "0.1.0" }
@@ -239,6 +241,7 @@ zerocopy = "0.8.25"
 # Browser (wasm) bindings.
 console_error_panic_hook = "0.1.7"
 js-sys = "0.3"
+serde_with = "3"
 serde-wasm-bindgen = "0.6.5"
 tsify = { version = "0.5.8", default-features = false, features = ["js"] }
 wasm-bindgen = "0.2.104"
@@ -259,6 +262,7 @@ hkdf = "0.12"
 percent-encoding = "2.3"
 zeroize = "1"
 # HSM custody backends exercised by the keypair test suite.
+aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "credentials-process", "sso"] }
 aws-sdk-kms = "1"
 aws-smithy-mocks = "0.3"
 criterion = "0.5"

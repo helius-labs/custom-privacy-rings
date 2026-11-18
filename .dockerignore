@@ -7,3 +7,13 @@ zolana/prover/server/proving-keys/
 zolana/prover/server/formal-verification/
 test-ledger/
 .env
+**/.git
+**/.worktrees
+**/.aws
+**/.solana
+**/.env
+**/*-keypair.json
+**/*.pem
+**/*.key
+**/id.json
+**/*.log

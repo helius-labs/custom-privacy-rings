@@ -4,11 +4,10 @@ use anyhow::{bail, ensure, Context as _, Result};
 use clap::{builder::PossibleValue, Args, ValueEnum};
 use custom_ring_interface::ListRegistry;
 use custom_ring_sdk::{
-    AuthorityRecordUpdate, MemberRecords, OwnerSaltCheck, PolicyUpdate, SaltedOwnerCheck,
-    SourceOwner, UpdatePolicy, WalletRecordUpdate,
+    MemberRecords, OwnerSaltCheck, PolicyUpdate, SaltedOwnerCheck, SourceOwner, UpdatePolicy,
+    WalletRecordUpdate,
 };
 use solana_address::Address;
-use solana_keypair::Keypair;
 use solana_signer::Signer;
 use zolana_ring_client::owner_record_key;
 use zolana_ring_keys::{RingAddress, RingKeyError};
@@ -67,7 +66,6 @@ pub(crate) enum ListChange {
 
 #[must_use]
 pub(crate) struct ListUpdate<'a> {
-    pub authority: &'a Keypair,
     pub list_id: ListId,
     pub subjects: &'a [Subject],
     pub change: ListChange,
@@ -243,7 +241,11 @@ impl EntryArgs {
         let read_salt = |owner: &Address| -> Result<[u8; 32]> {
             let list_salt = ctx
                 .ring_rpc()
-                .list_salt(ctx.ring_rpc_target()?, *owner, ctx.authority()?)?
+                .list_salt(
+                    ctx.ring_rpc_target()?,
+                    *owner,
+                    &ctx.request_signer(ctx.authority()?.as_ref()),
+                )?
                 .with_context(|| format!("{owner} has no tracking row and no private record"))?;
             ctx.zolana
                 .block_on(
@@ -286,7 +288,6 @@ impl EntryArgs {
         let list_id = self.list_id.id();
         let subjects = self.checked_subjects(ctx)?;
         let outcomes = ListUpdate {
-            authority: ctx.authority()?,
             list_id,
             subjects: &subjects,
             change,
@@ -360,22 +361,23 @@ impl ListUpdate<'_> {
                 members: &members,
             },
         )?;
-        let mut update =
-            AuthorityRecordUpdate::new(ctx.record_update_target()?, self.authority.pubkey());
-        let mut changed = false;
+        let mut writes = Vec::new();
         let mut outcomes = Vec::with_capacity(self.subjects.len());
         for (subject, read) in self.subjects.iter().zip(&reads) {
             if read.listed(list_id) == self.change.present() {
                 outcomes.push("already there");
-                continue;
+            } else {
+                writes.push(subject.member);
+                outcomes.push(self.change.outcome());
             }
-            update = update.with_write(subject.member, self.change.write(list_id)?)?;
-            changed = true;
-            outcomes.push(self.change.outcome());
         }
-        if changed {
-            ctx.ring_rpc()
-                .apply_record_update(update.sign(self.authority)?)?;
+        if !writes.is_empty() {
+            let change = self.change.write(list_id)?;
+            ctx.apply_authority_update(ctx.record_update_target()?, |update| {
+                Ok(writes
+                    .into_iter()
+                    .try_fold(update, |update, member| update.with_write(member, change))?)
+            })?;
         }
         Ok(outcomes)
     }
@@ -397,12 +399,12 @@ fn set_source(ctx: &Context, list_id: ListId, source: SourceOwner) -> Result<()>
     } else {
         let point = UpdatePolicy {
             ring: ctx.ring,
-            authority: authority.pubkey(),
+            authority: authority.address(),
             current: &account,
             update: PolicyUpdate::Source { list_id, source },
         }
         .instruction()?;
-        ctx.send(&[authority], &[point])?;
+        ctx.send_operator(&[authority.as_ref()], &[point])?;
         "created"
     };
     let registry = policy::pinned(ctx)?

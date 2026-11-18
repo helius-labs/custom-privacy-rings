@@ -196,7 +196,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
             let _slot = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring_program_id.0))?;
             let statement = service.auditor_key_statement(&request.auth).await?;
-            let signature = hub.sign_attestation(&statement);
+            let signature = hub.sign_attestation(&statement).await?;
             let (ring, auditor_pubkey) = (service.ring(), service.auditor_pubkey());
             Ok(CreateAuditorKeyResponse {
                 ring_program_id: ring.into(),
@@ -744,7 +744,7 @@ mod tests {
     fn identity(genesis_hash: [u8; 32]) -> ServiceIdentity {
         ServiceIdentity {
             genesis_hash,
-            service: Keypair::new(),
+            service: Arc::new(Keypair::new()),
         }
     }
 

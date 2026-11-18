@@ -9,13 +9,12 @@ use custom_ring_sdk::{
     PrivateStorageWrite, ProvenPrivateWrite, RingClient, RingError, RingIndexerBackend,
 };
 use solana_address::Address;
-use solana_keypair::Keypair;
 use solana_signature::Signature;
-use solana_signer::Signer;
 use spr_client::{AsyncRpc, ClientError};
 use spr_keypair::X25519Keypair;
 use thiserror::Error;
 use tokio::sync::{watch, Mutex as AsyncMutex, Semaphore, SemaphorePermit};
+use zolana_operator_custody::SigningIdentity;
 use zolana_ring_client::{
     auditor_view_tag,
     rpc::{unix_now, KeyMode, ServiceTarget},
@@ -57,7 +56,7 @@ use crate::{
 const READINESS_CACHE_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Hub<S> {
-    signer: Keypair,
+    signer: SigningIdentity,
     shared: Arc<Shared<S>>,
     writer: Option<Arc<RecordWriter>>,
     enrollments: Option<Arc<EnrollmentApplier>>,
@@ -121,7 +120,7 @@ pub(crate) enum Lane {
 /// Every read and auditor key attestation binds both.
 pub struct ServiceIdentity {
     pub genesis_hash: [u8; 32],
-    pub service: Keypair,
+    pub service: SigningIdentity,
 }
 
 #[must_use]
@@ -133,10 +132,10 @@ pub struct HubBuilder<S> {
     clock: Clock,
     store: Option<Store>,
     snapshot_limits: WalletSnapshotLimits,
-    storage: Option<(Arc<dyn StorageChain>, Keypair)>,
+    storage: Option<(Arc<dyn StorageChain>, SigningIdentity)>,
     reader_grants: ReaderGrantStore,
     grant_rows: Option<GrantRowsSecret>,
-    co_signer: Option<Keypair>,
+    co_signer: Option<SigningIdentity>,
     co_signer_approval: CoSignerApproval,
     co_signer_rule: Option<Arc<dyn CoSignRule>>,
     relay_budget: RelayBudget,
@@ -436,7 +435,7 @@ impl<S: TransactionSource> Hub<S> {
     }
 
     pub fn service_pubkey(&self) -> Address {
-        self.signer.pubkey()
+        self.signer.address()
     }
 
     pub fn record_writer(&self) -> Result<&Arc<RecordWriter>, RingRpcError> {
@@ -456,8 +455,11 @@ impl<S: TransactionSource> Hub<S> {
         &self.co_signer
     }
 
-    pub(crate) fn sign_attestation(&self, attestation: &[u8]) -> Signature {
-        self.signer.sign_message(attestation)
+    pub(crate) async fn sign_attestation(
+        &self,
+        attestation: &[u8],
+    ) -> Result<Signature, RingRpcError> {
+        Ok(self.signer.sign(attestation).await?)
     }
 
     pub fn origins(&self) -> &Origins {
@@ -722,7 +724,11 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
 
     /// The record writer runs only beside a store.
     #[must_use = "use the updated builder"]
-    pub fn with_storage_chain(mut self, chain: Arc<dyn StorageChain>, authority: Keypair) -> Self {
+    pub fn with_storage_chain(
+        mut self,
+        chain: Arc<dyn StorageChain>,
+        authority: SigningIdentity,
+    ) -> Self {
         self.storage = Some((chain, authority));
         self
     }
@@ -742,7 +748,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
 
     /// The hub refuses to build without a store.
     #[must_use = "use the updated builder"]
-    pub fn with_co_signer(mut self, signer: Keypair) -> Self {
+    pub fn with_co_signer(mut self, signer: SigningIdentity) -> Self {
         self.co_signer = Some(signer);
         self
     }
@@ -837,7 +843,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         let shared = Shared {
             source: self.source,
             genesis_hash,
-            service: signer.pubkey(),
+            service: signer.address(),
             keys,
             clock: self.clock,
             assets: AsyncMutex::new(AssetCache {

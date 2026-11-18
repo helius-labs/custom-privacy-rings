@@ -29,8 +29,7 @@ mod scope;
 
 use async_trait::async_trait;
 use solana_address::Address;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
+use zolana_operator_custody::SigningIdentity;
 
 pub(crate) use self::{direct::DirectCoSign, lists::migration as list_migration};
 pub use self::{
@@ -47,12 +46,12 @@ use crate::{
 
 /// Signs what its rule admits.
 pub struct CoSigner<R> {
-    signer: Keypair,
+    signer: SigningIdentity,
     pub(crate) rule: R,
 }
 
 impl<R: CoSignRule> CoSigner<R> {
-    pub const fn new(signer: Keypair, rule: R) -> Self {
+    pub const fn new(signer: SigningIdentity, rule: R) -> Self {
         Self { signer, rule }
     }
 
@@ -69,11 +68,11 @@ impl<R: CoSignRule> CoSigner<R> {
 #[async_trait]
 impl<R: CoSignRule> CoSignPolicy for CoSigner<R> {
     fn signer(&self) -> Option<Address> {
-        Some(self.signer.pubkey())
+        Some(self.signer.address())
     }
 
     async fn decide(&self, request: &CoSignRequest) -> Result<CoSignDecision, RingRpcError> {
-        let ticket = self.signer.sign_message(&request.message.serialize());
+        let ticket = self.signer.sign(&request.message.serialize()).await?;
         let operation = Operation {
             ring: request.ring,
             message: &request.message,

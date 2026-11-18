@@ -10,13 +10,13 @@ use custom_ring_interface::{
 use custom_ring_sdk::{
     entry_shape_keyed, select_spend_where, shape_keyed, AnonymousMove, AnonymousPayment,
     CoSignScope, CustomRingConfig, CustomRingTransfer, CustomRingTransferInput, DepositAsset,
-    DepositRecipient, EntrySpend, ListRegistry, PublicOwnerTransfer, RingDeposit,
-    RingDepositReceipt, RingMode, RingPayment,
+    DepositRecipient, EntrySpend, ListRegistry, LocalSigners, PublicOwnerTransfer, RingDeposit,
+    RingDepositReceipt, RingMode, RingOperation, RingPayment, RingSubmission,
 };
 use solana_address::Address;
 use solana_keypair::Keypair;
 use solana_signature::Signature;
-use solana_signer::Signer;
+use solana_signer::{null_signer::NullSigner, Signer};
 use spr_interface::{pda, MAX_TRANSACT_INPUTS};
 use spr_keypair::{shielded::ShieldedAddress, PublicKey, ShieldedKeypair};
 use spr_transaction::{
@@ -36,7 +36,6 @@ use zolana_ring_transaction::{ReplyMetadata, RingAssets};
 use crate::{
     assets,
     audit::OpenedSlot,
-    file,
     fund::TopUp,
     line,
     list::{ListChange, ListUpdate, Subject},
@@ -44,6 +43,7 @@ use crate::{
     member::{applied, KeyEnrollment},
     merge::carries_no_data,
     policy, records,
+    submission::MemberSigners,
     ui::{self, icon},
     wallet::WalletScan,
     BalanceArgs, Context, CosignerArg, DepositArgs, Target, TransactArgs, TransferArgs,
@@ -82,10 +82,6 @@ pub enum Recipient {
     /// Paid under the request tag until the pair is known.
     Ring(Box<RingPaymentRequest>),
     Address(Box<RingAddress>),
-}
-
-pub(crate) struct CoSigner {
-    keypair: Option<Keypair>,
 }
 
 #[must_use]
@@ -158,7 +154,6 @@ pub enum AllowListing {
 /// The demo parties a table referencing `Allow` refuses until their records carry it.
 #[must_use]
 struct AllowListWrite<'a> {
-    authority: &'a Keypair,
     parties: &'a [(&'a str, &'a ShieldedKeypair)],
     listing: AllowListing,
 }
@@ -171,7 +166,7 @@ struct Deposit<'a> {
     config: &'a CustomRingConfig,
     asset: DepositAsset,
     amount: u64,
-    cosigner: Option<&'a (dyn Signer + Sync)>,
+    cosigner: Option<Address>,
 }
 
 #[must_use]
@@ -182,16 +177,16 @@ struct Transfer<'a> {
     sender: &'a ShieldedKeypair,
     held: &'a RotatingRingKeys,
     payments: &'a Payments,
-    cosigner: Option<&'a (dyn Signer + Sync)>,
+    cosigner: Option<Address>,
     owner_rail: OwnerRail,
     spend_public: Option<Address>,
 }
 
-enum Inputs<'a> {
+enum Inputs {
     Deposits {
         asset: DepositAsset,
         amounts: [u64; 2],
-        cosigner: Option<&'a (dyn Signer + Sync)>,
+        cosigner: Option<Address>,
     },
     Held(Vec<WalletUtxo>),
 }
@@ -232,12 +227,11 @@ pub fn run(ctx: &Context, args: TransactArgs) -> Result<()> {
         .with_amount(args.amount)
         .resolve(config.mode, program)?;
     let assets = assets::resolve(ctx.rpc(), SOL_MINT)?.assets;
-    let cosigner = CoSigner::read(ctx, &args.cosigner)?;
     let demand = payments.outflow(&sender.signing_pubkey())?.demand(ctx)?;
     let inputs = Inputs::Deposits {
         asset: DepositAsset::Sol,
         amounts: [args.amount; 2],
-        cosigner: cosigner.sign(&config, Demand::Deposit)?,
+        cosigner: args.cosigner.sign(&config, Demand::Deposit)?,
     };
     let transfer = Transfer {
         config: &config,
@@ -246,25 +240,24 @@ pub fn run(ctx: &Context, args: TransactArgs) -> Result<()> {
         sender: &sender,
         held: &held,
         payments: &payments,
-        cosigner: cosigner.sign(&config, demand)?,
+        cosigner: args.cosigner.sign(&config, demand)?,
         owner_rail: args.owner_rail,
         spend_public: None,
     };
     payments.fits(&inputs)?;
     ctx.ring_rpc().check_serves(program)?;
-    let reader = ReaderKey::ed25519(ctx.authority()?.pubkey())?;
+    let authority = ctx.authority()?;
+    let reader = ReaderKey::ed25519(authority.address())?;
     ensure!(
         granted(ctx, &reader)?,
         "reader {reader} is not granted, run `zolana-ring reader grant {reader}` first"
     );
-    let authority = ctx.funded_authority()?;
     let parties = [("sender", &sender), ("recipient", &recipient)];
     KeyEnrollment {
         members: &[&sender, &recipient],
     }
     .ensure(ctx)?;
     AllowListWrite {
-        authority,
         parties: &parties,
         listing,
     }
@@ -281,7 +274,7 @@ pub fn run(ctx: &Context, args: TransactArgs) -> Result<()> {
     line("sender tag", owner_tag(&sender.shielded_address()?)?);
     line("recipient tag", owner_tag(&recipient.shielded_address()?)?);
     print_signatures(ctx, &sent)?;
-    read_back(ctx, authority, sent.transact)
+    read_back(ctx, &ctx.request_signer(authority.as_ref()), sent.transact)
 }
 
 /// Zero-key notes print apart, spending one names the wallet and shows its sender the spend.
@@ -325,9 +318,7 @@ pub fn run_transfer(ctx: &Context, args: TransferArgs) -> Result<()> {
         false => payments,
     };
     let total = payments.total()?;
-    let cosigner = CoSigner::read(ctx, &args.cosigner)?;
     let demand = payments.outflow(&sender.signing_pubkey())?.demand(ctx)?;
-    let authority = ctx.authority()?;
     let resolved = assets::resolve(ctx.rpc(), payments.mint)?;
     let transfer = Transfer {
         config: &config,
@@ -336,7 +327,7 @@ pub fn run_transfer(ctx: &Context, args: TransferArgs) -> Result<()> {
         sender: &sender,
         held: &held,
         payments: &payments,
-        cosigner: cosigner.sign(&config, demand)?,
+        cosigner: args.cosigner.sign(&config, demand)?,
         owner_rail: args.owner_rail,
         spend_public: args.spend_public,
     };
@@ -346,7 +337,7 @@ pub fn run_transfer(ctx: &Context, args: TransferArgs) -> Result<()> {
                 total >= 2,
                 "amount {total} does not split across the two deposits a ring transfer spends"
             );
-            let deposit_cosigner = cosigner.sign(&config, Demand::Deposit)?;
+            let deposit_cosigner = args.cosigner.sign(&config, Demand::Deposit)?;
             let payer = transfer.payer.pubkey();
             let asset = resolved.deposit(ctx.rpc(), payer, args.token_account, total)?;
             let half = total / 2;
@@ -388,20 +379,13 @@ pub fn run_transfer(ctx: &Context, args: TransferArgs) -> Result<()> {
         format_args!("{saved}  saved in {SENDER_KEYPAIR_FILE}"),
     );
     print_signatures(ctx, &sent)?;
-    // Reading the transfer back is a courtesy, the payment is already on chain.
-    let reader = ReaderKey::ed25519(authority.pubkey())?;
-    if !granted(ctx, &reader)? {
-        println!("auditor view skipped, `zolana-ring reader grant {reader}` lets it read the ring");
-        return Ok(());
-    }
-    read_back(ctx, authority, sent.transact)
+    Ok(())
 }
 
 pub fn run_deposit(ctx: &Context, args: DepositArgs) -> Result<()> {
     let config = ctx.ring_config()?;
     let mint = args.mint.map_or(SOL_MINT, |mint| mint.0);
-    let cosigner = CoSigner::read(ctx, &args.cosigner)?;
-    let deposit_cosigner = cosigner.sign(&config, Demand::Deposit)?;
+    let deposit_cosigner = args.cosigner.sign(&config, Demand::Deposit)?;
     let sender = ShieldedKeypair::from_keypair(&ctx.sender()?)?;
     let held = ctx.ring_keys(&sender)?;
     let payer = ctx.member_payer(config.mode, sender.pubkey())?;
@@ -882,35 +866,22 @@ impl Outflow {
     }
 }
 
-impl CoSigner {
-    pub(crate) fn read(ctx: &Context, arg: &CosignerArg) -> Result<Self> {
-        let keypair = arg
-            .cosigner_keypair
-            .as_deref()
-            .map(|path| file::read_keypair(&ctx.path(path)))
-            .transpose()?;
-        Ok(Self { keypair })
-    }
-
+impl CosignerArg {
     pub(crate) fn sign(
         &self,
         config: &CustomRingConfig,
         demand: Demand,
-    ) -> Result<Option<&(dyn Signer + Sync)>> {
+    ) -> Result<Option<Address>> {
         self.sign_for(Requirement::of(config.account(), demand)?)
     }
 
     /// Refused when the operation demands a co-signer the operator did not pass.
-    fn sign_for(&self, requirement: Requirement) -> Result<Option<&(dyn Signer + Sync)>> {
+    fn sign_for(&self, requirement: Requirement) -> Result<Option<Address>> {
         ensure!(
-            requirement.demanded.is_none() || self.keypair.is_some(),
-            "the operation needs the co-signer's approval, pass --cosigner-keypair"
+            requirement.demanded.is_none() || self.cosigner.is_some(),
+            "the operation needs the co-signer's approval, pass --cosigner"
         );
-        Ok(self
-            .keypair
-            .as_ref()
-            .filter(|_| requirement.demanded.is_some())
-            .map(|keypair| keypair as &(dyn Signer + Sync)))
+        Ok(self.cosigner.filter(|_| requirement.demanded.is_some()))
     }
 }
 
@@ -979,7 +950,6 @@ impl AllowListWrite<'_> {
             })
             .collect::<Result<Vec<_>>>()?;
         let outcomes = ListUpdate {
-            authority: self.authority,
             list_id: ListId::Allow,
             subjects: &subjects,
             change: ListChange::Set,
@@ -998,6 +968,7 @@ impl Deposit<'_> {
             RingMode::Anonymous => DepositRecipient::Anonymous { keys: self.held },
             RingMode::Confidential => DepositRecipient::Confidential(self.held.address()?),
         };
+        let public_cosigner = self.cosigner.as_ref().map(NullSigner::new);
         let deposit = RingDeposit {
             ring: ctx.ring,
             payer: self.payer,
@@ -1005,14 +976,32 @@ impl Deposit<'_> {
             tree: pda::tree(0),
             asset: self.asset,
             amount: self.amount,
-            cosigner: self.cosigner,
+            cosigner: public_cosigner
+                .as_ref()
+                .map(|key| key as &(dyn Signer + Sync)),
             list_salt: Some(self.sender.list_salt(&ctx.ring.program_id())?),
         };
-        Ok(ctx.block(deposit.send(ctx.ring_client()))?)
+        let prepared = ctx.block(deposit.prepare(ctx.chain()))?;
+        let mut submission = RingSubmission::new(prepared);
+        let signature = MemberSigners {
+            wallet: LocalSigners {
+                payer: self.payer,
+                signers: &[],
+            },
+            cosigner: self.cosigner,
+        }
+        .settle(ctx, &mut submission)?;
+        let Some([utxo]) = submission.deposit_utxos() else {
+            bail!("the deposit has no confirmed output")
+        };
+        Ok(RingDepositReceipt {
+            signature,
+            utxo: utxo.clone(),
+        })
     }
 }
 
-impl Inputs<'_> {
+impl Inputs {
     fn drawn_lamports(&self) -> u64 {
         match self {
             Self::Deposits { asset, amounts, .. } => amounts.iter().fold(0, |sum, amount| {
@@ -1122,6 +1111,19 @@ impl Transfer<'_> {
         .fetch(ctx)
     }
 
+    fn submit(
+        &self,
+        ctx: &Context,
+        operation: RingOperation<'_>,
+        wallet: LocalSigners<'_>,
+    ) -> Result<Signature> {
+        MemberSigners {
+            wallet,
+            cosigner: self.cosigner,
+        }
+        .settle(ctx, &mut RingSubmission::new(operation))
+    }
+
     fn spend(&self, ctx: &Context, inputs: Vec<WalletUtxo>) -> Result<Signature> {
         let shape = self.payments.shape(inputs.len(), held_total(&inputs)?)?;
         let tree_id = inputs
@@ -1164,7 +1166,7 @@ impl Transfer<'_> {
                     transfer = transfer.with_shape(shape)?;
                 }
                 if let Some(cosigner) = self.cosigner {
-                    transfer = transfer.with_co_signer(cosigner.pubkey());
+                    transfer = transfer.with_co_signer(cosigner);
                 }
                 match self.owner_rail {
                     // The owner signs its spends, it pays the transaction too.
@@ -1180,9 +1182,23 @@ impl Transfer<'_> {
                 }
                 if let Some(wallet) = self.spend_public {
                     let transfer = self.named_wallet(ctx, transfer.spend_public(wallet))?;
-                    return ctx.submit(transfer, payer, self.cosigner.as_slice());
+                    return self.submit(
+                        ctx,
+                        transfer.into(),
+                        LocalSigners {
+                            payer,
+                            signers: &[],
+                        },
+                    );
                 }
-                ctx.submit(transfer, payer, self.cosigner.as_slice())
+                self.submit(
+                    ctx,
+                    transfer.into(),
+                    LocalSigners {
+                        payer,
+                        signers: &[],
+                    },
+                )
             }
             Payees::Anonymous {
                 ring: payees,
@@ -1220,12 +1236,17 @@ impl Transfer<'_> {
                         None => transfer,
                     };
                     let transfer = match self.cosigner {
-                        Some(cosigner) => transfer.with_co_signer(cosigner.pubkey()),
+                        Some(cosigner) => transfer.with_co_signer(cosigner),
                         None => transfer,
                     };
-                    let mut signers: Vec<&(dyn Signer + Sync)> = vec![self.sender];
-                    signers.extend(self.cosigner);
-                    return ctx.submit(transfer, self.payer, &signers);
+                    return self.submit(
+                        ctx,
+                        transfer.into(),
+                        LocalSigners {
+                            payer: self.payer,
+                            signers: &[self.sender],
+                        },
+                    );
                 }
                 // The hidden owner never signs in public, the payer funds its spend.
                 let transfer = match self.payments.sdk_selects() {
@@ -1240,7 +1261,7 @@ impl Transfer<'_> {
                             asset: mint,
                             payments: payees.clone(),
                             entry: *entry,
-                            co_signer: self.cosigner.map(|signer| signer.pubkey()),
+                            co_signer: self.cosigner,
                         };
                         ctx.block(select.select(ctx.ring_client()))?
                     }
@@ -1278,12 +1299,19 @@ impl Transfer<'_> {
                             None => transfer,
                         };
                         match self.cosigner {
-                            Some(cosigner) => transfer.with_co_signer(cosigner.pubkey()),
+                            Some(cosigner) => transfer.with_co_signer(cosigner),
                             None => transfer,
                         }
                     }
                 };
-                ctx.submit(transfer, self.payer, self.cosigner.as_slice())
+                self.submit(
+                    ctx,
+                    transfer.into(),
+                    LocalSigners {
+                        payer: self.payer,
+                        signers: &[],
+                    },
+                )
             }
         }
     }
@@ -1405,7 +1433,7 @@ fn print_signatures(ctx: &Context, sent: &Sent) -> Result<()> {
 }
 
 /// What the auditor opens for a granted reader, once the indexer has the slot.
-fn read_back(ctx: &Context, reader: &Keypair, signature: Signature) -> Result<()> {
+fn read_back(ctx: &Context, reader: &dyn Signer, signature: Signature) -> Result<()> {
     println!("waiting for the indexer and the ring rpc to open the transaction");
     ctx.wait_for_indexed(signature)?;
     let target = ctx.ring_rpc_target()?;
@@ -1466,19 +1494,17 @@ mod tests {
         result.expect_err("refused").to_string()
     }
 
-    const ABSENT: CoSigner = CoSigner { keypair: None };
+    const ABSENT: CosignerArg = CosignerArg { cosigner: None };
 
-    impl CoSigner {
+    impl CosignerArg {
         fn passing(keypair: &Keypair) -> Self {
             Self {
-                keypair: Some(keypair.insecure_clone()),
+                cosigner: Some(keypair.pubkey()),
             }
         }
 
         fn signs(&self, config: &RingPolicy, demand: Demand) -> Result<Option<Address>> {
-            Ok(self
-                .sign_for(Requirement::of(config, demand)?)?
-                .map(|cosigner| cosigner.pubkey()))
+            self.sign_for(Requirement::of(config, demand)?)
         }
     }
 
@@ -1486,19 +1512,16 @@ mod tests {
     fn blanket_scope_and_private_approval_require_a_co_signer() {
         let key = Keypair::new();
         let transfers = configured(CoSignScope::TRANSFERS);
-        assert!(
-            refusal(ABSENT.signs(&transfers, Demand::Transfer)).contains("pass --cosigner-keypair")
-        );
+        assert!(refusal(ABSENT.signs(&transfers, Demand::Transfer)).contains("pass --cosigner"));
         assert_eq!(
-            CoSigner::passing(&key)
+            CosignerArg::passing(&key)
                 .signs(&transfers, Demand::Transfer)
                 .unwrap(),
             Some(key.pubkey())
         );
         let withdrawals = configured(CoSignScope::WITHDRAWALS);
         assert_eq!(ABSENT.signs(&withdrawals, Demand::Transfer).unwrap(), None);
-        assert!(refusal(ABSENT.signs(&withdrawals, Demand::Approval))
-            .contains("pass --cosigner-keypair"));
+        assert!(refusal(ABSENT.signs(&withdrawals, Demand::Approval)).contains("pass --cosigner"));
         let none: Box<RingPolicy> = bytemuck::zeroed_box();
         assert_eq!(ABSENT.signs(&none, Demand::Transfer).unwrap(), None);
         assert!(refusal(ABSENT.signs(&none, Demand::Approval))
@@ -1508,7 +1531,7 @@ mod tests {
     #[test]
     fn deposits_and_transfers_hand_the_co_signer_only_to_the_class_it_gates() {
         let key = Keypair::new();
-        let passed = CoSigner::passing(&key);
+        let passed = CosignerArg::passing(&key);
         for (scope, deposit, transfer) in [
             (CoSignScope::DEPOSITS, true, false),
             (CoSignScope::TRANSFERS, false, true),

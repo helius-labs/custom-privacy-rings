@@ -6,17 +6,21 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use custom_ring_cli::{ListName, ModeName, SENDER_KEYPAIR_FILE};
+use custom_ring_cli::{config::OperatorManifest, ListName, ModeName, SENDER_KEYPAIR_FILE};
 use custom_ring_sdk::CustomRing;
 use solana_address::Address;
 use solana_keypair::Keypair;
-use spr_keypair::ShieldedKeypair;
+use solana_loader_v3_interface::instruction as loader;
+use solana_signer::Signer;
+use spr_keypair::{ShieldedKeypair, X25519Keypair};
 use spr_test_utils::localnet::isolated_temp_path;
+use zolana_operator_custody::{Kms, SecretContext, SecretPurpose};
 use zolana_ring_policy::ListId;
 
 use crate::{
     policy::{owner_member, wait_for_list},
-    shared::{custom_ring_program_id, prover_url, TestEnv},
+    ring_rpc::{LocalRingRpc, RingRpcSpec},
+    shared::{prover_url, send, TestEnv},
 };
 
 const RING_CLI: &str = concat!(
@@ -24,9 +28,10 @@ const RING_CLI: &str = concat!(
     "/../../target/debug/zolana-ring"
 );
 
-/// The harness payer deploys, `policy_authority` holds the policy role.
 pub struct RingProject {
-    pub policy_authority: Keypair,
+    pub policy_authority: Address,
+    pub auditor: X25519Keypair,
+    pub ring_rpc: LocalRingRpc,
     dir: PathBuf,
     program_id: Address,
 }
@@ -78,25 +83,69 @@ pub fn merged(output: &Output) -> String {
 }
 
 impl RingProject {
-    /// `keys/auditor.key.pub` holds `auditor`, the local key `init` pins.
-    pub fn create(env: &TestEnv, auditor: &spr_keypair::X25519Pubkey) -> Result<Self> {
+    pub fn create(env: &TestEnv) -> Result<Self> {
         let dir = PathBuf::from(isolated_temp_path("zolana-ring-cli"));
-        let keys = dir.join("keys");
-        std::fs::create_dir_all(&keys)?;
-        let policy_authority = Keypair::new();
-        solana_keypair::write_keypair_file(&env.payer, dir.join("upgrade.json"))
-            .map_err(|e| anyhow!("write upgrade keypair {e}"))?;
-        solana_keypair::write_keypair_file(&policy_authority, dir.join("policy.json"))
-            .map_err(|e| anyhow!("write policy keypair {e}"))?;
-        std::fs::write(
-            keys.join("auditor.key.pub"),
-            format!("{}\n", hex::encode(auditor.as_bytes())),
+        std::fs::create_dir_all(&dir)?;
+        let path = PathBuf::from(std::env::var("RING_TEST_OPERATOR_MANIFEST")?);
+        let mut operator = OperatorManifest::load(&path)?;
+        let program_id = operator.program.address;
+        let genesis = env.client.rpc().genesis_hash()?;
+        let context = || SecretContext {
+            deployment: &operator.deployment,
+            genesis_hash: &genesis,
+            purpose: SecretPurpose::Auditor(program_id),
+        };
+        let endpoint = operator
+            .localnet_kms
+            .context("missing local KMS endpoint")?;
+        let kms = Kms::localnet_for_genesis(endpoint, &genesis)?;
+        let wrapping_key = std::env::var("RING_TEST_WRAPPING_KEY")?;
+        let wrapped = env
+            .client
+            .block_on(async { anyhow::Ok(kms.provision(&wrapping_key, context()).await?) })?;
+        let secret = env
+            .client
+            .block_on(async { anyhow::Ok(kms.open(&wrapped, context()).await?) })?;
+        let auditor = X25519Keypair::from_bytes(&secret);
+        let writer = env
+            .client
+            .block_on(async { anyhow::Ok(kms.signer(&operator.enrollment_writer).await?) })?;
+        operator.auditor = Some(wrapped);
+        operator.rpc_custody = None;
+        serde_json::to_writer(std::fs::File::create(dir.join("operator.json"))?, &operator)?;
+        send(
+            env.client.rpc(),
+            &env.payer,
+            &[loader::set_upgrade_authority(
+                &program_id,
+                &env.payer.pubkey(),
+                Some(&operator.upgrade_authority.address),
+            )],
         )?;
+        let ring_rpc = RingRpcSpec {
+            env,
+            ring: program_id,
+            auditor: auditor.clone(),
+        }
+        .serve_with_writer(writer)?;
         Ok(Self {
-            policy_authority,
+            policy_authority: operator.policy.address,
+            program_id,
             dir,
-            program_id: custom_ring_program_id()?,
+            auditor,
+            ring_rpc,
         })
+    }
+
+    pub fn enrollment_rpc(&self) -> custom_ring_cli::RingRpcClient {
+        custom_ring_cli::RingRpcClient::new(&self.ring_rpc.url)
+    }
+
+    pub fn member_fee_payer(&self) -> Result<&'static str> {
+        let path = "fee-payer.json";
+        solana_keypair::write_keypair_file(&Keypair::new(), self.dir.join(path))
+            .map_err(|error| anyhow!("write member fee payer {error}"))?;
+        Ok(path)
     }
 
     pub fn write_config(&self, toml: RingToml<'_>) -> Result<()> {
@@ -108,20 +157,17 @@ impl RingProject {
             self.dir.join("ring.toml"),
             format!(
                 "name = \"cli\"\ntarget = \"localnet\"\nprogram_id = \"{}\"\nmode = \"{}\"\n\
-                 authority_keypair = \"{}\"\npolicy_authority_keypair = \"{}\"\n\
-                 enrollment_writer_keypair = \"{}\"\n\n{policy}\
-                 [localnet]\nrpc = \"{}\"\nindexer = \"{}\"\nprover = \"{}\"\nring_rpc = \"{}\"\n\n\
+                 operator_manifest = \"operator.json\"\n\n{policy}\
+                 [localnet]\nrpc = \"{}\"\nindexer = \"{}\"\nprover = \"{}\"\nring_rpc = \"{}\"\nring_rpc_pubkey = \"{}\"\n\n\
                  [devnet]\nrpc = \"https://api.devnet.solana.com\"\nindexer = \"http://indexer.invalid\"\n\
                  prover = \"http://prover.invalid\"\nring_rpc = \"http://ring.invalid\"\n",
                 self.program_id,
                 toml.mode,
-                self.dir.join("upgrade.json").display(),
-                self.dir.join("policy.json").display(),
-                self.dir.join("upgrade.json").display(),
                 toml.env.rpc_url,
                 toml.env.indexer_url,
                 prover_url(),
                 toml.ring_rpc,
+                self.ring_rpc.service,
             ),
         )?;
         Ok(())

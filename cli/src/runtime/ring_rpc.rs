@@ -4,9 +4,10 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use solana_address::Address;
 use solana_signature::Signature;
-use solana_signer::Signer;
+use solana_signer::{Signer, SignerError};
 use spr_indexer_api::{Base64String, Hash};
 use spr_keypair::X25519Pubkey;
+use zolana_operator_custody::OperatorSigner;
 use zolana_ring_client::{
     auditor_view_tag,
     rpc::{
@@ -46,6 +47,39 @@ pub struct RingRpcClient {
     http: reqwest::blocking::Client,
 }
 
+pub(crate) struct RequestSigner<'a> {
+    context: &'a Context,
+    operator: &'a dyn OperatorSigner,
+}
+
+impl Context {
+    pub(crate) fn request_signer<'a>(
+        &'a self,
+        operator: &'a dyn OperatorSigner,
+    ) -> RequestSigner<'a> {
+        RequestSigner {
+            context: self,
+            operator,
+        }
+    }
+}
+
+impl Signer for RequestSigner<'_> {
+    fn try_pubkey(&self) -> Result<Address, SignerError> {
+        Ok(self.operator.address())
+    }
+
+    fn try_sign_message(&self, message: &[u8]) -> Result<Signature, SignerError> {
+        self.context
+            .block(async { anyhow::Ok(self.operator.sign(message).await?) })
+            .map_err(|error| SignerError::Custom(error.to_string()))
+    }
+
+    fn is_interactive(&self) -> bool {
+        false
+    }
+}
+
 #[derive(Deserialize)]
 struct JsonRpcResponse<T> {
     result: Option<T>,
@@ -73,11 +107,11 @@ impl AttestedAuditorKey {
         match trust {
             Trust::Pinned(pinned) => ensure!(
                 pinned == actual,
-                "the ring rpc signs with {actual} but ring.toml pins {pinned}"
+                "the ring RPC signs with {actual}, expected {pinned}"
             ),
             Trust::Unpinned => {}
             Trust::Refuse => bail!(
-                "ring.toml pins no ring rpc service key, the rpc signs with {actual}. Put it in ring_rpc_pubkey after confirming it out of band, or pass --trust-ring-rpc for a local instance"
+                "no service key is pinned for the ring RPC signing with {actual}. Verify the key and set ring_rpc_pubkey or pass --trust-ring-rpc for a local instance"
             ),
         }
         Ok(self.auditor_pk)
@@ -286,7 +320,11 @@ impl RingRpcClient {
         Ok(status.state)
     }
 
-    fn call<T: DeserializeOwned>(&self, method: &str, params: impl Serialize) -> Result<T> {
+    pub(crate) fn call<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        params: impl Serialize,
+    ) -> Result<T> {
         let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
         let response: JsonRpcResponse<T> = self
             .http
@@ -463,7 +501,7 @@ mod tests {
         assert!(mismatch
             .expect_err("other")
             .to_string()
-            .contains("but ring.toml pins"));
+            .contains("expected"));
         let refused = required(Trust::Refuse).expect_err("refused").to_string();
         assert!(refused.contains("--trust-ring-rpc"), "{refused}");
     }

@@ -124,7 +124,8 @@ pub use crate::{
         SaltedOwnerWrite, StorageApplyProof, UpdateStorage, UpdateStorageAuthority,
     },
     submission::{
-        live_registry, RingOperation, RingSubmission, SettledSubmission, SubmissionStatus,
+        live_registry, LocalSigners, RingOperation, RingSubmission, SettledSubmission,
+        SubmissionSigners, SubmissionStatus,
     },
     trees::{tree_id, written_tree_fees},
     viewing_rotation::RotateViewingKey,

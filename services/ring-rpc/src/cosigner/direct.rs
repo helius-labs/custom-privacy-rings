@@ -21,6 +21,9 @@ impl DirectCoSign<'_> {
         request: &CoSignTransactionRequest,
     ) -> Result<CoSignTransactionResponse, RingRpcError> {
         let signer = self.policy.signer().ok_or(CoSignError::Disabled)?;
+        if request.message.0.len() > solana_message::v1::MAX_TRANSACTION_SIZE {
+            return Err(CoSignError::MessageScope.into());
+        }
         let message: VersionedMessage =
             wincode::deserialize(&request.message.0).map_err(|_| CoSignError::MessageScope)?;
         let ring = request.ring.0;

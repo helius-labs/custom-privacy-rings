@@ -311,7 +311,11 @@ fn held_transfer(payer: &ShieldedKeypair) -> RingSubmission<'static> {
         accounts: vec![AccountMeta::new(payer.pubkey(), true)],
         data: vec![tag::SET_DELEGATE],
     }));
-    submission.pending = Some(Attempt { proved, sent: None });
+    submission.pending = Some(Attempt {
+        payer: payer.pubkey(),
+        proved,
+        sent: None,
+    });
     submission.attempts = 1;
     submission
 }

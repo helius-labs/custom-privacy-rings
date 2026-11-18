@@ -1,8 +1,8 @@
-//! `deploy`, the Solana CLI writes the buffer, every other loader call is ours.
+#[path = "deploy/buffer.rs"]
+mod buffer;
 
 use std::{
     path::Path,
-    process::Command,
     thread,
     time::{Duration, Instant},
 };
@@ -12,27 +12,25 @@ use custom_ring_interface::{RingAccount, RingPolicy};
 use sha2::{Digest, Sha256};
 use solana_account::Account;
 use solana_address::Address;
-use solana_keypair::Keypair;
-use solana_loader_v3_interface::{instruction::extend_program, state::UpgradeableLoaderState};
+use solana_loader_v3_interface::{instruction as loader, state::UpgradeableLoaderState};
 use solana_sbpf::elf_parser::{
     consts::{ELFOSABI_NONE, EM_BPF, EM_SBPF, ET_DYN, PF_X, PT_LOAD},
     Elf64,
 };
-use solana_signer::Signer;
+use solana_system_interface::instruction as system;
 use spr_client::Rpc;
+use zolana_operator_custody::OperatorSigner;
 use zolana_ring_client::ProgramData;
 
 use crate::{
-    config::expand_tilde, file, line, policy::Pinned, release::RingProgram, tool::SOLANA,
-    workspace::Workspace, Context, DeployArgs, Target,
+    line, policy::Pinned, release::RingProgram, workspace::Workspace, Context, DeployArgs, Target,
 };
 
 /// The smallest growth of `ProgramData` the loader accepts.
-const MIN_EXTEND_BYTES: usize = 10_240;
-/// A deploy is hundreds of writes plus the loader calls.
-const DEPLOY_FEE_BUDGET: u64 = 20_000_000;
+const MIN_EXTEND_BYTES: usize = loader::MINIMUM_EXTEND_PROGRAM_BYTES as usize;
 const USABLE_TIMEOUT: Duration = Duration::from_secs(60);
 const SLOT_POLL: Duration = Duration::from_millis(400);
+const LOADER: Address = Address::new_from_array(spr_interface::BPF_LOADER_UPGRADEABLE_ID);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProgramBinary {
@@ -40,11 +38,16 @@ pub(crate) struct ProgramBinary {
     pub sha256: [u8; 32],
 }
 
-#[must_use]
 struct ProgramUpload<'a> {
-    authority: &'a Keypair,
-    program_keypair: &'a Path,
-    program_so: &'a Path,
+    authority: &'a dyn OperatorSigner,
+    bytes: &'a [u8],
+    binary: ProgramBinary,
+}
+
+struct UploadBuffer<'a> {
+    address: Address,
+    seed: String,
+    source: ProgramUpload<'a>,
 }
 
 pub fn run(ctx: &mut Context, args: DeployArgs) -> Result<()> {
@@ -53,7 +56,7 @@ pub fn run(ctx: &mut Context, args: DeployArgs) -> Result<()> {
         workspace.is_none() || ctx.config.target == Target::Localnet,
         "workspace artifacts are only supported on localnet"
     );
-    let program_so = match (args.program_so, workspace) {
+    let program_so = match (args.program.program_so, workspace) {
         (Some(path), _) => ctx.path(&path),
         (None, Some(workspace)) => workspace.ring_program_so()?,
         (None, None) => {
@@ -64,76 +67,93 @@ pub fn run(ctx: &mut Context, args: DeployArgs) -> Result<()> {
         }
     };
     line("binary", program_so.display());
-    let authority = ctx.config.upgrade_authority()?;
-    let program_keypair = ctx.path(&args.program_keypair);
-    let outcome = ProgramUpload {
-        authority: &authority,
-        program_keypair: &program_keypair,
-        program_so: &program_so,
+    let bytes = std::fs::read(&program_so)
+        .with_context(|| format!("cannot read {}", program_so.display()))?;
+    let binary = ProgramBinary::checked(&bytes)?;
+    let authority = ctx.upgrade_authority_signer()?;
+    let buffer = ProgramUpload {
+        authority: authority.as_ref(),
+        bytes: &bytes,
+        binary,
     }
-    .send(ctx)?;
+    .bind(ctx.ring.program_id())?;
+    line("buffer", buffer.address);
+    if args.close_buffer {
+        return buffer.refund(ctx);
+    }
+    let outcome = buffer.send(ctx)?;
     let program = ctx.ring.program_id();
-    println!("{outcome} {program} under {}", authority.pubkey());
+    println!("{outcome} {program} under {}", authority.address());
     Ok(())
 }
 
-impl ProgramUpload<'_> {
-    /// The first deploy reads the program keypair, an upgrade checks the configs it keeps.
-    fn send(self, ctx: &Context) -> Result<&'static str> {
-        let Self {
-            authority,
-            program_keypair,
-            program_so,
-        } = self;
-        let binary = ProgramBinary::read(program_so)?;
+impl UploadBuffer<'_> {
+    fn send(&self, ctx: &Context) -> Result<&'static str> {
+        let authority = self.source.authority;
+        let binary = self.source.binary;
         let program = ctx.ring.program_id();
+        let payer = authority.address();
+        ensure!(payer != program, "program address cannot pay deploy fees");
         let deployed = program_data(ctx)?;
-        match &deployed {
+        let program_signer = match &deployed {
             Some(data) => {
-                check_upgrade_authority(program, data, authority.pubkey())?;
+                check_upgrade_authority(program, data, payer)?;
                 if binary.deployed_sha256(ctx)? == Some(binary.sha256) {
+                    wait_until_usable(ctx.rpc(), program, data.slot)?;
                     return Ok("present");
                 }
                 let policy = ctx.rpc().get_account(ctx.ring.policy_pda())?;
                 ensure_policy_compatible(program, policy.as_ref())?;
+                None
             }
             None => {
-                let found = file::read_keypair(program_keypair)
-                    .context("the first deploy needs the program keypair")?
-                    .pubkey();
+                let signer = ctx.program_signer()?;
                 ensure!(
-                    found == program,
-                    "program keypair is {found}, ring.toml names {program}"
+                    signer.address() == program,
+                    "program signer differs from ring.toml"
+                );
+                Some(signer)
+            }
+        };
+        let required = required_rent(ctx.rpc(), binary.len, deployed.as_ref())?;
+        self.fund_and_write(ctx, required)?;
+        if let Some(signer) = program_signer {
+            let rent = ctx
+                .rpc()
+                .get_minimum_balance_for_rent_exemption(UpgradeableLoaderState::size_of_program())?;
+            let mut instructions = loader::deploy_with_max_program_len(
+                &payer,
+                &program,
+                &self.address,
+                &payer,
+                rent,
+                binary.len,
+                true,
+            )?;
+            if let Some(account) = ctx.rpc().get_account(program)? {
+                ensure!(system_wallet(&account), "program address is occupied");
+                instructions.splice(
+                    ..1,
+                    [
+                        system::transfer(&payer, &program, rent.saturating_sub(account.lamports)),
+                        system::allocate(
+                            &program,
+                            UpgradeableLoaderState::size_of_program() as u64,
+                        ),
+                        system::assign(&program, &LOADER),
+                    ],
                 );
             }
+            ctx.send_operator(&[authority, signer.as_ref()], &instructions)?;
+        } else {
+            if let Some(data) = deployed.filter(|data| binary.len > data.capacity) {
+                let bytes = extension(data.capacity, binary.len);
+                let extend = loader::extend_program(&program, Some(&payer), u32::try_from(bytes)?);
+                ctx.send_operator(&[authority], &[extend])?;
+            }
+            let upgrade = loader::upgrade(&program, &self.address, &payer, &payer, true);
+            ctx.send_operator(&[authority], &[upgrade])?;
         }
-        // A short balance fails before the loader writes.
-        let required = required_balance(ctx.rpc(), binary.len, deployed.as_ref())?;
-        ctx.fund(authority.pubkey(), required)?;
-        if let Some(data) = deployed.filter(|data| binary.len > data.capacity) {
-            let bytes = (binary.len - data.capacity).max(MIN_EXTEND_BYTES);
-            println!("extending program data by {bytes} bytes");
-            let extend = extend_program(&program, Some(&authority.pubkey()), u32::try_from(bytes)?);
-            ctx.send(&[authority], &[extend])?;
-        }
-        let authority_keypair = expand_tilde(ctx.config.upgrade_authority_keypair())?;
-        let mut command = Command::new("solana");
-        // RPC only, the TPU client wants a websocket port another service may hold.
-        command
-            .args(["program", "deploy", "--use-rpc", "--url"])
-            .arg(&ctx.config.urls().rpc)
-            .arg("--keypair")
-            .arg(&authority_keypair)
-            .arg("--upgrade-authority")
-            .arg(&authority_keypair)
-            .arg("--program-id");
-        match deployed {
-            Some(_) => command.arg(program.to_string()),
-            None => command.arg(program_keypair),
-        };
-        SOLANA
-            .named("solana program deploy")
-            .run(command.arg(program_so))?;
         ctx.rpc()
             .assert_executable(&program)
             .with_context(|| format!("program {program} is not executable after deploy"))?;
@@ -146,14 +166,39 @@ impl ProgramUpload<'_> {
     }
 }
 
-/// `None` when the program is not deployed under the upgradeable loader.
+fn system_wallet(account: &Account) -> bool {
+    account.owner == solana_system_interface::program::ID
+        && account.data.is_empty()
+        && !account.executable
+}
+
 pub(crate) fn program_data(ctx: &Context) -> Result<Option<ProgramData>> {
-    if ctx.rpc().get_account(ctx.ring.program_id())?.is_none() {
-        return Ok(None);
-    }
-    let Some(account) = ctx.rpc().get_account(ctx.ring.program_data_pda())? else {
+    let Some(program) = ctx.rpc().get_account(ctx.ring.program_id())? else {
         return Ok(None);
     };
+    if system_wallet(&program) {
+        return Ok(None);
+    }
+    let pda = ctx.ring.program_data_pda();
+    ensure!(
+        program.executable
+            && program.owner == LOADER
+            && program.data.len() == UpgradeableLoaderState::size_of_program()
+            && wincode::deserialize::<UpgradeableLoaderState>(&program.data)?
+                == (UpgradeableLoaderState::Program {
+                    programdata_address: pda
+                }),
+        "invalid loader program account"
+    );
+    let account = ctx
+        .rpc()
+        .get_account(pda)?
+        .with_context(|| not_program_data(ctx))?;
+    ensure!(
+        !account.executable
+            && account.data.len() >= UpgradeableLoaderState::size_of_programdata_metadata(),
+        "invalid ProgramData account"
+    );
     let mut data =
         zolana_ring_client::program_data(&account).with_context(|| not_program_data(ctx))?;
     data.upgrade_authority = data
@@ -187,9 +232,18 @@ impl ProgramBinary {
     pub(crate) fn read(path: &Path) -> Result<Self> {
         let bytes =
             std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-        let binary = Self::parse(&bytes)?;
+        Self::checked(&bytes)
+    }
+
+    fn checked(bytes: &[u8]) -> Result<Self> {
+        ensure!(
+            u64::try_from(UpgradeableLoaderState::size_of_programdata(bytes.len()))?
+                <= solana_system_interface::MAX_PERMITTED_DATA_LENGTH,
+            "program binary exceeds the loader account limit"
+        );
+        let binary = Self::parse(bytes)?;
         zolana_cli_common::release::verify_program_keys(
-            &bytes,
+            bytes,
             custom_ring_interface::proving_key_hashes(),
         )?;
         Ok(binary)
@@ -255,25 +309,36 @@ fn ensure_policy_compatible(program: Address, policy: Option<&Account>) -> Resul
     Ok(())
 }
 
-/// A first deploy pays rent for the program and its data account, an upgrade only for the
-/// growth. Both pay for the write buffer, refunded when the deploy finishes.
-fn required_balance<R: Rpc>(rpc: &R, so_len: usize, deployed: Option<&ProgramData>) -> Result<u64> {
+fn extension(capacity: usize, length: usize) -> usize {
+    let max = solana_system_interface::MAX_PERMITTED_DATA_LENGTH as usize
+        - UpgradeableLoaderState::size_of_programdata_metadata();
+    length
+        .saturating_sub(capacity)
+        .max(MIN_EXTEND_BYTES)
+        .min(max.saturating_sub(capacity))
+}
+
+/// The loader drains the buffer before it funds a new ProgramData account.
+fn required_rent<R: Rpc>(rpc: &R, so_len: usize, deployed: Option<&ProgramData>) -> Result<u64> {
     let rent = |bytes: usize| rpc.get_minimum_balance_for_rent_exemption(bytes);
-    let mut lamports = DEPLOY_FEE_BUDGET + rent(UpgradeableLoaderState::size_of_buffer(so_len))?;
-    match deployed {
+    let buffer = rent(UpgradeableLoaderState::size_of_buffer(so_len))?;
+    let held = match deployed {
         None => {
-            lamports += rent(UpgradeableLoaderState::size_of_program())?;
-            lamports += rent(UpgradeableLoaderState::size_of_programdata(so_len))?;
+            let data = rent(UpgradeableLoaderState::size_of_programdata(so_len))?;
+            buffer
+                .max(data)
+                .checked_add(rent(UpgradeableLoaderState::size_of_program())?)
         }
         Some(data) if so_len > data.capacity => {
-            let grown = data.capacity + (so_len - data.capacity).max(MIN_EXTEND_BYTES);
-            lamports += rent(UpgradeableLoaderState::size_of_programdata(grown))?.saturating_sub(
+            let grown = data.capacity + extension(data.capacity, so_len);
+            let extra = rent(UpgradeableLoaderState::size_of_programdata(grown))?.saturating_sub(
                 rent(UpgradeableLoaderState::size_of_programdata(data.capacity))?,
             );
+            buffer.checked_add(extra)
         }
-        Some(_) => {}
-    }
-    Ok(lamports)
+        Some(_) => Some(buffer),
+    };
+    held.context("deploy rent exceeds the lamport limit")
 }
 
 /// The loader refuses a program in the slot it was deployed in.
@@ -462,13 +527,11 @@ mod tests {
     }
 
     #[test]
-    fn a_first_deploy_pays_program_data_and_buffer() {
+    fn a_first_deploy_reuses_buffer_rent() {
         let so_len = 300_000;
         assert_eq!(
-            required_balance(&Rent, so_len, None).expect("priced"),
-            DEPLOY_FEE_BUDGET
-                + rent(UpgradeableLoaderState::size_of_buffer(so_len))
-                + rent(UpgradeableLoaderState::size_of_program())
+            required_rent(&Rent, so_len, None).expect("priced"),
+            rent(UpgradeableLoaderState::size_of_program())
                 + rent(UpgradeableLoaderState::size_of_programdata(so_len))
         );
     }
@@ -480,14 +543,13 @@ mod tests {
             capacity: 300_000,
             slot: 0,
         };
-        let fits = required_balance(&Rent, deployed.capacity, Some(&deployed)).expect("priced");
+        let fits = required_rent(&Rent, deployed.capacity, Some(&deployed)).expect("priced");
         assert_eq!(
             fits,
-            DEPLOY_FEE_BUDGET + rent(UpgradeableLoaderState::size_of_buffer(deployed.capacity))
+            rent(UpgradeableLoaderState::size_of_buffer(deployed.capacity))
         );
         // One byte too big still extends by the loader's minimum.
-        let grows =
-            required_balance(&Rent, deployed.capacity + 1, Some(&deployed)).expect("priced");
+        let grows = required_rent(&Rent, deployed.capacity + 1, Some(&deployed)).expect("priced");
         assert_eq!(
             grows - fits,
             (rent(MIN_EXTEND_BYTES) - rent(0)) + (rent(1) - rent(0))

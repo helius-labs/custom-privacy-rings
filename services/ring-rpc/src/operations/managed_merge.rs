@@ -846,7 +846,7 @@ pub(crate) mod tests {
             let parts = RelayParts {
                 store,
                 prover: Arc::new(UnusedProver),
-                fee_payer: fee_payer(),
+                fee_payer: Arc::new(fee_payer()),
                 chain: chain.clone(),
             };
             Self {
@@ -877,11 +877,11 @@ pub(crate) mod tests {
             };
             let identity = ServiceIdentity {
                 genesis_hash: GENESIS,
-                service: Keypair::new(),
+                service: Arc::new(Keypair::new()),
             };
             let mut builder = Hub::builder(source, identity)
                 .with_store(store)
-                .with_co_signer(Keypair::new())
+                .with_co_signer(Arc::new(Keypair::new()))
                 .with_co_signer_approval(crate::cosign::CoSignerApproval::new([
                     crate::cosign::ApproveClass::Transfers,
                 ]));

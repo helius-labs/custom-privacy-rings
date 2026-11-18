@@ -14,10 +14,13 @@ use custom_ring_interface::{
 use custom_ring_sdk::{OwnedChange, OwnerEnrollment};
 use solana_account::Account;
 use solana_instruction::Instruction;
+use solana_keypair::Keypair;
 use solana_message::VersionedMessage;
 use solana_signature::Signature;
+use solana_signer::Signer;
 use solana_transaction::versioned::VersionedTransaction;
 use spr_keypair::X25519Keypair;
+use zolana_operator_custody::CustodyError;
 use zolana_ring_client::{SealedNullifierKey, TrackingLeaf};
 use zolana_ring_indexer::rpc::{
     GetStorageApplyProofInputsRequest, GetStorageApplyProofInputsResponse,
@@ -250,7 +253,7 @@ impl StorageChain for StubChain {
 fn parts(chain: &Arc<StubChain>) -> EnrollmentApplierParts {
     EnrollmentApplierParts {
         chain: chain.clone(),
-        payer: payer(),
+        payer: Arc::new(payer()),
         rings: vec![RING, UNINITIALIZED_RING],
         budget_lamports: u64::MAX,
         ring_budget_lamports: u64::MAX,
@@ -410,6 +413,37 @@ async fn a_write_signed_over_the_binary_message_is_refused() {
         EnrollmentRefusal::InvalidWrite
     );
     applier.submit(request).await.expect("held");
+}
+
+struct UnavailablePayer;
+
+#[async_trait]
+impl OperatorSigner for UnavailablePayer {
+    fn address(&self) -> Address {
+        payer().pubkey()
+    }
+
+    async fn sign(&self, _: &[u8]) -> Result<Signature, CustodyError> {
+        Err(CustodyError::Service(
+            std::io::Error::from(std::io::ErrorKind::TimedOut).into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn an_unavailable_signer_preserves_enrollments_and_the_fee_budget() {
+    let chain = StubChain::new();
+    chain.enrolled([3]);
+    let mut applier = budgeted(&chain, signature_fees(2)).await;
+    let signer = std::mem::replace(&mut applier.payer, Arc::new(UnavailablePayer));
+    applier.submit(rotation(3)).await.expect("held");
+    for _ in 0..MAX_ENROLLMENT_ATTEMPTS {
+        applier.flush().await;
+    }
+    assert!(chain.sent.lock().unwrap().is_empty());
+    applier.payer = signer;
+    applier.flush().await;
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

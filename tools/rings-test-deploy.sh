@@ -1,37 +1,13 @@
 #!/usr/bin/env bash
-# Stand up an isolated test deployment of the prover and one ring RPC on ECS.
-# Every resource is named zolana-rings-test-* and tagged zolana-rings-test=1,
-# nothing it creates is shared with another deployment.
-#
-#   tools/rings-test-deploy.sh up              create and start from published images
-#   tools/rings-test-deploy.sh status          addresses and health
-#   tools/rings-test-deploy.sh down            delete everything it created
-#
-# Images live in the zolana-ring-prover and zolana-ring-rpc repositories under
-# <service>-<branch>-<sha12>, built and pushed here when the tag is absent.
-# The prover task fetches the SPP transfer proving keys at start. The ring RPC
-# runs in derived mode, one root secret serves every ring
-# that takes its auditor key from it at `init`, and a service key secret of its
-# own signs its attestations. Both services sit behind one
-# network load balancer and a CloudFront distribution each, so they are reached
-# over HTTPS on a stable amazon hostname.
-#
-# Needs aws (with write access), docker, jq, openssl, git.
-#
-# Environment
-#   RINGS_TEST_PROVER_TAG     tag in zolana-ring-prover, default ring-prover-<branch>-<sha12>
-#   RINGS_TEST_RING_RPC_TAG   tag in zolana-ring-rpc, default ring-rpc-<branch>-<sha12>
-#   RINGS_TEST_INDEXER_URL    photon the ring RPC reads, required. A plain HTTP
-#                             one also gets a distribution of this stack in
-#                             front of it, the photon itself is not changed.
-#   RINGS_TEST_SOLANA_RPC_URL default https://api.devnet.solana.com
-#   AWS_REGION            default eu-north-1
-#   RINGS_TEST_VPC        VPC id, default the account's default VPC
-#   RINGS_TEST_ORIGINS    browser origins for the ring RPC, default * (any page)
+# tools/rings-test-deploy.sh {provision|up|status|down}
+# provision requires RINGS_TEST_SERVICE_KEY_ARN, RINGS_TEST_WRAPPING_KEY_ARN, RINGS_TEST_GENESIS_HASH and ring-rpc on PATH.
+# up requires RINGS_TEST_INDEXER_URL.
+# RINGS_TEST_SOLANA_RPC_URL defaults to devnet.
+# down retains the KMS keys and the custody record in Parameter Store.
 set -euo pipefail
 
 usage() {
-    sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -42,7 +18,7 @@ shift
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
 region="${AWS_REGION:-eu-north-1}"
-prefix="zolana-rings-test"
+prefix="zolana-rings-kms-test"
 tag_spec="Key=$prefix,Value=1"
 ecs_tag_spec="key=$prefix,value=1"
 account="$(aws sts get-caller-identity --query Account --output text)"
@@ -52,8 +28,8 @@ branch="$(git rev-parse --abbrev-ref HEAD | tr -c 'A-Za-z0-9._\n' '-')"
 cluster="$prefix"
 role="$prefix-exec"
 log_group="/$prefix"
-secret="$prefix/root-secret"
-service_secret="$prefix/service-key"
+task_role="$prefix-rpc"
+parameter="/$prefix/custody"
 security_group="$prefix-sg"
 load_balancer="$prefix"
 prover_port=3001
@@ -99,22 +75,29 @@ ensure_security_group() {
 }
 
 ensure_role() {
-    if ! aws_ iam get-role --role-name "$role" >/dev/null 2>&1; then
-        aws_ iam create-role --role-name "$role" --tags "$tag_spec" --assume-role-policy-document '{
-            "Version": "2012-10-17",
-            "Statement": [{"Effect": "Allow", "Principal": {"Service": "ecs-tasks.amazonaws.com"}, "Action": "sts:AssumeRole"}]
-        }' >/dev/null
-        aws_ iam attach-role-policy --role-name "$role" \
-            --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-        aws_ iam put-role-policy --role-name "$role" --policy-name secrets --policy-document "{
-            \"Version\": \"2012-10-17\",
-            \"Statement\": [{\"Effect\": \"Allow\", \"Action\": \"secretsmanager:GetSecretValue\",
-                            \"Resource\": \"arn:aws:secretsmanager:$region:$account:secret:$prefix/*\"}]
-        }"
-        log "waiting for the role to propagate"
-        sleep 15
+    local name="$1"
+    if ! aws_ iam get-role --role-name "$name" >/dev/null 2>&1; then
+        aws_ iam create-role --role-name "$name" --tags "$tag_spec" --assume-role-policy-document "$(jq -n \
+            --arg account "$account" --arg source "arn:aws:ecs:$region:$account:*" '{
+            Version:"2012-10-17", Statement:[{Effect:"Allow", Principal:{Service:"ecs-tasks.amazonaws.com"},
+                Action:"sts:AssumeRole", Condition:{StringEquals:{"aws:SourceAccount":$account},
+                                                   ArnLike:{"aws:SourceArn":$source}}}]}')" >/dev/null
     fi
-    aws_ iam get-role --role-name "$role" --query Role.Arn --output text
+    aws_ iam get-role --role-name "$name" --query Role.Arn --output text
+}
+
+set_custody_policy() {
+    local record="$1"
+    aws_ iam put-role-policy --role-name "$task_role" --policy-name custody --policy-document \
+        "$(jq -c --arg deployment "$prefix" '{
+            Version:"2012-10-17", Statement:[
+                {Effect:"Allow", Action:"kms:GetPublicKey", Resource:.custody.service.key_arn},
+                {Effect:"Allow", Action:"kms:Sign", Resource:.custody.service.key_arn,
+                 Condition:{StringEquals:{"kms:SigningAlgorithm":"ED25519_SHA_512"}}},
+                {Effect:"Allow", Action:"kms:Decrypt", Resource:.custody.auditor.key_arn,
+                 Condition:{StringEquals:{"kms:EncryptionContext:application":"zolana-custom-rings-v1",
+                     "kms:EncryptionContext:deployment":$deployment, "kms:EncryptionContext:genesis":.genesis,
+                     "kms:EncryptionContext:purpose":"auditor-root"}}}]}' <<< "$record")"
 }
 
 # Runs in the fetch container before the prover starts.
@@ -212,14 +195,44 @@ target_group_arn() {
     aws_ elbv2 describe-target-groups --names "$prefix-$1" --query 'TargetGroups[0].TargetGroupArn' --output text
 }
 
-# The root secret is created once and never rotated by this script, a rotation
-# would change every derived auditor key.
-ensure_secret() {
-    local name="$1"
-    if ! aws_ secretsmanager describe-secret --secret-id "$name" >/dev/null 2>&1; then
-        aws_ secretsmanager create-secret --name "$name" --secret-string "$(openssl rand -hex 32)" --tags "$tag_spec" >/dev/null
+validate_record() {
+    jq -ce --arg arn "arn:aws:kms:$region:$account:key/" '
+            def key_arn: startswith($arn) and (ltrimstr($arn) | test("\\A([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})\\z"));
+            def address: test("\\A[1-9A-HJ-NP-Za-km-z]{32,44}\\z");
+            select((keys == ["custody","genesis"]) and (.genesis | address)
+                and (.custody | keys == ["auditor","service"])
+                and (.custody.service | keys == ["address","key_arn"])
+                and (.custody.auditor | keys == ["ciphertext","key_arn"])
+                and (.custody.service.key_arn | key_arn) and (.custody.auditor.key_arn | key_arn)
+                and (.custody.service.address | address)
+                and (.custody.auditor.ciphertext | test("\\A[A-Za-z0-9+/]+={0,2}\\z")))'
+}
+
+custody_record() {
+    aws_ ssm get-parameter --name "$parameter:1" --query Parameter.Value --output text | validate_record
+}
+
+provision() {
+    [[ $# -eq 0 ]] || usage
+    [[ -z "${RING_RPC_LOCALNET_KMS:-}" ]] || { log "unset RING_RPC_LOCALNET_KMS for AWS provisioning"; return 1; }
+    local genesis="${RINGS_TEST_GENESIS_HASH:?set RINGS_TEST_GENESIS_HASH}"
+    local signer="${RINGS_TEST_SERVICE_KEY_ARN:?set RINGS_TEST_SERVICE_KEY_ARN}"
+    local wrapper="${RINGS_TEST_WRAPPING_KEY_ARN:?set RINGS_TEST_WRAPPING_KEY_ARN}"
+    local existing service auditor record
+    existing="$(aws_ ssm get-parameters --names "$parameter:1" --query 'length(Parameters)' --output text)"
+    if [[ "$existing" == 1 ]]; then
+        record="$(custody_record)"
+        jq -e --arg genesis "$genesis" --arg signer "$signer" --arg wrapper "$wrapper" \
+            '.genesis == $genesis and .custody.service.key_arn == $signer and .custody.auditor.key_arn == $wrapper' \
+            <<< "$record" >/dev/null || { log "existing custody record differs from requested identities"; return 1; }
+        return
     fi
-    aws_ secretsmanager describe-secret --secret-id "$name" --query ARN --output text
+    service="$(ring-rpc signer-ref --kms-region "$region" --key-arn "$signer")"
+    auditor="$(ring-rpc provision --kms-region "$region" --deployment "$prefix" --genesis-hash "$genesis" \
+        --wrapping-key-arn "$wrapper" --purpose auditor-root)"
+    record="$(jq -cn --arg genesis "$genesis" --argjson service "$service" --argjson auditor "$auditor" \
+        '{genesis:$genesis,custody:{service:$service,auditor:$auditor}}' | validate_record)"
+    aws_ ssm put-parameter --name "$parameter" --type String --no-overwrite --tags "$tag_spec" --value "$record" >/dev/null
 }
 
 register_prover() {
@@ -233,7 +246,10 @@ register_prover() {
             def logs(p): {logDriver: "awslogs", options: {"awslogs-group": $group, "awslogs-region": $region, "awslogs-stream-prefix": p}};
             def keys: [{sourceVolume: "keys", containerPath: "/keys"}];
             [
-            {name: "redis", image: $redis, essential: true, logConfiguration: logs("redis")},
+            {name: "redis", image: $redis, essential: true,
+             command: ["redis-server", "--bind", "127.0.0.1", "--save", "", "--appendonly", "no",
+                       "--crash-log-enabled", "no", "--hide-user-data-from-log", "yes"],
+             logConfiguration: logs("redis")},
             {name: "fetch", image: $fetch, essential: false, user: "0", mountPoints: keys,
              command: ["sh", "-c", ($script + "\nchown -R 65532:65532 /keys")], logConfiguration: logs("fetch")},
             {name: "prover", image: $image, essential: true, mountPoints: keys,
@@ -241,28 +257,26 @@ register_prover() {
              command: ["start", "--keys-dir", "/keys/", "--prover-address", ("0.0.0.0:" + ($port|tostring)),
                        "--auto-download=true", "--redis-url", "redis://127.0.0.1:6379/0"],
              portMappings: [{containerPort: $port, protocol: "tcp"}],
-             logConfiguration: logs("prover")}
-        ]')" --query 'taskDefinition.taskDefinitionArn' --output text
+             environment: [{name:"GOTRACEBACK",value:"none"}], logConfiguration: logs("prover")}
+        ] | map(. + {ulimits:[{name:"core",hardLimit:0,softLimit:0}]})')" --query 'taskDefinition.taskDefinitionArn' --output text
 }
 
 register_ring_rpc() {
-    local image="$1" role_arn="$2" secret_arn="$3" service_arn="$4" indexer="$5" rpc="$6"
+    local image="$1" role_arn="$2" task_arn="$3" record="$4" indexer="$5" rpc="$6"
     aws_ ecs register-task-definition --family "$prefix-ring-rpc" --tags "$ecs_tag_spec" \
         --requires-compatibilities FARGATE --network-mode awsvpc --cpu 512 --memory 1024 \
-        --execution-role-arn "$role_arn" --runtime-platform cpuArchitecture=X86_64,operatingSystemFamily=LINUX \
-        --container-definitions "$(jq -n --arg image "$image" --arg secret "$secret_arn" --arg service "$service_arn" \
+        --execution-role-arn "$role_arn" --task-role-arn "$task_arn" --runtime-platform cpuArchitecture=X86_64,operatingSystemFamily=LINUX \
+        --container-definitions "$(jq -n --arg image "$image" --argjson record "$record" --arg deployment "$prefix" \
             --arg indexer "$indexer" --arg rpc "$rpc" --arg origins "${RINGS_TEST_ORIGINS:-*}" \
             --arg rp "${RINGS_TEST_RP_ID:-}" --arg group "$log_group" --arg region "$region" --argjson port "$ring_rpc_port" '[
             {name: "ring-rpc", image: $image, essential: true,
-             entryPoint: ["/bin/sh", "-c"],
-             command: ["umask 077 && printf %s \"$ROOT_SECRET\" > /var/lib/ring-rpc/root.key && printf %s \"$SERVICE_KEY\" > /var/lib/ring-rpc/service.key && exec ring-rpc serve"],
-             secrets: [{name: "ROOT_SECRET", valueFrom: $secret}, {name: "SERVICE_KEY", valueFrom: $service}],
+             readonlyRootFilesystem: true, ulimits:[{name:"core",hardLimit:0,softLimit:0}],
              environment: ([
                {name: "RING_RPC_BIND", value: "0.0.0.0"}, {name: "RING_RPC_INSECURE_PUBLIC_BIND", value: "true"},
                {name: "RING_RPC_PORT", value: ($port|tostring)},
                {name: "RING_RPC_INDEXER_URL", value: $indexer}, {name: "RING_RPC_SOLANA_RPC_URL", value: $rpc},
-               {name: "RING_RPC_ROOT_SECRET_FILE", value: "/var/lib/ring-rpc/root.key"},
-               {name: "RING_RPC_SERVICE_KEY_FILE", value: "/var/lib/ring-rpc/service.key"},
+               {name: "RING_RPC_CUSTODY_JSON", value: ($record.custody|tojson)},
+               {name: "RING_RPC_DEPLOYMENT", value: $deployment}, {name: "AWS_REGION", value: $region},
                {name: "RING_RPC_ALLOW_ORIGINS", value: $origins}]
                + (if $rp == "" then [] else [{name: "RING_RPC_WEBAUTHN_RP_ID", value: $rp}] end)),
              portMappings: [{containerPort: $port, protocol: "tcp"}],
@@ -301,6 +315,9 @@ up() {
     local prover_tag="${RINGS_TEST_PROVER_TAG:-ring-prover-$branch-${sha:0:12}}"
     local ring_rpc_tag="${RINGS_TEST_RING_RPC_TAG:-ring-rpc-$branch-${sha:0:12}}"
 
+    local record
+    record="$(custody_record)"
+
     log "== images"
     ensure_repository zolana-ring-prover
     ensure_repository zolana-ring-rpc
@@ -313,24 +330,26 @@ up() {
         fi
     done
 
-    log "== network, load balancer, role, logs, cluster, secret"
+    log "== network, load balancer, role, logs, cluster"
     read -r vpc subnets <<< "$(vpc_and_subnets)"
-    local sg role_arn secret_arn service_arn
+    local sg role_arn task_arn
     sg="$(ensure_security_group "$vpc")"
     local dns
     dns="$(ensure_load_balancer "$vpc" "$subnets")"
-    role_arn="$(ensure_role)"
+    role_arn="$(ensure_role "$role")"
+    task_arn="$(ensure_role "$task_role")"
+    aws_ iam attach-role-policy --role-name "$role" \
+        --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+    set_custody_policy "$record"
     aws_ logs describe-log-groups --log-group-name-prefix "$log_group" --query "logGroups[?logGroupName=='$log_group']" --output text | grep -q . \
         || aws_ logs create-log-group --log-group-name "$log_group" --tags "$prefix=1"
     aws_ ecs describe-clusters --clusters "$cluster" --query "clusters[?status=='ACTIVE']" --output text | grep -q . \
         || aws_ ecs create-cluster --cluster-name "$cluster" --tags "$ecs_tag_spec" >/dev/null
-    secret_arn="$(ensure_secret "$secret")"
-    service_arn="$(ensure_secret "$service_secret")"
 
     log "== services"
     local prover_td ring_rpc_td
     prover_td="$(register_prover "$registry/zolana-ring-prover:$prover_tag" "$role_arn")"
-    ring_rpc_td="$(register_ring_rpc "$registry/zolana-ring-rpc:$ring_rpc_tag" "$role_arn" "$secret_arn" "$service_arn" "$indexer" "$rpc")"
+    ring_rpc_td="$(register_ring_rpc "$registry/zolana-ring-rpc:$ring_rpc_tag" "$role_arn" "$task_arn" "$record" "$indexer" "$rpc")"
     ensure_service "$prefix-prover" "$prover_td" "$subnets" "$sg" prover "$prover_port"
     ensure_service "$prefix-ring-rpc" "$ring_rpc_td" "$subnets" "$sg" ring-rpc "$ring_rpc_port"
     log "== https"
@@ -386,18 +405,19 @@ down() {
     sg="$(aws_ ec2 describe-security-groups --filters "Name=group-name,Values=$security_group" --query 'SecurityGroups[0].GroupId' --output text)"
     [[ "$sg" == None || -z "$sg" ]] || { sleep 20; aws_ ec2 delete-security-group --group-id "$sg"; }
     aws_ logs delete-log-group --log-group-name "$log_group" 2>/dev/null || true
-    for name in "$secret" "$service_secret"; do
-        aws_ secretsmanager delete-secret --secret-id "$name" --force-delete-without-recovery >/dev/null 2>&1 || true
-    done
+    if aws_ iam get-role --role-name "$task_role" >/dev/null 2>&1; then
+        aws_ iam delete-role-policy --role-name "$task_role" --policy-name custody
+        aws_ iam delete-role --role-name "$task_role"
+    fi
     if aws_ iam get-role --role-name "$role" >/dev/null 2>&1; then
         aws_ iam detach-role-policy --role-name "$role" --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-        aws_ iam delete-role-policy --role-name "$role" --policy-name secrets
         aws_ iam delete-role --role-name "$role"
     fi
-    echo "removed every $prefix-* resource"
+    echo "removed $prefix runtime resources"
 }
 
 case "$command" in
+    provision) provision "$@" ;;
     up) up "$@" ;;
     status) status ;;
     down) down ;;

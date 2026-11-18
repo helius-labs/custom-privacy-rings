@@ -31,7 +31,7 @@ pub(crate) struct OpenedSlot<'a> {
 
 pub fn run(ctx: &Context, args: AuditArgs) -> Result<()> {
     let config = ctx.ring_config()?;
-    let auditor = ring_auditor_key(ctx, &args.auditor_key)?;
+    let auditor = ring_auditor_key(ctx)?;
     let tracking = ctx.block(ctx.ring.require_policy(ctx.chain()))?.tracking;
     let mut scan = RingScan::new(ctx.ring.program_id(), auditor.pubkey())
         .with_mode(config.mode)

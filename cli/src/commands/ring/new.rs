@@ -1,22 +1,20 @@
 //! `new`, the ring directory every other command reads.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context as _, Result};
 use serde::Deserialize;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
 
 use crate::{
-    config::{expand_tilde, parse_ring_toml, Base58Address, RingConfig, Target, Urls},
+    config::{
+        expand_tilde, parse_ring_toml, Base58Address, OperatorManifest, RingConfig, Target, Urls,
+    },
     file, line,
     policy::PolicySpec,
     ui::{self, icon, Ask},
     wizard::{live_catalogue, Wizard},
-    NewArgs, PROGRAM_KEYPAIR_FILE, RING_TOML,
+    NewArgs, RING_TOML,
 };
-
-pub const DEFAULT_AUTHORITY_KEYPAIR: &str = "~/.config/solana/id.json";
 
 const DEVNET_RPC: &str = "https://api.devnet.solana.com";
 const DEVNET_INDEXER: &str = "https://d2xah7tnhdhcom.cloudfront.net";
@@ -64,18 +62,16 @@ pub fn run(args: NewArgs, ask: &mut dyn Ask, catalogue: Option<&str>) -> Result<
     .run(args.name, preset)?;
     let ring_dir = args.dest.join(&answers.name);
     refuse_existing(&ring_dir)?;
-    let program = Keypair::new();
+    let path = expand_tilde(&args.operator_manifest)?;
+    let operator_manifest = path
+        .canonicalize()
+        .with_context(|| format!("cannot resolve operator manifest {}", path.display()))?;
+    let manifest = OperatorManifest::load(&operator_manifest)?;
     let config = RingConfig {
         name: answers.name,
         target: answers.target,
-        program_id: Base58Address(program.pubkey()),
-        authority_keypair: PathBuf::from(&args.authority_keypair),
-        upgrade_authority_keypair: None,
-        policy_authority_keypair: None,
-        admin_keypair: None,
-        pauser_keypair: None,
-        cosign_admin_keypair: None,
-        enrollment_writer_keypair: None,
+        program_id: Base58Address(manifest.program.address),
+        operator_manifest,
         mode: answers.mode,
         policy: answers.policy,
         cosigner: None,
@@ -90,14 +86,15 @@ pub fn run(args: NewArgs, ask: &mut dyn Ask, catalogue: Option<&str>) -> Result<
         "nothing written, the preview was not confirmed"
     );
 
-    file::write_keypair(&program, &ring_dir.join(PROGRAM_KEYPAIR_FILE))?;
+    file::create_dir_all(&args.dest)?;
+    std::fs::create_dir(&ring_dir)
+        .with_context(|| format!("cannot create ring directory {}", ring_dir.display()))?;
     file::write(&ring_dir.join(RING_TOML), rendered)?;
     file::write(&ring_dir.join(".gitignore"), "keys/\n.env\n")?;
-    ensure_authority(&args.authority_keypair)?;
 
     ui::heading(icon::RING, &config.name);
     line("ring", ring_dir.display());
-    line("program id", program.pubkey());
+    line("program id", manifest.program.address);
     println!(
         "next, `cd {}` and `zolana-ring localnet` or `zolana-ring devnet`",
         ring_dir.display()
@@ -121,26 +118,10 @@ fn refuse_existing(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Only the default path is created, any other missing path is the operator's to mount.
-fn ensure_authority(recorded: &str) -> Result<()> {
-    let path = expand_tilde(Path::new(recorded))?;
-    if path.is_file() {
-        line("authority", file::read_keypair(&path)?.pubkey());
-    } else if recorded == DEFAULT_AUTHORITY_KEYPAIR {
-        let keypair = Keypair::new();
-        file::write_keypair(&keypair, &path)?;
-        line(
-            "authority",
-            format_args!("{} created at {recorded}", keypair.pubkey()),
-        );
-    } else {
-        eprintln!("note: no authority keypair at {recorded}, mount it before `zolana-ring deploy`");
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use zolana_ring_policy::{ListId, Rule, RuleTable, Subject};
 
     use super::*;
@@ -157,11 +138,32 @@ mod tests {
     }
 
     fn args(name: Option<&str>, dest: &Path, silent: bool) -> NewArgs {
+        let manifest = dest.join("operator.json");
+        std::fs::create_dir_all(dest).unwrap();
+        let mut document = serde_json::json!({ "region": "us-east-1", "deployment": "sample" });
+        for (index, role) in [
+            "program",
+            "upgrade_authority",
+            "admin",
+            "policy",
+            "pauser",
+            "cosign_admin",
+            "enrollment_writer",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            document[role] = serde_json::json!({
+                "key_arn": format!("arn:aws:kms:us-east-1:123456789012:key/key-{index}"),
+                "address": solana_address::Address::new_from_array([index as u8 + 1; 32]).to_string()
+            });
+        }
+        std::fs::write(&manifest, document.to_string()).unwrap();
         NewArgs {
             name: name.map(str::to_owned),
             dest: dest.to_path_buf(),
             silent,
-            authority_keypair: dest.join("authority.json").to_string_lossy().into_owned(),
+            operator_manifest: manifest,
             policy_from: None,
         }
     }
@@ -173,10 +175,13 @@ mod tests {
 
         let ring_dir = dest.join("smoke");
         let config = RingConfig::load(&ring_dir.join(RING_TOML)).expect("load");
-        let program = file::read_keypair(&ring_dir.join(PROGRAM_KEYPAIR_FILE)).expect("keypair");
-        assert_eq!(config.program_id.0, program.pubkey());
+        let manifest = OperatorManifest::load(&config.operator_manifest).expect("manifest");
+        assert_eq!(config.program_id.0, manifest.program.address);
         assert_eq!(config.target, Target::Localnet);
-        assert_eq!(config.authority_keypair, dest.join("authority.json"));
+        assert_eq!(
+            config.operator_manifest,
+            dest.join("operator.json").canonicalize().unwrap()
+        );
         assert_eq!(config.mode, ModeName::Confidential);
         assert!(config.policy.is_none());
         assert_eq!(

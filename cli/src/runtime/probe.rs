@@ -58,7 +58,10 @@ pub fn http(connect: Duration, total: Duration) -> reqwest::blocking::Client {
 }
 
 pub fn check(http: &reqwest::blocking::Client, url: &str) -> Result<()> {
-    http.get(url).send()?.error_for_status()?;
+    http.get(url)
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(reqwest::Error::without_url)?;
     Ok(())
 }
 
@@ -77,7 +80,7 @@ pub fn service_url(base: &str, path: &str) -> String {
 
 fn next_steps(config: &RingConfig) {
     let rpc_step = if config.urls().ring_rpc_is_local() {
-        "started by `zolana-ring localnet` or `pipeline`, serving keys/auditor.key"
+        "start the configured local Ring RPC service"
     } else {
         "check that the hosted ring rpc holds this ring's auditor key"
     };

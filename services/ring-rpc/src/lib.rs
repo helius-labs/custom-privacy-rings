@@ -118,8 +118,7 @@ pub use authorize::{ReadCheck, ReadClaim, Unauthorized, AUTH_SKEW};
 pub use client_identity::{ApiKeyDigest, ApiKeyDigestError, ClientIdentityPolicy};
 pub use client_rate::{BucketRate, ClientLimitArgs, ClientLimits, ClientRates, RateLimit};
 pub use config::{
-    read_root_secret, write_grant_rows_secret, write_keypair, write_root_secret, Cli, Command,
-    GrantRowsSecret, KeyKind, KeygenArgs, ReaderGrantStore, RootSecret, RootSecretError, ServeArgs,
+    Cli, Command, GrantRowsSecret, ReaderGrantStore, RootSecret, RootSecretError, ServeArgs,
     ServeKeyError, ServeKeys,
 };
 pub use cosign::{

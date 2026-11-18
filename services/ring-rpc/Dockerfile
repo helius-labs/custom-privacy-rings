@@ -28,7 +28,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10002 ring-rpc \
     && useradd --system --uid 10002 --gid ring-rpc \
-        --home-dir /var/lib/ring-rpc --create-home ring-rpc
+        --home-dir /nonexistent --no-create-home ring-rpc
 
 COPY --from=builder --chmod=0755 /workspace/target/release/ring-rpc /usr/local/bin/ring-rpc
 COPY zolana/LICENSE zolana/THIRD_PARTY_NOTICES /usr/share/licenses/zolana/
@@ -38,8 +38,7 @@ LABEL org.opencontainers.image.title="Zolana Ring RPC" \
       org.opencontainers.image.source="https://github.com/helius-labs/zolana-custom-rings" \
       org.opencontainers.image.licenses="Apache-2.0"
 
-ENV HOME=/var/lib/ring-rpc
-WORKDIR /var/lib/ring-rpc
+ENV HOME=/nonexistent
 USER ring-rpc
 
 EXPOSE 8785

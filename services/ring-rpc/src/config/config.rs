@@ -1,24 +1,30 @@
 use std::{
-    net::IpAddr,
+    collections::HashSet,
+    fs::File,
+    net::{IpAddr, SocketAddr},
     num::{NonZeroU32, NonZeroU64, NonZeroUsize},
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::Duration,
 };
 
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use p256::elliptic_curve::subtle::ConstantTimeEq;
-use rand::RngCore;
+use serde::Deserialize;
 use solana_address::Address;
-use solana_keypair::Keypair;
+use solana_hash::Hash;
 use thiserror::Error;
 use zeroize::Zeroizing;
+use zolana_operator_custody::{
+    CustodyError, Kms, SecretContext, SecretPurpose, SignerRef, SigningIdentity, WrappedSecret,
+};
 use zolana_ring_client::rpc::{auditor_keypair, KeyFileError};
-use zolana_secret_file::{create_new, read_key32, Access, SecretFileError, Visibility};
 
 use crate::{
     client_rate::ClientLimitArgs, cosign::ApproveClass, keys::KeySource, origins::OriginTransport,
     server::BindPolicy, wallet_snapshots::WalletSnapshotLimits,
 };
+
+const DEFAULT_ENROLLMENT_MAX_RINGS: usize = 256;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -33,14 +39,13 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Serve(Box<ServeArgs>),
-    Keygen(KeygenArgs),
+    Provision(ProvisionArgs),
+    SignerRef(SignerRefArgs),
 }
 
 #[derive(Debug, Args)]
 #[command(group(
-    ArgGroup::new("proves")
-        .args(["store_url", "enrollment_applier_key_file"])
-        .multiple(true)
+    ArgGroup::new("manifest").args(["custody", "custody_json"]).required(true)
 ))]
 pub struct ServeArgs {
     #[arg(long, env = "RING_RPC_BIND", default_value = "127.0.0.1")]
@@ -59,44 +64,24 @@ pub struct ServeArgs {
         default_value = "http://127.0.0.1:8899"
     )]
     pub rpc_url: String,
-    /// Lowercase hex X25519 secret bytes.
-    #[arg(
-        long,
-        env = "RING_RPC_AUDITOR_KEY_FILE",
-        conflicts_with = "root_secret_file",
-        required_unless_present = "root_secret_file"
-    )]
-    pub auditor_key_file: Option<PathBuf>,
-    #[arg(long, env = "RING_RPC_RING_PROGRAM_ID", requires = "auditor_key_file")]
-    pub ring_program_id: Option<Address>,
-    /// Lowercase hex root secret.
-    #[arg(long, env = "RING_RPC_ROOT_SECRET_FILE")]
-    pub root_secret_file: Option<PathBuf>,
-    /// Lowercase hex Ed25519 seed, every read and auditor key attestation binds its public key.
-    #[arg(long, env = "RING_RPC_SERVICE_KEY_FILE")]
-    pub service_key_file: PathBuf,
-    /// Lowercase hex Ed25519 seed of the `StorageRegistry` authority the record writer signs as.
-    #[arg(
-        long,
-        env = "RING_RPC_STORAGE_AUTHORITY_KEY_FILE",
-        requires = "store_url"
-    )]
-    pub storage_authority_key_file: Option<PathBuf>,
-    /// Lowercase hex Ed25519 seed, turns on co-signing under the asset limits.
-    #[arg(long, env = "RING_RPC_CO_SIGNER_KEY_FILE", requires = "store_url")]
-    pub co_signer_key_file: Option<PathBuf>,
+    #[command(flatten)]
+    kms: KmsArgs,
+    #[arg(long, env = "RING_RPC_DEPLOYMENT", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    deployment: String,
+    #[arg(long, env = "RING_RPC_CUSTODY")]
+    custody: Option<PathBuf>,
+    #[arg(long, env = "RING_RPC_CUSTODY_JSON")]
+    custody_json: Option<String>,
+    #[arg(long, env = "RING_RPC_RING_PROGRAM_ID")]
+    ring_program_id: Option<Address>,
     /// The classes the co-signer signs for, none refuses every operation.
     #[arg(
         long,
         env = "RING_RPC_CO_SIGNER_APPROVE",
         value_enum,
-        value_delimiter = ',',
-        requires = "co_signer_key_file"
+        value_delimiter = ','
     )]
     pub co_signer_approve: Vec<ApproveClass>,
-    /// Lowercase hex secret the grant row cipher and lookup keys expand from.
-    #[arg(long, env = "RING_RPC_GRANT_ROWS_KEY_FILE")]
-    pub grant_rows_key_file: Option<PathBuf>,
     #[arg(
         long = "allow-origin",
         env = "RING_RPC_ALLOW_ORIGINS",
@@ -115,22 +100,8 @@ pub struct ServeArgs {
     pub request_timeout_secs: NonZeroU64,
     #[arg(long, env = "RING_RPC_UPSTREAM_TIMEOUT_SECS", default_value = "10")]
     pub upstream_timeout_secs: NonZeroU64,
-    #[arg(long, env = "RING_RPC_ALLOW_SHARED_KEY_FILE")]
-    pub allow_shared_key_file: bool,
-    /// Lowercase hex Ed25519 seed, set to relay transfers and pay their fees.
-    #[arg(
-        long,
-        env = "RING_RPC_FEE_PAYER_KEY_FILE",
-        requires_all = ["store_url", "prover_url"]
-    )]
-    pub fee_payer_key_file: Option<PathBuf>,
     /// Lamports reserved and spent over the store's life on enrollments and token accounts, zero refuses every charge.
-    #[arg(
-        long,
-        env = "RING_RPC_RELAY_BUDGET_LAMPORTS",
-        default_value_t = 0,
-        requires = "fee_payer_key_file"
-    )]
+    #[arg(long, env = "RING_RPC_RELAY_BUDGET_LAMPORTS", default_value_t = 0)]
     pub relay_budget_lamports: u64,
     /// Lamports one signer holds outstanding at once, the fees of its attempts that never landed stay counted, zero refuses every charge.
     #[arg(
@@ -141,54 +112,28 @@ pub struct ServeArgs {
     )]
     pub relay_signer_budget_lamports: u64,
     /// `postgres://` or `sqlite://` URL of the service store, also turns the record writer on.
-    #[arg(
-        long,
-        env = "RING_RPC_STORE_URL",
-        requires_all = ["prover_url", "storage_authority_key_file"]
-    )]
+    #[arg(long, env = "RING_RPC_STORE_URL", requires = "prover_url")]
     pub store_url: Option<String>,
     /// Stable per deployed replica and unique among live ones, a restart then writes at once.
     #[arg(long, env = "RING_RPC_REPLICA_ID", requires = "store_url")]
     pub replica_id: Option<String>,
     /// Serves the ring keys the record writer and the relay prove with.
-    #[arg(long, env = "RING_RPC_PROVER_URL", requires = "proves")]
+    #[arg(long, env = "RING_RPC_PROVER_URL")]
     pub prover_url: Option<String>,
-    /// Lowercase hex Ed25519 seed of the ring's `EnrollmentWriter` role key, the batch signer and fee payer.
-    #[arg(
-        long,
-        env = "RING_RPC_ENROLLMENT_APPLIER_KEY_FILE",
-        requires = "prover_url"
-    )]
-    pub enrollment_applier_key_file: Option<PathBuf>,
     /// Lamports the enrollment writer spends on batch fees over the process life, zero refuses every write.
-    #[arg(
-        long,
-        env = "RING_RPC_ENROLLMENT_BUDGET_LAMPORTS",
-        default_value_t = 0,
-        requires = "enrollment_applier_key_file"
-    )]
+    #[arg(long, env = "RING_RPC_ENROLLMENT_BUDGET_LAMPORTS", default_value_t = 0)]
     pub enrollment_budget_lamports: u64,
     /// Lamports one ring's batches spend over the process life, a tenth of the budget when unset.
-    #[arg(
-        long,
-        env = "RING_RPC_ENROLLMENT_RING_BUDGET_LAMPORTS",
-        requires = "enrollment_applier_key_file"
-    )]
+    #[arg(long, env = "RING_RPC_ENROLLMENT_RING_BUDGET_LAMPORTS")]
     pub enrollment_ring_budget_lamports: Option<u64>,
     /// Rings `registerEnrollmentRing` adds, the rings of `--enrollment-apply-ring` aside.
-    #[arg(
-        long,
-        env = "RING_RPC_ENROLLMENT_MAX_RINGS",
-        default_value_t = 256,
-        requires = "enrollment_applier_key_file"
-    )]
+    #[arg(long, env = "RING_RPC_ENROLLMENT_MAX_RINGS", default_value_t = DEFAULT_ENROLLMENT_MAX_RINGS)]
     pub enrollment_max_rings: usize,
     /// A ring whose pending enrollments the applier sends without a registration.
     #[arg(
         long = "enrollment-apply-ring",
         env = "RING_RPC_ENROLLMENT_APPLY_RINGS",
-        value_delimiter = ',',
-        requires = "enrollment_applier_key_file"
+        value_delimiter = ','
     )]
     pub enrollment_apply_rings: Vec<Address>,
     /// Serve plain HTTP on a public address and accept plain HTTP origins, test deployments only.
@@ -200,7 +145,7 @@ pub struct ServeArgs {
         env = "RING_RPC_READER_GRANTS",
         value_enum,
         default_value_t = ReaderGrantStore::Tree,
-        requires_ifs([("database", "store_url"), ("database", "grant_rows_key_file")])
+        requires_if("database", "store_url")
     )]
     pub reader_grants: ReaderGrantStore,
     #[command(flatten)]
@@ -217,85 +162,170 @@ pub enum ReaderGrantStore {
 }
 
 #[derive(Debug, Args)]
-pub struct KeygenArgs {
+struct KmsArgs {
+    #[arg(
+        long,
+        conflicts_with = "localnet_kms",
+        help = "AWS KMS region, defaults to AWS_REGION"
+    )]
+    kms_region: Option<String>,
+    #[arg(long, env = "RING_RPC_LOCALNET_KMS")]
+    localnet_kms: Option<SocketAddr>,
+}
+
+#[derive(Debug, Args)]
+pub struct ProvisionArgs {
+    #[command(flatten)]
+    kms: KmsArgs,
+    #[arg(long, env = "RING_RPC_DEPLOYMENT", value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    deployment: String,
     #[arg(long)]
-    pub out: PathBuf,
-    #[arg(long, value_enum, default_value_t = KeyKind::Auditor)]
-    pub kind: KeyKind,
+    wrapping_key_arn: String,
+    #[arg(long, value_enum)]
+    purpose: Purpose,
+    #[arg(long)]
+    genesis_hash: Hash,
+    #[arg(long, required_if_eq("purpose", "auditor"))]
+    ring_program_id: Option<Address>,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum KeyKind {
+#[derive(Debug, Args)]
+pub struct SignerRefArgs {
+    #[command(flatten)]
+    kms: KmsArgs,
+    #[arg(long)]
+    key_arn: String,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Purpose {
     Auditor,
-    Root,
-    FeePayer,
-    Service,
-    StorageAuthority,
-    CoSigner,
+    AuditorRoot,
     GrantRows,
-    EnrollmentApplier,
 }
 
-impl KeyKind {
-    pub const fn role(self) -> &'static str {
-        match self {
-            Self::Auditor => "auditor",
-            Self::Root => "root secret",
-            Self::FeePayer => "fee payer",
-            Self::Service => "service",
-            Self::StorageAuthority => "storage authority",
-            Self::CoSigner => "co-signer",
-            Self::GrantRows => "grant rows",
-            Self::EnrollmentApplier => "enrollment applier",
-        }
-    }
-
-    pub const fn flag(self) -> &'static str {
-        match self {
-            Self::Auditor => "--auditor-key-file",
-            Self::Root => "--root-secret-file",
-            Self::FeePayer => "--fee-payer-key-file",
-            Self::Service => "--service-key-file",
-            Self::StorageAuthority => "--storage-authority-key-file",
-            Self::CoSigner => "--co-signer-key-file",
-            Self::GrantRows => "--grant-rows-key-file",
-            Self::EnrollmentApplier => "--enrollment-applier-key-file",
-        }
-    }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CustodyManifest {
+    auditor: WrappedSecret,
+    service: SignerRef,
+    storage_authority: Option<SignerRef>,
+    co_signer: Option<SignerRef>,
+    grant_rows: Option<WrappedSecret>,
+    fee_payer: Option<SignerRef>,
+    enrollment_applier: Option<SignerRef>,
 }
 
-/// No two roles share a secret.
 pub struct ServeKeys {
     pub auditor: KeySource,
-    pub service: Keypair,
-    pub storage_authority: Option<Keypair>,
-    pub co_signer: Option<Keypair>,
+    pub service: SigningIdentity,
+    pub storage_authority: Option<SigningIdentity>,
+    pub co_signer: Option<SigningIdentity>,
     pub grant_rows: Option<GrantRowsSecret>,
-    pub fee_payer: Option<Keypair>,
-    pub enrollment_applier: Option<Keypair>,
+    pub fee_payer: Option<SigningIdentity>,
+    pub enrollment_applier: Option<SigningIdentity>,
 }
 
 #[derive(Debug, Error)]
 pub enum ServeKeyError {
-    #[error("{flag} is unusable because {source}")]
-    File {
-        flag: &'static str,
-        #[source]
-        source: SecretFileError,
-    },
-    #[error("{0} holds a zero key")]
-    Zero(&'static str),
-    #[error("auditor key is unusable because {0}")]
+    #[error("cannot read the custody manifest")]
+    File(#[from] std::io::Error),
+    #[error("invalid custody manifest")]
+    Manifest(#[from] serde_json::Error),
+    #[error("missing custody manifest")]
+    MissingManifest,
+    #[error("missing AWS region")]
+    MissingRegion,
+    #[error("only a single ring auditor requires a ring program ID")]
+    AuditorRing,
+    #[error("local KMS requires a loopback bind address and Solana RPC URL")]
+    RemoteCluster,
+    #[error("the store and its storage authority must be configured together")]
+    StorageAuthority,
+    #[error("configure a prover for a store or an enrollment applier")]
+    Prover,
+    #[error("the co-signer and fee payer require a store")]
+    SigningStore,
+    #[error("approval classes require a co-signer")]
+    Approval,
+    #[error("relay budgets require a fee payer")]
+    RelayBudget,
+    #[error("enrollment options require an enrollment applier")]
+    Enrollment,
+    #[error("database reader grants require a wrapped grant rows secret")]
+    GrantRows,
+    #[error("each signing role requires a distinct address")]
+    SharedAddress,
+    #[error("the grant rows secret matches the auditor secret")]
+    SharedSecret,
+    #[error(transparent)]
+    Kms(#[from] CustodyError),
+    #[error(transparent)]
     Auditor(#[from] KeyFileError),
-    #[error("pass exactly one of --auditor-key-file and --root-secret-file")]
-    AuditorMode,
-    #[error("--ring-program-id must name the served ring")]
-    RingMissing,
-    #[error("{0} and {1} hold the same key")]
-    Shared(&'static str, &'static str),
 }
 
 pub struct GrantRowsSecret(Zeroizing<[u8; 32]>);
+pub struct RootSecret(Zeroizing<[u8; 32]>);
+
+#[derive(Debug, Error)]
+#[error("root secret cannot be zero")]
+pub struct RootSecretError;
+
+impl KmsArgs {
+    async fn connect(&self, genesis_hash: &[u8; 32]) -> Result<Kms, ServeKeyError> {
+        match self.localnet_kms {
+            Some(endpoint) => Ok(Kms::localnet_for_genesis(endpoint, genesis_hash)?),
+            None => self.aws().await,
+        }
+    }
+
+    async fn aws(&self) -> Result<Kms, ServeKeyError> {
+        let region = self
+            .kms_region
+            .clone()
+            .or_else(|| std::env::var("AWS_REGION").ok())
+            .ok_or(ServeKeyError::MissingRegion)?;
+        Ok(Kms::aws(&region).await?)
+    }
+}
+
+impl ProvisionArgs {
+    pub async fn provision(&self) -> Result<WrappedSecret, ServeKeyError> {
+        let purpose = match self.purpose {
+            Purpose::Auditor => {
+                SecretPurpose::Auditor(self.ring_program_id.ok_or(ServeKeyError::AuditorRing)?)
+            }
+            _ if self.ring_program_id.is_some() => return Err(ServeKeyError::AuditorRing),
+            Purpose::AuditorRoot => SecretPurpose::AuditorRoot,
+            Purpose::GrantRows => SecretPurpose::GrantRows,
+        };
+        let genesis_hash = self.genesis_hash.to_bytes();
+        let kms = self.kms.connect(&genesis_hash).await?;
+        Ok(kms
+            .provision(
+                &self.wrapping_key_arn,
+                SecretContext {
+                    deployment: &self.deployment,
+                    genesis_hash: &genesis_hash,
+                    purpose,
+                },
+            )
+            .await?)
+    }
+}
+
+impl SignerRefArgs {
+    pub async fn resolve(self) -> Result<SignerRef, ServeKeyError> {
+        let address = match self.kms.localnet_kms {
+            Some(endpoint) => Kms::localnet_public_key(endpoint, &self.key_arn).await?,
+            None => self.kms.aws().await?.public_key(&self.key_arn).await?,
+        };
+        Ok(SignerRef {
+            key_arn: self.key_arn,
+            address,
+        })
+    }
+}
 
 impl ServeArgs {
     pub fn enrollment_ring_budget(&self) -> u64 {
@@ -319,14 +349,6 @@ impl ServeArgs {
         }
     }
 
-    pub fn key_access(&self) -> Access {
-        if self.allow_shared_key_file {
-            Access::Shared
-        } else {
-            Access::OwnerOnly
-        }
-    }
-
     pub fn request_timeout(&self) -> Duration {
         Duration::from_secs(self.request_timeout_secs.get())
     }
@@ -335,115 +357,146 @@ impl ServeArgs {
         Duration::from_secs(self.upstream_timeout_secs.get())
     }
 
-    pub fn read_keys(&self) -> Result<ServeKeys, ServeKeyError> {
-        let read = |kind: KeyKind, path: Option<&Path>| {
-            path.map(|path| read_role_secret(kind, path, self.key_access()))
-                .transpose()
+    pub async fn read_keys(&self, genesis_hash: &[u8; 32]) -> Result<ServeKeys, ServeKeyError> {
+        let manifest: CustodyManifest = if let Some(path) = &self.custody {
+            serde_json::from_reader(File::open(path)?)?
+        } else {
+            serde_json::from_str(
+                self.custody_json
+                    .as_deref()
+                    .ok_or(ServeKeyError::MissingManifest)?,
+            )?
         };
-        let auditor = read(KeyKind::Auditor, self.auditor_key_file.as_deref())?;
-        let root = read(KeyKind::Root, self.root_secret_file.as_deref())?;
-        let service =
-            read_role_secret(KeyKind::Service, &self.service_key_file, self.key_access())?;
-        let storage_authority = read(
-            KeyKind::StorageAuthority,
-            self.storage_authority_key_file.as_deref(),
-        )?;
-        let co_signer = read(KeyKind::CoSigner, self.co_signer_key_file.as_deref())?;
-        let grant_rows = read(KeyKind::GrantRows, self.grant_rows_key_file.as_deref())?;
-        let fee_payer = read(KeyKind::FeePayer, self.fee_payer_key_file.as_deref())?;
-        let enrollment_applier = read(
-            KeyKind::EnrollmentApplier,
-            self.enrollment_applier_key_file.as_deref(),
-        )?;
-        refuse_shared(&[
-            (KeyKind::Auditor, auditor.as_deref()),
-            (KeyKind::Root, root.as_deref()),
-            (KeyKind::Service, Some(&*service)),
-            (KeyKind::StorageAuthority, storage_authority.as_deref()),
-            (KeyKind::CoSigner, co_signer.as_deref()),
-            (KeyKind::GrantRows, grant_rows.as_deref()),
-            (KeyKind::FeePayer, fee_payer.as_deref()),
-            (KeyKind::EnrollmentApplier, enrollment_applier.as_deref()),
-        ])?;
-        let auditor = match (auditor, root) {
-            (Some(secret), None) => KeySource::Local {
-                ring: self.ring_program_id.ok_or(ServeKeyError::RingMissing)?,
+        manifest.validate(self)?;
+        if self.kms.localnet_kms.is_some()
+            && (!self.bind.is_loopback() || !loopback_url(&self.rpc_url))
+        {
+            return Err(ServeKeyError::RemoteCluster);
+        }
+        let kms = self.kms.connect(genesis_hash).await?;
+        let context = |purpose| SecretContext {
+            deployment: &self.deployment,
+            genesis_hash,
+            purpose,
+        };
+        let purpose = self
+            .ring_program_id
+            .map_or(SecretPurpose::AuditorRoot, SecretPurpose::Auditor);
+        let secret = kms.open(&manifest.auditor, context(purpose)).await?;
+        let grant_rows = match &manifest.grant_rows {
+            Some(wrapped) => {
+                let grant = kms.open(wrapped, context(SecretPurpose::GrantRows)).await?;
+                if bool::from(secret.as_slice().ct_eq(grant.as_slice())) {
+                    return Err(ServeKeyError::SharedSecret);
+                }
+                Some(GrantRowsSecret(grant))
+            }
+            None => None,
+        };
+        let auditor = match self.ring_program_id {
+            Some(ring) => KeySource::Local {
+                ring,
                 auditor: auditor_keypair(&secret)?,
             },
-            (None, Some(secret)) => KeySource::Derived(
-                RootSecret::from_bytes(*secret)
-                    .map_err(|_| ServeKeyError::Zero(KeyKind::Root.flag()))?,
-            ),
-            _ => return Err(ServeKeyError::AuditorMode),
+            None => KeySource::Derived(RootSecret(secret)),
         };
-        let keypair = |seed: Zeroizing<[u8; 32]>| Keypair::new_from_array(*seed);
+        let (service, storage_authority, co_signer, fee_payer, enrollment_applier) = tokio::try_join!(
+            kms.signer(&manifest.service),
+            optional_signer(&kms, manifest.storage_authority.as_ref()),
+            optional_signer(&kms, manifest.co_signer.as_ref()),
+            optional_signer(&kms, manifest.fee_payer.as_ref()),
+            optional_signer(&kms, manifest.enrollment_applier.as_ref()),
+        )?;
         Ok(ServeKeys {
             auditor,
-            service: keypair(service),
-            storage_authority: storage_authority.map(keypair),
-            co_signer: co_signer.map(keypair),
-            grant_rows: grant_rows.map(GrantRowsSecret),
-            fee_payer: fee_payer.map(keypair),
-            enrollment_applier: enrollment_applier.map(keypair),
+            service,
+            storage_authority,
+            co_signer,
+            grant_rows,
+            fee_payer,
+            enrollment_applier,
         })
     }
 }
 
-/// Public keys of two key types never match, the raw secrets do.
-fn refuse_shared(secrets: &[(KeyKind, Option<&[u8; 32]>)]) -> Result<(), ServeKeyError> {
-    let named: Vec<_> = secrets
-        .iter()
-        .filter_map(|(kind, secret)| secret.map(|secret| (*kind, secret)))
-        .collect();
-    for (index, (first, first_secret)) in named.iter().enumerate() {
-        for (second, second_secret) in &named[index + 1..] {
-            if bool::from(first_secret.ct_eq(second_secret.as_slice())) {
-                return Err(ServeKeyError::Shared(first.flag(), second.flag()));
+impl CustodyManifest {
+    fn validate(&self, args: &ServeArgs) -> Result<(), ServeKeyError> {
+        let store = args.store_url.is_some();
+        let applier = self.enrollment_applier.is_some();
+        if store != self.storage_authority.is_some() {
+            return Err(ServeKeyError::StorageAuthority);
+        }
+        if (store || applier) != args.prover_url.is_some() {
+            return Err(ServeKeyError::Prover);
+        }
+        if !store && (self.co_signer.is_some() || self.fee_payer.is_some()) {
+            return Err(ServeKeyError::SigningStore);
+        }
+        if !args.co_signer_approve.is_empty() && self.co_signer.is_none() {
+            return Err(ServeKeyError::Approval);
+        }
+        if (args.relay_budget_lamports != 0 || args.relay_signer_budget_lamports != 0)
+            && self.fee_payer.is_none()
+        {
+            return Err(ServeKeyError::RelayBudget);
+        }
+        if !applier
+            && (!args.enrollment_apply_rings.is_empty()
+                || args.enrollment_budget_lamports != 0
+                || args.enrollment_ring_budget_lamports.is_some()
+                || args.enrollment_max_rings != DEFAULT_ENROLLMENT_MAX_RINGS)
+        {
+            return Err(ServeKeyError::Enrollment);
+        }
+        if args.reader_grants == ReaderGrantStore::Database && self.grant_rows.is_none() {
+            return Err(ServeKeyError::GrantRows);
+        }
+        let mut addresses = HashSet::new();
+        for identity in [
+            Some(&self.service),
+            self.storage_authority.as_ref(),
+            self.co_signer.as_ref(),
+            self.fee_payer.as_ref(),
+            self.enrollment_applier.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !addresses.insert(identity.address) {
+                return Err(ServeKeyError::SharedAddress);
             }
         }
+        Ok(())
     }
-    Ok(())
 }
 
-fn read_role_secret(
-    kind: KeyKind,
-    path: &Path,
-    access: Access,
-) -> Result<Zeroizing<[u8; 32]>, ServeKeyError> {
-    let secret = read_key32(path, access).map_err(|source| ServeKeyError::File {
-        flag: kind.flag(),
-        source,
-    })?;
-    if *secret == [0; 32] {
-        return Err(ServeKeyError::Zero(kind.flag()));
+async fn optional_signer(
+    kms: &Kms,
+    identity: Option<&SignerRef>,
+) -> Result<Option<SigningIdentity>, CustodyError> {
+    match identity {
+        Some(identity) => kms.signer(identity).await.map(Some),
+        None => Ok(None),
     }
-    Ok(secret)
 }
 
-pub struct RootSecret(Zeroizing<[u8; 32]>);
-
-#[derive(Debug, Error)]
-pub enum RootSecretError {
-    #[error("root secret cannot be zero")]
-    Zero,
-    #[error(transparent)]
-    File(#[from] SecretFileError),
+fn loopback_url(url: &str) -> bool {
+    reqwest::Url::parse(url).ok().is_some_and(|url| {
+        url.host_str().is_some_and(|host| {
+            host == "localhost"
+                || host
+                    .trim_matches(['[', ']'])
+                    .parse::<IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        })
+    })
 }
 
 impl RootSecret {
-    pub fn random() -> Self {
-        loop {
-            let mut bytes = [0u8; 32];
-            rand::rngs::OsRng.fill_bytes(&mut bytes);
-            if let Ok(root) = Self::from_bytes(bytes) {
-                return root;
-            }
-        }
-    }
-
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, RootSecretError> {
         if bytes == [0; 32] {
-            return Err(RootSecretError::Zero);
+            return Err(RootSecretError);
         }
         Ok(Self(Zeroizing::new(bytes)))
     }
@@ -453,274 +506,13 @@ impl RootSecret {
     }
 }
 
-pub fn read_root_secret(path: &Path, access: Access) -> Result<RootSecret, RootSecretError> {
-    RootSecret::from_bytes(*read_key32(path, access)?)
-}
-
-pub fn write_root_secret(out: &Path) -> Result<(), RootSecretError> {
-    let root = Zeroizing::new(hex::encode(RootSecret::random().as_bytes()));
-    Ok(create_new(out, root.as_bytes(), Visibility::Secret)?)
-}
-
 impl GrantRowsSecret {
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Self(Zeroizing::new(bytes))
     }
 
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
-    }
-}
-
-pub fn write_keypair(out: &Path) -> Result<Keypair, SecretFileError> {
-    Ok(Keypair::new_from_array(*write_random_key32(out)?))
-}
-
-pub fn write_grant_rows_secret(out: &Path) -> Result<(), SecretFileError> {
-    write_random_key32(out).map(drop)
-}
-
-fn write_random_key32(out: &Path) -> Result<Zeroizing<[u8; 32]>, SecretFileError> {
-    let mut secret = Zeroizing::new([0u8; 32]);
-    rand::rngs::OsRng.fill_bytes(secret.as_mut_slice());
-    create_new(
-        out,
-        Zeroizing::new(hex::encode(*secret)).as_bytes(),
-        Visibility::Secret,
-    )?;
-    Ok(secret)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use solana_signer::Signer;
-
-    use super::*;
-    use crate::{
-        database::Store,
-        hub::{Hub, ServiceIdentity},
-        storage_chain::LiveStorageChain,
-        upstream::{ChainSource, Upstreams},
-    };
-
-    const UNREACHABLE: &str = "http://127.0.0.1:1";
-
-    /// `serve` with a store and a prover, an `@name` flag resolves under `dir`.
-    fn serve_args(dir: &Path, flags: &[&str]) -> Result<ServeArgs, clap::Error> {
-        let stored = [
-            "--store-url",
-            "sqlite::memory:",
-            "--prover-url",
-            UNREACHABLE,
-        ];
-        parse_serve(dir, &[&stored, flags].concat())
-    }
-
-    fn parse_serve(dir: &Path, flags: &[&str]) -> Result<ServeArgs, clap::Error> {
-        let path = |name: &str| dir.join(name).display().to_string();
-        let mut argv = vec!["ring-rpc".to_owned(), "serve".to_owned()];
-        argv.extend(flags.iter().map(|flag| match flag.strip_prefix('@') {
-            Some(name) => path(name),
-            None => (*flag).to_owned(),
-        }));
-        match Cli::try_parse_from(argv)?.command {
-            Command::Serve(args) => Ok(*args),
-            Command::Keygen(_) => panic!("serve parses as keygen"),
-        }
-    }
-
-    #[test]
-    fn an_enrollment_applier_takes_no_store_or_authority_and_names_its_rings() {
-        let dir = Path::new("/");
-        let ring = Address::new_from_array([1; 32]).to_string();
-        let keys = [
-            "--root-secret-file",
-            "@root.key",
-            "--service-key-file",
-            "@service.key",
-        ];
-        let applier = [
-            "--prover-url",
-            UNREACHABLE,
-            "--enrollment-applier-key-file",
-            "@applier.key",
-            "--enrollment-apply-ring",
-            &ring,
-        ];
-        let parsed = parse_serve(dir, &[&keys[..], &applier].concat()).expect("applier alone");
-        assert_eq!(parsed.enrollment_apply_rings.len(), 1);
-        assert!(parse_serve(dir, &[&keys[..], &applier[..2]].concat()).is_err());
-        let budget = ["--enrollment-budget-lamports", "1000"];
-        let registered = parse_serve(dir, &[&keys[..], &applier[..4], &budget].concat())
-            .expect("an applier without named rings");
-        assert!(registered.enrollment_apply_rings.is_empty());
-        assert_eq!(registered.enrollment_ring_budget(), 100);
-        assert_eq!(registered.enrollment_max_rings, 256);
-        let capped = ["--enrollment-ring-budget-lamports", "7"];
-        let parsed =
-            parse_serve(dir, &[&keys[..], &applier[..4], &capped].concat()).expect("a ring budget");
-        assert_eq!(parsed.enrollment_ring_budget(), 7);
-        assert!(parse_serve(dir, &[&keys[..], &capped].concat()).is_err());
-    }
-
-    fn temp_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ring-rpc-{label}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        dir
-    }
-
-    #[test]
-    fn a_zero_or_malformed_root_secret_is_refused() {
-        let dir = temp_dir("zero");
-        let zero = dir.join("zero.key");
-        create_new(&zero, "00".repeat(32).as_bytes(), Visibility::Secret).expect("zero");
-        assert!(matches!(
-            read_root_secret(&zero, Access::OwnerOnly),
-            Err(RootSecretError::Zero)
-        ));
-        let upper = dir.join("upper.key");
-        create_new(&upper, "AA".repeat(32).as_bytes(), Visibility::Secret).expect("upper");
-        assert!(matches!(
-            read_root_secret(&upper, Access::OwnerOnly),
-            Err(RootSecretError::File(SecretFileError::Hex))
-        ));
-        std::fs::remove_dir_all(dir).expect("cleanup");
-    }
-
-    #[test]
-    fn root_keygen_writes_a_nonzero_private_secret() {
-        let dir = temp_dir("root-keygen");
-        let secret = dir.join("nested/root.key");
-        write_root_secret(&secret).expect("keygen");
-        let root = read_root_secret(&secret, Access::OwnerOnly).expect("root");
-        assert!(root.as_bytes().iter().any(|byte| *byte != 0));
-        std::fs::remove_dir_all(dir).expect("cleanup");
-    }
-
-    #[test]
-    fn the_same_key_file_for_two_roles_is_refused() {
-        let dir = temp_dir("shared-role");
-        write_keypair(&dir.join("shared.key")).expect("shared");
-        write_keypair(&dir.join("storage.key")).expect("storage");
-        write_root_secret(&dir.join("root.key")).expect("root");
-        let ed25519 = serve_args(
-            &dir,
-            &[
-                "--root-secret-file",
-                "@root.key",
-                "--service-key-file",
-                "@shared.key",
-                "--storage-authority-key-file",
-                "@storage.key",
-                "--co-signer-key-file",
-                "@shared.key",
-            ],
-        )
-        .expect("args");
-        assert!(matches!(
-            ed25519.read_keys(),
-            Err(ServeKeyError::Shared(
-                "--service-key-file",
-                "--co-signer-key-file"
-            ))
-        ));
-        let secret = serve_args(
-            &dir,
-            &[
-                "--root-secret-file",
-                "@root.key",
-                "--service-key-file",
-                "@shared.key",
-                "--storage-authority-key-file",
-                "@storage.key",
-                "--grant-rows-key-file",
-                "@root.key",
-            ],
-        )
-        .expect("args");
-        assert!(matches!(
-            secret.read_keys(),
-            Err(ServeKeyError::Shared(
-                "--root-secret-file",
-                "--grant-rows-key-file"
-            ))
-        ));
-        std::fs::remove_dir_all(dir).expect("cleanup");
-    }
-
-    #[tokio::test]
-    async fn each_role_signs_with_the_key_of_its_own_file() {
-        let dir = temp_dir("own-file");
-        write_root_secret(&dir.join("root.key")).expect("root");
-        let service = write_keypair(&dir.join("service.key")).expect("service");
-        let storage = write_keypair(&dir.join("storage.key")).expect("storage");
-        let co_signer = write_keypair(&dir.join("co-signer.key")).expect("co-signer");
-        let keys = serve_args(
-            &dir,
-            &[
-                "--root-secret-file",
-                "@root.key",
-                "--service-key-file",
-                "@service.key",
-                "--storage-authority-key-file",
-                "@storage.key",
-                "--co-signer-key-file",
-                "@co-signer.key",
-            ],
-        )
-        .expect("args")
-        .read_keys()
-        .expect("keys");
-        let KeySource::Derived(root) = keys.auditor else {
-            panic!("a root secret serves derived keys");
-        };
-        let upstreams = Upstreams {
-            indexer_url: UNREACHABLE,
-            rpc_url: UNREACHABLE,
-            timeout: Duration::from_secs(1),
-        };
-        let chain = LiveStorageChain::connect(upstreams, UNREACHABLE).expect("chain");
-        let identity = ServiceIdentity {
-            genesis_hash: [1; 32],
-            service: keys.service,
-        };
-        let hub = Hub::builder(ChainSource::connect(upstreams).expect("source"), identity)
-            .with_store(Store::open("sqlite::memory:", 1).await.expect("store"))
-            .with_storage_chain(Arc::new(chain), keys.storage_authority.expect("storage"))
-            .with_co_signer(keys.co_signer.expect("co-signer"))
-            .derived(root)
-            .expect("hub");
-
-        assert_eq!(hub.service_pubkey(), service.pubkey());
-        assert_eq!(
-            hub.record_writer().expect("writer").authority(),
-            storage.pubkey()
-        );
-        assert_eq!(hub.co_signer().signer(), Some(co_signer.pubkey()));
-        std::fs::remove_dir_all(dir).expect("cleanup");
-    }
-
-    #[test]
-    fn database_reader_grants_need_the_grant_rows_key_file() {
-        let dir = temp_dir("grant-rows");
-        let refused = serve_args(
-            &dir,
-            &[
-                "--root-secret-file",
-                "@root.key",
-                "--service-key-file",
-                "@service.key",
-                "--storage-authority-key-file",
-                "@storage.key",
-                "--reader-grants",
-                "database",
-            ],
-        )
-        .expect_err("database grants without a grant rows key");
-        assert!(refused.to_string().contains("--grant-rows-key-file"));
-        std::fs::remove_dir_all(dir).expect("cleanup");
     }
 }

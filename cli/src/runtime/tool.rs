@@ -9,7 +9,6 @@ use anyhow::{anyhow, ensure, Result};
 
 pub const ANZA_INSTALL: &str = r#"install the Anza toolchain with sh -c "$(curl -sSfL https://release.anza.xyz/v4.2.2/install)""#;
 
-pub const SOLANA: Tool = Tool::new("solana", ANZA_INSTALL);
 pub const SOLANA_TEST_VALIDATOR: Tool = Tool::new("solana-test-validator", ANZA_INSTALL);
 pub const ZOLANA: Tool = Tool::new(
     "zolana",
@@ -27,7 +26,6 @@ impl Tool {
         Self { name, install }
     }
 
-    /// The subcommand the error names, `SOLANA.named("solana program deploy")`.
     pub fn named(self, name: &'static str) -> Self {
         Self { name, ..self }
     }

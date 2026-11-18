@@ -1,0 +1,32 @@
+[package]
+name = "zolana-operator-custody"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[features]
+test-fixtures = ["dep:solana-keypair"]
+
+[dependencies]
+async-trait.workspace = true
+aws-config.workspace = true
+aws-sdk-kms.workspace = true
+base64.workspace = true
+ed25519-dalek = { workspace = true, features = ["pkcs8"] }
+serde.workspace = true
+serde_with.workspace = true
+solana-address.workspace = true
+solana-keypair = { workspace = true, optional = true }
+solana-message.workspace = true
+solana-signature = { workspace = true, features = ["verify"] }
+solana-signer.workspace = true
+solana-transaction.workspace = true
+spr-client.workspace = true
+subtle = "2.6"
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+aws-smithy-mocks.workspace = true
+aws-sdk-kms = { workspace = true, features = ["test-util"] }
+tokio.workspace = true

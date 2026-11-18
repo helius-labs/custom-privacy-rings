@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use custom_ring_sdk::RingClient;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
 use spr_client::{AsyncProverClient, AsyncSolanaRpc, AsyncSprClient, AsyncSprIndexer};
+use zolana_operator_custody::SigningIdentity;
 
 use crate::{
     database::Store, escrow_merge::RingSdkMergeBuilder, landing::SolanaChain,
@@ -23,7 +22,7 @@ pub(crate) struct MergeParts {
 
 #[must_use]
 pub struct RelayServicesInit<'a> {
-    pub fee_payer: Keypair,
+    pub fee_payer: SigningIdentity,
     pub store: Store,
     pub rpc_url: &'a str,
     pub indexer_url: &'a str,
@@ -42,7 +41,7 @@ impl RelayServicesInit<'_> {
         };
         let builder = Arc::new(RingSdkMergeBuilder {
             client: ring_client(),
-            payer: self.fee_payer.pubkey(),
+            payer: self.fee_payer.address(),
         });
         RelayServices {
             parts: RelayParts {

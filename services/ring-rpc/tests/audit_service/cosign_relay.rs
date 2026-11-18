@@ -212,7 +212,7 @@ impl CappedRelay {
         let hub = Hub::builder(source, identity(GENESIS))
             .with_origins(origins())
             .with_store(store.clone())
-            .with_co_signer(co_signer_key())
+            .with_co_signer(Arc::new(co_signer_key()))
             .with_co_signer_approval(CoSignerApproval::new([
                 ApproveClass::Transfers,
                 ApproveClass::Withdrawals,
@@ -228,7 +228,7 @@ impl CappedRelay {
                     auditor: fixture.auditor.pubkey(),
                     nullifier,
                 }),
-                fee_payer: Keypair::new_from_array([31; 32]),
+                fee_payer: Arc::new(Keypair::new_from_array([31; 32])),
                 chain: chain.clone(),
             })
             .local(RING, fixture.auditor.clone())
@@ -814,7 +814,7 @@ async fn a_derived_relay_refuses_a_ring_whose_auditor_key_it_does_not_hold() {
         .with_relay(RelayParts {
             store,
             prover: prover.clone(),
-            fee_payer: Keypair::new_from_array([31; 32]),
+            fee_payer: Arc::new(Keypair::new_from_array([31; 32])),
             chain: chain.clone(),
         })
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
