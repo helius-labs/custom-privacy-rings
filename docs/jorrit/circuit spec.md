@@ -43,7 +43,7 @@ Inputs and withdrawals are fixed key capacities. A frame publishes `m` output sl
 | Deposits | 1 / 2 / 4 / 8 outputs | 67,883 / 90,120 / 134,623 / 223,751 |
 | Merges | 8 / 24 inputs | 59,535 / 84,577 |
 
-Counts come from the [current constraint pins](../prover/ringtest/ringkey/constraints.json), with the catalog in [key_catalog.rs](../program-libs/interface/src/proof/key_catalog.rs) and release v10 in [proving-keys.lock](../prover/ring/proving-keys.lock). The [earlier proving-time benchmark](benchmarks/circuit-proving-times.json) measured the 90-key catalog at `cac79b02`; it does not provide timings for the current transfer circuits.
+Counts come from the [current constraint pins](../../prover/ringtest/ringkey/constraints.json), with the catalog in [key_catalog.rs](../../program-libs/interface/src/proof/key_catalog.rs) and release v10 in [proving-keys.lock](../../prover/ring/proving-keys.lock). The [earlier proving-time benchmark](../benchmarks/circuit-proving-times.json) measured the 90-key catalog at `cac79b02`; it does not provide timings for the current transfer circuits.
 
 ## Delivered audit
 
@@ -86,7 +86,7 @@ struct ExitAuditRecordPlaintext {
 
 Evidence follows the published input count, including zero entries for published dummies, rather than the key's maximum capacity. Current frames use no hash prefixes. Each input hash identifies one commitment; an unknown input remains unresolved while transfer output records still decrypt independently.
 
-Transfers, deposits and key registration share the labelled Poseidon KDF and AES schedule. Anonymous bodies, replies and sender bundles now use that schedule too, under separate labels. Merge keeps its older schedule and Poseidon field masking. Exit recipient bodies use Zolana's scheme 3 outside the ring encryption proof. See [Encryption](spec/crypto/envelope.md), [Disclosure](spec/crypto/disclosure.md) and [Proof composition](design/proof-composition.md).
+Transfers, deposits and key registration share the labelled Poseidon KDF and AES schedule. Anonymous bodies, replies and sender bundles now use that schedule too, under separate labels. Merge keeps its older schedule and Poseidon field masking. Exit recipient bodies use Zolana's scheme 3 outside the ring encryption proof. See [Encryption](../spec/crypto/envelope.md), [Disclosure](../spec/crypto/disclosure.md) and [Proof composition](../design/proof-composition.md).
 
 ## Anonymous audit
 
@@ -189,7 +189,7 @@ Each additional commitment input adds **32 B**. Entry evidence instead adds a **
    | 16      | 5,162              | 3,978           | 1,184       | 104,749               | 626,978               | 522,229           |
 
 
-    [Historical measurements and assumptions](benchmarks/anonymous-audit-poseidon-kdf-tradeoff.json). Mandatory nullifier-key escrow would let the auditor compute spends directly, but output identities and values would still need verified recovery.
+    [Historical measurements and assumptions](../benchmarks/anonymous-audit-poseidon-kdf-tradeoff.json). Mandatory nullifier-key escrow would let the auditor compute spends directly, but output identities and values would still need verified recovery.
 5. New recipient bodies, sender bundles and discovery tags are now checked by the proof. The old scheme 1/2 groups are named `committed` and `uncommitted` in the historical reader, rather than claiming their encryption was verified.
 6. The ring delivery schemes now share the Poseidon KDF and AES schedule, while merge and exit recipient encryption remain exceptions. The target requirements only demand verifiable encryption to the auditor; proving recipient delivery and requiring address enrollment are additional implementation requirements.
 7. Compact output padding and hidden dummies are supported: a frame publishes `m <= N` slots and omits a suffix. Key capacities, four-owner policy screening, single-owner entry and dataless outputs still restrict SPP flexibility. Confidential policy frames publish zero recipient identities for dummies, so dummy privacy is not uniform across modes.
@@ -203,7 +203,7 @@ The ring merge circuit opens inputs under one owner, one asset and one nullifier
 
 Merge seals a disclosure key using its older AES schedule and masks the packed input list with Poseidon field pads. The output's owner, asset and amount are inherited from known inputs rather than encrypted directly. Missing input metadata leaves the merge and dependent merges unresolved. A wallet opening also requires deriving the output blinding from the nullifier secret and first nullifier.
 
-Under key escrow, merge checks the owner's record and escrow key unless the nullifier public key is `Poseidon(0)`. It does not run the transfer rule table. See [Merge disclosure](spec/crypto/disclosure.md#merge-disclosure).
+Under key escrow, merge checks the owner's record and escrow key unless the nullifier public key is `Poseidon(0)`. It does not run the transfer rule table. See [Merge disclosure](../spec/crypto/disclosure.md#merge-disclosure).
 
 **Notes:**
 
@@ -373,7 +373,7 @@ Curator lookups project only list columns from the authenticated full leaf; they
    | 32               | 136              | 6                    | 144,736               | 356,828                |
 
 
-    Smaller budgets limit distinct authenticated (tree, record) pairs; they do not preserve the current worst-case record diversity. Repeated owners and assets can reuse records. The prototype keeps both registry roots, shared upper Merkle paths per tree, policy-source checks, and own-tree restrictions for escrow and mint settings. Subject-pool capacities remain unchanged. For comparison, separate pools with 18 records each cost 174,591 constraints versus 174,650 for a unified 36-record pool. These are compiled prototype counts; applying the design to the combined transfer circuits requires new measurements, keys and witness changes. Honest witnesses, non-membership and tree-selection rejection checks passed. [Raw measurements](benchmarks/unified-record-pool-tradeoff.json) and [reproducible experiment](benchmarks/unified-record-pool-experiment.tar.gz).
+    Smaller budgets limit distinct authenticated (tree, record) pairs; they do not preserve the current worst-case record diversity. Repeated owners and assets can reuse records. The prototype keeps both registry roots, shared upper Merkle paths per tree, policy-source checks, and own-tree restrictions for escrow and mint settings. Subject-pool capacities remain unchanged. For comparison, separate pools with 18 records each cost 174,591 constraints versus 174,650 for a unified 36-record pool. These are compiled prototype counts; applying the design to the combined transfer circuits requires new measurements, keys and witness changes. Honest witnesses, non-membership and tree-selection rejection checks passed. [Raw measurements](../benchmarks/unified-record-pool-tradeoff.json) and [reproducible experiment](../benchmarks/unified-record-pool-experiment.tar.gz).
 
 
 

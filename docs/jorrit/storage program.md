@@ -14,4 +14,4 @@
 
 The current program has no separate `UpdateImmediate` instruction; `Update` uses the proof's restrictive flag to determine whether earlier roots remain valid.
 
-Sources: [instruction dispatch](../programs/storage/src/lib.rs), [instruction tags](../program-libs/interface/src/instructions/storage.rs).
+Sources: [instruction dispatch](../../programs/storage/src/lib.rs), [instruction tags](../../program-libs/interface/src/instructions/storage.rs).
