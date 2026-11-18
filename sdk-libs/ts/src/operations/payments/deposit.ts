@@ -40,6 +40,7 @@ import {
   approveUnattended,
   intentHash,
   type ApprovalHandler,
+  type DepositSource,
   type ProofOutputUtxo,
   type TransactionIntent,
 } from "@heliuslabs/spr/transaction";
@@ -323,7 +324,7 @@ export class PreparedRingDeposit {
       nullifierKey.publicKey(),
       fresh.viewingKey().publicKey(),
     );
-    const transfer = inputlessTransfer(sender, outputTree.treeId, params.feePayer);
+    const transfer = ConfidentialTransfer.newDeposit(sender, outputTree.treeId, params.feePayer);
     // 2. One public leg funds the output, the funder signs the leg's accounts.
     let deposit: TransactDeposit;
     let source: DepositSource;
@@ -376,22 +377,6 @@ export class PreparedRingDeposit {
       nullifierKey,
     });
   }
-}
-
-type DepositSource =
-  | Readonly<{ kind: "sol"; funder: Address }>
-  | Readonly<{ kind: "spl"; sourceTokenAccount: Address; splInterfaceBump: number }>;
-
-type InputlessTransfer = ConfidentialTransfer &
-  Readonly<{ deposit(asset: Address, amount: bigint, source: DepositSource): void }>;
-
-/** Zolana builds no transfer of only dummy inputs. */
-function inputlessTransfer(
-  _sender: ShieldedAddress,
-  _outputTreeId: number,
-  _feePayer: Address,
-): InputlessTransfer {
-  throw new RingError("RING_BUILD_DEPOSIT", { details: { reason: "deposit unavailable" } });
 }
 
 /** Prepares, proves and compiles one deposit. */

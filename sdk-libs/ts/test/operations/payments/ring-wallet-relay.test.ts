@@ -342,8 +342,7 @@ describe("wallet relay", () => {
     expect(failedRelay.calls).toEqual(["prepareRelay", "getRelayStatus"]);
   });
 
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("relays a deposit into a key escrow ring with no opening request", async () => {
+  it("relays a deposit into a key escrow ring with no opening request", async () => {
     const fixture = await ringFixture({ mode: "confidential", records: [] });
     const network = walletNetwork(fixture);
     const recipient = ShieldedKeypair.generate().shieldedAddress();
