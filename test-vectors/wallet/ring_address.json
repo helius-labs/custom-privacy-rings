@@ -8,7 +8,8 @@
       "list_salt": "0707070707070707070707070707070707070707070707070707070707070707",
       "amount": null,
       "mint": null,
-      "label": null
+      "label": null,
+      "tag": null
     },
     {
       "name": "amount_mint_label",
@@ -18,7 +19,8 @@
       "list_salt": "0707070707070707070707070707070707070707070707070707070707070707",
       "amount": "1500000",
       "mint": "4Ss5JMkXAD9Z7cktFEdrqeMuT6jGMF1pVozTyPHZ6zT4",
-      "label": "Coffee & cake ☕ 100%"
+      "label": "Coffee & cake ☕ 100%",
+      "tag": null
     },
     {
       "name": "label_only",
@@ -28,7 +30,19 @@
       "list_salt": "0707070707070707070707070707070707070707070707070707070707070707",
       "amount": null,
       "mint": null,
-      "label": "rent"
+      "label": "rent",
+      "tag": null
+    },
+    {
+      "name": "request_tag",
+      "uri": "zolana:Zkyw6f8vwKjdS7eooGBFScH7gqLHsQMQ1RZxv32Zo19cFhFK9PbpxQazrjeH5239CpLZZe2QmRHmSGE2tMaYH31kGFc9qYRSKa8mzevEvQaoyMjqESthvavAzAvmNW4BtnH9CtXQiqBA2J2SfiDzCPbYT5pJyBtjGNyWdF1ubmkDYgdis1DnQZbfa1ZEizGxe6kKbjyxodWLmxCLihyeZ17RCmP5zWbq7X6?tag=111111111111111111111111G7Y8VakWQpZ",
+      "recipient": "01ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c000ce02d7711322665f107415edd1ce95cc2aa12378f6cd56d6e0544b800c448d1047d34a4815fa6b982535e60af3bd9b49556816080f1641ff81d2b7c8ae8268a44",
+      "ring_program_id": "29d2S7vB453rNYFdR5Ycwt7y9haRT5fwVwL9zTmBhfV2",
+      "list_salt": "0707070707070707070707070707070707070707070707070707070707070707",
+      "amount": null,
+      "mint": null,
+      "label": null,
+      "tag": "0000000000000000000000000000000000000000000000005a5a5a5a5a5a5a5a"
     }
   ],
   "rejected": [
@@ -73,9 +87,14 @@
       "error": "InvalidRingAddressListSalt"
     },
     {
-      "name": "delivery_tag_key",
+      "name": "hex_tag",
       "uri": "zolana:Zkyw6f8vwKjdS7eooGBFScH7gqLHsQMQ1RZxv32Zo19cFhFK9PbpxQazrjeH5239CpLZZe2QmRHmSGE2tMaYH31kGFc9qYRSKa8mzevEvQaoyMjqESthvavAzAvmNW4BtnH9CtXQiqBA2J2SfiDzCPbYT5pJyBtjGNyWdF1ubmkDYgdis1DnQZbfa1ZEizGxe6kKbjyxodWLmxCLihyeZ17RCmP5zWbq7X6?tag=0000000000000000000000000000000000000000000000000000000000000000",
-      "error": "UnknownRingPaymentKey"
+      "error": "InvalidRingPaymentTag"
+    },
+    {
+      "name": "short_tag",
+      "uri": "zolana:Zkyw6f8vwKjdS7eooGBFScH7gqLHsQMQ1RZxv32Zo19cFhFK9PbpxQazrjeH5239CpLZZe2QmRHmSGE2tMaYH31kGFc9qYRSKa8mzevEvQaoyMjqESthvavAzAvmNW4BtnH9CtXQiqBA2J2SfiDzCPbYT5pJyBtjGNyWdF1ubmkDYgdis1DnQZbfa1ZEizGxe6kKbjyxodWLmxCLihyeZ17RCmP5zWbq7X6?tag=2NuhXcKnbB8ntgzUUPWcPP5gR5k5DdCjfE8wf7MNaXb",
+      "error": "InvalidRingPaymentTag"
     },
     {
       "name": "deposit_tag_key",
