@@ -47,7 +47,7 @@ Every commitment and statement of a custom ring is a Poseidon hash over BN254. T
 | Private transaction blinding | `TXPB(n0, seed) = Poseidon(TXPB, n0, seed)` |
 | Merge output blinding | `TMOB(seed, n0)`, as zolana defines it. `seed` is the owner's nullifier secret |
 
-`n0` is the transfer's first nullifier. The transfer proof derives `private_tx_blinding = TXPB(n0, CRBS(tx_viewing_sk, salt))` and reopens `private_tx_hash` over it. SPP derives every output blinding and `private_tx_blinding` from one seed, so the shared hash fixes that seed to `CRBS(tx_viewing_sk, salt)` and SPP holds every published output's blinding to it, a dummy's included. Each output record carries its slot's blinding, and the auditor also derives it from the sealed key. Only the sender bundle carries the output seed.
+`n0` is the transfer's first nullifier. The transfer proof derives `private_tx_blinding = TXPB(n0, CRBS(tx_viewing_sk, salt))` and reopens `private_tx_hash` over it. SPP derives every output blinding and `private_tx_blinding` from one seed, so the shared hash fixes that seed to `CRBS(tx_viewing_sk, salt)` and SPP holds every published output's blinding to it, a dummy's included. Each output record carries its slot's blinding, and the auditor also derives it from the sealed key.
 
 ## Slot secret
 
@@ -55,7 +55,7 @@ Every commitment and statement of a custom ring is a Poseidon hash over BN254. T
 |---|---|
 | Slot secret | `Poseidon(CRDS, pack_be(dh), pack_be(tx_viewing_pk), pack_be(0x04 \|\| u), right_align(salt), i, n0)`, `dh = X25519(tx_viewing_sk, u)`, 10 inputs |
 
-The sender seals slot `i` to its recipient key `u = V_i`. The recipient rebuilds the slot secret from `X25519(u_sk, tx_viewing_u)`, the auditor from the sealed transaction viewing secret and the sealed `V_i`. An output record and its payload take `i` as the slot. A reply takes the secret of its slot. The sender bundle takes `i = m`, past every slot's index. A merge record takes `eph_sk` in place of `tx_viewing_sk`, the owner's viewing key as `u`, a zero salt and `i = 0`.
+The sender seals slot `i` to its recipient key `u = V_i`. The recipient rebuilds the slot secret from `X25519(u_sk, tx_viewing_u)`, the auditor from the sealed transaction viewing secret and the sealed `V_i`. An output record and its payload take `i` as the slot. A reply takes the secret of its slot. A merge record takes `eph_sk` in place of `tx_viewing_sk`, the owner's viewing key as `u`, a zero salt and `i = 0`.
 
 | Value | Encoding |
 |---|---|
@@ -63,14 +63,9 @@ The sender seals slot `i` to its recipient key `u = V_i`. The recipient rebuilds
 
 A dummy slot seals its all-zero record to `V_i`. A relay that holds `tx_viewing_sk` rederives every dummy key, and no wire carries them. No proof checks the derivation, the auditor reads `V_i` from its stream.
 
-| Value | Encoding |
-|---|---|
-| Recipient tag | `Poseidon(CRRT, CRDS_i)`, `Poseidon(CRRT, s)` on a hidden dummy |
-| Bundle tag | `Poseidon(CRST, CRDS_m)` |
+No slot tag takes an output of a slot secret. [Discovery](disclosure.md#discovery) fixes the tag each slot publishes.
 
-Each tag is a canonical field element. `CRRT` and `CRST` sit below `2^32`, and a stream tag, a 9-byte label and one byte, sits above `2^72`. A tag and a [stream schedule](envelope.md#stream-schedule) therefore never share a first Poseidon input.
-
-An exit's scheme 3 body keeps zolana's [AES Key derivation](../../../zolana/docs/spec.md#aes-key-derivation), with its output position as the HKDF slot. A deposit keeps zolana's [View Tags](../../../zolana/docs/spec.md#view-tags). The auditor message takes the auditor's `u` as its tag.
+An exit's scheme 3 body keeps zolana's [AES Key derivation](../../../zolana/docs/spec.md#aes-key-derivation), with its output position as the HKDF slot. An anonymous frame's payment and sender tags keep zolana's [View Tags](../../../zolana/docs/spec.md#view-tags). The auditor message takes the auditor's `u` as its tag.
 
 ## Record tree
 
@@ -146,8 +141,6 @@ Each amount is a u128 under `right_align`. An output slot reads the largest char
 |---|---|---|
 | `CRTX` | `0x43525458` | transfer statement |
 | `CRDS` | `0x43524453` | slot secret |
-| `CRRT` | `0x43525254` | recipient and dummy tag |
-| `CRST` | `0x43525354` | sender bundle tag |
 | `CRBS` | `0x43524253` | ring blinding seed |
 | `CRTB` | `0x43525442` | policy table hash |
 | `CRPW` | `0x43525057` | withdrawal digest |

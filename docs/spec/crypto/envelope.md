@@ -1,6 +1,6 @@
 # Envelope
 
-The envelope seals a secret to the ring's X25519 auditor key. A ring uses it for a transfer's auditor stream, an enrolling owner's nullifier secret and list salt, and a merge's envelope. The stream schedule also keys each output record and payload, reply and sender bundle from a slot secret. The proofs seal each record and nothing past it. [Spec](../../spec.md) [Hashing](hashing.md) [Disclosure](disclosure.md)
+The envelope seals a secret to the ring's X25519 auditor key. A ring uses it for a transfer's auditor stream, an enrolling owner's nullifier secret and list salt, and a merge's envelope. The stream schedule also keys each output record, payload and reply from a slot secret. The proofs seal each record and nothing past it. [Spec](../../spec.md) [Hashing](hashing.md) [Disclosure](disclosure.md)
 
 The ring program verifies the transfer and merge proofs. The Storage program verifies the register key proof in `ApplyEnrollments` for each first enrollment write. In each, the ciphertext's hash in the statement fixes the plaintext.
 
@@ -41,12 +41,11 @@ ciphertext = AES-256-CTR(key, nonce || u32be(counter), plaintext), counter from 
 | `CRING/adt` | auditor stream | `salted` above, `eph_sk = tx_viewing_sk` |
 | `CRING/rcp` | output record and payload, scheme 10, or an exit's record | [slot secret](hashing.md#slot-secret) at `i` |
 | `CRING/rpl` | reply metadata | the secret of slot `i`'s body |
-| `CRING/snd` | sender bundle, scheme 9 | slot secret at `m` under the sender's viewing key |
 | `CRING/nfk` | register key | `secret` above |
 | `CRING/mrg` | merge envelope | `secret` above |
 | `CRING/mro` | merge record | slot secret of `eph_sk` and the owner's viewing key, salt zero, `i = 0` |
 
-One label per ciphertext kind gives each kind its own key and nonce, so a reply never restarts the body's counter. On an anonymous frame, the ring output tags and the bundle tag each take one more Poseidon output of the slot secret keying the ciphertext. Each tag has its own [domain](hashing.md#domain-tags). An exit's scheme 3 body takes zolana's [AES Key derivation](../../../zolana/docs/spec.md#aes-key-derivation) outside every circuit.
+One label per ciphertext kind gives each kind its own key and nonce, so a reply never restarts the body's counter. An exit's scheme 3 body takes zolana's [AES Key derivation](../../../zolana/docs/spec.md#aes-key-derivation) outside every circuit.
 
 ## Envelope uses
 
@@ -58,7 +57,6 @@ No line has an authentication tag. Integrity comes from the statement, or for a 
 | Output record | `CRING/rcp`, slot secret | the 169-byte [record](disclosure.md#records), published as a prefix | `HashChain4(Poseidon(exit_i, hash_bytes(record_ct_i)))` zero filled to `N` |
 | Payload | `CRING/rcp`, slot secret, past the record | the [payload](disclosure.md#slot-body) | no statement, SPP's external data hash binds the bytes |
 | Reply metadata | `CRING/rpl`, slot secret | the [reply](disclosure.md#reply-metadata) | no statement, SPP's external data hash binds the bytes |
-| Sender bundle | `CRING/snd`, slot secret | the [sender bundle](disclosure.md#sender-bundle) | no statement, SPP's external data hash binds the bytes |
 | Register key | `CRING/nfk` | `fe32(nullifier_secret) \|\| fe32(list_salt)`, 64 bytes, each with a zero lead byte | `pack_be` of both tagged keys, `hash_bytes(ciphertext)` |
 | Merge envelope | `CRING/mrg` | the 64-byte [merge envelope](disclosure.md#merges), `eph_sk` and the owner's viewing key | `pack_be` of both tagged keys, `hash_bytes(envelope_ct)` |
 | Merge record | `CRING/mro`, slot secret | the 169-byte [merge record](disclosure.md#merges), the record and the merge seed | `hash_bytes(record_ct)` |

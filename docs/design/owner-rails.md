@@ -7,7 +7,7 @@ One transfer circuit serves every rail, and three statement bits select it. The 
 1. **Signer rail.** Each public owner signs the Solana transaction, and the statement binds the deduplicated owner run. A confidential ring uses it, and a frame of public legs alone takes an empty run.
 2. **In-proof rail.** A confidential ring's owner signs inside the proof of SPP's anonymous rail, and the statement publishes that owner as the sender. Any payer sends the transaction, and signing co-owners can sit beside it.
 3. **Hidden rail.** An anonymous ring's hidden owner signs inside the SPP proof. Input 0 names that owner, and the owner stays outside the published run. Public co-owners can sign beside it.
-4. **Public-owner rail.** An anonymous ring's frame sets `PUBLIC_OWNERS`, every live owner signs in the open and SPP's confidential rail settles it. Recipients stay hidden.
+4. **Public-owner rail.** An anonymous ring's frame sets `PUBLIC_OWNERS`, every live owner signs in the open and SPP's confidential rail settles it. A recipient stays hidden only under a request tag.
 5. **Delegate rail.** `AuthorityTransfer` moves notes with no owner signature. The configured delegate signs, and the run stays empty because a published run would name the owner whose notes move.
 
 An entry key is not a rail. It adds a default-ring input to the signer, hidden or public-owner rail. The delegate rail holds every input to the ring, so it spends no default-ring note.
@@ -74,7 +74,7 @@ A zero-key note has `nullifier_secret = 0`. Anyone who knows its opening compute
 
 - The signer rail publishes the owner run, each slot's short tag and each exit owner.
 - The in-proof rail publishes the owner key in place of the signer, then the outputs as the signer rail does.
-- The hidden rail publishes each exit owner, the change slots by their zero tag, a short tag on each other non-exit slot and the sender bundle with its tag. A public co-owner signs in the open, and a default-ring spend also publishes the hidden owner's key.
+- The hidden rail publishes each exit owner and a short tag on each non-exit slot. A payment with no request publishes its recipient's bootstrap tag, see [privacy](privacy.md#anonymous-rings). A public co-owner signs in the open, and a default-ring spend also publishes the hidden owner's key.
 - The public-owner rail publishes the owner run, then the outputs as the hidden rail does.
 - The delegate rail publishes the delegate, then the outputs as the ring's frame does.
 
