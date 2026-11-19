@@ -11,7 +11,6 @@ import (
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/audit"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringaudit"
-	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringprotocol"
 )
 
 // Frame byte lengths the circuit does not bind itself, mirrored by program-libs/interface/src/instructions/transact.rs.
@@ -83,7 +82,6 @@ func walkTransferFrame(t *testing.T, line []byte, rail frameRail) {
 		hasData, entry                                                            = 64, 128
 		ringData, slotCount, lowBits                                              = 32, 31, 63
 	)
-	anonymousFrame := rail == frameAnonymous || rail == frameAnonymousDelegate
 	c := frameCursor{t: t, rest: line}
 	head := c.take(5)
 	flags, shape, inputByte, m := head[0], head[1], head[2], int(head[3]&slotCount)
@@ -140,9 +138,6 @@ func walkTransferFrame(t *testing.T, line []byte, rail frameRail) {
 	}
 	if flags&replyFlag != 0 {
 		c.take(int(binary.LittleEndian.Uint16(c.take(2))) * bodies)
-	}
-	if anonymousFrame {
-		c.take(32 + ringprotocol.SenderBundleLen)
 	}
 	stream := audit.StreamShape{InputClass: n, Outputs: m, Entry: inputByte&entry != 0}.Ranges()
 	c.take(stream.EnvelopeLen(n) + m*audit.KeyLen)

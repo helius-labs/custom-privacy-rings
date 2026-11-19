@@ -16,10 +16,6 @@ import (
 const (
 	// deliveredSlotSecretDomain = "CRDS"
 	deliveredSlotSecretDomain = 0x43524453
-	// recipientTagDomain = "CRRT"
-	recipientTagDomain = 0x43525254
-	// senderTagDomain = "CRST"
-	senderTagDomain = 0x43525354
 )
 
 // DeliveredSlotSecret is Poseidon(CRDS, dh0, dh1, txpk0, txpk1, r0, r1, salt, i, n0) over X25519(tx_viewing_sk, u), the recipient rebuilds it from X25519(u_sk, tx_u).
@@ -60,18 +56,6 @@ func OutputBlinding(t testing.TB, firstNullifier, seedOut *big.Int, i int) *big.
 	t.Helper()
 	blinding, err := protocol.OutputBlinding(firstNullifier, seedOut, i)
 	return spptest.MustHash(t, blinding, err)
-}
-
-// RecipientTag is the slot tag over its preimage.
-func RecipientTag(t testing.TB, preimage *big.Int) *big.Int {
-	t.Helper()
-	return ringtest.MustPoseidonHash(t, big.NewInt(recipientTagDomain), preimage)
-}
-
-// SenderBundleTag is the bundle tag over its slot secret.
-func SenderBundleTag(t testing.TB, secret *big.Int) *big.Int {
-	t.Helper()
-	return ringtest.MustPoseidonHash(t, big.NewInt(senderTagDomain), secret)
 }
 
 // VouchDigest mirrors shared.VouchDigest.
