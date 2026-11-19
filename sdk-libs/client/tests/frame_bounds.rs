@@ -4,7 +4,7 @@ mod frames;
 mod ring_policy;
 
 use custom_ring_interface::{
-    max_application_messages, AppMessage, CustomRingError, RingTransactData, MAX_SPP_MESSAGES,
+    AppMessage, CustomRingError, RingTransactData, MAX_APPLICATION_MESSAGES, MAX_SPP_MESSAGES,
 };
 use frames::Fixture;
 use spr_interface::{
@@ -54,17 +54,12 @@ fn parse_error(bytes: &[u8], data: &RingTransactData<'_>) -> CustomRingError {
 }
 
 #[test]
-fn the_message_limit_is_spp_s_beside_the_auditor_message_and_the_sender_bundle() {
+fn the_message_limit_is_spp_s_beside_the_auditor_message() {
     let fixture = Fixture::new();
     let ring = ring_policy::config();
+    let limit = MAX_APPLICATION_MESSAGES;
+    assert_eq!(limit + 1, MAX_SPP_MESSAGES);
     for (name, data) in fixture.cases() {
-        let limit = max_application_messages(data.rail);
-        assert_eq!(
-            limit + 1 + usize::from(data.sender.is_some()),
-            MAX_SPP_MESSAGES,
-            "{name}"
-        );
-
         let largest = with_messages(data.clone(), limit);
         let bytes = largest.encode().unwrap();
         RingTransactData::parse(&bytes, largest.rail).unwrap();

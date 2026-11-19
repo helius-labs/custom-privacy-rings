@@ -9,12 +9,12 @@ use spr_transaction::{utxo::SppProofInputUtxo, TransactionError};
 use zolana_ring_transaction::RingDelivery;
 
 use super::{
-    anonymous::{anonymous_plan, check_payment_ring, AnonymousPayment},
+    anonymous::{check_payment_ring, AnonymousPayment, TaggedPayments},
     canonical_shape,
     owner::Owner,
     sealed, OutputSeal, Rail, RailKind, RingTransfer, SealedOutputs, Spend, Staged,
 };
-use crate::{CustomRingConfig, RingError};
+use crate::{viewing_history::TransferTags, CustomRingConfig, RingError};
 
 /// The named wallet becomes public, recipients stay hidden on an anonymous ring.
 pub struct PublicOwners<'a> {
@@ -24,6 +24,7 @@ pub struct PublicOwners<'a> {
     zero_key_change: bool,
     /// In declared order, the order of their ring outputs.
     pub(super) payments: Vec<AnonymousPayment>,
+    tags: Option<TransferTags>,
 }
 
 pub type PublicOwnerTransfer<'a> = RingTransfer<PublicOwners<'a>>;
@@ -52,6 +53,7 @@ impl<'a> RingTransfer<Owner<'a>> {
                 wallet,
                 zero_key_change: false,
                 payments: Vec::new(),
+                tags: None,
             },
             list_salts: self.list_salts,
             ring_salt: self.ring_salt,
@@ -76,6 +78,13 @@ impl RingTransfer<PublicOwners<'_>> {
         payment.add_to(&mut self.rail.owner.transaction)?;
         self.rail.payments.push(payment);
         Ok(self)
+    }
+
+    /// The wallet's selection for the payments in declared order.
+    #[must_use = "use the updated transfer"]
+    pub fn with_tags(mut self, tags: TransferTags) -> Self {
+        self.rail.tags = Some(tags);
+        self
     }
 
     /// Unset, staging pads to the smallest supported shape.
@@ -155,7 +164,13 @@ impl PublicOwners<'_> {
     ) -> Result<SealedOutputs, RingError> {
         self.owner.check_settlement_accounts()?;
         let transaction = self.owner.transaction.clone();
-        let plan = anonymous_plan(&self.payments);
+        let plan = TaggedPayments {
+            transaction: &transaction,
+            sender,
+            payments: &self.payments,
+            tags: self.tags.as_ref(),
+        }
+        .plan()?;
         // A program circuit keeps its zero change in the asset it spent.
         let spent = transaction
             .inputs()

@@ -182,7 +182,7 @@ pub struct PendingClaim {
 }
 
 impl PendingClaim {
-    fn of(claim: &SenderClaim) -> Self {
+    pub(crate) fn of(claim: &SenderClaim) -> Self {
         let reply = claim.claim.claimed();
         Self {
             utxo_hash: claim.utxo_hash,
@@ -322,11 +322,8 @@ impl AnonymousWallet {
         &self.claims
     }
 
-    /// The wallet's own decision to trust a claimed sender, nothing else confirms one.
+    /// Clears the replies naming `claimed`.
     pub fn confirm_claim(&mut self, claimed: X25519Pubkey) -> Result<(), AnonymousError> {
-        if self.recovery.is_some() {
-            return Err(AnonymousError::RecoveryScopeChanged);
-        }
         if !self
             .claims
             .iter()
@@ -334,7 +331,6 @@ impl AnonymousWallet {
         {
             return Err(AnonymousError::UnknownSenderClaim);
         }
-        self.history.confirm_sender(claimed)?;
         self.revision.advance();
         self.claims
             .retain(|claim| claim.claimed_viewing_key != claimed);

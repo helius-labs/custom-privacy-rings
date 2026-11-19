@@ -116,7 +116,8 @@ fn public_co_owner_receives_payment_under_each_owners_net_debit_cap() -> Result<
             .output_slots
             .iter()
             .filter(|slot| {
-                slot.view_tag != [0; 32] && ring_body_output(&slot.payload).is_some()
+                slot.view_tag == bootstrap_slot_tag(co_owner.viewing_pubkey().u())
+                    && ring_body_output(&slot.payload).is_some()
             })
             .count(),
         1
@@ -146,7 +147,7 @@ fn public_co_owner_receives_payment_under_each_owners_net_debit_cap() -> Result<
             (10_000_000, sender.signing_pubkey().as_ed25519()?),
         ]
     );
-    let mut wallet = RingWallet::new(co_owner, env.ring_assets()?, ring_program);
+    let mut wallet = RingWallet::new(co_owner, env.ring_assets()?);
     wallet.sync(&env)?;
     assert!(wallet.unspent().any(|note| note.utxo.amount == 11_000_000));
     assert!(!wallet.unspent().any(|note| note.utxo.amount == 1_000_000));

@@ -1007,7 +1007,6 @@ impl Indexed<'_> {
                 .collect(),
             disclosure,
             auditor: self.auditor,
-            rail,
         });
         transaction.slot = 42;
         transaction.tx_signature = Signature::from([self.signature; 64]);

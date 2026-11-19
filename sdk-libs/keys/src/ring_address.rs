@@ -7,7 +7,10 @@ use sha2::{Digest, Sha256};
 use solana_address::Address;
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
-use spr_keypair::shielded::{ShieldedAddress, SHIELDED_ADDRESS_LEN};
+use spr_keypair::{
+    shielded::{ShieldedAddress, SHIELDED_ADDRESS_LEN},
+    viewing_key::ViewTag,
+};
 use spr_transaction::ShieldedKeys;
 
 use crate::{ListSaltHolder, RingKeyError};
@@ -141,13 +144,15 @@ fn checksum(body: &[u8]) -> [u8; CHECKSUM_LEN] {
     core::array::from_fn(|i| digest[i])
 }
 
-/// `zolana:<address>?amount=&mint=&label=`, the query part is unauthenticated.
+/// `zolana:<address>?amount=&mint=&label=&tag=`, the query part is unauthenticated.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RingPaymentRequest {
     pub address: RingAddress,
     pub amount: Option<u64>,
     pub mint: Option<Address>,
     pub label: Option<String>,
+    /// The recipient's request view tag, whoever reads it finds the payment.
+    pub tag: Option<ViewTag>,
 }
 
 impl fmt::Debug for RingPaymentRequest {
@@ -168,6 +173,7 @@ impl RingPaymentRequest {
             amount: None,
             mint: None,
             label: None,
+            tag: None,
         }
     }
 }
@@ -194,6 +200,9 @@ impl fmt::Display for RingPaymentRequest {
                 format_args!("{}", utf8_percent_encode(label, LABEL_ENCODE_SET)),
             )?;
         }
+        if let Some(tag) = &self.tag {
+            write("tag", format_args!("{}", bs58::encode(tag).into_string()))?;
+        }
         Ok(())
     }
 }
@@ -211,13 +220,14 @@ impl FromStr for RingPaymentRequest {
             None => (rest, None),
         };
         let address = RingAddress::from_base58(address)?;
-        let (mut amount, mut mint, mut label) = (None, None, None);
+        let (mut amount, mut mint, mut label, mut tag) = (None, None, None, None);
         for part in query.into_iter().flat_map(|query| query.split('&')) {
             let (key, value) = part.split_once('=').unwrap_or((part, ""));
             match key {
                 "amount" => replace_once(&mut amount, parse_amount(value)?)?,
                 "mint" => replace_once(&mut mint, parse_mint(value)?)?,
                 "label" => replace_once(&mut label, parse_label(value)?)?,
+                "tag" => replace_once(&mut tag, parse_tag(value)?)?,
                 _ => return Err(RingKeyError::UnknownRingPaymentKey),
             }
         }
@@ -226,6 +236,7 @@ impl FromStr for RingPaymentRequest {
             amount,
             mint,
             label,
+            tag,
         })
     }
 }
@@ -250,6 +261,14 @@ fn parse_mint(value: &str) -> Result<Address, RingKeyError> {
     value
         .parse()
         .map_err(|_| RingKeyError::InvalidRingPaymentMint)
+}
+
+fn parse_tag(value: &str) -> Result<ViewTag, RingKeyError> {
+    let mut tag = [0u8; 32];
+    match bs58::decode(value).onto(&mut tag) {
+        Ok(32) => Ok(tag),
+        _ => Err(RingKeyError::InvalidRingPaymentTag),
+    }
 }
 
 /// `percent_decode_str` keeps a bare `%`, every escape must be two hex digits.

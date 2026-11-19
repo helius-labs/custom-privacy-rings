@@ -1,18 +1,14 @@
 //! Slot secrets of the ring outputs under a wallet's viewing keys.
 
-use custom_ring_interface::SENDER_BUNDLE_LEN;
 use solana_address::Address;
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_keypair::{NullifierKey, ShieldedAddress, X25519Pubkey};
 use spr_transaction::{
-    DeriveRequest, RingCodec, RingOpening, ShieldedKeys, ShieldedTransaction, TransactionError,
-    WalletUtxo,
+    DeriveRequest, RingCodec, RingOpening, ShieldedKeys, ShieldedTransaction, WalletUtxo,
 };
-use zolana_ring_keys::confidential_slot_tag;
 use zolana_ring_keys::ring_body_output;
-use zolana_ring_keys::ring_sender_bundle_output_body;
 use zolana_ring_keys::SlotSecret;
-use zolana_ring_keys::{RingDeliveryRequest, RingKeys, RingTagFrame, RingTagKind, RingTagProbe};
+use zolana_ring_keys::{RingDeliveryRequest, RingKeys};
 use zolana_ring_transaction::{is_contributory, AnonymousOutput, OpenedBody, RingAssets};
 
 use crate::{exactly_one_each, is_zero_key, AnonymousError};
@@ -79,11 +75,18 @@ pub(crate) fn sort_by_publication(utxos: &mut [WalletUtxo]) {
     });
 }
 
-/// Serves confidential and anonymous rings, a zero-tag body opens only as the sender's change.
+/// Serves confidential and anonymous rings, each body tried under every held key.
 pub struct RingNoteCodec<'a, K: ?Sized> {
     pub ring: Address,
     pub keys: &'a K,
     pub assets: &'a RingAssets,
+}
+
+/// One ring body a held key rebuilt, with the secret its reply opens under.
+pub(crate) struct OpenedSlot {
+    pub viewing_pubkey: X25519Pubkey,
+    pub secret: SlotSecret,
+    pub opening: RingOpening,
 }
 
 impl<K: ShieldedKeys + RingKeys + ?Sized> RingCodec for RingNoteCodec<'_, K> {
@@ -94,118 +97,77 @@ impl<K: ShieldedKeys + RingKeys + ?Sized> RingCodec for RingNoteCodec<'_, K> {
     }
 
     fn open(&self, event: &ShieldedTransaction) -> Result<Vec<RingOpening>, AnonymousError> {
+        Ok(self
+            .opened(event)?
+            .into_iter()
+            .map(|slot| slot.opening)
+            .collect())
+    }
+}
+
+impl<K: ShieldedKeys + RingKeys + ?Sized> RingNoteCodec<'_, K> {
+    /// No tag selects a body, a rebuilt commitment alone names the owner.
+    pub(crate) fn opened(
+        &self,
+        event: &ShieldedTransaction,
+    ) -> Result<Vec<OpenedSlot>, AnonymousError> {
         let Some(context) = RingDeliveryContext::of(event) else {
             return Ok(Vec::new());
         };
         let address = self.keys.address()?;
-        let bodies: Vec<(u32, [u8; 32])> = (0u32..)
+        let bodies: Vec<u32> = (0u32..)
             .zip(&event.output_slots)
             .filter(|(_, slot)| ring_body_output(&slot.payload).is_some())
-            .map(|(position, slot)| (position, slot.view_tag))
+            .map(|(position, _)| position)
             .collect();
-        let bundle = event.messages.iter().find_map(|message| {
-            ring_sender_bundle_output_body(&message.data)
-                .filter(|bundle| bundle.len() == SENDER_BUNDLE_LEN)
-                .map(|_| message.view_tag)
-        });
-        let bundle_index = u32::try_from(event.output_slots.len())
-            .map_err(|_| TransactionError::TooManyOutputs)?;
-        // 1. One frame per held key, a confidential body names its key by a public tag.
-        let frames: Vec<RingTagFrame> = self
+        // One key's requests run together, the holder agrees once per key.
+        let requests: Vec<RingDeliveryRequest> = self
             .keys
             .viewing_public_keys()
             .into_iter()
-            .map(|viewing_pubkey| {
-                let confidential = confidential_slot_tag(viewing_pubkey.u());
-                let tagged =
-                    bodies
-                        .iter()
-                        .filter(|(_, tag)| *tag != [0; 32])
-                        .map(|&(index, tag)| {
-                            let kind = if tag == confidential {
-                                RingTagKind::Confidential
-                            } else {
-                                RingTagKind::Recipient
-                            };
-                            RingTagProbe {
-                                kind,
-                                output_index: index,
-                                tag,
-                            }
-                        });
-                let own = bundle.map(|tag| RingTagProbe {
-                    kind: RingTagKind::SenderBundle,
-                    output_index: bundle_index,
-                    tag,
-                });
-                RingTagFrame {
+            .flat_map(|viewing_pubkey| {
+                bodies.iter().map(move |&output_index| RingDeliveryRequest {
                     viewing_pubkey,
                     tx_viewing_pk: context.tx_viewing_pk,
                     salt: context.salt,
+                    output_index,
                     first_nullifier: context.first_nullifier,
-                    probes: tagged.chain(own).collect(),
-                }
+                })
             })
-            .filter(|frame| !frame.probes.is_empty())
             .collect();
-        if frames.is_empty() {
+        if requests.is_empty() {
             return Ok(Vec::new());
         }
-        let answers = exactly_one_each(self.keys.ring_tag_matches(&frames)?, frames.len())?;
-        let mut secrets = Vec::new();
-        let mut change = Vec::new();
-        for (frame, answers) in frames.iter().zip(answers) {
-            let answers = exactly_one_each(answers, frame.probes.len())?;
-            for (probe, secret) in frame.probes.iter().zip(answers) {
-                let Some(secret) = secret else {
-                    continue;
-                };
-                if probe.kind != RingTagKind::SenderBundle {
-                    secrets.push((probe.output_index, secret));
-                    continue;
-                }
-                // 2. A matched bundle marks an own event, its change carries tag zero.
-                let zero_tagged = bodies.iter().filter(|(_, tag)| *tag == [0; 32]);
-                change.extend(zero_tagged.map(|&(index, _)| RingDeliveryRequest {
-                    viewing_pubkey: frame.viewing_pubkey,
-                    tx_viewing_pk: context.tx_viewing_pk,
-                    salt: context.salt,
-                    output_index: index,
-                    first_nullifier: context.first_nullifier,
-                }));
-            }
-        }
-        if !change.is_empty() {
-            let answers =
-                exactly_one_each(self.keys.ring_delivery_secrets(&change)?, change.len())?;
-            for (request, secret) in change.iter().zip(answers) {
-                secrets.push((request.output_index, SlotSecret::new(secret)?));
-            }
-        }
-        let mut openings = Vec::new();
-        for (slot_index, slot_secret) in secrets {
+        let secrets =
+            exactly_one_each(self.keys.ring_delivery_secrets(&requests)?, requests.len())?;
+        let mut opened = Vec::new();
+        for (request, secret) in requests.iter().zip(secrets) {
             let candidate = RingDeliveredCandidate {
                 tx: event,
-                slot_index,
-                slot_secret,
+                slot_index: request.output_index,
+                slot_secret: SlotSecret::new(secret)?,
             };
-            let (OpenedBody::Note(note) | OpenedBody::UnknownMint(note)) =
-                match open_recipient_candidate(&address, self.assets, &candidate)? {
-                    Some(opened) => opened,
-                    None => continue,
-                };
-            openings.push(RingOpening {
-                slot_index,
-                nullifier_pubkey: note.nullifier_pk,
-                mint: note.utxo.asset.asset,
-                amount: note.utxo.amount,
-                blinding: note.utxo.blinding,
-                data: note.utxo.data,
-                data_hash: note.data_hash,
-                ring_data_hash: note.ring_data_hash,
+            let Some(OpenedBody::Note(note) | OpenedBody::UnknownMint(note)) =
+                open_recipient_candidate(&address, self.assets, &candidate)?
+            else {
+                continue;
+            };
+            opened.push(OpenedSlot {
+                viewing_pubkey: request.viewing_pubkey,
+                secret: candidate.slot_secret,
+                opening: RingOpening {
+                    slot_index: request.output_index,
+                    nullifier_pubkey: note.nullifier_pk,
+                    mint: note.utxo.asset.asset,
+                    amount: note.utxo.amount,
+                    blinding: note.utxo.blinding,
+                    data: note.utxo.data,
+                    data_hash: note.data_hash,
+                    ring_data_hash: note.ring_data_hash,
+                },
             });
         }
-        Ok(openings)
+        Ok(opened)
     }
 }
 

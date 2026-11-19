@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 use solana_address::Address;
 use solana_signer::Signer;
-use spr_indexer_api::{Base64String, SerializablePubkey, SerializableSignature};
+use spr_indexer_api::{Base64String, Hash, SerializablePubkey, SerializableSignature};
 use spr_keypair::{KeypairError, ShieldedAddress, ViewingKey};
 use zeroize::Zeroizing;
 
@@ -15,12 +15,15 @@ const AUTHORITY_TRANSFER_DOMAIN: &str = "zolana/ring-rpc-authority-transfer";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SerializableShieldedAddress(pub ShieldedAddress);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct AuthorityPayment {
     pub recipient: SerializableShieldedAddress,
     pub mint: SerializablePubkey,
     pub amount: u64,
+    /// The recipient's request tag on an anonymous ring payment, its bootstrap tag without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<Hash>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,9 +143,13 @@ impl Attestation for AuthorityTransferAttestation {
             .into_iter()
             .fold(String::new(), |mut lines, (kind, outputs)| {
                 for output in outputs {
+                    let tag = output
+                        .tag
+                        .as_ref()
+                        .map_or_else(|| "-".to_owned(), Hash::to_base58);
                     let _ = write!(
                         lines,
-                        "\n{kind}: {} {} {}",
+                        "\n{kind}: {} {} {} {tag}",
                         output.recipient.0, output.mint.0, output.amount
                     );
                 }

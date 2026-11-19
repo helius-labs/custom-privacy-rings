@@ -2,7 +2,7 @@ use solana_address::Address;
 use solana_signer::Signer;
 use spr_client::{AsyncRpc, ReservedKeys, RingTransferRequest, RingTransfers};
 use spr_transaction::instructions::transact::ConfidentialTransaction;
-use zolana_ring_keys::RingAddress;
+use zolana_ring_keys::{RingAddress, RingPaymentRequest};
 
 use crate::{
     client::{RingClient, RingIndexerBackend},
@@ -11,6 +11,7 @@ use crate::{
         OwnerSource,
     },
     submission::RingOperation,
+    viewing_history::TransferTags,
     CustomRing, RingError, RingSubmission, SignatureHistory,
 };
 
@@ -32,7 +33,9 @@ pub struct OwnerRingTransfers<'a, R, I>(pub RingProving<'a, R, I>);
 pub struct AnonymousRingTransfers<'a, R, I> {
     pub proving: RingProving<'a, R, I>,
     /// A payee missing here must be under the zero key, its list salt is zero.
-    pub payees: &'a [RingAddress],
+    pub payees: &'a [RingPaymentRequest],
+    /// The wallet's sender tag, core spends no ring note to find its change by.
+    pub tags: &'a TransferTags,
 }
 
 impl<R, I> RingProving<'_, R, I> {
@@ -118,18 +121,19 @@ impl<R, I> AnonymousRingTransfers<'_, R, I> {
             .ok_or(RingError::MissingAnonymousSigner)?;
         let payment = &request.payment;
         let ring_program_id = self.proving.ring.program_id();
-        let known = self.payees.iter().find(|address| {
-            address.recipient == payment.recipient && address.ring_program_id == ring_program_id
+        let known = self.payees.iter().find(|payee| {
+            payee.address.recipient == payment.recipient
+                && payee.address.ring_program_id == ring_program_id
         });
-        let to = match known {
-            Some(address) => address.clone(),
+        let payee = match known {
+            Some(payee) => payee.clone(),
             None => {
                 RingAddress::check_list_salt(&payment.recipient, &[0; 32])?;
-                RingAddress {
+                RingPaymentRequest::new(RingAddress {
                     recipient: payment.recipient,
                     ring_program_id,
                     list_salt: [0; 32],
-                }
+                })
             }
         };
         self.proving
@@ -138,12 +142,14 @@ impl<R, I> AnonymousRingTransfers<'_, R, I> {
                 authorizer: &request.authorizer,
                 owner,
             })
+            .with_tags(self.tags.clone())
             .with_payment(AnonymousPayment {
-                to,
+                to: payee.address,
                 asset: payment.asset,
                 amount: payment.amount,
                 reply: None,
                 data: NoteData::default(),
+                request_tag: payee.tag,
             })
     }
 }

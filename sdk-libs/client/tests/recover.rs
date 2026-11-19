@@ -238,7 +238,6 @@ impl Fixture {
             slots,
             disclosure: &disclosure,
             auditor: &self.auditor.pubkey(),
-            rail,
         });
         transaction.slot = u64::from(self.sequence.get());
         transaction.tx_signature = signature;
@@ -384,7 +383,6 @@ impl Fixture {
             slots: published,
             disclosure: &disclosure,
             auditor: &self.auditor.pubkey(),
-            rail: Rail::Anonymous,
         });
         transaction.slot = u64::from(self.sequence.get());
         transaction.tx_signature = signature;

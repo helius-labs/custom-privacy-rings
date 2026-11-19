@@ -22,7 +22,6 @@ pub fn run(ctx: &Context, args: ReplyClaimsArgs) -> Result<()> {
     WalletScan {
         keys: &keys,
         assets: &assets,
-        config: &config,
     }
     .fetch(ctx)?;
     if let Some(claimed) = &args.confirm {

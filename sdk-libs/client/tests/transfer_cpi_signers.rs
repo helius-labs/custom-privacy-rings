@@ -125,7 +125,6 @@ fn transfer_cpi_elevates_only_authorized_owner_and_co_signer_slots() {
                 2
             ],
             replies: None,
-            sender: None,
             envelope: &[],
             recipient_keys: &recipient_keys,
             vouched: false,

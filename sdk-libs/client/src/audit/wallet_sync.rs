@@ -1,4 +1,4 @@
-//! One sync of a ring-aware wallet, its core notes and every ring its viewing history names.
+//! One sync of a ring-aware wallet, its core notes and the ring notes its tags find.
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -13,7 +13,7 @@ use zolana_ring_keys::RingKeys;
 use zolana_ring_transaction::RingAssets;
 
 use crate::{
-    anonymous::{AnonymousSync, RecoveryStatus, SenderAuditFrames},
+    anonymous::{AnonymousSync, RecoveryStatus},
     anonymous_wallet::{AnonymousWallet, PendingNote},
     confidential::RingConfidentialScan,
     exposed_notes::verify_ring_owned,
@@ -42,16 +42,19 @@ pub struct RingWalletSync<'a, K: ?Sized> {
     assets: &'a RingAssets,
     config: IndexerRpcConfig,
     chain_assets: Option<&'a ChainAssets<'a>>,
-    sender_audit: Option<&'a dyn SenderAuditFrames>,
+    recovery: bool,
+}
+
+/// What one pass reads.
+#[derive(Clone, Copy)]
+enum Rail<'a> {
+    /// The wallet's listed tags and the spends of its notes.
+    Tags(&'a [ShieldedTransaction]),
+    /// Every body of each watched ring's history, the recovery scan.
+    History,
 }
 
 type ChainAssets<'a> = dyn Fn() -> Result<RingAssets, ClientError> + Sync + 'a;
-
-#[derive(Clone, Copy)]
-enum Rail<'t> {
-    Confidential(&'t [ShieldedTransaction]),
-    Anonymous,
-}
 
 struct Syncing<'s, 'a, K: ?Sized, I> {
     sync: &'s RingWalletSync<'a, K>,
@@ -66,8 +69,14 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingWalletSync<'a, K> {
             assets,
             config: IndexerRpcConfig::default(),
             chain_assets: None,
-            sender_audit: None,
+            recovery: false,
         }
+    }
+
+    /// Opens every body of each watched ring's history ahead of the tag read, a note no listed tag names is found here alone.
+    pub fn with_recovery_scan(mut self) -> Self {
+        self.recovery = true;
+        self
     }
 
     pub fn with_indexer_config(mut self, config: IndexerRpcConfig) -> Self {
@@ -78,12 +87,6 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingWalletSync<'a, K> {
     /// Read only when a found note's mint is missing from the given assets.
     pub fn with_chain_assets(mut self, read: &'a ChainAssets<'a>) -> Self {
         self.chain_assets = Some(read);
-        self
-    }
-
-    /// Without it a sync records no sent payment, change still opens.
-    pub fn with_sender_audit(mut self, frames: &'a dyn SenderAuditFrames) -> Self {
-        self.sender_audit = Some(frames);
         self
     }
 
@@ -118,16 +121,13 @@ impl<K: ShieldedKeys + RingKeys + ?Sized> RingWalletScanned<'_, K> {
             wallet,
         };
         let mut unknown_mints = BTreeSet::new();
-        if syncing.wallet.recovery_status() == RecoveryStatus::Complete {
-            let rail = Rail::Confidential(&core.history.transactions);
-            unknown_mints = syncing.synced(rail).await?;
+        // A paused recovery continues here, no other read moves while it is open.
+        if sync.recovery || syncing.wallet.recovery_status() == RecoveryStatus::Paused {
+            unknown_mints = syncing.synced(Rail::History).await?;
         }
-        let entries = syncing.wallet.history().entries();
-        if entries
-            .iter()
-            .any(|entry| !entry.ring_positions().is_empty())
-        {
-            unknown_mints.extend(syncing.synced(Rail::Anonymous).await?);
+        if syncing.wallet.recovery_status() == RecoveryStatus::Complete {
+            let tags = Rail::Tags(&core.history.transactions);
+            unknown_mints.extend(syncing.synced(tags).await?);
         }
         if wallet.recovery_status() == RecoveryStatus::Paused {
             return Ok(RingWalletSynced::Paused);
@@ -188,7 +188,7 @@ impl<K: ShieldedKeys + RingKeys + ?Sized, I: BlockingRpc> Syncing<'_, '_, K, I> 
     ) -> Result<BTreeSet<Address>, AnonymousError> {
         let keys = self.sync.keys;
         let unknown_mints = match rail {
-            Rail::Confidential(transactions) => {
+            Rail::Tags(transactions) => {
                 let scan = RingConfidentialScan::new(keys, assets)
                     .with_indexer_config(self.sync.config)
                     .sync(self.indexer, self.wallet, transactions)
@@ -197,13 +197,11 @@ impl<K: ShieldedKeys + RingKeys + ?Sized, I: BlockingRpc> Syncing<'_, '_, K, I> 
                 self.wallet.absorb(scan)?;
                 unknown_mints
             }
-            Rail::Anonymous => {
-                let mut sync =
-                    AnonymousSync::new(keys, assets).with_indexer_config(self.sync.config);
-                if let Some(frames) = self.sync.sender_audit {
-                    sync = sync.with_sender_audit(frames);
-                }
-                let scan = sync.fetch_wallet(self.indexer, self.wallet).await?;
+            Rail::History => {
+                let scan = AnonymousSync::new(keys, assets)
+                    .with_indexer_config(self.sync.config)
+                    .fetch_wallet(self.indexer, self.wallet)
+                    .await?;
                 let unknown_mints = scan.decrypted().unknown_mints.clone();
                 self.wallet.absorb(scan)?;
                 unknown_mints

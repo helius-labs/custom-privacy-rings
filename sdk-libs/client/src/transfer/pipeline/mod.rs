@@ -25,10 +25,10 @@ pub use voucher::VouchSigner;
 use custom_ring_interface::{
     cosign::{ApprovalMask, CoSignDemand, CoSignOperation},
     key_catalog::{RecordPools, RingCircuit, TransferSpend},
-    AnonymousParties, CheckedAuthorization, CustomRingError, CustomRingProof, FramedSenderBundle,
-    InputTrees, InstructionTag, ParsedTransact, PlainGroth16Proof, PolicyProof, PublicLeg,
-    PublicSlots, RecordForm, RingPolicy, RingRail, RootRead, SignerSet, TransferBinding,
-    ANONYMOUS_PARTIES, TRANSFER_OUTPUT_CAPACITIES,
+    AnonymousParties, CheckedAuthorization, CustomRingError, CustomRingProof, InputTrees,
+    InstructionTag, ParsedTransact, PlainGroth16Proof, PolicyProof, PublicLeg, PublicSlots,
+    RecordForm, RingPolicy, RingRail, RootRead, SignerSet, TransferBinding, ANONYMOUS_PARTIES,
+    TRANSFER_OUTPUT_CAPACITIES,
 };
 use solana_address::Address;
 use solana_instruction::Instruction;
@@ -40,8 +40,9 @@ use spr_hasher::primitives::solana_owner_identity;
 use spr_interface::instruction::instruction_data::transact::CacheAccess;
 use spr_interface::{instruction::TreeContext, N_PUBLIC_SLOTS};
 use spr_keypair::{
-    random_salt, viewing_key::Salt, NullifierKey, PublicKey, ShieldedAddress, SigningKey,
-    ViewingKey, X25519Pubkey,
+    random_salt,
+    viewing_key::{Salt, ViewTag},
+    NullifierKey, PublicKey, ShieldedAddress, SigningKey, ViewingKey, X25519Pubkey,
 };
 use spr_program::instruction::TransactInterfaceTransferAccounts;
 use spr_transaction::{
@@ -86,7 +87,7 @@ use self::{
     audit::{AuditSeal, PresealedAudit, SealedAudit},
     compact::{
         CoSignerForm, OwnedAppMessage, OwnedExtensions, OwnedInProofOwner, OwnedOutput,
-        OwnedSenderBundle, TransactAccounts, TransactParts,
+        TransactAccounts, TransactParts,
     },
     plan::{PlannedTransfer, TransferPlanner},
     policy::{owner_rows, PolicyInputs, PolicyRead},
@@ -666,7 +667,7 @@ struct Preview {
     n_out: u8,
     trees: usize,
     expiry_unix_ts: u32,
-    /// Past the sender bundle and ahead of the auditor's message.
+    /// Ahead of the auditor's message.
     app_messages: Vec<OwnedAppMessage>,
     discloses_approval: bool,
     vouched: bool,
@@ -687,7 +688,6 @@ impl Preview {
             inputs,
             published: &rail.published_slots(inputs, sender)?,
             records: BodyForm::of(&inputs.output_utxos)?.records,
-            sender_bundle: rail.published_sender(inputs, &sender.viewing_pubkey)?,
             tx_viewing_u: rail.tx_viewing_key().pubkey().u(),
         }))
     }
@@ -774,7 +774,6 @@ impl<'a> Pipeline<'a> {
                 .external_data
                 .messages
                 .iter()
-                .skip(usize::from(ring_rail.anonymous_frame()))
                 .map(|message| OwnedAppMessage {
                     view_tag: message.view_tag,
                     data: message.data.clone(),
@@ -1419,6 +1418,15 @@ impl ProvenRingTransfer {
         self.accounts.approved_transfer(&self.instruction()?)
     }
 
+    /// Each non-exit slot's tag in slot order.
+    pub fn slot_tags(&self) -> impl Iterator<Item = ViewTag> + '_ {
+        self.parts
+            .outputs
+            .iter()
+            .filter(|output| !output.is_exit())
+            .map(|output| output.owner_tag)
+    }
+
     /// The owners who sign the transaction in public, none on the anonymous and in-proof owner rails.
     pub fn owner_signers(&self) -> &[Address] {
         &self.accounts.owner_signers
@@ -1490,7 +1498,6 @@ struct PreviewParts<'a> {
     inputs: &'a SppProofInputs,
     published: &'a [PublishedSlot<'a>],
     records: RecordForm,
-    sender_bundle: Option<FramedSenderBundle<'a>>,
     tx_viewing_u: [u8; 32],
 }
 
@@ -1552,7 +1559,6 @@ fn preview_parts(parts: PreviewParts<'_>) -> TransactParts {
             .map(|slot| OwnedOutput::of(slot.wire()))
             .collect(),
         replies: owned_replies(parts.published),
-        sender: parts.sender_bundle.map(OwnedSenderBundle::of),
         envelope: Vec::new(),
         recipient_keys: Vec::new(),
         private_tx_hash: [0; 32],

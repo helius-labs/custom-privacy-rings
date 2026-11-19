@@ -4,6 +4,7 @@ use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::AsyncRpc;
 use spr_indexer_api::{Hash, SerializablePubkey, SerializableSignature};
+use spr_interface::instruction::instruction_data::OwnerTag;
 use spr_keypair::{NullifierKey, PublicKey, SigningKey};
 use spr_program::instruction::CreateAssociatedTokenAccount;
 use spr_transaction::instructions::transact::SppProofOutputUtxo;
@@ -334,8 +335,17 @@ impl<P: Planned> Sealed<'_, P> {
         let legs = self.public_legs()?;
         let slots = published_outputs(&inputs.output_utxos)
             .iter()
+            .zip(&inputs.external_data.outputs)
             .zip(0u32..)
-            .map(|(output, slot)| slot_opening(output, slot, inputs.output_tree_id))
+            .map(|((output, published), slot)| {
+                Ok(SlotOpening {
+                    tag: match published.owner_tag {
+                        OwnerTag::Inline(tag) => Some(Hash(tag)),
+                        OwnerTag::Account(_) => None,
+                    },
+                    ..slot_opening(output, slot, inputs.output_tree_id)?
+                })
+            })
             .collect::<Result<Vec<_>, RingError>>()?;
         Ok(staged
             .owner_signers
@@ -409,6 +419,7 @@ fn slot_opening(
             tree_id,
             data_hash: Hash([0; 32]),
             ring_data_hash: Hash([0; 32]),
+            tag: None,
         });
     };
     Ok(SlotOpening {
@@ -423,6 +434,7 @@ fn slot_opening(
         tree_id,
         data_hash: Hash(output.data_hash.unwrap_or_default()),
         ring_data_hash: Hash(output.ring_data_hash.unwrap_or_default()),
+        tag: None,
     })
 }
 

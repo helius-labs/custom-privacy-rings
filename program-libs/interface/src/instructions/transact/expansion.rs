@@ -9,9 +9,7 @@ use spr_interface::instruction::{
 
 use super::{invalid, ParsedTransact, RingOutput, RingTransactData, SlotBody};
 use crate::{
-    error::CustomRingError,
-    output::{encode_ring_sender_bundle_output, OutputPayload},
-    tagged_x25519, AuditorMessage, RingPolicy,
+    error::CustomRingError, output::OutputPayload, tagged_x25519, AuditorMessage, RingPolicy,
 };
 
 impl ParsedTransact<'_> {
@@ -92,19 +90,13 @@ impl RingTransactData<'_> {
             },
             // The auditor message stays last.
             messages: self
-                .sender
-                .map(|sender| {
-                    encode_ring_sender_bundle_output(sender.body).map(|data| MessageData {
-                        view_tag: *sender.tag,
-                        data,
-                    })
-                })
-                .transpose()?
-                .into_iter()
-                .chain(self.extensions.messages.iter().map(|message| MessageData {
+                .extensions
+                .messages
+                .iter()
+                .map(|message| MessageData {
                     view_tag: *message.view_tag,
                     data: message.data.to_vec(),
-                }))
+                })
                 .chain([MessageData {
                     view_tag,
                     data: self.auditor_message(),

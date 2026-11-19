@@ -1,6 +1,7 @@
 //! The message a wallet signs for Ring RPC, checked against the request the wallet made.
 
 use custom_ring_interface::cosign::ApprovalMask;
+use custom_ring_interface::stream::slot_tag;
 use custom_ring_interface::{
     CustomRingError, InstructionTag, ParsedTransact, RecordKind, RingOutput, RingPolicy, RingRail,
     RingTransactData, SettlementLeg, TransferLayout,
@@ -17,14 +18,14 @@ use spr_indexer_api::{Hash, SerializablePubkey};
 use spr_interface::{
     instruction::InterfaceTransfer, pda, tree_slot::tree_id_field, N_PUBLIC_SLOTS,
 };
-use spr_keypair::{PublicKey, ShieldedAddress, X25519Pubkey};
+use spr_keypair::{viewing_key::ViewTag, PublicKey, ShieldedAddress, X25519Pubkey};
 use spr_program::instruction::{
     CreateAssociatedTokenAccount, TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
     TransactSplWithdrawalAccounts,
 };
 use spr_transaction::{utxo::DUMMY_DOMAIN, Mint, TransactionError, Utxo, WalletUtxo, SOL_MINT};
 use thiserror::Error;
-use zolana_ring_keys::confidential_slot_tag;
+use zolana_ring_keys::bootstrap_slot_tag;
 use zolana_ring_keys::DeliveredSlot;
 use zolana_ring_keys::OutputRecord;
 use zolana_ring_policy::{ApprovalTotals, Member, OutputTotals, OwnerDebit, PublicTotals};
@@ -160,6 +161,9 @@ pub struct SlotOpening {
     pub tree_id: u16,
     pub data_hash: Hash,
     pub ring_data_hash: Hash,
+    /// The tag a non-exit slot publishes, no proof holds it and a slot under another is lost to its recipient's sync.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<Hash>,
 }
 
 impl core::fmt::Debug for SlotOpening {
@@ -174,6 +178,7 @@ impl core::fmt::Debug for SlotOpening {
             tree_id,
             data_hash,
             ring_data_hash,
+            tag,
         } = self;
         f.debug_struct("SlotOpening")
             .field("slot", slot)
@@ -185,6 +190,7 @@ impl core::fmt::Debug for SlotOpening {
             .field("tree_id", tree_id)
             .field("data_hash", data_hash)
             .field("ring_data_hash", ring_data_hash)
+            .field("tag", tag)
             .finish()
     }
 }
@@ -369,6 +375,8 @@ pub(crate) struct ExpectedPayment {
     pub owner: ExpectedOwner,
     pub mint: Address,
     pub amount: u64,
+    /// The published owner tag, an exit's owner key or a payment's slot tag.
+    pub tag: ViewTag,
 }
 
 /// Only a check builds one.
@@ -745,11 +753,20 @@ impl ExpectedDelegate {
                         .map(|payment| (RecordKind::Exit, payment)),
                 )
                 .map(|(kind, payment)| {
+                    let owner = ExpectedOwner::of(&payment.recipient.0)?;
+                    let tag = match kind {
+                        RecordKind::Exit => owner.owner_key,
+                        _ => payment.tag.as_ref().map_or_else(
+                            || bootstrap_slot_tag(owner.viewing_u),
+                            |requested| slot_tag(requested.0),
+                        ),
+                    };
                     Ok(ExpectedPayment {
                         kind,
-                        owner: ExpectedOwner::of(&payment.recipient.0)?,
+                        owner,
                         mint: payment.mint.0,
                         amount: payment.amount,
+                        tag,
                     })
                 })
                 .collect::<Result<_, RingError>>()?,
@@ -810,6 +827,14 @@ impl ExpectedDelegate {
         // 3. Each live record pays one requested payment or returns change to a requested source,
         // sealed to that owner's viewing key.
         let records = open_records(parsed, &self.tx_viewing_key, &opened)?;
+        let anonymous = data.rail.anonymous_frame();
+        // An anonymous frame publishes each tag once, a match returns every slot of the transaction.
+        let published: Vec<ViewTag> = data
+            .outputs
+            .iter()
+            .filter(|output| !output.is_exit())
+            .map(|output| output.owner_tag)
+            .collect();
         let mut unpaid = self.payments.clone();
         for (output, (record, key)) in data.outputs.iter().zip(records) {
             if record.kind == RecordKind::Dummy {
@@ -819,28 +844,31 @@ impl ExpectedDelegate {
                 (record.kind == RecordKind::Exit || key.u() == owner.viewing_u)
                     && self.rebuilds(output, &record, owner)
             };
-            let paid = unpaid
+            // A payment no published tag finds is lost to its recipient's sync.
+            let paid = unpaid.iter().position(|payment| {
+                let tagged = match anonymous && payment.kind == RecordKind::Ring {
+                    true => published.contains(&payment.tag),
+                    false => payment.tag == output.owner_tag,
+                };
+                payment.matches(&record) && tagged && sealed_to(&payment.owner)
+            });
+            if let Some(index) = paid {
+                unpaid.swap_remove(index);
+                continue;
+            }
+            let source = self
+                .sources
                 .iter()
-                .position(|payment| payment.matches(&record) && sealed_to(&payment.owner));
-            let owner = match paid {
-                Some(index) => unpaid.swap_remove(index).owner,
-                None => *self
-                    .sources
-                    .iter()
-                    .find(|source| {
-                        record.kind == RecordKind::Ring && source.owns(&record) && sealed_to(source)
-                    })
-                    .ok_or(MessageMismatch::Recipients)?,
-            };
-            // A confidential reader finds its note by the tag, a change under another tag is lost to its source.
-            let owner_tag = match record.kind {
-                RecordKind::Exit => Some(owner.owner_key),
-                RecordKind::Ring if !data.rail.anonymous_frame() => {
-                    Some(confidential_slot_tag(owner.viewing_u))
-                }
-                _ => None,
-            };
-            if owner_tag.is_some_and(|tag| output.owner_tag != tag) {
+                .find(|source| {
+                    record.kind == RecordKind::Ring && source.owns(&record) && sealed_to(source)
+                })
+                .ok_or(MessageMismatch::Recipients)?;
+            // An anonymous source finds its change by the note it spent.
+            if anonymous {
+                continue;
+            }
+            // A confidential source finds its change by the tag.
+            if output.owner_tag != bootstrap_slot_tag(source.viewing_u) {
                 return Err(MessageMismatch::Recipients);
             }
         }
@@ -992,6 +1020,10 @@ impl ExpectedPublicOwner {
             // An exit commits no ring, a ring id here would refuse every exit.
             let rebuilt = opening.utxo_hash((!published.is_exit()).then_some(terms.ring.0))?;
             if rebuilt != *published.hash {
+                return Err(MessageMismatch::Recipients);
+            }
+            let tagged = opening.tag.as_ref().map(|tag| tag.0) == Some(published.owner_tag);
+            if !published.is_exit() && !tagged {
                 return Err(MessageMismatch::Recipients);
             }
         }

@@ -5,7 +5,7 @@ use custom_ring_interface::{
     ciphertext_digest, disclosure::SealedKeys, key_catalog::TRANSFER_SHAPES, record_chain,
     AuditKey, AuditStreamLayout, AuditorMessage, CustomRingError, RecordForm, RecordKind,
     RingOutput, SlotBody, ENTRY_RECORD_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN, SEALED_KEY_LEN,
-    SENDER_BUNDLE_LEN, STREAM_BLOCK_LEN, TRANSFER_RECORD_LEN,
+    STREAM_BLOCK_LEN, TRANSFER_RECORD_LEN,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -20,7 +20,6 @@ use zolana_ring_keys::OutputRecord;
 use zolana_ring_keys::RecipientPayload;
 use zolana_ring_keys::RecordKey;
 use zolana_ring_keys::SealedLayout;
-use zolana_ring_keys::SenderBundle;
 use zolana_ring_keys::RECORD_ZERO_KEY_BIT;
 
 const VECTORS: &str = concat!(
@@ -563,17 +562,6 @@ fn the_recipient_payload_reads_back_at_one_width() {
         RecipientPayload::decode(&empty.encode_padded(2).unwrap()).unwrap(),
         empty
     );
-}
-
-#[test]
-fn the_sender_bundle_holds_the_output_seed_alone() {
-    let bundle = SenderBundle {
-        output_seed: [1; 32],
-    };
-    let encoded = bundle.encode();
-    assert_eq!(encoded.len(), SENDER_BUNDLE_LEN);
-    assert_eq!(SenderBundle::decode(&encoded).unwrap(), bundle);
-    assert!(SenderBundle::decode(&[encoded.as_slice(), &[0; 32]].concat()).is_err());
 }
 
 #[derive(Deserialize)]

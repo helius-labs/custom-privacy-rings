@@ -299,6 +299,7 @@ impl Case {
                     bytes: output.data.utxo_data().unwrap().to_vec(),
                 }),
             },
+            request_tag: None,
         }
     }
 

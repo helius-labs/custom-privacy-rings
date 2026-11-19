@@ -22,14 +22,13 @@
 //! 9. The exit bitmap over `m`.
 //! 10. One [`RingOutput`] per slot, SPP's `utxo_hash`, `owner_tag` and `data`, then the slot's record at the length its kind takes under the frame's [`RecordForm`]. A non-exit slot carries a short tag and its record opens the ring's scheme 10 body. An exit carries the full tag, its record goes to the auditor message and SPP's scheme 3 body follows.
 //! 11. [`Replies`] under `REPLY_METADATA`, appended to each scheme 10 body inside SPP's `data`.
-//! 12. [`FramedSenderBundle`] on an anonymous frame, SPP's first message under scheme 9.
-//! 13. The envelope and the recipient keys, then the voucher's sealed key under `output_flag::VOUCHED`. With the exits' records, the auditor message, SPP's last message, with the auditor's `u` as its view tag.
-//! 14. `private_tx_hash`. SPP's, the ring proof reopens it over the slots it opened.
-//! 15. [`AnonymousProofData`] or [`InProofOwner`]. The BSB22 commitment and default owner tag of SPP's anonymous selector, and the in proof owner's key for the statement.
-//! 16. `spp_proof`. SPP's, with `b` compressed, and the expansion decompresses it.
-//! 17. The nullifiers and input trees. SPP's `inputs` and `tree_contexts`.
+//! 12. The envelope and the recipient keys, then the voucher's sealed key under `output_flag::VOUCHED`. With the exits' records, the auditor message, SPP's last message, with the auditor's `u` as its view tag.
+//! 13. `private_tx_hash`. SPP's, the ring proof reopens it over the slots it opened.
+//! 14. [`AnonymousProofData`] or [`InProofOwner`]. The BSB22 commitment and default owner tag of SPP's anonymous selector, and the in proof owner's key for the statement.
+//! 15. `spp_proof`. SPP's, with `b` compressed, and the expansion decompresses it.
+//! 16. The nullifiers and input trees. SPP's `inputs` and `tree_contexts`.
 //!
-//! What binds what. SPP's external data hash covers `TransactIxData` through `messages` and the settlement accounts, so every section from 6 to 13 it receives but the cached selector, and it binds bytes alone. The ring statement covers every record, the envelope, the recipient keys, the salt, the viewing key, the first nullifier and the published input count. SPP's proof holds an exit's tag to its owner. No proof constrains a non-exit slot's tag, a payload past a record, the sender bundle or a reply.
+//! What binds what. SPP's external data hash covers `TransactIxData` through `messages` and the settlement accounts, so every section from 6 to 12 it receives but the cached selector, and it binds bytes alone. The ring statement covers every record, the envelope, the recipient keys, the salt, the viewing key, the first nullifier and the published input count. SPP's proof holds an exit's tag to its owner. No proof constrains a non-exit slot's tag, a payload past a record or a reply.
 
 #[path = "transact/expansion.rs"]
 mod expansion;
@@ -56,7 +55,7 @@ use spr_interface::{
 
 use crate::{
     anonymous_exit::ANONYMOUS_PARTIES,
-    audit_stream::{AuditStreamLayout, RecordForm, RecordKind, MIN_REPLY_LEN, SENDER_BUNDLE_LEN},
+    audit_stream::{AuditStreamLayout, RecordForm, RecordKind, MIN_REPLY_LEN},
     bytes::Bytes,
     cosign::{ApprovalMask, CoSignOperation, CoSignRequirement},
     disclosure::AuditLayout,
@@ -269,8 +268,6 @@ pub struct RingTransactData<'a> {
     pub outputs: Vec<RingOutput<'a>>,
     /// Set exactly under `REPLY_METADATA`.
     pub replies: Option<Replies<'a>>,
-    /// Present exactly on an anonymous frame.
-    pub sender: Option<FramedSenderBundle<'a>>,
     /// `envelope_ct`, the transmitted length is the stream layout's.
     pub envelope: &'a [u8],
     /// One sealed key per published slot, in slot order, then the voucher's key under `vouched`.
@@ -444,13 +441,6 @@ impl<'a> RingOutput<'a> {
                 SlotBody::Exit(_) => true,
             }
     }
-}
-
-/// Sender bundle, forwarded under its tag as the first SPP message at [`SENDER_BUNDLE_LEN`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FramedSenderBundle<'a> {
-    pub tag: &'a [u8; 32],
-    pub body: &'a [u8],
 }
 
 /// Every reply of a frame, one length so a hidden dummy matches a recipient.
@@ -663,7 +653,7 @@ impl<'a> RingTransactData<'a> {
         let salt = bytes.array()?;
         let extensions = match flags.has(transact_flag::EXTENSIONS) {
             false => FrameExtensions::default(),
-            true => FrameExtensions::read(&mut bytes, rail)?,
+            true => FrameExtensions::read(&mut bytes)?,
         };
         check_extensions(&extensions, rail)?;
         let shape = rail.key_shape(&header)?;
@@ -730,18 +720,10 @@ impl<'a> RingTransactData<'a> {
                 Some(Replies::new(len, bytes.take(usize::from(len) * bodies)?)?.checked(bodies)?)
             }
         };
-        // 7. The bundle has one length, the frame spends no byte on it.
-        let sender = match rail.anonymous_frame() {
-            true => Some(FramedSenderBundle {
-                tag: bytes.array()?,
-                body: bytes.take(SENDER_BUNDLE_LEN)?,
-            }),
-            false => None,
-        };
-        // 8. The auditor's envelope and the recipient keys, their lengths follow `n` and `m`.
+        // 7. The auditor's envelope and the recipient keys, their lengths follow `n` and `m`.
         let envelope = bytes.take(stream.envelope().len)?;
         let recipient_keys = bytes.take(stream.keys_len())?;
-        // 9. SPP's proof data, nullifiers and trees. A byte past them refuses.
+        // 8. SPP's proof data, nullifiers and trees. A byte past them refuses.
         let private_tx_hash = bytes.array()?;
         let anonymous = (rail == RingRail::Anonymous && !header.flags.public_owners)
             .then(|| {
@@ -803,7 +785,6 @@ impl<'a> RingTransactData<'a> {
             wide_owners: header.flags.wide_owners,
             outputs,
             replies,
-            sender,
             envelope,
             recipient_keys,
             vouched: header.flags.vouched,
@@ -832,17 +813,12 @@ impl<'a> RingTransactData<'a> {
         stream.checked()?;
         let form = self.record_form();
         self.check_payload_width(form)?;
-        let anonymous_frame = self.rail.anonymous_frame();
         let owners_expected = match flags.reads_own_root() {
             true => crate::spl_withdrawal_count(&self.interface_transfers),
             false => 0,
         };
         if self.own_revision.is_some() != flags.reads_own_root()
             || self.spl_withdrawal_owners.len() != owners_expected
-            || self.sender.is_some() != anonymous_frame
-            || self
-                .sender
-                .is_some_and(|sender| sender.body.len() != SENDER_BUNDLE_LEN)
             || self.envelope.len() != stream.envelope().len
             || self.recipient_keys.len() != stream.keys_len()
             || !self.outputs.iter().all(|output| {
@@ -1116,7 +1092,7 @@ impl<'a> FrameExtensions<'a> {
         *self == Self::default()
     }
 
-    fn read(bytes: &mut Bytes<'a>, rail: RingRail) -> Result<Self, CustomRingError> {
+    fn read(bytes: &mut Bytes<'a>) -> Result<Self, CustomRingError> {
         let flags = bytes.byte()?;
         if flags & !extension_flag::KNOWN != 0 {
             return Err(CustomRingError::FlagNotAllowed);
@@ -1132,7 +1108,7 @@ impl<'a> FrameExtensions<'a> {
             false => Vec::new(),
             true => {
                 let count = usize::from(bytes.byte()?);
-                check_message_count(count, rail)?;
+                check_message_count(count)?;
                 // The bump allocator keeps every growth step, so the list takes its exact size once.
                 let mut messages = Vec::with_capacity(count);
                 for _ in 0..count {
@@ -1261,14 +1237,12 @@ impl TransactFlags {
 /// SPP's `messages` vector has a `u8` length.
 pub const MAX_SPP_MESSAGES: usize = u8::MAX as usize;
 
-/// SPP also receives the auditor message and an anonymous frame's sender bundle as messages.
-pub const fn max_application_messages(rail: RingRail) -> usize {
-    MAX_SPP_MESSAGES - 1 - rail.anonymous_frame() as usize
-}
+/// SPP also receives the auditor message.
+pub const MAX_APPLICATION_MESSAGES: usize = MAX_SPP_MESSAGES - 1;
 
 /// Runs ahead of the message list's allocation, the SPP encoder never meets an excess.
-fn check_message_count(count: usize, rail: RingRail) -> Result<(), CustomRingError> {
-    match count <= max_application_messages(rail) {
+fn check_message_count(count: usize) -> Result<(), CustomRingError> {
+    match count <= MAX_APPLICATION_MESSAGES {
         true => Ok(()),
         false => Err(CustomRingError::TooManyApplicationMessages),
     }
@@ -1290,7 +1264,7 @@ fn check_extensions(
     if rail.is_delegate() && extensions.cache.is_some() {
         return Err(CustomRingError::FlagNotAllowed);
     }
-    check_message_count(extensions.messages.len(), rail)
+    check_message_count(extensions.messages.len())
 }
 
 /// Bytes 1 to 3 of the compact data, the SPP shape's index and the input count below their flags, then `m`.

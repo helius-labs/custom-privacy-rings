@@ -887,10 +887,7 @@ fn relay_proof_inputs() -> RelayProofInputs {
     use spr_instruction::instruction::{
         TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
     };
-    use spr_interface::{
-        instruction::instruction_data::transact::{OwnerTag, TransactOutput},
-        MAX_OUTPUTS,
-    };
+    use spr_interface::instruction::instruction_data::transact::{OwnerTag, TransactOutput};
     use spr_keypair::{NullifierKey, ShieldedKeypair, SigningKey, X25519Keypair};
     use spr_transaction::{
         instructions::transact::{ExternalData, SettlementTransfer},
@@ -936,10 +933,7 @@ fn relay_proof_inputs() -> RelayProofInputs {
     };
     RelayProofInputs {
         rail: RelayRail::Anonymous {
-            plan: Box::new(AnonymousPlan::from_parts(
-                vec![owner.viewing_pubkey()],
-                [[25; 32]; MAX_OUTPUTS],
-            )),
+            plan: Box::new(AnonymousPlan::from_recipients([owner.viewing_pubkey()])),
             exit_token_owner: None,
             owner_exposed: false,
         },
@@ -1245,12 +1239,7 @@ fn shielded_address(seed: u8) -> ShieldedAddress {
 fn relay_deposit_inputs_encode_to_the_shared_vector() {
     let mut inputs = relay_proof_inputs();
     inputs.rail = RelayRail::Deposit {
-        plan: Some(Box::new(
-            zolana_ring_transaction::AnonymousPlan::from_parts(
-                Vec::new(),
-                [[25; 32]; spr_interface::MAX_OUTPUTS],
-            ),
-        )),
+        plan: Some(Box::new(zolana_ring_transaction::AnonymousPlan::new())),
     };
     inputs.inputs = vec![
         spr_transaction::utxo::SppProofInputUtxo::dummy_with_blinding([29; 32], 4).expect("dummy"),
@@ -1445,6 +1434,7 @@ fn a_signed_authority_transfer_matches_the_shared_vector() {
                 recipient: shielded_address(10).into(),
                 mint: Address::new_from_array([3; 32]).into(),
                 amount: 20,
+                tag: None,
             }],
             withdrawals: vec![
                 super::AuthorityWithdrawal {
@@ -1467,6 +1457,7 @@ fn a_signed_authority_transfer_matches_the_shared_vector() {
                 recipient: shielded_address(9).into(),
                 mint: Address::new_from_array([3; 32]).into(),
                 amount: 250,
+                tag: Some(Hash(custom_ring_interface::stream::slot_tag([13; 32]))),
             }],
         },
     };

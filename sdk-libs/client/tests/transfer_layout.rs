@@ -373,7 +373,10 @@ fn the_transfer_layout_is_the_shared_vector() {
 #[test]
 #[ignore = "rewrites test-vectors/proof/transfer-layout.json"]
 fn write_transfer_layout_vector() {
-    let json = serde_json::to_string_pretty(&compute_vector()).expect("json");
+    let mut vector = compute_vector();
+    // Any crate that enables serde_json's `preserve_order` turns the file into insertion order.
+    vector.sort_all_objects();
+    let json = serde_json::to_string_pretty(&vector).expect("json");
     std::fs::write(VECTORS, json + "\n").expect("write vector file");
 }
 

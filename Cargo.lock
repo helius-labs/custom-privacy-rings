@@ -2074,7 +2074,6 @@ dependencies = [
  "spl-token-2022-interface 2.1.0",
  "spr-api",
  "spr-client",
- "spr-event",
  "spr-indexer-api",
  "spr-interface",
  "spr-keypair",

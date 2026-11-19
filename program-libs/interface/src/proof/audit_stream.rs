@@ -202,6 +202,3 @@ impl RecordForm {
         }
     }
 }
-
-/// One length at every `m`.
-pub const SENDER_BUNDLE_LEN: usize = FIELD_LEN;

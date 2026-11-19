@@ -10,6 +10,7 @@ use std::sync::{
 
 use custom_ring_interface::{
     cosign::{ApprovalMask, CoSignDemand, CoSignOperation},
+    stream::slot_tag,
     CoSignScope, RingMode,
 };
 use solana_address::Address;
@@ -19,7 +20,7 @@ use solana_signer::Signer;
 use spr_client::{AsyncRpc, ClientError};
 use spr_indexer_api::SerializablePubkey;
 use spr_interface::{pda, state::SplAssetRegistry, N_PUBLIC_SLOTS, PROGRAM_ID_PUBKEY};
-use spr_keypair::{NullifierKey, ShieldedAddress, ShieldedKeypair};
+use spr_keypair::{viewing_key::ViewTag, NullifierKey, ShieldedAddress, ShieldedKeypair};
 use spr_program::instruction::{
     DepositAsset, TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
     TransactSplDepositAccounts,
@@ -28,7 +29,7 @@ use spr_transaction::{
     instructions::transact::ConfidentialTransaction, Data, Mint, SppProofOutputUtxo, Utxo,
     SOL_ASSET_ID, SOL_MINT,
 };
-use zolana_ring_keys::RingAddress;
+use zolana_ring_keys::{bootstrap_slot_tag, RingAddress};
 use zolana_ring_policy::Member;
 
 use crate::{
@@ -43,7 +44,9 @@ use crate::{
         PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayQuote, RelayRequestAttestation,
         ServiceTarget,
     },
-    tree_id, CustomRing, PreparedRelay, RingError, RingSubmission, SignatureHistory,
+    tree_id,
+    viewing_history::TransferTags,
+    CustomRing, PreparedRelay, RingError, RingSubmission, SignatureHistory,
 };
 
 #[cfg(test)]
@@ -59,8 +62,11 @@ pub enum DepositRecipient<'a> {
     Confidential(ShieldedAddress),
     /// The depositor's own hidden owner on an anonymous ring, paid like any member.
     Anonymous { keys: &'a dyn RingSender },
-    /// Another member of an anonymous ring.
-    AnonymousPayment { to: &'a RingAddress },
+    /// Another member of an anonymous ring, a deposit refuses one with no request tag.
+    AnonymousPayment {
+        to: &'a RingAddress,
+        request_tag: Option<ViewTag>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -85,6 +91,8 @@ pub struct RingDeposit<'a> {
     pub cosigner: Option<&'a (dyn Signer + Sync)>,
     /// A salted list refuses an enrolled recipient with none.
     pub list_salt: Option<[u8; 32]>,
+    /// The depositor wallet's sender tag, an anonymous deposit proves with no other.
+    pub tags: Option<&'a TransferTags>,
 }
 
 #[must_use]
@@ -97,6 +105,8 @@ pub struct RingDepositBatch<'a> {
     pub outputs: Vec<DepositOutput<'a>>,
     /// Signs when a record covers deposits, the record must be its own.
     pub cosigner: Option<&'a (dyn Signer + Sync)>,
+    /// The depositor wallet's sender tag, an anonymous deposit proves with no other.
+    pub tags: Option<&'a TransferTags>,
 }
 
 pub struct RingDepositReceipt {
@@ -132,6 +142,7 @@ struct DepositTerms {
     cosigner: Option<Address>,
     outputs: Vec<NoteTerms>,
     legs: Vec<DepositLeg>,
+    tags: Option<TransferTags>,
 }
 
 #[derive(Clone)]
@@ -140,6 +151,7 @@ struct NoteTerms {
     mint: Mint,
     amount: u64,
     list_salt: Option<[u8; 32]>,
+    request_tag: Option<ViewTag>,
 }
 
 #[derive(Clone, Copy)]
@@ -167,6 +179,7 @@ impl<'a> RingDeposit<'a> {
                 list_salt: self.list_salt,
             }],
             cosigner: self.cosigner,
+            tags: self.tags,
         }
     }
 
@@ -328,6 +341,7 @@ impl<'a> RingDepositBatch<'a> {
                 mint: mint_of(rpc, output.asset).await?,
                 amount: output.amount,
                 list_salt,
+                request_tag: output.recipient.request_tag(),
             });
         }
         let mut deposit_legs = Vec::with_capacity(legs.len());
@@ -362,6 +376,7 @@ impl<'a> RingDepositBatch<'a> {
             cosigner,
             outputs: notes,
             legs: deposit_legs,
+            tags: self.tags.cloned(),
         };
         let prepared = PreparedRingDeposit::draw(terms)?;
         prepared.check_public_signers(
@@ -393,7 +408,7 @@ impl DepositRecipient<'_> {
         match (*self, anonymous) {
             (Self::Confidential(address), false) => Ok((address, None)),
             (Self::Anonymous { keys }, true) => Ok((keys.address()?, None)),
-            (Self::AnonymousPayment { to }, true) => {
+            (Self::AnonymousPayment { to, .. }, true) => {
                 if to.ring_program_id != ring.program_id() {
                     return Err(RingError::ForeignRingAddress {
                         address: to.ring_program_id,
@@ -406,6 +421,13 @@ impl DepositRecipient<'_> {
             (Self::Anonymous { .. } | Self::AnonymousPayment { .. }, false) => {
                 Err(RingError::NotAnonymousRing)
             }
+        }
+    }
+
+    fn request_tag(&self) -> Option<ViewTag> {
+        match self {
+            Self::AnonymousPayment { request_tag, .. } => *request_tag,
+            Self::Confidential(_) | Self::Anonymous { .. } => None,
         }
     }
 }
@@ -562,19 +584,34 @@ impl PreparedRingDeposit {
             return Ok(DepositTransfer::Confidential(transfer));
         }
         // An anonymous payment carries its salt in its ring address.
+        let payments = terms.outputs.iter().map(|note| AnonymousPayment {
+            to: RingAddress {
+                recipient: note.recipient,
+                ring_program_id: ring,
+                list_salt: note.list_salt.unwrap_or_default(),
+            },
+            asset: note.mint,
+            amount: note.amount,
+            reply: None,
+            data: NoteData::default(),
+            request_tag: note.request_tag,
+        });
         let mut transfer = transfer.spend_public(self.sender.shielded_address()?.solana_address()?);
-        for note in &terms.outputs {
-            transfer = transfer.with_payment(AnonymousPayment {
-                to: RingAddress {
-                    recipient: note.recipient,
-                    ring_program_id: ring,
-                    list_salt: note.list_salt.unwrap_or_default(),
-                },
-                asset: note.mint,
-                amount: note.amount,
-                reply: None,
-                data: NoteData::default(),
-            })?;
+        for payment in payments {
+            // A deposit publishes its funder, a bootstrap tag beside it would name the recipient.
+            let bootstrap = bootstrap_slot_tag(payment.to.recipient.viewing_pubkey.u());
+            let named = terms.tags.as_ref().is_some_and(|tags| {
+                payment
+                    .tag(Some(tags))
+                    .is_none_or(|tag| slot_tag(tag) == bootstrap)
+            });
+            if named {
+                return Err(RingError::DepositBootstrapTag);
+            }
+            transfer = transfer.with_payment(payment)?;
+        }
+        if let Some(tags) = &terms.tags {
+            transfer = transfer.with_tags(tags.clone());
         }
         Ok(DepositTransfer::Anonymous(transfer))
     }

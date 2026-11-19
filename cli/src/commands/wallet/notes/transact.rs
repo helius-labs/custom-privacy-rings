@@ -21,10 +21,10 @@ use spr_transaction::{
 };
 use zolana_ring_client::{
     entry_shape_keyed, mint_balances, owner_record_key, rpc::DecryptedOutputKind,
-    select_spend_where, shape_keyed, AnonymousMove, AnonymousPayment, CoSignScope,
-    CustomRingConfig, CustomRingTransfer, CustomRingTransferInput, DepositAsset, DepositRecipient,
-    EntrySpend, ListRegistry, LocalSigners, PolicySources, PublicOwnerTransfer, ReaderKey,
-    RingDeposit, RingDepositReceipt, RingMode, RingOperation, RingPayment, RingSubmission,
+    select_spend_where, shape_keyed, AnonymousMove, CoSignScope, CustomRingConfig,
+    CustomRingTransfer, CustomRingTransferInput, DepositAsset, DepositRecipient, EntrySpend,
+    ListRegistry, LocalSigners, PolicySources, PublicOwnerTransfer, ReaderKey, RingDeposit,
+    RingDepositReceipt, RingMode, RingOperation, RingPayment, RingSubmission,
 };
 use zolana_ring_keys::{
     ring_address::RING_PAYMENT_SCHEME, ListSaltHolder, RingAddress, RingPaymentRequest,
@@ -45,7 +45,7 @@ use crate::{
     policy, records,
     submission::MemberSigners,
     ui::{self, icon},
-    wallet::WalletScan,
+    wallet::{SelectedTags, WalletScan},
     BalanceArgs, Context, CosignerArg, DepositArgs, Target, TransactArgs, TransferArgs,
     DEFAULT_TRANSACT_AMOUNT, SENDER_KEYPAIR_FILE,
 };
@@ -279,17 +279,18 @@ pub fn run(ctx: &Context, args: TransactArgs) -> Result<()> {
 
 /// Zero-key notes print apart, spending one names the wallet and shows its sender the spend.
 pub fn run_balance(ctx: &Context, args: BalanceArgs) -> Result<()> {
-    let config = ctx.ring_config()?;
     let sender = ShieldedKeypair::from_keypair(&ctx.sender()?)?;
     let held = ctx.ring_keys(&sender)?;
     let mint = args.mint.map_or(SOL_MINT, |mint| mint.0);
     let assets = assets::resolve(ctx.rpc(), mint)?.assets;
-    let notes = WalletScan {
+    let scan = WalletScan {
         keys: &held,
         assets: &assets,
-        config: &config,
-    }
-    .fetch_notes(ctx)?;
+    };
+    let notes = match args.recover {
+        true => scan.recover_notes(ctx)?,
+        false => scan.fetch_notes(ctx)?,
+    };
     let all = notes.spendable.utxos().chain(&notes.exposed_if_spent);
     for (mint, balance) in mint_balances(all, |_| false) {
         line("mint", mint);
@@ -970,6 +971,14 @@ impl Deposit<'_> {
             RingMode::Confidential => DepositRecipient::Confidential(self.held.address()?),
         };
         let public_cosigner = self.cosigner.as_ref().map(NullSigner::new);
+        // No spent note finds an anonymous deposit, its note takes the wallet's sender tag.
+        let selected = match self.config.mode {
+            RingMode::Anonymous => Some(
+                ctx.anonymous_wallet_store(self.held.identity_viewing_pubkey())
+                    .select(self.held)?,
+            ),
+            RingMode::Confidential => None,
+        };
         let deposit = RingDeposit {
             ring: ctx.ring,
             payer: self.payer,
@@ -981,6 +990,7 @@ impl Deposit<'_> {
                 .as_ref()
                 .map(|key| key as &(dyn Signer + Sync)),
             list_salt: Some(self.sender.list_salt(&ctx.ring.program_id())?),
+            tags: selected.as_ref().map(SelectedTags::tags),
         };
         let prepared = ctx.block(deposit.prepare(ctx.chain()))?;
         let mut submission = RingSubmission::new(prepared);
@@ -992,6 +1002,9 @@ impl Deposit<'_> {
             cosigner: self.cosigner,
         }
         .settle(ctx, &mut submission)?;
+        if let Some(selected) = &selected {
+            selected.confirm(submission.confirmed_slot_tags())?;
+        }
         let Some([utxo]) = submission.deposit_utxos() else {
             bail!("the deposit has no confirmed output")
         };
@@ -1018,7 +1031,6 @@ impl Transfer<'_> {
         let mut scanned = WalletScan {
             keys: self.held,
             assets: self.assets,
-            config: self.config,
         }
         .fetch_notes(ctx)?;
         // Only a spend naming its wallet takes a zero-key note.
@@ -1107,7 +1119,6 @@ impl Transfer<'_> {
         WalletScan {
             keys: self.held,
             assets: self.assets,
-            config: self.config,
         }
         .fetch(ctx)
     }
@@ -1193,6 +1204,22 @@ impl Transfer<'_> {
                 entry,
             } => {
                 let mint = self.assets.registry().mint(&self.payments.mint)?;
+                let selected = ctx
+                    .anonymous_wallet_store(self.held.identity_viewing_pubkey())
+                    .select(self.held)?;
+                let settle = |operation: RingOperation<'_>,
+                              signers: &[&(dyn Signer + Sync)]|
+                 -> Result<Signature> {
+                    let mut submission = RingSubmission::new(operation);
+                    let signature = self
+                        .signers(LocalSigners {
+                            payer: self.payer,
+                            signers,
+                        })
+                        .settle(ctx, &mut submission)?;
+                    selected.confirm(submission.confirmed_slot_tags())?;
+                    Ok(signature)
+                };
                 if let Some(wallet) = self.spend_public {
                     let mut transaction = transaction(inputs.clone(), self.payer.pubkey())?;
                     for payment in default_ring {
@@ -1210,13 +1237,7 @@ impl Transfer<'_> {
                     .spend_public(wallet);
                     let mut transfer = self.named_wallet(ctx, transfer)?;
                     for payment in payees {
-                        transfer = transfer.with_payment(AnonymousPayment {
-                            to: payment.to.clone(),
-                            asset: mint,
-                            amount: payment.amount,
-                            reply: payment.reply.clone(),
-                            data: payment.data.clone(),
-                        })?;
+                        transfer = transfer.with_payment(payment.in_asset(mint))?;
                     }
                     let transfer = match shape {
                         Some(shape) => transfer.with_shape(shape)?,
@@ -1226,12 +1247,10 @@ impl Transfer<'_> {
                         Some(cosigner) => transfer.with_co_signer(cosigner),
                         None => transfer,
                     };
-                    return self
-                        .signers(LocalSigners {
-                            payer: self.payer,
-                            signers: &[self.sender],
-                        })
-                        .submit(ctx, transfer);
+                    return settle(
+                        transfer.with_tags(selected.tags().clone()).into(),
+                        &[self.sender],
+                    );
                 }
                 // The hidden owner never signs in public, the payer funds its spend.
                 let transfer = match self.payments.sdk_selects() {
@@ -1247,6 +1266,7 @@ impl Transfer<'_> {
                             payments: payees.clone(),
                             entry: *entry,
                             co_signer: self.cosigner,
+                            tags: Some(selected.tags()),
                         };
                         ctx.block(select.select(ctx.ring_client()))?
                     }
@@ -1271,29 +1291,20 @@ impl Transfer<'_> {
                         .with_list_salt(sender, sender_salt)
                         .with_anonymous_signer(&self.sender.signing_key);
                         for payment in payees {
-                            transfer = transfer.with_payment(AnonymousPayment {
-                                to: payment.to.clone(),
-                                asset: mint,
-                                amount: payment.amount,
-                                reply: payment.reply.clone(),
-                                data: payment.data.clone(),
-                            })?;
+                            transfer = transfer.with_payment(payment.in_asset(mint))?;
                         }
                         let transfer = match shape {
                             Some(shape) => transfer.with_shape(shape)?,
                             None => transfer,
                         };
-                        match self.cosigner {
+                        let transfer = match self.cosigner {
                             Some(cosigner) => transfer.with_co_signer(cosigner),
                             None => transfer,
-                        }
+                        };
+                        transfer.with_tags(selected.tags().clone())
                     }
                 };
-                self.signers(LocalSigners {
-                    payer: self.payer,
-                    signers: &[],
-                })
-                .submit(ctx, transfer)
+                settle(transfer.into(), &[])
             }
         }
     }

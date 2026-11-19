@@ -68,4 +68,3 @@ spr-transaction = { workspace = true, features = ["serde"] }
 [dev-dependencies]
 zolana-operator-custody = { workspace = true, features = ["test-fixtures"] }
 solana-rpc-client-api = { workspace = true }
-spr-event = { workspace = true }

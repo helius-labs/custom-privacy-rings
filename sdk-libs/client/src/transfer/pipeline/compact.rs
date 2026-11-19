@@ -2,9 +2,9 @@
 
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, tag, AnonymousProofData, AppMessage, CustomRingError,
-    CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
-    PlainGroth16Proof, PolicyProof, Replies, RingOutput, RingPolicy, RingRail, RingTransactData,
-    RootRead, SlotBody, TransferApproval, TransferLayout, MAX_SPP_CPI_ACCOUNTS,
+    CustomRingProof, FrameExtensions, InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof,
+    Replies, RingOutput, RingPolicy, RingRail, RingTransactData, RootRead, SlotBody,
+    TransferApproval, TransferLayout, MAX_SPP_CPI_ACCOUNTS,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -50,28 +50,6 @@ pub(crate) struct OwnedOutput {
     pub body: OwnedBody,
     /// A recipient body's leading bytes, an exit's sealed record, [`SlotBody::record_len`] long.
     pub record: Vec<u8>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct OwnedSenderBundle {
-    pub tag: [u8; 32],
-    pub body: Vec<u8>,
-}
-
-impl OwnedSenderBundle {
-    pub fn of(sender: FramedSenderBundle<'_>) -> Self {
-        Self {
-            tag: *sender.tag,
-            body: sender.body.to_vec(),
-        }
-    }
-
-    pub fn view(&self) -> FramedSenderBundle<'_> {
-        FramedSenderBundle {
-            tag: &self.tag,
-            body: &self.body,
-        }
-    }
 }
 
 impl OwnedOutput {
@@ -173,7 +151,6 @@ pub(crate) struct TransactParts {
     pub outputs: Vec<OwnedOutput>,
     /// `reply_len` and the region, set exactly under `REPLY_METADATA`.
     pub replies: Option<(u16, Vec<u8>)>,
-    pub sender: Option<OwnedSenderBundle>,
     pub envelope: Vec<u8>,
     /// One sealed recipient key per published slot, then the voucher's under `vouched`.
     pub recipient_keys: Vec<u8>,
@@ -230,7 +207,6 @@ impl TransactParts {
                 .as_ref()
                 .map(|(len, region)| Replies::new(*len, region))
                 .transpose()?,
-            sender: self.sender.as_ref().map(OwnedSenderBundle::view),
             envelope: &self.envelope,
             recipient_keys: &self.recipient_keys,
             vouched: self.vouched,

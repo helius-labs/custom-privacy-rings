@@ -10,7 +10,9 @@ use spr_transaction::{
 use super::*;
 use crate::{
     pipeline::Assembled,
-    tests::support::{keypair, payer, ring, wallet, Chain, Registry, RingSettings, TREE_ID},
+    tests::support::{
+        fresh_wallet_tags, keypair, payer, ring, wallet, Chain, Registry, RingSettings, TREE_ID,
+    },
 };
 
 /// Stops at assembly and raises the ring's payment by `overpay` past core's terms.
@@ -81,6 +83,8 @@ async fn the_anonymous_rail_proves_a_wallet_payment_only_under_cores_signature()
         ring_program_id: ring().program_id(),
         list_salt: [7; 32],
     };
+    let payee = RingPaymentRequest::new(to.clone());
+    let tags = fresh_wallet_tags(&owner);
     let pay = |overpay| {
         let assembling = Assembling {
             port: Port::Anonymous(AnonymousRingTransfers {
@@ -90,7 +94,8 @@ async fn the_anonymous_rail_proves_a_wallet_payment_only_under_cores_signature()
                     payer: &fee_payer,
                     signers: &[],
                 },
-                payees: core::slice::from_ref(&to),
+                payees: core::slice::from_ref(&payee),
+                tags: &tags,
             }),
             overpay,
         };

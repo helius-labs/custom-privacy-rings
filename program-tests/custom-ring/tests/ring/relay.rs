@@ -33,7 +33,7 @@ fn a_relayed_anonymous_payment_reaches_its_recipient() -> Result<()> {
     }
     .send()?;
     relayed.notes(sender, 2).deposit_hidden_from(&env.payer)?;
-    let mut sender_wallet = RingWallet::new(sender, env.ring_assets()?, ring_program);
+    let mut sender_wallet = RingWallet::new(sender, env.ring_assets()?);
     sender_wallet.sync(env)?;
     let transfer = AnonymousPayment {
         ring: relayed.ring,
@@ -52,7 +52,7 @@ fn a_relayed_anonymous_payment_reaches_its_recipient() -> Result<()> {
     let relay_id = env.run(prepared.send(&ring_rpc.relay))?.submitted()?;
 
     ring_rpc.confirmed(env, &relay_id)?;
-    let mut recipient_wallet = RingWallet::new(recipient, env.ring_assets()?, ring_program);
+    let mut recipient_wallet = RingWallet::new(recipient, env.ring_assets()?);
     recipient_wallet.sync(env)?;
     sender_wallet.sync(env)?;
     assert_eq!(
@@ -123,6 +123,7 @@ fn a_relayed_deposit_lands_the_note_the_auditor_recovers() -> Result<()> {
         amount: DEPOSIT,
         cosigner: None,
         list_salt: None,
+        tags: None,
     };
     let quote = ring_rpc.quote(env, RelayOperation::Deposit)?;
 
@@ -225,6 +226,7 @@ fn a_relayed_authority_transfer_moves_the_enrolled_members_note() -> Result<()> 
             recipient: member_address.into(),
             mint: SOL_MINT.into(),
             amount: MOVED,
+            tag: None,
         }],
     };
 

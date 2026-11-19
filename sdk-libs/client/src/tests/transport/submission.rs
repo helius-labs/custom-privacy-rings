@@ -305,6 +305,7 @@ fn held_transfer(payer: &ShieldedKeypair) -> RingSubmission<'static> {
         budget: send_budget(InstructionTag::Transfer, None),
         bound: BoundState::default(),
         charged_outflows: Vec::new(),
+        slot_tags: None,
     };
     let mut submission = RingSubmission::new(RingOperation::Instruction(Instruction {
         program_id: program(),
@@ -490,4 +491,54 @@ async fn an_expired_transfer_proves_again() {
     ));
     assert_eq!(cluster.sent_tags(), [tag::TRANSFER, tag::SET_DELEGATE]);
     assert_eq!(submission.attempts(), 2);
+}
+
+#[tokio::test]
+async fn only_a_confirmed_transfer_shows_the_slot_tags_of_its_frame() {
+    let payer = keypair(1);
+    let tags = vec![[1; 32], [2; 32]];
+    let held = || {
+        let mut submission = held_transfer(&payer);
+        submission.slot_tags = tags.clone();
+        submission
+    };
+
+    let cluster = Cluster::default();
+    cluster.set(|state| state.transfer = Status::Absent);
+    let rpc = client(&cluster);
+    let mut landed = held();
+    assert!(landed.confirmed_slot_tags().is_empty());
+    let pending = landed.send(&rpc, &payer, &[]).await.unwrap();
+    assert!(matches!(pending, SubmissionStatus::Pending { .. }));
+    assert!(landed.confirmed_slot_tags().is_empty());
+    cluster.set(|state| state.transfer = Status::Landed);
+    let settled = landed.send(&rpc, &payer, &[]).await.unwrap();
+    assert!(matches!(
+        settled,
+        SubmissionStatus::Settled(SettledSubmission::Confirmed { .. })
+    ));
+    assert_eq!(landed.confirmed_slot_tags(), tags);
+
+    for (attempts, resent) in [(1, true), (MAX_ATTEMPTS, false)] {
+        let cluster = Cluster::default();
+        cluster.set(|state| {
+            state.transfer = Status::Absent;
+            state.expired = true;
+        });
+        let mut expired = held();
+        expired.attempts = attempts;
+        let settled = expired.send(&client(&cluster), &payer, &[]).await.unwrap();
+        let SubmissionStatus::Settled(settled) = settled else {
+            panic!("an expired transfer settles, {settled:?}");
+        };
+        assert_eq!(
+            matches!(settled, SettledSubmission::Confirmed { .. }),
+            resent
+        );
+        let shown: &[ViewTag] = match resent {
+            true => &tags,
+            false => &[],
+        };
+        assert_eq!(expired.confirmed_slot_tags(), shown);
+    }
 }

@@ -430,11 +430,6 @@ fn widest_spp_inputs(shape: TransferShape) -> usize {
         .unwrap_or(1)
 }
 
-/// The input cap of an anonymous sixteen output payout.
-fn sixteen_output_payouts(spend: Spend, shape: TransferShape) -> Option<usize> {
-    (spend.rail() == RingRail::Anonymous && shape.outputs == 16).then_some(2)
-}
-
 fn past_narrow_legs(wide: TransferShape) -> Result<usize> {
     let narrow = narrow_key(wide.outputs).context("a narrow key of its width")?;
     Ok(usize::from(narrow.withdrawals) + 1)
@@ -970,15 +965,9 @@ impl ShapeRing<'_> {
                 false => 0,
             };
             restart_prover()?;
-            // Anonymous sixteen output payouts stop at 2x16, the user's limit on the 4x16 key.
-            let payout_cap = sixteen_output_payouts(spend, shape);
             for kind in [LegKind::Sol, LegKind::Spl] {
                 let mut settled_legs = 0;
-                let counts = match payout_cap {
-                    Some(cap) => [1, cap],
-                    None => [1, widest_spp_inputs(shape)],
-                };
-                for count in counts {
+                for count in [1, widest_spp_inputs(shape)] {
                     let notes = match unspent.remove(&(kind, count)) {
                         Some(notes) => notes,
                         None => self.spendable(family, kind, count)?,
@@ -1001,29 +990,12 @@ impl ShapeRing<'_> {
                         }
                     }
                 }
-                if payout_cap.is_some() {
-                    // 1. The key's full input width is refused before proving at no leg.
-                    let past = usize::from(shape.inputs);
-                    let notes = self.spendable(family, kind, past)?;
-                    let refused = self.settle(
-                        ShapeTransfer {
-                            shape: Shape::new(past, shape.outputs.into()),
-                            inputs: notes.clone(),
-                            spend,
-                            legs: Vec::new(),
-                        },
-                        coverage,
-                    )?;
-                    ensure!(
-                        matches!(refused, Settlement::TooLarge(_)),
-                        "{family:?} {kind:?} {past}x{} must be refused",
-                        shape.outputs
-                    );
-                    unspent.insert((kind, past), notes);
-                    // 2. An SPL leg's accounts carry a sixteen output frame past the byte ceiling.
-                    if kind == LegKind::Spl {
-                        continue;
-                    }
+                // An SPL leg's accounts can carry an anonymous sixteen output frame past the byte ceiling.
+                if spend.rail() == RingRail::Anonymous
+                    && shape.outputs == 16
+                    && kind == LegKind::Spl
+                {
+                    continue;
                 }
                 ensure!(
                     settled_legs != 0,
@@ -1497,16 +1469,20 @@ impl ShapeRing<'_> {
                 let recipients = payments
                     .map(|_| ShieldedKeypair::new_ed25519())
                     .collect::<Result<Vec<_>, _>>()?;
+                let payees: Vec<&ShieldedKeypair> = recipients.iter().collect();
                 EnrollOwners {
                     ring: self.ring,
-                    owners: &recipients.iter().collect::<Vec<_>>(),
+                    owners: &payees,
                     env,
                 }
                 .send()?;
+                // No spent note finds a default ring spend, its slots need the sender's tags.
+                let tags = fresh_wallet_tags(sender)?;
                 // The recipients' apply moves the tracking root, the indexer serves it a projection later.
                 wait_for("the ring indexer to serve the applied roots", || {
                     let mut anonymous = owner_transfer(transaction(env.payer.pubkey())?)?
-                        .with_anonymous_signer(&sender.signing_key);
+                        .with_anonymous_signer(&sender.signing_key)
+                        .with_tags(tags.clone());
                     for recipient in &recipients {
                         anonymous =
                             anonymous.with_payment(zolana_ring_client::AnonymousPayment {
@@ -1515,6 +1491,7 @@ impl ShapeRing<'_> {
                                 amount,
                                 reply: None,
                                 data: zolana_ring_client::NoteData::default(),
+                                request_tag: None,
                             })?;
                     }
                     Ok(match env.run(anonymous.with_shape(shape)?.prove(client)) {
@@ -1538,6 +1515,7 @@ impl ShapeRing<'_> {
                             recipient,
                             asset: SOL_MINT,
                             amount,
+                            tag: Some(recipient.viewing_pubkey.u()),
                         })
                         .collect(),
                 })

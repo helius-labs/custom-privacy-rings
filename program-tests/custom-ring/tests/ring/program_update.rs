@@ -82,6 +82,7 @@ impl ProgramStep<'_> {
                 ring_data_hash: None,
                 application,
             },
+            request_tag: None,
         }
     }
 
@@ -355,6 +356,7 @@ impl Updated {
             amount: HELD,
             cosigner: None,
             list_salt: None,
+            tags: None,
         };
         let RingDepositReceipt { utxo, .. } = env.run(deposit.send(env.client.ring_client()))?;
         let token = pda_note(&env, utxo, None)?;

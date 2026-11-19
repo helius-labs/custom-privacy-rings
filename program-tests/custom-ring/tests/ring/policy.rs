@@ -54,6 +54,7 @@ fn an_outflow_limit_ring_bounds_each_transfer() -> Result<()> {
             amount,
             cosigner: None,
             list_salt: None,
+            tags: None,
         };
         let RingDepositReceipt { utxo, .. } = env.run(deposit.send(env.client.ring_client()))?;
         utxos.push(utxo);
@@ -165,6 +166,7 @@ fn a_relayer_pays_a_confidential_policy_transfer_its_owner_signs_in_the_proof() 
         amount: DEFAULT_DEPOSIT,
         cosigner: None,
         list_salt: None,
+        tags: None,
     };
     let RingDepositReceipt { utxo, .. } = env.run(deposit.send(env.client.ring_client()))?;
     let relayer = &env.payer;
@@ -236,6 +238,7 @@ fn the_key_enrollment_lifecycle_ends_in_a_delegate_move() -> Result<()> {
         amount: DEFAULT_DEPOSIT,
         cosigner: None,
         list_salt: None,
+        tags: None,
     };
     let RingDepositReceipt { signature, utxo } =
         env.run(deposit(member_address).send(env.client.ring_client()))?;
@@ -408,6 +411,7 @@ fn the_key_enrollment_lifecycle_ends_in_a_delegate_move() -> Result<()> {
             recipient: member_address,
             asset: SOL_MINT,
             amount: SEND,
+            tag: Some(member_address.viewing_pubkey.u()),
         }],
     })
     .with_assets(&env.assets);

@@ -2,8 +2,8 @@
 
 use bytemuck::Zeroable;
 use custom_ring_interface::{
-    max_application_messages, CustomRingError, InstructionTag, RingMode, RingPolicy, RingRail,
-    RingTransactData,
+    CustomRingError, InstructionTag, RingMode, RingPolicy, RingRail, RingTransactData,
+    MAX_APPLICATION_MESSAGES,
 };
 use solana_address::Address;
 use solana_instruction::Instruction;
@@ -251,7 +251,7 @@ fn spp_cpi_bytes(instruction: &Instruction) -> Result<Option<usize>, FitError> {
             Ok(len) => bytes = bytes.max(Some(len)),
             Err(CustomRingError::TooManyApplicationMessages) => {
                 refusal = FitError::ApplicationMessages {
-                    limit: max_application_messages(rail),
+                    limit: MAX_APPLICATION_MESSAGES,
                 }
             }
             Err(_) => {}

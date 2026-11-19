@@ -2,10 +2,9 @@
 
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, stream::slot_tag, AnonymousProofData, AppMessage,
-    CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
-    PlainGroth16Proof, PolicyProof, Replies, RingOutput, RingRail, RingTransactData, SlotBody,
-    CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
-    TRANSFER_RECORD_LEN,
+    CustomRingProof, FrameExtensions, InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof,
+    Replies, RingOutput, RingRail, RingTransactData, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN,
+    EXIT_RECORD_LEN, RING_RECORD_LEN, TRANSFER_RECORD_LEN,
 };
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
 use spr_interface::instruction::{InterfaceTransfer, TreeContext};
@@ -33,7 +32,6 @@ pub struct Fixture {
     pub tags: [[u8; 32]; 16],
     /// A record with its data hash and a payload, a data-bearing frame's.
     pub extended_bodies: [[u8; DATA_RING_RECORD_LEN + 35]; 16],
-    pub sender_body: [u8; SENDER_BUNDLE_LEN],
     /// Cut to one length per body-bearing slot.
     pub replies: Vec<u8>,
     pub payload: Vec<u8>,
@@ -70,7 +68,6 @@ impl Fixture {
                     false => byte as u8 ^ 0x3c,
                 })
             }),
-            sender_body: core::array::from_fn(|byte| byte as u8 ^ 0x2d),
             replies: (0..2048u32).map(|byte| byte as u8 ^ 0x17).collect(),
             payload: (0..CONFIDENTIAL_DATA_FREE_BODY_LEN as u8)
                 .map(|byte| byte ^ 0x66)
@@ -103,7 +100,6 @@ impl Fixture {
             wide_owners: false,
             outputs: Vec::new(),
             replies: None,
-            sender: None,
             envelope: &[],
             recipient_keys: &[],
             vouched: false,
@@ -264,7 +260,6 @@ impl Fixture {
                 _ => self.tagged(slot),
             })
             .collect();
-        data.sender = self.sender();
         data.anonymous = Some(AnonymousProofData {
             commitment: &self.bytes[20],
             commitment_pok: &self.bytes[21],
@@ -277,7 +272,6 @@ impl Fixture {
         let mut data = self.base(RingRail::Anonymous, 2, 2);
         data.entry = true;
         data.outputs = vec![self.tagged(0), self.exit(1, &self.payload)];
-        data.sender = self.sender();
         data.anonymous = Some(AnonymousProofData {
             commitment: &self.bytes[20],
             commitment_pok: &self.bytes[21],
@@ -296,7 +290,6 @@ impl Fixture {
     pub fn anonymous_delegate(&self) -> RingTransactData<'_> {
         let mut data = self.base(RingRail::AnonymousDelegate, 2, 2);
         data.outputs = vec![self.tagged(0), self.tagged(1)];
-        data.sender = self.sender();
         self.with_audit_stream(data)
     }
 
@@ -305,7 +298,6 @@ impl Fixture {
         let mut data = self.base(RingRail::Anonymous, 2, 2);
         data.public_owners = true;
         data.outputs = vec![self.tagged(0), self.tagged(1)];
-        data.sender = self.sender();
         self.with_audit_stream(data)
     }
 
@@ -318,7 +310,6 @@ impl Fixture {
         }
     }
 
-    /// Slot 0 a change output under a zero tag, any other slot a recipient's.
     pub fn tagged(&self, slot: usize) -> RingOutput<'_> {
         RingOutput {
             hash: &self.fields[10 + slot],
@@ -332,13 +323,6 @@ impl Fixture {
         }
     }
 
-    pub fn sender(&self) -> Option<FramedSenderBundle<'_>> {
-        Some(FramedSenderBundle {
-            tag: &self.tags[0],
-            body: &self.sender_body,
-        })
-    }
-
     /// The anonymous frame's replies, one of `len` bytes per non-exit slot.
     pub fn anonymous_replies(&self, len: u16) -> RingTransactData<'_> {
         let mut data = self.anonymous();
@@ -349,7 +333,6 @@ impl Fixture {
     pub fn anonymous_compact(&self) -> RingTransactData<'_> {
         let mut data = self.base(RingRail::Anonymous, 3, 4);
         data.outputs = vec![self.tagged(0), self.tagged(1)];
-        data.sender = self.sender();
         data.anonymous = Some(AnonymousProofData {
             commitment: &self.bytes[20],
             commitment_pok: &self.bytes[21],

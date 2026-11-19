@@ -21,6 +21,7 @@ use spr_client::{
     compile_message, sign_transaction, AsyncRpc, ClientError, ComputeBudgetConfig,
     RpcSendTransactionConfig,
 };
+use spr_keypair::viewing_key::ViewTag;
 use zolana_ring_policy::OwnerDebit;
 
 use crate::{
@@ -29,7 +30,7 @@ use crate::{
     compute_unit_limit,
     heap::boxed,
     AnonymousTransfer, CustomRing, CustomRingTransfer, DelegateTransfer, PreparedRingDeposit,
-    PublicOwnerTransfer, RingError, RingMergeOperation, SignatureHistory,
+    ProvenRingTransfer, PublicOwnerTransfer, RingError, RingMergeOperation, SignatureHistory,
 };
 
 #[cfg(test)]
@@ -284,6 +285,8 @@ struct Proved {
     budget: ComputeBudgetConfig,
     bound: BoundState,
     charged_outflows: Vec<OwnerDebit>,
+    /// Each non-exit slot's tag, `None` on an operation that proves no ring frame.
+    slot_tags: Option<Vec<ViewTag>>,
 }
 
 /// One transaction the submission owes, held from before its broadcast until its signature resolves.
@@ -354,6 +357,8 @@ pub struct RingSubmission<'a> {
     pending: Option<Attempt>,
     attempts: u8,
     terminal: Option<SubmissionStatus>,
+    /// Of the latest proven ring frame.
+    slot_tags: Vec<ViewTag>,
 }
 
 impl<'a> RingSubmission<'a> {
@@ -364,6 +369,7 @@ impl<'a> RingSubmission<'a> {
             pending: None,
             attempts: 0,
             terminal: None,
+            slot_tags: Vec::new(),
         }
     }
 
@@ -388,6 +394,14 @@ impl<'a> RingSubmission<'a> {
         match &self.operation {
             RingOperation::Deposit(deposit) => Some(deposit.utxos()),
             _ => None,
+        }
+    }
+
+    /// The confirmed frame's non-exit slot tags in slot order, empty until the transfer confirms.
+    pub fn confirmed_slot_tags(&self) -> &[ViewTag] {
+        match self.terminal {
+            Some(SubmissionStatus::Settled(SettledSubmission::Confirmed { .. })) => &self.slot_tags,
+            _ => &[],
         }
     }
 
@@ -582,6 +596,7 @@ impl<'a> RingSubmission<'a> {
             pending: Some(attempt),
             attempts: self.attempts,
             terminal: self.terminal,
+            slot_tags: self.slot_tags,
         })
     }
 
@@ -599,7 +614,11 @@ impl<'a> RingSubmission<'a> {
         self.operation
             .check_public_signers(client.zolana(), &public)
             .await?;
-        let proved = boxed(|| self.operation.prove(client, payer, self.priority_fee)).await?;
+        let mut proved = boxed(|| self.operation.prove(client, payer, self.priority_fee)).await?;
+        // A resent instruction proves no frame, the tags of the frame it carries stay.
+        if let Some(tags) = proved.slot_tags.take() {
+            self.slot_tags = tags;
+        }
         if proved
             .instruction
             .accounts
@@ -708,56 +727,33 @@ impl RingOperation<'_> {
             budget: send_budget(tag, priority_fee),
             bound,
             charged_outflows: Vec::new(),
+            slot_tags: None,
         };
-        let charged = |proved: Proved, charged_outflows| Proved {
-            charged_outflows,
-            ..proved
+        let transfer = |proven: ProvenRingTransfer, tag| -> Result<Proved, RingError> {
+            let unchanged = proved(proven.instruction()?, tag, proven.bound());
+            Ok(Proved {
+                slot_tags: Some(proven.slot_tags().collect()),
+                charged_outflows: proven.charged_outflows,
+                ..unchanged
+            })
         };
         Ok(match self {
-            Self::Transfer(transfer) => {
-                let proven = boxed(|| transfer.prove(client)).await?;
-                charged(
-                    proved(
-                        proven.instruction()?,
-                        InstructionTag::Transfer,
-                        proven.bound(),
-                    ),
-                    proven.charged_outflows,
-                )
-            }
-            Self::Anonymous(transfer) => {
-                let proven = boxed(|| transfer.prove(client)).await?;
-                charged(
-                    proved(
-                        proven.instruction()?,
-                        InstructionTag::Transfer,
-                        proven.bound(),
-                    ),
-                    proven.charged_outflows,
-                )
-            }
-            Self::PublicOwners(transfer) => {
-                let proven = boxed(|| transfer.prove(client)).await?;
-                charged(
-                    proved(
-                        proven.instruction()?,
-                        InstructionTag::Transfer,
-                        proven.bound(),
-                    ),
-                    proven.charged_outflows,
-                )
-            }
-            Self::Delegate(transfer) => {
-                let proven = boxed(|| transfer.prove(client)).await?;
-                charged(
-                    proved(
-                        proven.instruction()?,
-                        InstructionTag::AuthorityTransfer,
-                        proven.bound(),
-                    ),
-                    proven.charged_outflows,
-                )
-            }
+            Self::Transfer(operation) => transfer(
+                boxed(|| operation.prove(client)).await?,
+                InstructionTag::Transfer,
+            )?,
+            Self::Anonymous(operation) => transfer(
+                boxed(|| operation.prove(client)).await?,
+                InstructionTag::Transfer,
+            )?,
+            Self::PublicOwners(operation) => transfer(
+                boxed(|| operation.prove(client)).await?,
+                InstructionTag::Transfer,
+            )?,
+            Self::Delegate(operation) => transfer(
+                boxed(|| operation.prove(client)).await?,
+                InstructionTag::AuthorityTransfer,
+            )?,
             Self::Merge(operation) => {
                 let proven = boxed(|| {
                     operation
@@ -775,17 +771,10 @@ impl RingOperation<'_> {
                     },
                 )
             }
-            Self::Deposit(deposit) => {
-                let proven = boxed(|| deposit.prove_transfer(client)).await?;
-                charged(
-                    proved(
-                        proven.instruction()?,
-                        InstructionTag::Transfer,
-                        proven.bound(),
-                    ),
-                    proven.charged_outflows,
-                )
-            }
+            Self::Deposit(deposit) => transfer(
+                boxed(|| deposit.prove_transfer(client)).await?,
+                InstructionTag::Transfer,
+            )?,
             Self::Instruction(instruction) => {
                 let tag = instruction
                     .data

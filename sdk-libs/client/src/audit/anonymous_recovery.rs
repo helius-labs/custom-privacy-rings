@@ -45,7 +45,6 @@ struct RecoveryScope {
     keys: Vec<String>,
     full_scan: Option<Address>,
     from_start: bool,
-    sender_fast_path: bool,
     starting_history: Value,
 }
 
@@ -106,7 +105,6 @@ impl RecoverySession {
                 .any(|(before, after)| {
                     before.viewing_pubkey() != after.viewing_pubkey()
                         || before.created_at() != after.created_at()
-                        || before.known_senders() != after.known_senders()
                 })
         {
             return Err(AnonymousError::RecoveryScopeChanged);
@@ -222,7 +220,6 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
             keys,
             full_scan,
             from_start: self.from == ScanFrom::Start,
-            sender_fast_path: self.sender_fast_path,
             starting_history: wallet.history().to_json_value(),
         };
         let mut session = if let Some(session) = wallet.recovery_session() {
@@ -515,17 +512,9 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan
                     {
                         return Err(AnonymousError::RecoveryScopeChanged);
                     }
-                    let slice = std::slice::from_ref(row);
                     for (entry_offset, &entry) in entries.iter().enumerate().skip(offset.entry) {
                         let key = self.history.entries()[entry].viewing_pubkey();
-                        let candidates = if session.scope.full_scan.is_some() {
-                            let bodies = sites_of(row)
-                                .filter_map(|site| Body::of(row, site, AnonymousStream::FullScan))
-                                .collect();
-                            self.body_secrets(key, bodies)?
-                        } else {
-                            self.tag_bodies(entry, slice)?
-                        };
+                        let candidates = self.body_secrets(key, Body::every(row))?;
                         if offset.site > candidates.len() {
                             return Err(AnonymousError::RecoveryScopeChanged);
                         }
@@ -542,6 +531,7 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan
                             }
                             offset.site = site + 1;
                         }
+                        self.list_sent(entry, row).await?;
                         offset.entry = entry_offset + 1;
                         offset.site = 0;
                     }
@@ -593,23 +583,7 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan
             body,
             secret,
         } = work;
-        let position = match body.site {
-            Site::Message(message) => {
-                let viewing_key = self.history.entries()[entry].viewing_pubkey();
-                let own = self.own_transactions(viewing_key, &[body])?;
-                self.open_bundle(
-                    entry,
-                    body,
-                    message,
-                    secret,
-                    own.get(&body.context.first_nullifier),
-                )
-                .await?;
-                return Ok(PageProgress::Done);
-            }
-            Site::Output(position) => position,
-        };
-        self.open_recipient(entry, body, position, secret)?;
+        self.open_recipient(entry, body, body.position, secret)?;
         Ok(PageProgress::Done)
     }
 }

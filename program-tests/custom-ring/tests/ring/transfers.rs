@@ -136,6 +136,7 @@ fn auditor_sees_every_ring_transfer() -> Result<()> {
         amount,
         cosigner: None,
         list_salt: None,
+        tags: None,
     };
     let proven_while_open = {
         let prepared = env.run(deposit(RING_DEPOSIT_A).prepare(env.client.as_async()))?;
@@ -413,6 +414,7 @@ fn an_audit_only_ring_audits_every_transfer() -> Result<()> {
             amount,
             cosigner: None,
             list_salt: None,
+            tags: None,
         };
         let RingDepositReceipt { utxo, .. } =
             env.run(deposit.send_with_fee_payer(env.client.ring_client(), sender))?;
@@ -518,6 +520,7 @@ fn an_audit_only_ring_audits_a_relayer_paid_transfer_its_owner_signs_in_the_proo
         amount: RING_DEPOSIT_A,
         cosigner: None,
         list_salt: None,
+        tags: None,
     };
     let RingDepositReceipt { utxo, .. } = env.run(deposit.send(env.client.ring_client()))?;
     let relayer = &env.payer;
@@ -939,6 +942,7 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
         amount: USDC_RING_DEPOSIT,
         cosigner: None,
         list_salt: None,
+        tags: None,
     };
     let RingDepositReceipt { utxo: receipt, .. } =
         env.run(deposit.send(env.client.ring_client()))?;
@@ -1168,6 +1172,7 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
                 recipient: sender_address,
                 asset: usdc,
                 amount: USDC_FINAL_SEND,
+                tag: Some(sender_address.viewing_pubkey.u()),
             }],
         })
         .with_assets(&env.assets);
@@ -1257,6 +1262,7 @@ fn the_auditor_rebuilds_a_data_bearing_output_from_its_slot() -> Result<()> {
             amount: RING_DEPOSIT_A,
             cosigner: None,
             list_salt: None,
+            tags: None,
         }
         .send_with_fee_payer(env.client.ring_client(), sender),
     )?;

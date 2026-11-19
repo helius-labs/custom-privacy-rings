@@ -6,10 +6,9 @@ use custom_ring_interface::{
     funder_account_position, input_flag,
     key_catalog::{FrameKey, RingCircuit},
     spl_withdrawal_count, tag, transact_flag, AnonymousProofData, CoSignScope, CustomRingError,
-    CustomRingProof, FramedSenderBundle, InputTrees, PlainGroth16Proof, PolicyProof, RingOutput,
-    RingPolicy, RingRail, RingRole, RingTransactData, RootRead, SlotBody, TransferLayout,
-    EXIT_RECORD_LEN, RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX, SENDER_BUNDLE_LEN,
-    TRANSACT_PAYER_INDEX,
+    CustomRingProof, InputTrees, PlainGroth16Proof, PolicyProof, RingOutput, RingPolicy, RingRail,
+    RingRole, RingTransactData, RootRead, SlotBody, TransferLayout, EXIT_RECORD_LEN,
+    RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX, TRANSACT_PAYER_INDEX,
 };
 use solana_address::Address;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
@@ -50,8 +49,6 @@ pub struct Fixture {
     keys: [[u8; 32]; 16],
     /// Slot `i`'s record, a body with no payload.
     records: [[u8; EXIT_RECORD_LEN]; 16],
-    /// Cut to the frame's output count.
-    bundle: Vec<u8>,
     /// Cut to the stream layout's envelope length.
     envelope: Vec<u8>,
     /// Cut to one sealed key per published slot.
@@ -82,7 +79,6 @@ impl Fixture {
             fields: (1..=120u8).map(field).collect(),
             keys: core::array::from_fn(|i| [0x40 + i as u8; 32]),
             records: core::array::from_fn(|i| [0x80 + i as u8; EXIT_RECORD_LEN]),
-            bundle: vec![0x3c; SENDER_BUNDLE_LEN],
             envelope: (0..5000u32).map(|byte| byte as u8 ^ 0x93).collect(),
             recipient_keys: (0..512u32).map(|byte| byte as u8 ^ 0x71).collect(),
             tags: core::array::from_fn(|i| field(0xa0 + i as u8)),
@@ -147,10 +143,6 @@ impl Fixture {
             .is_none(),
             outputs: Vec::new(),
             replies: None,
-            sender: rail.anonymous_frame().then(|| FramedSenderBundle {
-                tag: &self.tags[15],
-                body: &[],
-            }),
             envelope: &[],
             recipient_keys: &[],
             vouched: false,
@@ -178,7 +170,6 @@ impl Fixture {
             })
             .collect();
         self.fit_stream(&mut data);
-        self.fit_bundle(&mut data);
         data
     }
 
@@ -211,12 +202,6 @@ impl Fixture {
         let stream = data.audit_stream().unwrap();
         data.envelope = &self.envelope[..stream.envelope().len];
         data.recipient_keys = &self.recipient_keys[..stream.keys_len()];
-    }
-
-    pub fn fit_bundle<'a>(&'a self, data: &mut RingTransactData<'a>) {
-        if let Some(sender) = &mut data.sender {
-            sender.body = &self.bundle;
-        }
     }
 }
 
@@ -540,7 +525,6 @@ fn a_compact_transfer_reaches_the_key_of_its_capacity() {
     let mut anonymous_ring = Ring::new(Setup::Anonymous);
     let mut hidden = fixture.transfer(RingRail::Anonymous, 2, 4, false);
     hidden.outputs.truncate(2);
-    fixture.fit_bundle(&mut hidden);
     fixture.fit_stream(&mut hidden);
     let spp = spp_list(&anonymous_ring.payer.pubkey(), &hidden, &[]);
     reaches_verification(send(
@@ -562,7 +546,6 @@ fn reply_metadata_reaches_the_key_on_the_anonymous_rail_and_no_other() {
     let mut data = fixture.transfer(RingRail::Anonymous, 2, 4, false);
     data.replies = Some(custom_ring_interface::Replies::new(97, &replies).unwrap());
     data.outputs.truncate(3);
-    fixture.fit_bundle(&mut data);
     fixture.fit_stream(&mut data);
     let spp = spp_list(&ring.payer.pubkey(), &data, &[]);
     reaches_verification(send(

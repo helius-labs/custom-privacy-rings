@@ -81,7 +81,6 @@ struct Built {
     layout: AuditStreamLayout,
     frame: Vec<u8>,
     disclosure: Disclosure,
-    rail: Rail,
 }
 
 fn build(transfer: &Transfer, rail: Rail, outputs: Vec<Output>) -> Built {
@@ -95,7 +94,6 @@ fn publish(transfer: &Transfer, rail: Rail, outputs: Vec<Output>, disclosure: Di
         slots: slots.iter().map(|slot| slot.output.clone()).collect(),
         disclosure: &disclosure,
         auditor: &auditor().pubkey(),
-        rail,
     });
     Built {
         frame: transfer.frame(Frame {
@@ -108,7 +106,6 @@ fn publish(transfer: &Transfer, rail: Rail, outputs: Vec<Output>, disclosure: Di
         outputs,
         slots,
         disclosure,
-        rail,
     }
 }
 
@@ -294,7 +291,6 @@ fn a_data_bearing_note_rebuilds_from_its_record_with_the_payload_dropped() {
             slots: built.transaction.output_slots.clone(),
             disclosure: &forged,
             auditor: &auditor().pubkey(),
-            rail: built.rail,
         });
         let audited = audit_registered(&built, &forged).unwrap();
         assert_eq!(
@@ -332,7 +328,6 @@ fn each_record_field_changed_fails_the_rebuild() {
                 slots: built.transaction.output_slots.clone(),
                 disclosure: &spoiled,
                 auditor: &auditor().pubkey(),
-                rail: built.rail,
             });
             let audited = audit_registered(&built, &forged).unwrap();
             // An unauthorized owner key leaves the output unresolved with no payload error.
@@ -372,7 +367,6 @@ fn a_noncanonical_nullifier_key_or_blinding_refuses_the_transaction() {
             slots: built.transaction.output_slots.clone(),
             disclosure: &spoiled,
             auditor: &auditor().pubkey(),
-            rail: built.rail,
         });
         assert!(
             matches!(
@@ -394,7 +388,6 @@ fn a_record_of_one_slot_at_another_drops_its_data_hashes() {
         slots: built.transaction.output_slots.clone(),
         disclosure: &swapped,
         auditor: &auditor().pubkey(),
-        rail: built.rail,
     });
     let audited = audit_registered(&built, &forged).unwrap();
     assert_eq!(
@@ -417,7 +410,6 @@ fn a_live_slot_under_a_dummy_record_is_rejected_on_the_commitment() {
         slots: built.transaction.output_slots.clone(),
         disclosure: &hidden,
         auditor: &auditor().pubkey(),
-        rail: built.rail,
     });
     assert_eq!(
         audit(&forged, built.layout).unwrap().payload_errors,
@@ -493,7 +485,6 @@ fn an_exit_opens_with_its_published_owner_tag() {
         slots: built.transaction.output_slots.clone(),
         disclosure: &swapped,
         auditor: &auditor().pubkey(),
-        rail: built.rail,
     });
     assert!(matches!(
         audit(&forged, built.layout),
@@ -879,10 +870,7 @@ fn the_envelope_must_seal_the_published_transaction_key() {
 #[test]
 fn the_auditor_message_is_unique_and_last() {
     let built = build(&Transfer::fixture(), Rail::Delivered, delivered_outputs());
-    let free_form = MessageData {
-        view_tag: [0x77; 32],
-        data: vec![1, 2, 3],
-    };
+    let free_form = application_message([0x77; 32]);
     let mut missing = built.transaction.clone();
     missing.messages = vec![free_form.clone()];
     assert!(matches!(
@@ -1387,13 +1375,20 @@ async fn a_cursor_at_the_end_of_history_returns_an_empty_page() {
     assert_eq!(origin.lookups.load(Ordering::Relaxed), 0);
 }
 
+fn application_message(view_tag: [u8; 32]) -> MessageData {
+    MessageData {
+        view_tag,
+        data: vec![1, 2, 3],
+    }
+}
+
 #[test]
-fn a_sender_bundle_under_the_auditor_tag_leaves_the_transfer_open() {
+fn an_application_message_under_the_auditor_tag_leaves_the_transfer_open() {
     let (_, built, _) = anonymous_spend();
     let expected = audit(&built.transaction, built.layout).unwrap();
     let mut transaction = built.transaction.clone();
-    assert_eq!(transaction.messages.len(), 2);
-    transaction.messages[0].view_tag = auditor_view_tag(&auditor().pubkey());
+    let tagged = application_message(auditor_view_tag(&auditor().pubkey()));
+    transaction.messages.insert(0, tagged);
     assert_eq!(audit(&transaction, built.layout).unwrap(), expected);
 }
 
@@ -1465,8 +1460,11 @@ async fn a_lost_auditor_message_stays_fatal_in_a_local_scan() {
     let (_, mut built, _) = anonymous_spend();
     let tag = auditor_view_tag(&auditor().pubkey());
     // A free tag keeps the row on the auditor's page, the last message names no auditor.
-    built.transaction.messages[0].view_tag = tag;
-    built.transaction.messages[1].view_tag = field(0x7c);
+    built.transaction.messages[0].view_tag = field(0x7c);
+    built
+        .transaction
+        .messages
+        .insert(0, application_message(tag));
     let (indexer, origin) = anonymous_page(&[&built]);
     assert!(matches!(
         anonymous_scan().audit(&auditor(), &indexer, &origin).await,

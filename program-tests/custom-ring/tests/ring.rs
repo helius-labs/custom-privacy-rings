@@ -18,8 +18,8 @@
 //! through a native async client, and lands the native proof (see [`AsyncHopParity`]).
 //!
 //! [`anonymous::an_anonymous_ring_hides_owners_and_preserves_auditor_access`] pays ring
-//! addresses under bootstrap, request and shared view tags, and fresh wallets find every
-//! payment, the change and a merge by exact tags.
+//! addresses under their bootstrap view tags, and fresh wallets find every deposit and
+//! payment by exact tags, the change and a merge by the notes they spend.
 //!
 //! [`transfers::ring_value_leaves_and_enters_through_audited_transfers`] crosses the ring
 //! boundary in both directions under the auditor and pins that a note of
@@ -84,7 +84,7 @@ use custom_ring_test_validator::{
         RegistryWrite, RingNotes, StorageRecords, EMPTY, LIMIT_CAP, LIMIT_COSIGN_ABOVE,
     },
     ring_rpc::RingRpcSpec,
-    ring_wallet::RingWallet,
+    ring_wallet::{fresh_wallet_tags, RingWallet},
     shared::{
         custom_ring_program_id, prover_url, send, send_expecting_rejection, setup,
         setup_with_programs, AuthorityRail, ExpectRejection, RegisterRing, RejectedTransact,
@@ -150,8 +150,7 @@ use zolana_ring_client::{
     SourceMember, ViewingHistory,
 };
 use zolana_ring_keys::ring_body_output;
-use zolana_ring_keys::ring_sender_bundle_output_body;
-use zolana_ring_keys::{RingAddress, RingPaymentRequest};
+use zolana_ring_keys::{bootstrap_slot_tag, RingAddress, RingPaymentRequest};
 use zolana_ring_policy::{ListId, Member, Rule, RuleTable, Subject};
 use zolana_ring_rpc::{Hub, ServiceIdentity};
 
@@ -244,6 +243,7 @@ fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
         env: &env,
     }
     .submit(&project.enrollment_rpc())?;
+    let tags = fresh_wallet_tags(&sender)?;
     for &amount in amounts {
         let deposit = RingDeposit {
             ring,
@@ -254,6 +254,7 @@ fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
             amount,
             cosigner: None,
             list_salt: None,
+            tags: Some(&tags),
         };
         let receipt = env.run(deposit.send(env.client.ring_client()))?;
         custom_ring_cli::wait_for_indexed_transaction(&env.client, receipt.signature)?;
@@ -274,7 +275,7 @@ fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
         assert!(output.contains(&line), "{line} in\n{output}");
     }
 
-    let mut wallet = RingWallet::new(&sender, env.ring_assets()?, ring.program_id());
+    let mut wallet = RingWallet::new(&sender, env.ring_assets()?);
     wallet.sync(&env)?;
     let mut actual: Vec<_> = wallet.unspent().map(|note| note.utxo.amount).collect();
     let mut expected = amounts[merged_count..].to_vec();
@@ -877,6 +878,7 @@ impl<'a> AnonymousPayment<'a> {
             amount: self.amount,
             reply: None,
             data: zolana_ring_client::NoteData::default(),
+            request_tag: None,
         })?
         .with_shape(shape)?)
     }

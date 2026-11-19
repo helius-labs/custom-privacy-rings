@@ -2,11 +2,10 @@
 
 use custom_ring_interface::stream::slot_tag;
 use custom_ring_interface::{
-    encode_ring_sender_bundle_output, key_catalog::FrameKey, tag as ring_tag, tagged_x25519,
-    AnonymousProofData, AuditKey, AuditStreamLayout, AuditorMessage, CustomRingProof,
-    FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees, PlainGroth16Proof, RecordForm,
-    RecordKind, RingOutput, RingRail, RingTransactData, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN,
-    EXIT_RECORD_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
+    key_catalog::FrameKey, tag as ring_tag, tagged_x25519, AnonymousProofData, AuditKey,
+    AuditStreamLayout, AuditorMessage, CustomRingProof, FrameExtensions, InProofOwner, InputTrees,
+    PlainGroth16Proof, RecordForm, RecordKind, RingOutput, RingRail, RingTransactData, SlotBody,
+    CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -213,8 +212,6 @@ pub struct Slot {
 
 /// A body before publish seals the slot's record over it.
 pub const ANONYMOUS_BODY: [u8; RING_RECORD_LEN] = [0xb1; RING_RECORD_LEN];
-pub const SENDER_BUNDLE_BYTE: u8 = 0xb2;
-pub const SENDER_TAG: [u8; 32] = [0x1e; 32];
 
 pub struct Transfer {
     pub tx_key: ViewingKey,
@@ -229,7 +226,6 @@ pub struct Publish<'a> {
     pub slots: Vec<OutputSlot>,
     pub disclosure: &'a Disclosure,
     pub auditor: &'a X25519Pubkey,
-    pub rail: Rail,
 }
 
 pub struct Frame<'a> {
@@ -414,11 +410,6 @@ impl Transfer {
                 None => exit_records.push(body),
             }
         }
-        let bundle = MessageData {
-            view_tag: SENDER_TAG,
-            data: encode_ring_sender_bundle_output(&[SENDER_BUNDLE_BYTE; SENDER_BUNDLE_LEN])
-                .unwrap(),
-        };
         ShieldedTransaction {
             slot: 1,
             tx_signature: Signature::default(),
@@ -426,19 +417,15 @@ impl Transfer {
             tx_viewing_pk: Some(self.tx_key.pubkey()),
             salt: Some(self.salt),
             output_slots: slots,
-            messages: (publish.rail == Rail::Anonymous)
-                .then_some(bundle)
-                .into_iter()
-                .chain([MessageData {
-                    view_tag: publish.auditor.u(),
-                    data: AuditorMessage::data(
-                        &sealed.eph_u,
-                        [sealed.envelope.as_slice(), sealed.keys.as_slice()]
-                            .into_iter()
-                            .chain(exit_records.iter().map(Vec::as_slice)),
-                    ),
-                }])
-                .collect(),
+            messages: vec![MessageData {
+                view_tag: publish.auditor.u(),
+                data: AuditorMessage::data(
+                    &sealed.eph_u,
+                    [sealed.envelope.as_slice(), sealed.keys.as_slice()]
+                        .into_iter()
+                        .chain(exit_records.iter().map(Vec::as_slice)),
+                ),
+            }],
             nullifiers: self.nullifiers.clone(),
             proofless: false,
             ring_config: None,
@@ -610,13 +597,6 @@ impl Transfer {
                     .collect()
             },
             replies: None,
-            sender: anonymous.then(|| {
-                let bundle = tx.messages.first().unwrap();
-                FramedSenderBundle {
-                    tag: &bundle.view_tag,
-                    body: zolana_ring_keys::ring_sender_bundle_output_body(&bundle.data).unwrap(),
-                }
-            }),
             envelope: message.envelope,
             recipient_keys: message.recipient_keys,
             vouched: layout.vouched,

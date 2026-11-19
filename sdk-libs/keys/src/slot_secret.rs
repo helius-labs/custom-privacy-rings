@@ -1,4 +1,4 @@
-//! Slot secrets and the tags they publish, mirrored by the Go package `prover/circuits/shared`.
+//! Slot secrets, mirrored by the Go package `prover/circuits/shared`, and the bootstrap tag a ring slot publishes.
 
 use custom_ring_interface::{domain, stream::slot_tag, TAGGED_X25519_KEY_LEN, VIEWING_PUBKEY_TAG};
 use spr_hasher::{
@@ -63,27 +63,11 @@ impl SlotSecret {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
-
-    /// `Poseidon(CRRT, secret)`, the published output of the secret that also keys the body.
-    pub fn recipient_tag(&self) -> Result<[u8; 32], HasherError> {
-        Poseidon::hashv(&[&domain::field(domain::RECIPIENT_TAG), &self.0])
-    }
-
-    /// `Poseidon(CRST, secret)` under the secret at index `m`.
-    pub fn sender_tag(&self) -> Result<[u8; 32], HasherError> {
-        Poseidon::hashv(&[&domain::field(domain::SENDER_TAG), &self.0])
-    }
-
-    /// An anonymous payment's tag, fresh per transaction and slot, since a tag stable per
-    /// recipient would link every payment to one recipient in public.
-    pub fn anonymous_slot_tag(&self) -> Result<[u8; 32], HasherError> {
-        self.recipient_tag().map(slot_tag)
-    }
 }
 
-/// A confidential output's tag, stable per recipient key, since the confidential rail hides
-/// amounts and leaves the recipient linkable to anyone who holds its address.
-pub fn confidential_slot_tag(viewing_u: [u8; 32]) -> [u8; 32] {
+/// The spec's bootstrap tag at the ring's width, a confidential output's tag and an anonymous payment's without a request.
+/// Stable per recipient key, so it links a slot to anyone who holds that key's address.
+pub fn bootstrap_slot_tag(viewing_u: [u8; 32]) -> [u8; 32] {
     slot_tag(viewing_u)
 }
 
@@ -105,22 +89,6 @@ fn canonical(value: [u8; 32]) -> Result<[u8; 32], StreamError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_tags_of_one_secret_differ_by_domain() {
-        let secret = SlotSecret::new(right_align(&[9])).unwrap();
-        let recipient = secret.recipient_tag().unwrap();
-        assert_eq!(
-            recipient,
-            Poseidon::hashv(&[&right_align(b"CRRT"), secret.as_bytes()]).unwrap()
-        );
-        assert_eq!(
-            secret.sender_tag().unwrap(),
-            Poseidon::hashv(&[&right_align(b"CRST"), secret.as_bytes()]).unwrap()
-        );
-        assert_ne!(recipient, secret.sender_tag().unwrap());
-        assert!(is_canonical_bn254_scalar_be(&recipient));
-    }
 
     #[test]
     fn untagged_viewing_keys_are_refused() {

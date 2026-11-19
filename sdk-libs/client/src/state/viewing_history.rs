@@ -1,28 +1,24 @@
 //! The anonymous rail's wallet state, spec `ViewingKeyEntry` per retained viewing key.
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
-    fmt,
-};
+use std::{collections::BTreeMap, fmt, ops::Range};
 
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
 use spr_keypair::{viewing_key::ViewTag, x25519::X25519_PUBKEY_LEN, X25519Pubkey};
 use zolana_ring_keys::{RingKeys, ViewTagRequest, ViewTagStream};
-use zolana_ring_transaction::is_contributory;
 
-use crate::{exactly_one, AnonymousError, REDACTED};
+use crate::{exactly_one, AnonymousError};
 
-/// How far below its watermark a sync still reads an unobserved index.
-pub const PENDING_RETENTION: u64 = 256;
+/// How far past its counter a stream is read, zolana's `DEFAULT_TAG_WINDOW`.
+pub const TAG_WINDOW: u64 = 64;
 
 /// `scanned` never passes `next`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StreamCounter {
+    /// The index the next request or send takes.
     next: u64,
+    /// Past the highest index a sync found.
     scanned: u64,
-    /// Unobserved, below `scanned` by at most [`PENDING_RETENTION`].
-    pending: BTreeSet<u64>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -30,12 +26,25 @@ pub struct ViewingKeyEntry {
     viewing_pubkey: X25519Pubkey,
     created_at: i64,
     tx: StreamCounter,
-    /// Viewing keys whose reply claim the wallet confirmed.
-    known_senders: HashSet<X25519Pubkey>,
+    request: StreamCounter,
     /// `after_slot` per ring, `None` reads from the first indexed block.
     ring_positions: BTreeMap<Address, Option<u64>>,
-    /// `after_slot` of the confidential slot tag read, `None` reads from the first indexed block.
+    /// `after_slot` of the tag read, `None` reads from the first indexed block.
     tag_position: Option<u64>,
+}
+
+/// The sender tag a wallet's history gives one transfer, a payment carries its own request tag.
+#[must_use]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferTags {
+    viewing_pubkey: X25519Pubkey,
+    sender: IndexedTag,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IndexedTag {
+    index: u64,
+    tag: ViewTag,
 }
 
 /// Every retained viewing key, oldest first, the last one current.
@@ -61,19 +70,47 @@ impl StreamCounter {
         self.scanned
     }
 
-    /// Reserved indices below the watermark no sync has observed yet.
-    pub fn pending(&self) -> impl Iterator<Item = u64> + '_ {
-        self.pending.iter().copied()
+    /// Every index taken and [`TAG_WINDOW`] past them, `zolana/docs/spec.md` First Time Sync Wallet.
+    pub(crate) fn listed(&self) -> Range<u64> {
+        0..self.next.saturating_add(TAG_WINDOW)
     }
 
-    fn same_progress(&self, stored: &Self) -> bool {
-        self.scanned == stored.scanned && self.pending == stored.pending
+    /// The indices an earlier sync read through its key's tag position.
+    pub(crate) fn read_before(&self) -> Range<u64> {
+        match self.scanned {
+            0 => 0..0,
+            scanned => 0..scanned.saturating_add(TAG_WINDOW),
+        }
     }
 
-    fn take_next(&mut self) -> Result<u64, AnonymousError> {
-        let next = self.next;
-        self.next = next.checked_add(1).ok_or(AnonymousError::CounterOverflow)?;
-        Ok(next)
+    /// The index a request takes, the counter moves past it.
+    fn mint(&mut self) -> Result<u64, AnonymousError> {
+        let index = self.next;
+        self.next = index
+            .checked_add(1)
+            .ok_or(AnonymousError::CounterOverflow)?;
+        Ok(index)
+    }
+
+    fn taken(&mut self, index: u64) {
+        self.next = self.next.max(index.saturating_add(1));
+    }
+
+    fn found(&mut self, index: u64) {
+        self.scanned = self.scanned.max(index.saturating_add(1));
+        self.next = self.next.max(self.scanned);
+    }
+}
+
+impl TransferTags {
+    /// The key the sender tag derives from.
+    pub fn viewing_pubkey(&self) -> X25519Pubkey {
+        self.viewing_pubkey
+    }
+
+    /// On the first slot of a frame sealed to the wallet's own key.
+    pub fn sender(&self) -> ViewTag {
+        self.sender.tag
     }
 }
 
@@ -83,7 +120,7 @@ impl ViewingKeyEntry {
             viewing_pubkey,
             created_at,
             tx: StreamCounter::default(),
-            known_senders: HashSet::new(),
+            request: StreamCounter::default(),
             ring_positions: BTreeMap::new(),
             tag_position: None,
         }
@@ -101,8 +138,24 @@ impl ViewingKeyEntry {
         self.tx.next
     }
 
-    pub fn known_senders(&self) -> &HashSet<X25519Pubkey> {
-        &self.known_senders
+    pub fn request_count(&self) -> u64 {
+        self.request.next
+    }
+
+    /// Every stream a sync reads under this key, the bootstrap tag aside.
+    pub(crate) fn streams(&self) -> [(ViewTagStream, StreamCounter); 2] {
+        [
+            (ViewTagStream::Sender, self.tx),
+            (ViewTagStream::Request, self.request),
+        ]
+    }
+
+    /// A tag found at `index` moves its stream's counter past it.
+    pub(crate) fn found(&mut self, stream: ViewTagStream, index: u64) {
+        match stream {
+            ViewTagStream::Sender => self.tx.found(index),
+            ViewTagStream::Request => self.request.found(index),
+        }
     }
 
     pub fn ring_positions(&self) -> &BTreeMap<Address, Option<u64>> {
@@ -123,17 +176,9 @@ impl ViewingKeyEntry {
         self.tag_position = Some(after_slot);
     }
 
-    /// A reply is a claim, the wallet confirms a sender here and nothing else does.
-    pub fn confirm_sender(&mut self, sender: X25519Pubkey) -> Result<(), AnonymousError> {
-        if !is_contributory(&sender) {
-            return Err(AnonymousError::RecipientKeyNotContributory);
-        }
-        self.known_senders.insert(sender);
-        Ok(())
-    }
-
     fn progress_matches(&self, stored: &Self) -> bool {
-        self.tx.same_progress(&stored.tx)
+        self.tx.scanned == stored.tx.scanned
+            && self.request.scanned == stored.request.scanned
             && self.tag_position == stored.tag_position
             && stored
                 .ring_positions
@@ -150,7 +195,6 @@ impl fmt::Debug for ViewingKeyEntry {
         f.debug_struct("ViewingKeyEntry")
             .field("created_at", &self.created_at)
             .field("tx", &self.tx)
-            .field("known_senders", &REDACTED)
             .finish_non_exhaustive()
     }
 }
@@ -225,11 +269,6 @@ impl ViewingHistory {
         &self.entries
     }
 
-    /// Reads `sender`'s shared tags under the current key once the wallet trusts its claim.
-    pub fn confirm_sender(&mut self, sender: X25519Pubkey) -> Result<(), AnonymousError> {
-        self.current_mut().confirm_sender(sender)
-    }
-
     pub fn current(&self) -> &ViewingKeyEntry {
         // Every constructor and `from_json` holds at least one entry.
         &self.entries[self.entries.len() - 1]
@@ -245,31 +284,63 @@ impl ViewingHistory {
         &mut self.entries
     }
 
-    /// The next sender tag of the current key, the tag of a deposit to the wallet's own note.
-    pub fn sender_tag<K: RingKeys + ?Sized>(
-        &self,
-        keys: &K,
-    ) -> Result<AdvancedTag<ViewTag>, AnonymousError> {
-        self.own_tag(keys, |entry| {
-            Ok(ViewTagStream::Sender {
-                tx_count: entry.tx.take_next()?,
-            })
+    /// The sender tag of one transfer under the current key, [`Self::with_published`] takes its index.
+    pub fn select<K: RingKeys + ?Sized>(&self, keys: &K) -> Result<TransferTags, AnonymousError> {
+        let entry = self.current();
+        let viewing_pubkey = entry.viewing_pubkey;
+        let index = entry.tx.next;
+        let derived = exactly_one(keys.view_tags(&[ViewTagRequest {
+            viewing_pubkey,
+            stream: ViewTagStream::Sender,
+            indices: index..index.saturating_add(1),
+        }])?)?;
+        Ok(TransferTags {
+            viewing_pubkey,
+            sender: IndexedTag {
+                index,
+                tag: exactly_one(derived)?,
+            },
         })
     }
 
-    fn own_tag<K: RingKeys + ?Sized>(
+    /// The history once `tags`' transfer confirmed, past the sender index when `published` carries its tag.
+    #[must_use]
+    pub fn with_published(mut self, tags: &TransferTags, published: &[ViewTag]) -> Self {
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.viewing_pubkey == tags.viewing_pubkey);
+        if let Some(entry) = entry.filter(|_| published.contains(&tags.sender.tag)) {
+            entry.tx.taken(tags.sender.index);
+        }
+        self
+    }
+
+    /// The tag of the current key's next payment request.
+    pub fn request_tag<K: RingKeys + ?Sized>(
         &self,
         keys: &K,
-        advance: impl FnOnce(&mut ViewingKeyEntry) -> Result<ViewTagStream, AnonymousError>,
     ) -> Result<AdvancedTag<ViewTag>, AnonymousError> {
         let mut history = self.clone();
         let current = history.current_mut();
-        let stream = advance(current)?;
-        let tag = exactly_one(keys.view_tags(&[ViewTagRequest {
+        let index = current.request.mint()?;
+        let tags = exactly_one(keys.view_tags(&[ViewTagRequest {
             viewing_pubkey: current.viewing_pubkey,
-            stream,
+            stream: ViewTagStream::Request,
+            indices: index..index.saturating_add(1),
         }])?)?;
-        Ok(AdvancedTag { tag, history })
+        Ok(AdvancedTag {
+            tag: exactly_one(tags)?,
+            history,
+        })
+    }
+
+    /// At least `count` requests were minted under the current key, a wallet restored from its seed alone states it.
+    #[must_use]
+    pub fn with_request_count(mut self, count: u64) -> Self {
+        let request = &mut self.current_mut().request;
+        request.next = request.next.max(count);
+        self
     }
 
     fn current_mut(&mut self) -> &mut ViewingKeyEntry {
@@ -285,6 +356,7 @@ impl ViewingHistory {
         }) && self.entries.iter().all(|entry| {
             stored.entry(&entry.viewing_pubkey).is_some()
                 || (entry.tx.scanned == 0
+                    && entry.request.scanned == 0
                     && entry.tag_position.is_none()
                     && entry.ring_positions.values().all(Option::is_none))
         })
@@ -312,7 +384,7 @@ struct EntryJson {
     viewing_pubkey: String,
     created_at: i64,
     tx: CounterJson,
-    known_senders: Vec<String>,
+    request: CounterJson,
     ring_positions: Vec<RingPositionJson>,
     tag_position: Option<u64>,
 }
@@ -329,15 +401,13 @@ struct RingPositionJson {
 struct CounterJson {
     next: u64,
     scanned: u64,
-    pending: Vec<u64>,
 }
 
-impl From<&StreamCounter> for CounterJson {
-    fn from(counter: &StreamCounter) -> Self {
+impl From<StreamCounter> for CounterJson {
+    fn from(counter: StreamCounter) -> Self {
         Self {
             next: counter.next,
             scanned: counter.scanned,
-            pending: counter.pending().collect(),
         }
     }
 }
@@ -346,24 +416,12 @@ impl TryFrom<CounterJson> for StreamCounter {
     type Error = AnonymousError;
 
     fn try_from(stored: CounterJson) -> Result<Self, AnonymousError> {
-        if stored.scanned > stored.next {
-            return Err(invalid("a scan watermark passes its next index"));
-        }
-        let floor = stored.scanned.saturating_sub(PENDING_RETENTION);
-        let ascending = stored.pending.windows(2).all(|pair| pair[0] < pair[1]);
-        let retained = stored
-            .pending
-            .iter()
-            .all(|index| (floor..stored.scanned).contains(index));
-        match ascending && retained {
+        match stored.scanned <= stored.next {
             true => Ok(Self {
                 next: stored.next,
                 scanned: stored.scanned,
-                pending: stored.pending.into_iter().collect(),
             }),
-            false => Err(invalid(
-                "a pending index repeats or lies outside its retention window",
-            )),
+            false => Err(invalid("a scan watermark passes its next index")),
         }
     }
 }
@@ -375,28 +433,20 @@ impl ViewingHistory {
             viewing_history: self
                 .entries
                 .iter()
-                .map(|entry| {
-                    let mut known_senders: Vec<String> = entry
-                        .known_senders
+                .map(|entry| EntryJson {
+                    viewing_pubkey: hex::encode(entry.viewing_pubkey.as_bytes()),
+                    created_at: entry.created_at,
+                    tx: entry.tx.into(),
+                    request: entry.request.into(),
+                    ring_positions: entry
+                        .ring_positions
                         .iter()
-                        .map(|sender| hex::encode(sender.as_bytes()))
-                        .collect();
-                    known_senders.sort();
-                    EntryJson {
-                        viewing_pubkey: hex::encode(entry.viewing_pubkey.as_bytes()),
-                        created_at: entry.created_at,
-                        tx: (&entry.tx).into(),
-                        known_senders,
-                        ring_positions: entry
-                            .ring_positions
-                            .iter()
-                            .map(|(ring, after_slot)| RingPositionJson {
-                                ring: ring.to_string(),
-                                after_slot: *after_slot,
-                            })
-                            .collect(),
-                        tag_position: entry.tag_position,
-                    }
+                        .map(|(ring, after_slot)| RingPositionJson {
+                            ring: ring.to_string(),
+                            after_slot: *after_slot,
+                        })
+                        .collect(),
+                    tag_position: entry.tag_position,
                 })
                 .collect(),
         };
@@ -442,24 +492,10 @@ fn entry_of(stored: EntryJson) -> Result<ViewingKeyEntry, AnonymousError> {
         viewing_pubkey: pubkey("viewingPubkey", &stored.viewing_pubkey)?,
         created_at: stored.created_at,
         tx: stored.tx.try_into()?,
-        known_senders: senders(&stored.known_senders)?,
+        request: stored.request.try_into()?,
         ring_positions,
         tag_position: stored.tag_position,
     })
-}
-
-fn senders(keys: &[String]) -> Result<HashSet<X25519Pubkey>, AnonymousError> {
-    let mut known = HashSet::new();
-    for text in keys {
-        let key = pubkey("knownSenders", text)?;
-        if !is_contributory(&key) {
-            return Err(invalid("knownSenders holds a small-order key"));
-        }
-        if !known.insert(key) {
-            return Err(invalid("knownSenders repeats a key"));
-        }
-    }
-    Ok(known)
 }
 
 /// An error names the field alone.
@@ -491,35 +527,105 @@ fn unparsed(error: serde_json::Error) -> AnonymousError {
 
 #[cfg(test)]
 mod tests {
-    use spr_keypair::ViewingKey;
+    use std::collections::BTreeSet;
+
+    use custom_ring_interface::stream::slot_tag;
+    use spr_keypair::{ShieldedKeypair, ViewingKey};
+    use zolana_ring_keys::bootstrap_slot_tag;
 
     use super::*;
 
     #[test]
-    fn a_stored_pending_index_outside_its_window_or_repeated_is_refused() {
-        let counter = StreamCounter {
-            next: PENDING_RETENTION + 2,
-            scanned: PENDING_RETENTION + 2,
-            pending: (2..=PENDING_RETENTION).collect(),
-        };
-        let mut history = ViewingHistory::new(ViewingKey::new().pubkey(), 0);
-        history.entries_mut()[0].tx = counter;
-        let stored = history.to_json_value();
+    fn a_sender_index_is_taken_only_when_a_confirmed_frame_carried_its_tag() {
+        let wallet = ShieldedKeypair::new_ed25519().unwrap();
+        let fresh = ViewingHistory::new(wallet.viewing_pubkey(), 0);
+        let first = fresh.select(&wallet).unwrap();
         assert_eq!(
-            ViewingHistory::from_json_value(stored.clone()).unwrap(),
-            history
+            first.sender(),
+            slot_tag(wallet.get_sender_view_tag(0).unwrap())
         );
-        for pending in [vec![0], vec![2, 2], vec![3, 2], vec![PENDING_RETENTION + 2]] {
-            let mut refused = stored.clone();
-            refused["viewingHistory"][0]["tx"]["pending"] = pending.clone().into();
-            assert!(
-                matches!(
-                    ViewingHistory::from_json_value(refused),
-                    Err(AnonymousError::ViewingHistory(_))
-                ),
-                "{pending:?}"
-            );
+        let payment = bootstrap_slot_tag(ViewingKey::new().pubkey().u());
+        for published in [&[][..], &[payment][..]] {
+            assert_eq!(fresh.clone().with_published(&first, published), fresh);
         }
+        let taken = fresh
+            .clone()
+            .with_published(&first, &[payment, first.sender()]);
+        assert_eq!(taken.current().tx_count(), 1);
+        let second = taken.select(&wallet).unwrap();
+        assert_eq!(
+            second.sender(),
+            slot_tag(wallet.get_sender_view_tag(1).unwrap())
+        );
+        let both = taken.with_published(&second, &[second.sender()]);
+        assert_eq!(both.current().tx_count(), 2);
+        assert_eq!(both.clone().with_published(&first, &[first.sender()]), both);
+    }
+
+    #[test]
+    fn requests_mint_past_the_tag_window_each_index_once() {
+        let wallet = ShieldedKeypair::new_ed25519().unwrap();
+        let viewing_pubkey = wallet.viewing_pubkey();
+        let mut history = ViewingHistory::new(viewing_pubkey, 0);
+        let mut minted = Vec::new();
+        for _ in 0..200 {
+            let advanced = history.request_tag(&wallet).unwrap();
+            minted.push(advanced.tag);
+            history = advanced.history;
+        }
+        assert_eq!(history.current().request_count(), 200);
+        assert_eq!(minted.iter().collect::<BTreeSet<_>>().len(), 200);
+        let stream = wallet
+            .view_tags(&[ViewTagRequest {
+                viewing_pubkey,
+                stream: ViewTagStream::Request,
+                indices: 0..200,
+            }])
+            .unwrap();
+        assert_eq!(stream, [minted]);
+
+        let last = ViewingHistory::new(viewing_pubkey, 0)
+            .with_request_count(u64::MAX - 1)
+            .request_tag(&wallet)
+            .unwrap()
+            .history;
+        assert_eq!(last.current().request_count(), u64::MAX);
+        assert!(matches!(
+            last.request_tag(&wallet),
+            Err(AnonymousError::CounterOverflow)
+        ));
+    }
+
+    #[test]
+    fn a_stated_request_count_raises_the_counter_and_never_lowers_it() {
+        let wallet = ShieldedKeypair::new_ed25519().unwrap();
+        let stated = ViewingHistory::new(wallet.viewing_pubkey(), 0).with_request_count(70);
+        assert_eq!(stated.current().request_count(), 70);
+        assert_eq!(stated.current().tx_count(), 0);
+        for lower in [0, 69, 70] {
+            assert_eq!(stated.clone().with_request_count(lower), stated);
+        }
+        let minted = stated.request_tag(&wallet).unwrap();
+        assert_eq!(
+            minted.tag[24..],
+            wallet.get_recipient_request_view_tag(70).unwrap()[24..]
+        );
+        assert_eq!(minted.history.current().request_count(), 71);
+    }
+
+    #[test]
+    fn a_stream_lists_a_window_past_its_counter_and_reads_before_only_past_a_found_index() {
+        let history = ViewingHistory::new(ViewingKey::new().pubkey(), 0).with_request_count(5);
+        let mut entry = history.current().clone();
+        assert_eq!(entry.request.listed(), 0..69);
+        assert!(entry.request.read_before().is_empty());
+        entry.found(ViewTagStream::Request, 2);
+        assert_eq!(entry.request.listed(), 0..69);
+        assert_eq!(entry.request.read_before(), 0..67);
+        entry.found(ViewTagStream::Request, 9);
+        assert_eq!(entry.request.listed(), 0..74);
+        assert_eq!(entry.request.read_before(), 0..74);
+        assert_eq!(entry.tx.listed(), 0..64);
     }
 
     #[test]
@@ -527,6 +633,37 @@ mod tests {
         let history = ViewingHistory::new(ViewingKey::new().pubkey(), 0);
         let mut stored = history.to_json_value();
         stored["viewingHistory"][0]["tx"]["scanned"] = 1.into();
+        assert!(matches!(
+            ViewingHistory::from_json_value(stored),
+            Err(AnonymousError::ViewingHistory(_))
+        ));
+    }
+
+    #[test]
+    fn a_stored_document_names_each_streams_counters_and_holds_the_request_watermark() {
+        let mut history = ViewingHistory::new(ViewingKey::new().pubkey(), 0);
+        history.entries_mut()[0].tx = StreamCounter {
+            next: 5,
+            scanned: 3,
+        };
+        history.entries_mut()[0].request = StreamCounter {
+            next: 9,
+            scanned: 7,
+        };
+        let mut stored = history.to_json_value();
+        let entry = &stored["viewingHistory"][0];
+        assert_eq!(entry["tx"], serde_json::json!({ "next": 5, "scanned": 3 }));
+        assert_eq!(
+            entry["request"],
+            serde_json::json!({ "next": 9, "scanned": 7 })
+        );
+        assert_eq!(
+            ViewingHistory::from_json_value(stored.clone()).unwrap(),
+            history
+        );
+        stored["viewingHistory"][0]["request"]["scanned"] = 9.into();
+        assert!(ViewingHistory::from_json_value(stored.clone()).is_ok());
+        stored["viewingHistory"][0]["request"]["scanned"] = 10.into();
         assert!(matches!(
             ViewingHistory::from_json_value(stored),
             Err(AnonymousError::ViewingHistory(_))

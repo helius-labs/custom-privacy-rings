@@ -313,6 +313,12 @@ pub struct AddressArgs {
     pub mint: Option<Mint>,
     #[arg(long)]
     pub label: Option<String>,
+    /// Prints the bare address with no request tag. A payment to it carries the member's public viewing key tag, every observer reads its recipient.
+    #[arg(long)]
+    pub bootstrap: bool,
+    /// The requests minted before a restore from the seed alone. A sync then reads them and the next request takes an index past them.
+    #[arg(long)]
+    pub request_count: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -410,6 +416,9 @@ pub struct BalanceArgs {
     /// Registered mint, `sol` by default.
     #[arg(long)]
     pub mint: Option<Mint>,
+    /// Also reads the ring's whole history and opens every body under each held key. It finds a note no listed tag names, after a restore from the seed or a payment under a wrong tag.
+    #[arg(long)]
+    pub recover: bool,
 }
 
 #[derive(Debug, Args)]
