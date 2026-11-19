@@ -8,7 +8,7 @@ import type { Wallet, WalletUtxo } from "@heliuslabs/spr/transaction";
 import { RingError } from "../protocol/error.js";
 import { exactlyOne, unseen } from "./batch.js";
 import { mintBalances, noteState, type MintBalance, type NoteState } from "./exposed-notes.js";
-import { consumeScan, type AnonymousScan } from "./anonymous-sync.js";
+import { consumeScan, type AnonymousScan, type SenderClaim } from "./anonymous-sync.js";
 import type { RingKeys } from "./ring-keys.js";
 import { RingWallet, type NoteCommit, type NoteDelta } from "./ring-wallet.js";
 import {
@@ -19,7 +19,7 @@ import {
   type RecoveryCoverage,
   type RecoveryWallet,
 } from "./recovery-session.js";
-import { parseExact, senderStream, ViewingHistory } from "./viewing-history.js";
+import { parseExact, senderStream, ViewingHistory, type RingRead } from "./viewing-history.js";
 
 /** A reply read from a note, what a sender wrote about itself and nothing the proof binds. */
 export interface PendingClaim {
@@ -29,10 +29,12 @@ export interface PendingClaim {
   readonly claimedNullifierPk: Bytes32;
 }
 
-/** What one confidential sync stores beside its notes, Rust `ScanCommit`. */
-export interface ConfidentialCommit extends NoteDelta {
+/** What one ring sync stores beside its notes, Rust `ScanCommit`. */
+export interface SyncCommit extends NoteDelta {
   /** The held keys the sync read and the slot their tag reads are complete through. */
   readonly tagPosition?: Readonly<{ keys: readonly X25519PublicKey[]; afterSlot: bigint }>;
+  readonly ringPositions: readonly (RingRead & Readonly<{ afterSlot: bigint }>)[];
+  readonly senderClaims: readonly SenderClaim[];
   /** Stored retries whose spend row the sync read again. */
   readonly retried: readonly Bytes32[];
 }
@@ -189,17 +191,7 @@ export class AnonymousWallet {
       const recovery = consumeScan(scan, this.#history, this);
       if (recovery === undefined && this.#recovery !== null)
         throw new RingError("RING_SCAN_HISTORY_CHANGED");
-      const claimed = new Set(this.#claims.map((claim) => bytesKey(claim.utxoHash)));
-      const claims = scan.senderClaims
-        .filter((claim) => unseen(claimed, bytesKey(claim.utxoHash)))
-        .map(({ utxoHash, claim: { claimed: reply } }): PendingClaim =>
-          Object.freeze({
-            utxoHash,
-            claimedViewingKey: reply.viewingKey,
-            claimedOwnerKey: reply.ownerKey,
-            claimedNullifierPk: reply.nullifierPk,
-          }),
-        );
+      const claims = this.#withClaims(scan.senderClaims);
       const history = this.#history._withScanProgress(scan.history);
       this.#notes._absorb(
         {
@@ -209,7 +201,7 @@ export class AnonymousWallet {
         this.wallet,
         (commit) => this.wallet._replace({ ...this.wallet._state(), ...commit }),
       );
-      this.#claims = [...this.#claims, ...claims];
+      this.#claims = claims;
       this.#history = history;
       const observed = scan.targetSlot ?? scan.observedSlot;
       if (observed > this.#recoveryFloor) this.#recoveryFloor = observed;
@@ -224,31 +216,50 @@ export class AnonymousWallet {
   }
 
   /**
-   * @internal Lands one confidential sync, the caller holds the sync lock.
+   * @internal Lands one ring sync, the caller holds the sync lock.
    *
    * `write` stores the wallet fields and the core checkpoints, a refusal there leaves the positions and retries unmoved.
    */
-  _absorbConfidential(
-    commit: ConfidentialCommit,
-    base: Wallet,
-    write: (fields: NoteCommit) => void,
-  ): void {
+  _absorbSync(commit: SyncCommit, base: Wallet, write: (fields: NoteCommit) => void): void {
     if (
       this.#recovery !== null &&
       (commit.tagPosition !== undefined ||
+        commit.ringPositions.length > 0 ||
         (this.#recovery.targetSlot !== null &&
           this._recoveryMinimumSlot(base) > this.#recovery.targetSlot))
     )
       throw new RingError("RING_SYNC_INCOMPLETE");
     this.#notes._absorb(commit, base, write);
     this.#revision += 1n;
+    this.#claims = this.#withClaims(commit.senderClaims);
     const { tagPosition } = commit;
     if (tagPosition !== undefined)
       this.#history = this.#history._withTagPosition(tagPosition.keys, tagPosition.afterSlot);
+    for (const { ring, keys, afterSlot } of commit.ringPositions)
+      for (const key of keys)
+        this.#history = this.#history._withRingCheckpoint(ring, key, afterSlot);
     // A retry leaves only once the indexer returned its spend row, a lagging indexer keeps it stored.
     const retries = new Map(this.#mergeRetries);
     for (const nullifier of commit.retried) retries.delete(bytesKey(nullifier));
     this.#mergeRetries = retries;
+  }
+
+  /** A note claimed once keeps its first claim. */
+  #withClaims(claims: readonly SenderClaim[]): readonly PendingClaim[] {
+    const claimed = new Set(this.#claims.map((claim) => bytesKey(claim.utxoHash)));
+    return [
+      ...this.#claims,
+      ...claims
+        .filter((claim) => unseen(claimed, bytesKey(claim.utxoHash)))
+        .map(({ utxoHash, claim: { claimed: reply } }): PendingClaim =>
+          Object.freeze({
+            utxoHash,
+            claimedViewingKey: reply.viewingKey,
+            claimedOwnerKey: reply.ownerKey,
+            claimedNullifierPk: reply.nullifierPk,
+          }),
+        ),
+    ];
   }
 
   /** Moves each pending note whose mint now registers into the spendable notes, the moved ones returned. */

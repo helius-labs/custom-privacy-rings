@@ -5,6 +5,7 @@ import {
   concatBytes,
   encodeBase58,
   prepareTransfer,
+  treeAddress,
 } from "@heliuslabs/spr/internal";
 import type { NoteData, OwnerExposure } from "../../../src/operations/payments/anonymous.js";
 import { EMPTY_MINT_POLICY } from "../../../src/protocol/membership/mint-policy.js";
@@ -32,7 +33,7 @@ import {
   associatedTokenAddress,
   splInterfaceWithBump,
 } from "@heliuslabs/spr/internal";
-import { initializePoseidon } from "@heliuslabs/spr";
+import { buildRingPaymentTransaction, initializePoseidon } from "@heliuslabs/spr";
 import {
   SOL_INTERFACE,
   SPL_TOKEN_2022_PROGRAM_ID,
@@ -61,12 +62,14 @@ import {
   Wallet,
   SppProofInputs,
   Data,
+  intentHash,
   type PreparedTransfer,
   type ProofOutputUtxo,
 } from "@heliuslabs/spr/transaction";
 import {
   checkRingPreparedTransfer,
   approveRingUnattended,
+  ringIntentHash,
   type RingApprovalRequest,
 } from "../../../src/protocol/transaction/intent.js";
 import { ringProofCircuit } from "../../../src/rpc/prover/ring.js";
@@ -96,11 +99,13 @@ import {
   type AnonymousTransfer,
 } from "../../../src/operations/payments/transfer-rails.js";
 import {
+  anonymousRingTransfers,
   buildRingEntryTransaction,
   buildRingExitTransaction,
   buildRingTransferTransaction,
   buildRingWithdrawalTransaction,
   createRingEntrySubmission,
+  ownerRingTransfers,
   prepareRingEntryRelay,
   prepareRingTransferRelay,
   prepareRingWithdrawalRelay,
@@ -810,7 +815,7 @@ describe("anonymous delivery slots", () => {
       utxos: [
         {
           utxo,
-          outputContext: { hash, tree: TREE, leafIndex: 0n },
+          outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: 0n },
           nullifier: utxo.nullifier(hash, sender.keypair.nullifierKey()),
           spent: false,
         },
@@ -1588,7 +1593,7 @@ describe("anonymous ring relay", () => {
         const hash = utxo.proofInput(nullifierPublicKey, TREE_ID, note.dataHash).hash();
         return {
           utxo,
-          outputContext: { hash, tree: TREE, leafIndex: BigInt(index) },
+          outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: BigInt(index) },
           nullifier: utxo.nullifier(hash, sender.keypair.nullifierKey()),
           ...(note.dataHash === undefined ? {} : { dataHash: note.dataHash }),
           spent: false,
@@ -2653,3 +2658,122 @@ describe("anonymous entry key bound", () => {
 function hex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("hex");
 }
+
+describe("ring payment adapters", () => {
+  type Options = Readonly<{
+    payer?: "owner";
+    signer?: false;
+    payee?: "unknown";
+    ring?: "confidential";
+  }>;
+
+  function defaultWallet(sender: Sender): Wallet {
+    const { keypair } = sender;
+    const wallet = new Wallet({ identity: keypair.shieldedAddress(), registry: assets });
+    const utxo = new Utxo({
+      owner: keypair.signingPublicKey(),
+      asset: SOL_MINT,
+      amount: 10_000n,
+      blinding: randomBlinding(),
+    });
+    const hash = utxo.proofInput(keypair.nullifierPublicKey(), TREE_ID).hash();
+    wallet._replace({
+      utxos: [
+        {
+          utxo,
+          outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: 0n },
+          nullifier: utxo.nullifier(hash, keypair.nullifierKey()),
+          spent: false,
+        },
+      ],
+      transactions: [],
+      nullifiers: new Set(),
+    });
+    return wallet;
+  }
+
+  async function payment(options: Options) {
+    const fixture = options.ring === "confidential" ? await ringFixture() : await anonymousRing();
+    const sender = anonymousSender();
+    fixture.enroll(sender.keypair.shieldedAddress());
+    const to = await addressOf(fixture, ShieldedKeypair.generate());
+    const outputTree = fixture.client.treeId + 1;
+    const client = {
+      ...fixture.client,
+      tree: treeAddress(outputTree),
+      treeId: outputTree,
+      getLatestBlockhash: async () => BLOCKHASH,
+    };
+    const input = { client, ringProgramId: fixture.ringProgramId, assets };
+    const ring =
+      options.ring === "confidential"
+        ? ownerRingTransfers(input)
+        : anonymousRingTransfers({ ...input, payees: options.payee === "unknown" ? [] : [to] });
+    const owner = sender.keypair.shieldedAddress().solanaAddress();
+    const proved = buildRingPaymentTransaction({
+      client,
+      ring,
+      wallet: defaultWallet(sender),
+      keys: walletKeys(sender.keypair),
+      feePayer: options.payer === "owner" ? owner : fixture.authority,
+      recipient: to.recipient,
+      amount: 400n,
+      ...(options.signer === false
+        ? {}
+        : {
+            owner: {
+              signingPublicKey: () => sender.signing.publicKey(),
+              sign: (message: Uint8Array) => sender.signing.sign(message),
+            },
+          }),
+    });
+    return { fixture, sender, to, proved, outputTree };
+  }
+
+  it.each([
+    ["anonymous", {}],
+    ["confidential", { ring: "confidential", signer: false }],
+  ] as const)(
+    "pays a %s ring from core's wallet into the client's tree, change kept in the ring",
+    async (_, options) => {
+      const { fixture, sender, to, proved, outputTree } = await payment(options);
+      await expect(proved).resolves.toBeDefined();
+      const { proofInputs } = itemAt(fixture.sppCalls, 0);
+      expect(proofInputs.outputTreeId).toBe(outputTree);
+      const paid = proofInputs.outputs
+        .filter((output) => !output.isDummy() && output.amount > 0n)
+        .map((output) => [output.ownerAddress?.toBytes(), output.amount, output.ringProgramId]);
+      expect(paid).toEqual([
+        [sender.keypair.shieldedAddress().toBytes(), 9_600n, fixture.ringProgramId],
+        [to.recipient.toBytes(), 400n, fixture.ringProgramId],
+      ]);
+    },
+  );
+
+  it("hashes an anonymous transfer apart from core's ring deposit", async () => {
+    const fixture = await anonymousRing();
+    const to = await addressOf(fixture, ShieldedKeypair.generate());
+    const fields = { ringProgramId: fixture.ringProgramId, asset: SOL_MINT, amount: 400n };
+    const anonymous = {
+      kind: "ringAnonymousTransfer",
+      ...fields,
+      recipient: to,
+      defaultFunding: 0n,
+    } as const;
+    const deposit = { kind: "ringDeposit", ...fields, recipient: to.recipient } as const;
+    expect(ringIntentHash(anonymous)).not.toEqual(intentHash(deposit));
+  });
+
+  it("refuses no signer, the hidden owner as payer, an unknown enrolled payee and an in-proof owner on default notes", async () => {
+    for (const [options, code] of [
+      [{ signer: false }, "RING_ANONYMOUS_SIGNER_REQUIRED"],
+      [{ ring: "confidential" }, "RING_IN_PROOF_DEFAULT_RING_INPUT"],
+      [{ payer: "owner" }, "RING_ANONYMOUS_SIGNER_LINKS_OWNER"],
+      [{ payee: "unknown" }, "KEYPAIR_INVALID_RING_ADDRESS_LIST_SALT"],
+    ] as const) {
+      const { fixture, proved } = await payment(options);
+      await expect(proved).rejects.toMatchObject({ cause: { code } });
+      noProofs(fixture);
+    }
+  });
+});

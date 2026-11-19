@@ -35,7 +35,7 @@ export CUSTOM_RING_PROGRAM_ID := env_var_or_default("CUSTOM_RING_PROGRAM_ID", "9
 export PROVER_BIN := justfile_directory() / "target/prover-server"
 # Mirrored by GENESIS_PROGRAMS in cli/src/commands/ring/localnet.rs.
 ring-genesis-programs := "--sbf-program rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL target/deploy/storage_program.so"
-sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-transaction zolana-ring-rpc custom-ring-sdk custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
+sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-keys zolana-ring-transaction zolana-ring-rpc custom-ring-sdk custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
 
 default:
     @just --list
@@ -631,7 +631,7 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
     solana airdrop 100 "$enrollment_writer" --url {{localnet-rpc-url}} >/dev/null
     e2e_programs=()
     e2e_rings=()
-    for index in 1 2; do
+    for index in 1 2 3; do
       solana-keygen new --no-bip39-passphrase --silent --force -o "$ring_dir/e2e-ring-$index.json"
       e2e_programs+=("$PWD/$ring_dir/e2e-ring-$index.json")
       e2e_rings+=("$(solana-keygen pubkey "$ring_dir/e2e-ring-$index.json")")

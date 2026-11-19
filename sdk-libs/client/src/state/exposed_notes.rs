@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, HashSet};
 
 use solana_address::Address;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
-use spr_keypair::NullifierKey;
 use spr_transaction::{
     verify_owned, DecryptionResult, OwnedUtxos, ShieldedKeys, TransactionError, WalletUtxo,
 };
@@ -69,47 +68,24 @@ pub fn mint_balances<'a>(
     balances
 }
 
-/// [`verify_owned`] drops a zero-key note, the same checks run here under the zero key.
+/// Every note passes [`verify_owned`], a zero-key one leaves `owned`.
 pub fn verify_ring_owned<K: ShieldedKeys + ?Sized>(
     shielded_keys: &K,
     decrypted: &DecryptionResult,
 ) -> Result<RingOwnedUtxos, TransactionError> {
-    let (zero_key, keyed): (Vec<_>, Vec<_>) =
-        decrypted.utxos.iter().cloned().partition(is_zero_key);
-    let owned = verify_owned(
-        shielded_keys,
-        &DecryptionResult {
-            utxos: keyed,
-            ..decrypted.clone()
-        },
-    )?;
-    let signing_pubkey = shielded_keys.address()?.signing_pubkey;
-    let zero_secret = NullifierKey::from_secret([0; 31]);
-    let mut claimed = HashSet::new();
+    let mut owned = verify_owned(shielded_keys, decrypted)?;
+    let (zero_key, keyed): (Vec<_>, Vec<_>) = std::mem::take(&mut owned.utxos)
+        .into_iter()
+        .partition(is_zero_key);
+    owned.utxos = keyed;
     let mut exposed_if_spent = Vec::new();
     let mut spent_exposed = HashSet::new();
     for note in zero_key {
-        if note.utxo.owner != signing_pubkey
-            || (note.utxo.data.utxo_data().is_some() && note.data_hash.is_none())
-            || (note.utxo.data.ring_data().is_some() && note.ring_data_hash.is_none())
-        {
-            continue;
-        }
-        let hash = note.utxo.hash(
-            &ZERO_NULLIFIER_PUBKEY,
-            &note.data_hash.unwrap_or_default(),
-            &note.ring_data_hash.unwrap_or_default(),
-            note.tree_id,
-        )?;
-        if hash != note.utxo_hash || !claimed.insert(hash) {
-            continue;
-        }
-        let nullifier = zero_secret.nullifier(&hash, &note.utxo.blinding)?;
-        match decrypted.spent_nullifiers.contains(&nullifier) {
+        match owned.spent.remove(&note.nullifier) {
             true => {
-                spent_exposed.insert(nullifier);
+                spent_exposed.insert(note.nullifier);
             }
-            false => exposed_if_spent.push(WalletUtxo { nullifier, ..note }),
+            false => exposed_if_spent.push(note),
         }
     }
     Ok(RingOwnedUtxos {

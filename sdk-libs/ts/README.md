@@ -25,13 +25,14 @@ digest. Run it before the first Ring proof. A Helius mainnet or devnet RPC URL
 selects the pinned Nitro Enclave prover of that cluster when `proverUrl` is
 omitted.
 
-`syncRingWallet` runs `syncWallet`, then opens the confidential Ring notes and
-Ring deposits it skips into an `AnonymousWallet`. Keys that are also `RingKeys`
-open delivered notes too. An audited Ring deposit opens through its capsule. A
-note of a mint the registry lacks waits in `pendingOpenings()` and becomes
-spendable on the first sync after its mint registers. Each viewing key's
-`tagPosition` resumes the next sync where the last one stopped, so store the
-wallet after every sync:
+`syncRingWallet` runs `syncWallet`, then reads each held viewing key's
+confidential slot tag and every Ring its `ViewingHistory` names, and stores in an
+`AnonymousWallet` each Ring note whose commitment `decryptTransactions` rebuilds.
+Only keys that are also `RingKeys` open Ring notes. A note or merge output of a
+mint the registry lacks waits in `pendingOpenings()`, and the first sync that sees
+the mint registered moves it to the notes. Each viewing key's
+`tagPosition` and Ring positions resume the next sync where the last one
+stopped, so store the wallet after every sync:
 
 ```ts
 import {
@@ -143,7 +144,7 @@ relay. A deposit carries the recipient's.
 On an anonymous Ring the transfer proof binds each live recipient slot's
 ciphertext and its recipient, no proof binds a discovery tag. A bad tag costs the
 note its discovery by `fetch`, and `fullScan` still opens it. A wallet finds its notes with
-`AnonymousSync.fetch`, which scans every Ring its `ViewingHistory` names, and
+`syncRingWallet` or `AnonymousSync.fetch`, which scan every Ring its `ViewingHistory` names, and
 adds a Ring with `withRing` when a key enrolls. `AnonymousSync.fullScan` reads a
 Ring from its start and uses no tag. `AnonymousWallet` holds the notes, spends,
 reply claims and scan positions in one document. Absorb a scan, then replace

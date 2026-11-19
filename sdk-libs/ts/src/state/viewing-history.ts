@@ -201,6 +201,8 @@ export class ViewingKeyEntry {
 /** One ring a key reads, `afterSlot` the terminal page's `context.slot` of its last read. */
 export type RingPosition = Readonly<{ ring: Address; afterSlot: bigint | null }>;
 
+export type RingRead = RingPosition & Readonly<{ keys: readonly X25519PublicKey[] }>;
+
 /** A tag for one output, `history` advanced past it. */
 export interface AdvancedTag<T> {
   readonly tag: T;
@@ -278,6 +280,21 @@ export class ViewingHistory {
   withConfirmedSender(sender: X25519PublicKey): ViewingHistory {
     if (isSmallOrder(sender)) throw new RingError("RING_RECIPIENT_KEY_NOT_CONTRIBUTORY");
     return this.withEntry(this.entries.length - 1, this.current().withKnownSender(sender));
+  }
+
+  /** @internal Held keys at one position of one ring share a read, `fromStart` reads every ring from its start. */
+  _ringReads(held: readonly X25519PublicKey[], fromStart: boolean): readonly RingRead[] {
+    const reads = new Map<string, RingRead>();
+    for (const entry of this.entries.filter((candidate) =>
+      held.some((key) => key.equals(candidate.viewingPublicKey)),
+    ))
+      for (const { ring, afterSlot } of entry.ringPositions()) {
+        const position = fromStart ? null : afterSlot;
+        const key = `${ring}:${String(position)}`;
+        const read = reads.get(key) ?? { ring, afterSlot: position, keys: [] };
+        reads.set(key, { ...read, keys: [...read.keys, entry.viewingPublicKey] });
+      }
+    return [...reads.values()];
   }
 
   /** @internal Only a terminal page's `context.slot` reaches here, a lower one leaves the position in place. */

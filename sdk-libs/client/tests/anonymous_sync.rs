@@ -43,7 +43,7 @@ use spr_transaction::{
 use zolana_ring_client::{
     auditor_view_tag, note_state, open_ring_confidential, verify_ring_owned, AnonymousError,
     AnonymousScan, AnonymousStream, AnonymousSync, AnonymousWallet, AuditError, AuditStreamSeal,
-    NoteState, RingConfidentialScan, SenderAuditFrame, SenderAuditFrames, SentCheck,
+    NoteState, RingConfidentialScan, RingNoteCodec, SenderAuditFrame, SenderAuditFrames, SentCheck,
     ViewingHistory,
 };
 use zolana_ring_keys::{
@@ -2332,6 +2332,62 @@ fn deliver(
     };
     indexer.publish(tx.clone());
     tx
+}
+
+#[test]
+fn a_delivered_note_counts_once_core_rebuilds_its_commitment() {
+    let indexer = Indexer::default();
+    let mut alice = Wallet::new(1);
+    let bob = Wallet::new(2);
+    let tx = deliver(&mut alice, &indexer, &bob.address(), |_| {});
+    let assets = assets();
+    let codec = RingNoteCodec {
+        ring: RING,
+        keys: &bob.keys,
+        assets: &assets,
+    };
+    let mut decrypted = DecryptionResult::default();
+    decrypted
+        .extend_with_ring(&bob.keys, &[tx], assets.registry(), &codec)
+        .unwrap();
+    let spendable = verify_spendable(&bob.keys, &decrypted).unwrap();
+    let ring = spendable.ring_balances().remove(&RING).unwrap();
+    assert_eq!(ring.get_balance(Mint::SOL.asset).unwrap().amount, 30);
+}
+
+#[test]
+fn one_codec_opens_an_anonymous_payment_and_the_senders_change_through_core() {
+    let indexer = Indexer::default();
+    let mut alice = Wallet::new(1);
+    let bob = Wallet::new(2);
+    let carol = Wallet::new(3);
+    let paid = alice.pay(&indexer, &[pay(&bob.address(), 30)]);
+    let assets = assets();
+    let credited = |wallet: &Wallet| {
+        let codec = RingNoteCodec {
+            ring: RING,
+            keys: &wallet.keys,
+            assets: &assets,
+        };
+        let mut decrypted = DecryptionResult::default();
+        decrypted
+            .extend_with_ring(
+                &wallet.keys,
+                core::slice::from_ref(&paid),
+                assets.registry(),
+                &codec,
+            )
+            .unwrap();
+        let ring = verify_spendable(&wallet.keys, &decrypted)
+            .unwrap()
+            .ring_balances();
+        ring.get(&RING)
+            .and_then(|balances| balances.get_balance(Mint::SOL.asset))
+            .map(|balance| balance.amount)
+    };
+    assert_eq!(credited(&bob), Some(30));
+    assert_eq!(credited(&alice), Some(70));
+    assert_eq!(credited(&carol), None);
 }
 
 #[tokio::test]

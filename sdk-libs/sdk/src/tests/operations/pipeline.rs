@@ -103,7 +103,7 @@ async fn exit_owner(
     };
     match stage_anonymous(&transfer, &chain).await?.spend {
         Spend::Anonymous(_) => Ok(()),
-        Spend::Owner | Spend::InProofOwner(_) | Spend::PublicOwners | Spend::Delegate { .. } => {
+        Spend::Owner(_) | Spend::InProofOwner(_) | Spend::PublicOwners | Spend::Delegate { .. } => {
             unreachable!("an anonymous ring stages its rail")
         }
     }
@@ -3359,7 +3359,7 @@ async fn only_a_named_public_spend_takes_the_wallets_zero_key_note() {
     let named = owner_transfer(&sender, ring_transaction(vec![note])).spend_public(wallet);
     assert!(matches!(
         named.rail.stage(ring(), &config).await.unwrap().spend,
-        Spend::Owner
+        Spend::Owner(_)
     ));
 }
 
@@ -3418,7 +3418,7 @@ fn each_input_takes_the_secret_its_own_nullifier_names() {
     };
     let mut inputs = [input_of(&keyed), input_of(&zero)];
     TransferAuthority {
-        owner: Some(owner.nullifier_key.clone()),
+        owner: Some(OwnerKey::Held(&owner.nullifier_key)),
         co_owners: Vec::new(),
     }
     .complete_inputs(&mut inputs)
@@ -4139,7 +4139,7 @@ async fn a_program_owner_spends_public_under_either_key_class_on_both_modes() {
             // The frame admits its public owners flag on the anonymous rail alone.
             let spends_public = match mode {
                 RingMode::Anonymous => matches!(staged.spend, Spend::PublicOwners),
-                RingMode::Confidential => matches!(staged.spend, Spend::Owner),
+                RingMode::Confidential => matches!(staged.spend, Spend::Owner(_)),
             };
             assert!(spends_public, "{mode:?}");
             assert_eq!(staged.owner_signers, [pda(0x51)], "{mode:?}");

@@ -11,7 +11,7 @@ use spl_token_2022_interface::{
     },
     pod::{PodAccount, PodMint},
 };
-use spr_client::{fetch_spl_asset_registrations, Rpc, SolanaRpc};
+use spr_client::{fetch_spl_asset_registrations, ClientError, Rpc, SolanaRpc};
 use spr_interface::{
     pda, SPL_TOKEN_2022_PROGRAM_ID, SPL_TOKEN_ACCOUNT_INITIALIZED, SPL_TOKEN_PROGRAM_ID,
 };
@@ -44,7 +44,7 @@ pub fn resolve(rpc: &SolanaRpc, mint: Address) -> Result<ResolvedAsset> {
 }
 
 /// SOL and every SPL mint SPP registered.
-pub fn ring_assets(rpc: &SolanaRpc) -> Result<RingAssets> {
+pub fn ring_assets(rpc: &SolanaRpc) -> Result<RingAssets, ClientError> {
     Ok(RingAssets::new(fetch_spl_asset_registrations(rpc, None)?)?)
 }
 

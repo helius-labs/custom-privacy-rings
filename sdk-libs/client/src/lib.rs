@@ -51,6 +51,8 @@ mod types;
 pub mod viewing_history;
 #[path = "operations/viewing_rotation.rs"]
 mod viewing_rotation;
+#[path = "operations/wallet_sync.rs"]
+mod wallet_sync;
 
 pub(crate) const REDACTED: &str = "<redacted>";
 
@@ -62,6 +64,7 @@ pub use crate::anonymous::{
 pub use crate::anonymous_wallet::{
     AnonymousWallet, LedgerScan, PendingClaim, PendingNote, ScanCommit,
 };
+pub use crate::delivered::RingNoteCodec;
 #[cfg(feature = "solana-rpc")]
 pub use crate::origin::{confirmed_origin, ConfirmedRingOrigins, ORIGIN_TRANSACTION_CONFIG};
 pub use crate::tags::{HistoryRows, IndexerReads, TagWindow, TAGS_PER_REQUEST};
@@ -112,6 +115,7 @@ pub use crate::{
 };
 pub use program_data::{program_data, ProgramData, PROGRAM_DATA_METADATA_LEN};
 pub use viewing_rotation::{ViewingRotation, ViewingRotationError};
+pub use wallet_sync::{RingWalletNotes, RingWalletScanned, RingWalletSync, RingWalletSynced};
 pub use zolana_ring_indexer::rpc::RingRpcError;
 
 /// The answer to a one-item request, a holder that answers more or less is refused.

@@ -14,13 +14,15 @@ import {
 import {
   SOL_MINT,
   Utxo,
+  Wallet,
+  decryptTransactions,
   type IndexedShieldedTransaction,
   type OutputSlot,
 } from "@heliuslabs/spr/transaction";
 
 import { deliveredSlotSecret, slotTag } from "../../src/crypto/derivation/ring-stream.js";
 import { AnonymousSync, TAGS_PER_REQUEST, ringFullScan } from "../../src/state/anonymous-sync.js";
-import { openRingNotes } from "../../src/state/ring-sync.js";
+import { ringNoteCodec } from "../../src/state/ring-sync.js";
 import { LocalRingKeys } from "../../src/state/ring-keys.js";
 import { ViewingHistory } from "../../src/state/viewing-history.js";
 import { TREE, TREE_ID, randomAddress } from "../helpers/ring-pipeline.js";
@@ -418,12 +420,14 @@ describe("full scan recovery", () => {
         ...slot,
         viewTag: new Uint8Array(32).fill(0x55) as Bytes32,
       }));
-      const tagged = await openRingNotes({
+      const tagged = new Wallet({ identity: bob.address, registry: ASSETS });
+      await decryptTransactions({
+        wallet: tagged,
         keys: bob.keys,
-        assets: ASSETS,
         transactions: indexer.transactions,
+        ring: ringNoteCodec({ ringProgramId: RING, keys: bob.keys, assets: ASSETS }),
       });
-      expect(tagged.utxos).toEqual([]);
+      expect(tagged.utxos()).toEqual([]);
       const recovered = await scan(bob, indexer);
       expect(recovered.utxos.map((note) => hex(note.outputContext.hash))).toEqual([hex(hash)]);
       expect(recovered.auditorRecovery.unopened.map(hex)).not.toContain(hex(hash));

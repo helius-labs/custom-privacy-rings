@@ -49,6 +49,7 @@ function walletOf(notes: readonly Note[], ringProgramId?: Address): Wallet {
       outputContext: {
         hash: noteId(index),
         tree: treeAddress(tree),
+        treeId: tree,
         leafIndex: BigInt(index),
       },
       nullifier: noteId(index),

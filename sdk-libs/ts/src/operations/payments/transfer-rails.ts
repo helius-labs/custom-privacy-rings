@@ -119,7 +119,11 @@ export interface RingTransferApproval {
   readonly transaction: RingTransactionFrame;
   /** Runs once the transfer fits its transaction, before any proof. */
   approve(
-    transfer: Readonly<{ prepared: PreparedTransfer; coSigners: readonly Address[] }>,
+    transfer: Readonly<{
+      prepared: PreparedTransfer;
+      proofInputs: SppProofInputs;
+      coSigners: readonly Address[];
+    }>,
   ): Promise<void>;
 }
 
@@ -301,7 +305,6 @@ export class CustomRingTransfer {
         throw new RingError("RING_RELAY_PAYER_MISMATCH", {
           details: { payer: prepared.payer, feePayer: quote.feePayer },
         });
-      await approval?.approve({ prepared, coSigners: [] });
       const sealed = sealRelayedTransfer({
         ringProgramId,
         config,
@@ -311,6 +314,7 @@ export class CustomRingTransfer {
       let payload: Uint8Array | undefined;
       try {
         const { proofInputs } = sealed;
+        await approval?.approve({ prepared, proofInputs, coSigners: [] });
         payload = encodeRelayProofInputs({
           rail: { kind: "confidential" },
           ringProgramId,
@@ -733,7 +737,6 @@ export class AnonymousTransfer {
         throw new RingError("RING_RELAY_PAYER_MISMATCH", {
           details: { payer: prepared.payer, feePayer: quote.feePayer },
         });
-      await approval?.approve({ prepared, coSigners: [] });
       const sealed = sealRelayedTransfer({
         ringProgramId,
         config,
@@ -743,6 +746,7 @@ export class AnonymousTransfer {
       let payload: Uint8Array | undefined;
       try {
         const { proofInputs } = sealed;
+        await approval?.approve({ prepared, proofInputs, coSigners: [] });
         const plan = staged.rail.delivery;
         if (plan.kind !== "anonymous") throw new RingError("RING_NOT_ANONYMOUS");
         payload = encodeRelayProofInputs({
@@ -1508,7 +1512,7 @@ function approvedStage(
   if (approval === undefined) return {};
   return {
     transaction: approval.transaction,
-    approve: (coSigners) => approval.approve({ prepared, coSigners }),
+    approve: (coSigners, proofInputs) => approval.approve({ prepared, proofInputs, coSigners }),
   };
 }
 

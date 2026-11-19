@@ -3,7 +3,6 @@
 //! Every ring mode keeps one ledger per identity, an anonymous ring adds the anonymous sync.
 
 use std::{
-    collections::BTreeSet,
     fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -13,12 +12,12 @@ use anyhow::{ensure, Context as _, Result};
 use custom_ring_interface::RingMode;
 use custom_ring_sdk::CustomRingConfig;
 use solana_address::Address;
-use spr_client::{BlockingIndexer, BlockingRpc, IndexerRpcConfig, Rpc, UtxoScan};
+use spr_client::{BlockingIndexer, BlockingRpc, IndexerRpcConfig, Rpc};
 use spr_keypair::X25519Pubkey;
-use spr_transaction::{SpendableDecryptionResult, WalletUtxo};
+use spr_transaction::SpendableDecryptionResult;
 use zolana_ring_client::{
-    verify_ring_owned, AnonymousSync, AnonymousWallet, RingConfidentialScan, RingSenderAudit,
-    SenderAuditFrames, ViewingHistory,
+    AnonymousError, AnonymousWallet, RingSenderAudit, RingWalletNotes, RingWalletSync,
+    RingWalletSynced, ViewingHistory,
 };
 use zolana_ring_keys::RotatingRingKeys;
 use zolana_ring_transaction::RingAssets;
@@ -50,17 +49,9 @@ pub struct WalletScan<'a> {
 
 #[must_use]
 struct ScanAt<'a> {
-    keys: &'a RotatingRingKeys,
-    assets: &'a RingAssets,
-    /// Read only when a found note's mint is missing from `assets`.
-    chain_assets: &'a dyn Fn() -> Result<RingAssets>,
-    /// The indexer answers only after it holds the slot.
-    slot: u64,
+    sync: RingWalletSync<'a, RotatingRingKeys>,
     store: &'a AnonymousWalletStore,
-    mode: RingMode,
-    ring: Address,
-    /// `None` records no sent payment, change still opens.
-    sender_audit: Option<&'a dyn SenderAuditFrames>,
+    watch: Option<Address>,
 }
 
 /// Held while a store's file changes, any part file found under it is a crashed run's.
@@ -147,19 +138,12 @@ impl AnonymousWalletStore {
     }
 }
 
-/// Zero-key notes stay apart, no automatic path selects them.
-#[must_use]
-pub struct WalletNotes {
-    pub spendable: SpendableDecryptionResult,
-    pub exposed_if_spent: Vec<WalletUtxo>,
-}
-
 impl WalletScan<'_> {
     pub fn fetch(self, ctx: &Context) -> Result<SpendableDecryptionResult> {
         Ok(self.fetch_notes(ctx)?.spendable)
     }
 
-    pub fn fetch_notes(self, ctx: &Context) -> Result<WalletNotes> {
+    pub fn fetch_notes(self, ctx: &Context) -> Result<RingWalletNotes> {
         let store = ctx.anonymous_wallet_store(self.keys.identity_viewing_pubkey());
         let sender_audit = RingSenderAudit {
             origin: ctx.chain().rpc(),
@@ -167,15 +151,14 @@ impl WalletScan<'_> {
             mode: self.config.mode,
             auditor_pk: self.config.auditor_pubkey,
         };
+        let rpc = ctx.rpc();
         ScanAt {
-            keys: self.keys,
-            assets: self.assets,
-            chain_assets: &|| crate::assets::ring_assets(ctx.rpc()),
-            slot: ctx.rpc().get_slot()?,
+            sync: RingWalletSync::new(self.keys, self.assets)
+                .with_indexer_config(IndexerRpcConfig::at_slot(rpc.get_slot()?))
+                .with_chain_assets(&|| crate::assets::ring_assets(rpc))
+                .with_sender_audit(&sender_audit),
             store: &store,
-            mode: self.config.mode,
-            ring: ctx.ring.program_id(),
-            sender_audit: Some(&sender_audit),
+            watch: (self.config.mode == RingMode::Anonymous).then_some(ctx.ring.program_id()),
         }
         .fetch(&ctx.zolana)
     }
@@ -186,111 +169,22 @@ impl ScanAt<'_> {
     fn fetch<R: BlockingRpc, I: BlockingIndexer>(
         self,
         zolana: &Zolana<R, I>,
-    ) -> Result<WalletNotes> {
-        let (keys, config) = (self.keys, IndexerRpcConfig::at_slot(self.slot));
-        let owned = UtxoScan::new(keys, self.assets.registry())
-            .with_indexer_config(config)
-            .fetch(zolana.indexer())?;
-        let mut spendable = owned.spendable;
-        let confidential = |assets: &RingAssets, wallet: &mut AnonymousWallet| {
-            let scan = zolana.block_on(async {
-                RingConfidentialScan::new(keys, assets)
-                    .with_indexer_config(config)
-                    .sync(
-                        zolana.as_async().indexer(),
-                        wallet,
-                        &owned.history.transactions,
-                    )
-                    .await
-                    .map_err(anyhow::Error::from)
-            })?;
-            let unknown_mints = scan.decrypted().unknown_mints.clone();
-            wallet.absorb(scan)?;
-            Ok(unknown_mints)
-        };
-        let anonymous = |assets: &RingAssets, wallet: &mut AnonymousWallet| {
-            let scan = zolana.block_on(async {
-                let mut sync = AnonymousSync::new(keys, assets).with_indexer_config(config);
-                if let Some(frames) = self.sender_audit {
-                    sync = sync.with_sender_audit(frames);
-                }
-                sync.fetch_wallet(zolana.as_async().indexer(), wallet)
-                    .await
-                    .map_err(anyhow::Error::from)
-            })?;
-            let unknown_mints = scan.decrypted().unknown_mints.clone();
-            wallet.absorb(scan)?;
-            Ok(unknown_mints)
-        };
-        let (held, unknown_mints, incomplete) = self.store.update(|wallet| {
-            let mut unknown_mints =
-                if wallet.recovery_status() == zolana_ring_client::RecoveryStatus::Paused {
-                    BTreeSet::new()
-                } else {
-                    self.synced(wallet, confidential)?
-                };
-            if self.mode == RingMode::Anonymous {
-                let watched = wallet.history().clone().with_ring(self.ring, None);
+    ) -> Result<RingWalletNotes> {
+        let scanned = self.sync.scan(zolana.indexer())?;
+        let synced = self.store.update(|wallet| {
+            if let Some(ring) = self.watch {
+                let watched = wallet.history().clone().with_ring(ring, None);
                 wallet.update_history(watched)?;
-                unknown_mints.extend(self.synced(wallet, anonymous)?);
             }
-            unknown_mints.extend(wallet.pending_notes().iter().map(|note| note.mint()));
-            Ok((
-                wallet.decrypted(),
-                unknown_mints,
-                wallet.recovery_status() == zolana_ring_client::RecoveryStatus::Paused,
-            ))
+            zolana.block_on(async {
+                let indexer = zolana.as_async().indexer();
+                Ok(scanned.sync(indexer, wallet).await?)
+            })
         })?;
-        if incomplete {
-            return Err(zolana_ring_client::AnonymousError::SyncIncomplete.into());
+        match synced {
+            RingWalletSynced::Notes(notes) => Ok(notes),
+            RingWalletSynced::Paused => Err(AnonymousError::SyncIncomplete.into()),
         }
-        let verified = verify_ring_owned(keys, &held)?;
-        let found = verified.owned.spendable().with_transaction_keys(keys)?;
-        let spent = &held.spent_nullifiers;
-        for balance in &mut spendable.balances.assets {
-            balance
-                .utxos
-                .retain(|held| !spent.contains(&held.nullifier));
-            balance.amount = balance
-                .utxos
-                .iter()
-                .fold(0, |sum, held| sum.saturating_add(held.utxo.amount));
-        }
-        spendable
-            .utxos_with_data
-            .retain(|held| !spent.contains(&held.nullifier));
-        for utxo in found.utxos() {
-            if !spendable
-                .utxos()
-                .any(|held| held.utxo_hash == utxo.utxo_hash)
-            {
-                spendable.utxos_with_data.push(utxo.clone());
-            }
-        }
-        spendable.unknown_mints.extend(unknown_mints);
-        Ok(WalletNotes {
-            spendable,
-            exposed_if_spent: verified.exposed_if_spent,
-        })
-    }
-
-    /// Absorbs one sync, a mint registered after the registry read opens its notes under the chain's assets.
-    fn synced(
-        &self,
-        wallet: &mut AnonymousWallet,
-        sync: impl Fn(&RingAssets, &mut AnonymousWallet) -> Result<BTreeSet<Address>>,
-    ) -> Result<BTreeSet<Address>> {
-        let mut unknown_mints = sync(self.assets, wallet)?;
-        if unknown_mints.is_empty() && wallet.pending_notes().is_empty() {
-            return Ok(unknown_mints);
-        }
-        let chain = (self.chain_assets)()?;
-        wallet.resolve_pending(&chain);
-        // A merge output under an unregistered mint opens only on a read of its spend.
-        if !unknown_mints.is_empty() {
-            unknown_mints = sync(&chain, wallet)?;
-        }
-        Ok(unknown_mints)
     }
 }
 

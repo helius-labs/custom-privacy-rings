@@ -213,5 +213,6 @@ exports[`ring error codes > pins the public codes and their order 1`] = `
   "RING_DEPOSIT_PROOF_DATA_SOURCE",
   "RING_VIEWING_KEY_MISMATCH",
   "RING_VIEWING_KEY_NOT_HELD",
+  "RING_OWNER_UNAUTHORIZED",
 ]
 `;

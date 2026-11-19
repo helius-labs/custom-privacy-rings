@@ -107,6 +107,10 @@ export const REPROOF: ReadonlyMap<number, "fixes" | "ifMoved"> = new Map([
 ]);
 const NO_RESERVATION: ReservationHold = Object.freeze({ release() {}, extend() {} });
 
+export function provenComputeUnitLimit(proven: ProvenRingTransfer): number {
+  return ringComputeUnitLimit(transactTag(proven.data.rail));
+}
+
 /** One proven transfer as an attempt, the fit refuses it over the complete transaction, setup included. */
 export async function provenRingAttempt(
   input: Readonly<{
@@ -123,7 +127,7 @@ export async function provenRingAttempt(
     proven.instruction(),
     chain.getLatestBlockhash(context),
   ]);
-  const computeUnitLimit = ringComputeUnitLimit(transactTag(proven.data.rail));
+  const computeUnitLimit = provenComputeUnitLimit(proven);
   TransactionFit.of(instruction, fitSigners(feePayer, frame), {
     ...fitBudget(frame),
     computeUnitLimit,

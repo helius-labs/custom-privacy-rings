@@ -14,7 +14,8 @@ import {
 } from "@heliuslabs/spr/internal";
 import type { Bytes16, Bytes32 } from "@heliuslabs/spr/interface";
 import { randomSalt, ShieldedAddress, ViewingKey, X25519Keypair } from "@heliuslabs/spr/keypair";
-import { SOL_MINT, Utxo, Wallet } from "@heliuslabs/spr/transaction";
+import { SOL_MINT, Utxo, Wallet, decryptTransactions } from "@heliuslabs/spr/transaction";
+import { ringNoteCodec } from "../../src/state/ring-sync.js";
 
 import {
   AnonymousSync,
@@ -80,6 +81,26 @@ describe("anonymous sync", () => {
     expect(stream(change, output(paid, 0))).toEqual({ kind: "tagHint" });
     expect(change.utxos.map((note) => note.utxo.amount)).toEqual([70n]);
     expect(indexer.transactionTagReads).toBe(0);
+  });
+
+  it("opens a payment, the sender's change and nothing for a stranger through core", async () => {
+    const indexer = new ScanIndexer();
+    const alice = new ScanWallet(1);
+    const bob = new ScanWallet(2);
+    const paid = await alice.pay(indexer, [{ to: bob.address, amount: 30n }]);
+    const credited = async (wallet: ScanWallet) => {
+      const core = new Wallet({ identity: wallet.address });
+      await decryptTransactions({
+        wallet: core,
+        keys: wallet.keys,
+        transactions: [paid],
+        ring: ringNoteCodec({ ringProgramId: RING, keys: wallet.keys, assets: ASSETS }),
+      });
+      return core.ringBalances().flatMap((ring) => ring.assets.map((asset) => asset.amount));
+    };
+    expect(await credited(bob)).toEqual([30n]);
+    expect(await credited(alice)).toEqual([70n]);
+    expect(await credited(new ScanWallet(3))).toEqual([]);
   });
 
   it("skips a body sealed to another key and goes on", async () => {

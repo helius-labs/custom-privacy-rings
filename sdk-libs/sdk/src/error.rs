@@ -254,6 +254,8 @@ pub enum RingError {
     InProofDefaultRingInput { index: usize },
     #[error("the confidential relay carries no owner signature")]
     MissingInProofOwnerSignature,
+    #[error("core authorized no in-proof owner for the payment")]
+    OwnerUnauthorized,
     #[error("public transaction signers must differ from the hidden owner")]
     AnonymousPublicSignerLinksOwner,
     #[error("withdrawal destination {0} names the hidden owner")]
@@ -319,6 +321,11 @@ pub enum RingError {
     Rejected {
         signature: Signature,
         error: solana_transaction_error::TransactionError,
+    },
+    #[error("{signature} is unresolved after {error}")]
+    Unsettled {
+        signature: Signature,
+        error: Box<RingError>,
     },
     #[error("{owner} is enrolled under another nullifier key, the first key is final")]
     AlreadyEnrolled { owner: Address },

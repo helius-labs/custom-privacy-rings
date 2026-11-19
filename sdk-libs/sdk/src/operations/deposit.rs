@@ -44,7 +44,7 @@ use crate::{
         ProvenRingTransfer, PublicOwnerTransfer, RingSender,
     },
     relay_message::ExpectedMessage,
-    tree_id, CustomRing, PreparedRelay, RingError, RingSubmission, SettledSubmission,
+    tree_id, CustomRing, PreparedRelay, RingError, RingSubmission,
 };
 
 #[cfg(test)]
@@ -278,22 +278,14 @@ impl<'a> RingDepositBatch<'a> {
             .await?;
         let signers = self.signers(&prepared);
         let mut submission = RingSubmission::new(prepared);
-        submission.prove(client, fee_payer, &signers).await?;
-        match submission
-            .send_until_settled(client, fee_payer, &signers)
-            .await?
-        {
-            SettledSubmission::Confirmed { signature, .. } => Ok(RingDepositBatchReceipt {
-                signature,
-                utxos: submission
-                    .deposit_utxos()
-                    .ok_or(RingError::DepositFrameReused)?
-                    .to_vec(),
-            }),
-            SettledSubmission::Failed { signature, error } => {
-                Err(RingError::Rejected { signature, error })
-            }
-        }
+        let signature = submission.land(client, fee_payer, &signers).await?;
+        Ok(RingDepositBatchReceipt {
+            signature,
+            utxos: submission
+                .deposit_utxos()
+                .ok_or(RingError::DepositFrameReused)?
+                .to_vec(),
+        })
     }
 
     /// A co-signer the ring does not demand is no account of the deposit and cannot sign it.

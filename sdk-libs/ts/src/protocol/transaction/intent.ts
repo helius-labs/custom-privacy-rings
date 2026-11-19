@@ -38,9 +38,9 @@ export type RingApprovalRequest = Omit<ApprovalRequest, "intent"> &
 
 export type RingApprovalHandler = (request: RingApprovalRequest) => Promise<IntentApproval>;
 
-const INTENT_DOMAIN = "zolana/intent/v1";
-/** Follows the pinned SPP kind tags, 1 to 10. */
-const RING_ANONYMOUS_TRANSFER_TAG = 11;
+/** Separates ring intent hashes from core's `"zolana/intent/v1"` and its kind tags. */
+const RING_INTENT_DOMAIN = "zolana-custom-rings/intent/v1";
+const RING_ANONYMOUS_TRANSFER_TAG = 1;
 
 export const approveRingUnattended: RingApprovalHandler = (request) =>
   Promise.resolve(Object.freeze({ intentHash: ringIntentHash(request.intent) }));
@@ -55,7 +55,7 @@ export function ringIntentHash(intent: RingTransactionIntent): Bytes32 {
     throw new RingError("RING_INTENT_MISMATCH", { details: { field: "recipient" } });
   const recipient = intent.recipient.toBytes();
   const hash = sha256.create();
-  hash.update(new TextEncoder().encode(INTENT_DOMAIN));
+  hash.update(new TextEncoder().encode(RING_INTENT_DOMAIN));
   hash.update(Uint8Array.of(RING_ANONYMOUS_TRANSFER_TAG));
   hash.update(addressBytes(intent.ringProgramId, "ringProgramId"));
   hash.update(addressBytes(intent.asset, "asset"));

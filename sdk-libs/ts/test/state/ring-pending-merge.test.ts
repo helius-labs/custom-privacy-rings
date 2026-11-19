@@ -29,7 +29,7 @@ function heldNote(owner: ScanWallet, mint: Address): WalletUtxo {
   const hash = utxo.hash(owner.address.nullifierPublicKey, TREE_ID);
   return {
     utxo,
-    outputContext: { hash, tree: TREE, leafIndex: 0n },
+    outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: 0n },
     nullifier: utxo.nullifier(hash, owner.keypair.nullifierKey()),
     spent: false,
   };

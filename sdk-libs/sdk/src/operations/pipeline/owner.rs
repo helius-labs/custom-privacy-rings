@@ -1,7 +1,9 @@
 //! The confidential rail.
 
 use custom_ring_interface::{RingMode, RingRail};
-use spr_client::{AsyncRpc, OwnerAuthorization, SettlementAccountValidation};
+use spr_client::{
+    AsyncRpc, OwnerAuthorization, ProofAuthority, RingAuthorizer, SettlementAccountValidation,
+};
 use spr_interface::shape::Shape;
 use spr_keypair::{NullifierKey, ShieldedAddress, SigningKey};
 use spr_program::instruction::TransactInterfaceTransferAccounts;
@@ -14,19 +16,20 @@ use super::{
     anonymous::{CoOwner, HiddenOwner},
     canonical_shape, pad_under_rail,
     public_owners::check_zero_key_inputs,
-    sealed, shape_keyed, transaction_key, ApprovalDisclosure, CoOwnerKey, DeliveredRail, Rail,
-    RailKind, RingSender, RingTransfer, Spend, Staged, TransferAuthority,
+    sealed, shape_keyed, transaction_key, ApprovalDisclosure, CoOwnerKey, DeliveredRail, OwnerKey,
+    Rail, RailKind, RingSender, RingTransfer, Spend, Staged, TransferAuthority,
 };
 use crate::{CustomRing, CustomRingConfig, RingError};
 
 /// The sender's spends, it signs the assembled Solana transaction itself or inside the proof.
 pub struct Owner<'a> {
     pub(super) sender: &'a dyn RingSender,
-    pub(super) nullifier_key: Option<&'a NullifierKey>,
+    pub(super) owner_key: Option<OwnerKey<'a>>,
     pub(super) transaction: ConfidentialTransaction,
     pub(super) interface_transfer_accounts: Vec<TransactInterfaceTransferAccounts>,
     pub(super) shape: Option<Shape>,
     pub(super) in_proof_owner: Option<&'a SigningKey>,
+    pub(super) authorizer: Option<&'a RingAuthorizer<'a>>,
     pub(super) token_account_setup: Vec<TokenAccountSetup>,
     /// The other owners of a signer rail spend, each signs the transaction.
     pub(super) co_owners: Vec<CoOwner<'a>>,
@@ -59,11 +62,12 @@ impl<'a> RingTransfer<Owner<'a>> {
             priority_fee: None,
             rail: Owner {
                 sender: input.sender,
-                nullifier_key: input.nullifier_key,
+                owner_key: input.nullifier_key.map(OwnerKey::Held),
                 transaction: input.transaction,
                 interface_transfer_accounts: Vec::new(),
                 shape: None,
                 in_proof_owner: None,
+                authorizer: None,
                 token_account_setup: Vec::new(),
                 co_owners: Vec::new(),
             },
@@ -84,6 +88,19 @@ impl<'a> RingTransfer<Owner<'a>> {
     #[must_use = "use the updated transfer"]
     pub fn with_in_proof_owner(mut self, signer: &'a SigningKey) -> Self {
         self.rail.in_proof_owner = Some(signer);
+        self
+    }
+
+    #[must_use = "use the updated transfer"]
+    pub(crate) fn with_authorizer(mut self, authorizer: &'a RingAuthorizer<'a>) -> Self {
+        self.rail.authorizer = Some(authorizer);
+        self
+    }
+
+    /// Completes the real inputs in place of a nullifier key, a relay refuses it.
+    #[must_use = "use the updated transfer"]
+    pub(crate) fn with_proof_authority(mut self, authority: &'a dyn ProofAuthority) -> Self {
+        self.rail.owner_key = Some(OwnerKey::Reserved(authority));
         self
     }
 
@@ -115,7 +132,7 @@ impl<'a> RingTransfer<Owner<'a>> {
     }
 }
 
-impl Owner<'_> {
+impl<'a> Owner<'a> {
     /// The rail pads under its own blinding seed, a caller never pads.
     pub(super) fn shape(&self, sender: &ShieldedAddress) -> Result<Shape, RingError> {
         match self.shape {
@@ -209,7 +226,10 @@ impl Owner<'_> {
                     Spend::InProofOwner(OwnerAuthorization::SigningKey(signer)),
                 )
             }
-            None => (proof_inputs.owner_signer_pubkeys()?, Spend::Owner),
+            None => (
+                proof_inputs.owner_signer_pubkeys()?,
+                Spend::Owner(self.authorizer),
+            ),
         };
         Ok(Staged {
             authority: self.authority()?,
@@ -224,9 +244,9 @@ impl Owner<'_> {
         })
     }
 
-    pub(super) fn authority(&self) -> Result<TransferAuthority, RingError> {
+    pub(super) fn authority(&self) -> Result<TransferAuthority<'a>, RingError> {
         Ok(TransferAuthority {
-            owner: self.nullifier_key.cloned(),
+            owner: self.owner_key,
             co_owners: self
                 .co_owners
                 .iter()

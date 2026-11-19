@@ -364,10 +364,14 @@ impl<'a> RingSubmission<'a> {
             let attempt = boxed(|| self.prepare(client, payer, signers)).await?;
             self.pending = Some(attempt);
         }
-        Ok(self
-            .pending
+        Ok(self.charges())
+    }
+
+    /// Empty before `prove` and once the submission settles.
+    pub fn charges(&self) -> &[OwnerDebit] {
+        self.pending
             .as_ref()
-            .map_or(&[], |attempt| &attempt.proved.charged_outflows))
+            .map_or(&[], |attempt| &attempt.proved.charged_outflows)
     }
 
     /// Inputs stay reserved while the sent signature is unresolved.
@@ -470,6 +474,43 @@ impl<'a> RingSubmission<'a> {
                 SubmissionStatus::Pending { .. } => tokio::time::sleep(PENDING_POLL).await,
             }
         }
+    }
+
+    /// An error after the broadcast carries the sent signature.
+    pub(crate) async fn land<R: AsyncRpc + SignatureHistory, I: RingIndexerBackend>(
+        &mut self,
+        client: &RingClient<R, I>,
+        payer: &(dyn Signer + Sync),
+        signers: &[&(dyn Signer + Sync)],
+    ) -> Result<Signature, RingError> {
+        self.prove(client, payer, signers).await?;
+        let settled = boxed(|| self.send_until_settled(client, payer, signers))
+            .await
+            .map_err(|error| match self.pending_transaction() {
+                Some(sent) => RingError::Unsettled {
+                    signature: sent.signatures[0],
+                    error: Box::new(error),
+                },
+                None => error,
+            })?;
+        match settled {
+            SettledSubmission::Confirmed { signature, .. } => Ok(signature),
+            SettledSubmission::Failed { signature, error } => {
+                Err(RingError::Rejected { signature, error })
+            }
+        }
+    }
+
+    /// The proven attempt alone, a reproof resends its instruction.
+    pub(crate) fn detached(self) -> Result<RingSubmission<'static>, RingError> {
+        let attempt = self.pending.ok_or(RingError::SubmissionUnproved)?;
+        Ok(RingSubmission {
+            operation: RingOperation::Instruction(attempt.proved.instruction.clone()),
+            priority_fee: self.priority_fee,
+            pending: Some(attempt),
+            attempts: self.attempts,
+            terminal: self.terminal,
+        })
     }
 
     /// Proves the next attempt, nothing held and every earlier signature final.

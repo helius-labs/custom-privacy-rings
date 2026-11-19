@@ -7,7 +7,7 @@ use custom_ring_interface::{
 };
 use solana_account::Account;
 use solana_address::Address;
-use spr_client::{AsyncRpc, OwnerAuthorization, Shape};
+use spr_client::{AsyncRpc, Shape};
 use spr_interface::{pda, SPL_TOKEN_2022_PROGRAM_ID, SPL_TOKEN_PROGRAM_ID};
 use spr_keypair::{NullifierKey, PublicKey, ShieldedAddress, SigningKey};
 use spr_transaction::{
@@ -29,8 +29,8 @@ use super::{
     public_owners::check_zero_key_inputs,
     sealed,
     selection::{payment_total, widest, Candidate, Funding},
-    spends_default_ring, transaction_key, transfer_key, CoOwnerKey, Rail, RailKind, RingSender,
-    RingTransfer, Spend, Staged, TransferAuthority,
+    spends_default_ring, transaction_key, transfer_key, CoOwnerKey, OwnerSource, Rail, RailKind,
+    RingSender, RingTransfer, Spend, Staged, TransferAuthority,
 };
 use crate::{
     client::{RingClient, RingIndexerBackend},
@@ -201,7 +201,7 @@ impl OwnerExposure {
 /// The owner's spends on an anonymous ring, no transaction signer names the owner by default.
 pub struct Anonymous<'a> {
     pub(super) owner: Owner<'a>,
-    pub(super) signer: &'a SigningKey,
+    pub(super) signer: OwnerSource<'a>,
     pub(super) exposure: OwnerExposure,
     /// In declared order, the order of their ring outputs.
     payments: Vec<AnonymousPayment>,
@@ -236,6 +236,13 @@ impl Rail for Anonymous<'_> {
 impl<'a> RingTransfer<Owner<'a>> {
     /// The hidden Ed25519 owner an anonymous ring proves, it must be the sender's signing key.
     pub fn with_anonymous_signer(self, signer: &'a SigningKey) -> RingTransfer<Anonymous<'a>> {
+        self.with_anonymous_owner(OwnerSource::Ready(signer.into()))
+    }
+
+    pub(crate) fn with_anonymous_owner(
+        self,
+        signer: OwnerSource<'a>,
+    ) -> RingTransfer<Anonymous<'a>> {
         RingTransfer {
             ring: self.ring,
             co_signers: self.co_signers,
@@ -419,7 +426,7 @@ pub(crate) struct HiddenOwner(pub Address);
 
 pub(crate) struct AnonymousSpend<'a> {
     pub token_owner: Option<Address>,
-    pub signer: OwnerAuthorization<'a>,
+    pub signer: OwnerSource<'a>,
 }
 
 impl HiddenOwner {
@@ -450,7 +457,7 @@ impl Anonymous<'_> {
         }
         let keys = self.owner.sender;
         let sender = keys.address()?;
-        if self.signer.pubkey() != sender.signing_pubkey {
+        if self.signer.public_key() != sender.signing_pubkey {
             return Err(RingError::AnonymousSignerMismatch);
         }
         let guarded = self
@@ -514,14 +521,14 @@ impl Anonymous<'_> {
             rail,
             sender,
             authority: TransferAuthority {
-                owner: self.owner.nullifier_key.cloned(),
+                owner: self.owner.owner_key,
                 co_owners,
             },
             owner_signers,
             interface_transfer_accounts: self.owner.interface_transfer_accounts.clone(),
             spend: Spend::Anonymous(Box::new(AnonymousSpend {
                 token_owner: exits.token_owner,
-                signer: OwnerAuthorization::SigningKey(self.signer),
+                signer: self.signer,
             })),
             presealed: None,
             list_salts: payment_salts(&self.payments)?,

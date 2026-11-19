@@ -65,6 +65,7 @@ function funded(treeId: number) {
     outputContext: {
       hash: utxo.hash(owner.shieldedAddress().nullifierPublicKey, treeId),
       tree: treeAddress(treeId),
+      treeId,
       leafIndex: 0n,
     },
     nullifier: proof.nullifier(),
@@ -197,7 +198,7 @@ async function persistedFixture(count = 1) {
         f.entry,
         {
           utxo,
-          outputContext: { hash: proof.hash(), tree: treeAddress(0), leafIndex: 1n },
+          outputContext: { hash: proof.hash(), tree: treeAddress(0), treeId: 0, leafIndex: 1n },
           nullifier: proof.nullifier(),
           spent: false,
         },

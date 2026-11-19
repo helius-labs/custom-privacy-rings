@@ -104,6 +104,7 @@ function fundedWallet(
       outputContext: {
         hash: filled(index + 1),
         tree: TREE,
+        treeId: 0,
         leafIndex: BigInt(index),
       },
       nullifier: filled(index + 20),
@@ -117,7 +118,7 @@ function fundedWallet(
 
 function ringUtxoWallet(
   keypair: ShieldedKeypair,
-  utxos: readonly (readonly [bigint, Address | undefined, Address?])[],
+  utxos: readonly (readonly [bigint, Address | undefined, number?])[],
 ): Wallet {
   const wallet = fundedWallet(keypair, []);
   wallet._replace({
@@ -130,7 +131,12 @@ function ringUtxoWallet(
         data: new Data(),
         ...(ringProgramId === undefined ? {} : { ringProgramId }),
       }),
-      outputContext: { hash: filled(index + 1), tree: tree ?? TREE, leafIndex: BigInt(index) },
+      outputContext: {
+        hash: filled(index + 1),
+        tree: treeAddress(tree ?? 0),
+        treeId: tree ?? 0,
+        leafIndex: BigInt(index),
+      },
       nullifier: filled(index + 20),
       spent: false,
     })),
@@ -238,7 +244,7 @@ describe("selectRingInputs", () => {
     const second = treeAddress(1);
     const wallet = ringUtxoWallet(spendingKeypair(), [
       [6n, RING],
-      [6n, RING, second],
+      [6n, RING, 1],
     ]);
     const selected = selectRingInputs({
       wallet,
@@ -255,8 +261,8 @@ describe("selectRingInputs", () => {
     const second = treeAddress(1);
     const wallet = ringUtxoWallet(spendingKeypair(), [
       [6n, RING],
-      [6n, RING, second],
-      [4n, RING, second],
+      [6n, RING, 1],
+      [4n, RING, 1],
     ]);
     const selected = selectRingInputs({
       wallet,
@@ -272,8 +278,8 @@ describe("selectRingInputs", () => {
   it("refuses a spend only three trees cover", () => {
     const wallet = ringUtxoWallet(spendingKeypair(), [
       [4n, RING],
-      [4n, RING, treeAddress(1)],
-      [4n, RING, treeAddress(2)],
+      [4n, RING, 1],
+      [4n, RING, 2],
     ]);
     expect(() =>
       selectRingInputs({
@@ -455,7 +461,7 @@ describe("ring approval summary", () => {
         ringProgramId: RING,
         wallet: ringUtxoWallet(keypair, [
           [6n, RING],
-          [6n, RING, second],
+          [6n, RING, 1],
         ]),
         keys: localKeys(keypair),
         feePayer: keypair.shieldedAddress().solanaAddress(),

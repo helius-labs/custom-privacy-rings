@@ -187,8 +187,8 @@ export type {
   SentPayment,
 } from "../state/anonymous-sync.js";
 export type { PlannedPayment } from "../operations/payments/output-rail.js";
-export { openRingNotes, syncRingWallet } from "../state/ring-sync.js";
-export type { RingNotes, RingSyncClient, RingSyncInput } from "../state/ring-sync.js";
+export { ringNoteCodec, syncRingWallet } from "../state/ring-sync.js";
+export type { RingNoteCodecInput, RingSyncClient, RingSyncInput } from "../state/ring-sync.js";
 export { LocalRingKeys, isRingKeys, ringWalletKeys } from "../state/ring-keys.js";
 export type {
   RingDeliveryRequest,
@@ -335,6 +335,8 @@ export {
   createRingExitSubmission,
   createRingTransferSubmission,
   createRingWithdrawalSubmission,
+  anonymousRingTransfers,
+  ownerRingTransfers,
   prepareRingEntryRelay,
   prepareRingExitRelay,
   prepareRingTransferRelay,
@@ -356,6 +358,7 @@ export type {
   RingExitTransactionParams,
   RingSpendParams,
   RingTransferClient,
+  RingTransfersInput,
   RingTransferTransactionParams,
   RingWithdrawalTransactionParams,
 } from "../operations/payments/transfer.js";

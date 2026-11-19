@@ -385,6 +385,7 @@ describe("delegate sources", () => {
         outputContext: {
           hash: small(leaf + 1),
           tree: fixture.client.tree,
+          treeId: fixture.client.treeId,
           leafIndex: BigInt(leaf),
         },
         nullifier: input.nullifier(),
@@ -503,7 +504,12 @@ describe("delegate sources", () => {
       );
       const note: WalletUtxo = {
         utxo: input.utxo,
-        outputContext: { hash: small(1), tree: fixture.client.tree, leafIndex: 0n },
+        outputContext: {
+          hash: small(1),
+          tree: fixture.client.tree,
+          treeId: fixture.client.treeId,
+          leafIndex: 0n,
+        },
         nullifier: input.nullifier(),
         spent: false,
       };

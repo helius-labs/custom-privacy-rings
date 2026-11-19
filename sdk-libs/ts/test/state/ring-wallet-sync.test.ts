@@ -19,6 +19,7 @@ import {
   bytesKey,
   ZERO_NULLIFIER_PK,
   encodeBase58,
+  treeAddress,
   encodeMergeOutputData,
   encryptMergeOutput,
   mergeOutputBlinding,
@@ -28,6 +29,8 @@ import {
 import {
   AssetRegistry,
   Wallet,
+  assetField,
+  decryptTransactions,
   ownerUtxoHash,
   type IndexedShieldedTransaction,
 } from "@heliuslabs/spr/transaction";
@@ -40,13 +43,19 @@ import {
 import { deliveredSlotSecret, slotTag } from "../../src/crypto/derivation/ring-stream.js";
 import { noteState } from "../../src/state/exposed-notes.js";
 import { LocalRingKeys } from "../../src/state/ring-keys.js";
-import { openRingNotes, syncRingWallet, type RingSyncClient } from "../../src/state/ring-sync.js";
+import { ringNoteCodec, syncRingWallet, type RingSyncClient } from "../../src/state/ring-sync.js";
 import { AnonymousWallet } from "../../src/state/anonymous-wallet.js";
 import { ViewingHistory } from "../../src/state/viewing-history.js";
-import { sealedNote } from "../helpers/ring-scan.js";
+import {
+  RING as SCAN_RING,
+  ScanIndexer,
+  ScanWallet,
+  sealedNote,
+  signature,
+} from "../helpers/ring-scan.js";
 
 const RING = address("9vyTbYGyh3cwxkAQpjjFQGXmdJP6p9B6YcQ5pNuXPNbh");
-const TREE = address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3");
+const TREE = treeAddress(DEFAULT_TREE_ID);
 const SALT = new Uint8Array(16).fill(7) as Bytes16;
 const FIRST_NULLIFIER = new Uint8Array(32).fill(9) as Bytes32;
 const AMOUNT = 25_000n;
@@ -99,29 +108,46 @@ function transaction(
   };
 }
 
-async function opened(
-  keys: Parameters<typeof openRingNotes>[0]["keys"],
-  transactions: readonly IndexedShieldedTransaction[],
-) {
-  return openRingNotes({ keys, assets: new AssetRegistry(), transactions });
+async function opened(keys: LocalRingKeys, transactions: readonly IndexedShieldedTransaction[]) {
+  const wallet = new Wallet({ identity: keys.address() });
+  await decryptTransactions({
+    wallet,
+    keys,
+    transactions,
+    ring: ringNoteCodec({ ringProgramId: RING, keys, assets: wallet.registry }),
+  });
+  return wallet.utxos();
 }
 
-describe("openRingNotes", () => {
-  it("opens a delivered note under ring keys by trial over the registered mints", async () => {
+describe("ringNoteCodec", () => {
+  it("opens a delivered note under ring keys and nothing for a stranger", async () => {
     const recipient = ShieldedKeypair.generate();
     const tx = ringBody(recipient);
     const notes = await opened(LocalRingKeys.fromKeypair(recipient), [tx]);
-    expect(notes.utxos.map((entry) => [entry.utxo.amount, entry.utxo.asset])).toEqual([
+    expect(notes.map((entry) => [entry.utxo.amount, entry.utxo.asset])).toEqual([
       [AMOUNT, SOL_MINT],
     ]);
-    expect(notes.utxos[0]?.outputContext.hash).toEqual(note(recipient).hash);
-    expect(notes.utxos[0]?.outputContext.tree).toBe(TREE);
-    expect(notes.utxos[0]?.spent).toBe(false);
-    expect(notes.pendingOpenings).toEqual([]);
-    const plain = await opened(LocalShieldedKeys.fromKeypair(recipient), [tx]);
-    expect(plain.utxos).toEqual([]);
+    expect(notes[0]?.outputContext.hash).toEqual(note(recipient).hash);
+    expect(notes[0]?.outputContext.tree).toBe(TREE);
+    expect(notes[0]?.spent).toBe(false);
     const stranger = await opened(LocalRingKeys.fromKeypair(ShieldedKeypair.generate()), [tx]);
-    expect(stranger).toEqual({ utxos: [], pendingOpenings: [] });
+    expect(stranger).toEqual([]);
+  });
+
+  it("credits a delivered note once core rebuilds its commitment", async () => {
+    const recipient = ShieldedKeypair.generate();
+    const keys = LocalRingKeys.fromKeypair(recipient);
+    const assets = new AssetRegistry();
+    const wallet = new Wallet({ identity: recipient.shieldedAddress() });
+    await decryptTransactions({
+      wallet,
+      keys,
+      transactions: [ringBody(recipient)],
+      ring: ringNoteCodec({ ringProgramId: RING, keys, assets }),
+    });
+    expect(wallet.ringBalances(true)).toEqual([
+      { ringProgramId: RING, assets: [{ assetId: 1n, mint: SOL_MINT, amount: AMOUNT, utxos: [] }] },
+    ]);
   });
 });
 
@@ -221,10 +247,10 @@ describe("ring bodies", () => {
     const notes = await opened(LocalRingKeys.fromKeypair(recipient), [
       ringBody(recipient, note(recipient).hash),
     ]);
-    expect(notes.utxos.map((entry) => [entry.utxo.amount, entry.utxo.asset])).toEqual([
+    expect(notes.map((entry) => [entry.utxo.amount, entry.utxo.asset])).toEqual([
       [AMOUNT, SOL_MINT],
     ]);
-    const [held] = notes.utxos;
+    const [held] = notes;
     if (held === undefined) throw new Error("no note");
     expect(noteState(held)).toBe("spendable");
   });
@@ -234,7 +260,7 @@ describe("ring bodies", () => {
     const hash = note(recipient).utxo.hash(ZERO_NULLIFIER_PK as Bytes32, DEFAULT_TREE_ID);
     const body = ringBody(recipient, hash, SOL_MINT, undefined, ZERO_NULLIFIER_PK as Bytes32);
     const notes = await opened(LocalRingKeys.fromKeypair(recipient), [body]);
-    const [held] = notes.utxos;
+    const [held] = notes;
     if (held === undefined) throw new Error("no note");
     expect(noteState(held)).toBe("exposedIfSpent");
   });
@@ -243,10 +269,7 @@ describe("ring bodies", () => {
     const recipient = ShieldedKeypair.generate();
     const keys = LocalRingKeys.fromKeypair(recipient);
     const other = new Uint8Array(32).fill(1) as Bytes32;
-    expect(await opened(keys, [ringBody(recipient, other)])).toEqual({
-      utxos: [],
-      pendingOpenings: [],
-    });
+    expect(await opened(keys, [ringBody(recipient, other)])).toEqual([]);
   });
 
   it("refuses the sync when the holder fails on a ring body slot", async () => {
@@ -303,6 +326,42 @@ function mergeOf(owner: ShieldedKeypair, nullifier: Bytes32, mint: Address) {
 }
 
 describe("syncRingWallet", () => {
+  it("credits an anonymous payment in one sync and drops it once a later sync reads its spend", async () => {
+    const indexer = new ScanIndexer();
+    const alice = new ScanWallet(1);
+    const bob = new ScanWallet(2);
+    const paid = await alice.pay(indexer, [
+      { to: bob.address, amount: 30n, reply: alice.replyTo() },
+    ]);
+    const ring = AnonymousWallet.create(new Wallet({ identity: bob.address }), bob.fresh());
+    const input = { wallet: ring, keys: bob.keys, client: indexer.client() };
+
+    await syncRingWallet(input);
+
+    expect(ring.wallet.ringBalances(true)).toEqual([
+      {
+        ringProgramId: SCAN_RING,
+        assets: [{ assetId: 1n, mint: SOL_MINT, amount: 30n, utxos: [] }],
+      },
+    ]);
+    expect(ring.pendingClaims().map((claim) => claim.claimedViewingKey)).toEqual([
+      alice.viewingKey,
+    ]);
+    expect(ring.wallet._state().nullifiers).toEqual(new Set());
+    const [received] = ring.notes();
+    if (received === undefined) throw new Error("no note");
+    indexer.publish({
+      ...paid,
+      slot: paid.slot + 1n,
+      txSignature: signature(99n),
+      outputSlots: [],
+      messages: [],
+      nullifiers: [received.nullifier],
+    });
+    await syncRingWallet(input);
+    expect(ring.wallet.ringBalances(true)).toEqual([]);
+  });
+
   it("reads a confidential payment under the slot tag it publishes", async () => {
     const recipient = ShieldedKeypair.generate();
     const ring = ringWallet(recipient);
@@ -472,7 +531,7 @@ describe("syncRingWallet", () => {
     const before = wallet._state();
 
     await expect(syncRingWallet({ wallet: ring, keys, client })).rejects.toMatchObject({
-      code: "WALLET_KEYS_BATCH_MISMATCH",
+      code: "TRANSACTION_KEYS_BATCH_MISMATCH",
     });
 
     expect(wallet._state()).toEqual(before);
@@ -523,7 +582,7 @@ describe("syncRingWallet", () => {
       ],
     };
     const notes = await opened(keys, [short, good]);
-    expect(notes.utxos.map((entry) => entry.utxo.amount)).toEqual([AMOUNT]);
+    expect(notes.map((entry) => entry.utxo.amount)).toEqual([AMOUNT]);
   });
 
   it("asks the holder nothing for a published key or first nullifier no agreement accepts", async () => {
@@ -538,46 +597,41 @@ describe("syncRingWallet", () => {
       { ...good, txViewingPublicKey: smallOrder },
       { ...good, nullifiers: [new Uint8Array(32).fill(0xff) as Bytes32] },
     ]);
-    expect(notes).toEqual({ utxos: [], pendingOpenings: [] });
+    expect(notes).toEqual([]);
     expect(asked).not.toHaveBeenCalled();
   });
 
-  it("keeps an unknown-mint note pending beside a payment, then promotes it on registration", async () => {
+  it("keeps a note under an unregistered mint pending and credits it once the mint registers", async () => {
     const recipient = ShieldedKeypair.generate();
     const keys = LocalRingKeys.fromKeypair(recipient);
     const ring = ringWallet(recipient);
     const unknownMint = encodeBase58(new Uint8Array(32).fill(1));
-    const pending = {
+    const unregistered = {
       ...ringBody(recipient, note(recipient, unknownMint).hash, unknownMint),
       txSignature: "2".repeat(64) as Signature,
     };
-    const client = syncClient([pending, ringBody(recipient)]);
+    const client = syncClient([unregistered, ringBody(recipient)]);
+    const sol = { assetId: 1n, mint: SOL_MINT, amount: AMOUNT, utxos: [] };
 
-    await syncRingWallet({ wallet: ring, keys, client });
-
-    // The payment stays visible, the pending note waits outside every balance and selection.
-    expect(ring.wallet.utxos().map((entry) => entry.utxo.asset)).toEqual([SOL_MINT]);
-    expect(ring.wallet.ringBalances()).toHaveLength(1);
-    expect(ring.pendingOpenings().map((entry) => entry.utxo.asset)).toEqual([unknownMint]);
-    const restored = AnonymousWallet.fromJson(ring.toJson());
-    expect(restored.pendingOpenings().map((entry) => entry.outputContext.hash)).toEqual([
-      pending.outputSlots[0]!.outputContext.hash,
-    ]);
-
-    const calls = client.getShieldedTransactionsByTags.mock.calls.length;
-    restored.wallet.ensureAsset(9n, unknownMint);
-    const report = await syncRingWallet({ wallet: restored, keys, client });
+    const report = await syncRingWallet({ wallet: ring, keys, client });
 
     expect(report.storedUtxos).toBe(1);
-    expect(restored.pendingOpenings()).toEqual([]);
-    expect(
-      restored.wallet
-        .utxos()
-        .map((entry) => entry.utxo.asset)
-        .sort(),
-    ).toEqual([SOL_MINT, unknownMint].sort());
-    for (const [request] of client.getShieldedTransactionsByTags.mock.calls.slice(calls))
-      expect(request.filters).toEqual({ slot: { gt: 20n } });
+    expect(ring.wallet.ringBalances(true)).toEqual([{ ringProgramId: RING, assets: [sol] }]);
+    expect(ring.pendingOpenings().map((entry) => entry.utxo.asset)).toEqual([unknownMint]);
+    expect(report.unregisteredRingNotes).toEqual(ring.pendingOpenings());
+    expect(report.unknownAssetFields).toEqual([assetField(unknownMint)]);
+    expect(ring.history().current().tagPosition).toBe(20n);
+    ring.wallet.ensureAsset(9n, unknownMint);
+    const promoted = await syncRingWallet({ wallet: ring, keys, client });
+
+    expect(promoted.storedUtxos).toBe(1);
+    expect(ring.pendingOpenings()).toEqual([]);
+    expect(ring.wallet.ringBalances(true)).toEqual([
+      {
+        ringProgramId: RING,
+        assets: [sol, { assetId: 9n, mint: unknownMint, amount: AMOUNT, utxos: [] }],
+      },
+    ]);
   });
 
   it("refuses a held key the history lists no entry for and moves nothing", async () => {

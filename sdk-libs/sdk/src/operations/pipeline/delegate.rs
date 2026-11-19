@@ -19,7 +19,7 @@ use super::{
     anonymous::SenderChange,
     canonical_shape, pad_under_rail, sealed,
     selection::{payment_total, spanned_trees, widest, Candidate},
-    shape_keyed, ApprovalDisclosure, CoOwner, CoOwnerKey, DeliveredRail, Rail, RailKind,
+    shape_keyed, ApprovalDisclosure, CoOwner, CoOwnerKey, DeliveredRail, OwnerKey, Rail, RailKind,
     RingTransfer, Spend, Staged, TransferAuthority,
 };
 use crate::client::{RingClient, RingIndexerBackend};
@@ -690,7 +690,7 @@ impl Delegated<'_> {
                     .iter()
                     .map(CoOwnerKey::of)
                     .collect::<Result<_, RingError>>()?,
-                owner: Some(self.source_key.clone()),
+                owner: Some(OwnerKey::Held(&self.source_key)),
             },
             owner_signers: Vec::new(),
             interface_transfer_accounts,

@@ -17,7 +17,7 @@ use zolana_ring_policy::OwnerDebit;
 
 use super::{
     approval_totals_of, charged_outflows_of, owner::deposit_funder, Anonymous, Delegated, Owner,
-    OwnerExposure, Planned, Rail, RingTransfer, Sealed,
+    OwnerExposure, OwnerKey, Planned, Rail, RingTransfer, Sealed,
 };
 use crate::{
     relay_message::{
@@ -89,7 +89,11 @@ impl RingTransfer<Anonymous<'_>> {
         WalletRelay {
             transfer: self,
             owner: &self.rail.owner,
-            signer: self.rail.signer,
+            signer: self
+                .rail
+                .signer
+                .key()
+                .ok_or(RingError::MissingAnonymousSigner)?,
             exit_token_owner: self.rail.exit_token_owner,
             owner_exposed: self.rail.exposure == OwnerExposure::Accepted,
         }
@@ -147,7 +151,8 @@ impl<'t, R: Rail> WalletRelay<'t, R> {
         let nullifier_key = staged
             .authority
             .owner
-            .clone()
+            .and_then(OwnerKey::held)
+            .cloned()
             .ok_or(RingError::MissingAnonymousSigner)?;
         let token_account_setup = self.owner.token_account_setup.clone();
         // The relay refuses a setup naming no withdrawal, only an owner's terms read it here.
@@ -226,7 +231,8 @@ impl<R: Rail> RingTransfer<R> {
         let nullifier_key = staged
             .authority
             .owner
-            .clone()
+            .and_then(OwnerKey::held)
+            .cloned()
             .ok_or(RingError::NullifierKeyMismatch)?;
         let terms = SealedTerms {
             owners: Vec::new(),

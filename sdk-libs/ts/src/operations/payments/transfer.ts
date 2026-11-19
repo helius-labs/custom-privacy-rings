@@ -1,7 +1,12 @@
 /** Ring transfers from a wallet, every flow selects, reserves, approves, proves and compiles through one driver. */
 import type { Instruction } from "@solana/kit";
 
-import type { BlockhashProvider, WalletKeys } from "@heliuslabs/spr/client";
+import type {
+  BlockhashProvider,
+  PreparedOwnerSignature,
+  RingTransfers,
+  WalletKeys,
+} from "@heliuslabs/spr/client";
 import {
   reserveEntries,
   reservedUtxoKeys,
@@ -58,6 +63,7 @@ import {
   type AnonymousTransfer,
   type AnonymousTransferClient,
   type CustomRingTransferClient,
+  type CustomRingTransferInput,
   type PreparedRingRelay,
   type RingTransferApproval,
 } from "./transfer-rails.js";
@@ -72,6 +78,7 @@ import {
 import {
   RingTransactionSubmission,
   checkRetainedEntries,
+  provenComputeUnitLimit,
   provenRingAttempt,
   type RingSubmissionAttempt,
   type RingSubmissionBuildState,
@@ -1026,4 +1033,95 @@ function checkRequestTerms(params: SendParams, recipient: RingAddress | RingPaym
 
 export function assetLabel(asset: Address): string {
   return asset === SOL_MINT ? "SOL" : asset;
+}
+
+export type RingTransfersInput = Readonly<{
+  client: RingTransferClient;
+  ringProgramId: Address;
+  assets: CustomRingTransferInput["assets"];
+  listSalts?: readonly RingListSalt[];
+}>;
+
+type RingPaymentRail = Readonly<{
+  proveApproved(
+    client: RingTransferClient,
+    approval: RingTransferApproval,
+    context?: RequestContext,
+  ): Promise<ProvenRingTransfer>;
+}>;
+
+function ringTransfers(
+  input: RingTransfersInput,
+  rail: (
+    request: Parameters<RingTransfers["proveRingTransfer"]>[0],
+    ring: Omit<RingTransfersInput, "client">,
+    signer: AnonymousSpendSigner | undefined,
+  ) => RingPaymentRail,
+): RingTransfers {
+  const { client, ...ring } = input;
+  return {
+    ringProgramId: ring.ringProgramId,
+    proveRingTransfer: async (request, context) => {
+      request.transfer.withOutputTreeId(
+        (await resolveRingOutputTree(client, undefined, context)).treeId,
+      );
+      let authorized: PreparedOwnerSignature | undefined;
+      const approval: RingTransferApproval = {
+        transaction: {},
+        approve: async ({ proofInputs }) => {
+          authorized = await request.authorize(proofInputs);
+        },
+      };
+      const { owner } = request;
+      const signer =
+        owner === undefined
+          ? undefined
+          : {
+              publicKey: () => owner,
+              sign: async () => {
+                if (authorized === undefined) throw new RingError("RING_OWNER_UNAUTHORIZED");
+                return authorized.ownerSignature;
+              },
+            };
+      const proven = await rail(request, ring, signer).proveApproved(client, approval, context);
+      return {
+        instruction: await proven.instruction(),
+        computeUnitLimit: provenComputeUnitLimit(proven),
+      };
+    },
+  };
+}
+
+/** Rust `OwnerRingTransfers`, an `owner` signing inside the proof is refused on default-ring inputs. */
+export function ownerRingTransfers(input: RingTransfersInput): RingTransfers {
+  return ringTransfers(input, ({ transfer, payment, keys }, ring, signer) => {
+    transfer.send(payment.recipient, payment.asset, payment.amount);
+    const rail = CustomRingTransfer.new({ ...ring, keys, transfer });
+    return signer === undefined ? rail : rail.withInProofOwner(signer);
+  });
+}
+
+/** Rust `AnonymousRingTransfers`, a payee missing from `payees` must be under the zero key. */
+export function anonymousRingTransfers(
+  input: RingTransfersInput & Readonly<{ payees: readonly RingAddress[] }>,
+): RingTransfers {
+  const { payees, ...rest } = input;
+  return ringTransfers(rest, ({ transfer, payment, keys }, ring, signer) => {
+    if (signer === undefined) throw new RingError("RING_ANONYMOUS_SIGNER_REQUIRED");
+    const recipient = payment.recipient.toBytes();
+    const to =
+      payees.find(
+        (address) =>
+          address.ringProgramId === ring.ringProgramId &&
+          equalBytes(address.recipient.toBytes(), recipient),
+      ) ??
+      new RingAddress({
+        recipient: payment.recipient,
+        ringProgramId: ring.ringProgramId,
+        listSalt: new Uint8Array(32) as Bytes32,
+      });
+    return CustomRingTransfer.new({ ...ring, keys, transfer })
+      .withAnonymousSigner(signer)
+      .withPayment({ to, asset: payment.asset, amount: payment.amount, reply: null });
+  });
 }

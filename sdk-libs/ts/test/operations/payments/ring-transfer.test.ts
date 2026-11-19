@@ -992,6 +992,7 @@ describe("signer set and owner debits", () => {
         outputContext: {
           hash: utxo.proofInput(key, client.treeId).hash(),
           tree: client.tree,
+          treeId: client.treeId,
           leafIndex: 0n,
         },
         nullifier,
@@ -1364,6 +1365,7 @@ describe("delegate move builder", () => {
         outputContext: {
           hash: small(index + 1),
           tree: fixture.client.tree,
+          treeId: fixture.client.treeId,
           leafIndex: BigInt(index),
         },
         nullifier: small(index + 100),
@@ -1484,6 +1486,7 @@ describe("ring transfer builder", () => {
         outputContext: {
           hash: small(index + 1),
           tree: fixture.client.tree,
+          treeId: fixture.client.treeId,
           leafIndex: BigInt(index),
         },
         nullifier: small(index + 100),
@@ -1582,6 +1585,7 @@ describe("direct confidential spend", () => {
           outputContext: {
             hash: small(1),
             tree: fixture.client.tree,
+            treeId: fixture.client.treeId,
             leafIndex: 0n,
           },
           nullifier: small(100),

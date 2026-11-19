@@ -309,7 +309,7 @@ export type StagedTransferInput = Readonly<{
   /** An enrolled subject on a ring reading a salted list needs its salt here. */
   listSalts?: readonly RingListSalt[];
   transaction?: RingTransactionFrame;
-  approve?: (coSigners: readonly Address[]) => Promise<void>;
+  approve?: (coSigners: readonly Address[], proofInputs: SppProofInputs) => Promise<void>;
 }>;
 
 /** Rust `Pipeline::assemble` and `Assembled::prove`, neither proof is an input to the other. */
@@ -318,7 +318,7 @@ export function proveStagedTransfer(
   context?: RequestContext,
 ): Promise<ProvenRingTransfer> {
   return assembleStagedTransfer(input, context, async (assembled) => {
-    await input.approve?.(assembled.coSigners);
+    await input.approve?.(assembled.coSigners, assembled.proofInputs);
     return proveAssembled(input, assembled, context);
   });
 }

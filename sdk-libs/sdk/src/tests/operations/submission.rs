@@ -386,6 +386,20 @@ async fn an_unknown_transfer_holds_its_attempt_and_blocks_a_new_proof() {
 }
 
 #[tokio::test]
+async fn a_landing_whose_status_read_fails_returns_the_sent_signature() {
+    let cluster = Cluster::default();
+    cluster.set(|state| state.transfer = Status::LookupFails);
+    let payer = keypair(1);
+    let landed = held_transfer(&payer)
+        .land(&client(&cluster), &payer, &[])
+        .await;
+    assert!(matches!(
+        landed,
+        Err(RingError::Unsettled { signature, .. }) if signature == cluster.last_signature()
+    ));
+}
+
+#[tokio::test]
 async fn an_expired_transfer_proves_again() {
     let cluster = Cluster::default();
     cluster.set(|state| state.transfer = Status::Absent);

@@ -89,8 +89,7 @@ function indexedFrame(fixture: Fixture): IndexedShieldedTransaction {
 }
 
 describe("ring deposit", () => {
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("proves a confidential deposit as a transfer that spends no note, the funder signing its leg", async () => {
+  it("proves a confidential deposit as a transfer that spends no note, the funder signing its leg", async () => {
     const fixture = await ringFixture();
     const recipient = ShieldedKeypair.generate();
     fixture.enroll(recipient.shieldedAddress());
@@ -143,8 +142,7 @@ describe("ring deposit", () => {
     expect(fixture.ringRequests).toEqual([]);
   });
 
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("pays an anonymous recipient a plan slot it finds through its normal sync", async () => {
+  it("pays an anonymous recipient a plan slot it finds through its normal sync", async () => {
     const fixture = await ringFixture({ mode: "anonymous" });
     const recipient = ShieldedKeypair.generate();
     fixture.enroll(recipient.shieldedAddress());
@@ -177,8 +175,7 @@ describe("ring deposit", () => {
     ]);
   });
 
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("refuses a recipient of the other ring mode and a ring address of another ring before proving", async () => {
+  it("refuses a recipient of the other ring mode and a ring address of another ring before proving", async () => {
     const confidential = await ringFixture();
     const anonymous = await ringFixture({ mode: "anonymous" });
     const owner = ShieldedKeypair.generate();
@@ -211,8 +208,7 @@ describe("ring deposit", () => {
     expect([...confidential.sppCalls, ...anonymous.sppCalls]).toEqual([]);
   });
 
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("relays a deposit on the deposit rail under the funder's request text and refuses a funding fee payer", async () => {
+  it("relays a deposit on the deposit rail under the funder's request text and refuses a funding fee payer", async () => {
     const fixture = await ringFixture({ mode: "anonymous" });
     const owner = ShieldedKeypair.generate();
     fixture.enroll(owner.shieldedAddress());

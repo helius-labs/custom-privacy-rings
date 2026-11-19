@@ -4,24 +4,21 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use custom_ring_interface::{ring_body_output, stream::confidential_slot_tag};
+use custom_ring_interface::stream::confidential_slot_tag;
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{AsyncRpc, IndexerRpcConfig};
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
-use spr_keypair::ShieldedAddress;
 use spr_transaction::{
     verify_owned, DecryptionResult, OwnedUtxos, ShieldedKeys, ShieldedTransaction, WalletUtxo,
 };
 use zolana_ring_keys::RingKeys;
-use zolana_ring_transaction::{open_recipient_body, AnonymousOutput, OpenedBody, RingAssets};
+use zolana_ring_transaction::RingAssets;
 
 use crate::{
-    anonymous::{published_note, AnonymousSync, AuditorRecovery},
+    anonymous::{AnonymousSync, AuditorRecovery},
     anonymous_wallet::{AnonymousWallet, PendingNote, ScanCommit},
-    delivered::{
-        assign_nullifiers, confidential_delivered, RingDeliveredCandidate, RingDeliveryContext,
-    },
+    delivered::RingNoteCodec,
     exposed_notes::{verify_ring_owned, RingOwnedUtxos},
     history::HistoryPosition,
     merge_audit::RingMergeBody,
@@ -276,9 +273,6 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
         &self,
         transactions: &[ShieldedTransaction],
     ) -> Result<OpenedRows, AnonymousError> {
-        // 1. Every opening below is a candidate until step 3, rows from the caller or the indexer earn no trust here.
-        let address = self.keys.address()?;
-        let candidates = confidential_delivered(self.keys, transactions)?;
         let mut decrypted = DecryptionResult {
             spent_nullifiers: transactions
                 .iter()
@@ -286,21 +280,31 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
                 .collect(),
             ..DecryptionResult::default()
         };
-        let mut pending = Vec::new();
-        for candidate in &candidates {
-            if let Some(opened) = open_recipient_candidate(&address, self.assets, candidate)? {
-                keep_opened(
-                    &mut decrypted,
-                    &mut pending,
-                    candidate.tx,
-                    candidate.slot_index as usize,
-                    opened,
-                )?;
+        // 1. A row earns no trust, core counts an opening only once it rebuilds the published commitment.
+        let mut rings: BTreeMap<Address, Vec<ShieldedTransaction>> = BTreeMap::new();
+        for tx in transactions {
+            if let Some(ring) = tx.ring_program_id {
+                rings.entry(ring).or_default().push(tx.clone());
             }
         }
-        assign_nullifiers(self.keys, &mut decrypted.utxos)?;
-        // 2. Only a commitment rebuilt under the owner proves a note, a pending note rebuilt its own in the opener.
-        assign_nullifiers(self.keys, &mut pending)?;
+        let mut pending = Vec::new();
+        for (ring, events) in &rings {
+            let codec = RingNoteCodec {
+                ring: *ring,
+                keys: self.keys,
+                assets: self.assets,
+            };
+            pending.extend(decrypted.extend_with_ring(
+                self.keys,
+                events,
+                self.assets.registry(),
+                &codec,
+            )?);
+        }
+        // 2. Core also decodes a ring event's default-ring exits, the core scan holds those.
+        decrypted
+            .utxos
+            .retain(|note| note.utxo.ring_program_id.is_some());
         let RingOwnedUtxos {
             owned,
             exposed_if_spent,
@@ -371,53 +375,6 @@ fn union_events(
         .collect()
 }
 
-/// A note under an unregistered mint stays out of `utxos`, waits in `pending` and names its mint.
-fn keep_opened(
-    decrypted: &mut DecryptionResult,
-    pending: &mut Vec<WalletUtxo>,
-    tx: &ShieldedTransaction,
-    position: usize,
-    opened: OpenedBody,
-) -> Result<(), AnonymousError> {
-    match opened {
-        OpenedBody::Note(note) => decrypted.utxos.push(published_note(tx, position, note)?),
-        OpenedBody::UnknownMint(note) => {
-            decrypted.unknown_mints.insert(note.utxo.asset.asset);
-            pending.push(published_note(tx, position, note)?);
-        }
-    }
-    Ok(())
-}
-
-/// `None` off a ring body output or on a body that rebuilds nothing.
-fn open_recipient_candidate(
-    address: &ShieldedAddress,
-    assets: &RingAssets,
-    candidate: &RingDeliveredCandidate<'_>,
-) -> Result<Option<OpenedBody>, AnonymousError> {
-    let tx = candidate.tx;
-    let Some(slot) = tx.output_slots.get(candidate.slot_index as usize) else {
-        return Ok(None);
-    };
-    let (Some((ciphertext, _)), Some(context)) =
-        (ring_body_output(&slot.payload), RingDeliveryContext::of(tx))
-    else {
-        return Ok(None);
-    };
-    let Ok(body) = open_recipient_body(ciphertext, &candidate.slot_secret) else {
-        return Ok(None);
-    };
-    Ok(AnonymousOutput {
-        ring: context.ring,
-        owner: address,
-        utxo_hash: &slot.output_context.hash,
-        tree_id: slot.output_context.tree_id,
-        assets,
-    }
-    .open_body(&body)
-    .unwrap_or(None))
-}
-
 /// Refuses a first nullifier or ring data hash off the field, a Poseidon error past here fails the read.
 pub(crate) fn is_ring_merge(tx: &ShieldedTransaction) -> bool {
     tx.ring_program_id.is_some()
@@ -466,7 +423,8 @@ mod tests {
     };
     use spr_event::{encode_merge_output_data, MergeOutputDataRef};
     use spr_keypair::{
-        viewing_key::ViewTag, KeypairError, ShieldedKeypair, SigningKey, ViewingKey, X25519Pubkey,
+        viewing_key::ViewTag, KeypairError, ShieldedAddress, ShieldedKeypair, SigningKey,
+        ViewingKey, X25519Pubkey,
     };
     use spr_transaction::{
         instructions::merge::{merge_output_blinding, merge_output_key, MergeOutputPlaintext},

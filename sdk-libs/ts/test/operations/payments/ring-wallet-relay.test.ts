@@ -142,7 +142,7 @@ function owner(fixture: Fixture, count: number, asset: Address = SOL_MINT) {
       const hash = utxo.proofInput(keypair.nullifierPublicKey(), TREE_ID).hash();
       return {
         utxo,
-        outputContext: { hash, tree: TREE, leafIndex: BigInt(index) },
+        outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: BigInt(index) },
         nullifier: utxo.nullifier(hash, keypair.nullifierKey()),
         spent: false,
       };
@@ -342,8 +342,7 @@ describe("wallet relay", () => {
     expect(failedRelay.calls).toEqual(["prepareRelay", "getRelayStatus"]);
   });
 
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("relays a deposit into a key escrow ring with no opening request", async () => {
+  it("relays a deposit into a key escrow ring with no opening request", async () => {
     const fixture = await ringFixture({ mode: "confidential", records: [] });
     const network = walletNetwork(fixture);
     const recipient = ShieldedKeypair.generate().shieldedAddress();
