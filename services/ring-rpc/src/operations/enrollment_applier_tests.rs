@@ -149,7 +149,7 @@ impl ChainSubmit for StubChain {
     }
 
     async fn simulate(&self, _message: &VersionedMessage) -> Result<Simulation, RingRpcError> {
-        unreachable!("an applier sends without a simulation")
+        Ok(Simulation::Passed)
     }
 }
 
@@ -547,3 +547,132 @@ async fn a_pass_drops_a_rotation_the_running_leaves_refuse() {
 
 #[path = "enrollment_registration_tests.rs"]
 mod enrollment_registration_tests;
+
+#[tokio::test]
+async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
+    use custom_ring_sdk::VaultEnrollmentMessage;
+    use zolana_ring_client::rpc::{
+        SignedVaultEnrollment, VaultEnrollmentBlock, VaultEnrollmentRequest,
+    };
+
+    let chain = StubChain::new();
+    let fee = signature_fees(2);
+    let service = budgeted(&chain, fee).await;
+    let writer = service.payer();
+    chain.policy(
+        RING,
+        RingRoles {
+            enrollment_writer: writer,
+            ..RingRoles::zeroed()
+        },
+    );
+    let program = Address::new_from_array([0x63; 32]);
+    let manager = Keypair::new();
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../test-vectors/registry/pda-enrollment.json"
+    ))
+    .unwrap();
+    let inner = hex::decode(vector["enroll"].as_str().unwrap()).unwrap();
+    let request = VaultEnrollmentRequest {
+        ring: RING.into(),
+        program: program.into(),
+        manager: manager.pubkey().into(),
+        vault: Address::find_program_address(&[b"owner"], &program)
+            .0
+            .into(),
+        payload: spr_indexer_api::Base64String(inner),
+    };
+    assert_eq!(
+        refusal(service.prepare_vault(request.clone()).await),
+        EnrollmentRefusal::NotServed
+    );
+    let service = service.with_vault_programs([program]);
+    let block = service.prepare_vault(request.clone()).await.unwrap();
+    let compile = |request: &VaultEnrollmentRequest, block: &VaultEnrollmentBlock| {
+        VaultEnrollmentMessage {
+            request,
+            writer,
+            registry: REGISTRY,
+        }
+        .compile(block)
+        .unwrap()
+    };
+    let unissued = VaultEnrollmentBlock {
+        blockhash: spr_indexer_api::Hash([9; 32]),
+        ..block.clone()
+    };
+    let unissued_bytes = compile(&request, &unissued).serialize();
+    assert_eq!(
+        refusal(
+            service
+                .submit_vault(SignedVaultEnrollment {
+                    enrollment: request.clone(),
+                    block: unissued,
+                    signature: manager.sign_message(&unissued_bytes).into(),
+                })
+                .await
+        ),
+        EnrollmentRefusal::InvalidWrite
+    );
+    let message = compile(&request, &block);
+    let bytes = message.serialize();
+    let mut signed = SignedVaultEnrollment {
+        enrollment: request,
+        block,
+        signature: Keypair::new().sign_message(&bytes).into(),
+    };
+    assert_eq!(
+        refusal(service.submit_vault(signed.clone()).await),
+        EnrollmentRefusal::InvalidWrite
+    );
+    assert!(chain.sent.lock().unwrap().is_empty());
+    signed.signature = manager.sign_message(&bytes).into();
+    let submitted = service.submit_vault(signed.clone()).await.unwrap();
+    let vault_rotation = VaultEnrollmentRequest {
+        payload: spr_indexer_api::Base64String(
+            hex::decode(vector["rotate"].as_str().unwrap()).unwrap(),
+        ),
+        ..signed.enrollment.clone()
+    };
+    let rotation_bytes = compile(&vault_rotation, &signed.block).serialize();
+    assert_eq!(
+        refusal(
+            service
+                .submit_vault(SignedVaultEnrollment {
+                    enrollment: vault_rotation.clone(),
+                    block: signed.block.clone(),
+                    signature: manager.sign_message(&rotation_bytes).into(),
+                })
+                .await
+        ),
+        EnrollmentRefusal::InFlight
+    );
+    assert_eq!(
+        service.submit_vault(signed.clone()).await.unwrap(),
+        submitted
+    );
+    chain.landed(ChainOutcome::Confirmed { slot: SLOT });
+    service.flush().await;
+    assert_eq!(
+        refusal(
+            service
+                .submit_vault(SignedVaultEnrollment {
+                    enrollment: vault_rotation,
+                    block: signed.block.clone(),
+                    signature: manager.sign_message(&rotation_bytes).into(),
+                })
+                .await
+        ),
+        EnrollmentRefusal::Budget
+    );
+    let sent = chain.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1], sent[0]);
+    assert_eq!(sent[0].message, message);
+    assert_eq!(
+        sent[0].signatures,
+        [payer().sign_message(&bytes), manager.sign_message(&bytes)]
+    );
+    assert_eq!(submitted.0, sent[0].signatures[0]);
+    assert_eq!(service.budget.spent().total, fee);
+}

@@ -1,7 +1,7 @@
 /**
  * The owner's signature over an enrollment write, Rust `SignedEnrollment::sign`. The owner signs
  * no transaction, Ring RPC batches the signed write under the ring's `enrollmentWriter` role and
- * storage checks the signature through the ed25519 precompile. A PDA holds no key and cannot enroll.
+ * storage checks the signature through the ed25519 precompile.
  *
  * Read after `enrollment.ts` and `viewing-rotation.ts`, the two modules that build the write.
  */

@@ -17,6 +17,9 @@ mod delegate_source;
 mod deposit;
 #[path = "operations/enrollment.rs"]
 pub mod enrollment;
+#[path = "operations/vault_enrollment.rs"]
+mod vault_enrollment;
+pub use vault_enrollment::{EnrollVault, VaultEnrollmentMessage};
 mod error;
 #[path = "state/heap.rs"]
 mod heap;

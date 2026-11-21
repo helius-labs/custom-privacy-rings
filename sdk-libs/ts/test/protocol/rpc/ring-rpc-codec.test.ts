@@ -801,9 +801,9 @@ describe("ring rpc refusals", () => {
     expect(ringRpcRefusalName(-32216)).toBe("oversized");
   });
 
-  it("names -32180 to -32186 as the enrollment refusals and frees the relayed enrollment codes", () => {
+  it("names -32180 to -32187 as the enrollment refusals and frees the relayed enrollment codes", () => {
     expect(
-      [-32180, -32181, -32182, -32183, -32184, -32185, -32186].map(ringRpcRefusalName),
+      [-32180, -32181, -32182, -32183, -32184, -32185, -32186, -32187].map(ringRpcRefusalName),
     ).toEqual([
       "enrollmentNotServed",
       "enrollmentRingMissing",
@@ -812,6 +812,7 @@ describe("ring rpc refusals", () => {
       "enrollmentsFull",
       "enrollmentBudget",
       "enrollmentRingsFull",
+      "enrollmentInFlight",
     ]);
     expect(
       [-32202, -32205, -32213, -32214, -32215].map(ringRpcRefusalName).filter(Boolean),

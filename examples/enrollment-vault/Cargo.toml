@@ -1,0 +1,16 @@
+[package]
+name = "enrollment-vault"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+custom-ring-interface = { path = "../../program-libs/interface", default-features = false, features = ["enrollment-cpi"] }
+pinocchio = { workspace = true, features = ["cpi"] }
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+check-cfg = ['cfg(target_os, values("solana"))']

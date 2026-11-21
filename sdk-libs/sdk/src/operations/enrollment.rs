@@ -42,7 +42,6 @@ use crate::{
 #[path = "../tests/operations/enrollment.rs"]
 mod tests;
 
-/// The owner signs with its own key, a PDA holds none and cannot enroll.
 #[must_use]
 pub struct Enroll<'a> {
     pub ring: CustomRing,

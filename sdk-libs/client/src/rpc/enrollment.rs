@@ -15,7 +15,7 @@ use solana_signer::{Signer, SignerError};
 use spr_indexer_api::{Base64String, RpcMethod, SerializablePubkey, SerializableSignature};
 use thiserror::Error;
 
-use super::SUBMIT_ENROLLMENT;
+use super::{PREPARE_VAULT_ENROLLMENT, SUBMIT_ENROLLMENT, SUBMIT_VAULT_ENROLLMENT};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -60,7 +60,6 @@ impl RpcMethod for SubmitEnrollment {
 }
 
 impl SignedEnrollment<'_> {
-    /// `owner` must be the write's owner, a PDA holds no key and cannot enroll.
     pub fn sign<S: Signer + ?Sized>(
         self,
         owner: &S,
@@ -101,4 +100,45 @@ impl SubmitEnrollmentRequest {
         }
         Ok(write)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct VaultEnrollmentRequest {
+    pub ring: SerializablePubkey,
+    pub program: SerializablePubkey,
+    pub manager: SerializablePubkey,
+    pub vault: SerializablePubkey,
+    pub payload: Base64String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct VaultEnrollmentBlock {
+    pub blockhash: spr_indexer_api::Hash,
+    pub last_valid_block_height: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SignedVaultEnrollment {
+    pub enrollment: VaultEnrollmentRequest,
+    pub block: VaultEnrollmentBlock,
+    pub signature: SerializableSignature,
+}
+
+pub struct PrepareVaultEnrollment;
+
+impl RpcMethod for PrepareVaultEnrollment {
+    const NAME: &'static str = PREPARE_VAULT_ENROLLMENT;
+    type Request = VaultEnrollmentRequest;
+    type Response = VaultEnrollmentBlock;
+}
+
+pub struct SubmitVaultEnrollment;
+
+impl RpcMethod for SubmitVaultEnrollment {
+    const NAME: &'static str = SUBMIT_VAULT_ENROLLMENT;
+    type Request = SignedVaultEnrollment;
+    type Response = SerializableSignature;
 }

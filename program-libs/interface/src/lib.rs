@@ -53,6 +53,8 @@ pub mod output;
 pub mod owner_grant;
 #[path = "proof/owner_signature.rs"]
 pub mod owner_signature;
+#[path = "instructions/pda_enrollment.rs"]
+pub mod pda_enrollment;
 #[path = "proof/ring_keys.rs"]
 pub mod ring_keys;
 #[path = "codec/spp.rs"]
@@ -72,6 +74,7 @@ pub mod tracking;
 pub use owner_grant::OwnerGrant;
 #[path = "instructions/transact.rs"]
 pub mod transact;
+#[cfg(feature = "verifying-keys")]
 #[path = "proof/verification.rs"]
 mod verification;
 #[path = "instructions/withdrawals.rs"]
@@ -102,6 +105,7 @@ pub use spp::*;
 pub use state::*;
 pub use statement::*;
 pub use transact::*;
+#[cfg(feature = "verifying-keys")]
 pub use verification::{RegisterKeyCheck, RingProof};
 
 pub const STORAGE_PROGRAM_ID: solana_address::Address =

@@ -375,6 +375,7 @@ mod tests {
             Full,
             Budget,
             RingsFull,
+            InFlight,
         ] {
             let code = match refusal {
                 NotServed => -32180,
@@ -384,6 +385,7 @@ mod tests {
                 Full => -32184,
                 Budget => -32185,
                 RingsFull => -32186,
+                InFlight => -32187,
             };
             assert_eq!(
                 ErrorObjectOwned::from(RingRpcError::Enrollment(refusal)).code(),

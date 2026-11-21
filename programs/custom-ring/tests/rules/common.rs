@@ -212,6 +212,10 @@ impl Ring {
         ring
     }
 
+    pub fn install_owner_program(&mut self, program: Address, binary: &str) {
+        self.svm.add_program(program, &deployed(binary)).unwrap();
+    }
+
     /// The registry accounts `read` passes after the ring account.
     pub fn registries(&self, read: RootRead) -> Vec<AccountMeta> {
         self.read::<RingPolicy>(&policy_pda())

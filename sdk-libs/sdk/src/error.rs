@@ -329,6 +329,10 @@ pub enum RingError {
     EnrollmentBatchSize { writes: u64 },
     #[error("the enrollment of {owner} takes the owner's own signature")]
     EnrollmentSigner { owner: Address },
+    #[error("the vault manager {manager} must be a wallet key other than the enrollment writer")]
+    VaultManager { manager: Address },
+    #[error("ring rpc answered with a signature the enrollment writer {writer} did not make")]
+    WriterSignature { writer: Address },
     #[error(transparent)]
     EnrollmentRequest(#[from] EnrollmentRequestError),
     #[error("ring rpc failed the relay with {reason}")]

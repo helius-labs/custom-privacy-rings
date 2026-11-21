@@ -160,7 +160,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             }
             .applier()
             .await
-            .context("loading the registered enrollment rings")?,
+            .context("loading the registered enrollment rings")?
+            .with_vault_programs(args.enrollment_vault_programs.iter().copied()),
         );
         info!("enrollment writer {}", applier.payer());
         if args.enrollment_budget_lamports == 0 {

@@ -26,7 +26,7 @@ pub fn process_enroll_batch_ix(
     let ring = iter.next_account("ring")?;
     let ring_auth = iter.next_mut("ring_auth")?;
     let tracking = iter.next_mut("tracking_registry")?;
-    let instructions_sysvar = iter.next_account("instructions_sysvar")?;
+    let owner_authorization = iter.next_account("owner_authorization")?;
     let storage_program = iter.next_account("storage_program")?;
 
     // 1. Only the enrollment writer submits, into the registry the ring pinned at creation.
@@ -48,7 +48,7 @@ pub fn process_enroll_batch_ix(
         &[
             &*ring_auth,
             &*tracking,
-            &*instructions_sysvar,
+            &*owner_authorization,
             &*storage_program,
         ],
         &storage_data,
