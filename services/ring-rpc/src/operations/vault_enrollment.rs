@@ -4,7 +4,6 @@ use custom_ring_sdk::VaultEnrollmentMessage;
 use solana_address::Address;
 use solana_hash::Hash;
 use solana_signature::Signature;
-use solana_signer::Signer;
 use spr_indexer_api::SerializableSignature;
 use zolana_ring_client::rpc::{
     SignedVaultEnrollment, VaultEnrollmentBlock, VaultEnrollmentRequest,
@@ -121,7 +120,7 @@ impl EnrollmentApplier {
         {
             return Err(EnrollmentRefusal::InvalidWrite.into());
         }
-        let writer_signature = self.payer.sign_message(&bytes);
+        let writer_signature = self.payer.sign(&bytes).await?;
         let transaction = presigned_transaction(
             &message,
             &[

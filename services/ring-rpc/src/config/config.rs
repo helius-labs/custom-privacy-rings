@@ -142,8 +142,7 @@ pub struct ServeArgs {
     #[arg(
         long = "enrollment-vault-program",
         env = "RING_RPC_ENROLLMENT_VAULT_PROGRAMS",
-        value_delimiter = ',',
-        requires = "enrollment_applier_key_file"
+        value_delimiter = ','
     )]
     pub enrollment_vault_programs: Vec<Address>,
     /// Serve plain HTTP on a public address and accept plain HTTP origins, test deployments only.
@@ -434,6 +433,7 @@ impl ServeArgs {
         }
         if !applier
             && (!self.enrollment_apply_rings.is_empty()
+                || !self.enrollment_vault_programs.is_empty()
                 || self.enrollment_budget_lamports != 0
                 || self.enrollment_ring_budget_lamports.is_some()
                 || self.enrollment_max_rings.is_some())
@@ -643,6 +643,12 @@ mod tests {
             (
                 "a named ring without an applier",
                 vec!["--enrollment-apply-ring", &ring],
+                custody(&[]),
+                Enrollment,
+            ),
+            (
+                "a vault program without an applier",
+                vec!["--enrollment-vault-program", &ring],
                 custody(&[]),
                 Enrollment,
             ),
