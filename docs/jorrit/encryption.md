@@ -1,5 +1,52 @@
+# Encryption
+
+## Current encoding sizes
+
+These sizes count the encryption fields and discovery tags carried by the compact ring transfer instruction. They assume ring outputs only, no default-ring inputs, and no application payloads, replies or extra messages.
+
+`M` is the number of published output slots, including recipient payments, change and dummies. Compact padding omitted from the instruction adds no bytes.
+
+| Component | Confidential | Anonymous |
+|---|---:|---:|
+| Transaction viewing public key | 32 B | 32 B |
+| Salt | 16 B | 16 B |
+| Encrypted auditor envelope: viewing secret and spent-note count | 33 B | 33 B |
+| Encrypted recipient viewing keys for the auditor | `32 × M` B | `32 × M` B |
+| Encrypted output records | `105 × M` B | `105 × M` B |
+| Output discovery tags | `8 × M` B | `8 × M` B |
+| Encrypted sender bundle | — | 32 B |
+| Sender bundle discovery tag | — | 32 B |
+| **Total** | **`81 + 145 × M` B** | **`145 + 145 × M` B** |
+
+Each 105-byte ring output record contains its kind (1 B), amount (8 B), owner key (32 B), mint (32 B) and blinding (32 B). The nullifier public key is omitted from a ring record; the reader uses the owner's registration or the record's zero-key flag. The recipient and auditor open the same record, so there is one encrypted copy per output.
+
+| Published output slots (`M`) | Confidential bytes | Anonymous bytes |
+|---|---:|---:|
+| 1 | 226 | 290 |
+| 2 | 371 | 435 |
+| 4 | 661 | 725 |
+| 8 | 1,241 | 1,305 |
+| 16 | 2,401 | 2,465 |
+
+Counting ciphertext alone gives `33 + 137 × M` bytes for confidential transfers and `65 + 137 × M` for anonymous transfers. The totals above also include the public viewing key, salt and discovery tags. AES-CTR adds no authentication tag or transmitted block padding.
+
+The complete instruction additionally carries output commitments (`32 × M` B), proofs, nullifiers, root revisions, counts, the exit bitmap and authorization fields. Transaction signatures, account addresses and the message header add further bytes. A row in this table therefore does not establish that the complete transaction fits.
+
+### Additional fields
+
+- **Default-ring entry:** the auditor envelope grows from 33 B to `41 + 136 × N` B, adding `8 + 136 × N` bytes. `N` is the published input/nullifier count, including padding and address inputs, rather than just the number of default-ring notes. The instruction can require additional public authorization fields too.
+- **Application payloads:** with `HAS_DATA`, each output gets a 2-byte body-length field. Each non-exit output also carries the frame's shared encrypted payload width, including its internal encoding and padding.
+- **Replies:** add a 2-byte shared length and `L` bytes per non-exit output, where `L >= 97`. Slots without a reply carry filler of the same length.
+- **Default-ring exits:** each exit carries a 137-byte audit record, a full 32-byte owner tag and a separate SPP recipient body. The table's ring-output formula does not cover exits.
+
+Sources: [audit stream lengths](../../program-libs/interface/src/proof/audit_stream.rs), [compact transfer encoder](../../program-libs/interface/src/instructions/transact.rs), [output body encoding](../../program-libs/interface/src/codec/output.rs). Complete transaction profiles are measured separately in [ring-frame-fit.md](../../test-vectors/proof/ring-frame-fit.md).
+
+## Earlier plaintext-layout draft
+
+The structs below describe an earlier layout and encryption guarantees. The current size tables above follow the implemented compact encoding.
+
 ```rust
-// Current custom-ring implementation: standard anonymous transfers, merges and key registration.
+// Earlier custom-ring layout: standard anonymous transfers, merges and key registration.
 // Logical plaintext layouts; Vec/Option grouping is not the wire encoding.
 // Layout reference: https://github.com/helius-labs/zolana/blob/alex/anonymous-layout-e2e/docs/spec.md#anonymous
 //
