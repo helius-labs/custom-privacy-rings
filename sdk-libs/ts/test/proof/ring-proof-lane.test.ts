@@ -729,6 +729,7 @@ describe("prover/ring/params.go", () => {
       hidden: false,
       delegate: false,
       sender: zero,
+      delegateAsset: zero,
       partyIdentities: repeat(ANONYMOUS_PARTIES, zero),
     };
     const keys = Object.keys(ringProofRequestBody(request));

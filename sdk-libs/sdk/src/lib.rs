@@ -17,6 +17,9 @@ mod delegate_source;
 mod deposit;
 #[path = "operations/enrollment.rs"]
 pub mod enrollment;
+#[path = "operations/vault_enrollment.rs"]
+mod vault_enrollment;
+pub use vault_enrollment::{EnrollVault, VaultEnrollmentMessage};
 mod error;
 #[path = "state/heap.rs"]
 mod heap;
@@ -95,21 +98,21 @@ pub use crate::{
         MERGE_DEFAULT_INPUT_COUNT,
     },
     pipeline::{
-        entry_shape_keyed, shape_keyed, transfer_key, Anonymous, AnonymousMove, AnonymousPayment,
-        AnonymousTransfer, ApplicationData, CachedNote, CoOwner, CustomRingTransfer,
-        CustomRingTransferInput, DelegateCandidates, DelegateFunding, DelegateMove, DelegateOutput,
-        DelegatePayment, DelegateSource, DelegateTransfer, DelegateTransferInput,
-        DelegateWithdrawal, Delegated, EntrySpend, NoteData, Owner, OwnerExposure,
-        ProvenRingTransfer, PublicOwnerTransfer, PublicOwners, Rail, RailKind, ReadCache, Relayed,
-        RelayedTransfer, RelayedTransferInput, RingPayment, RingSender, RingTransfer, SealRow,
-        TransferKey, UnsignedRelay,
+        entry_shape_keyed, shape_keyed, sole_mint, transfer_key, Anonymous, AnonymousMove,
+        AnonymousPayment, AnonymousTransfer, ApplicationData, CachedNote, CoOwner,
+        CustomRingTransfer, CustomRingTransferInput, DelegateCandidates, DelegateFunding,
+        DelegateMint, DelegateMintAccount, DelegateMove, DelegateOutput, DelegatePayment,
+        DelegateSource, DelegateTransfer, DelegateTransferInput, DelegateWithdrawal, Delegated,
+        EntrySpend, NoteData, Owner, OwnerExposure, ProvenRingTransfer, PublicOwnerTransfer,
+        PublicOwners, Rail, RailKind, ReadCache, Relayed, RelayedTransfer, RelayedTransferInput,
+        RingPayment, RingSender, RingTransfer, SealRow, TransferKey, UnsignedRelay,
     },
     records::{
         AuthorityRecordUpdate, MemberRecords, OwnerSaltCheck, RecordUpdateService,
         RecordUpdateTarget, SaltedOwnerCheck, WalletRecordUpdate,
     },
     relay::{
-        PendingSignature, PreparedAuthorityTransfer, PreparedRelay, RelaySent,
+        DelegateRequester, PendingSignature, PreparedAuthorityTransfer, PreparedRelay, RelaySent,
         RequestedAuthorityTransfer, RingRelay,
     },
     relay_message::{

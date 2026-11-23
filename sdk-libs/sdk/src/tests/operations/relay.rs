@@ -687,7 +687,7 @@ mod delegate_message {
     use std::sync::Mutex;
 
     use custom_ring_interface::{
-        compute_unit_limit, tag, InstructionTag, RingRail, RingTransactData,
+        compute_unit_limit, tag, CustomRingError, InstructionTag, RingRail, RingTransactData,
     };
     use solana_instruction::Instruction;
     use solana_signer::Signer;
@@ -705,9 +705,9 @@ mod delegate_message {
         relay_message::ExpectedDelegate,
         tests::support::{pinned_vector, relay_message, verdict, MessageCase, MessageVector},
         AllowedNullifiers, CoOwner, CustomRingConfig, DelegateMove, DelegateOutput,
-        DelegatePayment, DelegateSource, DelegateSourceError, DelegateWithdrawal, MessageMismatch,
-        RelaySent, RelayedTransferInput, RequestedAuthorityTransfer, ResolvedSource, RingTransfer,
-        SourceEnrollment,
+        DelegatePayment, DelegateRequester, DelegateSource, DelegateSourceError,
+        DelegateWithdrawal, MessageMismatch, RelaySent, RelayedTransferInput,
+        RequestedAuthorityTransfer, ResolvedSource, RingTransfer, SourceEnrollment,
     };
 
     const FEE_PAYER: Address = Address::new_from_array([0x44; 32]);
@@ -1034,7 +1034,7 @@ mod delegate_message {
                 quote: &quote(),
                 output_tree_id: crate::tests::support::TREE_ID,
                 config,
-                allowed: self.allowed(&asked.transfer).await,
+                requester: DelegateRequester::Ring(self.allowed(&asked.transfer).await),
             })
             .unwrap()
         }
@@ -1175,7 +1175,7 @@ mod delegate_message {
         let config = ring().require_config(relay.client.zolana()).await.unwrap();
         let asked = request(delegate.pubkey());
         let prepared = RequestedAuthorityTransfer {
-            allowed: relay.allowed(&asked.transfer).await,
+            requester: DelegateRequester::Ring(relay.allowed(&asked.transfer).await),
             request: asked,
             quote: &quote(),
             output_tree_id: crate::tests::support::TREE_ID,
@@ -1562,16 +1562,18 @@ mod delegate_message {
             let stolen = relay.victim_funded(&asked, &member, &victim).await;
 
             let mut paid = expected.clone();
-            paid.allowed = relay
-                .allowed(&AuthorityTransfer {
-                    exits: Vec::new(),
-                    withdrawals: Vec::new(),
-                    sources: vec![SerializableShieldedAddress(
-                        victim.shielded_address().unwrap(),
-                    )],
-                    payments: Vec::new(),
-                })
-                .await;
+            paid.requester = DelegateRequester::Ring(
+                relay
+                    .allowed(&AuthorityTransfer {
+                        exits: Vec::new(),
+                        withdrawals: Vec::new(),
+                        sources: vec![SerializableShieldedAddress(
+                            victim.shielded_address().unwrap(),
+                        )],
+                        payments: Vec::new(),
+                    })
+                    .await,
+            );
             assert_eq!(
                 paid.check(&relay_message(&FEE_PAYER, std::slice::from_ref(&stolen), UNITS).0)
                     .map(drop),
@@ -1589,6 +1591,45 @@ mod delegate_message {
     }
 
     #[tokio::test]
+    async fn a_requester_states_its_kind_and_a_stale_config_refuses_the_ring_delegate() {
+        let (relay, signed) = relayed_signature(Answer::Honest).await;
+        signed.unwrap();
+        let honest = relay.honest.lock().unwrap().clone().unwrap();
+        let message = Answer::Honest.message(&honest, relay.delegate);
+        let mut config = ring().require_config(relay.client.zolana()).await.unwrap();
+        let asked = request(relay.delegate);
+        let allowed = relay.allowed(&asked.transfer).await;
+        let expected = |config: &CustomRingConfig, requester| {
+            ExpectedDelegate::new(&RequestedAuthorityTransfer {
+                requester,
+                request: asked.clone(),
+                quote: &quote(),
+                output_tree_id: crate::tests::support::TREE_ID,
+                config,
+            })
+        };
+        let records_only = expected(&config, DelegateRequester::Mint(Mint::SOL.asset)).unwrap();
+        assert!(records_only.check(&message.0).is_ok());
+        assert!(matches!(
+            expected(
+                &config,
+                DelegateRequester::Mint(Address::new_from_array([7; 32]))
+            ),
+            Err(RingError::Program(CustomRingError::UnauthorizedDelegate))
+        ));
+        config.delegate = Some(Address::new_from_array([8; 32]));
+        assert!(matches!(
+            expected(&config, DelegateRequester::Ring(allowed.clone())),
+            Err(RingError::Program(CustomRingError::UnauthorizedDelegate))
+        ));
+        config.delegate = None;
+        assert!(matches!(
+            expected(&config, DelegateRequester::Ring(allowed)),
+            Err(RingError::MissingDelegate)
+        ));
+    }
+
+    #[tokio::test]
     async fn an_allowed_set_for_other_sources_is_refused() {
         let delegate = keypair(7);
         let relay = DelegateRelay::new(Answer::Honest, delegate.pubkey());
@@ -1600,7 +1641,7 @@ mod delegate_message {
         )];
 
         let refused = RequestedAuthorityTransfer {
-            allowed: relay.allowed(&other).await,
+            requester: DelegateRequester::Ring(relay.allowed(&other).await),
             request: asked,
             quote: &quote(),
             output_tree_id: crate::tests::support::TREE_ID,
@@ -1836,7 +1877,7 @@ mod delegate_message {
             quote: &quote(),
             output_tree_id: crate::tests::support::TREE_ID,
             config: &config,
-            allowed: allowed_as_pinned(&sources, spends),
+            requester: DelegateRequester::Ring(allowed_as_pinned(&sources, spends)),
         })
         .unwrap();
         for case in vector.cases {
@@ -1928,7 +1969,7 @@ mod delegate_message {
             quote: &quote,
             output_tree_id: crate::tests::support::TREE_ID,
             config: &config,
-            allowed: allowed_as_pinned(&sources, honest_nullifiers),
+            requester: DelegateRequester::Ring(allowed_as_pinned(&sources, honest_nullifiers)),
         })
         .unwrap();
         assert_eq!(vector.cases.len(), Answer::ALL.len() + 1);

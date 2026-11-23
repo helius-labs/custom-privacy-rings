@@ -1,11 +1,11 @@
 //! A transfer the wallet sealed and Ring RPC proves, pays and sends.
 
-use custom_ring_interface::{CustomRingError, RingMode, RingRail};
+use custom_ring_interface::{RingMode, RingRail};
 use solana_address::Address;
 use spr_client::{prover::transact::OwnerAuthorization, AsyncRpc, SettlementAccountValidation};
 use spr_interface::shape::Shape;
 use zolana_ring_client::rpc::{RelayProofInputs, RelayRail};
-use zolana_ring_transaction::{RingDelivery, RingOutputRail};
+use zolana_ring_transaction::{ClassifiedInput, RingDelivery, RingOutputRail};
 
 use super::{
     anonymous::{
@@ -13,6 +13,7 @@ use super::{
         OwnerExposure,
     },
     audit::PresealedAudit,
+    delegate::DelegateSigner,
     public_owners::check_zero_key_inputs,
     sealed, shape_keyed, ApprovalDisclosure, CoOwner, CoOwnerKey, DeliveredRail, Rail, RailKind,
     RingTransfer, SealRow, Spend, Staged, TransferAuthority,
@@ -219,13 +220,17 @@ impl Relayed<'_> {
                 }
             }
             RelayRail::Delegate { delegate, plan } => {
-                match config.delegate {
-                    None => return Err(RingError::MissingDelegate),
-                    Some(stored) if stored != *delegate => {
-                        return Err(CustomRingError::UnauthorizedDelegate.into())
-                    }
-                    Some(_) => {}
+                let mint = DelegateSigner {
+                    config,
+                    delegate: *delegate,
+                    spent: proof_inputs
+                        .input_utxos
+                        .iter()
+                        .filter(|input| input.is_note())
+                        .map(|input| input.utxo.asset.asset),
                 }
+                .mint(client)
+                .await?;
                 let ring_rail = RingRail::delegate(config.mode);
                 if !Shape::new(proof_inputs.input_utxos.len(), n_outputs).is_ring_authority() {
                     return Err(RingError::ShapeUnkeyed { rail: ring_rail });
@@ -243,6 +248,7 @@ impl Relayed<'_> {
                     Vec::new(),
                     Spend::Delegate {
                         delegate: *delegate,
+                        mint,
                         rail: ring_rail,
                     },
                 )

@@ -454,6 +454,7 @@ function request(item: Json): RingProofRequest {
       hidden: flag(item["hidden"]),
       delegate: flag(item["delegate"]),
       sender: field(item["sender"]),
+      delegateAsset: field(item["delegateAsset"]),
       partyIdentities: fields(item["partyIdentities"]),
       approvalMask: count(item["approvalMask"]),
       ...(item["approvalTotals"] === undefined

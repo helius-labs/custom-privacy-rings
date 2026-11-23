@@ -8,7 +8,7 @@
 //! 1. The ring account.
 //! 2. The registries `RootRead` names, own then curator then tracking, each compared with the ring's pin.
 //! 3. One `[record, signer]` pair per co-signer the demand needs, SPP does not receive them.
-//! 4. The delegate's signer on the authority rails, SPP does not receive it.
+//! 4. The delegate's signer on the authority rails, then the mint when its permanent delegate signs, SPP receives neither.
 //! 5. SPP's list, forwarded whole. Prefix, input trees, nullifier PDAs, owner run, settlement groups, cache accounts.
 //!
 //! On return these facts hold:
@@ -38,7 +38,7 @@ use spr_interface::instruction::instruction_data::settlement_accounts;
 
 use crate::instructions::{
     instruction_runtime::{PlacedRingAuth, RingAuth},
-    loader::{check_funding_signer, CoSigners, RegistrySlots},
+    loader::{check_funding_signer, load_mint_delegate_asset, CoSigners, RegistrySlots},
     public_legs::public_slots,
 };
 
@@ -48,6 +48,7 @@ pub(super) struct TransactAccounts {
     pub roots: TransferRoots,
     /// The in-proof owner's identity, zero otherwise.
     pub sender: [u8; 32],
+    pub delegate_asset: [u8; 32],
     /// SPP's owner signer run, default on the authority rails.
     pub signers: SignerSet,
     /// The co-signers' identities, zeros off the anonymous frame.
@@ -108,8 +109,27 @@ impl TransactCheck<'_> {
         )?;
         // 4. The pairs and the delegate slot size the ring's prefix, every SPP index below counts from `spp`.
         let delegate_slot = co_signers_start + co_signers.accounts();
+        let delegate_signer = match self.signer {
+            RailSigner::Delegate { .. } => accounts
+                .get(delegate_slot)
+                .filter(|signer| signer.is_signer()),
+            RailSigner::Owners | RailSigner::Payer => None,
+        };
+        // A signer other than the ring's delegate names its mint in the next slot.
+        let mint_delegate =
+            delegate_signer.filter(|signer| ring.delegate() != Some(signer.address()));
+        let delegate_asset = match mint_delegate {
+            Some(signer) => {
+                load_mint_delegate_asset(account_at(accounts, delegate_slot + 1)?, signer.address())
+                    .map_err(|error| match ring.delegate() {
+                        None => CustomRingError::DelegateDisabled,
+                        Some(_) => error,
+                    })?
+            }
+            None => [0; 32],
+        };
         let spp_start = match self.signer {
-            RailSigner::Delegate { .. } => delegate_slot + 1,
+            RailSigner::Delegate { .. } => delegate_slot + 1 + usize::from(mint_delegate.is_some()),
             RailSigner::Owners | RailSigner::Payer => delegate_slot,
         };
         let spp = accounts
@@ -171,11 +191,10 @@ impl TransactCheck<'_> {
                 };
                 (sender, signer_set(owners, slots)?)
             }
-            RailSigner::Delegate { delegate, .. } => {
+            RailSigner::Delegate { .. } => {
                 // SPP's authority rail admits no owner signer, the delegate slot is the move's one
                 // authorization beside governance's rail flag in `RingConfig`.
-                let signer = account_at(accounts, delegate_slot)?;
-                if !signer.is_signer() || signer.address() != &delegate {
+                if delegate_signer.is_none() {
                     return Err(CustomRingError::UnauthorizedDelegate.into());
                 }
                 ([0; 32], SignerSet::default())
@@ -207,6 +226,7 @@ impl TransactCheck<'_> {
         Ok(TransactAccounts {
             roots: bound,
             sender,
+            delegate_asset,
             signers,
             party_identities,
             public_slots,

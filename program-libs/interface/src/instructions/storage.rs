@@ -291,6 +291,13 @@ impl<'a> EnrollmentWrite<'a> {
         }
     }
 
+    pub fn check_pda_owner(&self, registry_authority: &Address) -> Result<(), StorageError> {
+        if self.owner == registry_authority || self.owner.is_on_curve() {
+            return Err(StorageError::OwnerSignatureMismatch);
+        }
+        Ok(())
+    }
+
     pub fn entry(&self) -> Result<TrackingEntry, StorageError> {
         match self.change {
             EnrollmentChange::Enroll { ix, .. } => TrackingEntry::from_enroll(self.owner, ix),

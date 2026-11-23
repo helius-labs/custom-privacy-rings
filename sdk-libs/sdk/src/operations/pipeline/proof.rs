@@ -66,6 +66,7 @@ impl Assembled {
             hidden: parts.anonymous.is_some(),
             delegate: parts.rail.is_delegate(),
             sender: self.sender,
+            delegate_asset: frame.delegate_asset,
             party_identities: self.party_identities.to_vec(),
             tracking: frame.policy.tracking_params()?,
             policy: frame.policy.params(&PolicyProving {

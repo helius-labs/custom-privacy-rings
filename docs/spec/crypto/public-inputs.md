@@ -4,7 +4,7 @@ Every ring proof has one public input. It is the fold of a statement its verifie
 
 | Statement | Fold | Elements | Verified by |
 |---|---|---|---|
-| Transfer | `HashChain4` | 43 | `Transfer`, `AuthorityTransfer` |
+| Transfer | `HashChain4` | 44 | `Transfer`, `AuthorityTransfer` |
 | Apply records | `HashChain4` | 9, or 11 on a private key | Storage `Update` |
 | Apply enrollments | `HashChain4` | 8 | Storage `ApplyEnrollments` |
 | Register key | `HashChain4` | 10 | Storage `Enroll`, first enrollment |
@@ -23,13 +23,13 @@ One statement serves every rail. It covers the audit, the policy and the approva
   in_proof, hidden, delegate,
   approval_mask, approval_totals, no_spend,
   output_count, record_chain,
-  input_count, private_tx_hash, sender,
+  input_count, private_tx_hash, sender, delegate_asset,
   party_0 .. party_4,
   signer_count, signer_chain,
   policy_hash, own_root, curator_root, tracking_root,
   (asset_k, net_k, gross_k) for k in 0..3,
   withdrawal_hash,
-  43 ]                                the element count, itself included
+  44 ]                                the element count, itself included
 ```
 
 The head has 10 elements:
@@ -64,6 +64,7 @@ The rail bits:
 - `no_spend` is `1` when `R`, the sealed count of spent notes, is `0`. The proof sets it from `R`. The program then demands no owner signer and no `TRANSFERS` co-signer. An address input still needs SPP's authorization.
 - `output_count` is `right_align(m)`, and `input_count` is `right_align(n)`. The circuit holds every spent note below `n`.
 - `sender` is `solana_owner_identity` of the framed owner key on the in-proof rail, and `0` on every other rail.
+- `delegate_asset` is `hash_bytes(mint)` when the signer of `AuthorityTransfer` is the Token-2022 permanent delegate of `mint` and not the ring's delegate, and `0` on every other frame. The program reads the delegate from the mint account at execution. The circuit holds the asset of every live input and output to a nonzero value, an exit included.
 - `party_0 .. party_4` are the co-signers in account order. Each is `solana_owner_identity`, and `0` when absent. Every party is `0` off an anonymous ring. The circuit refuses a hidden owner equal to any nonzero party, so a hidden owner holding a co-signer key cannot approve its own outflow.
 - `signer_count` is the number of distinct keys in the SPP owner signer run, deduplicated by first occurrence. `signer_chain` is `HashChain4` of their identities in that order, zero-filled to `S`, and `0` when the count is `0`. The delegate rails bind count `0` and chain `0`.
 - `policy_hash` is the ring account's written hash on a policy ring, else `0`. `own_root` is the ring's own registry root at the frame's `own_revision` on a ring with own records, else `0`. `curator_root` is the curator root at the frame's `curator_revision` on a policy ring with a curator, else `0`. The delegate rails read no policy root, so all three are `0` there. `tracking_root` is the tracking registry root at the frame's `tracking_revision` on every rail. The program refuses a revision below the highest tracking floor of the salted sources the frame reads.

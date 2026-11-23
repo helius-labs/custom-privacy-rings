@@ -256,6 +256,7 @@ describe("ring-statements.json", () => {
     signers: { count: vector.signer_count, chain: field(vector.signer_chain) },
     inputCount: vector.input_count,
     privateTxHash: field(vector.private_tx_hash),
+    delegateAsset: field(vector.delegate_asset),
     roots: {
       policyHash: field(vector.policy_hash),
       ownRoot: field(vector.own_root),
@@ -296,7 +297,7 @@ describe("ring-statements.json", () => {
     ).toThrow(expect.objectContaining({ code: "RING_INVALID_LENGTH" }));
   });
 
-  it("closes 43 elements and binds the recipient keys through the envelope digest", () => {
+  it("closes 44 elements and binds the recipient keys through the envelope digest", () => {
     const zero = (): Bytes32 => new Uint8Array(32) as Bytes32;
     const keys = new Uint8Array(64).fill(7);
     const statement: TransferStatement = {
@@ -326,8 +327,8 @@ describe("ring-statements.json", () => {
       withdrawalHash: zero(),
     };
     const elements = transferStatementElements(statement);
-    expect(elements).toHaveLength(43);
-    expect(elements[42]).toEqual(field("2b".padStart(64, "0")));
+    expect(elements).toHaveLength(44);
+    expect(elements[43]).toEqual(field("2c".padStart(64, "0")));
     expect(elements[7]).toEqual(envelopeDigest(statement.head.envelope, keys));
     expect(elements[7]).not.toEqual(ciphertextDigest(statement.head.envelope));
     const changed = keys.slice();
@@ -508,9 +509,7 @@ describe("ring rails", () => {
     expect(ringRail(transfer, { mode: "anonymous" })).toBe("anonymous");
     expect(ringRail(authorityTransfer, { mode: "confidential", delegate })).toBe("delegate");
     expect(ringRail(authorityTransfer, { mode: "anonymous", delegate })).toBe("anonymousDelegate");
-    expect(() => ringRail(authorityTransfer, { mode: "anonymous" })).toThrow(
-      ringError("DelegateDisabled"),
-    );
+    expect(ringRail(authorityTransfer, { mode: "anonymous" })).toBe("anonymousDelegate");
     expect(() => ringRailOf(merge, "confidential")).toThrow(ringError("InvalidInstructionData"));
   });
 });

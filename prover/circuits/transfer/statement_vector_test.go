@@ -49,6 +49,7 @@ type transferStatementVector struct {
 	InputCount      int                     `json:"input_count"`
 	PrivateTxHash   string                  `json:"private_tx_hash"`
 	Sender          *string                 `json:"sender"`
+	DelegateAsset   string                  `json:"delegate_asset"`
 	PartyIdentities []string                `json:"party_identities"`
 	SignerSlots     int                     `json:"signer_slots"`
 	Signers         []string                `json:"signers"`
@@ -82,7 +83,7 @@ func vectorOf(t *testing.T, name, family string, s ringtransfer.Statement, run [
 		FirstNullifier: ringtest.FieldHex(s.Head.FirstNullifier), RingID: ringtest.FieldHex(s.Head.RingProgramID),
 		TxViewingU: hex.EncodeToString(s.Head.TxViewingU[:]), AuditorPubkey: hex.EncodeToString(s.Head.AuditorPubkey[:]),
 		Envelope: hex.EncodeToString(s.Head.Envelope), RecipientKeys: hex.EncodeToString(s.Head.Keys), Salt: hex.EncodeToString(s.Head.Salt[:]), Layout: s.Head.Layout,
-		OutputCapacity: len(s.Outputs), InputCount: s.InputCount, PrivateTxHash: ringtest.FieldHex(s.PrivateTxHash),
+		OutputCapacity: len(s.Outputs), InputCount: s.InputCount, PrivateTxHash: ringtest.FieldHex(s.PrivateTxHash), DelegateAsset: ringtest.FieldHex(s.Cells[1]),
 		SignerSlots: slots, Signers: append([]string{}, hexes(run)...), SignerCount: s.SignerCount, SignerChain: ringtest.FieldHex(s.SignerChain),
 		PolicyHash: ringtest.FieldHex(s.PolicyHash), OwnRoot: ringtest.FieldHex(s.OwnRoot), CuratorRoot: ringtest.FieldHex(s.CuratorRoot),
 		TrackingRoot: ringtest.FieldHex(s.TrackingRoot),
@@ -102,14 +103,14 @@ func vectorOf(t *testing.T, name, family string, s ringtransfer.Statement, run [
 	return v
 }
 
-// fixedStatementElements is TRANSFER_FIXED_ELEMENTS less the sender, the sender and party cells, the public slots and the close add to it.
+// fixedStatementElements is TRANSFER_FIXED_ELEMENTS less the sender and delegate asset cells, those, the party cells, the public slots and the close add to it.
 const fixedStatementElements = 10 + 3 + 3 + 2 + 2 + 2 + 4 + 1
 
 func confidentialCase(t *testing.T, name string, w ringtransfer.Confidential) transferStatementVector {
 	t.Helper()
 	b := w.Build(t)
 	values, elements := b.Values(t), b.Statement(t)
-	if want := fixedStatementElements + 1 + shared.AnonymousParties + 9 + 1; len(elements) != want {
+	if want := fixedStatementElements + 2 + shared.AnonymousParties + 9 + 1; len(elements) != want {
 		t.Fatalf("%s holds %d elements, the statement fixes %d", name, len(elements), want)
 	}
 	v := vectorOf(t, name, "confidential", values, b.Run, w.Shape.Inputs, &b.Circuit.Policy, elements)
@@ -124,12 +125,12 @@ func anonymousCase(t *testing.T, name string, w ringtransfer.Anonymous) transfer
 	t.Helper()
 	b := w.Build(t)
 	values, elements := b.Values(t), b.Statement(t)
-	if want := fixedStatementElements + 1 + shared.AnonymousParties + 9 + 1; len(elements) != want {
+	if want := fixedStatementElements + 2 + shared.AnonymousParties + 9 + 1; len(elements) != want {
 		t.Fatalf("%s holds %d elements, the statement fixes %d", name, len(elements), want)
 	}
 	v := vectorOf(t, name, "anonymous", values, b.Run, w.Shape.Inputs, &b.Circuit.Policy, elements)
 	v.PublicOwners, v.Delegate = w.Rail == ringtransfer.PublicOwners, values.RailBits[2]
-	v.PartyIdentities = hexes(values.Cells[1:])
+	v.PartyIdentities = hexes(values.Cells[2:])
 	requireSolved(t, b.Circuit)
 	return v
 }
@@ -145,6 +146,8 @@ func TestTransferStatementVector(t *testing.T) {
 	coOwned.CoOwners = []*big.Int{coOwner}
 	inProofCoOwned := onRail(confidential2, ringtransfer.InProof)
 	inProofCoOwned.CoOwners = []*big.Int{coOwner}
+	mintDelegate := onRail(confidential2, ringtransfer.Delegate)
+	mintDelegate.DelegateAsset = asset
 	withData := ringtransfer.Signed(dataKey2)
 	withData.HasData = true
 	entered := ringtransfer.Signed(confEntry2)
@@ -160,13 +163,14 @@ func TestTransferStatementVector(t *testing.T) {
 	anonData := ringtransfer.Hidden(anonData2)
 	anonData.HasData = true
 	ringtest.PinVector(t, "audit/transfer_statement.json", map[string]any{
-		"description": "Honest statements of the Go transfer fixtures, each solves its key, with every preimage of a chain or digest position. Every rail: head(10), in_proof, hidden, delegate, approval_mask, approval_totals, no_spend, output_count, record_chain, input_count, private_tx_hash, sender, parties, signer_count, signer_chain, policy_hash, own_root, curator_root, tracking_root, (asset, net, gross) * 3, withdrawal_hash, length. outputs lists the published records, record_chain zero fills to output_capacity. signer_chain is HashChain4(signers, zeros up to signer_slots), zero on an empty run. withdrawal_hash is HashChain4(CRPW, count, owner, asset, amount per leg). envelope_digest is Poseidon(ciphertext_digest(envelope), ciphertext_digest(recipient_keys)), ciphertext_digest(bytes) = Poseidon(u32 len, HashChain4(pack_left31(bytes))). public_input_hash = HashChain4(elements). Produced by prover/circuits/transfer/statement_vector_test.go with WRITE_AUDIT_VECTORS=1.",
+		"description": "Honest statements of the Go transfer fixtures, each solves its key, with every preimage of a chain or digest position. Every rail: head(10), in_proof, hidden, delegate, approval_mask, approval_totals, no_spend, output_count, record_chain, input_count, private_tx_hash, sender, delegate_asset, parties, signer_count, signer_chain, policy_hash, own_root, curator_root, tracking_root, (asset, net, gross) * 3, withdrawal_hash, length. outputs lists the published records, record_chain zero fills to output_capacity. signer_chain is HashChain4(signers, zeros up to signer_slots), zero on an empty run. withdrawal_hash is HashChain4(CRPW, count, owner, asset, amount per leg). envelope_digest is Poseidon(ciphertext_digest(envelope), ciphertext_digest(recipient_keys)), ciphertext_digest(bytes) = Poseidon(u32 len, HashChain4(pack_left31(bytes))). public_input_hash = HashChain4(elements). Produced by prover/circuits/transfer/statement_vector_test.go with WRITE_AUDIT_VECTORS=1.",
 		"cases": []transferStatementVector{
 			confidentialCase(t, "signer", ringtransfer.Signed(confidential2)),
 			confidentialCase(t, "signer_two_owners", coOwned),
 			confidentialCase(t, "in_proof", onRail(confidential2, ringtransfer.InProof)),
 			confidentialCase(t, "in_proof_co_owner", inProofCoOwned),
 			confidentialCase(t, "authority", onRail(confidential2, ringtransfer.Delegate)),
+			confidentialCase(t, "authority_mint", mintDelegate),
 			confidentialCase(t, "signer_compact", compact),
 			confidentialCase(t, "signer_data", withData),
 			confidentialCase(t, "signer_entry", entered),

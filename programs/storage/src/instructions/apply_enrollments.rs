@@ -1,15 +1,12 @@
 //! Applies a batch of owner-signed writes to a ring's tracking tree.
 //!
-//! The registry's authority, the ring's `ring_auth` acting for its `EnrollmentWriter`, is the one writer.
-//! It holds no owner's key, so the precompile instruction ahead of the ring's carries each write's
-//! owner ed25519 signature, and a first enrollment carries its `RegisterKey` proof. The writer chooses
-//! the signed writes that enter and their order, nothing inside one.
+//! A PDA can authorize one write through CPI.
 //!
 //! Read after `program-libs/interface/src/accounts/tracking.rs`, `program-libs/interface/src/proof/owner_signature.rs`.
 //! Read before `prover/circuits/registry/apply_enrollments.go`.
 //!
 //! Guarantees:
-//! 1. Every applied entry is one its owner signed over the registry, and every inserting entry carries a verified `RegisterKey` seal.
+//! 1. Each insertion requires owner consent and a verified `RegisterKey` seal.
 //! 2. The new root and next index follow from the current ones by exactly the batch's entries in write order, and the next index stays within `TRACKING_CAPACITY`.
 //! 3. The outgoing root keeps its full grace. An apply that would evict an unexpired root refuses.
 //! 4. An `EnrollmentsApplied` event carrying every write follows only a verified proof.
@@ -37,9 +34,7 @@ use pinocchio::{
 
 use crate::{
     emit_event,
-    loader::{
-        check_signer, check_storage_program, load_tracking_registry_mut, with_owner_signatures,
-    },
+    loader::{check_signer, check_storage_program, load_tracking_registry_mut, EnrollmentOwners},
 };
 
 pub fn process_apply_enrollments_ix(
@@ -49,7 +44,7 @@ pub fn process_apply_enrollments_ix(
 ) -> ProgramResult {
     let request = ApplyEnrollmentsRequest::parse(data)?;
     let ix = request.ix;
-    let [authority_account, registry_account, sysvar_account, program_account, ..] = accounts
+    let [authority_account, registry_account, owner_authorization, program_account, ..] = accounts
     else {
         return Err(StorageError::MissingAccounts.into());
     };
@@ -61,16 +56,18 @@ pub fn process_apply_enrollments_ix(
     if authority_account.address() != &registry.authority {
         return Err(StorageError::Unauthorized.into());
     }
-    // 2. Signature `i` is write `i`'s owner over the registry and its entry hash, a first enrollment also proves its seal.
-    // The chain folds the same entry hashes, so the proof applies exactly what the owners signed.
+    let owners = EnrollmentOwners {
+        account: owner_authorization,
+        registry: &registry_address,
+        authority: &registry.authority,
+    };
     let chain_start = tracking_chain_start(&registry_address, ix.revision)?;
-    let chain_end = with_owner_signatures(sysvar_account, request.writes.len(), |signatures| {
+    let chain_end = owners.authorize(request.writes.len(), |authorization| {
         request.writes.iter().enumerate().try_fold(
             chain_start,
             |chain, (index, write)| -> Result<[u8; 32], ProgramError> {
                 write.check()?;
-                let signed = write.signed(&registry_address)?;
-                signatures.check(index, write.owner, &signed.message)?;
+                let entry_hash = authorization.entry_hash(index, write)?;
                 if let EnrollmentChange::Enroll { ix: record, proof } = write.change {
                     RegisterKeyCheck {
                         ring_id: &registry.ring_id,
@@ -81,8 +78,7 @@ pub fn process_apply_enrollments_ix(
                     }
                     .verify()?;
                 }
-                Ok(chain_link(&chain, &signed.entry_hash)
-                    .map_err(|_| StorageError::HashingFailed)?)
+                Ok(chain_link(&chain, &entry_hash).map_err(|_| StorageError::HashingFailed)?)
             },
         )
     })?;

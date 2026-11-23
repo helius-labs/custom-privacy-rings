@@ -192,7 +192,7 @@ fn a_relayed_authority_transfer_moves_the_enrolled_members_note() -> Result<()> 
     let member_address = member.shielded_address()?;
     let delegate = env.funded_keypair()?;
     relayed.appoint(&delegate)?;
-    env.enable_authority_rail(relayed.ring)?;
+    env.set_authority_rail(relayed.ring, AuthorityRail::Open)?;
     let deposited = relayed.notes(member, 1).deposit()?;
     let ring_rpc = relayed.serve()?;
     // The delegate admits exactly the member's notes it opened under the tracking row's sealed key.
@@ -249,7 +249,7 @@ fn a_relayed_authority_transfer_moves_the_enrolled_members_note() -> Result<()> 
             request,
             quote: &quote,
             config: &config,
-            allowed: allowed.clone(),
+            requester: custom_ring_sdk::DelegateRequester::Ring(allowed.clone()),
             output_tree_id: env.tree_id(env.tree)?,
         }
         .prepare()?;

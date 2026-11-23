@@ -578,6 +578,14 @@ pub(crate) mod tests {
     }
 
     impl TransactionSource for EscrowRingSource {
+        async fn is_mint_delegate(
+            &self,
+            mint: Address,
+            signer: Address,
+        ) -> Result<bool, ClientError> {
+            Ok(mint == MINT && signer == mint_delegate().pubkey())
+        }
+
         async fn salted_list_writers(&self, _ring: Address) -> Result<Vec<Address>, ClientError> {
             Ok(vec![list_writer().pubkey()])
         }
@@ -810,6 +818,11 @@ pub(crate) mod tests {
 
     fn assets() -> RingAssets {
         RingAssets::new([Mint::new(MINT, 7), Mint::new(SECOND_MINT, 8)]).expect("assets")
+    }
+
+    /// The permanent delegate of `MINT` on the scripted chain.
+    pub(crate) fn mint_delegate() -> Keypair {
+        Keypair::new_from_array([24; 32])
     }
 
     pub(crate) fn list_writer() -> Keypair {

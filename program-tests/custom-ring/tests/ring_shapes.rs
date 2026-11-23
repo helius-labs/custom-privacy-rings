@@ -12,7 +12,7 @@ use custom_ring_interface::{
 };
 use custom_ring_test_validator::{
     policy::{EnrollOwners, PrivateBlockWrites, RingNotes},
-    shared::restart_prover,
+    shared::{restart_prover, AuthorityRail},
 };
 use spr_api::{ApiError, HttpClient, HttpFuture, HttpRequest};
 use spr_client::{Shape, SPP_SUPPORTED_SHAPES};
@@ -668,7 +668,7 @@ impl<'a> ColumnSetup<'a> {
                 delegate: &delegate,
             }
             .send(env)?;
-            env.enable_authority_rail(ring)?;
+            env.set_authority_rail(ring, AuthorityRail::Open)?;
         }
         let enrolled = match self.column {
             Column::Salted => Self::enroll_batches(env, ring, self.gate, coverage)?,

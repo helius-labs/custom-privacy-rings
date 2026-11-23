@@ -30,15 +30,48 @@ A public update names no tracking revision and passes no tracking registry, and 
 
 A ring creates one tracking registry at `[b"tracking_registry", creator, ring_id]`, pinning its ring id and auditor key. Neither the seeds nor the ring id authenticate it. Anyone can create one naming any ring, and only the address a ring pins in its policy counts.
 
-`Enroll` needs the owner's signature, a program signing its PDA through CPI, and any payer may fund it. A first enrollment verifies a `RegisterKey` proof in the same instruction and creates the owner's `TrackingAuthorization`. `Enroll` only reads the registry, so enrollment traffic takes no write lock on it. The program supplies the member, the ring id and the auditor key to the statement. A later `Enroll` carries no proof and moves only the viewing key. The nullifier key, list tag and ciphertext are final.
+The ring's enrollment writer signs `EnrollBatch`. Wallets can give the writer an Ed25519 signature for each write. For a PDA, prepare one write with `Enroll::prove` and `OwnerEnrollment::prove_cpi`. Before calling `invoke_signed`, the PDA's program must verify the ring program, the tracking registry, and the enrollment write against its own policy.
 
-`ApplyEnrollments` is permissionless. The applier names up to `APPLY_BATCH` authorization accounts in any order, and the program computes each entry from account state, so an applier chooses only which accounts and in what order. A stale proof fails and the accounts stay pending for the next applier. Nothing grants anything while pending, because every check reads the root.
+Storage checks owner consent, verifies the tree update, and publishes the new root. A first enrollment also requires a `RegisterKey` proof for the sealed nullifier key and list salt. A rotation changes only the viewing key. Rebuild the apply proof if another write advances the registry revision. If storage returns `RootHistoryRetained`, wait for the oldest root to expire before retrying.
 
-Every retired tracking root serves its full `TRACKING_GRACE_SLOTS`. An apply that would evict an unexpired root refuses with `RootHistoryRetained`, and its accounts stay pending until the oldest root expires. A rotation leaves the account's entry unchanged, so it stales no apply proof.
+### Enroll a vault PDA
 
-The tracking tree is 16 levels of four, taller than a policy tree, because anyone can pay to fill it and no tree replaces a full one. Its next index is a u64 and an apply past `TRACKING_CAPACITY` refuses. A first enrollment past capacity stays pending and grants nothing, and no other entry waits for it, since an applier names its accounts. Rotations of enrolled owners need no free leaf.
+Enable the `enrollment-cpi` feature of `custom-ring-interface` in the vault program. Pass instruction data that starts with `ENROLL_PDA` to `PdaEnrollment::parse` unchanged.
 
-The tracking registry stays separate from the policy registry because authority revocation must not race permissionless enrollment. A stale apply proof fails on revision, so one shared tree would let enrollment traffic delay a block.
+Check that the vault program owns `enrollment.vault()` before reading its manager, ring and tracking registry. Derive the expected vault address from your program's seeds. If the vault restricts enrollment keys, check `enrollment.change()` before signing.
+
+```rust
+use custom_ring_interface::pda_enrollment::{PdaEnrollment, VaultEnrollmentPolicy};
+
+let enrollment = PdaEnrollment::parse(accounts, data)?;
+enrollment.invoke_signed(
+    VaultEnrollmentPolicy {
+        manager: &vault.manager,
+        vault: &vault_address,
+        ring: &vault.ring,
+        tracking_registry: &vault.tracking_registry,
+    },
+    signer,
+)
+```
+
+Pass the vault's seeds and bump in the Pinocchio `Signer`. The helper requires the vault manager's signature before it invokes the ring. The [example vault program](../../examples/enrollment-vault/src/lib.rs) keeps one vault at one PDA.
+
+Set `Enroll::owner` to the vault PDA.
+
+```rust
+use custom_ring_sdk::EnrollVault;
+
+let signature = EnrollVault {
+    enrollment,
+    program: vault_program,
+    manager: &manager,
+}
+.send(&ring_rpc, &client)
+.await?;
+```
+
+The manager signs the transaction after the SDK prepares the proof. Ring RPC adds the enrollment writer's signature and pays the fee. `send` returns the transaction signature after confirmation.
 
 ## Owner grants
 

@@ -15,6 +15,7 @@
 //! 7. The roots from the pinned registries and `policy_hash` from the ring account, the frame names only revisions.
 //! 8. The public slots from the frame's legs and the window's mints in SPP's fold, SPP's proof refuses another assignment.
 //! 9. `withdrawal_hash` from the live settlement accounts.
+//! 10. `delegate_asset` by hashing the mint whose permanent delegate signs, zero for the ring's delegate.
 //!
 //! The frame supplies the rest, and a proof refuses any other value:
 //!
@@ -58,6 +59,7 @@ impl RingStatements<'_> {
                 ring_id: &ring_id,
                 auditor_pubkey: &self.ring.auditor_pubkey,
                 sender: &self.accounts.sender,
+                delegate_asset: &self.accounts.delegate_asset,
                 signers: self.accounts.signers,
                 party_identities: &self.accounts.party_identities,
                 roots: &self.accounts.roots,

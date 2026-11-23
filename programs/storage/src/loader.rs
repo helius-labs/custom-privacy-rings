@@ -15,7 +15,9 @@ use custom_ring_interface::{
     owner_grant::OwnerGrant,
     owner_signature::Ed25519Signatures,
     storage::{Revision, StorageError, StorageRegistry},
-    storage_instruction::{InitializeIxData, InitializeTrackingIxData, OwnerGrantIxData},
+    storage_instruction::{
+        EnrollmentWrite, InitializeIxData, InitializeTrackingIxData, OwnerGrantIxData,
+    },
     tracking::TrackingRegistry,
 };
 use pinocchio::{
@@ -219,24 +221,80 @@ pub fn check_authority(registry: &StorageRegistry, authority: &AccountView) -> P
     Ok(())
 }
 
-/// `check` must match each signature to its write, the runtime verified them in the ed25519 instruction just before the current top-level one.
-#[inline(always)]
-pub fn with_owner_signatures<T>(
-    sysvar: &AccountView,
-    count: usize,
-    check: impl FnOnce(Ed25519Signatures<'_>) -> Result<T, ProgramError>,
-) -> Result<T, ProgramError> {
-    let instructions = Instructions::try_from(sysvar)?;
-    let precompile = instructions
-        .get_instruction_relative(-1)
-        .map_err(|_| StorageError::InvalidSignatureInstruction)?;
-    if precompile.get_program_id() != &solana_sdk_ids::ed25519_program::ID {
-        return Err(StorageError::InvalidSignatureInstruction.into());
+pub struct EnrollmentOwners<'a> {
+    pub account: &'a AccountView,
+    pub registry: &'a Address,
+    pub authority: &'a Address,
+}
+
+pub enum EnrollmentAuthorization<'a> {
+    Pda {
+        signer: &'a Address,
+        authority: &'a Address,
+    },
+    Batch {
+        signatures: Ed25519Signatures<'a>,
+        registry: &'a Address,
+    },
+}
+
+impl EnrollmentOwners<'_> {
+    pub fn authorize<T>(
+        &self,
+        count: usize,
+        apply: impl FnOnce(EnrollmentAuthorization<'_>) -> Result<T, ProgramError>,
+    ) -> Result<T, ProgramError> {
+        if self.account.address() != &pinocchio::sysvars::instructions::INSTRUCTIONS_ID {
+            check_signer(self.account)?;
+            if count != 1 {
+                return Err(StorageError::UnsupportedBatch.into());
+            }
+            return apply(EnrollmentAuthorization::Pda {
+                signer: self.account.address(),
+                authority: self.authority,
+            });
+        }
+        let instructions = Instructions::try_from(self.account)?;
+        let precompile = instructions
+            .get_instruction_relative(-1)
+            .map_err(|_| StorageError::InvalidSignatureInstruction)?;
+        if precompile.get_program_id() != &solana_sdk_ids::ed25519_program::ID {
+            return Err(StorageError::InvalidSignatureInstruction.into());
+        }
+        apply(EnrollmentAuthorization::Batch {
+            signatures: Ed25519Signatures::parse(precompile.get_instruction_data(), count)?,
+            registry: self.registry,
+        })
     }
-    check(Ed25519Signatures::parse(
-        precompile.get_instruction_data(),
-        count,
-    )?)
+}
+
+impl EnrollmentAuthorization<'_> {
+    pub fn entry_hash(
+        &self,
+        index: usize,
+        write: &EnrollmentWrite<'_>,
+    ) -> Result<[u8; 32], StorageError> {
+        match self {
+            Self::Pda { signer, authority } => {
+                if *signer != write.owner {
+                    return Err(StorageError::OwnerSignatureMismatch);
+                }
+                write.check_pda_owner(authority)?;
+                write
+                    .entry()?
+                    .hash()
+                    .map_err(|_| StorageError::HashingFailed)
+            }
+            Self::Batch {
+                signatures,
+                registry,
+            } => {
+                let signed = write.signed(registry)?;
+                signatures.check(index, write.owner, &signed.message)?;
+                Ok(signed.entry_hash)
+            }
+        }
+    }
 }
 
 /// The event self invocation resolves the program from the instruction's accounts.

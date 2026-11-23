@@ -51,7 +51,7 @@ func (w Confidential) Build(t testing.TB) Built {
 	case InProof:
 		run = w.CoOwners
 	}
-	c.InProof, c.Hidden, c.Delegate, c.Sender = ringtest.Bit(w.Rail == InProof), 0, ringtest.Bit(w.Rail == Delegate), 0
+	c.InProof, c.Hidden, c.Delegate, c.Sender, c.DelegateAsset = ringtest.Bit(w.Rail == InProof), 0, ringtest.Bit(w.Rail == Delegate), 0, w.delegateAsset()
 	for i := range c.PartyIdentities {
 		c.PartyIdentities[i] = 0
 	}

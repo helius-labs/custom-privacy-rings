@@ -68,6 +68,13 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit holds live rows strictly ascending with zero rows last, except on the delegate rail, in `assertRowsAscending`.
 - The tests are `TestInputPredicateOnEveryRail`, `TestZeroKeyInputs`, `TestDelegateInputOwners`, `TestOwnerCapacity`, and `TestRowsAscend` in `prover/circuits/policy`.
 
+### A mint's permanent delegate moves that mint alone
+
+- The program takes any signer in the delegate slot of `AuthorityTransfer`. A signer other than the ring's delegate names a mint in the next slot. The program requires a Token-2022 mint whose `PermanentDelegate` is that signer, in `MintDelegate::asset`, the parse Ring RPC and the Rust SDK also run, and writes `hash_bytes(mint)` as `delegate_asset`. The program writes zero for the ring's delegate.
+- The circuit holds the asset of every live input and every live output to a nonzero `delegate_asset`, an exit included, in `assertAsset`. A zero value holds nothing.
+- SPP conserves each asset over the notes and the public slots, and the program refuses a deposit leg on the rail, so no withdrawal of another asset balances.
+- The tests are `TestDelegateAssetHoldsEveryNote`, `a_mint_names_its_asset_only_to_its_live_permanent_delegate` in `program-libs/interface/tests/transact.rs`, `a_mint_names_its_live_permanent_delegate_on_the_authority_rail` in `programs/custom-ring/tests/rules/transact_rules.rs` and `a_mint_delegate_moves_its_mint_alone_and_reads_no_secret` in `services/ring-rpc/src/operations/authority_transfer.rs`.
+
 ### The signer set is the run SPP authorizes
 
 - The program reads the SPP owner run, deduplicates by first occurrence, and builds `signer_count` and `signer_chain`. Each entry must sign, and none can be a demanded co-signer.

@@ -2,6 +2,7 @@
 members = [
     "cli",
     "cli/common",
+    "examples/enrollment-vault",
     "program-libs/interface",
     "program-libs/member-registry",
     "program-libs/policy",

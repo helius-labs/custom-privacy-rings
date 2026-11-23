@@ -159,7 +159,11 @@ function delegate(
       },
     } as unknown as PrepareAuthorityTransferRequest,
     quote: { feePayer: request.feePayer, validUntilSlot: 0n },
-    config: { mode: "confidential", auditorPublicKey: auditorOf(request) },
+    config: {
+      mode: "confidential",
+      auditorPublicKey: auditorOf(request),
+      delegate: prepare.delegate,
+    },
     allowed: pinnedAllowed(pinned),
     // The vector's frames append to Rust `support::TREE_ID`.
     outputTreeId: 0,

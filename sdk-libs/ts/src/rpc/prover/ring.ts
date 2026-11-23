@@ -200,6 +200,8 @@ export interface TransferProofRequest extends TransferProofInputs {
   readonly delegate: boolean;
   /** The in-proof owner, zero on every other rail. */
   readonly sender: Bytes32;
+  /** The asset of the mint whose permanent delegate signs, zero otherwise. */
+  readonly delegateAsset: Bytes32;
   /** Payer, each co-signer and exit destination, zero when absent. */
   readonly partyIdentities: readonly Bytes32[];
 }
@@ -485,6 +487,7 @@ function transferJson(request: TransferProofRequest): Json {
     hidden: flag(request.hidden),
     delegate: flag(request.delegate),
     sender: field(request.sender, "sender"),
+    delegateAsset: field(request.delegateAsset, "delegateAsset"),
     partyIdentities: fields(request.partyIdentities, ANONYMOUS_PARTIES, "partyIdentities"),
     approvalMask: integer(request.approvalMask, "approvalMask", 0, APPROVAL_MASK_MAX),
     ...(request.approvalTotals === undefined

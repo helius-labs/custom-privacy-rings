@@ -92,7 +92,7 @@ fn auditor_sees_every_ring_transfer() -> Result<()> {
     // 3. Register the ring with SPP. The `RingConfig` SPP allocates IS the ring's
     //    `ring_auth` PDA, and the content is built on chain from the config
     //    account, so the registered authority is `ring_auth` itself and the
-    //    authority-transact rail stays disabled.
+    //    pool opens the authority-transact rail with the activation.
     let (ring_auth, ring_auth_bump) = pda::ring_auth(&ring_program);
     assert_eq!(ring_auth, ring.ring_auth_pda(), "sdk ring_auth PDA helper");
     let ring_config: RingConfig = fetch_state(rpc, &ring_auth)?;
@@ -102,7 +102,7 @@ fn auditor_sees_every_ring_transfer() -> Result<()> {
             discriminator: RING_CONFIG,
             authority: ring_auth,
             program_id: ring_program,
-            ring_authority_transact_is_enabled: 0,
+            ring_authority_transact_is_enabled: 1,
             paused: 0,
             // The fixture bootstraps with permissionless activation.
             activated: 1,
@@ -1148,7 +1148,7 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
     );
 
     // 7. The delegate re-owns the recipient's final note to the sender over the
-    //    authority rail, refused until governance enables the rail.
+    //    authority rail, refused while governance holds the rail closed.
     let delegate = Keypair::new();
     EnrolledDelegate {
         ring,
@@ -1173,6 +1173,7 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
         .with_assets(&env.assets);
         Ok(env.run(transfer.prove(env.client.ring_client()))?)
     };
+    env.set_authority_rail(ring, AuthorityRail::Closed)?;
     let rejection = RejectedTransact {
         payer: &env.payer,
         signers: &[&delegate],
@@ -1182,7 +1183,7 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
     Rejection::pool(ShieldedPoolError::RingAuthorityTransactDisabled)
         .at(0)
         .assert_client(&rejection);
-    env.enable_authority_rail(ring)?;
+    env.set_authority_rail(ring, AuthorityRail::Open)?;
     let proven = moved()?;
     let moved_note = ring_utxo(
         sender,

@@ -98,6 +98,8 @@ export interface TransferStatement {
   /** `n`, the frame's nullifier count, it fixes the transmitted entry records. */
   readonly inputCount: number;
   readonly privateTxHash: Bytes32;
+  /** The asset of the mint whose permanent delegate signs, absent on every other frame. */
+  readonly delegateAsset?: Bytes32;
   /** Default on the in-proof and authority rails and on an empty run. */
   readonly signers: SignerBinding;
   readonly roots: TransferRoots;
@@ -204,6 +206,7 @@ export function transferStatementElements(statement: TransferStatement): readonl
     u32Field(statement.inputCount, "input count"),
     checkedBytes<Bytes32>(statement.privateTxHash, 32, "private tx hash"),
     sender,
+    checkedBytes<Bytes32>(statement.delegateAsset ?? ZERO_FIELD, 32, "delegate asset"),
     ...parties,
     u32Field(statement.signers.count, "signer count"),
     checkedBytes<Bytes32>(statement.signers.chain, 32, "signer chain"),

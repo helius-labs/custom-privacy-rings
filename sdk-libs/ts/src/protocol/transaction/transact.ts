@@ -262,14 +262,12 @@ function authorityRail(instruction: Uint8Array): RingRail {
   throw invalid("InvalidInstructionData");
 }
 
-/** Rust `RingRail::new`, the delegate rails need the delegate only `SetDelegate` writes. */
+/** Rust `RingRail::new`. */
 export function ringRail(
   tag: number,
   config: Readonly<{ mode: RingMode; delegate?: Address }>,
 ): RingRail {
-  const rail = ringRailOf(tag, config.mode);
-  if (isDelegateRail(rail) && config.delegate === undefined) throw invalid("DelegateDisabled");
-  return rail;
+  return ringRailOf(tag, config.mode);
 }
 
 export function isDelegateRail(rail: RingRail): boolean {

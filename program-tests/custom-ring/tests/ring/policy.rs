@@ -297,7 +297,7 @@ fn the_key_enrollment_lifecycle_ends_in_a_delegate_move() -> Result<()> {
         delegate: &delegate,
     }
     .send(&env)?;
-    env.enable_authority_rail(ring)?;
+    env.set_authority_rail(ring, AuthorityRail::Open)?;
     let recovery = RingRecovery::new(ring_program, &auditor).for_member(SourceMember {
         address: &member_address,
         nullifier_key: &nullifier_key,

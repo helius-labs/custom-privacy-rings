@@ -124,7 +124,7 @@ export type RelayMessageMismatch =
   | "Unrequested"
   | "Signer";
 
-export type DelegateRingConfig = Pick<RingPolicy, "mode" | "auditorPublicKey">;
+export type DelegateRingConfig = Pick<RingPolicy, "mode" | "auditorPublicKey" | "delegate">;
 
 /** Rust `AllowedNullifiers`, filled only by `admit`. */
 export class AllowedNullifiers {
@@ -218,8 +218,8 @@ export interface ExpectedDelegate {
   readonly sources: readonly ExpectedOwner[];
   readonly payments: readonly ExpectedPayment[];
   readonly withdrawals: readonly ExpectedWithdrawal[];
-  /** Every note of each requested source, a note Ring RPC selects outside it is refused. */
-  readonly allowed: AllowedNullifiers;
+  /** Every note of each requested source, undefined for a mint's permanent delegate. */
+  readonly allowed: AllowedNullifiers | undefined;
   readonly outputTreeId: number;
 }
 
@@ -382,26 +382,48 @@ export class VerifiedRelayMessage {
   }
 }
 
-/** Rust `RequestedAuthorityTransfer`, the delegate's ask and the notes its own openings allow. */
-export interface RequestedAuthorityTransfer {
+/** Rust `DelegateRequester`, the ring's delegate with its openings or the permanent delegate of the one mint of every leg. */
+export type DelegateRequester =
+  | { readonly allowed: AllowedNullifiers; readonly mint?: never }
+  | { readonly mint: Address; readonly allowed?: never };
+
+/** Rust `RequestedAuthorityTransfer`. */
+export type RequestedAuthorityTransfer = DelegateRequester & {
   readonly request: PrepareAuthorityTransferRequest;
   readonly quote: RelayQuote;
-  /** The auditor key and the rail come from the ring account. */
+  /** The auditor key, the rail and the delegate come from the ring account. */
   readonly config: DelegateRingConfig;
-  readonly allowed: AllowedNullifiers;
   /** The tree SPP appends the outputs to, each output's commitment rebuilds in it. */
   readonly outputTreeId: number;
-}
+};
 
-export async function expectedDelegate({
+/** Undefined for a mint's permanent delegate, no source opens to it. */
+export function openedSources({
   request,
-  quote,
   config,
   allowed,
-  outputTreeId,
-}: RequestedAuthorityTransfer): Promise<ExpectedDelegate> {
+  mint,
+}: RequestedAuthorityTransfer): AllowedNullifiers | undefined {
   const { transfer } = request;
+  const refused = (reason: "missing" | "unauthorized") =>
+    new RingError("RING_DELEGATE_INVALID", { details: { reason } });
+  if (allowed === undefined) {
+    const legs = [...transfer.payments, ...transfer.exits, ...transfer.withdrawals];
+    if (legs.length === 0 || legs.some((leg) => leg.mint !== mint)) throw refused("unauthorized");
+    return undefined;
+  }
+  if (config.delegate !== request.delegate)
+    throw refused(config.delegate === undefined ? "missing" : "unauthorized");
   allowed.checkSources(transfer.sources);
+  return allowed;
+}
+
+export async function expectedDelegate(
+  requested: RequestedAuthorityTransfer,
+): Promise<ExpectedDelegate> {
+  const { request, quote, config, outputTreeId } = requested;
+  const { transfer } = request;
+  const allowed = openedSources(requested);
   if (!Number.isInteger(outputTreeId) || outputTreeId < 0 || outputTreeId > 0xffff)
     throw new RingError("RING_DELEGATE_INVALID", { details: { reason: "outputTreeId" } });
   return Object.freeze({
@@ -836,7 +858,7 @@ function checkMoved(
   const { envelope, recipientKeys } = openStream(expected.txViewingKey, expected.auditor, frame);
   const records = frameRecords(expected.txViewingKey, frame, recipientKeys);
   // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
-  if (!expected.allowed.countsSpends(envelope.realInputs, frame.nullifiers))
+  if (expected.allowed?.countsSpends(envelope.realInputs, frame.nullifiers) === false)
     throw mismatch("SpendsUnrequestedNote");
   // 3. Each live record pays one requested payment or returns change to a requested source,
   // sealed to that owner's viewing key so the owner can open it. A ring output's record names no

@@ -88,9 +88,9 @@ use custom_ring_test_validator::{
     ring_rpc::RingRpcSpec,
     ring_wallet::RingWallet,
     shared::{
-        custom_ring_program_id, prover_url, send, send_expecting_rejection, setup, ExpectRejection,
-        RegisterRing, RejectedTransact, RingRoleKeys, SendAs, TestEnv, Tier, WalletSync,
-        USDC_ASSET_ID,
+        custom_ring_program_id, prover_url, send, send_expecting_rejection, setup, AuthorityRail,
+        ExpectRejection, RegisterRing, RejectedTransact, RingRoleKeys, SendAs, TestEnv, Tier,
+        WalletSync, USDC_ASSET_ID,
     },
 };
 use solana_address::Address;

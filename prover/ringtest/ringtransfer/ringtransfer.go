@@ -66,6 +66,8 @@ type World struct {
 	HasData bool
 	// Addresses are SPP's address nullifiers, the address chain private_tx_hash reads.
 	Addresses []*big.Int
+	// DelegateAsset is the asset of the mint whose permanent delegate signs, nil for the ring's delegate.
+	DelegateAsset *big.Int
 	// Outputs replace slots by index before any hash reads them.
 	Outputs map[int]func(*ringaudit.Slot)
 	// Unenrolled owners hold no tracking row.
@@ -97,6 +99,13 @@ func Sender(t testing.TB) *big.Int {
 func SenderNullifierPk(t testing.TB) *big.Int {
 	t.Helper()
 	return spptest.MustNullifierPk(t, big.NewInt(7))
+}
+
+func (w World) delegateAsset() frontend.Variable {
+	if w.DelegateAsset == nil {
+		return 0
+	}
+	return w.DelegateAsset
 }
 
 // table admits every output owner on the allow list and refuses a frozen sender, a salted block list also refuses its owners.

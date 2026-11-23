@@ -572,6 +572,14 @@ impl StaticSource {
 }
 
 impl TransactionSource for StaticSource {
+    async fn is_mint_delegate(
+        &self,
+        _mint: Address,
+        _signer: Address,
+    ) -> Result<bool, ClientError> {
+        Ok(false)
+    }
+
     async fn co_signer_scope(
         &self,
         _ring: Address,

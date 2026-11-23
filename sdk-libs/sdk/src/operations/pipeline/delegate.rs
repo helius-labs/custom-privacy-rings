@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use custom_ring_interface::RingRail;
+use custom_ring_interface::{CustomRingError, MintDelegate, RingRail};
+use solana_account::Account;
 use solana_address::Address;
 use spr_client::AsyncRpc;
 use spr_interface::{
@@ -494,20 +495,95 @@ pub(crate) fn same_owner(left: &PublicKey, right: &PublicKey) -> bool {
     }
 }
 
+/// `None` unless every mint is one mint.
+pub fn sole_mint(mints: impl IntoIterator<Item = Address>) -> Option<Address> {
+    let mut mints = mints.into_iter();
+    mints
+        .next()
+        .filter(|mint| mints.all(|other| other == *mint))
+}
+
+/// A mint and its asset field, read while the signer is the mint's live permanent delegate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DelegateMint {
+    pub address: Address,
+    pub asset: [u8; 32],
+}
+
+#[must_use]
+pub struct DelegateMintAccount<'a> {
+    pub address: Address,
+    pub account: &'a Account,
+    pub signer: Address,
+}
+
+impl DelegateMintAccount<'_> {
+    pub fn mint(self) -> Result<DelegateMint, CustomRingError> {
+        Ok(DelegateMint {
+            address: self.address,
+            asset: MintDelegate {
+                mint: &self.address,
+                owner: &self.account.owner,
+                data: &self.account.data,
+                signer: &self.signer,
+            }
+            .asset()?,
+        })
+    }
+}
+
+/// The refusal of a signer the ring account does not name its delegate.
+pub(crate) fn refused_delegate(config: &CustomRingConfig) -> RingError {
+    match config.delegate {
+        None => RingError::MissingDelegate,
+        Some(_) => CustomRingError::UnauthorizedDelegate.into(),
+    }
+}
+
+#[must_use]
+pub(super) struct DelegateSigner<'a, I> {
+    pub config: &'a CustomRingConfig,
+    pub delegate: Address,
+    pub spent: I,
+}
+
+impl<I: Iterator<Item = Address>> DelegateSigner<'_, I> {
+    /// `None` for the ring's delegate, else the one spent mint whose live permanent delegate signs.
+    pub(super) async fn mint<R: AsyncRpc + ?Sized>(
+        self,
+        client: &R,
+    ) -> Result<Option<DelegateMint>, RingError> {
+        if self.config.delegate == Some(self.delegate) {
+            return Ok(None);
+        }
+        let refused = || refused_delegate(self.config);
+        let address = sole_mint(self.spent).ok_or_else(refused)?;
+        let account = client.get_account(address).await?.ok_or_else(refused)?;
+        DelegateMintAccount {
+            address,
+            account: &account,
+            signer: self.delegate,
+        }
+        .mint()
+        .map(Some)
+        .map_err(|_| refused())
+    }
+}
+
 impl Delegated<'_> {
     pub(super) async fn stage<R: AsyncRpc + ?Sized>(
         &self,
         ring: CustomRing,
-        _client: &R,
+        client: &R,
         config: &CustomRingConfig,
     ) -> Result<Staged<'_>, RingError> {
-        match config.delegate {
-            None => return Err(RingError::MissingDelegate),
-            Some(stored) if stored != self.delegate => {
-                return Err(custom_ring_interface::CustomRingError::UnauthorizedDelegate.into())
-            }
-            Some(_) => {}
+        let mint = DelegateSigner {
+            config,
+            delegate: self.delegate,
+            spent: self.inputs.iter().map(|input| input.utxo.asset.asset),
         }
+        .mint(client)
+        .await?;
         if self.source_key.pubkey()? != self.source.nullifier_pubkey {
             return Err(RingError::NullifierKeyMismatch);
         }
@@ -620,6 +696,7 @@ impl Delegated<'_> {
             interface_transfer_accounts,
             spend: Spend::Delegate {
                 delegate: self.delegate,
+                mint,
                 rail: ring_rail,
             },
             presealed: None,

@@ -197,6 +197,30 @@ describe("delegate sources", () => {
   });
 
   describe.each(["confidential", "anonymous"] as const)("on the %s rail", (mode) => {
+    it("holds a requester to the kind it states", async () => {
+      const [source, payee] = [ShieldedKeypair.generate(), ShieldedKeypair.generate()];
+      const { fixture, delegate } = await moveRing(mode, [source, payee]);
+      const { transfer, notes } = movingFrom(fixture, delegate, [source], payee, 4n);
+      const instruction = await (await transfer.prove(fixture.client)).instruction();
+      const asked = {
+        request: requestFor(fixture, delegate, [source], payee, 4n),
+        quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+        config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+        outputTreeId: fixture.client.treeId,
+      };
+      const allowed = allowedOf([{ owner: source, notes }]);
+      const stale = { ...asked.config, delegate: randomAddress() };
+      for (const refused of [
+        expectedDelegate({ ...asked, allowed }),
+        expectedDelegate({ ...asked, config: stale, allowed }),
+        expectedDelegate({ ...asked, mint: USDC }),
+      ])
+        await expect(refused).rejects.toMatchObject({ code: "RING_DELEGATE_INVALID" });
+      const recordsOnly = await expectedDelegate({ ...asked, mint: SOL_MINT });
+      const message = messageOf(fixture, instruction);
+      expect(checkRelayMessage(recordsOnly, message, delegate as never).signer).toBe(delegate);
+    });
+
     it.each([
       ["its own", 1, 4n],
       ["one member's", 1, 4n],
@@ -211,7 +235,7 @@ describe("delegate sources", () => {
       const expected = await expectedDelegate({
         request: requestFor(fixture, delegate, sources, payee, amount),
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-        config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+        config: { mode, auditorPublicKey: fixture.auditor.publicKey(), delegate },
         outputTreeId: fixture.client.treeId,
         allowed: allowedOf(sources.map((owner, at) => ({ owner, notes: notes.slice(at, at + 1) }))),
       });
@@ -246,7 +270,7 @@ describe("delegate sources", () => {
         const refused = await expectedDelegate({
           request: asked,
           quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-          config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+          config: { mode, auditorPublicKey: fixture.auditor.publicKey(), delegate },
           outputTreeId,
           allowed: allowedOf(
             sources.map((owner, at) => ({ owner, notes: notes.slice(at, at + 1) })),
@@ -283,7 +307,7 @@ describe("delegate sources", () => {
       const expected = await expectedDelegate({
         request: requestFor(fixture, delegate, [member], payee, 15n),
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-        config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+        config: { mode, auditorPublicKey: fixture.auditor.publicKey(), delegate },
         outputTreeId: fixture.client.treeId,
         allowed: allowedOf([{ owner: member, notes: notes.slice(0, 1) }]),
       });
@@ -324,7 +348,7 @@ describe("delegate sources", () => {
       const asked = {
         request: requestFor(fixture, delegate, [member], payee, 4n),
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-        config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+        config: { mode, auditorPublicKey: fixture.auditor.publicKey(), delegate },
         outputTreeId: fixture.client.treeId,
       };
 
@@ -616,7 +640,7 @@ describe("delegate sources", () => {
             ],
           ),
           quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-          config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+          config: { mode, auditorPublicKey: fixture.auditor.publicKey(), delegate },
           outputTreeId: fixture.client.treeId,
           allowed: allowedOf(recovered),
         });

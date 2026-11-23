@@ -95,6 +95,8 @@ pub struct TransferStatement<'a> {
     /// `n`, the frame's nullifier count.
     pub input_count: usize,
     pub private_tx_hash: &'a [u8; 32],
+    /// The asset of the mint whose permanent delegate signs, zero on every other frame.
+    pub delegate_asset: &'a [u8; 32],
     /// Default on the authority rails and on an empty run.
     pub signers: SignerSet,
     pub roots: &'a TransferRoots,
@@ -116,7 +118,7 @@ pub struct TransferRoots {
 }
 
 /// Everything but the party cells, the public slots and the close.
-const TRANSFER_FIXED_ELEMENTS: usize = AUDIT_HEAD_ELEMENTS + 3 + 3 + 2 + 2 + 1 + 2 + 4 + 1;
+const TRANSFER_FIXED_ELEMENTS: usize = AUDIT_HEAD_ELEMENTS + 3 + 3 + 2 + 2 + 2 + 2 + 4 + 1;
 
 impl TransferStatement<'_> {
     pub const fn element_count(&self) -> usize {
@@ -143,6 +145,8 @@ impl TransferStatement<'_> {
             count(self.input_count),
             *self.private_tx_hash,
             *self.family.sender(),
+            // A nonzero cell is the asset of every note.
+            *self.delegate_asset,
         ]);
         // 6. The circuit refuses a hidden owner equal to any party the program names.
         elements.extend(self.family.parties());

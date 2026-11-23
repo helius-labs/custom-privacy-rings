@@ -31,7 +31,7 @@ func railValues(t testing.TB, c *transfer.TransferCircuit, a Assembled) Statemen
 	t.Helper()
 	s := values(t, &c.Sections, a)
 	s.RailBits = [3]bool{ringtest.AsBigInt(c.InProof).Sign() != 0, ringtest.AsBigInt(c.Hidden).Sign() != 0, ringtest.AsBigInt(c.Delegate).Sign() != 0}
-	s.Cells = []*big.Int{ringtest.AsBigInt(c.Sender)}
+	s.Cells = []*big.Int{ringtest.AsBigInt(c.Sender), ringtest.AsBigInt(c.DelegateAsset)}
 	for _, party := range c.PartyIdentities {
 		s.Cells = append(s.Cells, ringtest.AsBigInt(party))
 	}

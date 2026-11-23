@@ -56,7 +56,7 @@ pub(crate) fn check_transaction_size(
 }
 
 const MAX_ATTEMPTS: u8 = 3;
-const PENDING_POLL: Duration = Duration::from_millis(500);
+pub(crate) const PENDING_POLL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]

@@ -727,18 +727,93 @@ fn the_rail_follows_the_instruction_and_the_ring_mode() {
         rail(Merge, RingMode::Confidential),
         Err(CustomRingError::InvalidInstructionData)
     );
-    for mode in [RingMode::Confidential, RingMode::Anonymous] {
-        assert_eq!(
-            RingRail::new(AuthorityTransfer, &ring(mode, None)),
-            Err(CustomRingError::DelegateDisabled)
-        );
-    }
+    // A mint's permanent delegate needs no ring delegate.
+    assert_eq!(
+        RingRail::new(AuthorityTransfer, &ring(RingMode::Confidential, None)),
+        Ok(RingRail::Delegate)
+    );
     let mut unknown = ring(RingMode::Confidential, None);
     unknown.mode = 1;
     assert_eq!(
         RingRail::new(Transfer, &unknown),
         Err(CustomRingError::InvalidRingMode)
     );
+}
+
+#[test]
+fn a_mint_names_its_asset_only_to_its_live_permanent_delegate() {
+    use custom_ring_interface::MintDelegate;
+    use solana_address::Address;
+    use spl_token_2022_interface::{
+        extension::{
+            permanent_delegate::PermanentDelegate, BaseStateWithExtensionsMut, ExtensionType,
+            PodStateWithExtensionsMut,
+        },
+        pod::{PodAccount, PodMint},
+    };
+    use spr_hasher::primitives::hash_bytes;
+    use spr_interface::{SPL_TOKEN_2022_PROGRAM_ID, SPL_TOKEN_PROGRAM_ID};
+
+    let (mint, signer) = (
+        Address::new_from_array([7; 32]),
+        Address::new_from_array([8; 32]),
+    );
+    let token_2022 = Address::new_from_array(SPL_TOKEN_2022_PROGRAM_ID);
+    let mint_data = |extensions: &[ExtensionType], delegate: Option<Address>| {
+        let len = ExtensionType::try_calculate_account_len::<PodMint>(extensions).unwrap();
+        let mut data = vec![0; len];
+        let mut state =
+            PodStateWithExtensionsMut::<PodMint>::unpack_uninitialized(&mut data).unwrap();
+        if !extensions.is_empty() {
+            state
+                .init_extension::<PermanentDelegate>(false)
+                .unwrap()
+                .delegate = delegate
+                .map(|key| key.to_bytes().into())
+                .try_into()
+                .unwrap();
+        }
+        state.base.is_initialized = true.into();
+        state.init_account_type().unwrap();
+        data
+    };
+    let asset = |owner: &Address, data: &[u8]| {
+        MintDelegate {
+            mint: &mint,
+            owner,
+            data,
+            signer: &signer,
+        }
+        .asset()
+    };
+    let delegated = mint_data(&[ExtensionType::PermanentDelegate], Some(signer));
+    assert_eq!(
+        asset(&token_2022, &delegated),
+        Ok(hash_bytes(mint.as_array()).unwrap())
+    );
+    let token_account = bytemuck::bytes_of(&PodAccount {
+        state: spr_interface::SPL_TOKEN_ACCOUNT_INITIALIZED,
+        ..PodAccount::default()
+    })
+    .to_vec();
+    for (owner, data) in [
+        (Address::new_from_array(SPL_TOKEN_PROGRAM_ID), delegated),
+        (
+            token_2022,
+            mint_data(&[ExtensionType::PermanentDelegate], None),
+        ),
+        (
+            token_2022,
+            mint_data(&[ExtensionType::PermanentDelegate], Some(mint)),
+        ),
+        (token_2022, mint_data(&[], None)),
+        (token_2022, token_account),
+    ] {
+        assert_eq!(
+            asset(&owner, &data),
+            Err(CustomRingError::UnauthorizedDelegate)
+        );
+    }
 }
 
 /// Without `has_data` every body has one length, the frame carries none.
@@ -1330,6 +1405,7 @@ fn binding<'a>(
         ring_id: &fixture.fields[60],
         auditor_pubkey: &config.auditor_pubkey,
         sender: &fixture.fields[61],
+        delegate_asset: &[0; 32],
         signers: SignerSet::default(),
         party_identities: &[[0; 32]; ANONYMOUS_PARTIES],
         roots,

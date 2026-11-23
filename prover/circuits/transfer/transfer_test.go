@@ -833,3 +833,51 @@ func TestKeysHoldTheAmountBound(t *testing.T) {
 		}
 	}
 }
+
+// A mint's permanent delegate moves that mint alone, the ring's own delegate moves the same frames with the cell at zero.
+func TestDelegateAssetHoldsEveryNote(t *testing.T) {
+	exiting := transfer.Shape{Inputs: 24, Outputs: 4, Withdrawals: 4, Owners: 4}
+	otherMint := ringtest.Repeat(0x0b)
+	inMint := func(mint [32]byte) func(*ringaudit.Slot) {
+		return func(slot *ringaudit.Slot) { slot.Mint, slot.Utxo.Asset = mint, ringtest.AssetField(t, mint) }
+	}
+	asMint := func(t *testing.T, circuit *transfer.TransferCircuit, rebind func(testing.TB)) {
+		t.Helper()
+		requireSolved(t, circuit)
+		circuit.DelegateAsset = ringtransfer.Asset(t)
+		rebind(t)
+	}
+	t.Run("one mint moves, withdraws and exits", func(t *testing.T) {
+		w := onRail(confidential2, ringtransfer.Delegate)
+		w.Public = []ringtransfer.PublicSlot{{Asset: ringtransfer.Asset(t), Net: -500, Gross: 500}}
+		b := w.Build(t)
+		asMint(t, b.Circuit, b.Rebind)
+		requireSolved(t, b.Circuit)
+		anon := onAnonymous(exiting, ringtransfer.AnonymousDelegate)
+		anon.Outputs = map[int]func(*ringaudit.Slot){2: inMint(ringaudit.FixtureMint)}
+		exit := anon.Build(t)
+		asMint(t, exit.Circuit, exit.Rebind)
+		requireSolved(t, exit.Circuit)
+	})
+	t.Run("an input of another mint", func(t *testing.T) {
+		foreign := senderNote(t, 52)
+		foreign.Mint, foreign.Utxo.Asset = otherMint, ringtest.AssetField(t, otherMint)
+		w := onRail(confidential2, ringtransfer.Delegate)
+		w.Inputs = []ringaudit.Input{senderNote(t, 51), foreign}
+		b := w.Build(t)
+		asMint(t, b.Circuit, b.Rebind)
+		refused(t, b.Circuit, "transfer.assertAsset")
+	})
+	for name, outputs := range map[string]map[int]func(*ringaudit.Slot){
+		"a ring output of another mint": {1: inMint(otherMint), 2: inMint(ringaudit.FixtureMint)},
+		"an exit of another mint":       {2: inMint(otherMint)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := onAnonymous(exiting, ringtransfer.AnonymousDelegate)
+			w.Outputs = outputs
+			b := w.Build(t)
+			asMint(t, b.Circuit, b.Rebind)
+			refused(t, b.Circuit, "transfer.assertAsset")
+		})
+	}
+}

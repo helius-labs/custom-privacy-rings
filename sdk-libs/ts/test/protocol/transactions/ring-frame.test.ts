@@ -399,7 +399,7 @@ describe("the ring frame", () => {
 });
 
 describe("the transfer statement", () => {
-  const STATEMENT_LENGTH = 43;
+  const STATEMENT_LENGTH = 44;
 
   it("orders the confidential elements and closes on the length", () => {
     const frame: Frame = {
@@ -421,7 +421,7 @@ describe("the transfer statement", () => {
     );
     expect(bigint(elements[18])).toBe(2n);
     expect(elements[19]).toEqual(frame.privateTxHash);
-    expect(bigint(elements[26])).toBe(1n);
+    expect(bigint(elements[27])).toBe(1n);
     expect(bigint(elements.at(-1))).toBe(BigInt(elements.length));
     const disclosed: Frame = { ...frame, extensions: { approvalTotals: field(88) } };
     expect(

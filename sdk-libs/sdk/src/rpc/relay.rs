@@ -48,13 +48,20 @@ pub struct PreparedRelay {
     sent: AtomicBool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DelegateRequester {
+    /// Every note of each requested source, a note Ring RPC selects outside it is refused.
+    Ring(AllowedNullifiers),
+    /// The one mint of every leg, its permanent delegate opens no source.
+    Mint(Address),
+}
+
 #[must_use = "prepare the authority transfer"]
 pub struct RequestedAuthorityTransfer<'a> {
     pub request: PrepareAuthorityTransferRequest,
     pub quote: &'a RelayQuote,
     pub config: &'a CustomRingConfig,
-    /// Every note of each requested source, a note Ring RPC selects outside it is refused.
-    pub allowed: AllowedNullifiers,
+    pub requester: DelegateRequester,
     /// The tree SPP appends the outputs to, each output's commitment rebuilds in it.
     pub output_tree_id: u16,
 }

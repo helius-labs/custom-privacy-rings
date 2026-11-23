@@ -184,6 +184,7 @@ describe("transfer_statement.json", () => {
       capacity: vector.output_capacity,
       inputCount: vector.input_count,
       privateTxHash: field(vector.private_tx_hash),
+      delegateAsset: field(vector.delegate_asset),
       signers: signerBinding(vector.signers.map(field), vector.signer_slots),
       roots: {
         policyHash: field(vector.policy_hash),

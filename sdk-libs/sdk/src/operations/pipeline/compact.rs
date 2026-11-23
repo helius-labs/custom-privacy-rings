@@ -258,6 +258,7 @@ pub(crate) struct TransactAccounts {
     pub read_cache: Option<Address>,
     pub co_signers: Vec<Address>,
     pub delegate: Option<Address>,
+    pub delegate_mint: Option<Address>,
 }
 
 impl TransactAccounts {
@@ -330,6 +331,10 @@ impl TransactAccounts {
         accounts.extend(
             self.delegate
                 .map(|delegate| AccountMeta::new_readonly(delegate, true)),
+        );
+        accounts.extend(
+            self.delegate_mint
+                .map(|mint| AccountMeta::new_readonly(mint, false)),
         );
         accounts.extend(spp);
         let mut bytes = vec![match parts.rail.is_delegate() {

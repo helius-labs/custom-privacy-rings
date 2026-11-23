@@ -4,8 +4,8 @@ use custom_ring_interface::cosign::ApprovalMask;
 use custom_ring_interface::{
     compute_unit_limit, funder_account_position,
     stream::{confidential_slot_tag, DeliveredSlot},
-    tag, InstructionTag, OutputRecord, ParsedTransact, RecordKind, RingMode, RingOutput, RingRail,
-    RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX,
+    tag, CustomRingError, InstructionTag, OutputRecord, ParsedTransact, RecordKind, RingMode,
+    RingOutput, RingRail, RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX,
 };
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -34,8 +34,8 @@ use zolana_ring_policy::{ApprovalTotals, Member, OutputTotals, OwnerDebit, Publi
 use zolana_ring_transaction::{open_recipient_body, record_key};
 
 use crate::{
-    AllowedNullifiers, CustomRing, CustomRingConfig, PendingSignature, RequestedAuthorityTransfer,
-    RingError, REDACTED,
+    pipeline::refused_delegate, sole_mint, CustomRing, CustomRingConfig, DelegateRequester,
+    PendingSignature, RequestedAuthorityTransfer, RingError, REDACTED,
 };
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -305,8 +305,7 @@ pub(crate) struct ExpectedDelegate {
     pub sources: Vec<ExpectedOwner>,
     pub payments: Vec<ExpectedPayment>,
     pub withdrawals: Vec<ExpectedWithdrawal>,
-    /// Admitted from the delegate's own openings of exactly the requested sources.
-    pub allowed: AllowedNullifiers,
+    pub requester: DelegateRequester,
     pub output_tree_id: u16,
 }
 
@@ -502,11 +501,23 @@ impl ExpectedDelegate {
             request,
             quote,
             config,
-            allowed,
+            requester,
             output_tree_id,
         } = requested;
         let transfer = &request.transfer;
-        allowed.check_sources(transfer.sources.iter().map(|source| &source.0))?;
+        match requester {
+            DelegateRequester::Ring(allowed) => {
+                if config.delegate != Some(request.delegate.0) {
+                    return Err(refused_delegate(config));
+                }
+                allowed.check_sources(transfer.sources.iter().map(|source| &source.0))?;
+            }
+            DelegateRequester::Mint(mint) => {
+                if sole_mint(transfer.mints()) != Some(*mint) {
+                    return Err(CustomRingError::UnauthorizedDelegate.into());
+                }
+            }
+        }
         Ok(Self {
             ring: CustomRing::new(request.ring.0),
             fee_payer: quote.fee_payer.0,
@@ -543,7 +554,7 @@ impl ExpectedDelegate {
                 .iter()
                 .map(ExpectedWithdrawal::new)
                 .collect::<Result<_, _>>()?,
-            allowed: allowed.clone(),
+            requester: requester.clone(),
             output_tree_id: *output_tree_id,
         })
     }
@@ -586,9 +597,11 @@ impl ExpectedDelegate {
         }
         self.check_withdrawals(data, accounts)?;
         // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
-        self.allowed
-            .check_spends(opened.real_inputs, data.nullifiers)
-            .map_err(|_| MessageMismatch::SpendsUnrequestedNote)?;
+        if let DelegateRequester::Ring(allowed) = &self.requester {
+            allowed
+                .check_spends(opened.real_inputs, data.nullifiers)
+                .map_err(|_| MessageMismatch::SpendsUnrequestedNote)?;
+        }
         // 3. Each live record pays one requested payment or returns change to a requested source,
         // sealed to that owner's viewing key.
         let records = open_records(parsed, &self.tx_viewing_key, &opened)?;

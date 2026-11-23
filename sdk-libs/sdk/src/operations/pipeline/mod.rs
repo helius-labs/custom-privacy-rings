@@ -56,8 +56,9 @@ pub use self::{
         CoOwner, EntrySpend, NoteData, OwnerExposure, ReadCache, RingPayment,
     },
     delegate::{
-        DelegateCandidates, DelegateFunding, DelegateMove, DelegateOutput, DelegatePayment,
-        DelegateSource, DelegateTransfer, DelegateTransferInput, DelegateWithdrawal, Delegated,
+        sole_mint, DelegateCandidates, DelegateFunding, DelegateMint, DelegateMintAccount,
+        DelegateMove, DelegateOutput, DelegatePayment, DelegateSource, DelegateTransfer,
+        DelegateTransferInput, DelegateWithdrawal, Delegated,
     },
     owner::{CustomRingTransfer, CustomRingTransferInput, Owner},
     plan::SealRow,
@@ -66,7 +67,11 @@ pub use self::{
     relayed::{Relayed, RelayedTransfer, RelayedTransferInput},
 };
 
-pub(crate) use self::{anonymous::HiddenOwner, delegate::same_owner, pool_subjects::KnownSalts};
+pub(crate) use self::{
+    anonymous::HiddenOwner,
+    delegate::{refused_delegate, same_owner},
+    pool_subjects::KnownSalts,
+};
 
 use self::{
     anonymous::AnonymousSpend,
@@ -176,6 +181,8 @@ pub(crate) enum Spend<'a> {
     PublicOwners,
     Delegate {
         delegate: Address,
+        /// The mint a permanent delegate signs for, `None` for the ring's delegate.
+        mint: Option<DelegateMint>,
         rail: RingRail,
     },
 }
@@ -432,6 +439,7 @@ struct Frame {
     published_inputs: usize,
     policy: PolicyInputs,
     sender_pk_hash: [u8; 32],
+    delegate_asset: [u8; 32],
     public_assets: [[u8; 32]; N_PUBLIC_SLOTS],
     public_amount_fields: [[u8; 32]; N_PUBLIC_SLOTS],
     public_gross: [[u8; 32]; N_PUBLIC_SLOTS],
@@ -836,10 +844,10 @@ impl<'a> Sealed<'a> {
         let public_amount_fields = public.amount_fields()?;
         let public_gross = public.gross_fields();
         let sender_pk_hash = sender.signing_pubkey.owner_proof_input_hash()?;
-        let delegate = match spend {
-            Spend::Delegate { delegate, .. } => Some(delegate),
+        let (delegate, delegate_mint) = match spend {
+            Spend::Delegate { delegate, mint, .. } => (Some(delegate), mint),
             Spend::Owner | Spend::InProofOwner(_) | Spend::Anonymous(_) | Spend::PublicOwners => {
-                None
+                (None, None)
             }
         };
         let transfers = &proof_inputs.external_data.interface_transfers;
@@ -901,6 +909,7 @@ impl<'a> Sealed<'a> {
             read_cache: proof_inputs.cache_accounts.read,
             co_signers,
             delegate,
+            delegate_mint: delegate_mint.map(|mint| mint.address),
         };
         let mut parts = preview.parts(&proof_inputs, &rail, &sender, policy.plan.key)?;
         parts.seal_audit(
@@ -964,6 +973,7 @@ impl<'a> Sealed<'a> {
                 published_inputs,
                 policy,
                 sender_pk_hash,
+                delegate_asset: delegate_mint.map_or([0; 32], |mint| mint.asset),
                 public_assets,
                 public_amount_fields,
                 public_gross,
@@ -1072,6 +1082,7 @@ impl Unwitnessed<'_> {
                 ring_id: &frame.ring_id,
                 auditor_pubkey: auditor.as_bytes(),
                 sender: &sender,
+                delegate_asset: &frame.delegate_asset,
                 signers,
                 party_identities: &party_identities,
                 roots: &frame.policy.roots(),

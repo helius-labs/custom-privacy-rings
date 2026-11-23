@@ -75,6 +75,8 @@ build-storage-program:
         --manifest-path programs/storage/Cargo.toml -- --locked --features bpf-entrypoint
     SBF_TOOLS_VERSION={{sbf-tools-version}} zolana/tools/build-programs.sh \
         --manifest-path programs/storage/tests/cpi-owner/Cargo.toml -- --locked
+    SBF_TOOLS_VERSION={{sbf-tools-version}} zolana/tools/build-programs.sh \
+        --manifest-path examples/enrollment-vault/Cargo.toml -- --locked
 
 # Skipped when ZOLANA_SPP_PROGRAM_SO and ZOLANA_USER_REGISTRY_SO name builds.
 _spp-programs:

@@ -36,6 +36,7 @@ import {
   type ExpectedSealed,
   expectedDelegate,
   mismatch,
+  openedSources,
   type RequestedAuthorityTransfer,
   type VerifiedRelayMessage,
 } from "./relay-message.js";
@@ -182,7 +183,7 @@ export class PreparedAuthorityTransfer {
 
   /** Rust `RequestedAuthorityTransfer::prepare`, refuses an allowed set built for other sources. */
   constructor(requested: RequestedAuthorityTransfer) {
-    requested.allowed.checkSources(requested.request.transfer.sources);
+    openedSources(requested);
     this.request = requested.request;
     this.#requested = requested;
     Object.freeze(this);

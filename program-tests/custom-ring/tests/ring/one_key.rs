@@ -576,6 +576,7 @@ impl Binding {
             ring_id: &self.ring_id,
             auditor_pubkey: &self.auditor,
             sender: &[0; 32],
+            delegate_asset: &[0; 32],
             signers: SignerSet::new(
                 std::iter::once(&self.owner),
                 parsed.audit_stream().key.signer_slots(),

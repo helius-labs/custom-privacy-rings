@@ -89,6 +89,7 @@ type TransferParams struct {
 	Hidden          bool    `json:"hidden"`
 	Delegate        bool    `json:"delegate"`
 	Sender          Field   `json:"sender"`
+	DelegateAsset   Field   `json:"delegateAsset"`
 	PartyIdentities []Field `json:"partyIdentities"`
 	ApprovalMask    uint8   `json:"approvalMask"`
 	// Both absent read zero, a frame that discloses nothing.

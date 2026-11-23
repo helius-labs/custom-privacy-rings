@@ -9,8 +9,10 @@ publish = false
 [features]
 default = ["verifying-keys"]
 verifying-keys = []
+enrollment-cpi = ["dep:pinocchio"]
 
 [dependencies]
+pinocchio = { workspace = true, optional = true, features = ["cpi"] }
 arrayvec = { workspace = true }
 # Required for Pod on the compressed auditor key.
 bytemuck = { workspace = true, features = ["extern_crate_alloc", "min_const_generics"] }

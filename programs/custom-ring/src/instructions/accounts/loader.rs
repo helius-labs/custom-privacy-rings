@@ -22,8 +22,8 @@ use custom_ring_interface::{
     cosign::{CoSignCover, CoSignRequirement, MAX_CO_SIGNERS},
     storage::{Revision, StorageRegistry},
     tracking::TrackingRegistry,
-    CoSigner, CustomRingError, LiveRoots, RingAccount, RingPolicy, RingRole, RootRead,
-    SettlementAccount, TokenAccountState, STORAGE_PROGRAM_ID,
+    CoSigner, CustomRingError, LiveRoots, MintDelegate, RingAccount, RingPolicy, RingRole,
+    RootRead, SettlementAccount, TokenAccountState, STORAGE_PROGRAM_ID,
 };
 use pinocchio::{
     account::{Ref, RefMut},
@@ -299,6 +299,22 @@ impl CoSigners {
     pub fn contains(&self, address: &Address) -> bool {
         self.as_slice().contains(address)
     }
+}
+
+pub fn load_mint_delegate_asset(
+    mint: &AccountView,
+    signer: &Address,
+) -> Result<[u8; 32], CustomRingError> {
+    let data = mint
+        .try_borrow()
+        .map_err(|_| CustomRingError::UnauthorizedDelegate)?;
+    MintDelegate {
+        mint: mint.address(),
+        owner: mint.owner(),
+        data: &data,
+        signer,
+    }
+    .asset()
 }
 
 pub(crate) struct LoadedSettlement<'a>(pub &'a AccountView);

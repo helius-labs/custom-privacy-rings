@@ -24,7 +24,7 @@
 //   - InProof names Sender in the statement, that owner signs inside SPP's circuit.
 //   - Hidden keeps input 0's owner out of the statement, that owner signs inside SPP's circuit.
 //   - Delegate is the ring's permanent delegate. It signs for every owner, the run stays empty and
-//     no policy section binds.
+//     no policy section binds. A mint's permanent delegate signs the same rail, held to that mint by DelegateAsset.
 //
 // The hardest arguments live at the code they govern.
 //   - Outflow, charge, peak and the telescoping floor are in policy/outflow.go.
@@ -79,6 +79,8 @@ type TransferCircuit struct {
 	// Delegate is the authority rail.
 	InProof, Hidden, Delegate frontend.Variable
 	Sender                    frontend.Variable
+	// Zero for the ring's delegate and off the authority rail.
+	DelegateAsset frontend.Variable
 	// PartyIdentities are an anonymous frame's co-signers, an absent co-signer is zero.
 	PartyIdentities [shared.AnonymousParties]frontend.Variable
 	Sections
@@ -195,6 +197,8 @@ func (c *TransferCircuit) Define(api frontend.API) error {
 	signers := OpenSigners(api, c.Signers, c.SignerCount)
 	// The delegate signs for every owner, a published run would name a victim.
 	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: c.Delegate, V: c.SignerCount})
+	// A nonzero DelegateAsset is the asset of every note, an exit included.
+	assertAsset(api, c.DelegateAsset, section.Slots, opened.Slots)
 	hiddenOwner := c.hiddenOwner(api, section, signers)
 	// At most one term is nonzero, assertRail excludes the bits and zeroes Sender off InProof.
 	signers.AssertOwners(api, section, api.Sub(1, c.Delegate), api.Add(hiddenOwner, c.Sender))
@@ -230,6 +234,13 @@ func (c *TransferCircuit) assertRail(api frontend.API) {
 	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: api.Sub(1, c.InProof), V: c.Sender})
 }
 
+// assertAsset holds nothing for a zero asset or a dummy slot.
+func assertAsset(api frontend.API, asset frontend.Variable, slots ...[]shared.Output) {
+	for _, slot := range slices.Concat(slots...) {
+		abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: api.Mul(slot.Utxo, asset), V: api.Sub(slot.Asset, asset)})
+	}
+}
+
 // hiddenOwner reads the first note, zero on every rail with no owner to hide.
 func (c *TransferCircuit) hiddenOwner(api frontend.API, section InputSection, signers SignerSet) frontend.Variable {
 	owner := api.Mul(c.Hidden, section.Slots[0].OwnerPkHash)
@@ -261,7 +272,7 @@ func (c *TransferCircuit) statement(e audit.Envelope, w audit.AuditWires, s audi
 	fields := slices.Concat(e.Head(w, s, shared.TransferStatementDomain), []frontend.Variable{
 		c.InProof, c.Hidden, c.Delegate, c.ApprovalMask, c.ApprovalTotals, s.NoSpend,
 		c.OutputCount, recordChain,
-		c.InputCount, c.PrivateTxHash, c.Sender,
+		c.InputCount, c.PrivateTxHash, c.Sender, c.DelegateAsset,
 	}, c.PartyIdentities[:], []frontend.Variable{
 		c.SignerCount, signers.Chain,
 		c.PolicyHash, c.OwnRoot, c.CuratorRoot, c.TrackingRoot,

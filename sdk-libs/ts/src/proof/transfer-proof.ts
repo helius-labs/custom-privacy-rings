@@ -195,6 +195,7 @@ export function transferProofRequest(
     hidden: input.ringRail === "anonymous" && !input.publicOwners,
     delegate: input.ringRail === "delegate" || input.ringRail === "anonymousDelegate",
     sender: input.sender,
+    delegateAsset: ZERO_32,
     partyIdentities: anonymousFrame
       ? [
           ...input.partyIdentities,

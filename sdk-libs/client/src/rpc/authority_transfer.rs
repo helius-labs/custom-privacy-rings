@@ -43,6 +43,16 @@ pub struct AuthorityTransfer {
     pub withdrawals: Vec<AuthorityWithdrawal>,
 }
 
+impl AuthorityTransfer {
+    pub fn mints(&self) -> impl Iterator<Item = Address> + '_ {
+        self.payments
+            .iter()
+            .chain(&self.exits)
+            .map(|payment| payment.mint.0)
+            .chain(self.withdrawals.iter().map(|leg| leg.mint.0))
+    }
+}
+
 /// The delegate picks the transaction key, the frame's proof binds each record to it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct TxViewingSecret(Zeroizing<[u8; 32]>);

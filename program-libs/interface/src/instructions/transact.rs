@@ -35,7 +35,14 @@
 mod expansion;
 
 use solana_address::Address;
-use spr_hasher::{primitives::solana_owner_identity, HasherError};
+use spl_token_2022_interface::{
+    extension::{permanent_delegate::get_permanent_delegate, PodStateWithExtensions},
+    pod::PodMint,
+};
+use spr_hasher::{
+    primitives::{hash_bytes, solana_owner_identity},
+    HasherError,
+};
 use spr_interface::{
     error::ShieldedPoolError,
     instruction::{
@@ -50,7 +57,7 @@ use spr_interface::{
         CircuitId, InterfaceTransfer, TreeContext,
     },
     shape::{Shape, SPP_SUPPORTED_SHAPES},
-    N_PUBLIC_SLOTS,
+    N_PUBLIC_SLOTS, SPL_TOKEN_2022_PROGRAM_ID,
 };
 use wincode::{containers, len::FixIntLen, Serialize};
 
@@ -103,7 +110,6 @@ pub enum RailSigner {
     /// The anonymous rail, the payer, the owner run, the co-signers and the funders sign.
     Payer,
     Delegate {
-        delegate: Address,
         anonymous_ring: bool,
     },
 }
@@ -113,13 +119,9 @@ impl RailSigner {
         match RingRail::of(tag, ring.mode()?)? {
             RingRail::Anonymous => Ok(Self::Payer),
             RingRail::Confidential => Ok(Self::Owners),
-            rail @ (RingRail::Delegate | RingRail::AnonymousDelegate) => ring
-                .delegate()
-                .map(|delegate| Self::Delegate {
-                    delegate: *delegate,
-                    anonymous_ring: rail == RingRail::AnonymousDelegate,
-                })
-                .ok_or(CustomRingError::DelegateDisabled),
+            rail @ (RingRail::Delegate | RingRail::AnonymousDelegate) => Ok(Self::Delegate {
+                anonymous_ring: rail == RingRail::AnonymousDelegate,
+            }),
         }
     }
 
@@ -136,6 +138,31 @@ impl RailSigner {
                 ..
             } => RingRail::AnonymousDelegate,
         }
+    }
+}
+
+#[must_use]
+pub struct MintDelegate<'a> {
+    pub mint: &'a Address,
+    pub owner: &'a Address,
+    pub data: &'a [u8],
+    pub signer: &'a Address,
+}
+
+impl MintDelegate<'_> {
+    /// The mint's asset field, `UnauthorizedDelegate` unless `signer` is its live permanent delegate.
+    pub fn asset(self) -> Result<[u8; 32], CustomRingError> {
+        if self.owner.as_array() != &SPL_TOKEN_2022_PROGRAM_ID {
+            return Err(CustomRingError::UnauthorizedDelegate);
+        }
+        let state = PodStateWithExtensions::<PodMint>::unpack(self.data)
+            .map_err(|_| CustomRingError::UnauthorizedDelegate)?;
+        if get_permanent_delegate(&state).map(|delegate| delegate.to_bytes())
+            != Some(self.signer.to_bytes())
+        {
+            return Err(CustomRingError::UnauthorizedDelegate);
+        }
+        Ok(hash_bytes(self.mint.as_array())?)
     }
 }
 
@@ -619,6 +646,7 @@ impl<'a> ParsedTransact<'a> {
             output_capacity: self.stream.capacity,
             input_count: data.nullifiers.len(),
             private_tx_hash: data.private_tx_hash,
+            delegate_asset: binding.delegate_asset,
             signers: binding.signers,
             roots: binding.roots,
             public_assets: binding.public_assets,
@@ -637,6 +665,7 @@ pub struct TransferBinding<'a> {
     pub auditor_pubkey: &'a [u8; TAGGED_X25519_KEY_LEN],
     /// The in-proof owner identity, otherwise zero.
     pub sender: &'a [u8; 32],
+    pub delegate_asset: &'a [u8; 32],
     /// Default on the authority rails and on an empty run.
     pub signers: SignerSet,
     /// Zero outside the anonymous family.

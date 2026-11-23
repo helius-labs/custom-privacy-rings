@@ -525,6 +525,8 @@ pub(crate) struct TransferParams<'a> {
     /// The in-proof owner, zero on every other rail.
     #[serde(with = "fe")]
     pub sender: [u8; 32],
+    #[serde(with = "fe")]
+    pub delegate_asset: [u8; 32],
     /// Payer, co-signer and exit destination of an anonymous frame, zero when absent.
     #[serde(serialize_with = "fe::seq")]
     pub party_identities: Vec<[u8; 32]>,

@@ -91,14 +91,21 @@ pub struct TestEnv {
     standard_accounts: smart_account::StandardAccounts,
 }
 
+/// SPP opens the rail at creation on a pool with permissionless ring activation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthorityRail {
+    Open,
+    Closed,
+}
+
 impl TestEnv {
-    /// Governance enables the authority rail for `ring` through the ring vault.
-    pub fn enable_authority_rail(&self, ring: CustomRing) -> Result<()> {
+    /// Governance sets the authority rail of `ring` through the ring vault.
+    pub fn set_authority_rail(&self, ring: CustomRing, rail: AuthorityRail) -> Result<()> {
         let activation = SetRingActivation {
             authority: self.standard_accounts.ring_vault,
             ring_config: ring.ring_auth_pda(),
             activated: true,
-            ring_authority_transact_is_enabled: true,
+            ring_authority_transact_is_enabled: rail == AuthorityRail::Open,
         }
         .instruction();
         let sync = smart_account::execute_sync_ix(

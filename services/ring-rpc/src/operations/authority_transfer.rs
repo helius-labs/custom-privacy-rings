@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use custom_ring_sdk::{
-    AllowedNullifiers, DelegateFunding, DelegatePayment, DelegateSourceError, DelegateWithdrawal,
-    ResolvedSource, SourceEnrollment,
+    sole_mint, AllowedNullifiers, DelegateFunding, DelegatePayment, DelegateSourceError,
+    DelegateWithdrawal, ResolvedSource, SourceEnrollment,
 };
 use jsonrpsee::types::ErrorObjectOwned;
 use spr_indexer_api::Hash;
@@ -331,11 +331,19 @@ impl<S: TransactionSource> Hub<S> {
         if let Some(step) = relay.stored(&relay_id).await? {
             return Ok(step);
         }
-        // 2. The config names the key its delegate and the auditor key held here.
-        let config = shared.source.ring_config(ring).await?;
-        let config = config
-            .filter(|config| config.delegate == Some(delegate))
+        // 2. The config names the key its delegate and the auditor key held here, any other key is
+        //    the live permanent delegate of the one mint every leg names.
+        let config = shared
+            .source
+            .ring_config(ring)
+            .await?
             .ok_or(AuthorityTransferError::NotDelegate)?;
+        if config.delegate != Some(delegate) {
+            let mint = sole_mint(transfer.mints()).ok_or(AuthorityTransferError::NotDelegate)?;
+            if !shared.source.is_mint_delegate(mint, delegate).await? {
+                return Err(AuthorityTransferError::NotDelegate.into());
+            }
+        }
         if config.auditor_pubkey != service.auditor_pubkey() {
             return Err(AuthorityTransferError::ForeignAuditor.into());
         }
@@ -362,13 +370,7 @@ impl<S: TransactionSource> Hub<S> {
         //    the allowed set the sealed inputs answer to.
         let assets = shared.due_assets().await;
         let mut mints: Vec<Mint> = Vec::new();
-        for address in transfer
-            .payments
-            .iter()
-            .chain(&transfer.exits)
-            .map(|payment| payment.mint.0)
-            .chain(transfer.withdrawals.iter().map(|leg| leg.mint.0))
-        {
+        for address in transfer.mints() {
             let mint = assets.registry().mint(&address)?;
             if !mints.contains(&mint) {
                 mints.push(mint);
@@ -491,7 +493,8 @@ mod tests {
     use crate::{
         database::Store,
         managed_merge::tests::{
-            fee_payer, list_writer, Fixture, ScriptedChain, GENESIS, LIST_SALT, MINT, RING,
+            fee_payer, list_writer, mint_delegate, Fixture, ScriptedChain, GENESIS, LIST_SALT,
+            MINT, RING,
         },
         relay::{RelayParts, RelayPayload},
         relay_prover::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver},
@@ -922,6 +925,73 @@ mod tests {
             .await
             .expect_err("only the configured delegate reads");
         assert_eq!(ErrorObjectOwned::from(refused).code(), -32220);
+    }
+
+    #[tokio::test]
+    async fn a_mint_delegate_moves_its_mint_alone_and_reads_no_secret() {
+        let (fixture, prover) = served(Keypair::new_from_array([21; 32]).pubkey()).await;
+        let issuer = mint_delegate();
+        let wallet = Keypair::new_from_array([11; 32]);
+        let source = address(&wallet, &fixture.escrow_notes(&wallet, 2).await);
+        let refused =
+            |error: RingRpcError| assert_eq!(ErrorObjectOwned::from(error).code(), -32220);
+        let own = request(&fixture, &issuer, source);
+        let signed = |edit: fn(&mut AuthorityTransfer)| {
+            let mut transfer = own.transfer.clone();
+            edit(&mut transfer);
+            SignedRequest::new(AuthorityTransferAttestation {
+                target: ReadTarget {
+                    cluster: GENESIS,
+                    service: fixture.hub.service_pubkey(),
+                    ring: RING,
+                },
+                delegate: issuer.pubkey(),
+                transfer,
+            })
+            .at(unix_now().unwrap())
+            .sign(&issuer, &ViewingKey::new())
+            .unwrap()
+        };
+        for request in [
+            signed(|transfer| {
+                transfer.exits = vec![AuthorityPayment {
+                    mint: Address::new_from_array([7; 32]).into(),
+                    ..transfer.payments[0]
+                }]
+            }),
+            signed(|transfer| {
+                transfer.withdrawals = vec![zolana_ring_client::rpc::AuthorityWithdrawal {
+                    recipient: Address::new_from_array([9; 32]).into(),
+                    mint: Address::new_from_array([7; 32]).into(),
+                    amount: 1,
+                    token_program: None,
+                }]
+            }),
+            signed(|transfer| transfer.payments[0].mint = spr_transaction::SOL_MINT.into()),
+            request(&fixture, &Keypair::new_from_array([22; 32]), source),
+        ] {
+            refused(
+                fixture
+                    .hub
+                    .prepare_authority_transfer(&request)
+                    .await
+                    .expect_err("one mint under its permanent delegate"),
+            );
+        }
+        refused(
+            fixture
+                .hub
+                .delegate_notes(&notes_request(&fixture, &issuer, wallet.pubkey()))
+                .await
+                .expect_err("a secret links every mint of the owner"),
+        );
+        assert!(prover.sealed.lock().unwrap().is_empty());
+        fixture
+            .hub
+            .prepare_authority_transfer(&own)
+            .await
+            .expect("the mint delegate's move");
+        assert_eq!(prover.sealed.lock().unwrap()[0].delegate, issuer.pubkey());
     }
 
     fn salt_request(fixture: &Fixture, signer: &Keypair, owner: Address) -> GetListSaltRequest {

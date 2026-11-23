@@ -5,7 +5,7 @@ use custom_ring_interface::{
     storage::StorageRegistry, tracking::TrackingRegistry, CoSignScope, OwnerGrant, ReaderKeyBytes,
     RingAccount, RingMode, RingPolicy, RingRoles,
 };
-use custom_ring_sdk::{CustomRing, RingError};
+use custom_ring_sdk::{CustomRing, DelegateMintAccount, RingError};
 use solana_account::Account;
 use solana_address::Address;
 use solana_commitment_config::CommitmentConfig;
@@ -115,6 +115,12 @@ pub trait TransactionSource: Send + Sync {
         &self,
         request: GetStorageMemberRecordsRequest,
     ) -> impl Future<Output = Result<GetStorageMemberRecordsResponse, RingIndexerError>> + Send;
+
+    fn is_mint_delegate(
+        &self,
+        mint: Address,
+        signer: Address,
+    ) -> impl Future<Output = Result<bool, ClientError>> + Send;
 
     /// `None` for a program that is immutable or not deployed.
     fn upgrade_authority(
@@ -507,6 +513,18 @@ impl TransactionSource for ChainSource {
         .origins
         .remove(&event_index)
         .ok_or(AuditError::InvalidEventIndex(event_index))
+    }
+
+    async fn is_mint_delegate(&self, mint: Address, signer: Address) -> Result<bool, ClientError> {
+        Ok(self.rpc.get_account(mint).await?.is_some_and(|account| {
+            DelegateMintAccount {
+                address: mint,
+                account: &account,
+                signer,
+            }
+            .mint()
+            .is_ok()
+        }))
     }
 
     async fn ring_config(&self, ring: Address) -> Result<Option<RingConfiguration>, ClientError> {

@@ -152,7 +152,7 @@ pub fn process_initialize_ix(
     // 7. SPP binds the ring program to its canonical configuration account.
     let data = encode_instruction(
         tag::CREATE_RING_CONFIG,
-        // SPP starts the authority rail off, and the config stays inert until `set_ring_activation`
+        // The config stays inert and its authority rail closed until `set_ring_activation`,
         // unless the protocol config allows permissionless activation.
         &CreateRingConfigData {
             program_id: *program_id,

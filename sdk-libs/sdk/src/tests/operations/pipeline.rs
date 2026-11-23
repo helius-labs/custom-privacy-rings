@@ -966,6 +966,7 @@ async fn only_the_configured_delegate_moves_utxos() {
             member,
             key: key.nullifier_key.clone(),
             inputs,
+            mint: None,
         })
     };
     let utxos = |count: u64| -> Vec<WalletUtxo> {
@@ -1309,10 +1310,17 @@ struct DelegateCase<'a> {
     member: &'a ShieldedKeypair,
     key: spr_keypair::NullifierKey,
     inputs: Vec<WalletUtxo>,
+    /// The account the chain holds at the mint of the first input.
+    mint: Option<solana_account::Account>,
 }
 
-async fn stage_delegate(case: DelegateCase<'_>) -> Result<(), RingError> {
-    let assets = AssetRegistry::default();
+/// The mint a staged permanent delegate signs for.
+async fn stage_delegate(case: DelegateCase<'_>) -> Result<Option<DelegateMint>, RingError> {
+    let spent = case.inputs[0].utxo.asset;
+    let mut assets = AssetRegistry::default();
+    if spent != Mint::SOL {
+        assets.insert(spent.asset_id, spent.asset)?;
+    }
     let source = case.member.shielded_address()?;
     let transfer = DelegateTransfer::new(DelegateTransferInput {
         ring: ring(),
@@ -1323,18 +1331,92 @@ async fn stage_delegate(case: DelegateCase<'_>) -> Result<(), RingError> {
         inputs: case.inputs,
         outputs: vec![DelegateOutput {
             recipient: source,
-            asset: Mint::SOL.asset,
+            asset: spent.asset,
             amount: 2,
         }],
     })
     .with_assets(&assets);
-    let chain = Chain::ring(case.settings);
+    let mut chain = Chain::ring(case.settings);
+    if let Some(mint) = case.mint {
+        chain = chain.with(spent.asset, mint);
+    }
     let config = ring().require_config(&chain).await?;
-    transfer
-        .rail
-        .stage(ring(), &chain, &config)
+    match transfer.rail.stage(ring(), &chain, &config).await?.spend {
+        Spend::Delegate { mint, .. } => Ok(mint),
+        _ => unreachable!("a delegate transfer stages its rail"),
+    }
+}
+
+#[tokio::test]
+async fn a_permanent_delegate_moves_only_the_mint_it_holds() {
+    use spl_token_2022_interface::{
+        extension::{
+            permanent_delegate::PermanentDelegate, BaseStateWithExtensionsMut, ExtensionType,
+            PodStateWithExtensionsMut,
+        },
+        pod::PodMint,
+    };
+    let member = &crate::tests::support::keypair(1);
+    let issuer = Address::new_from_array([0x46; 32]);
+    let mint = Mint::new(Address::new_from_array([0x47; 32]), 2);
+    let extensions = [ExtensionType::PermanentDelegate];
+    let mut data =
+        vec![0; ExtensionType::try_calculate_account_len::<PodMint>(&extensions).unwrap()];
+    let mut state = PodStateWithExtensionsMut::<PodMint>::unpack_uninitialized(&mut data).unwrap();
+    state
+        .init_extension::<PermanentDelegate>(false)
+        .unwrap()
+        .delegate = Some(issuer.to_bytes().into()).try_into().unwrap();
+    state.base.is_initialized = true.into();
+    state.init_account_type().unwrap();
+    let stage_on = |settings, delegate, inputs| {
+        stage_delegate(DelegateCase {
+            settings,
+            delegate,
+            member,
+            key: member.nullifier_key.clone(),
+            inputs,
+            mint: Some(solana_account::Account {
+                owner: Address::new_from_array(spr_interface::SPL_TOKEN_2022_PROGRAM_ID),
+                data: data.clone(),
+                ..Default::default()
+            }),
+        })
+    };
+    let undelegated = RingSettings::new(RingMode::Confidential);
+    let stage = |delegate, inputs| stage_on(undelegated, delegate, inputs);
+    let held = |count: u64| -> Vec<WalletUtxo> {
+        (0..count)
+            .map(|leaf| ring_utxo(member, mint, 1, leaf))
+            .collect()
+    };
+    assert_eq!(
+        stage(issuer, held(2)).await.unwrap(),
+        Some(DelegateMint {
+            address: mint.asset,
+            asset: spr_hasher::primitives::hash_bytes(mint.asset.as_array()).unwrap(),
+        })
+    );
+    let mut mixed = held(2);
+    mixed.push(ring_utxo(member, Mint::SOL, 1, 2));
+    for refused in [
+        stage(issuer, mixed).await,
+        stage(Address::new_from_array([0x48; 32]), held(2)).await,
+    ] {
+        assert!(matches!(refused, Err(RingError::MissingDelegate)));
+    }
+    let delegated = RingSettings {
+        delegate: Some(Address::new_from_array([0x44; 32])),
+        ..undelegated
+    };
+    assert!(stage_on(delegated, issuer, held(2))
         .await
-        .map(|_| ())
+        .unwrap()
+        .is_some());
+    assert!(matches!(
+        stage_on(delegated, Address::new_from_array([0x48; 32]), held(2)).await,
+        Err(RingError::Program(CustomRingError::UnauthorizedDelegate))
+    ));
 }
 
 /// Every string a request draws, hashes or derives keeps only its length.
