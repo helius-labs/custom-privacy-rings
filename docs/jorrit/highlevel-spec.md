@@ -31,17 +31,27 @@ An allowlist is a list of approved identities that the ring authority
 maintains. Sender and or recipient must be on allow list.  
 Recipients above threshold must be on allow list.
 
+A listed identity can vouch for one transfer by signing it. Its entry then  
+admits every sender and recipient of that transfer. A vouch lifts no block or freeze.
+
 ### 1.2. Blocklist
 
 A blocklist is a list of identities or tokens the ring refuses transfers to  
-or from. This freezes all tokens the blocked identity holds.
+or from. This freezes all tokens the blocked identity holds.  
+Entries may be private: a registered identity is listed under its own salt,  
+an unregistered one under the ring salt, not on main yet.
 
-### 1.3. Asset allowlist
+### 1.3. Frozen list
+
+A separate list of identities that cannot send. A frozen identity still  
+receives. A block or freeze binds with the update that writes it.
+
+### 1.4. Asset allowlist
 
 Only allowed assets can be deposited.  
 Only allowed assets can be transferred.
 
-### 1.4. Auditor
+### 1.5. Auditor
 
 The auditor holds the ring's viewing key and can read every transfer and  
 withdrawal through the ring: tokens, amounts and recipients. The auditor  
@@ -57,7 +67,8 @@ transfers, withdrawals, merges and delegate moves. Funds stay where they are.
 ### 2.2. Permanent delegate
 
 A permanent delegate is a key that can move any user's funds to another user  
-within the custom ring.
+within the custom ring, or withdraw them. A delegate move runs no policy rule,  
+needs no co-signer and cannot exit to the default ring.
 
 ## 3. Ring RPC
 
@@ -81,12 +92,13 @@ operations. The co-signer on its own cannot move funds.
 
 ## Trust Assumptions
 
-1. **Storage tree write authority:** Trusted for membership data, list entries and key registrations. The tree proof verifies the update; each record's validity and the wallet's consent depend on the authority unless additional checks are defined.
+1. **Storage tree write authority:** Trusted for membership data and list entries. The tree proof verifies the update; each record's validity depends on the authority. Key registrations are checked on-chain: the owner's signature and the encrypted key.
 2. **Config Authority:** Trusted to set policy rules, ring settings and access grants across the ring.
 3. **Ring RPC:** Trusted to protect auditor keys and proof inputs, enforce reader permissions and apply co-signer limits.
 4. **Curators:** A ring trusts the authorities of the external storage trees used by its policy.
 5. **Delegate:** Trusted to move users' funds within the ring under the configured controls.
 6. **Upgrade Authority:** Trusted to create the initial configuration and deploy upgrades that preserve the intended program guarantees.
+7. **Voucher:** Trusted to vouch only for transfers the ring would allow.
 
 ## Glossary
 
@@ -95,17 +107,17 @@ operations. The co-signer on its own cannot move funds.
 | --- | --------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **Member record**     | Registry entry | A public entry in the member registry for an owner or asset, containing list memberships, key escrow information and asset limits used to prove that a transfer meets the ring's rules.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | 2   | **Ring RPC**          | Service        | Our hosted service that indexes member records, generates proofs, pays fees, submits transactions and serves decrypted activity to authorized readers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| 3   | **Ring Program**      | Solana program | Enforces ring controls and verifies proofs before SPP CPI. <br><br>1. `Initialize`: Creates the initial ring configuration and registers the ring with SPP.<br>2. `UpdateAuthority`: Changes the Config Authority, authorized by the current Config Authority.<br>3. `UpdatePolicy`: Updates the configured policy rules and storage tree references.<br>4. `SetPaused`: Pauses or resumes ring operations.<br>5. `SetDelegate`: Sets the permanent delegate once.<br>6. `SetCoSigner`: Adds or updates a co-signer and the operations it must approve.<br>7. `ClearCoSigner`: Removes a co-signer.<br>8. `Deposit`: Verifies deposit and audit proofs before SPP CPI.<br>9. `Transfer`: Verifies the required proofs for transfers and withdrawals before SPP CPI.<br>10. `Merge`: Verifies merge and audit proofs before SPP CPI.<br>11. `AuthorityTransfer`: Verifies permanent delegate authorization and the required proofs before SPP CPI. |
-| 4   | **Storage Program**   | Solana program | Stores storage tree roots and verifies that authorized record updates produce the correct new root. Shared write authority is managed through a smart account. <br><br>1. `Initialize`: Initializes a storage tree, its root history and write authority.<br>2. `Update`: Applies record updates with a proof of the tree update, keeping earlier roots valid for the grace period.<br>3. `UpdateImmediate`: Applies record updates with a proof of the tree update and invalidates earlier roots.<br>4. `UpdateAuthority`: Changes the tree's write authority, authorized by its current write authority.                                                                                                                                                                                                                                                                                                                                        |
-| 5   | **Storage tree**      | Merkle tree    | Merkle tree using account compression, with roots held by the Storage Program. Ring RPC maintains the pending record-update queue outside Solana, generates apply proofs for eligible batches, then indexes applied records and serves their Merkle proofs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 3   | **Ring Program**      | Solana program | Enforces ring controls and verifies proofs before SPP CPI. <br><br>1. `Initialize`: Creates the initial ring configuration and registers the ring with SPP.<br>2. `UpdateAuthority`: Changes the Config Authority, authorized by the current Config Authority.<br>3. `UpdatePolicy`: Updates the configured policy rules and storage tree references.<br>4. `SetPaused`: Pauses or resumes ring operations.<br>5. `SetDelegate`: Sets the permanent delegate once.<br>6. `SetCoSigner`: Adds or updates a co-signer and the operations it must approve.<br>7. `ClearCoSigner`: Removes a co-signer.<br>8. `EnrollBatch`: Applies key registrations through the Storage Program.<br>9. `Transfer`: Verifies the required proofs for deposits, transfers and withdrawals before SPP CPI. A deposit is a transfer that spends no UTXO.<br>10. `Merge`: Verifies merge and audit proofs before SPP CPI.<br>11. `AuthorityTransfer`: Verifies permanent delegate authorization and the required proofs before SPP CPI. |
+| 4   | **Storage Program**   | Solana program | Stores storage tree roots and verifies that authorized record updates produce the correct new root. Shared write authority is managed through a smart account. <br><br>1. `Initialize`: Initializes a storage tree, its root history and write authority.<br>2. `Update`: Applies record updates with a proof of the tree update, keeping earlier roots valid for the grace period unless the proof marks the batch restrictive.<br>3. `ApplyEnrollments`: Inserts key registrations into the tracking tree, checking each owner's signature and encrypted key.<br>4. `UpdateAuthority`: Changes the tree's write authority, authorized by its current write authority.                                                                                                                                                                                                                                                                                                                                        |
+| 5   | **Storage trees**     | Merkle trees   | Each ring has a policy-records tree and a tracking tree for key registrations. Roots are held by the Storage Program and read live by the Ring Program. Ring RPC maintains the pending record-update queue outside Solana, generates apply proofs for eligible batches, then indexes applied records and serves their Merkle proofs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | 6   | **Curator**           | Authority      | Authority to a third party storage tree.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 7   | **Wallet**            | User           | Holds spending keys and authorizes transfers of its ring UTXOs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | 8   | **Reader**            | User           | Uses granted read access to query decrypted ring activity through Ring RPC.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| 9   | **Config Authority**  | Authority      | Sets ring policies, member lists, readers, co-signer requirements, fees and pause controls.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 9   | **Config Authority**  | Authority      | Sets ring policies, member lists, readers, co-signer requirements, fees and pause controls. Split into admin, policy, pauser, co-sign admin and enrollment writer roles; the admin rotates each.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | 10  | **Upgrade Authority** | Authority      | Upgrades the ring program and creates its initial configuration.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 11  | **Auditor**           | Authority      | Holds the auditor key and decrypts ring transfers, deposits, merges and escrowed keys.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | 12  | **Co-signer**         | Authority      | Signs operations when the ring's configured scope or approval rules require it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| 13  | **Delegate**          | Authority      | Uses delegated authority to move members' UTXOs within a ring with key escrow.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 13  | **Delegate**          | Authority      | Uses delegated authority to move members' UTXOs within a ring, or withdraw them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 
 ## Flows
@@ -122,7 +134,7 @@ operations. The co-signer on its own cannot move funds.
 
 ## 1. Member enrollment and key escrow
 
-Enrollment depends on the ring's policy. Key escrow is required on key-escrow rings, optional on other confidential rings, and unavailable on anonymous rings.
+Every ring has key registration. A wallet registers once to spend UTXOs with a nonzero nullifier key. Receiving needs no registration.
 
 1. **Wallet:** Authorizes its member-record updates and, when registering an escrow key, encrypts its nullifier secret to the **Auditor**.
 2. **Ring RPC:**
@@ -194,7 +206,7 @@ A merge combines UTXOs of the same wallet, token and ring into one UTXO with the
 
 ## 6. Managed Merge
 
-Managed merge is initiated by **Ring RPC** on a ring with a permanent delegate and registered escrow keys. It combines one wallet's UTXOs of the same token and ring while preserving their total value. The user should be able to configure, how many utxos with what average amount. 
+Managed merge is initiated by **Ring RPC** for a wallet that signed merge settings and registered its key. It needs no permanent delegate. It combines one wallet's UTXOs of the same token and ring while preserving their total value. The user should be able to configure, how many utxos with what average amount. 
 
 1. **Ring RPC:**
    1. Selects unspent UTXOs belonging to the same wallet, token and ring.
@@ -207,14 +219,14 @@ Managed merge is initiated by **Ring RPC** on a ring with a permanent delegate a
 
 ## 7. Authority transfer
 
-An authority transfer moves a wallet's funds to recipients within the same ring, authorized by the permanent **Delegate**. **Ring RPC** uses the wallet's escrowed nullifier key to prepare the spend.
+An authority transfer moves a wallet's funds to recipients within the same ring, or withdraws them, authorized by the permanent **Delegate**. **Ring RPC** uses the wallet's escrowed nullifier key to prepare the spend.
 
 1. **Delegate:** Requests a transfer specifying the source wallet, recipients, token and amounts.
 2. **Ring RPC:**
    1. Retrieves the source wallet's unspent UTXOs and escrowed nullifier key.
    2. Prepares recipient and change UTXOs within the same ring and encrypts their details to the recipients and the **Auditor**.
-   3. Generates the required transfer, audit and policy proofs, including recipient key-escrow checks.
-3. **Delegate:** Signs the transaction; the **Co-signer** also signs when required.
+   3. Generates the required transfer and audit proofs. No policy rule applies.
+3. **Delegate:** Signs the transaction. No co-signer is required.
 4. **Ring RPC:**
    1. Pays fees and submits the transfer to the **Ring Program**.
    2. Indexes the result, marking the input UTXOs spent and adding the new UTXOs.
@@ -248,16 +260,16 @@ The **Config Authority** configures the limits applied by a **Co-signer**. **Rin
    3. Queues the record update, generates an apply proof when ready and submits the batch to the **Storage Program**, paying fees.
    4. Indexes the applied configuration, activates the limits and confirms the changes to the **Config Authority**.
 
-**Ring RPC** tracks usage and enforces the active limits when deciding whether to co-sign. The **Ring Program** checks the required co-signer signature.
+Limits are per asset, not per co-signer. **Ring RPC** tracks usage and enforces the active limits when deciding whether to co-sign. The **Ring Program** checks the required co-signer signature.
 
 ## Notes
 
 1. The program's upgrade authority is responsible only for upgrading the program and creating its initial configuration. The ring authority manages policy rules, list entries and ongoing ring settings.
-2. We should implement support for multiple co signers using smart accounts in a hot path is too expensive. We can just create a pda per co signer and check it in the program.
+2. We should implement support for multiple co signers using smart accounts in a hot path is too expensive. We can just create a pda per co signer and check it in the program. Implemented.
 3. We need to test that we can make the ring rpc relayer flow work with third party zk programs.
-4. The wallet should never fetch merkle proofs.
+4. The wallet should never fetch merkle proofs. Holds on the Ring RPC path; a direct path without Ring RPC stays available.
 5. Storage tree update proofs will be need to be small if we require all the data that we publish to be in the same instruction.
-6. We should probably not include validity proofs of the actual data that is stored in the storage tree update process to keep complexity low. If we want to add them a wrapper ix in the ring program that checks a batch proof over the data and a cpi into the storage program could be a clean way to extend this.
+6. We should probably not include validity proofs of the actual data that is stored in the storage tree update process to keep complexity low. If we want to add them a wrapper ix in the ring program that checks a batch proof over the data and a cpi into the storage program could be a clean way to extend this. Implemented for key registrations as `EnrollBatch`.
 
 
 
@@ -267,10 +279,11 @@ The **Config Authority** configures the limits applied by a **Co-signer**. **Rin
 2. custom ring rpc api
 3. Instruction data + accounts for the important instructions
 4. can we get this into 2 weeks audit scope?
+5. smart-account write authority: not implemented. Ring RPC pins one KMS key per authority.
 
 ## Questions:
 
-1. Do we always need key escrow? Only if we use permanent delegate right? For auditor only we dont need it.
+1. Do we always need key escrow? Only if we use permanent delegate right? For auditor only we dont need it. Answer: registration is needed only to spend UTXOs with a nonzero nullifier key.
 2. Should we have ownership checks inside the Storage program proofs so that only the owner of the data can modify certain fields, and only the authority can modify other fields?
 3. Is the curator program a third party policy program?
-   1. I don't want us to pass too many accounts for a ring transfer, ideally it is only 1 the policy account, we could sync root history of curated trees and the policy store program trees to the policy pda so that all roots originate from that account.
+   1. I don't want us to pass too many accounts for a ring transfer, ideally it is only 1 the policy account, we could sync root history of curated trees and the policy store program trees to the policy pda so that all roots originate from that account. Decision: two trees per ring, roots read live from each registry, none synced into the policy account.

@@ -1,5 +1,7 @@
 # Circuit checks
 
+General, Inputs and Outputs describe an earlier statement. The ciphertext section is current: the statement has 44 fields and no `output_chain`, `tail_chain`, `input_nullifier_chain`, `signer_data_counts`, address bitmap, data-hash record or single-asset payout key.
+
 ## General
 
 1. **Public input hash:**
@@ -169,7 +171,7 @@
     2. **Division:** Require `numerator = quotient * divisor + remainder`, with `0 <= remainder < divisor`.
     3. **Maximum:** Require the result to be at least every candidate and equal to one.
 18. **Program assumptions:** The circuit cannot see these; the program enforces them.
-    1. **Live roots:** `own_root`, `curator_root` and `tracking_root` are current, and `curator_root` is the root of the registry the source map names.
+    1. **Live roots:** `own_root`, `curator_root` and `tracking_root` are current, and `curator_root` is the root of the registry the source map names. An earlier root stays valid for the registry's grace after a batch that tightens nothing.
     2. **Tracking floor:** `tracking_root` is at or above every salted source’s floor, else an owner a private list names could prove itself unregistered.
     3. **Legs:** `gross` is folded from the settled legs and `withdrawal_hash` from the legs’ accounts.
     4. **Table shape:** Write-time validation refuses what the circuit decodes freely: a guard on a sender rule, a per-asset guard off an owner rule, mixed polarity, more than one absent list, or a present list that is not a grant list.
@@ -226,9 +228,11 @@ There is no address-input bitmap, shared payout mint or separate output data-has
 
 ## Notes
 
+Implemented since: 2, 4, 5 and 7 to 16. Open: 1, 6, 18, 19, 20.
+
 1. Why do we need **No-spend flag** ?
 2. Default-ring input data, should be stored in a message.
-3. We dont need to verifiably encrypt output blindings since we constraint the deterministically derived blindings.
+3. We dont need to verifiably encrypt output blindings since we constraint the deterministically derived blindings. Kept: the recipient holds no viewing secret to derive them.
 4. Derive `private_tx_blinding` from the auditor-recoverable seed using SPP’s derivation. The shared `private_tx_hash` then lets SPP enforce output blindings, removing duplicate per-output checks from the ring circuit. No SPP changes required.
 5. Pass precomputed `address_chain` as a private witness checked through `private_tx_hash`. If we remove the auditor address bitmap, we can also remove the full nullifier list and `input_nullifier_chain`; keep `first_nullifier`.
 6. We should allow transfers from and to utxos with nullifier secret 0 and skip the registration requirement for those. We need to prove that there is no registered nullifier then.
@@ -242,14 +246,14 @@ There is no address-input bitmap, shared payout mint or separate output data-has
 14. Note 9 likely makes the separate single-asset payout circuit unnecessary; sharing the mint can remain an optional encoding optimization.
 15. The withdrawal `amount < 2^64` check is probably redundant: `withdrawal_hash` binds the amount to the program’s `u64` value. The nonzero checks are separate.
 16. Consider unifying list lookups as `Poseidon(domain, owner_id, salt)`: use zero salt for public lists and the registered salt for private lists, selected by the policy. Both use the same hashing and membership logic; public entries require no registration.
-17. Consider to unify the two trees. todo do a separate doc on the tree design.
+17. Consider to unify the two trees. todo do a separate doc on the tree design. Decision: two trees stay.
 18. Consider one guard kind: a guard bit and a threshold. `AboveAmount(t)` is the bit with threshold `t`, `AboveAmountByAsset` is the bit with threshold zero, which reads the asset record's threshold; `AboveAmount(0)` is already refused. Behaviour is unchanged, including an absent asset record binding on any nonzero total. The circuit drops the second guard tag and the per-payment record comparison; the table shape rule for per-asset guards can stay or go.
 19. Consider keeping non-policy lists out of the policy tree. No rule reads `Reader`, `RingViewing` or a wallet grant, yet their writes move the root every transfer proof opens. Write them as a memo instead, instruction data the indexer picks up as it does for the Solana memo program, with no leaf and no root change.
 20. Consider removing the charge. `displaced` is nonzero only when a public deposit of an asset meets an exit or withdrawal of the same asset in one transaction: without the deposit, SPP's balance gives `leaving <= sum(debit)`. Refuse that case, the withdrawal half in the program's public slot fold and the exit half in the circuit (an exit's asset must not equal a deposited slot's asset, where a slot deposits iff `net + gross != 0`), and charged outflow is the debit. That deletes `flowsOf`, `floorDiv`, `min` and the division hint, about 105 lines of circuit code, plus a dozen 72-bit range checks per asset slot. The spec's mixed-owner rule becomes unconditional; single-owner pass-through of public funds is the one feature lost.
 
 ## Limitations
 
-1. At most four screened owners per transfer on commitment keys and one on entry keys; a spend with more distinct input owners cannot be proven.
+1. Screened owners per transfer are fixed per key, from 2 to 13; a spend with more distinct input owners cannot be proven.
 2. Sixteen rules per table, nine lists, one curator registry beside the ring’s own.
 3. A rule is one polarity: any of its grant lists by presence, or one deny list by absence. No AND inside a rule, no mixed present and absent lists, no present rule on a deny list.
 4. Sender rules take no amount guard. A per-asset guard fits only owner rules.
@@ -259,17 +263,17 @@ There is no address-input bitmap, shared payout mint or separate output data-has
 8. An asset without an own record has no cap, no `cosign_above` and no withdrawal threshold, and a per-asset guard on it binds on any nonzero total.
 9. Limits are per transaction. Window limits exist only in Ring RPC, on transactions it co-signs.
 10. Caps and rows key on owner identity, so one person with several keys is several owners.
-11. A private list reads only through a tracking row. An unregistered owner is off every private list: an allow rule refuses it, a block rule admits it.
+11. A private list reads only through a tracking row. An unregistered owner is off every private list: an allow rule refuses it, a block rule admits it. A voucher admits it under an allow rule. A ring salt that lets a private list name it is not on main yet.
 12. The circuit cannot see a root’s age. Freshness, the salted-source floor and which registry a curator root belongs to are program checks.
 13. The circuit decodes any row; table shape is a write-time check. A table that bypasses that check is honoured by the proof.
 14. Three public assets per transaction, and withdrawal legs capped by the key’s slot count.
 15. The delegate rail runs no rule, cap or approval, and must present zero policy, own and curator roots.
 16. The charge attributes third-party-funded exits to owners who kept funds, by row order for rounding, and is not a trace of whose funds left.
 17. Guard totals net only ring inputs; debit nets entry inputs too. The same transfer has two notions of what an owner received.
-18. Two approval classes, outflow and withdrawal, each from one per-asset threshold. No approval on a deposit, a recipient or a list event.
+18. Two approval classes, outflow and withdrawal, each from one per-asset threshold. No approval on a deposit, a recipient or a list event. The program can also require a co-signer per operation class, deposits included.
 19. The withdrawal bit reads gross per public slot, with no deposit offset and no per-owner attribution.
 20. Approval totals reach a co-signer only as a blinded digest; the blinder’s freshness is not constrained.
 21. Record pool capacity is fixed per key: senders, two per output slot, withdrawals, salted keys, spent inputs and public assets. More distinct subjects than that cannot be proven.
-22. The single-asset payout key allows one ring input, one public signer, sixteen outputs of that asset, and no entry, exits, public legs or data.
+22. Removed: there is no single-asset payout key.
 23. The merge circuit reads no policy, so a merge is unscreened by any rule or cap.
 24. Exits are screened as recipients only; there is no exit-specific subject or rule.

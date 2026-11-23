@@ -37,6 +37,7 @@ The complete instruction additionally carries output commitments (`32 × M` B), 
 - **Default-ring entry:** the auditor envelope grows from 33 B to `41 + 136 × N` B, adding `8 + 136 × N` bytes. `N` is the published input/nullifier count, including padding and address inputs, rather than just the number of default-ring notes. The instruction can require additional public authorization fields too.
 - **Application payloads:** with `HAS_DATA`, each output gets a 2-byte body-length field. Each non-exit output also carries the frame's shared encrypted payload width, including its internal encoding and padding.
 - **Replies:** add a 2-byte shared length and `L` bytes per non-exit output, where `L >= 97`. Slots without a reply carry filler of the same length.
+- **Vouched transfer:** the auditor stream carries the voucher's key, adding 32 B.
 - **Default-ring exits:** each exit carries a 137-byte audit record, a full 32-byte owner tag and a separate SPP recipient body. The table's ring-output formula does not cover exits.
 
 Sources: [audit stream lengths](../../program-libs/interface/src/proof/audit_stream.rs), [compact transfer encoder](../../program-libs/interface/src/instructions/transact.rs), [output body encoding](../../program-libs/interface/src/codec/output.rs). Complete transaction profiles are measured separately in [ring-frame-fit.md](../../test-vectors/proof/ring-frame-fit.md).

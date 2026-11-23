@@ -1,6 +1,6 @@
 The ring circuits prove that deposits, transfers, merges and registry updates satisfy the ring's applicable audit, policy and key escrow requirements.
 
-Current implementation: PR #18, `alex/one-ring-proof` at `cfc83604` (4 November 2026), statement version 3 and key release v10. This describes the rebased code; [requirements.md](requirements.md) records the target design. Open design questions remain in the Notes subsections.
+Historical: describes PR #18, `alex/one-ring-proof` at `cfc83604` (4 November 2026), statement version 3 and key release v10. The key catalog, statement and encryption layout have changed since; see [circuit checks](circuit%20checks.md) and [encryption](encryption.md). [requirements.md](requirements.md) records the target design. Open design questions remain in the Notes subsections.
 
 ## Circuits
 

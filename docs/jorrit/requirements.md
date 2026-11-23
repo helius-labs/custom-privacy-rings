@@ -50,7 +50,7 @@ with cosigner we can do anything eg:
       3. **Exit to the default ring:** Recover the created default-ring UTXO. Must be in the same layout as standard confidential transfers.
       4. **Withdrawal:** No additional encrypted information required.
       5. **Deposit:** Same as transfer.
-      6. **Merge:** Same as transfer.
+      6. **Merge:** Same as transfer, for UTXOs with a registered nullifier key.
       7. **Delegate transfer:** Same as transfer.
       8. **Compact padding:** must be supported same as SPP circuit.
       9. **Dummies:** Indistinguishable from real outputs through public information. The auditor can reliably identify and skip them.
@@ -72,7 +72,7 @@ with cosigner we can do anything eg:
       **Technical requirements:**
    2. Support program-owned UTXOs and CPI flows.
    3. Preserve SPP’s supported owner combinations and signing methods.
-   4. Preserve SPP’s supported input/output sizes and compact and dummy padding.
+   4. Support the input/output sizes in the ring’s key catalog, a subset of SPP’s, with compact and dummy padding. Wider payments split across transfers.
 4. **Owner allowlisting**
 
    **Purpose:**
@@ -81,10 +81,11 @@ with cosigner we can do anything eg:
       **Technical requirements:**
    2. Allowlist entries may be public or private. Private entries must not reveal members’ identities to public observers.
    3. Using the allowlist must not reveal the identities of the owners sending or receiving funds to public observers.
+   - **Vouching:** An allowlisted owner may sign a transfer as its voucher. Its allowlist entry then covers every sender and recipient of that transfer. A vouch covers allowlists only: a blocked or frozen owner stays refused, and a blocked or frozen voucher vouches for no one. The voucher’s identity is hidden from public observers and verifiably encrypted to the auditor. Whether a transfer is vouched may be public.
    
       **Cases:**
    
-      Apply the configured sender and recipient allowlisting to each case, regardless of which instruction handles it.
+      Apply the configured sender and recipient allowlisting to each case, regardless of which instruction handles it. Each owner must be listed or covered by a voucher.
    4. **Transfer within the ring:** Check spent UTXO owners and receiving UTXO owners.
    5. **Deposit:** Check receiving ring UTXO owners.
    6. **Withdrawal:** Check spent UTXO owners and public withdrawal recipients.
@@ -101,6 +102,10 @@ with cosigner we can do anything eg:
    2. Blocklist and freeze-list entries may be public or private. Private entries must not reveal members’ identities to public observers.
    3. Using the blocklist must not reveal the identities of the owners sending or receiving funds to public observers.
    4. Blocking and freezing can use separate lists.
+   - **Freezing:** A frozen owner cannot send, withdraw or exit. It can still receive. A blocked owner can neither send nor receive.
+   - A block or freeze binds on-chain with the update that writes it. A proof made against an earlier root fails.
+   - Private entries reach unregistered owners. A registered owner is listed under its own salt, an unregistered owner under a ring-wide salt, and no owner is refused for being unregistered. The wallet derives its salt per ring from its viewing key, final at registration. Ring RPC derives the ring salt from the auditor secret. A holder of the ring salt can test a known identity for membership. The ring salt is not on main yet.
+   - Freezing a voucher stops its vouching at once. It does not freeze the owners it admitted earlier; those are frozen by their own entries, and the auditor reads each transfer’s voucher.
    
       **Cases:**
    
@@ -110,8 +115,8 @@ with cosigner we can do anything eg:
    7. **Withdrawal:** Check spent UTXO owners and public withdrawal recipients.
    8. **Entry from the default ring:** Check spent default-ring UTXO owners and receiving ring UTXO owners.
    9. **Exit to the default ring:** Check spent ring UTXO owners and receiving default-ring UTXO owners.
-   10. **Merge:** No blocklist checks; ownership remains unchanged.
-   11. **Delegate transfer:** No blocklist checks; authorization is covered by the permanent delegate policy.
+   10. **Merge:** No blocklist checks; ownership remains unchanged. A frozen owner can still merge.
+   11. **Delegate transfer:** No blocklist checks; authorization is covered by the permanent delegate policy. The delegate can move a blocked or frozen owner’s funds.
 6. **Asset allowlist**
 
    **Purpose:**
@@ -121,7 +126,7 @@ with cosigner we can do anything eg:
    2. Enforcing the asset allowlist must not reveal private UTXO assets to public observers.
    
       **Cases:**
-   3. **Transfer within the ring:** Check assets of spent and receiving UTXOs.
+   3. **Transfer within the ring:** Check assets of spent and receiving UTXOs. Amount-guarded asset rules apply to receiving UTXOs only.
    4. **Deposit:** Check deposited assets.
    5. **Withdrawal:** Check withdrawn assets.
    6. **Entry from the default ring:** Check assets entering the ring.
@@ -159,7 +164,7 @@ with cosigner we can do anything eg:
    
         Aggregate outflow per owner and asset across the transaction. Subtract funds returned to the same owner in ring UTXOs.
    3. **Transfer within the ring:** Count funds sent to other owners.
-   4. **Deposit:** No outflow-cap checks; public funds enter the ring.
+   4. **Deposit:** No outflow-cap checks; public funds enter the ring. A deposit beside an exit or withdrawal of the same asset charges the owners who kept funds.
    5. **Withdrawal:** Count withdrawn funds toward the owner’s outflow.
    6. **Entry from the default ring:** Count funds sent to other owners; exclude funds received by the same owner within the ring.
    7. **Exit to the default ring:** Count exited funds, including exits to the same owner.
@@ -190,7 +195,7 @@ with cosigner we can do anything eg:
     1. Allow a configured delegate to move funds without owner authorization.
     
        **Technical requirements:**
-    2. Require authorization from the delegate configured by the ring policy.
+    2. Require authorization from the delegate configured by the ring policy. A mint’s own permanent delegate may also act, for transfers of that mint only.
     3. Delegate transfers bypass the other transfer policies; auditor recovery remains required.
     
        **Cases:**
@@ -198,7 +203,7 @@ with cosigner we can do anything eg:
     5. **Deposit:** Delegate authority cannot authorize spending public funds.
     6. **Withdrawal:** Permitted with delegate authorization.
     7. **Entry from the default ring:** Delegate authority cannot spend default-ring UTXOs.
-    8. **Exit to the default ring:** Permitted with delegate authorization.
+    8. **Exit to the default ring:** Not available; SPP’s authority rail has no exit.
     9. **Merge:** Normal merge authorization applies; no additional delegate-policy checks.
     10. **Delegate transfer:** Require the configured delegate’s authorization and apply auditor recovery, without the other transfer-policy checks.
 
@@ -215,6 +220,6 @@ with cosigner we can do anything eg:
 **Notes:**
 
 1. With input and output allowlisting, removal blocks sending and receiving; a separate freeze list only adds “receive but not spend.”
-2. Should we add asset block list?
+2. Should we add asset block list? Already expressible: a deny rule can name an asset.
 3. Should amount guards also add a min transfer?
 4. Do we need Co-signer approval thresholds. at all or is a co signer policy in the relayer sufficient?
