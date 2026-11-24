@@ -263,7 +263,7 @@ Implemented since: 2, 4, 5 and 7 to 16. Open: 1, 6, 18, 19, 20.
 8. An asset without an own record has no cap, no `cosign_above` and no withdrawal threshold, and a per-asset guard on it binds on any nonzero total.
 9. Limits are per transaction. Window limits exist only in Ring RPC, on transactions it co-signs.
 10. Caps and rows key on owner identity, so one person with several keys is several owners.
-11. A private list reads only through a tracking row. An unregistered owner is off every private list: an allow rule refuses it, a block rule admits it. A voucher admits it under an allow rule. A ring salt that lets a private list name it is not on main yet.
+11. A private list reads an owner under the ring salt, and a registered owner also under its own salt through its tracking row. A block under either refuses, an allow under either admits. On a ring that commits no ring salt an unregistered owner is off every private list: an allow rule refuses it, a block rule admits it. A voucher admits it under an allow rule.
 12. The circuit cannot see a root’s age. Freshness, the salted-source floor and which registry a curator root belongs to are program checks.
 13. The circuit decodes any row; table shape is a write-time check. A table that bypasses that check is honoured by the proof.
 14. Three public assets per transaction, and withdrawal legs capped by the key’s slot count.

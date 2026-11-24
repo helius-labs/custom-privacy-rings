@@ -39,7 +39,7 @@ admits every sender and recipient of that transfer. A vouch lifts no block or fr
 A blocklist is a list of identities or tokens the ring refuses transfers to  
 or from. This freezes all tokens the blocked identity holds.  
 Entries may be private: a registered identity is listed under its own salt,  
-an unregistered one under the ring salt, not on main yet.
+an unregistered one under the ring salt.
 
 ### 1.3. Frozen list
 

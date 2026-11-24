@@ -104,7 +104,7 @@ with cosigner we can do anything eg:
    4. Blocking and freezing can use separate lists.
    - **Freezing:** A frozen owner cannot send, withdraw or exit. It can still receive. A blocked owner can neither send nor receive.
    - A block or freeze binds on-chain with the update that writes it. A proof made against an earlier root fails.
-   - Private entries reach unregistered owners. A registered owner is listed under its own salt, an unregistered owner under a ring-wide salt, and no owner is refused for being unregistered. The wallet derives its salt per ring from its viewing key, final at registration. Ring RPC derives the ring salt from the auditor secret. A holder of the ring salt can test a known identity for membership. The ring salt is not on main yet.
+   - Private entries reach unregistered owners. A registered owner is listed under its own salt, an unregistered owner under a ring-wide salt, and no owner is refused for being unregistered. The wallet derives its salt per ring from its viewing key, final at registration. Ring RPC derives the ring salt from the auditor secret. An entry under the ring salt stays in force after registration. A holder of the ring salt can test a known identity for membership.
    - Freezing a voucher stops its vouching at once. It does not freeze the owners it admitted earlier; those are frozen by their own entries, and the auditor reads each transfer’s voucher.
    
       **Cases:**
