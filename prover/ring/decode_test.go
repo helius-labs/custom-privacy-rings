@@ -2,7 +2,9 @@ package ring
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/consensys/gnark/frontend"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
+	"github.com/helius-labs/zolana-custom-rings/prover/circuits/registry"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/transfer"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringregistry"
@@ -47,7 +50,8 @@ func TestDecodeRejectsMalformedRequests(t *testing.T) {
 		{"missing field", transferKey, func(m map[string]any) { delete(m, "firstNullifier") }, `missing field "firstNullifier"`},
 		{"missing layout", transferKey, func(m map[string]any) { delete(m, "layout") }, `missing field "layout"`},
 		{"missing flag", batchKey, func(m map[string]any) { delete(write(m), "exists") }, `writes: [0]: missing field "exists"`},
-		{"null field", transferKey, func(m map[string]any) { m["firstNullifier"] = nil }, "FirstNullifier: missing"},
+		{"null field", transferKey, func(m map[string]any) { m["firstNullifier"] = nil }, "firstNullifier: null value"},
+		{"null bytes", transferKey, func(m map[string]any) { m["auditorPk"] = nil }, "auditorPk: null value"},
 		{"field at the modulus", transferKey, func(m map[string]any) { m["firstNullifier"] = modulus }, canonical},
 		{"uppercase hex", transferKey, func(m map[string]any) { m["auditorPk"] = strings.ToUpper(m["auditorPk"].(string)) }, canonical},
 		{"short field", transferKey, func(m map[string]any) { m["firstNullifier"] = "0x01" }, canonical},
@@ -85,6 +89,30 @@ func TestDecodeRejectsMalformedRequests(t *testing.T) {
 	if _, err := decode("custom-ring-transfer-4-in24-w4-s4", honest); err == nil {
 		t.Fatal("a request for the 2-output key decoded on the 4-output key")
 	}
+	oversized := append(append([]byte(nil), honest...), make([]byte, MaxBodyBytes)...)
+	for i := len(honest); i < len(oversized); i++ {
+		oversized[i] = ' '
+	}
+	if err := Unmarshal(oversized, new(TransferParams)); err == nil || !strings.Contains(err.Error(), "request body exceeds") {
+		t.Fatalf("an oversized body decoded: %v", err)
+	}
+	padded := append([]byte(`{"firstNullifier":"`+strings.Repeat("0", MaxBodyBytes)+`"}`), []byte{}...)
+	if _, err := decode(transferKey, padded); err == nil || !strings.Contains(err.Error(), "request body exceeds") {
+		t.Fatalf("an oversized json request decoded: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(honest, &raw); err != nil {
+		t.Fatal(err)
+	}
+	zero := "0x" + strings.Repeat("00", 32)
+	huge := make([]any, maxJSONArrayLen+1)
+	for i := range huge {
+		huge[i] = zero
+	}
+	raw["signers"] = huge
+	if _, err := decode(transferKey, mustMarshal(t, raw)); err == nil || !strings.Contains(err.Error(), "array exceeds") {
+		t.Fatalf("an oversized array decoded: %v", err)
+	}
 }
 
 // The Rust encoder's table for a PrivateFrozen source, spliced into a host transfer request, reaches the circuit wires.
@@ -106,5 +134,68 @@ func TestRustPolicyTableReachesTheAssignment(t *testing.T) {
 	}
 	if wires.Sources[policy.NSources-1].ListID != frontend.Variable(uint8(policy.NSources)) {
 		t.Fatalf("the PrivateFrozen slot reads list %v", wires.Sources[policy.NSources-1].ListID)
+	}
+}
+
+func assertAllZeroVariables(t *testing.T, v reflect.Value, path string) {
+	t.Helper()
+	varType := reflect.TypeFor[frontend.Variable]()
+	switch {
+	case v.Type() == varType:
+		if v.IsNil() {
+			t.Fatalf("%s is nil", path)
+		}
+		if v.Interface() != 0 {
+			t.Fatalf("%s = %v, want 0", path, v.Interface())
+		}
+	case v.Kind() == reflect.Struct:
+		for i := range v.NumField() {
+			f := v.Type().Field(i)
+			if f.Tag.Get("gnark") == "-" {
+				continue
+			}
+			assertAllZeroVariables(t, v.Field(i), path+"."+f.Name)
+		}
+	case v.Kind() == reflect.Array || v.Kind() == reflect.Slice:
+		for i := range v.Len() {
+			assertAllZeroVariables(t, v.Index(i), path)
+		}
+	}
+}
+
+func TestAssignNilSlotsAndAbsentPrivateOwnerRoundTrip(t *testing.T) {
+	records := applyRequest(t, "custom-ring-apply-records-2", 2)
+	records.Writes[1] = nil
+	assigned, err := decode("custom-ring-apply-records-2", mustMarshal(t, records))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := frontend.NewWitness(assigned, ecc.BN254.ScalarField()); err != nil {
+		t.Fatal(err)
+	}
+	assertAllZeroVariables(t, reflect.ValueOf(assigned.(*registry.ApplyRecordsCircuit).Writes[1]), "Writes[1]")
+
+	batch := ringregistry.PrivateBatch(t, 2, ringregistry.PrivateBlockBit)
+	batch.Owners[0].Present = 0
+	batch.Owners[0].Ring = 1
+	batch.Owners[0].Owner = 42
+	private := requestOf[PrivateApplyRecordsParams](t, "custom-ring-apply-records-private-2", batch)
+	if private.Owners[0].Absent == nil || !private.Owners[0].Ring {
+		t.Fatalf("absent ring owner dropped in requestOf: %+v", private.Owners[0])
+	}
+	private.Writes[1] = nil
+	private.Owners[1] = nil
+	assigned, err = decode("custom-ring-apply-records-private-2", mustMarshal(t, private))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := frontend.NewWitness(assigned, ecc.BN254.ScalarField()); err != nil {
+		t.Fatal(err)
+	}
+	pc := assigned.(*registry.PrivateApplyRecordsCircuit)
+	assertAllZeroVariables(t, reflect.ValueOf(pc.Writes[1]), "Private.Writes[1]")
+	assertAllZeroVariables(t, reflect.ValueOf(pc.Owners[1]), "Private.Owners[1]")
+	if pc.Owners[0].Present != frontend.Variable(0) || pc.Owners[0].Ring != frontend.Variable(1) || fmt.Sprint(pc.Owners[0].Owner) != "42" {
+		t.Fatalf("unexpected absent owner assignment: %+v", pc.Owners[0])
 	}
 }

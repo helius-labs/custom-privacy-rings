@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/registry"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/transfer"
 	"github.com/helius-labs/zolana/prover/server/prover/common"
@@ -20,6 +21,11 @@ const (
 	Merge
 )
 
+type PoolCapacity struct {
+	policy.RecordPoolShape
+	Tracking int
+}
+
 type Key struct {
 	Circuit common.CircuitType
 	Family  Family
@@ -30,7 +36,12 @@ type Key struct {
 	Owners      int
 	Entry       bool
 	Wide        bool
-	Private     bool
+	// FrameWide mirrors FrameKey.wide, small entry keys set Wide for salted pools alone.
+	FrameWide bool
+	Private   bool
+	Tracking  int           `json:",omitempty"`
+	Records   int           `json:",omitempty"`
+	Pools     *PoolCapacity `json:",omitempty"`
 }
 
 // Keys takes each shape from the package that sizes it.
@@ -40,6 +51,13 @@ func (k Key) KeyFile() string {
 	return strings.ReplaceAll(string(k.Circuit), "-", "_") + ".key"
 }
 
+func frameWide(shape transfer.Shape) bool {
+	if shape.Entry {
+		return shape.Outputs == 8 && shape.Inputs == 8 && shape.Withdrawals == 32 && shape.Owners == 8
+	}
+	return shape.Wide
+}
+
 func keys() []Key {
 	var keys []Key
 	add := func(key Key) {
@@ -47,7 +65,26 @@ func keys() []Key {
 		keys = append(keys, key)
 	}
 	for _, shape := range transfer.Shapes {
-		add(Key{Family: Transfer, Inputs: shape.Inputs, Outputs: shape.Outputs, Withdrawals: shape.Withdrawals, Owners: shape.Owners, Entry: shape.Entry, Wide: shape.Wide})
+		circuit, err := transfer.NewTransferCircuit(shape)
+		if err != nil {
+			panic(err)
+		}
+		add(Key{
+			Family:      Transfer,
+			Inputs:      shape.Inputs,
+			Outputs:     shape.Outputs,
+			Withdrawals: shape.Withdrawals,
+			Owners:      shape.Owners,
+			Entry:       shape.Entry,
+			Wide:        shape.Wide,
+			FrameWide:   frameWide(shape),
+			Tracking:    shape.Tracking,
+			Records:     shape.Records,
+			Pools: &PoolCapacity{
+				RecordPoolShape: circuit.RecordPools(),
+				Tracking:        circuit.TrackingPoolSize(),
+			},
+		})
 	}
 	for _, private := range []bool{false, true} {
 		for _, writes := range registry.ApplyWidths {

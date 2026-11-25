@@ -147,7 +147,12 @@ func (v enrollmentView) request() any {
 }
 
 func (v privateOwnerView) request() any {
-	return PrivateOwnerParams{ListSalt: v.ListSalt, Record: v.Record, Index: v.Path.Index, Path: v.Path.flat()}
+	req := PrivateOwnerParams{ListSalt: v.ListSalt, Ring: v.Ring, Record: v.Record, Index: v.Path.Index, Path: v.Path.flat()}
+	if !v.Present {
+		owner := v.Owner
+		req.Absent = &owner
+	}
+	return req
 }
 
 func (v writeView) request() any {

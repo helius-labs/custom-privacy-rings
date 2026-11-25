@@ -72,7 +72,7 @@ func TestPolicyRequestsRejectMalformedPayloads(t *testing.T) {
 		{"missing record field", func(m map[string]any) { delete(record(m), "next") }, "missing field"},
 		{"missing subject index", func(m map[string]any) { delete(subject(m), "recordIndex") }, "missing field"},
 		{"missing curator reference", func(m map[string]any) { delete(entry(m), "curator") }, "missing field"},
-		{"null record field", func(m map[string]any) { record(m)["member"] = nil }, "missing"},
+		{"null record field", func(m map[string]any) { record(m)["member"] = nil }, "null value"},
 		{"noncanonical member", func(m map[string]any) { record(m)["member"] = "0x01" }, "not canonical"},
 		{"modulus member", func(m map[string]any) { record(m)["member"] = "0x" + ecc.BN254.ScalarField().Text(16) }, "not canonical"},
 		{"negative subject index", func(m map[string]any) { subject(m)["recordIndex"] = -1 }, "uint32"},

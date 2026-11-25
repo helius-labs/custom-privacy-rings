@@ -14,6 +14,7 @@ import (
 
 	"github.com/consensys/gnark/constraint"
 
+	"github.com/helius-labs/zolana-custom-rings/prover/circuits/transfer"
 	"github.com/helius-labs/zolana/prover/server/prover/common"
 	"github.com/helius-labs/zolana/prover/server/prover/provingkeys"
 )
@@ -61,6 +62,57 @@ func TestEveryKeyIsRegisteredAndPinned(t *testing.T) {
 	slices.Sort(files)
 	if pinned := slices.Sorted(maps.Keys(lock.Keys)); !slices.Equal(files, pinned) {
 		t.Fatalf("proving-keys.lock differs from the catalog\n got %v\nwant %v", pinned, files)
+	}
+}
+
+func TestTransferKeysPrecomputePoolCapacities(t *testing.T) {
+	for _, key := range Keys {
+		if key.Family != Transfer {
+			if key.Pools != nil || key.Tracking != 0 || key.Records != 0 {
+				t.Fatalf("%s carried transfer pool fields", key.Circuit)
+			}
+			continue
+		}
+		if key.Pools == nil {
+			t.Fatalf("%s has nil Pools", key.Circuit)
+		}
+		circuit, err := transfer.NewTransferCircuit(key.transferShape())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := PoolCapacity{
+			RecordPoolShape: circuit.RecordPools(),
+			Tracking:        circuit.TrackingPoolSize(),
+		}
+		if *key.Pools != want {
+			t.Fatalf("%s pools %+v, want %+v", key.Circuit, *key.Pools, want)
+		}
+		wantFrameWide := strings.HasPrefix(string(key.Circuit), "custom-ring-transfer-wide-") ||
+			key.Circuit == "custom-ring-transfer-entry-8-in8-w32-s8"
+		if key.FrameWide != wantFrameWide {
+			t.Fatalf("%s FrameWide = %v, want %v", key.Circuit, key.FrameWide, wantFrameWide)
+		}
+	}
+	var builds int
+	counting := func(shape transfer.Shape) (*transfer.TransferCircuit, error) {
+		builds++
+		return transfer.NewTransferCircuit(shape)
+	}
+	key := keyOf(t, transferKey)
+	ext := bindPolicy[TransferParams](key, counting, key.transferShape())
+	for range 3 {
+		_ = ext.Request()
+	}
+	if builds != 0 {
+		t.Fatalf("bindPolicy built %d circuits with precomputed Pools, want 0", builds)
+	}
+	key.Pools = nil
+	ext = bindPolicy[TransferParams](key, counting, key.transferShape())
+	for range 3 {
+		_ = ext.Request()
+	}
+	if builds != 1 {
+		t.Fatalf("bindPolicy built %d circuits without precomputed Pools, want 1", builds)
 	}
 }
 

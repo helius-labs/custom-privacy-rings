@@ -29,6 +29,8 @@
 #   RING_DEVNET_RING_RPC_TAG, RING_DEVNET_RING_INDEXER_TAG, RING_DEVNET_PROVER_TAG, RING_DEVNET_PHOTON_TAG
 #                                       image tags, default <service>-<commit12>
 #   RING_DEVNET_VPC                     VPC id, default the account's default VPC
+#   RING_DEVNET_ORIGIN_CERT_ARN         ACM certificate ARN for TLS listeners and https-only CloudFront origins
+#   RING_DEVNET_ORIGIN_DOMAIN           custom origin domain alias matching RING_DEVNET_ORIGIN_CERT_ARN
 #   AWS_REGION                          default eu-north-1
 set -euo pipefail
 
@@ -78,6 +80,7 @@ ring_rpc_port=8785
 ring_indexer_port=8786
 prover_url="http://127.0.0.1:3001"
 public_rpc="${RING_DEVNET_PUBLIC_RPC_URL:-https://api.devnet.solana.com}"
+origin_cert_arn="${RING_DEVNET_ORIGIN_CERT_ARN:-}"
 rpc_secret="$prefix/solana-rpc-url"
 custody_secret="$prefix/ring-rpc/custody"
 key_alias="alias/$prefix/ring-rpc"
@@ -252,8 +255,14 @@ ensure_load_balancer() {
         aws_ elbv2 modify-target-group-attributes --target-group-arn "$group" --attributes \
             Key=preserve_client_ip.enabled,Value=false Key=deregistration_delay.timeout_seconds,Value=30 >/dev/null
         if absent "$(aws_ elbv2 describe-listeners --load-balancer-arn "$arn" --query "Listeners[?Port==\`$port\`].ListenerArn | [0]" --output text)"; then
-            aws_ elbv2 create-listener --load-balancer-arn "$arn" --protocol TCP --port "$port" \
-                --default-actions "Type=forward,TargetGroupArn=$group" --tags "$tag_spec" >/dev/null
+            if [[ -n "$origin_cert_arn" ]]; then
+                aws_ elbv2 create-listener --load-balancer-arn "$arn" --protocol TLS --port "$port" \
+                    --certificates "CertificateArn=$origin_cert_arn" \
+                    --default-actions "Type=forward,TargetGroupArn=$group" --tags "$tag_spec" >/dev/null
+            else
+                aws_ elbv2 create-listener --load-balancer-arn "$arn" --protocol TCP --port "$port" \
+                    --default-actions "Type=forward,TargetGroupArn=$group" --tags "$tag_spec" >/dev/null
+            fi
         fi
     done
     aws_ elbv2 describe-load-balancers --load-balancer-arns "$arn" --query 'LoadBalancers[0].DNSName' --output text
@@ -273,16 +282,23 @@ own_distribution() {
 
 # CloudFront gives HTTPS on an amazon hostname with Amazon's certificate, no domain to validate.
 ensure_distribution() {
-    local name="$1" origin="$2" origin_port="$3" id
+    local name="$1" origin="$2" origin_port="$3" id origin_policy="http-only" http_port="$origin_port" https_port=443
+    if [[ -n "$origin_cert_arn" ]]; then
+        origin="${RING_DEVNET_ORIGIN_DOMAIN:-$origin}"
+        origin_policy="https-only"
+        http_port=80
+        https_port="$origin_port"
+    fi
     id="$(own_distribution "$name")"
     if absent "$id"; then
         id="$(aws_ cloudfront create-distribution-with-tags --distribution-config-with-tags "$(jq -n \
-            --arg name "$name" --arg reference "$name-$(date +%s)" --arg origin "$origin" --argjson port "$origin_port" \
-            --arg key "$prefix" '{
+            --arg name "$name" --arg reference "$name-$(date +%s)" --arg origin "$origin" \
+            --argjson http_port "$http_port" --argjson https_port "$https_port" \
+            --arg origin_policy "$origin_policy" --arg key "$prefix" '{
             DistributionConfig: {CallerReference: $reference, Comment: $name, Enabled: true, HttpVersion: "http2",
                 PriceClass: "PriceClass_100",
                 Origins: {Quantity: 1, Items: [{Id: "origin", DomainName: $origin,
-                    CustomOriginConfig: {HTTPPort: $port, HTTPSPort: 443, OriginProtocolPolicy: "http-only",
+                    CustomOriginConfig: {HTTPPort: $http_port, HTTPSPort: $https_port, OriginProtocolPolicy: $origin_policy,
                         OriginReadTimeout: 60, OriginKeepaliveTimeout: 5,
                         OriginSslProtocols: {Quantity: 1, Items: ["TLSv1.2"]}}}]},
                 DefaultCacheBehavior: {TargetOriginId: "origin", ViewerProtocolPolicy: "redirect-to-https",
@@ -410,7 +426,8 @@ create_database() {
     aws_ secretsmanager get-secret-value --secret-id "$password_arn" --query SecretString --output text | tr -d '\n' > "$file"
     aws_ rds create-db-instance --db-instance-identifier "$prefix-$service" --db-instance-class "$db_class" \
         --engine postgres --master-username "$user" --master-user-password "file://$file" --db-name "$user" \
-        --allocated-storage 20 --max-allocated-storage 200 --storage-type gp3 --no-publicly-accessible --no-multi-az \
+        --allocated-storage 20 --max-allocated-storage 200 --storage-type gp3 --storage-encrypted \
+        --no-publicly-accessible --no-multi-az \
         --backup-retention-period "$backups" --db-subnet-group-name "$db_subnet_group" \
         --vpc-security-group-ids "$db_sg" --tags "$tag_spec" >/dev/null
 }
@@ -571,7 +588,29 @@ check_origins() {
     done
 }
 
+check_devnet_origin() {
+    if [[ -n "$origin_cert_arn" ]]; then
+        [[ -n "${RING_DEVNET_ORIGIN_DOMAIN:-}" ]] \
+            || die "RING_DEVNET_ORIGIN_CERT_ARN requires RING_DEVNET_ORIGIN_DOMAIN because ACM certificates cannot match *.elb.amazonaws.com and require a custom origin domain alias"
+        return 0
+    fi
+    local rpc_url="${RING_DEVNET_RPC_URL:-$public_rpc}" candidate lowered observed
+    for candidate in "$rpc_url" "$public_rpc"; do
+        lowered="$(printf '%s' "$candidate" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$lowered" == *mainnet* ]]; then
+            die "plaintext CloudFront origin is refused off devnet, set RING_DEVNET_ORIGIN_CERT_ARN"
+        fi
+    done
+    ((dry_run)) && return 0
+    observed="$(curl -sS --max-time 15 -H 'Content-Type: application/json' \
+        -d '{"jsonrpc":"2.0","id":1,"method":"getGenesisHash"}' "$rpc_url" \
+        | jq -r '.result // empty' 2>/dev/null || true)"
+    [[ "$observed" == "$genesis" ]] \
+        || die "plaintext CloudFront origin requires devnet genesis $genesis, got '${observed:-unreadable}'"
+}
+
 up() {
+    check_devnet_origin
     local origins="${RING_DEVNET_ALLOW_ORIGINS:-http://localhost:3000}" rp first
     first="${origins%%,*}"
     first="${first#*://}"
@@ -643,6 +682,10 @@ up() {
 
     # Tasks reach each other through the balancer.
     local photon_url="http://$dns:$photon_port" ring_indexer_url="http://$dns:$ring_indexer_port"
+    if [[ -n "$origin_cert_arn" ]]; then
+        photon_url="https://${RING_DEVNET_ORIGIN_DOMAIN}:$photon_port"
+        ring_indexer_url="https://${RING_DEVNET_ORIGIN_DOMAIN}:$ring_indexer_port"
+    fi
 
     log "== migration"
     run_migration "$registry/$prefix-photon:$photon_tag" "$photon_password" "$photon_db" "$subnets" "$sg"

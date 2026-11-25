@@ -25,7 +25,7 @@ import (
 // 2. Resolve reads a present owner's own leaf or proves the owner absent by the one link it falls inside, the sort order registry/apply_enrollments.go keeps leaves no third case.
 // 3. An absent owner or an unset cond reads an all zero row.
 // 4. The leaf folds to root while cond is set, and one index below TrackingCapacity names it.
-// 5. No circuit decides on ViewingHash. A sender must check hash_bytes(viewing_u) against it off chain, an X25519 u can exceed the BN254 modulus.
+// 5. No circuit decides on ViewingHash. A sender must check Poseidon(CRVH, pack_be(viewing_u), seq) against it off chain, an X25519 u can exceed the BN254 modulus.
 
 // The empty leaf is 0, and the sentinel (0, q-1, 0, 0, 0, 0) at index 0 brackets every member in [1, q-2].
 type TrackingRecord struct {
