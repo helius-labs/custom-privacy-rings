@@ -63,6 +63,7 @@ zolana-ring-keys = { workspace = true }
 zolana-ring-policy = { workspace = true }
 zolana-ring-transaction = { workspace = true }
 zolana-secret-file = { workspace = true }
+zeroize = { workspace = true }
 spr-transaction = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]

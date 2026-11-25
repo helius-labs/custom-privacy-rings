@@ -121,6 +121,12 @@ fn a_full_batch_of_first_enrollments_fits_one_transaction() {
     let [precompile, enroll] = batch
         .instructions(&ApplyEnrollmentsIxData::zeroed(), writes)
         .unwrap();
+    let ring_auth = enroll
+        .accounts
+        .iter()
+        .find(|meta| meta.pubkey == ring().ring_auth_pda())
+        .expect("ring auth");
+    assert!(!ring_auth.is_writable);
     let fit = TransactionFit::of(
         &enroll,
         FitSigners::new(AUTHORITY).with_setup(core::slice::from_ref(&precompile)),

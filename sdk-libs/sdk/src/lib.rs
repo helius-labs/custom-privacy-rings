@@ -111,8 +111,9 @@ pub use crate::{
         TransferKey, UnsignedRelay, VouchSigner,
     },
     records::{
-        AuthorityRecordUpdate, MemberRecords, OwnerSaltCheck, RecordUpdateService,
-        RecordUpdateTarget, SaltedOwnerCheck, WalletRecordUpdate,
+        AuthorityRecordUpdate, MemberRecords, OwnerListSalts, OwnerPrivateClear, OwnerSaltCheck,
+        PrivateKeyKind, PrivateListMember, RecordUpdateService, RecordUpdateTarget,
+        SaltedOwnerCheck, WalletRecordUpdate,
     },
     relay::{
         DelegateRequester, PendingSignature, PreparedAuthorityTransfer, PreparedRelay, RelaySent,

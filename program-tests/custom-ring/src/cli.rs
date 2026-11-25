@@ -135,7 +135,7 @@ impl RingProject {
     }
 
     pub fn enrollment_rpc(&self) -> custom_ring_cli::RingRpcClient {
-        custom_ring_cli::RingRpcClient::new(&self.ring_rpc.url)
+        custom_ring_cli::RingRpcClient::new(&self.ring_rpc.url).expect("ring rpc url")
     }
 
     pub fn write_member_fee_payer(&self) -> Result<&'static str> {

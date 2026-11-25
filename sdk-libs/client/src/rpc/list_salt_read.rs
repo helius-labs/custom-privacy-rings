@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use solana_address::Address;
 use solana_signer::Signer;
 use spr_indexer_api::{Base64String, Hash, SerializablePubkey, SerializableSignature};
+use zeroize::Zeroize;
 
 use super::{base64, Attestation, ReadTarget, RequestBuildError, SignedRequest};
+use crate::REDACTED;
 
 pub const GET_LIST_SALT: &str = "getListSalt";
 const LIST_SALT_DOMAIN: &str = "zolana/ring-rpc-list-salt";
@@ -21,15 +23,39 @@ pub struct GetListSaltRequest {
     pub signature: SerializableSignature,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GetListSaltResponse {
     /// Absent while the owner has no tracking row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list_salt: Option<Hash>,
-    /// Set while the owner has no tracking row, refused on a ring committing no tag of it.
+    /// Present whenever the ring commits a ring list tag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ring_salt: Option<Hash>,
+}
+
+impl core::fmt::Debug for GetListSaltResponse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            list_salt,
+            ring_salt,
+        } = self;
+        f.debug_struct("GetListSaltResponse")
+            .field("list_salt", &list_salt.as_ref().map(|_| REDACTED))
+            .field("ring_salt", &ring_salt.as_ref().map(|_| REDACTED))
+            .finish()
+    }
+}
+
+impl Drop for GetListSaltResponse {
+    fn drop(&mut self) {
+        if let Some(salt) = &mut self.list_salt {
+            salt.0.zeroize();
+        }
+        if let Some(salt) = &mut self.ring_salt {
+            salt.0.zeroize();
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,5 +98,28 @@ impl ListSaltRequest {
             nonce: self.nonce.to_vec().into(),
             signature: signature.into(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_list_salt_response_debug_redacts_both_salts() {
+        let response = GetListSaltResponse {
+            list_salt: Some(Hash([0xab; 32])),
+            ring_salt: Some(Hash([0xcd; 32])),
+        };
+        let rendered = format!("{response:?}");
+        assert!(rendered.contains(REDACTED), "{rendered}");
+        assert!(
+            !rendered.contains(&response.list_salt.as_ref().unwrap().to_string()),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains(&response.ring_salt.as_ref().unwrap().to_string()),
+            "{rendered}"
+        );
     }
 }

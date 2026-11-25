@@ -1,7 +1,6 @@
 use std::{
-    env,
-    fs::{self, File},
-    io::{Read, Write},
+    env, fs,
+    io::Read,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -10,7 +9,7 @@ use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::config_dir;
+use crate::{config_dir, AtomicFileMode, AtomicWrite};
 
 const DEFAULT_RELEASE_BASE_URL: &str = "https://github.com/helius-labs/zolana/releases/download";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
@@ -47,11 +46,24 @@ pub fn host_platform() -> Result<(&'static str, &'static str)> {
     Ok((os, arch))
 }
 
+pub fn check_path_segment(value: &str, kind: &str) -> Result<()> {
+    ensure!(
+        !value.is_empty()
+            && value != "."
+            && value != ".."
+            && !value.contains(['/', '\\', ':', '\0']),
+        "invalid {kind}"
+    );
+    Ok(())
+}
+
 pub fn cache_dir(tag: &str) -> PathBuf {
     config_dir().join("cache").join(tag)
 }
 
 pub fn ensure_cached(tag: &str, asset: &Asset) -> Result<PathBuf> {
+    check_path_segment(tag, "release tag")?;
+    check_path_segment(&asset.name, "asset name")?;
     let path = cache_dir(tag).join(&asset.name);
     ensure_at(tag, asset, &path)?;
     Ok(path)
@@ -59,6 +71,8 @@ pub fn ensure_cached(tag: &str, asset: &Asset) -> Result<PathBuf> {
 
 /// A file at `path` is verified on every use, only a missing or wrong one is downloaded.
 pub fn ensure_at(tag: &str, asset: &Asset, path: &Path) -> Result<()> {
+    check_path_segment(tag, "release tag")?;
+    check_path_segment(&asset.name, "asset name")?;
     pinned(asset)?;
     if fs::read(path).is_ok_and(|bytes| verify(&bytes, asset).is_ok()) {
         return Ok(());
@@ -168,9 +182,6 @@ fn pinned(asset: &Asset) -> Result<()> {
 
 /// The part file is unique per process, so concurrent downloads never write one file.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let name = path
-        .file_name()
-        .with_context(|| format!("{} names no file", path.display()))?;
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -178,22 +189,13 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    let part = path.with_file_name(format!(
-        "{}.{}.part",
-        name.to_string_lossy(),
-        std::process::id()
-    ));
-    let written = File::create(&part)
-        .and_then(|mut file| {
-            file.write_all(bytes)?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&part, path));
-    if let Err(error) = written {
-        let _ = fs::remove_file(&part);
-        return Err(error).with_context(|| format!("failed to write {}", path.display()));
+    AtomicWrite {
+        path,
+        bytes,
+        mode: AtomicFileMode::DefaultUmask,
     }
-    Ok(())
+    .write()
+    .with_context(|| format!("failed to write {}", path.display()))
 }
 
 #[cfg(test)]
@@ -286,5 +288,37 @@ mod tests {
         .expect("binary");
         assert_eq!(binary.asset.name, "prover-v1");
         assert_eq!(binary.asset.size, 5);
+    }
+
+    #[test]
+    fn traversal_and_separator_names_are_refused() {
+        assert!(check_path_segment("foo..bar", "asset").is_ok());
+        assert!(check_path_segment("v1.2..3", "release tag").is_ok());
+        let dir = env::temp_dir().join(format!("zolana-release-traversal-{}", std::process::id()));
+        let target = dir.join("out");
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../escape",
+            "/etc/passwd",
+            "sub/file",
+            r"sub\file",
+            "drive:file",
+            "bad\0name",
+        ] {
+            let mut bad_asset = asset(HELLO);
+            bad_asset.name = bad.to_owned();
+            assert!(ensure_cached("v1", &bad_asset).is_err(), "asset {bad:?}");
+            assert!(
+                ensure_at("v1", &bad_asset, &target).is_err(),
+                "asset {bad:?}"
+            );
+            assert!(ensure_cached(bad, &asset(HELLO)).is_err(), "tag {bad:?}");
+            assert!(
+                ensure_at(bad, &asset(HELLO), &target).is_err(),
+                "tag {bad:?}"
+            );
+        }
     }
 }

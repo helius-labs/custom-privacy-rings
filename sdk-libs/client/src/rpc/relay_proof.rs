@@ -6,7 +6,7 @@ use spr_instruction::instruction::{
 };
 use spr_interface::{
     instruction::{instruction_data::transact::TransactOutput, InterfaceTransfer},
-    pda, MAX_OUTPUTS,
+    pda, MAX_OUTPUTS, ZERO_NULLIFIER_PUBKEY,
 };
 use spr_keypair::{
     constants::BLINDING_LEN, KeypairError, NullifierKey, ShieldedAddress, ViewingKey,
@@ -146,7 +146,27 @@ pub fn deposit_funder(
     }
 }
 
+impl Drop for RelayProofInputs {
+    fn drop(&mut self) {
+        self.clear_secrets();
+    }
+}
+
 impl RelayProofInputs {
+    fn clear_secrets(&mut self) {
+        self.blinding_seed.zeroize();
+        self.approval_blinder.zeroize();
+        for input in &mut self.inputs {
+            input.utxo.blinding.zeroize();
+        }
+        for output in &mut self.outputs {
+            output.blinding.zeroize();
+        }
+        for salt in &mut self.list_salts {
+            salt.list_salt.zeroize();
+        }
+    }
+
     /// In leg order.
     pub fn deposit_funders(&self) -> impl Iterator<Item = Address> + '_ {
         self.external_data
@@ -234,9 +254,17 @@ impl RelayProofInputs {
     }
 }
 
+impl Drop for RelayMergeInputs {
+    fn drop(&mut self) {
+        for input in &mut self.inputs {
+            input.utxo.blinding.zeroize();
+        }
+    }
+}
+
 impl RelayMergeInputs {
     pub fn encode(&self) -> Result<Zeroizing<Vec<u8>>, RelayProofInputsError> {
-        check_nullifier_key(&self.sender, &self.nullifier_key)?;
+        check_merge_nullifier_key(&self.sender, &self.nullifier_key)?;
         let wire = MergeWire {
             ring_program_id: self.ring_program_id,
             sender: self.sender.to_bytes(),
@@ -259,7 +287,7 @@ impl RelayMergeInputs {
         let wire: MergeWire = wincode::deserialize_exact(bytes)?;
         let sender = ShieldedAddress::from_bytes(&wire.sender)?;
         let nullifier_key = NullifierKey::from_secret(wire.nullifier_secret);
-        check_nullifier_key(&sender, &nullifier_key)?;
+        check_merge_nullifier_key(&sender, &nullifier_key)?;
         let inputs = wire
             .inputs
             .iter()
@@ -303,6 +331,9 @@ struct MergeWire {
 impl Drop for MergeWire {
     fn drop(&mut self) {
         self.nullifier_secret.zeroize();
+        for input in &mut self.inputs {
+            input.blinding.zeroize();
+        }
     }
 }
 
@@ -456,6 +487,27 @@ impl ProofInputsWire {
         self.approval_blinder.zeroize();
         for co_owner in &mut self.co_owners {
             co_owner.nullifier_secret.zeroize();
+        }
+        for input in &mut self.inputs {
+            match input {
+                InputWire::Spend(spend) => spend.blinding.zeroize(),
+                InputWire::Dummy { blinding, .. } => blinding.zeroize(),
+                InputWire::Compact { .. } => {}
+            }
+        }
+        for output in &mut self.outputs {
+            output.blinding.zeroize();
+        }
+        for salt in &mut self.list_salts {
+            salt.list_salt.zeroize();
+        }
+        match &mut self.rail {
+            RailWire::Anonymous { plan, .. } => plan.dummy_preimages.zeroize(),
+            RailWire::Delegate {
+                plan: Some(plan), ..
+            }
+            | RailWire::Deposit { plan: Some(plan) } => plan.dummy_preimages.zeroize(),
+            _ => {}
         }
     }
 
@@ -984,6 +1036,16 @@ fn check_nullifier_key(
     }
 }
 
+fn check_merge_nullifier_key(
+    sender: &ShieldedAddress,
+    nullifier_key: &NullifierKey,
+) -> Result<(), RelayProofInputsError> {
+    if sender.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY {
+        return Err(RelayProofInputsError::NullifierKey);
+    }
+    check_nullifier_key(sender, nullifier_key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -998,11 +1060,76 @@ mod tests {
             serde_json::from_value(vector["proofInputs"].clone()).unwrap();
         let mut wire: ProofInputsWire = wincode::deserialize_exact(&encoded.0).unwrap();
         wire.approval_blinder = Some([9; 32]);
+        wire.list_salts = vec![SubjectListSalt {
+            member: [4; 32],
+            list_salt: [5; 32],
+        }];
         assert_ne!(wire.blinding_seed, [0; 32]);
         wire.clear_secrets();
         assert_eq!(wire.nullifier_secret, [0; BLINDING_LEN]);
         assert_eq!(wire.tx_viewing_secret, [0; 32]);
         assert_eq!(wire.blinding_seed, [0; 32]);
         assert_eq!(wire.approval_blinder, None);
+        assert!(wire.inputs.iter().all(|input| match input {
+            InputWire::Spend(spend) => spend.blinding == [0; 32],
+            InputWire::Dummy { blinding, .. } => *blinding == [0; 32],
+            InputWire::Compact { .. } => true,
+        }));
+        assert!(wire.outputs.iter().all(|output| output.blinding == [0; 32]));
+        assert!(wire.list_salts.iter().all(|salt| salt.list_salt == [0; 32]));
+        if let RailWire::Anonymous { plan, .. } = &wire.rail {
+            assert_eq!(plan.dummy_preimages, [[0; 32]; MAX_OUTPUTS]);
+        }
+
+        let mut decoded = RelayProofInputs::decode(&encoded.0).unwrap();
+        decoded.approval_blinder = Some([7; 32]);
+        decoded.list_salts = vec![SubjectListSalt {
+            member: [4; 32],
+            list_salt: [5; 32],
+        }];
+        decoded.clear_secrets();
+        assert_eq!(decoded.blinding_seed, [0; 32]);
+        assert_eq!(decoded.approval_blinder, None);
+        assert!(decoded
+            .inputs
+            .iter()
+            .all(|input| input.utxo.blinding == [0; 32]));
+        assert!(decoded
+            .outputs
+            .iter()
+            .all(|output| output.blinding == [0; 32]));
+        assert!(decoded
+            .list_salts
+            .iter()
+            .all(|salt| salt.list_salt == [0; 32]));
+    }
+
+    #[test]
+    fn relay_merge_inputs_refuse_zero_nullifier_key_on_encode_and_decode() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../test-vectors/rpc/relay_merge_inputs.json"
+        ))
+        .unwrap();
+        let encoded: spr_indexer_api::Base64String =
+            serde_json::from_value(vector["proofInputs"].clone()).unwrap();
+        let mut decoded = RelayMergeInputs::decode(&encoded.0).unwrap();
+        decoded.sender.nullifier_pubkey = ZERO_NULLIFIER_PUBKEY;
+        decoded.nullifier_key = NullifierKey::from_secret([0; BLINDING_LEN]);
+        assert!(matches!(
+            decoded.encode(),
+            Err(RelayProofInputsError::NullifierKey)
+        ));
+
+        let forged = MergeWire {
+            ring_program_id: decoded.ring_program_id,
+            sender: decoded.sender.to_bytes(),
+            nullifier_secret: [0; BLINDING_LEN],
+            inputs: Vec::new(),
+        };
+        let bytes = wincode::serialize(&forged).unwrap();
+        assert!(matches!(
+            RelayMergeInputs::decode(&bytes),
+            Err(RelayProofInputsError::NullifierKey)
+        ));
     }
 }

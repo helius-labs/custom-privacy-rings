@@ -1,10 +1,11 @@
 //! Key files are never overwritten, and a read takes only a regular file, owner-only unless [`Access::Shared`].
 
 use std::{
-    fs::{self, File, Metadata, OpenOptions},
+    fs::{self, DirBuilder, File, Metadata, OpenOptions},
     io::{self, Read, Write},
     mem,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use thiserror::Error;
@@ -88,28 +89,74 @@ pub fn create_new(
         path: path.to_path_buf(),
         source,
     };
+    let name = path.file_name().ok_or_else(|| {
+        failed(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path names no file",
+        ))
+    })?;
     if let Some(parent) = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        fs::create_dir_all(parent).map_err(failed)?;
+        create_dir_all_private(parent).map_err(failed)?;
     }
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options
-            .custom_flags(libc::O_NOFOLLOW)
-            .mode(visibility.mode());
-    }
-    let mut file = options.open(path).map_err(failed)?;
-    if let Err(source) = persist(&mut file, bytes, visibility) {
-        drop(file);
-        let _ = fs::remove_file(path);
+    let (tmp_path, mut file) = create_temp_file(path, name).map_err(failed)?;
+    let published = persist(&mut file, bytes, visibility)
+        .and_then(|()| {
+            drop(file);
+            fs::hard_link(&tmp_path, path)
+        })
+        .map(|()| {
+            let _ = fs::remove_file(&tmp_path);
+        });
+    if let Err(source) = published {
+        let _ = fs::remove_file(&tmp_path);
         return Err(failed(source));
     }
     Ok(())
+}
+
+fn create_dir_all_private(dir: &Path) -> io::Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = dir.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        create_dir_all_private(parent)?;
+    }
+    let mut builder = DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    match builder.create(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn create_temp_file(path: &Path, name: &std::ffi::OsStr) -> io::Result<(PathBuf, File)> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let pid = std::process::id();
+    for _ in 0..64 {
+        let seq = NEXT.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = path.with_file_name(format!(".{}.tmp.{pid}.{seq}", name.to_string_lossy()));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
+        }
+        match options.open(&tmp_path) {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "cannot allocate temporary file",
+    ))
 }
 
 /// Writes the owner-only form [`read_key32`] reads, an existing file stays.
@@ -123,7 +170,7 @@ pub fn read_key32(path: &Path, access: Access) -> Result<Zeroizing<[u8; 32]>, Se
     decode_key32(&read_private(path, access, KEY_HEX_LEN)?)
 }
 
-fn read_private(
+pub fn read_private(
     path: &Path,
     access: Access,
     max_len: u64,

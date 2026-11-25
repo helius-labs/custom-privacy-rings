@@ -338,7 +338,7 @@ impl Transfer {
                     ring_data_hash: None,
                     ..opened
                 },
-                Some(OutputPayloadErrorKind::Payload),
+                Some(OutputPayloadErrorKind::Commitment),
             ),
         };
         Ok(SlotRead {

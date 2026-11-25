@@ -5,7 +5,10 @@ use std::{fs, io, path::Path};
 use anyhow::{anyhow, Context as _, Result};
 use custom_ring_sdk::secret_json_body;
 use solana_keypair::Keypair;
-use zolana_secret_file::{create_new, Visibility};
+use zeroize::Zeroizing;
+use zolana_secret_file::{create_new, read_private, Access, Visibility};
+
+const MAX_KEYPAIR_FILE_BYTES: u64 = 4096;
 
 pub fn read(path: &Path) -> Result<String> {
     fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))
@@ -30,22 +33,31 @@ pub fn remove_dir_all(path: &Path) -> Result<()> {
 }
 
 pub fn read_keypair(path: &Path) -> Result<Keypair> {
-    solana_keypair::read_keypair_file(path)
+    let text = read_private(path, Access::OwnerOnly, MAX_KEYPAIR_FILE_BYTES)
+        .with_context(|| format!("cannot read keypair {}", path.display()))?;
+    solana_keypair::read_keypair(&mut text.as_bytes())
         .map_err(|error| anyhow!("cannot read keypair {}, {error}", path.display()))
 }
 
 pub fn read_or_create_keypair(path: &Path) -> Result<Keypair> {
-    if path.is_file() {
-        return read_keypair(path);
+    match fs::symlink_metadata(path) {
+        Ok(_) => read_keypair(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let keypair = Keypair::new();
+            write_keypair(&keypair, path)?;
+            Ok(keypair)
+        }
+        Err(error) => {
+            Err(anyhow::Error::new(error)
+                .context(format!("cannot read keypair {}", path.display())))
+        }
     }
-    let keypair = Keypair::new();
-    write_keypair(&keypair, path)?;
-    Ok(keypair)
 }
 
 /// Owner-only and never over an existing file.
 pub fn write_keypair(keypair: &Keypair, path: &Path) -> Result<()> {
-    let json = secret_json_body(&keypair.to_bytes()[..])?;
+    let secret = Zeroizing::new(keypair.to_bytes());
+    let json = secret_json_body(&secret[..])?;
     create_new(path, json.as_bytes(), Visibility::Secret)
         .with_context(|| format!("cannot write keypair {}", path.display()))
 }
@@ -65,6 +77,15 @@ mod tests {
         let keypair = Keypair::new();
         write_keypair(&keypair, &path).unwrap();
         assert_eq!(read_keypair(&path).unwrap().pubkey(), keypair.pubkey());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let link = dir.join("link.json");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(read_keypair(&link).is_err());
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(read_keypair(&path).is_err());
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 }

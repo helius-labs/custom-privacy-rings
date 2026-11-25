@@ -67,7 +67,7 @@ fn approve(ctx: &Context, wallet: Address) -> Result<()> {
 
 fn read_pending(ctx: &Context, registry: Address) -> Result<Vec<PendingListApproval>> {
     let authority = ctx.authority()?;
-    ctx.ring_rpc().pending_list_approvals(
+    ctx.ring_rpc()?.pending_list_approvals(
         ListApprovalScope {
             target: ctx.ring_rpc_target()?,
             authority: authority.address(),

@@ -9,15 +9,18 @@ use spr_keypair::{ShieldedAddress, X25519Pubkey};
 use spr_transaction::{
     instructions::transact::SppProofInputs, Mint, SppProofOutputUtxo, TransactionError,
 };
+use zeroize::Zeroize;
 
 use crate::{
     recipient_delivery::{seal_reply, seal_sender_bundle},
     OutputBlindings, ReplyMetadata, RingRailError,
 };
 
+const REDACTED: &str = "<redacted>";
+
 /// The recipients of one anonymous transfer in declared order, a live tag derives from its slot.
 #[must_use]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AnonymousPlan {
     recipients: Vec<X25519Pubkey>,
     /// One per payment, a frame without any carries no reply bytes.
@@ -25,6 +28,23 @@ pub struct AnonymousPlan {
     /// Drawn ahead, every encoding of a dummy slot publishes one tag.
     dummy_preimages: [[u8; 32]; MAX_OUTPUTS],
     change_asset: Mint,
+}
+
+impl core::fmt::Debug for AnonymousPlan {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            recipients,
+            replies,
+            dummy_preimages: _,
+            change_asset,
+        } = self;
+        f.debug_struct("AnonymousPlan")
+            .field("recipients", recipients)
+            .field("replies", replies)
+            .field("dummy_preimages", &REDACTED)
+            .field("change_asset", change_asset)
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +184,12 @@ impl AnonymousPlan {
                 _ => None,
             })
             .collect()
+    }
+}
+
+impl Drop for AnonymousPlan {
+    fn drop(&mut self) {
+        self.dummy_preimages.zeroize();
     }
 }
 
@@ -348,4 +374,17 @@ pub(crate) fn is_change(output: &SppProofOutputUtxo, sender: &ShieldedAddress) -
         .flatten()
         .any(|hash| hash != [0; 32]);
     output.owner_address == Some(*sender) && output.ring_program_id.is_some() && !carries_data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anonymous_plan_debug_redacts_dummy_preimages() {
+        let plan = AnonymousPlan::from_parts(Vec::new(), [[0xa5; 32]; MAX_OUTPUTS]);
+        let rendered = format!("{plan:?}");
+        assert!(rendered.contains(REDACTED), "{rendered}");
+        assert!(!rendered.contains("165"), "{rendered}");
+    }
 }

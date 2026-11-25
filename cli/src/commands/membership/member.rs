@@ -86,7 +86,8 @@ fn register(ctx: &Context, member: &ShieldedKeypair) -> Result<()> {
         }
         .prove(ctx.ring_client()),
     )?;
-    ctx.ring_rpc().submit_enrollment(enrollment.sign(member)?)?;
+    ctx.ring_rpc()?
+        .submit_enrollment(enrollment.sign(member)?)?;
     Ok(())
 }
 

@@ -45,6 +45,7 @@ solana-transaction-status-client-types = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 wincode = { workspace = true, optional = true }
+subtle = { workspace = true }
 zeroize = { workspace = true }
 borsh = { workspace = true }
 spr-api = { workspace = true }

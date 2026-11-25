@@ -589,6 +589,11 @@ impl MergeRelay<'_> {
         if owner.to_bytes() != self.sender.signing_pubkey.as_ed25519()? {
             return Err(MessageMismatch::Signer.into());
         }
+        if self.sender.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY
+            || self.nullifier_key.pubkey()? == ZERO_NULLIFIER_PUBKEY
+        {
+            return Err(RingError::MergeOwnerKey);
+        }
         let proof_inputs = RelayMergeInputs {
             ring_program_id: ring,
             sender: self.sender,

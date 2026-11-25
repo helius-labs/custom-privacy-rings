@@ -4,7 +4,7 @@ use custom_ring_interface::cosign::ApprovalMask;
 use custom_ring_interface::{
     compute_unit_limit, funder_account_position,
     stream::{confidential_slot_tag, DeliveredSlot},
-    tag, CustomRingError, InstructionTag, OutputRecord, ParsedTransact, RecordKind, RingMode,
+    CustomRingError, InstructionTag, OutputRecord, ParsedTransact, RecordKind, RingMode,
     RingOutput, RingRail, RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX,
 };
 use serde::{Deserialize, Serialize};
@@ -193,12 +193,27 @@ pub(crate) struct SealedTerms {
 }
 
 /// The totals and blinder a frame's digest commits, no transaction secret and no slot.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ApprovalOpening {
     pub blinder: Hash,
     pub outputs: Vec<OutputTotalsOpening>,
     pub public: Vec<PublicTotalsOpening>,
+}
+
+impl core::fmt::Debug for ApprovalOpening {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            blinder: _,
+            outputs,
+            public,
+        } = self;
+        f.debug_struct("ApprovalOpening")
+            .field("blinder", &REDACTED)
+            .field("outputs", outputs)
+            .field("public", public)
+            .finish()
+    }
 }
 
 /// Amounts are decimal text, a `u128` does not survive every JSON reader.
@@ -231,13 +246,28 @@ pub enum CoSignerRule {
 }
 
 #[must_use]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ExactApproval {
     pub opening: ApprovalOpening,
     /// An asset the totals name with no limit here is refused.
     pub limits: Vec<ApprovalLimit>,
     /// The blinders of its earlier attempts, the only record of reuse the SDK has.
     pub seen_blinders: Vec<Hash>,
+}
+
+impl core::fmt::Debug for ExactApproval {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            opening,
+            limits,
+            seen_blinders: _,
+        } = self;
+        f.debug_struct("ExactApproval")
+            .field("opening", opening)
+            .field("limits", limits)
+            .field("seen_blinders", &REDACTED)
+            .finish()
+    }
 }
 
 /// `peak` bounds one owner's outflow, `outflow` the sum over owners, `gross` each public row's
@@ -355,7 +385,7 @@ impl ExpectedMessage {
         signer: Address,
     ) -> Result<VerifiedMessage, MessageMismatch> {
         match self {
-            Self::Delegate(delegate) => delegate.check(message),
+            Self::Delegate(delegate) => check_message(delegate, message, signer),
             Self::Sealed(_) => Err(MessageMismatch::Unrequested),
             Self::PublicOwner(owner) => check_message(owner, message, signer),
             Self::Funder(funder) => check_message(funder, message, signer),
@@ -394,16 +424,110 @@ impl ExpectedMessage {
     }
 }
 
+struct SettlementLeg<'a> {
+    transfer: InterfaceTransfer,
+    accounts: &'a [AccountMeta],
+}
+
+struct DecodedTransfer<'a> {
+    prefix: &'a [AccountMeta],
+    forwarded: &'a [AccountMeta],
+    spp_head: &'a [AccountMeta],
+    owner_signers: &'a [AccountMeta],
+    settlement_window: &'a [AccountMeta],
+    settlement: Vec<SettlementLeg<'a>>,
+    cache: &'a [AccountMeta],
+}
+
+impl<'a> DecodedTransfer<'a> {
+    fn decode(
+        ring: CustomRing,
+        data: &RingTransactData<'_>,
+        accounts: &'a [AccountMeta],
+    ) -> Result<Self, MessageMismatch> {
+        let ring_auth = ring.ring_auth_pda();
+        let mut copies = accounts
+            .iter()
+            .enumerate()
+            .filter(|(_, meta)| meta.pubkey == ring_auth);
+        let (Some((slot, _)), None) = (copies.next(), copies.next()) else {
+            return Err(MessageMismatch::Accounts);
+        };
+        let spp = slot
+            .checked_sub(RING_TRANSACT_RING_CONFIG_INDEX)
+            .ok_or(MessageMismatch::Accounts)?;
+        let (prefix, forwarded) = accounts
+            .split_at_checked(spp)
+            .ok_or(MessageMismatch::Accounts)?;
+        let settlement_window =
+            settlement_accounts(&data.interface_transfers, data.circuit(), forwarded)
+                .ok_or(MessageMismatch::Accounts)?;
+        let owner_signers = data
+            .owner_signers(forwarded, settlement_window.len())
+            .map_err(|_| MessageMismatch::Accounts)?;
+        let cache_len = data.circuit().cache_access().map_or(0, |access| {
+            usize::from(access.read_bitmap != 0) + 2 * usize::from(access.writes_cache())
+        });
+        let cache_start = forwarded
+            .len()
+            .checked_sub(cache_len)
+            .ok_or(MessageMismatch::Accounts)?;
+        let settlement_start = cache_start
+            .checked_sub(settlement_window.len())
+            .ok_or(MessageMismatch::Accounts)?;
+        let owner_start = settlement_start
+            .checked_sub(owner_signers.len())
+            .ok_or(MessageMismatch::Accounts)?;
+        let spp_head = forwarded
+            .get(..owner_start)
+            .ok_or(MessageMismatch::Accounts)?;
+        let cache = forwarded
+            .get(cache_start..)
+            .ok_or(MessageMismatch::Accounts)?;
+        let mut rest = settlement_window;
+        let mut settlement = Vec::with_capacity(data.interface_transfers.len());
+        for &transfer in &data.interface_transfers {
+            let (group, tail) = rest
+                .split_at_checked(transfer.settlement_account_count())
+                .ok_or(MessageMismatch::Accounts)?;
+            rest = tail;
+            settlement.push(SettlementLeg {
+                transfer,
+                accounts: group,
+            });
+        }
+        if !rest.is_empty() {
+            return Err(MessageMismatch::Accounts);
+        }
+        Ok(Self {
+            prefix,
+            forwarded,
+            spp_head,
+            owner_signers,
+            settlement_window,
+            settlement,
+            cache,
+        })
+    }
+}
+
+enum PrefixSigner {
+    Required,
+    Forbidden,
+}
+
 trait ExpectedFrame {
     const TAG: InstructionTag;
+
+    fn rail(&self) -> RingRail;
 
     fn envelope(&self, signer: Address) -> Result<Envelope, MessageMismatch>;
 
     fn check_frame(
         &self,
-        signer: Address,
-        frame: &[u8],
-        accounts: &[AccountMeta],
+        envelope: &Envelope,
+        parsed: &ParsedTransact<'_>,
+        decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch>;
 }
 
@@ -414,7 +538,14 @@ fn check_message<E: ExpectedFrame>(
 ) -> Result<VerifiedMessage, MessageMismatch> {
     let envelope = expected.envelope(signer)?;
     let instruction = envelope.open(message)?;
-    expected.check_frame(signer, &instruction.data, &instruction.accounts)?;
+    let parsed = instruction
+        .data
+        .split_first()
+        .filter(|(tag, _)| **tag == E::TAG as u8)
+        .and_then(|(_, data)| RingTransactData::parse(data, expected.rail()).ok())
+        .ok_or(MessageMismatch::Data)?;
+    let decoded = DecodedTransfer::decode(envelope.ring, parsed.data(), &instruction.accounts)?;
+    expected.check_frame(&envelope, &parsed, &decoded)?;
     Ok(envelope.verified(message))
 }
 
@@ -480,19 +611,45 @@ fn open_records(
         .collect()
 }
 
-/// The signer named once and read only, the ring account first.
-fn check_signer(envelope: &Envelope, accounts: &[AccountMeta]) -> Result<(), MessageMismatch> {
-    let mut named = accounts
-        .iter()
-        .filter(|meta| meta.pubkey == envelope.signer);
-    let signs_once = matches!(
+fn signs_once_readonly(slice: &[AccountMeta], signer: Address) -> bool {
+    let mut named = slice.iter().filter(|meta| meta.pubkey == signer);
+    matches!(
         (named.next(), named.next()),
         (Some(meta), None) if meta.is_signer && !meta.is_writable
-    );
-    if !signs_once || !envelope.reads_only(accounts.get(..1).unwrap_or_default(), &[]) {
-        return Err(MessageMismatch::Accounts);
+    )
+}
+
+fn contains_key(slice: &[AccountMeta], key: Address) -> bool {
+    slice.iter().any(|meta| meta.pubkey == key)
+}
+
+fn check_prefix_signer(
+    envelope: &Envelope,
+    decoded: &DecodedTransfer<'_>,
+) -> Result<(), MessageMismatch> {
+    let prefix_rest = decoded.prefix.get(1..).unwrap_or_default();
+    let valid = envelope.reads_only(decoded, PrefixSigner::Required)
+        && signs_once_readonly(prefix_rest, envelope.signer)
+        && !contains_key(decoded.forwarded, envelope.signer);
+    match valid {
+        true => Ok(()),
+        false => Err(MessageMismatch::Accounts),
     }
-    Ok(())
+}
+
+fn check_owner_signer(
+    envelope: &Envelope,
+    decoded: &DecodedTransfer<'_>,
+) -> Result<(), MessageMismatch> {
+    let valid = envelope.reads_only(decoded, PrefixSigner::Forbidden)
+        && signs_once_readonly(decoded.owner_signers, envelope.signer)
+        && !contains_key(decoded.spp_head, envelope.signer)
+        && !contains_key(decoded.settlement_window, envelope.signer)
+        && !contains_key(decoded.cache, envelope.signer);
+    match valid {
+        true => Ok(()),
+        false => Err(MessageMismatch::Accounts),
+    }
 }
 
 impl ExpectedDelegate {
@@ -559,6 +716,7 @@ impl ExpectedDelegate {
         })
     }
 
+    #[cfg(test)]
     pub fn check(&self, message: &[u8]) -> Result<VerifiedMessage, MessageMismatch> {
         check_message(self, message, self.delegate)
     }
@@ -587,7 +745,7 @@ impl ExpectedDelegate {
     fn check_moved(
         &self,
         parsed: &ParsedTransact<'_>,
-        accounts: &[AccountMeta],
+        decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
         let data = parsed.data();
         // 1. The stream opens under the requested keys, and the legs are the requested withdrawals.
@@ -595,7 +753,7 @@ impl ExpectedDelegate {
         if data.has_data || data.ring_data {
             return Err(MessageMismatch::Data);
         }
-        self.check_withdrawals(data, accounts)?;
+        self.check_withdrawals(decoded)?;
         // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
         if let DelegateRequester::Ring(allowed) = &self.requester {
             allowed
@@ -645,28 +803,17 @@ impl ExpectedDelegate {
         }
     }
 
-    fn check_withdrawals(
-        &self,
-        data: &RingTransactData<'_>,
-        accounts: &[AccountMeta],
-    ) -> Result<(), MessageMismatch> {
-        let spp = spp_accounts(self.ring.program_id(), accounts)?;
-        let mut groups = settlement_accounts(&data.interface_transfers, data.circuit(), spp)
-            .ok_or(MessageMismatch::Accounts)?;
+    fn check_withdrawals(&self, decoded: &DecodedTransfer<'_>) -> Result<(), MessageMismatch> {
         let mut unpaid = self.withdrawals.clone();
-        for transfer in &data.interface_transfers {
-            let (group, rest) = groups
-                .split_at_checked(transfer.settlement_account_count())
-                .ok_or(MessageMismatch::Accounts)?;
-            groups = rest;
+        for leg in &decoded.settlement {
             let paid = unpaid
                 .iter()
                 .position(|expected| {
-                    expected.transfer == *transfer
+                    expected.transfer == leg.transfer
                         && expected
                             .accounts
                             .iter()
-                            .eq(group.iter().map(|account| &account.pubkey))
+                            .eq(leg.accounts.iter().map(|account| &account.pubkey))
                 })
                 .ok_or(MessageMismatch::Data)?;
             unpaid.swap_remove(paid);
@@ -681,7 +828,14 @@ impl ExpectedDelegate {
 impl ExpectedFrame for ExpectedDelegate {
     const TAG: InstructionTag = InstructionTag::AuthorityTransfer;
 
+    fn rail(&self) -> RingRail {
+        self.rail
+    }
+
     fn envelope(&self, signer: Address) -> Result<Envelope, MessageMismatch> {
+        if self.delegate != signer {
+            return Err(MessageMismatch::Unrequested);
+        }
         Ok(Envelope {
             ring: self.ring,
             program: self.ring.program_id(),
@@ -694,17 +848,12 @@ impl ExpectedFrame for ExpectedDelegate {
 
     fn check_frame(
         &self,
-        signer: Address,
-        frame: &[u8],
-        accounts: &[AccountMeta],
+        envelope: &Envelope,
+        parsed: &ParsedTransact<'_>,
+        decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
-        let parsed = frame
-            .split_first()
-            .filter(|(tag, _)| **tag == tag::AUTHORITY_TRANSFER)
-            .and_then(|(_, data)| RingTransactData::parse(data, self.rail).ok())
-            .ok_or(MessageMismatch::Data)?;
-        self.check_moved(&parsed, accounts)?;
-        check_signer(&self.envelope(signer)?, accounts)
+        self.check_moved(parsed, decoded)?;
+        check_prefix_signer(envelope, decoded)
     }
 }
 
@@ -787,12 +936,9 @@ impl ExpectedPublicOwner {
     fn check_moved(
         &self,
         data: &RingTransactData<'_>,
-        _accounts: &[AccountMeta],
+        decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
         let terms = &self.terms;
-        if terms.slots.is_empty() && terms.nullifiers.is_empty() {
-            return Err(MessageMismatch::Unrequested);
-        }
         // 1. One opening per published slot in slot order, a missing or repeated slot could hide an
         // output the signature approves.
         let in_order = terms.slots.len() == data.outputs.len()
@@ -824,29 +970,19 @@ impl ExpectedPublicOwner {
             self.known_nullifiers.contains(spent)
                 && !terms.nullifiers.iter().any(|named| named.0 == *spent)
         });
-        match spends_another {
-            true => Err(MessageMismatch::SpendsUnnamedNote),
-            false => Ok(()),
+        if spends_another {
+            return Err(MessageMismatch::SpendsUnnamedNote);
         }
+        // 4. Transfer terms name no withdrawal destination.
+        if decoded
+            .settlement
+            .iter()
+            .any(|leg| !leg.transfer.is_deposit())
+        {
+            return Err(MessageMismatch::Data);
+        }
+        Ok(())
     }
-}
-
-/// SPP's forwarded list, found by the one ring auth PDA the program admits in it.
-fn spp_accounts(
-    ring: Address,
-    accounts: &[AccountMeta],
-) -> Result<&[AccountMeta], MessageMismatch> {
-    let ring_auth = CustomRing::new(ring).ring_auth_pda();
-    let mut copies = accounts
-        .iter()
-        .enumerate()
-        .filter(|(_, meta)| meta.pubkey == ring_auth);
-    let (Some((slot, _)), None) = (copies.next(), copies.next()) else {
-        return Err(MessageMismatch::Accounts);
-    };
-    slot.checked_sub(RING_TRANSACT_RING_CONFIG_INDEX)
-        .and_then(|start| accounts.get(start..))
-        .ok_or(MessageMismatch::Accounts)
 }
 
 impl SlotOpening {
@@ -895,9 +1031,15 @@ impl SlotOpening {
 impl ExpectedFrame for ExpectedPublicOwner {
     const TAG: InstructionTag = InstructionTag::Transfer;
 
+    fn rail(&self) -> RingRail {
+        self.rail
+    }
+
     /// Another key stays refused.
     fn envelope(&self, signer: Address) -> Result<Envelope, MessageMismatch> {
-        if self.terms.signer.0 != signer {
+        if self.terms.signer.0 != signer
+            || (self.terms.slots.is_empty() && self.terms.nullifiers.is_empty())
+        {
             return Err(MessageMismatch::Unrequested);
         }
         Ok(Envelope {
@@ -912,25 +1054,24 @@ impl ExpectedFrame for ExpectedPublicOwner {
 
     fn check_frame(
         &self,
-        signer: Address,
-        frame: &[u8],
-        accounts: &[AccountMeta],
+        envelope: &Envelope,
+        parsed: &ParsedTransact<'_>,
+        decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
-        let parsed = frame
-            .split_first()
-            .filter(|(tag, _)| **tag == tag::TRANSFER)
-            .and_then(|(_, data)| RingTransactData::parse(data, self.rail).ok())
-            .ok_or(MessageMismatch::Data)?;
-        self.check_moved(parsed.data(), accounts)?;
-        check_signer(&self.envelope(signer)?, accounts)
+        self.check_moved(parsed.data(), decoded)?;
+        check_owner_signer(envelope, decoded)
     }
 }
 
 impl ExpectedFrame for ExpectedFunder {
     const TAG: InstructionTag = InstructionTag::Transfer;
 
+    fn rail(&self) -> RingRail {
+        self.rail
+    }
+
     fn envelope(&self, signer: Address) -> Result<Envelope, MessageMismatch> {
-        if self.terms.signer.0 != signer {
+        if self.terms.signer.0 != signer || self.terms.legs.is_empty() {
             return Err(MessageMismatch::Unrequested);
         }
         Ok(Envelope {
@@ -946,64 +1087,61 @@ impl ExpectedFrame for ExpectedFunder {
     /// The signature authorizes every position naming the key, so the check holds both sides.
     fn check_frame(
         &self,
-        signer: Address,
-        frame: &[u8],
-        accounts: &[AccountMeta],
+        envelope: &Envelope,
+        _parsed: &ParsedTransact<'_>,
+        decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
-        if self.terms.legs.is_empty() {
-            return Err(MessageMismatch::Unrequested);
-        }
-        let parsed = frame
-            .split_first()
-            .filter(|(tag, _)| **tag == tag::TRANSFER)
-            .and_then(|(_, data)| RingTransactData::parse(data, self.rail).ok())
-            .ok_or(MessageMismatch::Data)?;
-        let data = parsed.data();
-        let spp = spp_accounts(self.terms.ring.0, accounts)?;
-        let mut groups = settlement_accounts(&data.interface_transfers, data.circuit(), spp)
-            .ok_or(MessageMismatch::Accounts)?;
         // 1. The legs of the frame that take the key as funder match the terms exactly, a leg the
         // sender adds would draw funds the signer never agreed to.
         let mut unfunded = self.terms.legs.clone();
-        let mut funded = 0;
-        for transfer in &data.interface_transfers {
-            let (group, rest) = groups
-                .split_at_checked(transfer.settlement_account_count())
-                .ok_or(MessageMismatch::Accounts)?;
-            groups = rest;
-            let names_signer = funder_account_position(transfer)
-                .and_then(|position| group.get(position))
-                .is_some_and(|meta| meta.pubkey == signer);
+        for leg in &decoded.settlement {
+            let names_signer = funder_account_position(&leg.transfer)
+                .and_then(|position| leg.accounts.get(position))
+                .is_some_and(|meta| meta.pubkey == envelope.signer);
             if !names_signer {
                 continue;
             }
-            let leg = FundedLeg {
-                mint: transfer
+            let expected = FundedLeg {
+                mint: leg
+                    .transfer
                     .mint_account_position()
-                    .and_then(|position| group.get(position))
+                    .and_then(|position| leg.accounts.get(position))
                     .map(|meta| SerializablePubkey(meta.pubkey)),
-                amount: transfer.amount(),
+                amount: leg.transfer.amount(),
             };
             let held = unfunded
                 .iter()
-                .position(|term| *term == leg)
+                .position(|term| *term == expected)
                 .ok_or(MessageMismatch::FunderLegs)?;
             unfunded.swap_remove(held);
-            funded += 1;
         }
         if !unfunded.is_empty() {
             return Err(MessageMismatch::FunderLegs);
         }
         // 2. Past the legs the key appears nowhere. A run entry would authorize its data outputs and
         // spent notes under one signature, the sharper authority the terms never name.
-        let named = accounts.iter().filter(|meta| meta.pubkey == signer);
-        if named.clone().count() != funded || !named.clone().all(|meta| meta.is_signer) {
-            return Err(MessageMismatch::Accounts);
-        }
-        match self
-            .envelope(signer)?
-            .reads_only(accounts.get(..1).unwrap_or_default(), &[])
-        {
+        self.check_funder_signer(envelope, decoded)
+    }
+}
+
+impl ExpectedFunder {
+    fn check_funder_signer(
+        &self,
+        envelope: &Envelope,
+        decoded: &DecodedTransfer<'_>,
+    ) -> Result<(), MessageMismatch> {
+        let sol_funded = self.terms.legs.iter().any(|leg| leg.mint.is_none());
+        let mut settlement_named = decoded
+            .settlement_window
+            .iter()
+            .filter(|meta| meta.pubkey == envelope.signer);
+        let valid = envelope.reads_only(decoded, PrefixSigner::Forbidden)
+            && !contains_key(decoded.spp_head, envelope.signer)
+            && !contains_key(decoded.owner_signers, envelope.signer)
+            && !contains_key(decoded.cache, envelope.signer)
+            && settlement_named.clone().count() == self.terms.legs.len()
+            && settlement_named.all(|meta| meta.is_signer && (sol_funded || !meta.is_writable));
+        match valid {
             true => Ok(()),
             false => Err(MessageMismatch::Accounts),
         }
@@ -1149,6 +1287,10 @@ impl ExactApproval {
 impl ExpectedFrame for ExpectedCoSigner {
     const TAG: InstructionTag = InstructionTag::Transfer;
 
+    fn rail(&self) -> RingRail {
+        self.rail
+    }
+
     fn envelope(&self, signer: Address) -> Result<Envelope, MessageMismatch> {
         if self.signer != signer {
             return Err(MessageMismatch::Unrequested);
@@ -1165,15 +1307,10 @@ impl ExpectedFrame for ExpectedCoSigner {
 
     fn check_frame(
         &self,
-        signer: Address,
-        frame: &[u8],
-        accounts: &[AccountMeta],
+        envelope: &Envelope,
+        parsed: &ParsedTransact<'_>,
+        decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
-        let parsed = frame
-            .split_first()
-            .filter(|(tag, _)| **tag == tag::TRANSFER)
-            .and_then(|(_, data)| RingTransactData::parse(data, self.rail).ok())
-            .ok_or(MessageMismatch::Data)?;
         let data = parsed.data();
         match &self.rule {
             CoSignerRule::Threshold { accepts } => {
@@ -1186,16 +1323,7 @@ impl ExpectedFrame for ExpectedCoSigner {
                 parsed.audit_stream().capacity,
             )?,
         }
-        check_signer(&self.envelope(signer)?, accounts)?;
-        // The rule reads an approval and nothing else. A signature named in SPP's list also moves the
-        // key's own funds or authorizes its notes and data outputs, none of it in the rule.
-        let in_spp = spp_accounts(self.ring, accounts)?
-            .iter()
-            .any(|meta| meta.pubkey == signer);
-        match in_spp {
-            true => Err(MessageMismatch::Accounts),
-            false => Ok(()),
-        }
+        check_prefix_signer(envelope, decoded)
     }
 }
 
@@ -1319,6 +1447,7 @@ impl Envelope {
         };
         // An omitted create costs the signer nothing, a transfer to a missing account only fails.
         let mut named = self.setup.iter();
+        let mut created_atas = Vec::with_capacity(setup.len());
         for compiled in setup {
             let program = key(compiled.program_id_index)?;
             let accounts = compiled
@@ -1326,16 +1455,22 @@ impl Envelope {
                 .iter()
                 .map(|&index| key(index))
                 .collect::<Result<Vec<_>, _>>()?;
-            let found = named.any(|expected| {
+            let matched = named.find(|expected| {
                 program == expected.program_id
                     && compiled.data == expected.data
                     && accounts
                         .iter()
                         .eq(expected.accounts.iter().map(|meta| &meta.pubkey))
             });
-            if !found {
+            let Some(expected) = matched else {
                 return Err(MessageMismatch::Instructions);
-            }
+            };
+            let ata = expected
+                .accounts
+                .get(1)
+                .ok_or(MessageMismatch::Instructions)?
+                .pubkey;
+            created_atas.push(ata);
         }
         if key(compiled.program_id_index)? != self.program {
             return Err(MessageMismatch::Program);
@@ -1350,7 +1485,21 @@ impl Envelope {
                     is_writable: requests_write(&message, usize::from(index)),
                 })
             })
-            .collect::<Result<_, MessageMismatch>>()?;
+            .collect::<Result<Vec<_>, MessageMismatch>>()?;
+        for (index, &pubkey) in message.account_keys.iter().enumerate() {
+            let in_ring = compiled
+                .accounts
+                .iter()
+                .any(|&account_index| usize::from(account_index) == index);
+            if in_ring || pubkey == self.fee_payer {
+                continue;
+            }
+            if message.is_signer(index)
+                || (requests_write(&message, index) && !created_atas.contains(&pubkey))
+            {
+                return Err(MessageMismatch::Accounts);
+            }
+        }
         Ok(Instruction {
             program_id: self.program,
             accounts,
@@ -1358,18 +1507,21 @@ impl Envelope {
         })
     }
 
-    /// The ring account first, then accounts that never name the signer and write only where `forwarded` writes, a message holds one write role per address.
-    fn reads_only(&self, prefix: &[AccountMeta], forwarded: &[AccountMeta]) -> bool {
+    /// Compiled v1 messages share one write bit per address across prefix and forwarded.
+    fn reads_only(&self, decoded: &DecodedTransfer<'_>, signer: PrefixSigner) -> bool {
         let forwarded_write = |meta: &AccountMeta| {
-            forwarded
+            decoded
+                .forwarded
                 .iter()
                 .any(|spp| spp.pubkey == meta.pubkey && spp.is_writable)
         };
-        match prefix.split_first() {
+        let signer_allowed = matches!(signer, PrefixSigner::Required);
+        match decoded.prefix.split_first() {
             Some((ring, rest)) => {
                 *ring == AccountMeta::new_readonly(self.ring.policy_pda(), false)
                     && rest.iter().all(|meta| {
-                        (!meta.is_writable || forwarded_write(meta)) && meta.pubkey != self.signer
+                        (!meta.is_writable || forwarded_write(meta))
+                            && (signer_allowed || meta.pubkey != self.signer)
                     })
             }
             None => false,
@@ -1460,5 +1612,112 @@ mod tests {
         ] {
             assert_eq!(opened(refused), Err(MessageMismatch::Instructions));
         }
+    }
+
+    #[test]
+    fn approval_opening_debug_redacts_blinder() {
+        let blinder = Hash([0xab; 32]);
+        let opening = ApprovalOpening {
+            blinder,
+            outputs: Vec::new(),
+            public: Vec::new(),
+        };
+        let rendered = format!("{opening:?}");
+        assert!(rendered.contains(REDACTED), "{rendered}");
+        assert!(!rendered.contains("171"), "{rendered}");
+        let exact = ExactApproval {
+            opening,
+            limits: Vec::new(),
+            seen_blinders: vec![Hash([0xcd; 32])],
+        };
+        let rendered = format!("{exact:?}");
+        assert!(rendered.contains(REDACTED), "{rendered}");
+        assert!(!rendered.contains("205"), "{rendered}");
+    }
+
+    #[test]
+    fn setup_only_accounts_refuse_signers_and_unmatched_writes() {
+        let ring_instruction = Instruction {
+            program_id: RING,
+            accounts: vec![AccountMeta::new_readonly(SIGNER, true)],
+            data: vec![9],
+        };
+        let check = |instructions: Vec<Instruction>| {
+            let message = compile_message(
+                &FEE_PAYER,
+                &instructions,
+                Blockhash::new_from_array([6; 32]),
+                ComputeBudgetConfig::new(UNITS),
+            )
+            .unwrap();
+            Envelope {
+                ring: CustomRing::new(RING),
+                program: RING,
+                units: UNITS,
+                fee_payer: FEE_PAYER,
+                signer: SIGNER,
+                setup: vec![create(7), create(8)],
+            }
+            .open(&message.serialize())
+        };
+
+        let mut writable_owner = create(7);
+        writable_owner.accounts[2].is_writable = true;
+        assert_eq!(
+            check(vec![writable_owner, ring_instruction.clone()]),
+            Err(MessageMismatch::Accounts)
+        );
+
+        let mut signer_owner = create(7);
+        signer_owner.accounts[2].is_signer = true;
+        assert_eq!(
+            check(vec![signer_owner, ring_instruction.clone()]),
+            Err(MessageMismatch::Accounts)
+        );
+
+        let mut signer_ata = create(7);
+        signer_ata.accounts[1].is_signer = true;
+        assert_eq!(
+            check(vec![signer_ata, ring_instruction.clone()]),
+            Err(MessageMismatch::Accounts)
+        );
+
+        // Omitting create(7) disarms write permission for create(7)'s ATA.
+        let omitted_ata = create(7).accounts[1].pubkey;
+        let base_msg = compile_message(
+            &FEE_PAYER,
+            &[create(8), ring_instruction],
+            Blockhash::new_from_array([6; 32]),
+            ComputeBudgetConfig::new(UNITS),
+        )
+        .unwrap();
+        let VersionedMessage::V1(mut smuggled) = base_msg else {
+            panic!("v1 message");
+        };
+        let insert_at = usize::from(smuggled.header.num_required_signatures);
+        smuggled.account_keys.insert(insert_at, omitted_ata);
+        for compiled in &mut smuggled.instructions {
+            if usize::from(compiled.program_id_index) >= insert_at {
+                compiled.program_id_index += 1;
+            }
+            for index in &mut compiled.accounts {
+                if usize::from(*index) >= insert_at {
+                    *index += 1;
+                }
+            }
+        }
+        assert!(smuggled.validate().is_ok());
+        assert_eq!(
+            Envelope {
+                ring: CustomRing::new(RING),
+                program: RING,
+                units: UNITS,
+                fee_payer: FEE_PAYER,
+                signer: SIGNER,
+                setup: vec![create(7), create(8)],
+            }
+            .open(&smuggled.serialize()),
+            Err(MessageMismatch::Accounts)
+        );
     }
 }

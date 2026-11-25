@@ -2,6 +2,7 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use solana_address::Address;
 use spr_keypair::{shielded::ShieldedKeypair, ViewingKey};
+use zeroize::Zeroizing;
 
 use crate::{RingKeyError, RotatingRingKeys};
 
@@ -30,9 +31,9 @@ const LIST_SALT_INFO: &[u8] = b"CRING/mrg_seed/v1";
 
 /// Canonical by its zero top byte, nonzero by its low bit.
 fn derive(root: &ViewingKey, ring_program_id: &Address) -> Result<[u8; 32], RingKeyError> {
-    let secret = root.secret_bytes();
+    let secret = Zeroizing::new(root.secret_bytes());
     let view_root = Hkdf::<Sha256>::new(Some(VIEW_ROOT_SALT), secret.as_slice());
-    let mut salt = [0u8; 32];
+    let mut salt = Zeroizing::new([0u8; 32]);
     view_root
         .expand_multi_info(
             &[LIST_SALT_INFO, ring_program_id.as_array(), &LIST_SALT_LABEL],
@@ -40,5 +41,5 @@ fn derive(root: &ViewingKey, ring_program_id: &Address) -> Result<[u8; 32], Ring
         )
         .map_err(|_| RingKeyError::InvalidListSalt)?;
     salt[31] |= 1;
-    Ok(salt)
+    Ok(*salt)
 }

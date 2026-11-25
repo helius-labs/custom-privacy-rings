@@ -346,8 +346,8 @@ impl<'a, H: HeldKeys> Agreements<'a, H> {
             Some((key, tx, _)) if key == viewing_pubkey && tx == tx_viewing_pk
         );
         if !current {
-            let agreement = self.holder.held(viewing_pubkey)?.ecdh(tx_viewing_pk)?;
-            self.latest = Some((*viewing_pubkey, *tx_viewing_pk, Zeroizing::new(agreement)));
+            let agreement = Zeroizing::new(self.holder.held(viewing_pubkey)?.ecdh(tx_viewing_pk)?);
+            self.latest = Some((*viewing_pubkey, *tx_viewing_pk, agreement));
             #[cfg(test)]
             {
                 self.computed += 1;

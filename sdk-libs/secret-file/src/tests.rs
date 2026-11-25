@@ -94,12 +94,22 @@ fn files_get_their_exact_mode() {
     use std::os::unix::fs::PermissionsExt;
     let dir = temp_dir("mode");
     let mode = |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
-    let secret = dir.join("root.key");
+    let nested = dir.join("private-dir");
+    let secret = nested.join("root.key");
     let public = dir.join("root.pub");
     create_new(&secret, SECRET.as_bytes(), Visibility::Secret).expect("secret");
     create_new(&public, b"public", Visibility::Public).expect("public");
+    assert_eq!(mode(&nested), 0o700);
     assert_eq!(mode(&secret), 0o600);
     assert_eq!(mode(&public), 0o644);
+    let dangling_target = dir.join("missing-target");
+    let dangling_link = dir.join("dangling.key");
+    std::os::unix::fs::symlink(&dangling_target, &dangling_link).expect("symlink");
+    assert!(matches!(
+        create_new(&dangling_link, SECRET.as_bytes(), Visibility::Secret),
+        Err(SecretFileError::Write { .. })
+    ));
+    assert!(!dangling_target.exists());
     fs::remove_dir_all(dir).expect("cleanup");
 }
 

@@ -1,5 +1,5 @@
-use anyhow::{bail, ensure, Context as _, Result};
-use custom_ring_sdk::{CustomRing, InitializeStorage};
+use anyhow::{anyhow, bail, ensure, Context as _, Result};
+use custom_ring_sdk::{CustomRing, InitializeStorage, OwnerListSalts};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use solana_address::Address;
@@ -88,10 +88,26 @@ struct JsonRpcResponse<T> {
     error: Option<serde_json::Value>,
 }
 
+pub fn check_service_url(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| anyhow!("invalid service URL"))?;
+    match parsed.scheme() {
+        "https" => ensure!(parsed.has_host(), "service URL names no host"),
+        "http" => {
+            ensure!(parsed.has_host(), "service URL names no host");
+            ensure!(
+                crate::config::Urls::is_loopback_host(parsed.host_str().unwrap_or_default()),
+                "non-loopback service URL must use https"
+            );
+        }
+        _ => bail!("service URL must use https or loopback http"),
+    }
+    Ok(())
+}
+
 /// Answers before the ring has a config, so a pipeline stops before `init` pins an
 /// auditor the service does not hold.
 pub fn run_check(ctx: &Context) -> Result<()> {
-    let client = ctx.ring_rpc();
+    let client = ctx.ring_rpc()?;
     let held = match client.state(ctx.ring.program_id())? {
         RingState::Served => "serves this ring",
         _ => "holds a key for the ring, `init` pins it",
@@ -120,37 +136,13 @@ impl AttestedAuditorKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WriterSalt {
-    Owner([u8; 32]),
-    /// The owner holds no tracking row.
-    Ring([u8; 32]),
-}
-
-impl WriterSalt {
-    pub const fn salt(&self) -> &[u8; 32] {
-        match self {
-            Self::Owner(salt) | Self::Ring(salt) => salt,
-        }
-    }
-
-    pub fn member(
-        &self,
-        owner: &zolana_ring_policy::Member,
-    ) -> Result<zolana_ring_policy::Member, zolana_ring_policy::MemberError> {
-        match self {
-            Self::Owner(salt) => zolana_ring_policy::Member::salted(owner, salt),
-            Self::Ring(salt) => zolana_ring_policy::Member::ring_salted(owner, salt),
-        }
-    }
-}
-
 impl RingRpcClient {
-    pub fn new(url: &str) -> Self {
-        Self {
+    pub fn new(url: &str) -> Result<Self> {
+        check_service_url(url)?;
+        Ok(Self {
             url: url.to_owned(),
             http: probe::http(probe::CONNECT_TIMEOUT, probe::TOTAL_TIMEOUT),
-        }
+        })
     }
 
     /// Verified against the service key the response names, the caller decides whether to trust it.
@@ -259,7 +251,7 @@ impl RingRpcClient {
         target: ReadTarget,
         owner: Address,
         writer: &dyn Signer,
-    ) -> Result<Option<WriterSalt>> {
+    ) -> Result<OwnerListSalts> {
         let request = ListSaltRequest::new(ListSaltAttestation {
             target,
             writer: writer.pubkey(),
@@ -268,8 +260,7 @@ impl RingRpcClient {
         .at(unix_now()?)
         .sign(writer)?;
         let response: GetListSaltResponse = self.call(GET_LIST_SALT, request)?;
-        let owner = response.list_salt.map(|salt| WriterSalt::Owner(salt.0));
-        Ok(owner.or(response.ring_salt.map(|salt| WriterSalt::Ring(salt.0))))
+        Ok(OwnerListSalts::from_response(&response))
     }
 
     /// The caller compares the answering signer with the ring's co-signer.
@@ -368,7 +359,7 @@ impl RingRpcClient {
 
     fn call<T: DeserializeOwned>(&self, method: &str, params: impl Serialize) -> Result<T> {
         let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-        let response: JsonRpcResponse<T> = self
+        let http_response = self
             .http
             .post(probe::service_url(&self.url, method))
             .json(&body)
@@ -376,9 +367,14 @@ impl RingRpcClient {
             .map_err(reqwest::Error::without_url)
             .with_context(|| format!("no ring rpc answers at {}", redact_url(&self.url)))?
             .error_for_status()
-            .map_err(reqwest::Error::without_url)?
-            .json()
             .map_err(reqwest::Error::without_url)?;
+        ensure!(
+            http_response.status().is_success(),
+            "ring rpc {method} returned HTTP {}",
+            http_response.status()
+        );
+        let response: JsonRpcResponse<T> =
+            http_response.json().map_err(reqwest::Error::without_url)?;
         if let Some(error) = response.error {
             bail!("ring rpc {method} failed, {error}");
         }
@@ -485,6 +481,7 @@ mod tests {
         for method in [CREATE_AUDITOR_KEY, RING_STATUS, GET_DECRYPTED_TRANSACTIONS] {
             let (url, server) = gateway(200);
             let result: bool = RingRpcClient::new(&url)
+                .expect("client")
                 .call(method, json!({}))
                 .expect("call");
             let (line, body) = server.join().expect("server");
@@ -501,6 +498,7 @@ mod tests {
     fn gateway_http_failures_do_not_expose_the_key() {
         let (url, server) = gateway(401);
         let error = RingRpcClient::new(&url)
+            .expect("client")
             .call::<bool>(RING_STATUS, json!({}))
             .expect_err("unauthorized");
         server.join().expect("server");
@@ -517,6 +515,7 @@ mod tests {
         );
         drop(listener);
         let error = RingRpcClient::new(&url)
+            .expect("client")
             .call::<bool>(RING_STATUS, json!({}))
             .expect_err("unreachable");
         assert!(!error.to_string().contains("secret"));
@@ -657,5 +656,142 @@ mod tests {
             .contains("could not open"));
         let failed = find_decrypted(wanted, 0, |_| bail!("down")).expect("retry");
         assert!(matches!(failed, Probe::Retry(error) if error.to_string() == "down"));
+    }
+
+    #[test]
+    fn non_loopback_http_urls_are_refused() {
+        for allowed in [
+            "http://127.0.0.1:8785",
+            "http://localhost:8785",
+            "http://rpc.localhost:8785",
+            "http://[::1]:8785",
+            "https://example.com",
+            "https://ring.example.com:8785/v1?api-key=secret",
+        ] {
+            assert!(RingRpcClient::new(allowed).is_ok(), "{allowed}");
+        }
+        for refused in [
+            "http://example.com",
+            "http://example.com:8785/v1?api-key=secret",
+            "http://.localhost:8785",
+            "http://..localhost:8785",
+            "http://localhost.evil.com:8785",
+            "http://127.0.0.1.evil.com:8785",
+            "http://0.0.0.0:8785",
+            "ftp://example.com",
+            "http://",
+        ] {
+            let error = RingRpcClient::new(refused)
+                .err()
+                .expect(refused)
+                .to_string();
+            assert!(!error.contains("secret"), "{error}");
+        }
+    }
+
+    #[test]
+    fn redirects_are_refused_without_following_to_target() {
+        for status in [307u16, 308u16] {
+            let redirector = TcpListener::bind("127.0.0.1:0").expect("redirector");
+            let sink = TcpListener::bind("127.0.0.1:0").expect("sink");
+            sink.set_nonblocking(true).expect("nonblocking");
+            let sink_url = format!("http://{}/sink", sink.local_addr().expect("sink addr"));
+            let origin = format!("http://{}", redirector.local_addr().expect("origin addr"));
+            let server = thread::spawn(move || {
+                let (mut stream, _) = redirector.accept().expect("request");
+                let mut reader = BufReader::new(&stream);
+                let mut content_length = 0usize;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).expect("header");
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = value.trim().parse().expect("length");
+                        }
+                    }
+                }
+                let mut body = vec![0; content_length];
+                reader.read_exact(&mut body).expect("body");
+                let payload = r#"{"jsonrpc":"2.0","id":1,"result":true}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Redirect\r\nLocation: {sink_url}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                )
+                .expect("redirect response");
+            });
+            let result = RingRpcClient::new(&origin)
+                .expect("client")
+                .call::<bool>(RING_STATUS, json!({}));
+            server.join().expect("server");
+            assert!(result.is_err(), "status {status} must fail");
+            assert!(
+                sink.accept().is_err(),
+                "status {status} must not follow redirect"
+            );
+        }
+    }
+
+    #[test]
+    fn list_salt_keeps_both_owner_and_ring_salt_when_present() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let url = format!("http://{}", listener.local_addr().expect("address"));
+        let owner_salt = [0x11; 32];
+        let ring_salt = [0x22; 32];
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": GetListSaltResponse {
+                list_salt: Some(Hash(owner_salt)),
+                ring_salt: Some(Hash(ring_salt)),
+            }
+        })
+        .to_string();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("request");
+            let mut reader = BufReader::new(&stream);
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("header");
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse().expect("length");
+                    }
+                }
+            }
+            let mut req = vec![0; content_length];
+            reader.read_exact(&mut req).expect("body");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .expect("response");
+        });
+        let writer = solana_keypair::Keypair::new();
+        let target = ReadTarget {
+            cluster: [1; 32],
+            service: SERVICE,
+            ring: Address::new_from_array([2; 32]),
+        };
+        let salt = RingRpcClient::new(&url)
+            .expect("client")
+            .list_salt(target, Address::new_from_array([3; 32]), &writer)
+            .expect("list salt");
+        server.join().expect("server");
+        assert_eq!(
+            salt,
+            OwnerListSalts {
+                list_salt: Some(owner_salt),
+                ring_salt: Some(ring_salt),
+            }
+        );
     }
 }

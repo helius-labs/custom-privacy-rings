@@ -304,12 +304,26 @@ impl Urls {
         Self::local_address(url).is_some_and(|ip| ip.is_loopback())
     }
 
+    pub(crate) fn is_loopback_host(host: &str) -> bool {
+        Self::host_address(host).is_some_and(|ip| ip.is_loopback())
+    }
+
     fn local_address(url: &str) -> Option<std::net::IpAddr> {
         let url = reqwest::Url::parse(url).ok()?;
-        match url.host_str()? {
-            "localhost" => Some(std::net::Ipv4Addr::LOCALHOST.into()),
-            host => host.trim_matches(['[', ']']).parse().ok(),
+        Self::host_address(url.host_str()?)
+    }
+
+    fn host_address(host: &str) -> Option<std::net::IpAddr> {
+        let host = host.trim_end_matches('.');
+        let lower = host.to_ascii_lowercase();
+        if lower == "localhost"
+            || lower.strip_suffix(".localhost").is_some_and(|prefix| {
+                !prefix.is_empty() && prefix.split('.').all(|label| !label.is_empty())
+            })
+        {
+            return Some(std::net::Ipv4Addr::LOCALHOST.into());
         }
+        host.trim_matches(['[', ']']).parse().ok()
     }
 
     pub fn ring_rpc_is_local(&self) -> bool {
@@ -664,10 +678,13 @@ ring_rpc = "http://127.0.0.1:8785"
         };
         assert!(local("http://127.0.0.1:8785"));
         assert!(local("http://localhost:8785/"));
+        assert!(local("http://rpc.localhost:8785/"));
         assert!(local("http://[::1]:8785"));
         assert!(local("http://0.0.0.0:8785"));
         assert!(!local("https://d24brah9h1i4q9.cloudfront.net"));
         assert!(!local("http://ring.example.com:8785"));
+        assert!(!local("http://.localhost:8785"));
+        assert!(!local("http://..localhost:8785"));
         // A host that merely starts with a loopback name is not one.
         assert!(!local("http://localhost.example.com:8785"));
     }

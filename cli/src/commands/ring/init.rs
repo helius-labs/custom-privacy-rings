@@ -95,7 +95,7 @@ pub fn run(ctx: &Context, args: InitArgs) -> Result<()> {
                 true => Trust::Unpinned,
                 false => Trust::Refuse,
             })?;
-            ctx.ring_rpc()
+            ctx.ring_rpc()?
                 .release_auditor_key(
                     ctx.ring.program_id(),
                     genesis_hash,
@@ -215,7 +215,7 @@ impl RingInitialization<'_> {
     fn send(self, ctx: &Context) -> Result<()> {
         let target = self.policy_authority.address();
         let records = ctx
-            .ring_rpc()
+            .ring_rpc()?
             .create_records_registry(ctx.ring_rpc_target()?, &ctx.request_signer(self.deployer))?;
         let empty = RuleTable::empty();
         let (rules, shared_sources) = match self.policy {

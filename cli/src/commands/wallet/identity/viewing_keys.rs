@@ -6,7 +6,10 @@
 //! Each rotated key is an owner-only `<n>.key` file, never overwritten, the newest current and every
 //! earlier one retained. The anonymous wallet store stays keyed by the identity key.
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{ensure, Context as _, Result};
 use custom_ring_sdk::RotateViewingKey;
@@ -96,7 +99,7 @@ pub fn rotate(ctx: &Context) -> Result<()> {
     );
     match prepared {
         Some(rotation) => {
-            ctx.ring_rpc().submit_enrollment(rotation.sign(&owner)?)?;
+            ctx.ring_rpc()?.submit_enrollment(rotation.sign(&owner)?)?;
             line("tracking rotation", "held by ring rpc");
         }
         None => line("tracking leaf", "already current"),
@@ -115,7 +118,7 @@ impl RotatedKeys {
 
     fn holder(&self, identity: &ShieldedKeypair) -> Result<RotatingRingKeys> {
         let mut keys = RotatingRingKeys::new(identity)?;
-        for path in self.stored() {
+        for (_, path) in self.stored()? {
             let secret = read_key32(&path, Access::OwnerOnly)?;
             let next = ViewingKey::from_canonical_bytes(&secret)
                 .with_context(|| format!("{} holds no viewing key", path.display()))?;
@@ -125,15 +128,41 @@ impl RotatedKeys {
     }
 
     fn store(&self, next: &ViewingKey) -> Result<()> {
-        let path = self.path(self.stored().count() + 1);
+        let next_rotation = self
+            .stored()?
+            .last()
+            .map_or(1, |(rotation, _)| rotation.saturating_add(1));
+        let path = self.path(next_rotation);
         Ok(create_key32(&path, &next.secret_bytes())?)
     }
 
-    /// Oldest first, a gap ends the rotations.
-    fn stored(&self) -> impl Iterator<Item = PathBuf> + '_ {
-        (1..)
-            .map(|rotation| self.path(rotation))
-            .take_while(|path| path.exists())
+    fn stored(&self) -> Result<Vec<(usize, PathBuf)>> {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot read {}", self.dir.display()))
+            }
+        };
+        let mut found = Vec::new();
+        for entry in entries {
+            let entry = entry.with_context(|| format!("cannot read {}", self.dir.display()))?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            let Some(stem) = name.strip_suffix(".key") else {
+                continue;
+            };
+            let Ok(rotation) = stem.parse::<usize>() else {
+                continue;
+            };
+            if rotation == 0 || stem != rotation.to_string() {
+                continue;
+            }
+            found.push((rotation, entry.path()));
+        }
+        found.sort_by_key(|(rotation, _)| *rotation);
+        Ok(found)
     }
 
     fn path(&self, rotation: usize) -> PathBuf {
@@ -194,5 +223,24 @@ mod tests {
         unclamped[31] = 0xff;
         create_key32(&rotated.path(2), &unclamped).unwrap();
         assert!(rotated.holder(&identity).is_err());
+    }
+
+    #[test]
+    fn a_gap_in_rotation_numbers_does_not_strand_later_keys() {
+        let (rotated, _dir) = rotated("gap");
+        let identity = keypair(3);
+        let second = ViewingKey::new();
+        let third = ViewingKey::new();
+        create_key32(&rotated.path(2), &second.secret_bytes()).unwrap();
+        let keys = rotated.holder(&identity).unwrap();
+        assert_eq!(keys.address().unwrap().viewing_pubkey, second.pubkey());
+        rotated.store(&third).unwrap();
+        assert!(rotated.path(3).exists());
+        let keys = rotated.holder(&identity).unwrap();
+        assert_eq!(keys.address().unwrap().viewing_pubkey, third.pubkey());
+        assert_eq!(
+            keys.viewing_public_keys(),
+            [third.pubkey(), second.pubkey(), identity.viewing_pubkey()]
+        );
     }
 }

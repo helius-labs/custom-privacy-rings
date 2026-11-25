@@ -140,7 +140,7 @@ impl MemberSigners<'_> {
                     wallet: self.wallet,
                     cosigner,
                     ring: ctx.ring.program_id(),
-                    rpc: ctx.ring_rpc(),
+                    rpc: ctx.ring_rpc()?,
                 },
             }
             .settle(&ctx.zolana),
@@ -333,7 +333,7 @@ mod tests {
     fn unreachable_ring_rpc() -> RingRpcClient {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
         let url = format!("http://{}", listener.local_addr().expect("address"));
-        RingRpcClient::new(&url)
+        RingRpcClient::new(&url).expect("loopback")
     }
 
     #[test]

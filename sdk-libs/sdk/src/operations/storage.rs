@@ -639,7 +639,7 @@ impl EnrollmentAccounts {
         vec![
             AccountMeta::new_readonly(self.writer, true),
             AccountMeta::new_readonly(ring.policy_pda(), false),
-            AccountMeta::new(ring.ring_auth_pda(), false),
+            AccountMeta::new_readonly(ring.ring_auth_pda(), false),
             AccountMeta::new(self.tracking_registry, false),
             self.authorization,
             AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),

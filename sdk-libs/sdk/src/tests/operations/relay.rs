@@ -1221,6 +1221,86 @@ mod delegate_message {
             .verify(relay.delegate.as_ref(), &message.0));
     }
 
+    #[tokio::test]
+    async fn a_foreign_signer_cannot_verify_a_delegate_message() {
+        let delegate = keypair(7);
+        let foreign = keypair(8);
+        let relay = DelegateRelay::new(Answer::Honest, delegate.pubkey());
+        let config = ring().require_config(relay.client.zolana()).await.unwrap();
+        let asked = request(delegate.pubkey());
+        let prepared = RequestedAuthorityTransfer {
+            requester: DelegateRequester::Ring(relay.allowed(&asked.transfer).await),
+            request: asked,
+            quote: &quote(),
+            output_tree_id: crate::tests::support::TREE_ID,
+            config: &config,
+        }
+        .prepare()
+        .unwrap();
+        let RelaySent::SignMessage(pending) = prepared.send(&relay).await.unwrap() else {
+            panic!("the delegate signs the move");
+        };
+        assert!(matches!(
+            pending.verify(foreign.pubkey()),
+            Err(RingError::RelayMessage(MessageMismatch::Unrequested))
+        ));
+        assert_eq!(
+            pending.verify(delegate.pubkey()).unwrap().signer(),
+            delegate.pubkey()
+        );
+    }
+
+    #[tokio::test]
+    async fn delegate_refuses_prefix_writes_forwarded_placement_and_short_settlement() {
+        use solana_instruction::AccountMeta;
+        use spr_interface::instruction::InterfaceTransfer;
+        let delegate = keypair(7);
+        let relay = DelegateRelay::new(Answer::Honest, delegate.pubkey());
+        let asked = request(delegate.pubkey());
+        let config = ring().require_config(relay.client.zolana()).await.unwrap();
+        let expected = relay.expected(&asked, &config).await;
+        let honest = relay
+            .build(&asked.transfer, &asked.tx_viewing_key)
+            .await
+            .unwrap();
+
+        let mut writable_prefix = honest.clone();
+        writable_prefix.accounts.insert(
+            1,
+            AccountMeta::new(Address::new_from_array([0x73; 32]), false),
+        );
+        assert_eq!(
+            expected
+                .check(&relay_message(&FEE_PAYER, &[writable_prefix], UNITS).0)
+                .err(),
+            Some(MessageMismatch::Accounts)
+        );
+
+        let mut forwarded_delegate = honest.clone();
+        forwarded_delegate
+            .accounts
+            .retain(|meta| meta.pubkey != delegate.pubkey());
+        forwarded_delegate
+            .accounts
+            .push(AccountMeta::new_readonly(delegate.pubkey(), true));
+        assert_eq!(
+            expected
+                .check(&relay_message(&FEE_PAYER, &[forwarded_delegate], UNITS).0)
+                .err(),
+            Some(MessageMismatch::Accounts)
+        );
+
+        let short_settlement = rewritten(&honest, RingRail::Delegate, |data| {
+            data.interface_transfers = vec![InterfaceTransfer::SolWithdrawal { amount: 1 }];
+        });
+        assert_eq!(
+            expected
+                .check(&relay_message(&FEE_PAYER, &[short_settlement], UNITS).0)
+                .err(),
+            Some(MessageMismatch::Accounts)
+        );
+    }
+
     fn thief() -> ShieldedAddress {
         keypair(3).shielded_address().unwrap()
     }
@@ -2696,6 +2776,8 @@ mod public_signers {
     /// The TypeScript check reads the same frames and reaches the same verdicts, `UPDATE_RELAY_MESSAGES=1` rewrites them.
     #[tokio::test]
     async fn the_shared_owner_messages_keep_their_verdicts() {
+        use solana_instruction::AccountMeta;
+        use spr_interface::instruction::InterfaceTransfer;
         let (sender, payee, thief, co_owner) = (keypair(1), keypair(2), keypair(4), keypair(3));
         let client = chain(
             RingMode::Anonymous,
@@ -2724,7 +2806,69 @@ mod public_signers {
             .transfer_terms(address(&payee))
             .unwrap()
             .clone();
-        let message = relay_message(&FEE_PAYER, &[frame(&client, &asked.request).await], UNITS).0;
+        let honest_frame = frame(&client, &asked.request).await;
+        let message = relay_message(&FEE_PAYER, core::slice::from_ref(&honest_frame), UNITS).0;
+        let spl_deposit_ix = |authority: Address, keep_owner_run: bool| {
+            let mut parsed = RingTransactData::parse(&honest_frame.data[1..], RingRail::Anonymous)
+                .unwrap()
+                .into_data();
+            parsed.interface_transfers = vec![InterfaceTransfer::SplDeposit {
+                amount: 5,
+                spl_interface_bump: 255,
+            }];
+            let mut ix = honest_frame.clone();
+            ix.data = [vec![tag::TRANSFER], parsed.encode().unwrap()].concat();
+            if !keep_owner_run {
+                ix.accounts.retain(|meta| meta.pubkey != address(&payee));
+            }
+            ix.accounts.extend([
+                AccountMeta::new_readonly(Address::new_from_array([0x41; 32]), false),
+                AccountMeta::new(Address::new_from_array([0x42; 32]), false),
+                AccountMeta::new_readonly(authority, true),
+                AccountMeta::new(Address::new_from_array([0x43; 32]), false),
+                AccountMeta::new_readonly(Address::new_from_array([0x46; 32]), false),
+            ]);
+            relay_message(&FEE_PAYER, &[ix], UNITS).0
+        };
+        let third_party_deposit = spl_deposit_ix(Address::new_from_array([0x45; 32]), true);
+        let spl_deposit_only = spl_deposit_ix(address(&payee), false);
+        let run_and_spl_deposit = spl_deposit_ix(address(&payee), true);
+        let withdrawal_ix = |transfer: InterfaceTransfer,
+                             spl_owners: &[[u8; 32]],
+                             metas: Vec<AccountMeta>| {
+            let mut parsed = RingTransactData::parse(&honest_frame.data[1..], RingRail::Anonymous)
+                .unwrap()
+                .into_data();
+            parsed.interface_transfers = vec![transfer];
+            parsed.spl_withdrawal_owners = spl_owners;
+            let mut ix = honest_frame.clone();
+            ix.data = [vec![tag::TRANSFER], parsed.encode().unwrap()].concat();
+            ix.accounts.extend(metas);
+            relay_message(&FEE_PAYER, &[ix], UNITS).0
+        };
+        let sol_withdrawal = withdrawal_ix(
+            InterfaceTransfer::SolWithdrawal { amount: 5 },
+            &[],
+            vec![
+                AccountMeta::new(Address::new_from_array([0x51; 32]), false),
+                AccountMeta::new(Address::new_from_array([0x52; 32]), false),
+            ],
+        );
+        let spl_withdrawal_owner = [[0x66; 32]];
+        let spl_withdrawal = withdrawal_ix(
+            InterfaceTransfer::SplWithdrawal {
+                amount: 5,
+                spl_interface_bump: 255,
+            },
+            &spl_withdrawal_owner,
+            vec![
+                AccountMeta::new_readonly(Address::new_from_array([0x61; 32]), false),
+                AccountMeta::new_readonly(Address::new_from_array([0x62; 32]), false),
+                AccountMeta::new(Address::new_from_array([0x63; 32]), false),
+                AccountMeta::new(Address::new_from_array([0x64; 32]), false),
+                AccountMeta::new_readonly(Address::new_from_array([0x65; 32]), false),
+            ],
+        );
         let stolen = paying(&thief);
         let forged = sent(
             stolen
@@ -2928,6 +3072,41 @@ mod public_signers {
                     &exit_message,
                     "Accepted",
                 ),
+                owner_case(
+                    "ownerWithThirdPartySplDeposit",
+                    &terms,
+                    &[],
+                    &third_party_deposit,
+                    "Accepted",
+                ),
+                owner_case(
+                    "ownerOnlyInSplDeposit",
+                    &terms,
+                    &[],
+                    &spl_deposit_only,
+                    "Accounts",
+                ),
+                owner_case(
+                    "ownerInRunAndSplDeposit",
+                    &terms,
+                    &[],
+                    &run_and_spl_deposit,
+                    "Accounts",
+                ),
+                owner_case(
+                    "ownerWithSolWithdrawal",
+                    &terms,
+                    &[],
+                    &sol_withdrawal,
+                    "Data",
+                ),
+                owner_case(
+                    "ownerWithSplWithdrawal",
+                    &terms,
+                    &[],
+                    &spl_withdrawal,
+                    "Data",
+                ),
             ],
         };
         let vector = crate::tests::support::pinned_vector("relay_transfer_messages.json", fresh);
@@ -2944,6 +3123,107 @@ mod public_signers {
                 case.verdict,
                 "{}",
                 case.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn public_owner_refuses_spl_deposit_authority_confusion_and_public_withdrawals() {
+        use solana_instruction::AccountMeta;
+        use spr_interface::instruction::InterfaceTransfer;
+        let (sender, payee) = (keypair(1), keypair(2));
+        let client = chain(RingMode::Anonymous, None, &[&sender, &payee]).client();
+        let paying = transfer(&sender, vec![ring_utxo(&sender, Mint::SOL, 10, 0)])
+            .with_anonymous_signer(&sender.signing_key)
+            .with_payment(data_payment(&payee))
+            .unwrap();
+        let asked = sent(
+            paying
+                .prepare_relay(client.zolana(), quote())
+                .await
+                .unwrap()
+                .sign()
+                .unwrap(),
+        )
+        .await;
+        let terms = asked
+            .pending
+            .transfer_terms(address(&payee))
+            .unwrap()
+            .clone();
+        let honest = frame(&client, &asked.request).await;
+        let expected = crate::relay_message::ExpectedMessage::PublicOwner(
+            crate::relay_message::ExpectedPublicOwner::new(
+                terms.clone(),
+                RingMode::Anonymous,
+                Vec::new(),
+            ),
+        );
+        let honest_message = relay_message(&FEE_PAYER, core::slice::from_ref(&honest), UNITS).0;
+        assert!(expected.check(&honest_message, address(&payee)).is_ok());
+
+        let mut parsed = RingTransactData::parse(&honest.data[1..], RingRail::Anonymous)
+            .unwrap()
+            .into_data();
+        parsed.interface_transfers = vec![InterfaceTransfer::SplDeposit {
+            amount: 5,
+            spl_interface_bump: 255,
+        }];
+        let mut deposit_ix = honest.clone();
+        deposit_ix.data = [vec![tag::TRANSFER], parsed.encode().unwrap()].concat();
+        deposit_ix
+            .accounts
+            .retain(|meta| meta.pubkey != address(&payee));
+        deposit_ix.accounts.extend([
+            AccountMeta::new_readonly(Address::new_from_array([0x41; 32]), false),
+            AccountMeta::new(Address::new_from_array([0x42; 32]), false),
+            AccountMeta::new_readonly(address(&payee), true),
+            AccountMeta::new(Address::new_from_array([0x43; 32]), false),
+            AccountMeta::new_readonly(Address::new_from_array([0x44; 32]), false),
+        ]);
+        let confused_message = relay_message(&FEE_PAYER, &[deposit_ix], UNITS).0;
+        assert_eq!(
+            expected.check(&confused_message, address(&payee)).err(),
+            Some(MessageMismatch::Accounts)
+        );
+
+        let spl_owner = [[0x66; 32]];
+        for (withdrawal, spl_owners, settlement_metas) in [
+            (
+                InterfaceTransfer::SolWithdrawal { amount: 5 },
+                &[][..],
+                vec![
+                    AccountMeta::new(Address::new_from_array([0x51; 32]), false),
+                    AccountMeta::new(Address::new_from_array([0x52; 32]), false),
+                ],
+            ),
+            (
+                InterfaceTransfer::SplWithdrawal {
+                    amount: 5,
+                    spl_interface_bump: 255,
+                },
+                &spl_owner[..],
+                vec![
+                    AccountMeta::new_readonly(Address::new_from_array([0x61; 32]), false),
+                    AccountMeta::new_readonly(Address::new_from_array([0x62; 32]), false),
+                    AccountMeta::new(Address::new_from_array([0x63; 32]), false),
+                    AccountMeta::new(Address::new_from_array([0x64; 32]), false),
+                    AccountMeta::new_readonly(Address::new_from_array([0x65; 32]), false),
+                ],
+            ),
+        ] {
+            let mut withdrawn = RingTransactData::parse(&honest.data[1..], RingRail::Anonymous)
+                .unwrap()
+                .into_data();
+            withdrawn.interface_transfers = vec![withdrawal];
+            withdrawn.spl_withdrawal_owners = spl_owners;
+            let mut ix = honest.clone();
+            ix.data = [vec![tag::TRANSFER], withdrawn.encode().unwrap()].concat();
+            ix.accounts.extend(settlement_metas);
+            let withdrawn_message = relay_message(&FEE_PAYER, &[ix], UNITS).0;
+            assert_eq!(
+                expected.check(&withdrawn_message, address(&payee)).err(),
+                Some(MessageMismatch::Data)
             );
         }
     }
@@ -3339,6 +3619,284 @@ mod public_signers {
             ..terms.clone()
         };
         refused(&pending(no_legs), &funder, MessageMismatch::Unrequested);
+
+        let extra_writable = |ix: &Instruction| {
+            let mut tampered = ix.clone();
+            tampered.accounts.insert(
+                1,
+                solana_instruction::AccountMeta::new(Address::new_from_array([0x71; 32]), false),
+            );
+            relay_message(&FEE_PAYER, &[tampered], UNITS).0
+        };
+        let check_funder = |msg: Vec<u8>| {
+            FunderApproval {
+                relay_id: asked.relay_id.clone(),
+                message: msg,
+                terms: terms.clone(),
+                config: &config,
+            }
+            .pending()
+        };
+        refused(
+            &check_funder(extra_writable(&built)),
+            &funder,
+            MessageMismatch::Accounts,
+        );
+
+        let mut in_prefix = built.clone();
+        in_prefix.accounts.insert(
+            1,
+            solana_instruction::AccountMeta::new_readonly(address(&funder), true),
+        );
+        refused(
+            &check_funder(relay_message(&FEE_PAYER, &[in_prefix], UNITS).0),
+            &funder,
+            MessageMismatch::Accounts,
+        );
+
+        let mut in_owner_run = built.clone();
+        let owner_slot = in_owner_run.accounts.len() - 2;
+        in_owner_run.accounts.insert(
+            owner_slot,
+            solana_instruction::AccountMeta::new_readonly(address(&funder), true),
+        );
+        refused(
+            &check_funder(relay_message(&FEE_PAYER, &[in_owner_run], UNITS).0),
+            &funder,
+            MessageMismatch::Accounts,
+        );
+
+        let mut forwarded_writable = built.clone();
+        let shared = forwarded_writable
+            .accounts
+            .iter()
+            .skip(1)
+            .find(|meta| meta.is_writable && meta.pubkey != address(&funder))
+            .unwrap()
+            .pubkey;
+        forwarded_writable
+            .accounts
+            .insert(1, solana_instruction::AccountMeta::new(shared, false));
+        signs(
+            &check_funder(relay_message(&FEE_PAYER, &[forwarded_writable], UNITS).0),
+            &funder,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_spl_only_funder_refuses_a_writable_authority_unless_also_funding_sol() {
+        use spr_program::instruction::{
+            TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
+            TransactSplDepositAccounts,
+        };
+        let (sender, payee, funder) = (keypair(1), keypair(2), keypair(4));
+        let spl = Mint {
+            asset: Address::new_from_array([0x49; 32]),
+            asset_id: 8,
+        };
+        let token_account = Address::new_from_array([0x4a; 32]);
+        let token_program = Address::new_from_array(spr_interface::SPL_TOKEN_PROGRAM_ID);
+        let client = Chain::ring(RingSettings {
+            has_policy: true,
+            ..RingSettings::new(RingMode::Anonymous)
+        })
+        .with_registry(
+            Registry::new(&[(&sender, 1), (&payee, 1), (&funder, 1)])
+                .with_mint(spl.asset, Default::default()),
+            &pipeline_rules(),
+        )
+        .client();
+        let config = ring().require_config(client.zolana()).await.unwrap();
+
+        let mut spl_only_tx = ConfidentialTransaction::new_with_ring(
+            vec![ring_utxo(&sender, Mint::SOL, 10, 0)],
+            FEE_PAYER,
+            ring().program_id(),
+        )
+        .unwrap();
+        spl_only_tx.deposit(spl, 5, token_account).unwrap();
+        let spl_leg = TransactInterfaceTransferAccounts::SplDeposit(TransactSplDepositAccounts {
+            mint: spl.asset,
+            spl_interface: spr_interface::pda::spl_interface(&spl.asset),
+            token_authority: address(&funder),
+            user_token_account: token_account,
+            token_program,
+        });
+        let spl_transfer = CustomRingTransfer::new(CustomRingTransferInput {
+            ring: ring(),
+            sender: &sender,
+            nullifier_key: Some(&sender.nullifier_key),
+            transaction: spl_only_tx,
+        })
+        .with_interface_transfer_accounts(vec![spl_leg])
+        .with_anonymous_signer(&sender.signing_key)
+        .with_payment(AnonymousPayment {
+            asset: spl,
+            ..pay(&payee, 5)
+        })
+        .unwrap();
+        let asked = sent(
+            spl_transfer
+                .prepare_relay(client.zolana(), quote())
+                .await
+                .unwrap()
+                .sign()
+                .unwrap(),
+        )
+        .await;
+        let spl_terms = asked
+            .pending
+            .funder_terms(address(&funder))
+            .unwrap()
+            .clone();
+        assert!(spl_terms.legs.iter().all(|leg| leg.mint.is_some()));
+        let spl_built = frame(&client, &asked.request).await;
+        let spl_pending = |ix: Instruction| {
+            FunderApproval {
+                relay_id: asked.relay_id.clone(),
+                message: relay_message(&FEE_PAYER, &[ix], UNITS).0,
+                terms: spl_terms.clone(),
+                config: &config,
+            }
+            .pending()
+        };
+        signs(&spl_pending(spl_built.clone()), &funder).await;
+
+        let mut writable_authority = spl_built;
+        for meta in &mut writable_authority.accounts {
+            if meta.pubkey == address(&funder) {
+                meta.is_writable = true;
+            }
+        }
+        refused(
+            &spl_pending(writable_authority),
+            &funder,
+            MessageMismatch::Accounts,
+        );
+
+        let mut mixed_tx = ConfidentialTransaction::new_with_ring(
+            vec![ring_utxo(&sender, Mint::SOL, 10, 0)],
+            FEE_PAYER,
+            ring().program_id(),
+        )
+        .unwrap();
+        mixed_tx.deposit_sol(3, address(&funder)).unwrap();
+        mixed_tx.deposit(spl, 5, token_account).unwrap();
+        let mixed_transfer = CustomRingTransfer::new(CustomRingTransferInput {
+            ring: ring(),
+            sender: &sender,
+            nullifier_key: Some(&sender.nullifier_key),
+            transaction: mixed_tx,
+        })
+        .with_interface_transfer_accounts(vec![
+            TransactInterfaceTransferAccounts::Sol(TransactSolTransferAccounts {
+                recipient: address(&funder),
+            }),
+            spl_leg,
+        ])
+        .with_anonymous_signer(&sender.signing_key)
+        .with_payment(AnonymousPayment {
+            asset: spl,
+            ..pay(&payee, 5)
+        })
+        .unwrap();
+        let mixed_asked = sent(
+            mixed_transfer
+                .prepare_relay(client.zolana(), quote())
+                .await
+                .unwrap()
+                .sign()
+                .unwrap(),
+        )
+        .await;
+        let mixed_terms = mixed_asked
+            .pending
+            .funder_terms(address(&funder))
+            .unwrap()
+            .clone();
+        let mixed_built = frame(&client, &mixed_asked.request).await;
+        let mixed_pending = FunderApproval {
+            relay_id: mixed_asked.relay_id,
+            message: relay_message(&FEE_PAYER, &[mixed_built], UNITS).0,
+            terms: mixed_terms,
+            config: &config,
+        }
+        .pending();
+        signs(&mixed_pending, &funder).await;
+    }
+
+    #[tokio::test]
+    async fn prefix_writes_and_role_confusion_are_refused_for_every_signer() {
+        use solana_instruction::AccountMeta;
+        let (sender, payee, co_signer) = (keypair(1), keypair(2), keypair(6));
+        let client = chain(
+            RingMode::Anonymous,
+            Some(address(&co_signer)),
+            &[&sender, &payee],
+        )
+        .client();
+        let config = ring().require_config(client.zolana()).await.unwrap();
+        let paying = transfer(&sender, vec![ring_utxo(&sender, Mint::SOL, 10, 0)])
+            .with_co_signer(address(&co_signer))
+            .with_anonymous_signer(&sender.signing_key)
+            .with_payment(data_payment(&payee))
+            .unwrap();
+        let asked = sent(
+            paying
+                .prepare_relay(client.zolana(), quote())
+                .await
+                .unwrap()
+                .sign()
+                .unwrap(),
+        )
+        .await;
+        let owner_terms = asked
+            .pending
+            .transfer_terms(address(&payee))
+            .unwrap()
+            .clone();
+        let honest = frame(&client, &asked.request).await;
+
+        let mut writable_prefix = honest.clone();
+        writable_prefix.accounts.insert(
+            1,
+            AccountMeta::new(Address::new_from_array([0x72; 32]), false),
+        );
+        let writable_msg = relay_message(&FEE_PAYER, &[writable_prefix], UNITS).0;
+        refused(
+            &pending_for(&asked.relay_id, writable_msg.clone(), &owner_terms, &config),
+            &payee,
+            MessageMismatch::Accounts,
+        );
+        refused(
+            &co_signer_pending(
+                &asked.relay_id,
+                writable_msg,
+                address(&co_signer),
+                CoSignerRule::Threshold {
+                    accepts: ApprovalMask::new(0).unwrap(),
+                },
+                &config,
+            ),
+            &co_signer,
+            MessageMismatch::Accounts,
+        );
+
+        let mut owner_also_in_prefix = honest.clone();
+        owner_also_in_prefix
+            .accounts
+            .insert(1, AccountMeta::new_readonly(address(&payee), true));
+        refused(
+            &pending_for(
+                &asked.relay_id,
+                relay_message(&FEE_PAYER, &[owner_also_in_prefix], UNITS).0,
+                &owner_terms,
+                &config,
+            ),
+            &payee,
+            MessageMismatch::Accounts,
+        );
     }
 
     /// The TypeScript check reads the same frames, neither rule opens a slot.

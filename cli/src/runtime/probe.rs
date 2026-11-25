@@ -20,6 +20,8 @@ pub fn run_devnet(config: &RingConfig) -> Result<()> {
         ("indexer", &urls.indexer, "/readiness"),
         ("prover", &urls.prover, "/health"),
     ] {
+        crate::ring_rpc::check_service_url(base)
+            .with_context(|| format!("devnet {service} URL is invalid"))?;
         let full = service_url(base, path);
         let url = redact_api_key(&full);
         print!("probing {service:<8} {url} ... ");
@@ -51,6 +53,7 @@ pub fn print_urls(config: &RingConfig) {
 /// Panics only where `reqwest::blocking::Client::new` panics, a broken TLS backend.
 pub fn http(connect: Duration, total: Duration) -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect)
         .timeout(total)
         .build()
@@ -58,10 +61,16 @@ pub fn http(connect: Duration, total: Duration) -> reqwest::blocking::Client {
 }
 
 pub fn check(http: &reqwest::blocking::Client, url: &str) -> Result<()> {
-    http.get(url)
+    let response = http
+        .get(url)
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(reqwest::Error::without_url)?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "unexpected HTTP status {}",
+        response.status()
+    );
     Ok(())
 }
 

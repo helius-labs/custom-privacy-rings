@@ -602,6 +602,32 @@ fn public_key_files_round_trip_and_reject_other_lengths() {
         read_auditor_pubkey(&short),
         Err(KeyFileError::PubkeyEncoding)
     ));
+    let oversized = dir.join("oversized.pub");
+    std::fs::write(&oversized, "a".repeat(256)).expect("oversized");
+    assert!(matches!(
+        read_auditor_pubkey(&oversized),
+        Err(KeyFileError::File(SecretFileError::TooLong { .. }))
+    ));
+    #[cfg(unix)]
+    {
+        let link = dir.join("link.pub");
+        std::os::unix::fs::symlink(&path, &link).expect("symlink");
+        assert!(matches!(
+            read_auditor_pubkey(&link),
+            Err(KeyFileError::File(SecretFileError::Read { .. }))
+        ));
+    }
+    assert!(matches!(
+        auditor_keypair(&[0; 32]),
+        Err(KeyFileError::ZeroAuditorKey)
+    ));
+    let mut first_bit = [0u8; 32];
+    first_bit[0] = 1;
+    let mut last_bit = [0u8; 32];
+    last_bit[31] = 1;
+    assert!(auditor_keypair(&first_bit).is_ok());
+    assert!(auditor_keypair(&last_bit).is_ok());
+    assert!(auditor_keypair(&[1; 32]).is_ok());
     std::fs::remove_dir_all(dir).expect("cleanup");
 }
 

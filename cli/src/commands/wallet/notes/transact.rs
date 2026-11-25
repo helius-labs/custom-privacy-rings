@@ -245,7 +245,7 @@ pub fn run(ctx: &Context, args: TransactArgs) -> Result<()> {
         spend_public: None,
     };
     payments.fits(&inputs)?;
-    ctx.ring_rpc().check_serves(program)?;
+    ctx.ring_rpc()?.check_serves(program)?;
     let authority = ctx.authority()?;
     let reader = ReaderKey::ed25519(authority.address())?;
     ensure!(
@@ -356,7 +356,7 @@ pub fn run_transfer(ctx: &Context, args: TransferArgs) -> Result<()> {
         }
     };
     payments.fits(&inputs)?;
-    ctx.ring_rpc().check_serves(ctx.ring.program_id())?;
+    ctx.ring_rpc()?.check_serves(ctx.ring.program_id())?;
     // A public spend needs no row, its zero-key change serves an unenrolled wallet.
     if args.spend_public.is_none() {
         KeyEnrollment {
@@ -1420,7 +1420,7 @@ fn read_back(ctx: &Context, reader: &dyn Signer, signature: Signature) -> Result
     ctx.wait_for_indexed(signature)?;
     let target = ctx.ring_rpc_target()?;
     let opened = ctx
-        .ring_rpc()
+        .ring_rpc()?
         // The submission carries one ring operation, its SPP event sits at index zero.
         .wait_for_decrypted(target, reader, signature, 0)
         .context("the ring rpc did not open the transfer")?;

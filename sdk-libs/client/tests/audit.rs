@@ -297,7 +297,7 @@ fn a_data_bearing_note_rebuilds_from_its_record_with_the_payload_dropped() {
         let audited = audit_registered(&built, &forged).unwrap();
         assert_eq!(
             audited.payload_errors,
-            [slot_error(0, OutputPayloadErrorKind::Payload)]
+            [slot_error(0, OutputPayloadErrorKind::Commitment)]
         );
         let kept = audited.outputs[0].opening.utxo().unwrap();
         assert_eq!((kept.amount, kept.owner_key), (note.amount, note.owner_key));
@@ -342,7 +342,7 @@ fn each_record_field_changed_fails_the_rebuild() {
             }
             assert_eq!(
                 audited.payload_errors,
-                [slot_error(slot as u32, OutputPayloadErrorKind::Payload)],
+                [slot_error(slot as u32, OutputPayloadErrorKind::Commitment)],
                 "{name} of slot {slot}"
             );
             // The reader keeps the record, only the ring proof refuses a forged one.
@@ -398,8 +398,8 @@ fn a_record_of_one_slot_at_another_drops_its_data_hashes() {
     assert_eq!(
         audited.payload_errors,
         [
-            slot_error(0, OutputPayloadErrorKind::Payload),
-            slot_error(1, OutputPayloadErrorKind::Payload),
+            slot_error(0, OutputPayloadErrorKind::Commitment),
+            slot_error(1, OutputPayloadErrorKind::Commitment),
         ]
     );
     assert_eq!(opened_slots(&audited), [0, 1, 2, 3, 4, 5, 6, 7]);

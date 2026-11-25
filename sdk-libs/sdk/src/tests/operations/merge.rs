@@ -180,6 +180,38 @@ fn a_zero_key_merge_is_refused_before_any_derivation() {
     ));
 }
 
+#[test]
+fn a_zero_key_merge_relay_is_refused_before_encoding() {
+    use spr_interface::ZERO_NULLIFIER_PUBKEY;
+    use zolana_ring_client::rpc::{RelayQuote, ServiceTarget};
+    let owner = keypair(1);
+    let utxos: Vec<_> = (0..2)
+        .map(|leaf| zero_key(ring_utxo(&owner, Mint::SOL, 5, leaf)))
+        .collect();
+    let viewing = spr_keypair::ViewingKey::new();
+    let sender = spr_keypair::ShieldedAddress {
+        signing_pubkey: owner.signing_pubkey(),
+        nullifier_pubkey: ZERO_NULLIFIER_PUBKEY,
+        viewing_pubkey: viewing.pubkey(),
+    };
+    let prepared = crate::MergeRelay {
+        ring: ring(),
+        service: ServiceTarget {
+            cluster: [0x11; 32],
+            service: solana_address::Address::new_from_array([0x22; 32]),
+        },
+        sender,
+        owner: &owner,
+        nullifier_key: spr_keypair::NullifierKey::from_secret([0; 31]),
+        inputs: utxos,
+    }
+    .prepare(RelayQuote {
+        fee_payer: solana_address::Address::new_from_array([0x33; 32]).into(),
+        valid_until_slot: 100,
+    });
+    assert!(matches!(prepared, Err(RingError::MergeOwnerKey)));
+}
+
 struct CountingHolder<'a> {
     keys: &'a ShieldedKeypair,
     address: spr_keypair::ShieldedAddress,

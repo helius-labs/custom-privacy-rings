@@ -1,5 +1,7 @@
 //! Registry records, read under a root or signed as record updates.
 
+use std::fmt;
+
 use async_trait::async_trait;
 use custom_ring_interface::domain;
 use solana_address::Address;
@@ -8,14 +10,15 @@ use spr_api::SprApi;
 use spr_client::{AsyncRpc, ClientError};
 use spr_indexer_api::Hash;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 use zolana_ring_client::{
     records::{path_of, MemberOpeningRead, RecordPoolCheck, RecordPoolRead},
     resolver::tracking_record,
     rpc::{
         method::{GetRecordUpdateStatus, SubmitRecordUpdate},
-        GetRecordUpdateStatusRequest, ReaderAccess, RecordUpdate, RecordUpdateEntry,
-        RecordUpdateId, RecordUpdateStatus, SubmitRecordUpdateRequest, WalletGrant,
-        AWAITABLE_LISTS,
+        GetListSaltResponse, GetRecordUpdateStatusRequest, ReaderAccess, RecordUpdate,
+        RecordUpdateEntry, RecordUpdateId, RecordUpdateStatus, SubmitRecordUpdateRequest,
+        WalletGrant, AWAITABLE_LISTS,
     },
     AsyncRingIndexer, ReaderKey, RecipientResolver, ResolvedRecipient,
 };
@@ -31,9 +34,13 @@ use zolana_ring_member_registry::{
     Canopy, OpeningCheck, PoolSubject, SharedPath, SharedProof, TrackingOpening, TrackingPool,
     TrackingRecord,
 };
-use zolana_ring_policy::{ListSet, ListWrite, Member, MintPolicy, Writer};
+use zolana_ring_policy::{ListChange, ListSet, ListWrite, Member, MemberError, MintPolicy, Writer};
 
-use crate::{submission::BoundRoot, CustomRing, RingError};
+use crate::{submission::BoundRoot, CustomRing, RingError, REDACTED};
+
+#[cfg(test)]
+#[path = "../tests/operations/records.rs"]
+mod tests;
 
 /// Members' records under the newest root of the ring's records registry.
 #[must_use]
@@ -271,11 +278,26 @@ impl SaltedOwnerCheck<'_> {
 
 /// No proof reads an entry whose salt opens neither the owner's tag nor, with no row, the ring's tag.
 #[must_use]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct OwnerSaltCheck<'a> {
     pub ring: CustomRing,
     pub owner: &'a Address,
     pub list_salt: &'a [u8; 32],
+}
+
+impl fmt::Debug for OwnerSaltCheck<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            ring,
+            owner,
+            list_salt: _,
+        } = self;
+        f.debug_struct("OwnerSaltCheck")
+            .field("ring", ring)
+            .field("owner", owner)
+            .field("list_salt", &REDACTED)
+            .finish()
+    }
 }
 
 impl OwnerSaltCheck<'_> {
@@ -371,6 +393,126 @@ impl OutputKey<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrivateKeyKind {
+    OwnerSalted,
+    RingSalted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrivateListMember {
+    pub member: Member,
+    pub kind: PrivateKeyKind,
+    pub owner: Address,
+}
+
+impl PrivateListMember {
+    pub const fn unregistered_owner(self) -> Option<Address> {
+        match self.kind {
+            PrivateKeyKind::OwnerSalted => None,
+            PrivateKeyKind::RingSalted => Some(self.owner),
+        }
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
+pub struct OwnerListSalts {
+    pub list_salt: Option<[u8; 32]>,
+    pub ring_salt: Option<[u8; 32]>,
+}
+
+impl fmt::Debug for OwnerListSalts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OwnerListSalts")
+            .field("list_salt", &self.list_salt.as_ref().map(|_| REDACTED))
+            .field("ring_salt", &self.ring_salt.as_ref().map(|_| REDACTED))
+            .finish()
+    }
+}
+
+impl OwnerListSalts {
+    pub fn from_response(response: &GetListSaltResponse) -> Self {
+        Self {
+            list_salt: response.list_salt.as_ref().map(|salt| salt.0),
+            ring_salt: response.ring_salt.as_ref().map(|salt| salt.0),
+        }
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.list_salt.is_none() && self.ring_salt.is_none()
+    }
+
+    pub const fn primary_salt(&self) -> Option<&[u8; 32]> {
+        match (&self.list_salt, &self.ring_salt) {
+            (Some(salt), _) | (None, Some(salt)) => Some(salt),
+            (None, None) => None,
+        }
+    }
+
+    pub fn private_write_member(&self, owner: Address) -> Result<PrivateListMember, RingError> {
+        self.check_nonzero_salts()?;
+        let owner_tag = Member::owner_tag(owner.as_array())?;
+        match (&self.list_salt, &self.ring_salt) {
+            (Some(list_salt), _) => Ok(PrivateListMember {
+                member: Member::salted(&owner_tag, list_salt)?,
+                kind: PrivateKeyKind::OwnerSalted,
+                owner,
+            }),
+            (None, Some(ring_salt)) => Ok(PrivateListMember {
+                member: Member::ring_salted(&owner_tag, ring_salt)?,
+                kind: PrivateKeyKind::RingSalted,
+                owner,
+            }),
+            (None, None) => Err(RingError::ListSaltUnknown {
+                member: *owner_tag.as_bytes(),
+            }),
+        }
+    }
+
+    /// Circuit reads the union of the owner salted key and the ring salted key.
+    pub fn revocation_members(&self, owner: Address) -> Result<Vec<PrivateListMember>, RingError> {
+        self.check_nonzero_salts()?;
+        let owner_tag = Member::owner_tag(owner.as_array())?;
+        let mut members = Vec::with_capacity(2);
+        if let Some(list_salt) = &self.list_salt {
+            members.push(PrivateListMember {
+                member: Member::salted(&owner_tag, list_salt)?,
+                kind: PrivateKeyKind::OwnerSalted,
+                owner,
+            });
+        }
+        if let Some(ring_salt) = &self.ring_salt {
+            members.push(PrivateListMember {
+                member: Member::ring_salted(&owner_tag, ring_salt)?,
+                kind: PrivateKeyKind::RingSalted,
+                owner,
+            });
+        }
+        if members.is_empty() {
+            return Err(RingError::ListSaltUnknown {
+                member: *owner_tag.as_bytes(),
+            });
+        }
+        Ok(members)
+    }
+
+    fn check_nonzero_salts(&self) -> Result<(), RingError> {
+        if self.list_salt.as_ref() == Some(&[0; 32]) || self.ring_salt.as_ref() == Some(&[0; 32]) {
+            return Err(MemberError::ZeroSalt.into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OwnerPrivateClear {
+    pub owner: Address,
+    pub salts: OwnerListSalts,
+    pub lists: ListSet,
+}
+
+impl ZeroizeOnDrop for OwnerPrivateClear {}
+
 /// The writer refuses the update after `valid_until_slot`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordUpdateTarget {
@@ -395,6 +537,7 @@ pub struct WalletRecordUpdate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorityRecordUpdate {
     draft: UpdateDraft,
+    unregistered_owners: Vec<Address>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -476,6 +619,7 @@ impl AuthorityRecordUpdate {
     pub const fn new(target: RecordUpdateTarget, authority: Address) -> Self {
         Self {
             draft: UpdateDraft::new(target, authority),
+            unregistered_owners: Vec::new(),
         }
     }
 
@@ -485,6 +629,30 @@ impl AuthorityRecordUpdate {
         self.draft
             .entries
             .push(RecordUpdateEntry::Write(list_write(member, write)));
+        Ok(self)
+    }
+
+    pub fn with_owner_private_clear(mut self, clear: OwnerPrivateClear) -> Result<Self, RingError> {
+        let write = ListChange {
+            set: ListSet::EMPTY,
+            clear: clear.lists,
+        }
+        .check()
+        .map_err(|_| RingError::EmptyListWrite)?;
+        check_writer(write, Writer::Authority)?;
+        if !clear.lists.is_subset(ListSet::PRIVATE_LISTS) {
+            return Err(RingError::PrivateWritesMismatch);
+        }
+        for target in clear.salts.revocation_members(clear.owner)? {
+            self.draft
+                .entries
+                .push(RecordUpdateEntry::Write(list_write(target.member, write)));
+            if let Some(owner) = target.unregistered_owner() {
+                if !self.unregistered_owners.contains(&owner) {
+                    self.unregistered_owners.push(owner);
+                }
+            }
+        }
         Ok(self)
     }
 
@@ -506,7 +674,11 @@ impl AuthorityRecordUpdate {
         self,
         authority: &S,
     ) -> Result<SubmitRecordUpdateRequest, RingError> {
-        self.draft.sign(authority)
+        let signed = self.draft.sign(authority)?;
+        Ok(match self.unregistered_owners.is_empty() {
+            true => signed,
+            false => signed.with_unregistered_owners(&self.unregistered_owners),
+        })
     }
 }
 

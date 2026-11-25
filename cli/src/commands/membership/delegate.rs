@@ -99,7 +99,7 @@ pub fn run_move(ctx: &Context, args: DelegateMoveArgs) -> Result<()> {
         .select(ctx.ring_client()),
     )?;
     ctx.require_balance(authority.address(), SENDER_FEE_BUDGET + PAYER_FEE_BUDGET)?;
-    ctx.ring_rpc().check_serves(ctx.ring.program_id())?;
+    ctx.ring_rpc()?.check_serves(ctx.ring.program_id())?;
     let operators = Operators {
         payer: authority.as_ref(),
         signers: &[delegate.as_ref()],
