@@ -7,7 +7,7 @@ import { U64_MAX, indexerCodec, indexerScalars } from "@heliuslabs/spr/internal"
 import type { indexerTypes } from "@heliuslabs/spr/internal";
 import type { ShieldedAddress } from "@heliuslabs/spr/keypair";
 
-import { encodeMintPolicy } from "../indexer/indexer-codec.js";
+import { encodeMintPolicy, unboundedU64 } from "../indexer/indexer-codec.js";
 import type {
   AuthorityTransfer,
   AuthorityPayment,
@@ -71,7 +71,7 @@ function toU64(value: bigint, path: string): number {
 }
 
 function u64(value: unknown, path: string): bigint {
-  return wireInteger(value, path, 0n, U64_MAX);
+  return unboundedU64(value, path);
 }
 
 function text(value: unknown, path: string): string {

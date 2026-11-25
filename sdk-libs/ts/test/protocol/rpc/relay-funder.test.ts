@@ -151,6 +151,54 @@ describe("a public funder's check", () => {
     expect(await verdict(terms([{ amount: 5n }]), bytes)).toBe("Accounts");
   });
 
+  it("refuses a writable account in the ring prefix ahead of SPP", async () => {
+    const frame: RingTransactData = {
+      ...ringFrame({ rail: "confidential", inputs: 1, outputs: 2 }),
+      interfaceTransfers: [solLeg(5n)],
+    };
+    const spp = (at: number, role: AccountRole): AccountMeta => ({ address: key(at), role });
+    const accounts: AccountMeta[] = [
+      { address: await ringPolicyAddress(RING), role: READ },
+      { address: key(99), role: WRITE },
+      { address: PAYER, role: SIGN_WRITE },
+      spp(10, WRITE),
+      spp(11, READ),
+      spp(12, READ),
+      { address: await ringAuthAddress(RING), role: READ },
+      spp(13, WRITE),
+      ...frame.nullifiers.map((_, at) => spp(20 + at, WRITE)),
+      ...solGroup,
+    ];
+    const { messageBytes } = compileUnsignedTransaction({
+      feePayer: PAYER,
+      lifetime: SIZE_PROBE_LIFETIME,
+      instructions: [{ programAddress: RING, accounts, data: ringInstructionData(frame) }],
+      computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+    });
+    expect(await verdict(terms([{ amount: 5n }]), new Uint8Array(messageBytes))).toBe("Accounts");
+  });
+
+  it("refuses a writable funder signer when terms fund only SPL legs", async () => {
+    const splLeg = { kind: "splDeposit" as const, amount: 5n, splInterfaceBump: 255 };
+    const splGroup = (role: AccountRole): readonly AccountMeta[] => [
+      { address: MINT, role: READ },
+      { address: key(31), role: WRITE },
+      { address: FUNDER, role },
+      { address: key(32), role: WRITE },
+      { address: key(33), role: READ },
+    ];
+    const readonlyFunder = await message({
+      transfers: [splLeg],
+      groups: splGroup(AccountRole.READONLY_SIGNER),
+    });
+    expect(await verdict(terms([{ mint: MINT, amount: 5n }]), readonlyFunder)).toBe("Accepted");
+    const writableFunder = await message({
+      transfers: [splLeg],
+      groups: splGroup(SIGN_WRITE),
+    });
+    expect(await verdict(terms([{ mint: MINT, amount: 5n }]), writableFunder)).toBe("Accounts");
+  });
+
   it("reads terms with no leg and another signer as unrequested", async () => {
     const bytes = await message({ transfers: [solLeg(5n)], groups: solGroup });
     expect(await verdict(terms([]), bytes)).toBe("Unrequested");

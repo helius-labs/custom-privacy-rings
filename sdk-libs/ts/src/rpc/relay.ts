@@ -101,9 +101,12 @@ export class UnsignedRelay {
   }
 
   async sign(context?: RequestContext): Promise<PreparedRelay> {
-    const ownerSignature = base58.decode(
-      await this.#signer.sign(this.#messageHash, context),
-    ) as Signature;
+    const signature = await this.#signer.sign(this.#messageHash, context);
+    if (!(signature instanceof Uint8Array) || signature.length !== 64)
+      throw new RingError("RING_RELAY_OWNER_SIGNATURE", {
+        details: { length: signature instanceof Uint8Array ? signature.length : -1 },
+      });
+    const ownerSignature = base58.decode(signature) as Signature;
     return new PreparedRelay(
       { ...this.#request, intent: { ...this.#request.intent, ownerSignature } },
       this.#expected,

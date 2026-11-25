@@ -1,6 +1,7 @@
 /** The message a wallet signs for Ring RPC, checked against the request the wallet made, Rust `relay_message`. */
 import {
   type AccountMeta,
+  type AccountRole,
   type Address,
   address,
   decompileTransactionMessage,
@@ -11,6 +12,7 @@ import {
   type Instruction,
   isSignerRole,
   isWritableRole,
+  mergeRoles,
   type TransactionMessageBytes,
   type TransactionPartialSigner,
 } from "@solana/kit";
@@ -20,6 +22,7 @@ import {
   NO_CACHE_WRITES,
   SOL_INTERFACE,
   SHIELDED_POOL_CPI_AUTHORITY,
+  TRANSACTION_SIZE_LIMIT,
 } from "@heliuslabs/spr/interface";
 import { getAssociatedTokenAddress } from "@heliuslabs/spr/addresses";
 import type {
@@ -89,6 +92,7 @@ import { x25519FromU } from "../crypto/keys/x25519.js";
 import { rawJson } from "../protocol/codec/raw-json.js";
 import { N_PUBLIC_SLOTS } from "../protocol/transaction/spp.js";
 import {
+  MAX_TRANSACTION_ADDRESSES,
   MAX_TRANSACTION_INSTRUCTIONS,
   MAX_TRANSACTION_SIGNATURES,
 } from "../protocol/transaction/v1-limits.js";
@@ -207,6 +211,7 @@ interface ExpectedWithdrawal {
 export interface ExpectedDelegate {
   readonly kind: "delegate";
   readonly ring: Address;
+  readonly ringAuth: Address;
   readonly policy: Address;
   readonly feePayer: Address;
   readonly delegate: Address;
@@ -377,7 +382,7 @@ export class VerifiedRelayMessage {
       context?.signal === undefined ? undefined : { abortSignal: context.signal },
     );
     const signature = signatures?.[signer.address];
-    if (signature === undefined) throw mismatch("Signer");
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) throw mismatch("Signer");
     return base58.decode(signature) as Signature;
   }
 }
@@ -429,6 +434,7 @@ export async function expectedDelegate(
   return Object.freeze({
     kind: "delegate",
     ring: request.ring,
+    ringAuth: await ringAuthAddress(request.ring),
     policy: await ringPolicyAddress(request.ring),
     feePayer: quote.feePayer,
     delegate: request.delegate,
@@ -765,7 +771,7 @@ export function checkRelayMessage(
   if (expected.kind === "sealed") throw mismatch("Unrequested");
   const envelope = frameEnvelope(expected, signer, frameTag(expected));
   const { data, accounts } = open(envelope, snapshot);
-  checkFrame(expected, signer, data, accounts);
+  checkFrame(expected, envelope, data, accounts);
   return new VerifiedRelayMessage(VERIFIED, envelope.signer, snapshot);
 }
 
@@ -780,7 +786,8 @@ function frameEnvelope(
   signer: Address,
   tag: RingInstructionTag,
 ): Envelope {
-  if (expected.kind === "delegate")
+  if (expected.kind === "delegate") {
+    if (expected.delegate !== signer) throw mismatch("Unrequested");
     return {
       program: expected.ring,
       policy: expected.policy,
@@ -789,6 +796,7 @@ function frameEnvelope(
       signer: expected.delegate,
       setup: [],
     };
+  }
   if (expected.kind === "coSigner") {
     if (expected.signer !== signer) throw mismatch("Unrequested");
     return {
@@ -801,7 +809,11 @@ function frameEnvelope(
     };
   }
   const { terms, policy, setup } = expected;
-  if (terms.signer !== signer) throw mismatch("Unrequested");
+  const empty =
+    expected.kind === "funder"
+      ? expected.terms.legs.length === 0
+      : expected.terms.slots.length === 0 && expected.terms.nullifiers.length === 0;
+  if (terms.signer !== signer || empty) throw mismatch("Unrequested");
   return {
     program: terms.ring,
     policy,
@@ -812,54 +824,131 @@ function frameEnvelope(
   };
 }
 
+interface SettlementLeg {
+  readonly transfer: InterfaceTransfer;
+  readonly accounts: readonly AccountMeta[];
+}
+
+interface DecodedTransferAccounts {
+  readonly prefix: readonly AccountMeta[];
+  readonly forwarded: readonly AccountMeta[];
+  readonly sppHead: readonly AccountMeta[];
+  readonly ownerSigners: readonly AccountMeta[];
+  readonly settlementWindow: readonly AccountMeta[];
+  readonly settlement: readonly SettlementLeg[];
+  readonly cache: readonly AccountMeta[];
+}
+
+function decodeTransferAccounts(
+  ringAuth: Address,
+  frame: RingTransactData,
+  accounts: readonly AccountMeta[],
+): DecodedTransferAccounts {
+  const copies = accounts.flatMap((meta, at) => (meta.address === ringAuth ? [at] : []));
+  const [slot] = copies;
+  if (slot === undefined || copies.length !== 1 || slot < RING_TRANSACT_RING_CONFIG_INDEX)
+    throw mismatch("Accounts");
+  const spp = slot - RING_TRANSACT_RING_CONFIG_INDEX;
+  const prefix = accounts.slice(0, spp);
+  const forwarded = accounts.slice(spp);
+  const cacheCount = cacheAccountCount(frame.extensions.cache);
+  const settlementEnd = forwarded.length - cacheCount;
+  const settlementLen = frame.interfaceTransfers.reduce(
+    (total, transfer) => total + SETTLEMENT_ACCOUNTS[transfer.kind],
+    0,
+  );
+  const settlementStart = settlementEnd - settlementLen;
+  const trees = frame.inputTrees.kind === "one" ? 1 : 2;
+  const ownerStart = RING_TRANSACT_RING_CONFIG_INDEX + 1 + trees + frame.nullifiers.length;
+  if (settlementEnd < 0 || settlementStart < ownerStart) throw mismatch("Accounts");
+  const sppHead = forwarded.slice(0, ownerStart);
+  const ownerSigners = forwarded.slice(ownerStart, settlementStart);
+  const settlementWindow = forwarded.slice(settlementStart, settlementEnd);
+  const cache = forwarded.slice(settlementEnd);
+  let at = 0;
+  const settlement: SettlementLeg[] = frame.interfaceTransfers.map((transfer) => {
+    const count = SETTLEMENT_ACCOUNTS[transfer.kind];
+    const legAccounts = settlementWindow.slice(at, at + count);
+    at += count;
+    return { transfer, accounts: legAccounts };
+  });
+  return { prefix, forwarded, sppHead, ownerSigners, settlementWindow, settlement, cache };
+}
+
+function signsOnceReadonly(slice: readonly AccountMeta[], signer: Address): boolean {
+  const named = slice.filter((meta) => meta.address === signer);
+  return (
+    named.length === 1 &&
+    named.every((meta) => isSignerRole(meta.role) && !isWritableRole(meta.role))
+  );
+}
+
+function containsAddress(slice: readonly AccountMeta[], key: Address): boolean {
+  return slice.some((meta) => meta.address === key);
+}
+
+function checkPrefixSigner(envelope: Envelope, decoded: DecodedTransferAccounts): void {
+  if (
+    !readsOnly(envelope, decoded, "required") ||
+    !signsOnceReadonly(decoded.prefix.slice(1), envelope.signer) ||
+    containsAddress(decoded.forwarded, envelope.signer)
+  )
+    throw mismatch("Accounts");
+}
+
 function checkFrame(
   expected: ExpectedFrame,
-  signer: Address,
+  envelope: Envelope,
   data: Uint8Array,
   accounts: readonly AccountMeta[],
 ): void {
   const tag = frameTag(expected);
   if (data[0] !== tag) throw mismatch("Data");
   const frame = withMismatch("Data", () => RingTransactData.parse(data.subarray(1), expected.rail));
+  const decoded = decodeTransferAccounts(expected.ringAuth, frame, accounts);
   if (expected.kind === "funder") {
-    checkFundedLegs(expected, frame, accounts);
-    if (!readsOnly(frameEnvelope(expected, signer, tag), accounts.slice(0, 1)))
-      throw mismatch("Accounts");
+    checkFundedLegs(expected, envelope, decoded);
     return;
   }
-  if (expected.kind === "delegate") checkMoved(expected, frame, accounts);
-  else if (expected.kind === "coSigner") checkCoSignerRule(expected.rule, frame);
-  else checkOpenings(expected, frame);
-  const envelope = frameEnvelope(expected, signer, tag);
-  const named = accounts.filter((meta) => meta.address === envelope.signer);
-  const signsOnce =
-    named.length === 1 &&
-    named.every((meta) => isSignerRole(meta.role) && !isWritableRole(meta.role));
-  if (!signsOnce || !readsOnly(envelope, accounts.slice(0, 1))) throw mismatch("Accounts");
-  // The rule reads an approval and nothing else. A signature named in SPP's list also moves the
-  // key's own funds or authorizes its notes and data outputs, none of it in the rule.
-  if (expected.kind === "coSigner") {
-    const spp = ringAuthSlot(expected.ringAuth, accounts) - RING_TRANSACT_RING_CONFIG_INDEX;
-    if (accounts.slice(spp).some((meta) => meta.address === envelope.signer))
-      throw mismatch("Accounts");
+  if (expected.kind === "delegate") {
+    checkMoved(expected, frame, decoded);
+    checkPrefixSigner(envelope, decoded);
+    return;
   }
+  if (expected.kind === "coSigner") {
+    checkCoSignerRule(expected.rule, frame, envelope, decoded);
+    return;
+  }
+  checkOpenings(expected, frame, decoded);
+  checkPublicOwnerRun(envelope, decoded);
+}
+
+function checkPublicOwnerRun(envelope: Envelope, decoded: DecodedTransferAccounts): void {
+  if (
+    !readsOnly(envelope, decoded, "forbidden") ||
+    !signsOnceReadonly(decoded.ownerSigners, envelope.signer) ||
+    containsAddress(decoded.sppHead, envelope.signer) ||
+    containsAddress(decoded.settlementWindow, envelope.signer) ||
+    containsAddress(decoded.cache, envelope.signer)
+  )
+    throw mismatch("Accounts");
 }
 
 /** The proof binds each record to its slot under the key the frame publishes. */
 function checkMoved(
   expected: ExpectedDelegate,
   frame: RingTransactData,
-  accounts: readonly AccountMeta[],
+  decoded: DecodedTransferAccounts,
 ): void {
   // Owner tags alone, the message holds no blinding, a hidden frame's tags bind nothing.
   checkTransactionKey(expected.txViewingKey, frame);
   if (frame.hasData || frame.ringData) throw mismatch("Data");
-  checkWithdrawals(expected, frame, accounts);
+  checkWithdrawals(expected, decoded);
   const { envelope, recipientKeys } = openStream(expected.txViewingKey, expected.auditor, frame);
-  const records = frameRecords(expected.txViewingKey, frame, recipientKeys);
   // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
   if (expected.allowed?.countsSpends(envelope.realInputs, frame.nullifiers) === false)
     throw mismatch("SpendsUnrequestedNote");
+  const records = frameRecords(expected.txViewingKey, frame, recipientKeys);
   // 3. Each live record pays one requested payment or returns change to a requested source,
   // sealed to that owner's viewing key so the owner can open it. A ring output's record names no
   // nonzero key, the rebuilt commitment alone binds the output to the owner's nullifier key.
@@ -945,17 +1034,9 @@ function rebuilds(
   }
 }
 
-function checkWithdrawals(
-  expected: ExpectedDelegate,
-  frame: RingTransactData,
-  accounts: readonly AccountMeta[],
-): void {
-  const window = settlementWindow(frame, accounts);
+function checkWithdrawals(expected: ExpectedDelegate, decoded: DecodedTransferAccounts): void {
   const unpaid = [...expected.withdrawals];
-  let at = window.start;
-  for (const transfer of frame.interfaceTransfers) {
-    const group = accounts.slice(at, at + SETTLEMENT_ACCOUNTS[transfer.kind]);
-    at += group.length;
+  for (const { transfer, accounts: group } of decoded.settlement) {
     const paid = unpaid.findIndex((withdrawal) => {
       const wanted = withdrawal.transfer;
       return (
@@ -1063,9 +1144,12 @@ function frameRecords(
  * published owner tag of a ring output is zero, so no frame field names those outputs. The signer
  * reads every published output before it signs, no data output stays out of its view.
  */
-function checkOpenings(expected: ExpectedPublicOwner, frame: RingTransactData): void {
+function checkOpenings(
+  expected: ExpectedPublicOwner,
+  frame: RingTransactData,
+  decoded: DecodedTransferAccounts,
+): void {
   const { terms, knownNullifiers } = expected;
-  if (terms.slots.length === 0 && terms.nullifiers.length === 0) throw mismatch("Unrequested");
   // 1. One opening per published slot in slot order, a missing or repeated slot could hide an
   // output the signature approves.
   if (
@@ -1104,14 +1188,23 @@ function checkOpenings(expected: ExpectedPublicOwner, frame: RingTransactData): 
     )
   )
     throw mismatch("SpendsUnnamedNote");
+  if (
+    decoded.settlement.some(
+      ({ transfer }) => transfer.kind === "solWithdrawal" || transfer.kind === "splWithdrawal",
+    )
+  )
+    throw mismatch("Data");
 }
 
-function checkCoSignerRule(rule: CoSignerRule, frame: RingTransactData): void {
-  if (rule.kind === "exact") {
-    checkExactApproval(rule.approval, frame);
-    return;
-  }
-  if ((frame.approval & ~rule.accepts) !== 0) throw mismatch("ApprovalMaskUnaccepted");
+function checkCoSignerRule(
+  rule: CoSignerRule,
+  frame: RingTransactData,
+  envelope: Envelope,
+  decoded: DecodedTransferAccounts,
+): void {
+  if (rule.kind === "exact") checkExactApproval(rule.approval, frame);
+  else if ((frame.approval & ~rule.accepts) !== 0) throw mismatch("ApprovalMaskUnaccepted");
+  checkPrefixSigner(envelope, decoded);
 }
 
 /**
@@ -1168,50 +1261,18 @@ function checkExactApproval(exact: ExactApproval, frame: RingTransactData): void
   }
 }
 
-/** The one ring auth PDA the program admits in SPP's list. */
-function ringAuthSlot(ringAuth: Address, accounts: readonly AccountMeta[]): number {
-  const copies = accounts.flatMap((meta, at) => (meta.address === ringAuth ? [at] : []));
-  const [slot] = copies;
-  if (slot === undefined || copies.length !== 1 || slot < RING_TRANSACT_RING_CONFIG_INDEX)
-    throw mismatch("Accounts");
-  return slot;
-}
-
-/** The settlement groups end ahead of the cached selector's accounts, Rust `settlement_accounts`. */
-function settlementWindow(
-  frame: RingTransactData,
-  accounts: readonly AccountMeta[],
-): Readonly<{ start: number; end: number }> {
-  const end = accounts.length - cacheAccountCount(frame.extensions.cache);
-  const start =
-    end -
-    frame.interfaceTransfers.reduce(
-      (total, transfer) => total + SETTLEMENT_ACCOUNTS[transfer.kind],
-      0,
-    );
-  if (start < 0) throw mismatch("Accounts");
-  return { start, end };
-}
-
 /** The signature authorizes every position naming the key, so the check holds both sides. */
 function checkFundedLegs(
   expected: ExpectedFunder,
-  frame: RingTransactData,
-  accounts: readonly AccountMeta[],
+  envelope: Envelope,
+  decoded: DecodedTransferAccounts,
 ): void {
   const { terms } = expected;
-  if (terms.legs.length === 0) throw mismatch("Unrequested");
-  const spp = ringAuthSlot(expected.ringAuth, accounts) - RING_TRANSACT_RING_CONFIG_INDEX;
-  const window = settlementWindow(frame, accounts);
-  if (window.start < spp) throw mismatch("Accounts");
   // 1. The legs of the frame that take the key as funder match the terms exactly, a leg the sender
   // adds would draw funds the signer never agreed to.
   const unfunded = [...terms.legs];
   let funded = 0;
-  let at = window.start;
-  for (const transfer of frame.interfaceTransfers) {
-    const group = accounts.slice(at, at + SETTLEMENT_ACCOUNTS[transfer.kind]);
-    at += SETTLEMENT_ACCOUNTS[transfer.kind];
+  for (const { transfer, accounts: group } of decoded.settlement) {
     const position = FUNDER_POSITION[transfer.kind];
     if (position === undefined || group[position]?.address !== terms.signer) continue;
     const mintAt = MINT_POSITION[transfer.kind];
@@ -1224,8 +1285,20 @@ function checkFundedLegs(
   if (unfunded.length !== 0) throw mismatch("FunderLegs");
   // 2. Past the legs the key appears nowhere. A run entry would authorize its data outputs and spent
   // notes under one signature, the sharper authority the terms never name.
-  const named = accounts.filter((meta) => meta.address === terms.signer);
-  if (named.length !== funded || !named.every((meta) => isSignerRole(meta.role)))
+  const solFunded = terms.legs.some((leg) => leg.mint === undefined);
+  const settlementNamed = decoded.settlementWindow.filter(
+    (meta) => meta.address === envelope.signer,
+  );
+  if (
+    !readsOnly(envelope, decoded, "forbidden") ||
+    containsAddress(decoded.sppHead, envelope.signer) ||
+    containsAddress(decoded.ownerSigners, envelope.signer) ||
+    containsAddress(decoded.cache, envelope.signer) ||
+    settlementNamed.length !== funded ||
+    !settlementNamed.every(
+      (meta) => isSignerRole(meta.role) && (solFunded || !isWritableRole(meta.role)),
+    )
+  )
     throw mismatch("Accounts");
 }
 
@@ -1277,6 +1350,7 @@ interface RingInstruction {
 
 /** One canonical v1 message the quoted fee payer pays, holding only the ring instruction. */
 function open(envelope: Envelope, bytes: Uint8Array): RingInstruction {
+  if (bytes.length > TRANSACTION_SIZE_LIMIT) throw mismatch("Undecodable");
   const compiled = withMismatch("Undecodable", () =>
     getCompiledTransactionMessageDecoder().decode(bytes),
   );
@@ -1289,6 +1363,7 @@ function open(envelope: Envelope, bytes: Uint8Array): RingInstruction {
   const { header, staticAccounts, instructionHeaders } = compiled;
   if (
     !equalBytes(canonical, bytes) ||
+    staticAccounts.length > MAX_TRANSACTION_ADDRESSES ||
     new Set(staticAccounts).size !== staticAccounts.length ||
     header.numSignerAccounts > MAX_TRANSACTION_SIGNATURES ||
     header.numReadonlySignerAccounts >= header.numSignerAccounts ||
@@ -1315,11 +1390,13 @@ function open(envelope: Envelope, bytes: Uint8Array): RingInstruction {
   const leading = message.instructions.slice(0, -1);
   if (instruction === undefined) throw mismatch("Instructions");
   // In named order, an omitted create costs the signer nothing, a transfer to a missing account only fails.
+  const setupRoles = new Map<Address, AccountRole>();
   let next = 0;
   const sameSetup = leading.every((found) => {
     const accounts = found.accounts ?? [];
     for (; next < envelope.setup.length; next += 1) {
-      const named = envelope.setup[next]!;
+      const named = envelope.setup[next];
+      if (named === undefined) break;
       const namedAccounts = named.accounts ?? [];
       if (
         found.programAddress === named.programAddress &&
@@ -1327,6 +1404,13 @@ function open(envelope: Envelope, bytes: Uint8Array): RingInstruction {
         accounts.length === namedAccounts.length &&
         accounts.every((meta, at) => meta.address === namedAccounts[at]?.address)
       ) {
+        for (const meta of namedAccounts) {
+          const prior = setupRoles.get(meta.address);
+          setupRoles.set(
+            meta.address,
+            prior === undefined ? meta.role : mergeRoles(prior, meta.role),
+          );
+        }
         next += 1;
         return true;
       }
@@ -1335,24 +1419,34 @@ function open(envelope: Envelope, bytes: Uint8Array): RingInstruction {
   });
   if (!sameSetup) throw mismatch("Instructions");
   if (instruction.programAddress !== envelope.program) throw mismatch("Program");
+  const ringAccounts = instruction.accounts ?? [];
+  const inRing = new Set(ringAccounts.map((meta) => meta.address));
+  const writableSigners = header.numSignerAccounts - header.numReadonlySignerAccounts;
+  const writableEnd = staticAccounts.length - header.numReadonlyNonSignerAccounts;
+  for (const [index, pubkey] of staticAccounts.entries()) {
+    if (pubkey === envelope.feePayer || inRing.has(pubkey)) continue;
+    const signerRole = index < header.numSignerAccounts;
+    const writableRole = signerRole ? index < writableSigners : index < writableEnd;
+    const required = setupRoles.get(pubkey);
+    if (signerRole || (writableRole && (required === undefined || !isWritableRole(required))))
+      throw mismatch("Accounts");
+  }
   return {
     data: new Uint8Array(instruction.data ?? []),
-    accounts: instruction.accounts ?? [],
+    accounts: ringAccounts,
   };
 }
 
-/**
- * Rust `Envelope::reads_only`. The ring account first, then accounts that never name the signer and
- * compile writable only where the forwarded list writes the same address.
- */
+/** Compiled v1 messages share one write bit per address across prefix and forwarded. */
 function readsOnly(
   envelope: Envelope,
-  prefix: readonly AccountMeta[],
-  forwarded: readonly AccountMeta[] = [],
+  decoded: DecodedTransferAccounts,
+  signer: "required" | "forbidden",
 ): boolean {
-  const [ring, ...rest] = prefix;
+  const [ring, ...rest] = decoded.prefix;
+  const allowSigner = signer === "required";
   const forwardedWrite = (meta: AccountMeta): boolean =>
-    forwarded.some((spp) => spp.address === meta.address && isWritableRole(spp.role));
+    decoded.forwarded.some((spp) => spp.address === meta.address && isWritableRole(spp.role));
   return (
     ring !== undefined &&
     ring.address === envelope.policy &&
@@ -1360,7 +1454,8 @@ function readsOnly(
     !isWritableRole(ring.role) &&
     rest.every(
       (meta) =>
-        (!isWritableRole(meta.role) || forwardedWrite(meta)) && meta.address !== envelope.signer,
+        (!isWritableRole(meta.role) || forwardedWrite(meta)) &&
+        (allowSigner || meta.address !== envelope.signer),
     )
   );
 }

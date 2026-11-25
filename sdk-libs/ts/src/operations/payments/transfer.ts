@@ -176,7 +176,7 @@ export type RingAnonymousRelayRail = Readonly<{
 export type RingRelaySpendParams<
   P extends Omit<RingSpendParams, "amount"> = RingSpendParams,
   R extends RingRelayRail = RingRelayRail,
-> = Omit<P, "feePayer" | "cosigner" | "priorityFeeLamports"> & R;
+> = Omit<P, "feePayer" | "cosigners" | "priorityFeeLamports"> & R;
 
 /** The owner signs after reading `relay.chargedOutflows()`. */
 export type PreparedSpendRelay = PreparedRingRelay;
@@ -698,7 +698,7 @@ interface RingSpendStrategy<R> {
   ): RingSpendPlan;
 }
 
-type SpendBase = Omit<RingSpendParams, "feePayer" | "cosigner" | "priorityFeeLamports">;
+type SpendBase = Omit<RingSpendParams, "feePayer" | "cosigners" | "priorityFeeLamports">;
 
 /** The spend selected, reserved and configured, before its rail proves or relays it. */
 interface StagedSpend {

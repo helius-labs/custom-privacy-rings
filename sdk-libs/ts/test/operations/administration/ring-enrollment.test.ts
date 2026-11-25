@@ -5,10 +5,13 @@ import { readFileSync } from "node:fs";
 
 import { initializePoseidon } from "@heliuslabs/spr";
 import {
+  BN254_SCALAR_ORDER,
   Reader,
   ZERO_32,
   ZERO_NULLIFIER_PK,
   addressBytes,
+  bigIntBytes,
+  bytesToBigInt,
   encodeBase58,
   hashBytes,
 } from "@heliuslabs/spr/internal";
@@ -50,7 +53,7 @@ import {
   viewingKeyHash,
   type TrackingRecord,
 } from "../../../src/protocol/membership/tracking.js";
-import { ownerGrantPda } from "../../../src/protocol/pda/index.js";
+import { ownerGrantPda, STORAGE_PROGRAM_ID } from "../../../src/protocol/pda/index.js";
 import { registerKeyStatementHash } from "../../../src/protocol/proof/statement.js";
 import type { RegisterKeyProofRequest } from "../../../src/rpc/prover/ring.js";
 import { poseidon } from "@heliuslabs/spr/internal";
@@ -165,13 +168,17 @@ describe("tracking accounts", () => {
     );
   });
 
-  it("decodes an owner grant, only one means active", () => {
+  it("decodes an owner grant and rejects non-boolean active bytes", () => {
     const data = new Uint8Array(2);
     data[0] = 5;
     data[1] = 1;
     expect(decodeOwnerGrant(data).active).toBe(true);
     data[1] = 0;
     expect(decodeOwnerGrant(data).active).toBe(false);
+    for (const bad of [2, 255]) {
+      data[1] = bad;
+      expect(() => decodeOwnerGrant(data)).toThrow("RING_TRACKING_INVALID");
+    }
   });
 });
 
@@ -223,6 +230,56 @@ describe("tracking openings", () => {
     expect(() =>
       verifyTrackingOpening({ kind: "present", record, path }, root, field(0x06)),
     ).toThrow("RING_TRACKING_INVALID");
+  });
+  it("refuses out-of-range members and non-canonical field elements in tracking openings", () => {
+    const low = { ...TRACKING_SENTINEL, next: field(0x04) };
+    const { root, path } = single(low);
+    const wrappedNext = bigIntBytes(bytesToBigInt(low.next) + BN254_SCALAR_ORDER) as Bytes32;
+    expect(() =>
+      verifyTrackingOpening(
+        { kind: "absent", low: { ...low, next: wrappedNext }, path },
+        root,
+        field(0x05),
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        code: "RING_TRACKING_INVALID",
+        details: { reason: "NonCanonicalField" },
+      }),
+    );
+    const nonCanonical = bigIntBytes(BN254_SCALAR_ORDER) as Bytes32;
+    for (const member of [ZERO_32, bigIntBytes(BN254_SCALAR_ORDER - 1n) as Bytes32, nonCanonical]) {
+      expect(() =>
+        verifyTrackingOpening({ kind: "absent", low: TRACKING_SENTINEL, path }, root, member),
+      ).toThrow("RING_MEMBER_REGISTRY_INVALID");
+    }
+    for (const tampered of [
+      { ...low, nullifierPk: nonCanonical },
+      { ...low, ctHash: nonCanonical },
+      { ...low, listTag: nonCanonical },
+      { ...low, viewingHash: nonCanonical },
+    ]) {
+      expect(() =>
+        verifyTrackingOpening({ kind: "absent", low: tampered, path }, root, field(0x02)),
+      ).toThrow(
+        expect.objectContaining({
+          code: "RING_TRACKING_INVALID",
+          details: { reason: "NonCanonicalField" },
+        }),
+      );
+    }
+    const badPath = {
+      ...path,
+      siblings: [[nonCanonical, ZERO_32, ZERO_32], ...path.siblings.slice(1)],
+    };
+    expect(() =>
+      verifyTrackingOpening({ kind: "absent", low, path: badPath }, root, field(0x02)),
+    ).toThrow(
+      expect.objectContaining({
+        code: "RING_TRACKING_INVALID",
+        details: { reason: "NonCanonicalField" },
+      }),
+    );
   });
 });
 
@@ -371,13 +428,19 @@ const SALT = Uint8Array.of(0, ...new Uint8Array(31).fill(9)) as Bytes32;
 describe("proveEnrollment", () => {
   const auditor = X25519Keypair.generate();
 
-  function registryAccount(ringId: Bytes32): { data: Uint8Array } {
+  function registryAccount(
+    ringId: Bytes32,
+    owner: Address = STORAGE_PROGRAM_ID,
+  ): {
+    owner: Address;
+    data: Uint8Array;
+  } {
     const data = new Uint8Array(6250);
     data[0] = 3;
     data.set(ringId, 33);
     data.set(auditor.publicKey().toBytes(), 65);
     new DataView(data.buffer).setBigUint64(98, 1n, true);
-    return { data };
+    return { owner, data };
   }
 
   it("seals the ring key to the registry's auditor and states ring, member and list tag", async () => {
@@ -439,6 +502,16 @@ describe("proveEnrollment", () => {
         prover: { proveRing } as never,
       }),
     ).rejects.toMatchObject({ code: "RING_TRACKING_INVALID" });
+    await expect(
+      proveEnrollment({
+        holder,
+        owner: OWNER,
+        trackingRegistry: REGISTRY,
+        listSalt: SALT,
+        client: { getAccount: async () => registryAccount(field(0x1e), OWNER) } as never,
+        prover: { proveRing } as never,
+      }),
+    ).rejects.toMatchObject({ code: "RING_TRACKING_INVALID", details: { reason: "owner" } });
     expect(proveRing).not.toHaveBeenCalled();
   });
 

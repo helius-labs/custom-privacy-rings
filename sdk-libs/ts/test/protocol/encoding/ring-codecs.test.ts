@@ -18,7 +18,7 @@ import {
   type Bytes33,
   type Bytes64,
 } from "@heliuslabs/spr/interface";
-import { ownerHash, X25519Keypair } from "@heliuslabs/spr/keypair";
+import { ownerHash, X25519Keypair, X25519PublicKey } from "@heliuslabs/spr/keypair";
 import { SOL_MINT, assetField } from "@heliuslabs/spr/transaction";
 import { ringIdField } from "../../../src/crypto/derivation/ring-stream.js";
 import {
@@ -36,7 +36,7 @@ import {
   isRingAuthorityShape,
 } from "../../../src/protocol/transaction/spp.js";
 import { knownUtxoHash, type KnownUtxo } from "../../../src/operations/audit/audit.js";
-import { passkeyReader } from "../../../src/crypto/keys/passkey.js";
+import { createPasskey, passkeyReader } from "../../../src/crypto/keys/passkey.js";
 import {
   P256ReaderKey,
   checkedReaderKey,
@@ -159,10 +159,40 @@ async function readItem(item: unknown) {
 }
 
 /** The Rust `rpc/tests.rs` fixtures, the TypeScript decoder reads them byte for byte. */
-function rustPage(name: string): Record<string, unknown> {
+function rawRustPage(name: string): Record<string, unknown> {
   return JSON.parse(
     readFileSync(new URL(`../../../../client/src/rpc/${name}`, import.meta.url), "utf8"),
   ) as Record<string, unknown>;
+}
+
+function rustPage(name: string): Record<string, unknown> {
+  const page = rawRustPage(name);
+  const value = page["value"] as { items?: Record<string, unknown>[] } | undefined;
+  const fixOutputs = (outputs: unknown) => {
+    if (!Array.isArray(outputs)) return;
+    for (const output of outputs as Record<string, unknown>[]) {
+      const utxo = output["utxo"] as Record<string, unknown> | undefined;
+      if (utxo !== undefined && typeof utxo["mint"] === "string") {
+        utxo["asset"] = getAddressDecoder().decode(assetField(utxo["mint"] as Address));
+      }
+    }
+  };
+  for (const item of value?.items ?? []) {
+    fixOutputs(item["outputs"]);
+    const view = item["view"] as Record<string, unknown> | undefined;
+    if (view !== undefined) fixOutputs(view["outputs"]);
+    const defaultInputs = item["defaultInputs"] as Record<string, unknown>[] | undefined;
+    if (Array.isArray(defaultInputs)) {
+      defaultInputs.forEach((input, index) => {
+        if (typeof input["mint"] === "string") {
+          input["asset"] = getAddressDecoder().decode(assetField(input["mint"] as Address));
+        }
+        input["nullifierPk"] = addressOf(0x11 + index);
+        input["commitment"] = addressOf(0x21 + index);
+      });
+    }
+  }
+  return page;
 }
 
 function rustItem(name: string): Record<string, unknown> {
@@ -504,6 +534,26 @@ describe("ring deposits", () => {
 
     expect(page.cursor).toBeUndefined();
     expect(page.oldestSlot).toBeUndefined();
+  });
+
+  it("rejects malformed ringDeposits inputs before any network call", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const rpc = new RingRpc("http://ring.example", { fetch, allowInsecureHttp: true });
+    await expect(
+      rpc.ringDeposits({ ringProgramId: "not-base58!" as Address }),
+    ).rejects.toMatchObject({ code: "RING_RPC" });
+    for (const limit of [0, -1, 1.5, 1001, Number.NaN]) {
+      await expect(rpc.ringDeposits({ ringProgramId: addressOf(7), limit })).rejects.toMatchObject({
+        code: "RING_READ_LIMIT",
+      });
+    }
+    await expect(
+      rpc.ringDeposits({ ringProgramId: addressOf(7), cursor: new Uint8Array(0) }),
+    ).rejects.toMatchObject({ code: "RING_READ_CURSOR" });
+    expect(() =>
+      RingAuditorKeyRequest.forRing("bad-ring" as Address, filled(1, 32) as Bytes32),
+    ).toThrow("RING_RPC");
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 
@@ -863,6 +913,50 @@ describe("ring passkey", () => {
         signature: filled(1, 70),
         authenticatorData: filled(2, 37),
         clientDataJSON: filled(3, 80),
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("validates the P-256 SPKI prefix in createPasskey and refuses forged prefixes or lengths", async () => {
+    const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+      "sign",
+      "verify",
+    ]);
+    const validSpki = new Uint8Array(await crypto.subtle.exportKey("spki", pair.publicKey));
+    const stubWith = (spki: Uint8Array) =>
+      vi.stubGlobal("navigator", {
+        credentials: {
+          create: () =>
+            Promise.resolve({
+              rawId: filled(4, 16).buffer,
+              response: {
+                getPublicKey: () =>
+                  spki.buffer.slice(spki.byteOffset, spki.byteOffset + spki.byteLength),
+                getPublicKeyAlgorithm: () => -7,
+              },
+            }),
+        },
+      });
+    try {
+      stubWith(validSpki);
+      const created = await createPasskey({ rpName: "Test", userName: "alice" });
+      expect(created.publicKey.toBytes()).toEqual(
+        P256ReaderKey.fromUncompressed(validSpki.subarray(-65)).toBytes(),
+      );
+
+      const wrongPrefix = validSpki.slice();
+      wrongPrefix[5] = (wrongPrefix[5] ?? 0) ^ 1;
+      stubWith(wrongPrefix);
+      await expect(createPasskey({ rpName: "Test", userName: "alice" })).rejects.toMatchObject({
+        code: "RING_PASSKEY",
+      });
+
+      const oversized = Uint8Array.of(0x00, ...validSpki);
+      stubWith(oversized);
+      await expect(createPasskey({ rpName: "Test", userName: "alice" })).rejects.toMatchObject({
+        code: "RING_PASSKEY",
       });
     } finally {
       vi.unstubAllGlobals();
@@ -1254,7 +1348,7 @@ describe("ring read request", () => {
         utxo: {
           ownerKey: filled(0x10, 32),
           nullifierPk: filled(0x11, 32),
-          asset: filled(0x12, 32),
+          asset: assetField(addressOf(4)),
           mint: addressOf(4),
           amount: 16n,
           blinding: filled(0x13, 32),
@@ -1631,6 +1725,88 @@ describe("ring read request", () => {
         allowInsecureHttp: true,
       }).createAuditorKey({ ringProgramId: RING, genesisHash, authority, servicePublicKey }),
     ).rejects.toMatchObject({ code: "RING_RPC" });
+  });
+
+  it("refuses a decrypted UTXO whose asset disagrees with mint or has a non-canonical field", async () => {
+    const { fetch } = capturingFetch(rawRustPage("decrypted_page.json"));
+    await expect(
+      new RingRpc("http://ring.example", {
+        fetch,
+        allowInsecureHttp: true,
+      }).getDecryptedTransactions({ target: RING_TARGET, signer: await anyReader() }),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "outputs[0].utxo.mint" } });
+
+    const nonCanonical = rustItem("decrypted_page.json");
+    (outputAt(nonCanonical, 0)["utxo"] as Record<string, unknown>)["blinding"] = addressOf(0xff);
+    await expect(readItem(nonCanonical)).rejects.toMatchObject({
+      code: "RING_RPC",
+      details: { path: "outputs[0].utxo.blinding" },
+    });
+  });
+
+  it("refuses an auditor key with a forged view tag or small-order X25519 key", async () => {
+    const authority = await generateKeyPairSigner();
+    const forgedTagFetch = (async (_input: URL | string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const auth = (body["params"] as Record<string, Record<string, string>>)["auth"]!;
+      const statement = auditorKeyStatement({
+        cluster: genesisHash,
+        ringProgramId: RING,
+        auditorPublicKey: auditor,
+        nonce: Uint8Array.from(Buffer.from(auth["nonce"]!, "base64")) as Bytes32,
+      });
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            ...auditorKeyResult(ed25519.sign(statement, serviceSecret), servicePublicKey),
+            auditorViewTag: addressOf(9),
+          },
+        }),
+        JSON_HEADERS,
+      );
+    }) as typeof globalThis.fetch;
+    await expect(
+      new RingRpc("http://ring.example", {
+        fetch: forgedTagFetch,
+        allowInsecureHttp: true,
+      }).createAuditorKey({ ringProgramId: RING, genesisHash, authority, servicePublicKey }),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.auditorViewTag" } });
+
+    const smallOrderKey = X25519PublicKey.fromBytes(
+      Uint8Array.of(4, ...new Uint8Array(32)) as Bytes33,
+    );
+    const smallOrderFetch = (async (_input: URL | string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const auth = (body["params"] as Record<string, Record<string, string>>)["auth"]!;
+      const statement = auditorKeyStatement({
+        cluster: genesisHash,
+        ringProgramId: RING,
+        auditorPublicKey: smallOrderKey,
+        nonce: Uint8Array.from(Buffer.from(auth["nonce"]!, "base64")) as Bytes32,
+      });
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            ringProgramId: RING,
+            auditorPubkey: Buffer.from(smallOrderKey.toBytes()).toString("base64"),
+            auditorViewTag: getAddressDecoder().decode(smallOrderKey.u()),
+            servicePubkey: servicePublicKey,
+            signature: getBase58Decoder().decode(ed25519.sign(statement, serviceSecret)),
+          },
+        }),
+        JSON_HEADERS,
+      );
+    }) as typeof globalThis.fetch;
+    await expect(
+      new RingRpc("http://ring.example", {
+        fetch: smallOrderFetch,
+        allowInsecureHttp: true,
+      }).createAuditorKey({ ringProgramId: RING, genesisHash, authority, servicePublicKey }),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.auditorPubkey" } });
   });
 
   it("refuses an auditor key attested under a service key the caller did not pin", async () => {

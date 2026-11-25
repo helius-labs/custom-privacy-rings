@@ -49,9 +49,11 @@
     "check:dist": "tsc -p tsconfig.dist.json"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.2.0",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
-    "@solana-program/system": "^0.14.1"
+    "@solana-program/system": "^0.14.1",
+    "@solana-program/token": "^0.16.1"
   },
   "devDependencies": {
     "@heliuslabs/spr": "file:../../zolana/sdk-libs/ts",

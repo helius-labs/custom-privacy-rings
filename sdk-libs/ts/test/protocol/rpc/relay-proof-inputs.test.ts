@@ -6,12 +6,23 @@ import {
   getBase64Encoder,
   type Address,
 } from "@solana/kit";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
-import { Writer, addressBytes, splInterfaceWithBump } from "@heliuslabs/spr/internal";
-import { TransactWithdrawal, type Bytes32 } from "@heliuslabs/spr/interface";
-import { ShieldedKeypair, SigningKey, ViewingKey } from "@heliuslabs/spr/keypair";
+import {
+  Writer,
+  ZERO_NULLIFIER_PK,
+  addressBytes,
+  splInterfaceWithBump,
+} from "@heliuslabs/spr/internal";
+import { TransactWithdrawal, type Bytes31, type Bytes32 } from "@heliuslabs/spr/interface";
+import {
+  NullifierKey,
+  ShieldedAddress,
+  ShieldedKeypair,
+  SigningKey,
+  ViewingKey,
+} from "@heliuslabs/spr/keypair";
 import {
   AssetRegistry,
   ProofInputUtxo,
@@ -168,6 +179,12 @@ describe("relay proof inputs", () => {
     badTag[badTag.length - 1] = 2;
     await expect(decodeRelayProofInputs(badTag, new AssetRegistry())).rejects.toMatchObject({
       code: "RING_RELAY_PROOF_INPUTS",
+    });
+    const badWideOwners = wire.slice();
+    badWideOwners[badWideOwners.length - 3] = 2;
+    await expect(decodeRelayProofInputs(badWideOwners, new AssetRegistry())).rejects.toMatchObject({
+      code: "RING_RELAY_PROOF_INPUTS",
+      details: { reason: "wideOwners" },
     });
 
     const anonymous = proofInputs.rail as Extract<RelayRail, { kind: "anonymous" }>;
@@ -326,6 +343,53 @@ describe("relay proof inputs", () => {
       assets: new AssetRegistry(),
     });
     expect(encoded).toEqual(new Uint8Array(getBase64Encoder().encode(vector.proofInputs)));
+
+    const zeroSender = ShieldedAddress.fromPublicKeys(
+      sender.signingPublicKey,
+      ZERO_NULLIFIER_PK as Bytes32,
+      sender.viewingPublicKey,
+    );
+    const zeroNullifierKey = NullifierKey.fromSecret(new Uint8Array(31) as Bytes31);
+    expect(() =>
+      encodeRelayMergeInputs({
+        ringProgramId: ring,
+        sender: zeroSender,
+        nullifierKey: zeroNullifierKey,
+        inputs: [],
+        leafIndexes: [],
+        assets: new AssetRegistry(),
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        code: "RING_RELAY_PROOF_INPUTS",
+        details: { reason: "nullifierKey" },
+      }),
+    );
+  });
+
+  it("destroys allocated keys when decodeRelayProofInputs fails partway through", async () => {
+    const { wire } = anonymousPayload();
+    const withCoOwnerAndBadBlinder = Uint8Array.of(
+      ...wire.subarray(0, -2),
+      1,
+      ...filled(41, 32),
+      ...filled(42, 31),
+      2,
+    );
+    const destroyNullifier = vi.spyOn(NullifierKey.prototype, "destroy");
+    const destroyViewing = vi.spyOn(ViewingKey.prototype, "destroy");
+    try {
+      await expect(
+        decodeRelayProofInputs(withCoOwnerAndBadBlinder, new AssetRegistry()),
+      ).rejects.toMatchObject({
+        code: "RING_RELAY_PROOF_INPUTS",
+      });
+      expect(destroyNullifier).toHaveBeenCalledTimes(2);
+      expect(destroyViewing).toHaveBeenCalledTimes(1);
+    } finally {
+      destroyNullifier.mockRestore();
+      destroyViewing.mockRestore();
+    }
   });
 
   it("reads and writes the Rust deposit rail vector byte for byte", async () => {

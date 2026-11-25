@@ -604,6 +604,15 @@ describe("relay transfer terms", () => {
       setup: [{ ...setup, owner: randomAddress() }],
     });
     expect(refusal(() => other.verify(payeeAddress))).toBe("Instructions");
+
+    const escalatedSetup: Instruction = {
+      ...create,
+      accounts: (create.accounts ?? []).map((meta) =>
+        meta.address === setup.owner ? { ...meta, role: AccountRole.WRITABLE } : meta,
+      ),
+    };
+    const escalated = await framed([escalatedSetup, instruction], { ...terms, setup: [setup] });
+    expect(refusal(() => escalated.verify(payeeAddress))).toBe("Accounts");
   });
 
   it("writes and reads the terms as the Rust vector does", () => {

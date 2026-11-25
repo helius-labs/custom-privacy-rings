@@ -190,14 +190,71 @@ describe("getListSalt", () => {
     expect(JSON.stringify(encodeGetListSaltRequest(request))).toBe(vector.wire);
   });
 
-  it("reads a salt and an owner with no row", async () => {
+  it("reads a salt and an owner with no row, preferring listSalt and rejecting non-canonical salts", async () => {
     const { request } = await signed();
     const salt = new Uint8Array(32).fill(9);
+    const ringSalt = new Uint8Array(32).fill(7);
     const text = getBase58Decoder().decode(salt);
+    const ringText = getBase58Decoder().decode(ringSalt);
     await expect(answering({ result: { listSalt: text } }).getListSalt(request)).resolves.toEqual(
       salt,
     );
+    await expect(
+      answering({ result: { ringSalt: ringText } }).getListSalt(request),
+    ).resolves.toEqual(ringSalt);
+    await expect(
+      answering({ result: { listSalt: text, ringSalt: ringText } }).getListSalt(request),
+    ).resolves.toEqual(salt);
     await expect(answering({ result: {} }).getListSalt(request)).resolves.toBeUndefined();
+    const nonCanonical = getBase58Decoder().decode(new Uint8Array(32).fill(0xff));
+    await expect(
+      answering({ result: { listSalt: nonCanonical } }).getListSalt(request),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.listSalt" } });
+    await expect(
+      answering({ result: { ringSalt: nonCanonical } }).getListSalt(request),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.ringSalt" } });
+    await expect(
+      answering({ result: { listSalt: text, ringSalt: nonCanonical } }).getListSalt(request),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.ringSalt" } });
+    await expect(
+      answering({ result: { listSalt: nonCanonical, ringSalt: ringText } }).getListSalt(request),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.listSalt" } });
+    expect(() => RingListSaltRequest.forOwner(target, "bad-owner" as Address)).toThrow("RING_RPC");
+  });
+
+  it("keeps both owner and ring salts in getOwnerListSalts without discarding either", async () => {
+    const { request } = await signed();
+    const listSalt = new Uint8Array(32).fill(9);
+    const ringSalt = new Uint8Array(32).fill(7);
+    const listText = getBase58Decoder().decode(listSalt);
+    const ringText = getBase58Decoder().decode(ringSalt);
+
+    const both = await answering({
+      result: { listSalt: listText, ringSalt: ringText },
+    }).getOwnerListSalts(request);
+    expect(both).toEqual({ listSalt, ringSalt });
+    expect(Object.isFrozen(both)).toBe(true);
+
+    const ownerOnly = await answering({ result: { listSalt: listText } }).getOwnerListSalts(
+      request,
+    );
+    expect(ownerOnly).toEqual({ listSalt });
+    expect("ringSalt" in ownerOnly).toBe(false);
+
+    const ringOnly = await answering({ result: { ringSalt: ringText } }).getOwnerListSalts(request);
+    expect(ringOnly).toEqual({ ringSalt });
+    expect("listSalt" in ringOnly).toBe(false);
+
+    const empty = await answering({ result: {} }).getOwnerListSalts(request);
+    expect(empty).toEqual({});
+    expect(Object.keys(empty)).toEqual([]);
+
+    const nonCanonical = getBase58Decoder().decode(new Uint8Array(32).fill(0xff));
+    await expect(
+      answering({ result: { listSalt: listText, ringSalt: nonCanonical } }).getOwnerListSalts(
+        request,
+      ),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.ringSalt" } });
   });
 
   it("names -32226 as a signer writing no salted list", async () => {
@@ -255,12 +312,20 @@ describe("prepareAuthorityTransfer", () => {
       (array as Uint8Array).fill(4);
       return array;
     });
-    const signed = await RingAuthorityTransferRequest.forTransfer(target, transfer)
+    const key = ViewingKey.fromBytes(new Uint8Array(32).fill(6) as Bytes32).secretBytes();
+    const expectedKey = key.slice();
+    const request = RingAuthorityTransferRequest.forTransfer(target, transfer)
       .at(1_700_000_000n)
-      .withTxViewingKey(ViewingKey.fromBytes(new Uint8Array(32).fill(6) as Bytes32).secretBytes())
-      .sign(delegate)
-      .finally(() => nonce.mockRestore());
+      .withTxViewingKey(key);
+    key.fill(0);
+    const signed = await request.sign(delegate).finally(() => nonce.mockRestore());
+    expect(signed.txViewingKey).toEqual(expectedKey);
     expect(JSON.stringify(encodePrepareAuthorityTransferRequest(signed))).toBe(vector.wire);
+    expect(() =>
+      RingAuthorityTransferRequest.forTransfer(target, transfer).withTxViewingKey(
+        new Uint8Array(31) as Bytes32,
+      ),
+    ).toThrow("RING_RPC");
   });
 });
 
@@ -748,14 +813,25 @@ describe("co-sign", () => {
     }
   });
 
-  it("sends each method and names a refusal", async () => {
+  it("sends each method, verifies co-signatures, and names a refusal", async () => {
     const sent: unknown[] = [];
-    const signer = filled(8, 32) as Address;
-    const signature = filled(6, 64) as Signature;
+    const coSignerSecret = new Uint8Array(32).fill(8);
+    const signer = base58.decode(ed25519.getPublicKey(coSignerSecret)) as Address;
     const message = "AwQF" as indexerTypes.Base64String;
+    const messageBytes = Uint8Array.from(Buffer.from(message, "base64"));
+    const signature = base58.decode(ed25519.sign(messageBytes, coSignerSecret)) as Signature;
     await expect(
       answering({ result: { signer, signature } }, sent).coSignTransaction({ ring, message }),
     ).resolves.toEqual({ signer, signature });
+    await expect(
+      answering({ result: { signer, signature: filled(6, 64) as Signature } }).coSignTransaction({
+        ring,
+        message,
+      }),
+    ).rejects.toMatchObject({
+      code: "RING_RPC",
+      details: { method: "coSignTransaction", reason: "invalid cosignature" },
+    });
     const edit = {
       ring,
       edit: "set",
@@ -814,6 +890,40 @@ describe("ring rpc refusals", () => {
 
   it("names -32216 as a relayed message past one transaction", () => {
     expect(ringRpcRefusalName(-32216)).toBe("oversized");
+  });
+
+  it("names -32261 as records creation limit refusal without colliding with -32260", async () => {
+    expect(ringRpcRefusalName(-32260)).toBe("recordsNotCreated");
+    expect(ringRpcRefusalName(-32261)).toBe("recordsCreationLimit");
+    const authority = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(8));
+    const request = await signCreateRecordsRegistryRequest(
+      {
+        cluster: new Uint8Array(32).fill(1) as Bytes32,
+        service: filled(2, 32) as Address,
+        ringProgramId: filled(3, 32) as Address,
+      },
+      authority,
+    );
+    const rpc = new RingRpc("http://ring.example", {
+      allowInsecureHttp: true,
+      fetch: (async () =>
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            error: { code: -32261, message: "records registry creation limit is reached" },
+          }),
+          { headers: { "content-type": "application/json" } },
+        )) as typeof globalThis.fetch,
+    });
+    await expect(rpc.createRecordsRegistry(request)).rejects.toMatchObject({
+      code: "RING_RPC_REFUSED",
+      details: {
+        method: "createRecordsRegistry",
+        refusal: "recordsCreationLimit",
+        rpcCode: -32261,
+      },
+    });
   });
 
   it("names -32180 to -32187 as the enrollment refusals and frees the relayed enrollment codes", () => {

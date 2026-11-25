@@ -4,6 +4,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   createSignableMessage,
   getBase58Decoder,
+  getBase58Encoder,
   getBase64Decoder,
   type MessagePartialSigner,
 } from "@solana/kit";
@@ -39,6 +40,7 @@ import { MAX_MERGE_INPUTS } from "@heliuslabs/spr/interface";
 import { X25519PublicKey, KeypairError, NullifierKey } from "@heliuslabs/spr/keypair";
 import type { Bytes31 } from "@heliuslabs/spr/keypair";
 import { ringIdField } from "../crypto/derivation/ring-stream.js";
+import { isSmallOrder } from "../crypto/keys/x25519.js";
 import {
   snapshotPages,
   SNAPSHOT_CURSOR_LENGTH,
@@ -55,6 +57,7 @@ import {
   type OutputPayloadErrorKind,
 } from "../operations/audit/audit.js";
 import { RingError } from "../protocol/error.js";
+import type { OwnerListSalts } from "../protocol/membership/private-list.js";
 import { decodeRingRpcHealth, type RingRpcHealth } from "../protocol/ring-rpc/health.js";
 import { ringRecordsAddress } from "../protocol/pda/index.js";
 import {
@@ -141,6 +144,7 @@ import type { RelayLeg } from "../protocol/ring-rpc/relay-proof-inputs.js";
 type Hash = indexerTypes.Hash;
 
 const base58Decoder = getBase58Decoder();
+const base58Encoder = getBase58Encoder();
 const base64Decoder = getBase64Decoder();
 const encoder = new TextEncoder();
 
@@ -500,7 +504,7 @@ export class RingAuthorityTransferRequest {
 
   /** A fresh key when absent. */
   withTxViewingKey(txViewingKey: Bytes32): this {
-    this.#txViewingKey = txViewingKey;
+    this.#txViewingKey = requestBytes(txViewingKey, 32, "txViewingKey") as Bytes32;
     return this;
   }
 
@@ -521,7 +525,10 @@ export class RingAuthorityTransferRequest {
       ring: this.#target.ringProgramId,
       delegate: delegate.address,
       transfer: this.#transfer,
-      txViewingKey: this.#txViewingKey ?? freshTxViewingKey(),
+      txViewingKey:
+        this.#txViewingKey === undefined
+          ? freshTxViewingKey()
+          : (this.#txViewingKey.slice() as Bytes32),
       timestamp,
       nonce: base64Decoder.decode(nonce) as indexerTypes.Base64String,
       signature: base58Decoder.decode(signature) as Signature,
@@ -566,7 +573,7 @@ export class RingListSaltRequest {
 
   private constructor(target: RingReadTarget, owner: Address) {
     this.#target = checkedReadTarget(target);
-    this.#owner = owner;
+    this.#owner = requestAddress(owner, "owner");
   }
 
   static forOwner(target: RingReadTarget, owner: Address): RingListSaltRequest {
@@ -1149,7 +1156,7 @@ export class RingAuditorKeyRequest {
 
   static forRing(ringProgramId: Address, genesisHash: Bytes32): RingAuditorKeyRequest {
     return new RingAuditorKeyRequest(
-      ringProgramId,
+      requestAddress(ringProgramId, "ringProgramId"),
       copyBytes(genesisHash, 32, "genesisHash") as Bytes32,
     );
   }
@@ -1602,9 +1609,8 @@ export class RingRpc {
       ),
       "result",
     );
-    const key = base64(wire["auditorPubkey"], "result.auditorPubkey");
-    if (key.length !== 33) throw invalid("result.auditorPubkey");
-    const auditorPublicKey = X25519PublicKey.fromBytes(key as Bytes33);
+    const auditorPublicKey = x25519Key(wire["auditorPubkey"], "result.auditorPubkey");
+    if (isSmallOrder(auditorPublicKey)) throw invalid("result.auditorPubkey");
     if (address(wire["servicePubkey"], "result.servicePubkey") !== pinned) {
       throw new RingError("RING_RPC", {
         details: {
@@ -1616,16 +1622,21 @@ export class RingRpc {
     const signature = base58(wire["signature"], "result.signature");
     const ring = address(wire["ringProgramId"], "result.ringProgramId");
     if (ring !== checked.ringProgramId) throw invalid("result.ringProgramId");
-    const attested = ed25519.verify(
-      signature,
-      auditorKeyStatement({
-        cluster: checked.genesisHash,
-        ringProgramId: ring,
-        auditorPublicKey,
-        nonce: checked.nonce,
-      }),
-      addressBytes(pinned, "servicePublicKey"),
-    );
+    const auditorViewTag = hash(wire["auditorViewTag"], "result.auditorViewTag");
+    if (!equalBytes(auditorViewTag, auditorPublicKey.u())) throw invalid("result.auditorViewTag");
+    const attested =
+      signature.length === 64 &&
+      ed25519.verify(
+        signature,
+        auditorKeyStatement({
+          cluster: checked.genesisHash,
+          ringProgramId: ring,
+          auditorPublicKey,
+          nonce: checked.nonce,
+        }),
+        addressBytes(pinned, "servicePublicKey"),
+        { zip215: false },
+      );
     if (!attested) {
       throw new RingError("RING_RPC", {
         details: {
@@ -1637,7 +1648,7 @@ export class RingRpc {
     return Object.freeze({
       ringProgramId: ring,
       auditorPublicKey,
-      auditorViewTag: hash(wire["auditorViewTag"], "result.auditorViewTag"),
+      auditorViewTag,
       servicePublicKey: pinned,
       signature,
     });
@@ -1655,13 +1666,23 @@ export class RingRpc {
     }>,
     context?: RequestContext,
   ): Promise<RingDepositsPage> {
+    const ringProgramId = requestAddress(input.ringProgramId, "ringProgramId");
+    if (
+      input.limit !== undefined &&
+      (typeof input.limit !== "number" ||
+        !Number.isSafeInteger(input.limit) ||
+        input.limit < 1 ||
+        input.limit > 1000)
+    )
+      throw new RingError("RING_READ_LIMIT", { details: { limit: String(input.limit) } });
+    const cursorBytes = input.cursor === undefined ? undefined : checkedReadCursor(input.cursor);
     const wire = record(
       await this.#call(
         "ringDeposits",
         {
-          ringProgramId: input.ringProgramId,
+          ringProgramId,
           ...(input.limit === undefined ? {} : { limit: input.limit }),
-          ...(input.cursor === undefined ? {} : { cursor: base64Decoder.decode(input.cursor) }),
+          ...(cursorBytes === undefined ? {} : { cursor: base64Decoder.decode(cursorBytes) }),
         },
         context,
       ),
@@ -1675,10 +1696,10 @@ export class RingRpc {
           const deposit = record(entry, "result.deposits");
           return Object.freeze({
             signature: signature(deposit["signature"], "deposits.signature"),
-            slot: integer(deposit["slot"], "deposits.slot"),
+            slot: u64(deposit["slot"], "deposits.slot"),
             depositor: address(deposit["depositor"], "deposits.depositor"),
             asset: address(deposit["asset"], "deposits.asset"),
-            amount: integer(deposit["amount"], "deposits.amount"),
+            amount: u64(deposit["amount"], "deposits.amount"),
           });
         }),
       ),
@@ -1687,19 +1708,23 @@ export class RingRpc {
         : { cursor: base64(cursor, "result.cursor") }),
       ...(oldestSlot === undefined || oldestSlot === null
         ? {}
-        : { oldestSlot: integer(oldestSlot, "result.oldestSlot") }),
+        : { oldestSlot: u64(oldestSlot, "result.oldestSlot") }),
     });
   }
 
   /** Whether this service can open the ring, before a read is attempted. */
   async ringStatus(ringProgramId: Address, context?: RequestContext): Promise<RingStatus> {
-    const wire = record(await this.#call("ringStatus", { ringProgramId }, context), "result");
+    const expectedRing = requestAddress(ringProgramId, "ringProgramId");
+    const wire = record(
+      await this.#call("ringStatus", { ringProgramId: expectedRing }, context),
+      "result",
+    );
     const state = string(wire["state"], "result.state");
     if (state !== "served" && state !== "foreignAuditor" && state !== "uninitialized") {
       throw invalid("result.state");
     }
     const ring = address(wire["ringProgramId"], "result.ringProgramId");
-    if (ring !== ringProgramId) throw invalid("result.ringProgramId");
+    if (ring !== expectedRing) throw invalid("result.ringProgramId");
     const config = wire["configAuditorPubkey"];
     const activation = wire["activation"];
     return Object.freeze({
@@ -1775,13 +1800,27 @@ export class RingRpc {
     request: CoSignTransactionRequest,
     context?: RequestContext,
   ): Promise<CoSignTransactionResponse> {
-    return decodeCoSignTransactionResponse(
+    const response = decodeCoSignTransactionResponse(
       await this.#call(
         RingRpcMethod.coSignTransaction,
         encodeCoSignTransactionRequest(request),
         context,
       ),
     );
+    const message = indexerScalars.base64Bytes(request.message);
+    const sig = new Uint8Array(base58Encoder.encode(response.signature));
+    if (
+      sig.length !== 64 ||
+      !ed25519.verify(sig, message, addressBytes(response.signer, "signer"), { zip215: false })
+    ) {
+      throw new RingError("RING_RPC", {
+        details: {
+          method: RingRpcMethod.coSignTransaction,
+          reason: "invalid cosignature",
+        },
+      });
+    }
+    return response;
   }
 
   /** Answered with the entry the edit set or removed. */
@@ -1920,10 +1959,13 @@ export class RingRpc {
       await this.#delegateSnapshotCall({ input, method: "getDelegateNotes", context }),
       "result",
     );
+    const nullifierSecret =
+      wire["nullifierSecret"] == null
+        ? undefined
+        : hash(wire["nullifierSecret"], "nullifierSecret");
+    if (nullifierSecret !== undefined && nullifierSecret[0] !== 0) throw invalid("nullifierSecret");
     return Object.freeze({
-      ...(wire["nullifierSecret"] == null
-        ? {}
-        : { nullifierSecret: hash(wire["nullifierSecret"], "nullifierSecret") }),
+      ...(nullifierSecret === undefined ? {} : { nullifierSecret }),
       status: decodeWalletStatus(record(wire["status"], "status")),
     });
   }
@@ -2042,7 +2084,7 @@ export class RingRpc {
     if (utxos.length !== hashes.length) throw invalid("result.value.utxos");
     const ringId = ringIdField(checked.ringProgramId);
     return Object.freeze({
-      slot: integer(wireContext["slot"], "result.context.slot"),
+      slot: u64(wireContext["slot"], "result.context.slot"),
       blockTime: signedInteger(wireContext["blockTime"], "result.context.blockTime"),
       utxos: Object.freeze(
         utxos.map((entry, index) => {
@@ -2114,7 +2156,7 @@ export class RingRpc {
     if (opened.length > Number(checked.limit ?? RING_READ_PAGE_LIMIT))
       throw invalid("result.value");
     return Object.freeze({
-      slot: integer(wireContext["slot"], "result.context.slot"),
+      slot: u64(wireContext["slot"], "result.context.slot"),
       blockTime: signedInteger(wireContext["blockTime"], "result.context.blockTime"),
       opened: Object.freeze(
         opened.map((entry, index) => decodeAuditedMerge(entry, `result.value.opened[${index}]`)),
@@ -2140,7 +2182,7 @@ export class RingRpc {
     if (items.length + skipped.length > Number(checked.limit ?? RING_READ_PAGE_LIMIT))
       throw invalid("result.value");
     return Object.freeze({
-      slot: integer(wireContext["slot"], "result.context.slot"),
+      slot: u64(wireContext["slot"], "result.context.slot"),
       blockTime: signedInteger(wireContext["blockTime"], "result.context.blockTime"),
       items: Object.freeze(
         items.map((item, index) => decodeTransaction(record(item, `result.value.items[${index}]`))),
@@ -2169,7 +2211,7 @@ export class RingRpc {
     const items = list(value["items"], "result.value.items");
     if (items.length > Number(checked.limit ?? RING_READ_PAGE_LIMIT)) throw invalid("result.value");
     return Object.freeze({
-      slot: integer(wireContext["slot"], "result.context.slot"),
+      slot: u64(wireContext["slot"], "result.context.slot"),
       blockTime: signedInteger(wireContext["blockTime"], "result.context.blockTime"),
       items: Object.freeze(
         items.map((item, index) =>
@@ -2192,19 +2234,35 @@ export class RingRpc {
     );
   }
 
-  /** The owner's salt, or with no tracking row the ring salt the policy commits. */
-  async getListSalt(
+  async getOwnerListSalts(
     request: GetListSaltRequest,
     context?: RequestContext,
-  ): Promise<Bytes32 | undefined> {
+  ): Promise<OwnerListSalts> {
     const wire = exactRecord(
       await this.#call(RingRpcMethod.getListSalt, encodeGetListSaltRequest(request), context),
       LIST_SALT_FIELDS,
       NO_FIELDS,
       "result",
     );
-    const salt = wire["listSalt"] ?? wire["ringSalt"];
-    return absent(salt) ? undefined : hash(salt, "result.listSalt");
+    const listSalt = absent(wire["listSalt"])
+      ? undefined
+      : canonicalHash(wire["listSalt"], "result.listSalt");
+    const ringSalt = absent(wire["ringSalt"])
+      ? undefined
+      : canonicalHash(wire["ringSalt"], "result.ringSalt");
+    return Object.freeze({
+      ...(listSalt === undefined ? {} : { listSalt }),
+      ...(ringSalt === undefined ? {} : { ringSalt }),
+    });
+  }
+
+  /** The owner's salt, or with no tracking row the ring salt the policy commits. */
+  async getListSalt(
+    request: GetListSaltRequest,
+    context?: RequestContext,
+  ): Promise<Bytes32 | undefined> {
+    const salts = await this.getOwnerListSalts(request, context);
+    return salts.listSalt ?? salts.ringSalt;
   }
 
   async prepareAuthorityTransfer(
@@ -2417,7 +2475,9 @@ function freshNonce(): Bytes32 {
 }
 
 function timestampOrNow(timestamp: bigint | undefined): bigint {
-  return timestamp ?? BigInt(Math.floor(Date.now() / 1000));
+  return timestamp === undefined
+    ? BigInt(Math.floor(Date.now() / 1000))
+    : checkedUnixTimestamp(timestamp, "timestamp");
 }
 
 function authWire(
@@ -2510,7 +2570,7 @@ function decodeTransaction(wire: Record<string, unknown>): DecryptedRingTransact
   if (realInputs > nullifiers.length || defaultInputs.length > realInputs)
     throw invalid("realInputs");
   return Object.freeze({
-    slot: integer(wire["slot"], "slot"),
+    slot: u64(wire["slot"], "slot"),
     signature: signature(wire["txSignature"], "txSignature"),
     eventIndex: u16(wire["eventIndex"], "eventIndex"),
     txViewingPublicKey: x25519Key(wire["txViewingPk"], "txViewingPk"),
@@ -2557,7 +2617,7 @@ function decodeWalletActivity(wire: Record<string, unknown>): RingWalletActivity
     throw invalid("view.role");
   }
   return Object.freeze({
-    slot: integer(wire["slot"], "slot"),
+    slot: u64(wire["slot"], "slot"),
     signature: signature(wire["txSignature"], "txSignature"),
     eventIndex: u16(wire["eventIndex"], "eventIndex"),
     view: decoded,
@@ -2579,16 +2639,18 @@ function decodeWalletStatus(wire: Record<string, unknown>): RingWalletStatusPage
     enrollment,
     ...(wire["snapshotExpiresAt"] == null
       ? {}
-      : { snapshotExpiresAt: integer(wire["snapshotExpiresAt"], "snapshotExpiresAt") }),
-    historyThrough: integer(wire["historyThrough"], "historyThrough"),
+      : { snapshotExpiresAt: u64(wire["snapshotExpiresAt"], "snapshotExpiresAt") }),
+    historyThrough: u64(wire["historyThrough"], "historyThrough"),
     balances: Object.freeze(
       list(wire["balances"], "balances").map((entry, index) => {
         const path = `balances[${index}]`;
         const row = record(entry, path);
+        const asset = canonicalHash(row["asset"], `${path}.asset`);
+        const mint = row["mint"] == null ? undefined : namedMint(row, asset, path);
         return Object.freeze({
-          asset: hash(row["asset"], `${path}.asset`),
-          ...(row["mint"] == null ? {} : { mint: address(row["mint"], `${path}.mint`) }),
-          amount: integer(row["amount"], `${path}.amount`),
+          asset,
+          ...(mint === undefined ? {} : { mint }),
+          amount: u64(row["amount"], `${path}.amount`),
         });
       }),
     ),
@@ -2604,20 +2666,22 @@ function decodeWalletStatus(wire: Record<string, unknown>): RingWalletStatusPage
 function decodeWalletNote(row: Record<string, unknown>, path: string): RingWalletNote {
   const status = WALLET_NOTE_STATUSES.find((known) => known === row["status"]);
   if (status === undefined) throw invalid(`${path}.status`);
+  const asset = canonicalHash(row["asset"], `${path}.asset`);
+  const mint = row["mint"] == null ? undefined : namedMint(row, asset, path);
   return Object.freeze({
-    utxoHash: hash(row["utxoHash"], `${path}.utxoHash`),
+    utxoHash: canonicalHash(row["utxoHash"], `${path}.utxoHash`),
     status,
     ...(row["nullifierPk"] == null
       ? {}
-      : { nullifierPk: hash(row["nullifierPk"], `${path}.nullifierPk`) }),
-    asset: hash(row["asset"], `${path}.asset`),
-    ...(row["mint"] == null ? {} : { mint: address(row["mint"], `${path}.mint`) }),
-    amount: integer(row["amount"], `${path}.amount`),
-    blinding: hash(row["blinding"], `${path}.blinding`),
-    ...optionalDataHashes(row, path, hash),
+      : { nullifierPk: canonicalHash(row["nullifierPk"], `${path}.nullifierPk`) }),
+    asset,
+    ...(mint === undefined ? {} : { mint }),
+    amount: u64(row["amount"], `${path}.amount`),
+    blinding: canonicalHash(row["blinding"], `${path}.blinding`),
+    ...optionalDataHashes(row, path, canonicalHash),
     treeId: u16(row["treeId"], `${path}.treeId`),
-    leafIndex: integer(row["leafIndex"], `${path}.leafIndex`),
-    slot: integer(row["slot"], `${path}.slot`),
+    leafIndex: u64(row["leafIndex"], `${path}.leafIndex`),
+    slot: u64(row["slot"], `${path}.slot`),
     signature: signature(row["txSignature"], `${path}.txSignature`),
     eventIndex: u16(row["eventIndex"], `${path}.eventIndex`),
     slotIndex: u32(row["slotIndex"], `${path}.slotIndex`),
@@ -2628,7 +2692,7 @@ function decodeSpendCoverage(wire: Record<string, unknown>): RingSpendCoverage {
   const frame = (value: unknown, path: string): RingSpendCoverageFrame => {
     const row = record(value, path);
     return Object.freeze({
-      slot: integer(row["slot"], `${path}.slot`),
+      slot: u64(row["slot"], `${path}.slot`),
       signature: signature(row["txSignature"], `${path}.txSignature`),
       eventIndex: u16(row["eventIndex"], `${path}.eventIndex`),
     });
@@ -2648,15 +2712,15 @@ function decodeSpendCoverage(wire: Record<string, unknown>): RingSpendCoverage {
   return Object.freeze({
     ...(wire["positionSlot"] == null
       ? {}
-      : { positionSlot: integer(wire["positionSlot"], "positionSlot") }),
-    historyThrough: integer(wire["historyThrough"], "historyThrough"),
+      : { positionSlot: u64(wire["positionSlot"], "positionSlot") }),
+    historyThrough: u64(wire["historyThrough"], "historyThrough"),
     ...(totals === undefined
       ? {}
       : {
           totals: Object.freeze({
-            observed: integer(totals["observed"], "totals.observed"),
-            padding: integer(totals["padding"], "totals.padding"),
-            resolved: integer(totals["resolved"], "totals.resolved"),
+            observed: u64(totals["observed"], "totals.observed"),
+            padding: u64(totals["padding"], "totals.padding"),
+            resolved: u64(totals["resolved"], "totals.resolved"),
           }),
         }),
     unclassified: rows("unclassified"),
@@ -2763,9 +2827,14 @@ function decodeOutput(wire: Record<string, unknown>, path: string): DecryptedRin
 /** Rust `DecryptedUtxo`, `nullifierPk` absent until the auditor reads the owner's registered key. */
 function decodeDecryptedUtxo(wire: Record<string, unknown>, path: string): AuditedUtxo {
   const nullifierPk = wire["nullifierPk"];
+  const fields = utxoFields(wire, path, canonicalHash);
+  if (fields.mint !== undefined && !equalBytes(assetField(fields.mint), fields.asset))
+    throw invalid(`${path}.mint`);
   return Object.freeze({
-    ...utxoFields(wire, path, hash),
-    ...(absent(nullifierPk) ? {} : { nullifierPk: hash(nullifierPk, `${path}.nullifierPk`) }),
+    ...fields,
+    ...(absent(nullifierPk)
+      ? {}
+      : { nullifierPk: canonicalHash(nullifierPk, `${path}.nullifierPk`) }),
   });
 }
 
@@ -2839,13 +2908,14 @@ function decodeDefaultInputs(value: unknown, path: string): readonly DecryptedRi
     list(value, path).map((entry, index) => {
       const at = `${path}[${index}]`;
       const wire = exactRecord(entry, DEFAULT_INPUT_FIELDS, DEFAULT_INPUT_FIELDS, at);
+      const asset = canonicalHash(wire["asset"], `${at}.asset`);
       return Object.freeze({
         ownerKey: hash(wire["ownerKey"], `${at}.ownerKey`),
-        nullifierPk: hash(wire["nullifierPk"], `${at}.nullifierPk`),
-        asset: hash(wire["asset"], `${at}.asset`),
-        mint: address(wire["mint"], `${at}.mint`),
+        nullifierPk: canonicalHash(wire["nullifierPk"], `${at}.nullifierPk`),
+        asset,
+        mint: namedMint(wire, asset, at),
         amount: u64(wire["amount"], `${at}.amount`),
-        commitment: hash(wire["commitment"], `${at}.commitment`),
+        commitment: canonicalHash(wire["commitment"], `${at}.commitment`),
       });
     }),
   );
@@ -2948,7 +3018,7 @@ function decodeSkipped(wire: Record<string, unknown>): SkippedRingTransaction {
   const reason = SKIPPED_REASONS.find((candidate) => candidate === wire["reason"]);
   if (reason === undefined) throw invalid("reason");
   return Object.freeze({
-    slot: integer(wire["slot"], "slot"),
+    slot: u64(wire["slot"], "slot"),
     signature: signature(wire["txSignature"], "txSignature"),
     eventIndex: u16(wire["eventIndex"], "eventIndex"),
     reason,

@@ -1,8 +1,31 @@
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { address } from "@solana/kit";
-import { U64_MAX, PAGE_LIMIT } from "@heliuslabs/spr/internal";
+import { U64_MAX, PAGE_LIMIT, SHIELDED_ADDRESS_LENGTH } from "@heliuslabs/spr/internal";
+import { ShieldedAddress } from "@heliuslabs/spr/keypair";
 import type { Wallet, WalletUtxo } from "@heliuslabs/spr/transaction";
 import { RingError } from "../protocol/error.js";
 import { ViewingHistory } from "./viewing-history.js";
+
+const SESSION_FIELDS = new Set([
+  "version",
+  "owner",
+  "keys",
+  "mode",
+  "rescan",
+  "senderFastPath",
+  "ring",
+  "history",
+  "targetSlot",
+  "tasks",
+  "task",
+  "queue",
+  "checked",
+  "active",
+  "unopenedCount",
+  "unopenedSamples",
+]);
+const ACTIVE_FIELDS = new Set(["limit", "token", "workOffset", "nullifiers"]);
+const TASK_FIELDS = new Set(["kind", "limit", "token", "workOffset", "ring", "keys", "afterSlot"]);
 
 export const RECOVERY_DIAGNOSTIC_SAMPLES = 64;
 
@@ -58,7 +81,7 @@ export function recoverySessionJson(session: RecoverySession | null): string {
 
 export function restoreRecoverySession(value: unknown): RecoverySession | null {
   if (value === null || value === undefined) return null;
-  const stored = record(value);
+  const stored = record(value, SESSION_FIELDS);
   if (stored.version !== 1 && stored.version !== 1n) throw invalid();
   const mode = stored.mode;
   if (mode !== "tagHints" && mode !== "everySite") throw invalid();
@@ -71,7 +94,7 @@ export function restoreRecoverySession(value: unknown): RecoverySession | null {
   const cursor = integer(stored.task);
   if (cursor > tasks.length || keys.length === 0 || new Set(keys).size !== keys.length)
     throw invalid();
-  const active = stored.active === null ? null : record(stored.active);
+  const active = stored.active === null ? null : record(stored.active, ACTIVE_FIELDS);
   const samples = strings(stored.unopenedSamples).map(hash);
   if (
     samples.length > RECOVERY_DIAGNOSTIC_SAMPLES ||
@@ -80,7 +103,7 @@ export function restoreRecoverySession(value: unknown): RecoverySession | null {
     throw invalid();
   const session: RecoverySession = {
     version: 1,
-    owner: string(stored.owner),
+    owner: ownerHex(stored.owner),
     keys,
     mode,
     rescan: stored.rescan === true,
@@ -139,7 +162,7 @@ export function recoveryAllows(
 }
 
 function task(value: unknown): RecoveryTask {
-  const stored = record(value);
+  const stored = record(value, TASK_FIELDS);
   if (stored.kind !== "ring") throw invalid();
   return {
     ...page(stored),
@@ -198,9 +221,22 @@ function key(value: unknown): string {
   if (!/^[0-9a-f]{66}$/.test(parsed)) throw invalid();
   return parsed;
 }
-function record(value: unknown): Record<string, unknown> {
+function ownerHex(value: unknown): string {
+  const parsed = string(value);
+  if (parsed.length !== SHIELDED_ADDRESS_LENGTH * 2 || !/^[0-9a-f]+$/.test(parsed)) throw invalid();
+  try {
+    ShieldedAddress.fromBytes(hexToBytes(parsed));
+  } catch {
+    throw invalid();
+  }
+  return parsed;
+}
+function record(value: unknown, allowed: ReadonlySet<string>): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid();
-  return value as Record<string, unknown>;
+  const object = value as Record<string, unknown>;
+  if (Reflect.ownKeys(object).some((key) => typeof key !== "string" || !allowed.has(key)))
+    throw invalid();
+  return object;
 }
 function invalid(): RingError {
   return new RingError("RING_WALLET_DOCUMENT", { details: { reason: "invalid recovery session" } });

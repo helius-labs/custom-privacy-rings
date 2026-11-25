@@ -1,4 +1,10 @@
-import { checkedBytes, equalBytes, poseidon, ZERO_32 } from "@heliuslabs/spr/internal";
+import {
+  checkedBytes,
+  equalBytes,
+  isCanonicalField,
+  poseidon,
+  ZERO_32,
+} from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
 
 import type { MintPolicy } from "./mint-policy.js";
@@ -50,11 +56,11 @@ export function foldQuadPath(
   )
     refuse("IndexOutOfRange");
   if (path.siblings.length !== height) refuse("PathHeight");
-  let node = leaf;
+  let node = canonicalField(leaf, "leaf", refuse);
   path.siblings.forEach((siblings, level) => {
     if (siblings.length !== QUAD_ARITY - 1) refuse("PathArity");
     const digit = Math.floor(path.index / QUAD_ARITY ** level) % QUAD_ARITY;
-    const children = siblings.map((sibling) => checkedBytes<Bytes32>(sibling, 32, "sibling"));
+    const children = siblings.map((sibling) => canonicalField(sibling, "sibling", refuse));
     children.splice(digit, 0, node);
     node = poseidon(children) as Bytes32;
   });
@@ -74,7 +80,7 @@ export function coveredPaths(
 ): readonly QuadPath[] {
   const levels = canopyLevels(input.openings, input.height);
   if (input.canopy.length !== QUAD_ARITY ** levels) refuse("PoolShape");
-  const canopy = [input.canopy.map((node) => checkedBytes<Bytes32>(node, 32, "canopy"))];
+  const canopy = [input.canopy.map((node) => canonicalField(node, "canopy", refuse))];
   for (let level = 0; level < levels; level += 1) {
     const below = canopy[level] ?? [];
     canopy.push(
@@ -103,6 +109,12 @@ export function coveredPaths(
       ]),
     });
   });
+}
+
+function canonicalField(value: Bytes32, name: string, refuse: TreeRefusal): Bytes32 {
+  const checked = checkedBytes<Bytes32>(value, 32, name);
+  if (!isCanonicalField(checked)) refuse("NonCanonicalField");
+  return checked;
 }
 
 /** `Poseidon(previous, entry)`, Rust `chain_link`, one step of a records or enrollment chain. */

@@ -39,7 +39,7 @@ export async function signVouch(
   if (voucher !== undefined) {
     const publicKey = voucher.publicKey().ed25519();
     const signature = await voucher.sign(digest, context);
-    if (!ed25519.verify(signature, digest, publicKey))
+    if (signature.length !== 64 || !ed25519.verify(signature, digest, publicKey, { zip215: false }))
       throw new RingError("RING_VOUCHER_SIGNATURE_MISMATCH");
     return Object.freeze({ publicKey, signature });
   }

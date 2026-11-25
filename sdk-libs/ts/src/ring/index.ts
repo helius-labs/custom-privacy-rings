@@ -668,9 +668,11 @@ export {
 export {
   committedRingListKey,
   privateListKey,
+  privateRevocationKeys,
   publicListKey,
   ringListKey,
 } from "../protocol/membership/private-list.js";
+export type { OwnerListSalts, PrivateListTarget } from "../protocol/membership/private-list.js";
 export { listSaltOf, listTagOf } from "../crypto/keys/list-salt.js";
 export {
   ENROLLMENT_BATCH,

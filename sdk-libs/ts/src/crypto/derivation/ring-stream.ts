@@ -27,11 +27,12 @@ export function deliveredSlotSecret(slot: DeliveredSlot): Bytes32 {
     ...packBytesBe(slot.recipientViewingKey.toBytes()),
   ];
   const tail = slotTail(slot);
-  return domainHash(RingDomain.deliveredSlotSecret, [
-    ...packedSecret(slot.agreement, "agreement"),
-    ...keys,
-    ...tail,
-  ]);
+  const agreement = packedSecret(slot.agreement, "agreement");
+  try {
+    return domainHash(RingDomain.deliveredSlotSecret, [...agreement, ...keys, ...tail]);
+  } finally {
+    for (const limb of agreement) limb.fill(0);
+  }
 }
 
 /** The sealer's and the sent row reader's view of the secret, the agreement wiped once hashed. */

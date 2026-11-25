@@ -612,9 +612,18 @@ async function preparedOwnerSignature(
   proofInputs: SppProofInputs,
   context: RequestContext | undefined,
 ): Promise<PreparedOwnerSignature> {
+  const ownerSignature = await signer.sign(proofInputs.messageHash(), context);
+  if (!(ownerSignature instanceof Uint8Array) || ownerSignature.length !== 64)
+    throw new RingError("RING_INVALID_LENGTH", {
+      details: {
+        name: "ownerSignature",
+        expected: 64,
+        actual: ownerSignature instanceof Uint8Array ? ownerSignature.length : -1,
+      },
+    });
   return {
     ownerPublicKey: owner,
-    ownerSignature: await signer.sign(proofInputs.messageHash(), context),
+    ownerSignature,
   };
 }
 

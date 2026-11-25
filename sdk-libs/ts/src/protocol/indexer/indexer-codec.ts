@@ -31,8 +31,7 @@ const { checkedAddress, checkedHash, schemaFailure } = indexerScalars;
 type WireObject = Record<string, unknown>;
 type Hash = indexerTypes.Hash;
 
-/** No leading zero, no sign on zero, no exponent: one spelling per value. */
-const DECIMAL_INTEGER = /^(?:0|-?[1-9][0-9]*)$/;
+const UNSIGNED_DECIMAL_INTEGER = /^(?:0|[1-9][0-9]*)$/;
 
 function boolean(value: unknown, path: string): boolean {
   if (typeof value !== "boolean") {
@@ -41,10 +40,9 @@ function boolean(value: unknown, path: string): boolean {
   return value;
 }
 
-/** A slot, a JSON number or the decimal string an indexer sends past `2^53`. */
-function unboundedU64(value: unknown, path: string): bigint {
-  if (typeof value !== "string") return u64(value, path);
-  if (!DECIMAL_INTEGER.test(value)) {
+export function unboundedU64(value: unknown, path: string): bigint {
+  if (typeof value !== "string") return wireInteger(value, path, 0n, U64_MAX);
+  if (!UNSIGNED_DECIMAL_INTEGER.test(value)) {
     return schemaFailure("INDEXER_SCHEMA_INVALID_INTEGER", path, "a decimal integer string", value);
   }
   const integer = BigInt(value);
@@ -55,7 +53,7 @@ function unboundedU64(value: unknown, path: string): bigint {
 }
 
 function u64(value: unknown, path: string): bigint {
-  return wireInteger(value, path, 0n, U64_MAX);
+  return unboundedU64(value, path);
 }
 
 function toU64(value: bigint, path: string): number {
@@ -77,7 +75,7 @@ function memberRecord(value: unknown, path: string): RingMemberRecordView {
   return {
     member: checkedHash(record["member"], `${path}.member`),
     next: checkedHash(record["next"], `${path}.next`),
-    lists: wireInteger(record["lists"], `${path}.lists`, 0n, U64_MAX),
+    lists: unboundedU64(record["lists"], `${path}.lists`),
     mintPolicy: decodeMintPolicy(record["mintPolicy"]),
   };
 }
@@ -353,7 +351,7 @@ function decodeMintPolicy(value: unknown): MintPolicy {
     "limits",
   ]);
   const amount = (from: WireObject, key: string): bigint =>
-    wireInteger(from[key], `mintPolicy.${key}`, 0n, (1n << 64n) - 1n);
+    unboundedU64(from[key], `mintPolicy.${key}`);
   const limits = object(row["limits"], "mintPolicy.limits", ASSET_LIMIT_KEYS);
   return Object.freeze({
     threshold: amount(row, "threshold"),

@@ -23,7 +23,7 @@ import {
   splInterfaceWithBump,
   type SignerAccount,
 } from "@heliuslabs/spr/internal";
-import { decodeSplAssetRegistry } from "@heliuslabs/spr/interface";
+import { decodeSplAssetRegistry, SHIELDED_POOL_PROGRAM_ID } from "@heliuslabs/spr/interface";
 import type { Address, Bytes32, RequestContext, Transaction } from "@heliuslabs/spr/interface";
 import {
   NullifierKey,
@@ -477,7 +477,10 @@ async function depositAssets(
 ): Promise<AssetRegistry> {
   if (asset === SOL_MINT) return new AssetRegistry();
   const account = await client.getAccount(await splAssetRegistryAddress(asset), context);
-  const registry = account === undefined ? undefined : decodeSplAssetRegistry(account.data);
+  const registry =
+    account === undefined || account.owner !== SHIELDED_POOL_PROGRAM_ID
+      ? undefined
+      : decodeSplAssetRegistry(account.data);
   if (registry?.mint !== asset)
     throw new RingError("RING_BUILD_DEPOSIT", { details: { reason: "unregistered mint", asset } });
   return new AssetRegistry([[registry.assetId, asset]]);

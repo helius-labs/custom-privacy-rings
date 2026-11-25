@@ -452,7 +452,9 @@ export function openRingTransfer(input: TransactionAuditInput): OpenedRingAudit 
           }),
         );
       if (!opened.ok || opened.payload === false)
-        payloadErrors.push(Object.freeze({ slotIndex, kind: opened.ok ? "payload" : opened.kind }));
+        payloadErrors.push(
+          Object.freeze({ slotIndex, kind: opened.ok ? "commitment" : opened.kind }),
+        );
     });
     // The auditor's own index places each nullifier, the stream names none.
     const inputs = transaction.nullifiers.map((nullifier) =>
@@ -594,7 +596,7 @@ export function resolveRingOwners(
   if (!changed) return transaction;
   const payloadErrors = [
     ...transaction.payloadErrors,
-    ...failed.map((slotIndex) => Object.freeze({ slotIndex, kind: "payload" as const })),
+    ...failed.map((slotIndex) => Object.freeze({ slotIndex, kind: "commitment" as const })),
   ].sort((left, right) => left.slotIndex - right.slotIndex);
   return Object.freeze({
     ...transaction,

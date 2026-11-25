@@ -82,6 +82,7 @@ export const RingRpcRefusal = Object.freeze({
   unknownListApproval: -32244,
   listApprovalWindow: -32245,
   recordsNotCreated: -32260,
+  recordsCreationLimit: -32261,
   walletScope: -32270,
   invalidLimits: -32276,
   limitsWithoutRecord: -32277,

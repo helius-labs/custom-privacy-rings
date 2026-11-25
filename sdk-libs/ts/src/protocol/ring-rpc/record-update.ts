@@ -131,7 +131,12 @@ export function verifyRecordUpdate(request: SubmitRecordUpdateRequest): Bytes32 
   const hash = recordUpdateStatementHash(request);
   const signature = base58Encoder.encode(request.signature);
   const message = messageText(request, request.signer, hash);
-  if (!ed25519.verify(new Uint8Array(signature), message, addressBytes(request.signer, "signer")))
+  if (
+    signature.length !== 64 ||
+    !ed25519.verify(new Uint8Array(signature), message, addressBytes(request.signer, "signer"), {
+      zip215: false,
+    })
+  )
     throw invalid("Signature");
   return hash;
 }

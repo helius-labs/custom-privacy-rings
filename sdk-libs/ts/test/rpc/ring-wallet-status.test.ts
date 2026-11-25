@@ -164,9 +164,79 @@ describe("getWalletStatus", () => {
       rpc.getWalletStatus({ target: TARGET, signer: reader, wallet: WALLET }),
     ).rejects.toMatchObject({ code: "RING_RPC" });
   });
+
+  it("refuses out-of-range timestamps and mismatched balance or note mints", async () => {
+    const { rpc, bodies } = capture(page);
+    const authority = await generateKeyPairSigner();
+    for (const timestamp of [-1n, 1n << 53n]) {
+      await expect(
+        rpc.getWalletStatus({ target: TARGET, signer: reader, wallet: WALLET, timestamp }),
+      ).rejects.toMatchObject({ code: "RING_RPC" });
+      await expect(
+        rpc.getSpendCoverage({ target: TARGET, authority, timestamp }),
+      ).rejects.toMatchObject({ code: "RING_RPC" });
+      await expect(
+        rpc.getDelegateNotes({ target: TARGET, delegate: authority, owner: WALLET, timestamp }),
+      ).rejects.toMatchObject({ code: "RING_RPC" });
+    }
+    expect(bodies).toHaveLength(0);
+
+    await expect(
+      capture({
+        ...page,
+        balances: [{ asset: hashOf(0x13), mint: addressOf(4), amount: 500 }],
+      }).rpc.getWalletStatus({ target: TARGET, signer: reader, wallet: WALLET }),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "balances[0].mint" } });
+
+    await expect(
+      capture({
+        ...page,
+        notes: [noteWire("unspent", { mint: addressOf(4) })],
+      }).rpc.getWalletStatus({ target: TARGET, signer: reader, wallet: WALLET }),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "notes[0].mint" } });
+
+    const overU64 = (1n << 64n).toString();
+    for (const [override, path] of [
+      [{ historyThrough: overU64 }, "historyThrough"],
+      [{ snapshotExpiresAt: overU64 }, "snapshotExpiresAt"],
+      [{ balances: [{ asset: hashOf(0x13), amount: overU64 }] }, "balances[0].amount"],
+      [{ notes: [noteWire("unspent", { amount: overU64 })] }, "notes[0].amount"],
+      [{ notes: [noteWire("unspent", { leafIndex: overU64 })] }, "notes[0].leafIndex"],
+      [{ notes: [noteWire("unspent", { slot: overU64 })] }, "notes[0].slot"],
+    ] as const) {
+      await expect(
+        capture({ ...page, ...override }).rpc.getWalletStatus({
+          target: TARGET,
+          signer: reader,
+          wallet: WALLET,
+        }),
+      ).rejects.toMatchObject({ code: "RING_RPC", details: { path } });
+    }
+  });
 });
 
 describe("getSpendCoverage", () => {
+  it("refuses u64 overflows on spend coverage counters and slots", async () => {
+    const authority = await generateKeyPairSigner();
+    const overU64 = (1n << 64n).toString();
+    const base = {
+      positionSlot: 12,
+      historyThrough: 11,
+      totals: { observed: 5, padding: 2, resolved: 1 },
+      unclassified: [],
+      unreadable: [],
+      integrityFaults: [],
+    };
+    for (const [override, path] of [
+      [{ positionSlot: overU64 }, "positionSlot"],
+      [{ historyThrough: overU64 }, "historyThrough"],
+      [{ totals: { observed: overU64, padding: 2, resolved: 1 } }, "totals.observed"],
+    ] as const) {
+      await expect(
+        capture({ ...base, ...override }).rpc.getSpendCoverage({ target: TARGET, authority }),
+      ).rejects.toMatchObject({ code: "RING_RPC", details: { path } });
+    }
+  });
   it("accepts a continuation without totals", async () => {
     const { rpc, bodies } = capture({
       historyThrough: 11,
@@ -364,8 +434,9 @@ describe("delegate snapshots", () => {
 
   it("releases the delegate session when its iterator returns", async () => {
     const delegate = await generateKeyPairSigner();
+    const validNullifierSecret = base58.decode(Uint8Array.of(0, ...new Uint8Array(31).fill(12)));
     const { rpc, bodies } = sequence([
-      { nullifierSecret: hashOf(12), status: snapshotPage(snapshotCursor(1)) },
+      { nullifierSecret: validNullifierSecret, status: snapshotPage(snapshotCursor(1)) },
       true,
     ]);
     const pages = rpc.delegateNotesPages({ target: TARGET, delegate, owner: WALLET });
@@ -377,6 +448,17 @@ describe("delegate snapshots", () => {
       "releaseDelegateSnapshot",
     ]);
     expect(bodies[1]?.["params"]).toEqual(expect.objectContaining({ owner: WALLET }));
+  });
+
+  it("refuses a delegate nullifierSecret with a non-zero leading byte", async () => {
+    const delegate = await generateKeyPairSigner();
+    const { rpc } = capture({
+      nullifierSecret: hashOf(12),
+      status: snapshotPage(),
+    });
+    await expect(
+      rpc.getDelegateNotes({ target: TARGET, delegate, owner: WALLET }),
+    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "nullifierSecret" } });
   });
 });
 

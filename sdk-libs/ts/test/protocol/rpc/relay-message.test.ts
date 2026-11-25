@@ -1,6 +1,13 @@
 /** Refuses a relay message that moves more than the request, against the Rust check's vectors. */
-import { decompileTransactionMessage, getCompiledTransactionMessageDecoder } from "@solana/kit";
+import {
+  AccountRole,
+  type AccountMeta,
+  decompileTransactionMessage,
+  getCompiledTransactionMessageDecoder,
+  getCompiledTransactionMessageEncoder,
+} from "@solana/kit";
 import type { Instruction } from "@heliuslabs/spr/interface";
+import { getCreateAssociatedTokenAccountInstructionAsync } from "@heliuslabs/spr/instructions";
 import { encodeBase58, equalBytes } from "@heliuslabs/spr/internal";
 import {
   openOutputSlot,
@@ -56,14 +63,22 @@ import {
   type AllowedNullifiers,
   checkRelayMessage,
   decodeRelayTransferTerms,
+  expectedCoSigner,
   expectedDelegate,
+  expectedFunder,
   expectedPublicOwner,
   openingHash,
   ZERO_ADDRESS,
   type ExpectedRelayMessage,
   type DelegateRingConfig,
 } from "../../../src/rpc/relay-message.js";
-import { PendingRelaySignature, type RingRelayClient } from "../../../src/rpc/relay.js";
+import { ringFrame } from "../../helpers/ring-frame.js";
+import { ringAuthAddress, ringPolicyAddress } from "../../../src/protocol/pda/index.js";
+import {
+  PendingRelaySignature,
+  UnsignedRelay,
+  type RingRelayClient,
+} from "../../../src/rpc/relay.js";
 import type {
   PrepareAuthorityTransferRequest,
   RelayStatus,
@@ -300,6 +315,18 @@ describe("relay message check", () => {
     expect(verdict(expected, entry.message, entry.terms.signer)).toBe(entry.verdict);
   });
 
+  it("refuses a delegate message for a foreign signer", async () => {
+    const expected = await delegate(delegates.request);
+    const foreign = encodeBase58(new Uint8Array(32).fill(77));
+    expect(
+      verdict(
+        expected,
+        Buffer.from(message(delegates.cases, "honest")).toString("base64"),
+        foreign,
+      ),
+    ).toBe("Unrequested");
+  });
+
   it("refuses a delegate message with a swapped recipient before signing", async () => {
     const expected = await delegate(delegates.request);
     const delegateSigner = signer(delegates.request.prepare.delegate);
@@ -331,11 +358,21 @@ describe("relay message check", () => {
         Uint8Array.from(honestInstruction().data ?? []).subarray(1),
         "delegate",
       );
-    const verdictOf = async (frame: RingTransactData): Promise<string> => {
+    const verdictOf = async (
+      frame: RingTransactData,
+      extraAccounts: readonly AccountMeta[] = [],
+    ): Promise<string> => {
+      const base = honestInstruction();
       const { messageBytes } = compileUnsignedTransaction({
         feePayer: delegates.request.feePayer,
         lifetime: SIZE_PROBE_LIFETIME,
-        instructions: [{ ...honestInstruction(), data: ringInstructionData(frame) }],
+        instructions: [
+          {
+            ...base,
+            accounts: [...(base.accounts ?? []), ...extraAccounts],
+            data: ringInstructionData(frame),
+          },
+        ],
         computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.authorityTransfer),
       });
       return verdict(
@@ -423,7 +460,92 @@ describe("relay message check", () => {
         kind: "solWithdrawal" as const,
         amount: 1n,
       };
-      expect(await verdictOf({ ...honestFrame(), interfaceTransfers: [leg] })).toBe("Data");
+      const withdrawalAccounts: readonly AccountMeta[] = [
+        { address: encodeBase58(new Uint8Array(32).fill(51)), role: AccountRole.WRITABLE },
+        { address: encodeBase58(new Uint8Array(32).fill(52)), role: AccountRole.WRITABLE },
+      ];
+      expect(await verdictOf({ ...honestFrame(), interfaceTransfers: [leg] })).toBe("Accounts");
+      expect(
+        await verdictOf({ ...honestFrame(), interfaceTransfers: [leg] }, withdrawalAccounts),
+      ).toBe("Data");
+    });
+
+    it("refuses a delegate moved into forwarded accounts or a writable prefix account", async () => {
+      const base = honestInstruction();
+      const baseAccounts = base.accounts ?? [];
+      const expected = await delegate(delegates.request);
+      const checkAccounts = (accounts: readonly AccountMeta[]): string => {
+        const { messageBytes } = compileUnsignedTransaction({
+          feePayer: delegates.request.feePayer,
+          lifetime: SIZE_PROBE_LIFETIME,
+          instructions: [{ ...base, accounts }],
+          computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.authorityTransfer),
+        });
+        return verdict(expected, Buffer.from(new Uint8Array(messageBytes)).toString("base64"));
+      };
+      const forwardedDelegate: readonly AccountMeta[] = [
+        ...baseAccounts.filter((meta) => meta.address !== DELEGATE),
+        { address: DELEGATE, role: AccountRole.READONLY_SIGNER },
+      ];
+      expect(checkAccounts(forwardedDelegate)).toBe("Accounts");
+      const writablePrefix: readonly AccountMeta[] = [
+        baseAccounts[0]!,
+        { address: encodeBase58(new Uint8Array(32).fill(73)), role: AccountRole.WRITABLE },
+        ...baseAccounts.slice(1),
+      ];
+      expect(checkAccounts(writablePrefix)).toBe("Accounts");
+    });
+
+    it("reports an unrequested spend ahead of malformed slot records", async () => {
+      const frame = honestFrame();
+      const brokenOutputs = frame.outputs.map((output) => ({
+        ...output,
+        record: new Uint8Array(output.record.length),
+      }));
+      const base = honestInstruction();
+      const { messageBytes } = compileUnsignedTransaction({
+        feePayer: delegates.request.feePayer,
+        lifetime: SIZE_PROBE_LIFETIME,
+        instructions: [
+          { ...base, data: ringInstructionData({ ...frame, outputs: brokenOutputs }) },
+        ],
+        computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.authorityTransfer),
+      });
+      const expected = await expectedDelegate({
+        request: {
+          ring: delegates.request.prepare.ring,
+          delegate: delegates.request.prepare.delegate,
+          txViewingKey: new Uint8Array(base64.encode(delegates.request.prepare.txViewingKey)),
+          transfer: {
+            sources: delegates.request.prepare.transfer.sources.map((text) =>
+              ShieldedAddress.fromBytes(new Uint8Array(base58.encode(text))),
+            ),
+            exits: [],
+            withdrawals: [],
+            payments: delegates.request.prepare.transfer.payments.map((payment) => ({
+              recipient: ShieldedAddress.fromBytes(
+                new Uint8Array(base58.encode(payment.recipient)),
+              ),
+              mint: payment.mint,
+              amount: BigInt(payment.amount),
+            })),
+          },
+        } as unknown as PrepareAuthorityTransferRequest,
+        quote: { feePayer: delegates.request.feePayer, validUntilSlot: 0n },
+        config: {
+          mode: "confidential",
+          auditorPublicKey: auditorOf(delegates.request),
+          delegate: delegates.request.prepare.delegate,
+        },
+        allowed: {
+          checkSources: () => undefined,
+          countsSpends: () => false,
+        } as unknown as AllowedNullifiers,
+        outputTreeId: 0,
+      });
+      expect(verdict(expected, Buffer.from(new Uint8Array(messageBytes)).toString("base64"))).toBe(
+        "SpendsUnrequestedNote",
+      );
     });
 
     it("refuses a data commitment the request does not name", async () => {
@@ -587,6 +709,452 @@ describe("relay message check", () => {
       expect(
         await verdictWith({ ...terms, slots: [valued, ...terms.slots.slice(1)] }, [dummy]),
       ).toBe("Recipients");
+    });
+    it("refuses a public owner placed in an SPL deposit authority slot or a hidden withdrawal", async () => {
+      const baseIx = instruction();
+      const baseFrame = RingTransactData.parse(
+        Uint8Array.from(baseIx.data ?? []).subarray(1),
+        "anonymous",
+      );
+      const baseAccounts = baseIx.accounts ?? [];
+      const signerMeta = baseAccounts.find((meta) => meta.address === terms.signer);
+      if (signerMeta === undefined) throw new Error("missing signer");
+
+      const withoutOwner = baseAccounts.filter((meta) => meta.address !== terms.signer);
+      const splDepositAccounts = [
+        { address: encodeBase58(new Uint8Array(32).fill(91)), role: AccountRole.READONLY },
+        { address: encodeBase58(new Uint8Array(32).fill(92)), role: AccountRole.WRITABLE },
+        { address: terms.signer, role: AccountRole.READONLY_SIGNER },
+        { address: encodeBase58(new Uint8Array(32).fill(93)), role: AccountRole.WRITABLE },
+        { address: encodeBase58(new Uint8Array(32).fill(94)), role: AccountRole.READONLY },
+      ];
+      const confusedFrame = {
+        ...baseFrame,
+        interfaceTransfers: [{ kind: "splDeposit" as const, amount: 500n, splInterfaceBump: 255 }],
+      };
+      const confused = compileUnsignedTransaction({
+        feePayer: terms.feePayer,
+        lifetime: SIZE_PROBE_LIFETIME,
+        instructions: [
+          {
+            ...baseIx,
+            accounts: [...withoutOwner, ...splDepositAccounts],
+            data: ringInstructionData(confusedFrame),
+          },
+        ],
+        computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+      });
+      const expected = await expectedPublicOwner({
+        terms,
+        config: { mode: "anonymous" } as DelegateRingConfig,
+        knownNotes: entry.knownNullifiers.map((nullifier) => ({
+          nullifier: new Uint8Array(base58.encode(nullifier)) as Bytes32,
+        })),
+      });
+      expect(
+        verdict(
+          expected,
+          Buffer.from(new Uint8Array(confused.messageBytes)).toString("base64"),
+          terms.signer,
+        ),
+      ).toBe("Accounts");
+
+      for (const leg of [
+        { kind: "solWithdrawal" as const, amount: 10n },
+        { kind: "splWithdrawal" as const, amount: 10n, splInterfaceBump: 255 },
+      ]) {
+        const extra =
+          leg.kind === "solWithdrawal"
+            ? [
+                { address: encodeBase58(new Uint8Array(32).fill(51)), role: AccountRole.WRITABLE },
+                { address: encodeBase58(new Uint8Array(32).fill(52)), role: AccountRole.WRITABLE },
+              ]
+            : [
+                { address: encodeBase58(new Uint8Array(32).fill(53)), role: AccountRole.READONLY },
+                { address: encodeBase58(new Uint8Array(32).fill(54)), role: AccountRole.READONLY },
+                { address: encodeBase58(new Uint8Array(32).fill(55)), role: AccountRole.WRITABLE },
+                { address: encodeBase58(new Uint8Array(32).fill(56)), role: AccountRole.WRITABLE },
+                { address: encodeBase58(new Uint8Array(32).fill(57)), role: AccountRole.READONLY },
+              ];
+        const withdrawn = compileUnsignedTransaction({
+          feePayer: terms.feePayer,
+          lifetime: SIZE_PROBE_LIFETIME,
+          instructions: [
+            {
+              ...baseIx,
+              accounts: [...baseAccounts, ...extra],
+              data: ringInstructionData({
+                ...baseFrame,
+                interfaceTransfers: [leg],
+                splWithdrawalOwners:
+                  leg.kind === "splWithdrawal" && baseFrame.ownRevision !== undefined
+                    ? [new Uint8Array(32).fill(58) as Bytes32]
+                    : [],
+              }),
+            },
+          ],
+          computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+        });
+        expect(
+          verdict(
+            expected,
+            Buffer.from(new Uint8Array(withdrawn.messageBytes)).toString("base64"),
+            terms.signer,
+          ),
+        ).toBe("Data");
+      }
+
+      const writablePrefix = compileUnsignedTransaction({
+        feePayer: terms.feePayer,
+        lifetime: SIZE_PROBE_LIFETIME,
+        instructions: [
+          {
+            ...baseIx,
+            accounts: [
+              baseAccounts[0]!,
+              { address: encodeBase58(new Uint8Array(32).fill(61)), role: AccountRole.WRITABLE },
+              ...baseAccounts.slice(1),
+            ],
+          },
+        ],
+        computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+      });
+      expect(
+        verdict(
+          expected,
+          Buffer.from(new Uint8Array(writablePrefix.messageBytes)).toString("base64"),
+          terms.signer,
+        ),
+      ).toBe("Accounts");
+
+      const ownerAlsoInPrefix = compileUnsignedTransaction({
+        feePayer: terms.feePayer,
+        lifetime: SIZE_PROBE_LIFETIME,
+        instructions: [
+          {
+            ...baseIx,
+            accounts: [
+              baseAccounts[0]!,
+              { address: terms.signer, role: AccountRole.READONLY_SIGNER },
+              ...baseAccounts.slice(1),
+            ],
+          },
+        ],
+        computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+      });
+      expect(
+        verdict(
+          expected,
+          Buffer.from(new Uint8Array(ownerAlsoInPrefix.messageBytes)).toString("base64"),
+          terms.signer,
+        ),
+      ).toBe("Accounts");
+
+      expect(
+        verdict(expected, Buffer.from(new Uint8Array(4097)).toString("base64"), terms.signer),
+      ).toBe("Undecodable");
+
+      const decoded = getCompiledTransactionMessageDecoder().decode(
+        new Uint8Array(base64.encode(entry.message)),
+      );
+      if (decoded.version !== 1) throw new Error("expected v1 compiled message");
+      const extraAccounts = 65 - decoded.staticAccounts.length;
+      const tooManyAccounts = getCompiledTransactionMessageEncoder().encode({
+        ...decoded,
+        numStaticAccounts: 65,
+        header: {
+          ...decoded.header,
+          numReadonlyNonSignerAccounts: decoded.header.numReadonlyNonSignerAccounts + extraAccounts,
+        },
+        staticAccounts: [
+          ...decoded.staticAccounts,
+          ...Array.from({ length: extraAccounts }, (_, i) =>
+            encodeBase58(new Uint8Array(32).fill(100 + i)),
+          ),
+        ],
+      });
+      expect(verdict(expected, Buffer.from(tooManyAccounts).toString("base64"), terms.signer)).toBe(
+        "Undecodable",
+      );
+    });
+
+    it("refuses non-64-byte signatures from relay owner and transaction signers", async () => {
+      const badOwnerSigner = { sign: async () => new Uint8Array(63) };
+      const unsigned = new UnsignedRelay({
+        signer: badOwnerSigner,
+        messageHash: new Uint8Array(32),
+        request: {
+          ring: terms.ring,
+          quote: { feePayer: terms.feePayer, validUntilSlot: 1n },
+          intent: { operation: "anonymous", proofInputs: "AA==" as indexerTypes.Base64String },
+        },
+        expected: { kind: "sealed", terms: [], chargedOutflows: [] },
+      });
+      await expect(unsigned.sign()).rejects.toMatchObject({ code: "RING_RELAY_OWNER_SIGNATURE" });
+
+      const expected = await delegate(delegates.request);
+      const verified = checkRelayMessage(expected, message(delegates.cases, "honest"), DELEGATE);
+      const shortSigner = {
+        address: DELEGATE,
+        signTransactions: async () => [{ [DELEGATE]: new Uint8Array(63) }],
+      } as unknown as TransactionPartialSigner;
+      await expect(verified.sign(shortSigner)).rejects.toMatchObject({
+        details: { mismatch: "Signer" },
+      });
+    });
+
+    it("reports an unopened output ahead of a withdrawal leg", async () => {
+      const baseIx = instruction();
+      const baseFrame = RingTransactData.parse(
+        Uint8Array.from(baseIx.data ?? []).subarray(1),
+        "anonymous",
+      );
+      const baseAccounts = baseIx.accounts ?? [];
+      const withdrawn = compileUnsignedTransaction({
+        feePayer: terms.feePayer,
+        lifetime: SIZE_PROBE_LIFETIME,
+        instructions: [
+          {
+            ...baseIx,
+            accounts: [
+              ...baseAccounts,
+              { address: encodeBase58(new Uint8Array(32).fill(51)), role: AccountRole.WRITABLE },
+              { address: encodeBase58(new Uint8Array(32).fill(52)), role: AccountRole.WRITABLE },
+            ],
+            data: ringInstructionData({
+              ...baseFrame,
+              interfaceTransfers: [{ kind: "solWithdrawal" as const, amount: 10n }],
+            }),
+          },
+        ],
+        computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+      });
+      const unopenedExpected = await expectedPublicOwner({
+        terms: { ...terms, slots: terms.slots.slice(1) },
+        config: { mode: "anonymous" } as DelegateRingConfig,
+        knownNotes: entry.knownNullifiers.map((nullifier) => ({
+          nullifier: new Uint8Array(base58.encode(nullifier)) as Bytes32,
+        })),
+      });
+      expect(
+        verdict(
+          unopenedExpected,
+          Buffer.from(new Uint8Array(withdrawn.messageBytes)).toString("base64"),
+          terms.signer,
+        ),
+      ).toBe("UnopenedOutput");
+    });
+  });
+
+  describe("setup account role merging in compiled v1 messages", () => {
+    const key = (byte: number): Address => encodeBase58(new Uint8Array(32).fill(byte));
+    const RING = key(1);
+    const PAYER = key(2);
+    const SIGNER = key(3);
+    const MINT = key(4);
+    const TOKEN_PROGRAM = key(5);
+    const OTHER_OWNER = key(6);
+
+    const buildRingAccounts = async (
+      prefixTail: readonly AccountMeta[],
+      frame: RingTransactData,
+      settlement: readonly AccountMeta[],
+    ): Promise<readonly AccountMeta[]> => {
+      const spp = (at: number, role: AccountRole): AccountMeta => ({ address: key(at), role });
+      return [
+        { address: await ringPolicyAddress(RING), role: AccountRole.READONLY },
+        ...prefixTail,
+        { address: PAYER, role: AccountRole.WRITABLE_SIGNER },
+        spp(10, AccountRole.WRITABLE),
+        spp(11, AccountRole.READONLY),
+        spp(12, AccountRole.READONLY),
+        { address: await ringAuthAddress(RING), role: AccountRole.READONLY },
+        spp(13, AccountRole.WRITABLE),
+        ...frame.nullifiers.map((_, at) => spp(20 + at, AccountRole.WRITABLE)),
+        ...settlement,
+      ];
+    };
+
+    it("accepts a setup ATA create whose owner also signs as co-signer or funder", async () => {
+      const setup = { owner: SIGNER, mint: MINT, tokenProgram: TOKEN_PROGRAM };
+      const create = await getCreateAssociatedTokenAccountInstructionAsync({
+        payer: PAYER,
+        ...setup,
+      });
+
+      const coFrame = ringFrame({ rail: "confidential", inputs: 1, outputs: 2 });
+      const coAccounts = await buildRingAccounts(
+        [{ address: SIGNER, role: AccountRole.READONLY_SIGNER }],
+        coFrame,
+        [],
+      );
+      const coCompiled = compileUnsignedTransaction({
+        feePayer: PAYER,
+        lifetime: SIZE_PROBE_LIFETIME,
+        instructions: [
+          create,
+          { programAddress: RING, accounts: coAccounts, data: ringInstructionData(coFrame) },
+        ],
+        computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+      });
+      const coExpected = await expectedCoSigner({
+        ring: RING,
+        feePayer: PAYER,
+        signer: SIGNER,
+        config: { mode: "confidential" },
+        setup: [setup],
+        rule: { kind: "threshold", accepts: coFrame.approval },
+      });
+      expect(
+        verdict(
+          coExpected,
+          Buffer.from(new Uint8Array(coCompiled.messageBytes)).toString("base64"),
+          SIGNER,
+        ),
+      ).toBe("Accepted");
+
+      const funderFrame: RingTransactData = {
+        ...coFrame,
+        interfaceTransfers: [{ kind: "solDeposit" as const, amount: 5n }],
+      };
+      const funderAccounts = await buildRingAccounts([], funderFrame, [
+        { address: key(30), role: AccountRole.WRITABLE },
+        { address: SIGNER, role: AccountRole.WRITABLE_SIGNER },
+      ]);
+      const funderCompiled = compileUnsignedTransaction({
+        feePayer: PAYER,
+        lifetime: SIZE_PROBE_LIFETIME,
+        instructions: [
+          create,
+          {
+            programAddress: RING,
+            accounts: funderAccounts,
+            data: ringInstructionData(funderFrame),
+          },
+        ],
+        computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+      });
+      const funderExpected = await expectedFunder({
+        terms: {
+          ring: RING,
+          feePayer: PAYER,
+          signer: SIGNER,
+          legs: [{ amount: 5n }],
+          setup: [setup],
+        },
+        config: { mode: "confidential" },
+      });
+      expect(
+        verdict(
+          funderExpected,
+          Buffer.from(new Uint8Array(funderCompiled.messageBytes)).toString("base64"),
+          SIGNER,
+        ),
+      ).toBe("Accepted");
+    });
+
+    it("rejects setup-only accounts escalated to writable or signer and smuggled omitted ATAs", async () => {
+      const firstSetup = { owner: OTHER_OWNER, mint: MINT, tokenProgram: TOKEN_PROGRAM };
+      const secondSetup = { owner: key(7), mint: MINT, tokenProgram: TOKEN_PROGRAM };
+      const createFirst = await getCreateAssociatedTokenAccountInstructionAsync({
+        payer: PAYER,
+        ...firstSetup,
+      });
+      const createSecond = await getCreateAssociatedTokenAccountInstructionAsync({
+        payer: PAYER,
+        ...secondSetup,
+      });
+      const coFrame = ringFrame({ rail: "confidential", inputs: 1, outputs: 2 });
+      const coAccounts = await buildRingAccounts(
+        [{ address: SIGNER, role: AccountRole.READONLY_SIGNER }],
+        coFrame,
+        [],
+      );
+      const ringIx: Instruction = {
+        programAddress: RING,
+        accounts: coAccounts,
+        data: ringInstructionData(coFrame),
+      };
+      const expected = await expectedCoSigner({
+        ring: RING,
+        feePayer: PAYER,
+        signer: SIGNER,
+        config: { mode: "confidential" },
+        setup: [firstSetup, secondSetup],
+        rule: { kind: "threshold", accepts: coFrame.approval },
+      });
+      const checkSetup = (setupIx: Instruction): string => {
+        const { messageBytes } = compileUnsignedTransaction({
+          feePayer: PAYER,
+          lifetime: SIZE_PROBE_LIFETIME,
+          instructions: [setupIx, ringIx],
+          computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+        });
+        return verdict(
+          expected,
+          Buffer.from(new Uint8Array(messageBytes)).toString("base64"),
+          SIGNER,
+        );
+      };
+
+      expect(checkSetup(createFirst)).toBe("Accepted");
+
+      const writableOwner: Instruction = {
+        ...createFirst,
+        accounts: (createFirst.accounts ?? []).map((meta) =>
+          meta.address === OTHER_OWNER ? { ...meta, role: AccountRole.WRITABLE } : meta,
+        ),
+      };
+      expect(checkSetup(writableOwner)).toBe("Accounts");
+
+      const signerOwner: Instruction = {
+        ...createFirst,
+        accounts: (createFirst.accounts ?? []).map((meta) =>
+          meta.address === OTHER_OWNER ? { ...meta, role: AccountRole.READONLY_SIGNER } : meta,
+        ),
+      };
+      expect(checkSetup(signerOwner)).toBe("Accounts");
+
+      const ataAddress = createFirst.accounts?.[1]?.address;
+      if (ataAddress === undefined) throw new Error("missing ata");
+      const signerAta: Instruction = {
+        ...createFirst,
+        accounts: (createFirst.accounts ?? []).map((meta) =>
+          meta.address === ataAddress ? { ...meta, role: AccountRole.WRITABLE_SIGNER } : meta,
+        ),
+      };
+      expect(checkSetup(signerAta)).toBe("Accounts");
+
+      const omittedBase = compileUnsignedTransaction({
+        feePayer: PAYER,
+        lifetime: SIZE_PROBE_LIFETIME,
+        instructions: [createSecond, ringIx],
+        computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+      });
+      const decoded = getCompiledTransactionMessageDecoder().decode(
+        new Uint8Array(omittedBase.messageBytes),
+      );
+      if (decoded.version !== 1) throw new Error("expected v1 compiled message");
+      const insertAt = decoded.header.numSignerAccounts;
+      const shift = (index: number): number => (index >= insertAt ? index + 1 : index);
+      const smuggled = getCompiledTransactionMessageEncoder().encode({
+        ...decoded,
+        numStaticAccounts: decoded.staticAccounts.length + 1,
+        staticAccounts: [
+          ...decoded.staticAccounts.slice(0, insertAt),
+          ataAddress,
+          ...decoded.staticAccounts.slice(insertAt),
+        ],
+        instructionHeaders: decoded.instructionHeaders.map((header) => ({
+          ...header,
+          programAccountIndex: shift(header.programAccountIndex),
+        })),
+        instructionPayloads: decoded.instructionPayloads.map((payload) => ({
+          ...payload,
+          instructionAccountIndices: payload.instructionAccountIndices.map(shift),
+        })),
+      });
+      expect(verdict(expected, Buffer.from(smuggled).toString("base64"), SIGNER)).toBe("Accounts");
     });
   });
 

@@ -7,6 +7,7 @@ import { RingError } from "../../protocol/error.js";
 import { mintPolicyField, type MintPolicy } from "../../protocol/membership/mint-policy.js";
 import { checkMember } from "../../protocol/membership/member-opening.js";
 import {
+  isPrivateList,
   memberOfTag,
   publicMember,
   recordBit,
@@ -14,6 +15,10 @@ import {
   type ListId,
   type Member,
 } from "../../protocol/membership/policy.js";
+import {
+  privateRevocationKeys,
+  type OwnerListSalts,
+} from "../../protocol/membership/private-list.js";
 import { AWAITABLE_LISTS, signRecordUpdate } from "../../protocol/ring-rpc/record-update.js";
 import type {
   ReaderAccess,
@@ -106,6 +111,7 @@ export class AuthorityRecordUpdate {
   readonly #target: RecordUpdateTarget;
   readonly #authority: Address;
   #entries: readonly RecordUpdateEntry[] = Object.freeze([]);
+  #unregisteredOwners: readonly Address[] = Object.freeze([]);
 
   constructor(input: RecordUpdateTarget & Readonly<{ authority: Address }>) {
     this.#target = input;
@@ -123,6 +129,32 @@ export class AuthorityRecordUpdate {
       mask: listMask(lists),
       value: listBits(lists.set),
     });
+  }
+
+  withOwnerPrivateClear(
+    input: Readonly<{ owner: Address; salts: OwnerListSalts; lists: readonly ListId[] }>,
+  ): AuthorityRecordUpdate {
+    const write = listWrite({ clear: input.lists });
+    checkWriter(write, "authority");
+    if (write.clear.some((id) => !isPrivateList(id))) throw invalid("NonPrivateList");
+    const ownerPkHash = memberOfTag(addressBytes(input.owner, "owner"));
+    const targets = privateRevocationKeys(ownerPkHash, input.salts);
+    const mask = listMask(write);
+    const entries = targets.map((target) =>
+      Object.freeze<RecordUpdateEntry>({
+        kind: "write",
+        mintPolicy: null,
+        member: indexerScalars.hash(checkMember(target.member)),
+        mask,
+        value: 0n,
+      }),
+    );
+    const unregisteredOwners =
+      targets.some((target) => target.kind === "ring") &&
+      !this.#unregisteredOwners.includes(input.owner)
+        ? [...this.#unregisteredOwners, input.owner]
+        : this.#unregisteredOwners;
+    return this.#copy([...this.#entries, ...entries], unregisteredOwners);
   }
 
   /** Replaces all mint settings, zero values clear them. */
@@ -144,12 +176,23 @@ export class AuthorityRecordUpdate {
   /** The writer refuses a signer other than the policy authority. */
   async sign(authority: MessagePartialSigner): Promise<SubmitRecordUpdateRequest> {
     if (authority.address !== this.#authority) throw invalid("Signer");
-    return signEntries(this.#target, this.#entries, authority);
+    const signed = await signEntries(this.#target, this.#entries, authority);
+    return this.#unregisteredOwners.length === 0
+      ? signed
+      : Object.freeze({ ...signed, unregisteredOwners: this.#unregisteredOwners });
   }
 
   #with(entry: RecordUpdateEntry): AuthorityRecordUpdate {
+    return this.#copy([...this.#entries, Object.freeze(entry)], this.#unregisteredOwners);
+  }
+
+  #copy(
+    entries: readonly RecordUpdateEntry[],
+    unregisteredOwners: readonly Address[],
+  ): AuthorityRecordUpdate {
     const next = new AuthorityRecordUpdate({ ...this.#target, authority: this.#authority });
-    next.#entries = Object.freeze([...this.#entries, Object.freeze(entry)]);
+    next.#entries = Object.freeze(entries);
+    next.#unregisteredOwners = Object.freeze(unregisteredOwners);
     return next;
   }
 }

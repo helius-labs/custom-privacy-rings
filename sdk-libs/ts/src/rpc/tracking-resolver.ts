@@ -10,6 +10,7 @@ import type { RingAddress } from "../crypto/keys/ring-address.js";
 import { x25519FromU } from "../crypto/keys/x25519.js";
 import type { StorageRegistryRoot } from "../protocol/codec/ring-codecs.js";
 import { RingError } from "../protocol/error.js";
+import { STORAGE_PROGRAM_ID } from "../protocol/pda/index.js";
 import { sealViewingKey, type ServedTrackingOpening } from "../protocol/indexer/tracking-codec.js";
 import {
   decodeTrackingRegistry,
@@ -176,6 +177,10 @@ export async function fetchTrackingRegistry(
   if (account === undefined)
     throw new RingError("RING_TRACKING_INVALID", {
       details: { reason: "registry" },
+    });
+  if (account.owner !== STORAGE_PROGRAM_ID)
+    throw new RingError("RING_TRACKING_INVALID", {
+      details: { reason: "owner", registry: address, owner: account.owner },
     });
   return decodeTrackingRegistry(account.data);
 }

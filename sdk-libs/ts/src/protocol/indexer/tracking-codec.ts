@@ -18,12 +18,11 @@ import {
   type TrackingRecord,
 } from "../membership/tracking.js";
 import { MAX_RING_MEMBER_BATCH } from "./indexer-limits.js";
+import { unboundedU64 } from "./indexer-codec.js";
 
 const { array, context, object, wireInteger } = indexerCodec;
 const { checkedAddress, checkedBase64, checkedHash, hash, hashBytes, schemaFailure } =
   indexerScalars;
-
-const U64_MAX = (1n << 64n) - 1n;
 
 export interface TrackingOpeningsRequest {
   readonly registry: Address;
@@ -222,5 +221,5 @@ function field(value: unknown, path: string): Bytes32 {
 }
 
 function u64(value: unknown, path: string): bigint {
-  return wireInteger(value, path, 0n, U64_MAX);
+  return unboundedU64(value, path);
 }

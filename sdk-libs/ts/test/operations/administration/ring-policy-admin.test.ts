@@ -115,6 +115,27 @@ describe("policy transactions", () => {
       causeCode: "RING_MEMBER_REGISTRY_MISSING",
     });
     expect(client.getLatestBlockhash).not.toHaveBeenCalled();
+
+    const forgedClient = await chain();
+    forgedClient.getAccount.mockImplementation(async (account: Address) =>
+      account === CURATOR_B ? ownedAccount(RING, new Uint8Array(32)) : client.getAccount(account),
+    );
+    await expect(
+      buildRingUpdatePolicyTransaction({
+        client: forgedClient,
+        ringProgramId: RING,
+        authority: AUTHORITY,
+        update: {
+          kind: "rules",
+          table: buildRuleTable({ rules: RULES }),
+          sharedSources: [{ listId: ListId.block, curatorRegistry: CURATOR_B }],
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: "RING_BUILD_POLICY",
+      causeCode: "RING_MEMBER_REGISTRY_INVALID",
+    });
+    expect(forgedClient.getLatestBlockhash).not.toHaveBeenCalled();
   });
 
   it("refuses an audit-only ring before the curator or the blockhash", async () => {

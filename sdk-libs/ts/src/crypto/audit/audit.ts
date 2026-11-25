@@ -193,9 +193,11 @@ function sealRegions(
   const { auditorPublicKey } = input;
   const publicKey = key.publicKey();
   const secret = envelopeSecret(key, auditorPublicKey, publicKey, auditorPublicKey);
+  let derived: Bytes32 | undefined;
   let schedule: AuditSchedule | undefined;
   try {
-    const stream = (schedule = AuditSchedule.derive(keyed(secret), AUDIT_ENC_INFO));
+    derived = keyed(secret);
+    const stream = (schedule = AuditSchedule.derive(derived, AUDIT_ENC_INFO));
     const envelope = stream.apply(STREAM_FIRST_COUNTER, input.envelope);
     const recipientKeys = Object.freeze(
       input.recipientKeys.map(({ counter, bytes }) => stream.apply(counter, bytes)),
@@ -211,6 +213,7 @@ function sealRegions(
     });
   } finally {
     secret.fill(0);
+    derived?.fill(0);
     schedule?.destroy();
   }
 }
@@ -233,12 +236,13 @@ export function saltedAuditorSchedule(
     txViewingPublicKey,
     auditor.publicKey(),
   );
-  const salted = saltedSecret(shared, salt);
+  let salted: Bytes32 | undefined;
   try {
+    salted = saltedSecret(shared, salt);
     return AuditSchedule.derive(salted, AUDIT_ENC_INFO);
   } finally {
     shared.fill(0);
-    salted.fill(0);
+    salted?.fill(0);
   }
 }
 
@@ -249,13 +253,15 @@ export function sealedAuditorSchedule(
   salt: Bytes16,
 ): AuditSchedule {
   const key = X25519Keypair.fromBytes(txViewingSecret);
-  const shared = envelopeSecret(key, auditorPublicKey, key.publicKey(), auditorPublicKey);
-  const salted = saltedSecret(shared, salt);
+  let shared: Bytes32 | undefined;
+  let salted: Bytes32 | undefined;
   try {
+    shared = envelopeSecret(key, auditorPublicKey, key.publicKey(), auditorPublicKey);
+    salted = saltedSecret(shared, salt);
     return AuditSchedule.derive(salted, AUDIT_ENC_INFO);
   } finally {
-    shared.fill(0);
-    salted.fill(0);
+    shared?.fill(0);
+    salted?.fill(0);
     key.destroy();
   }
 }

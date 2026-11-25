@@ -1,4 +1,4 @@
-import { sha256 } from "@heliuslabs/spr/internal";
+import { equalBytes, sha256 } from "@heliuslabs/spr/internal";
 
 import { RingError } from "../../protocol/error.js";
 import {
@@ -16,6 +16,10 @@ export interface Passkey {
 const ES256 = -7;
 /** SPKI DER of a P-256 key ends with the 65-byte uncompressed point. */
 const UNCOMPRESSED_POINT_LENGTH = 65;
+const P256_SPKI_PREFIX = Uint8Array.from([
+  0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a,
+  0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07, 0x03, 0x42, 0x00,
+]);
 
 /** Only ES256 is offered, the authenticator always answers with a P-256 key. */
 export async function createPasskey(
@@ -38,7 +42,14 @@ export async function createPasskey(
   if (!credential || !spki || response?.getPublicKeyAlgorithm?.() !== ES256) {
     throw new RingError("RING_PASSKEY", { details: { reason: "no ES256 credential" } });
   }
-  const point = new Uint8Array(spki).slice(-UNCOMPRESSED_POINT_LENGTH);
+  const spkiBytes = new Uint8Array(spki);
+  if (
+    spkiBytes.length !== P256_SPKI_PREFIX.length + UNCOMPRESSED_POINT_LENGTH ||
+    !equalBytes(spkiBytes.subarray(0, P256_SPKI_PREFIX.length), P256_SPKI_PREFIX)
+  ) {
+    throw new RingError("RING_PASSKEY", { details: { reason: "invalid P-256 SPKI" } });
+  }
+  const point = spkiBytes.subarray(P256_SPKI_PREFIX.length);
   return Object.freeze({
     credentialId: new Uint8Array(credential.rawId),
     publicKey: P256ReaderKey.fromUncompressed(point),

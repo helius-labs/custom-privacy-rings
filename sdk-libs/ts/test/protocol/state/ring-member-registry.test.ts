@@ -5,7 +5,10 @@ import records from "../../../../../test-vectors/registry/ring-records.json" wit
 import type { RpcAccount } from "@heliuslabs/spr/client";
 import { initializePoseidon } from "@heliuslabs/spr";
 import {
+  BN254_SCALAR_ORDER,
+  ZERO_32,
   addressBytes,
+  bigIntBytes,
   bytesToBigInt,
   equalBytes,
   hashBytes,
@@ -14,7 +17,12 @@ import {
 import type { Bytes31, Bytes32 } from "@heliuslabs/spr/interface";
 import { NullifierKey, ShieldedKeypair, SigningKey, X25519Keypair } from "@heliuslabs/spr/keypair";
 import { ringPolicyPda } from "../../../src/protocol/pda/index.js";
-import { MEMBER_REGISTRY_EMPTY_ROOT } from "../../../src/protocol/membership/member-opening.js";
+import {
+  MEMBER_REGISTRY_EMPTY_ROOT,
+  SENTINEL_RECORD,
+  verifyRecordOpening,
+  verifyRecordPool,
+} from "../../../src/protocol/membership/member-opening.js";
 import { memberOfTag } from "../../../src/protocol/membership/policy.js";
 import {
   fetchRingSealedKey,
@@ -200,6 +208,62 @@ describe("nullifier key envelope", () => {
   it("pins the sentinel-only root the registry starts from", () => {
     expect(Buffer.from(MEMBER_REGISTRY_EMPTY_ROOT).toString("hex")).toBe(records.empty_root);
     expect(recordTree().root).toEqual(MEMBER_REGISTRY_EMPTY_ROOT);
+  });
+
+  it("refuses non-canonical field elements in member openings and pools", () => {
+    const member = actor(21).member;
+    const tree = recordTree();
+    const opening = tree.opening(member);
+    if (opening.kind !== "absent") throw new Error("expected absent");
+    const wrappedNext = bigIntBytes(
+      bytesToBigInt(opening.low.next) + BN254_SCALAR_ORDER,
+    ) as Bytes32;
+    expect(() =>
+      verifyRecordOpening(
+        { kind: "absent", low: { ...opening.low, next: wrappedNext }, path: opening.path },
+        tree.root,
+        member,
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        code: "RING_MEMBER_REGISTRY_INVALID",
+        details: { reason: "NonCanonicalField" },
+      }),
+    );
+    const nonCanonical = bigIntBytes(BN254_SCALAR_ORDER) as Bytes32;
+    const badPath = {
+      ...opening.path,
+      siblings: [[nonCanonical, ZERO_32, ZERO_32], ...opening.path.siblings.slice(1)],
+    };
+    expect(() =>
+      verifyRecordOpening(
+        { kind: "absent", low: SENTINEL_RECORD, path: badPath },
+        tree.root,
+        member,
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        code: "RING_MEMBER_REGISTRY_INVALID",
+        details: { reason: "NonCanonicalField" },
+      }),
+    );
+    expect(() =>
+      verifyRecordPool(
+        {
+          records: [{ record: SENTINEL_RECORD, path: opening.path }],
+          canopy: [nonCanonical],
+          subjects: [0],
+        },
+        tree.root,
+        [member],
+        1,
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        code: "RING_MEMBER_REGISTRY_INVALID",
+        details: { reason: "NonCanonicalField" },
+      }),
+    );
   });
 });
 

@@ -354,4 +354,59 @@ describe("durable recovery", () => {
     expect(source.tagQueries.at(-1)?.minContextSlot).toBe(300n);
     expect(source.ringQueries).toEqual([]);
   });
+
+  it("rejects unknown keys on recovery session objects and invalid owner hex", async () => {
+    const source = new RecoverySource();
+    const alice = new ScanWallet(1);
+    const bob = new ScanWallet(2);
+    await alice.pay(source.indexer, [{ to: bob.address, amount: 7n }], { slot: 10n });
+    const sync = AnonymousSync.create(bob.keys, ASSETS).withScanLimits({
+      pageSize: 1,
+      maxPages: 1,
+    });
+    const held = wallet(bob);
+    await held.absorb(await sync.fetchWallet(source.client(), held));
+    const base = JSON.parse(held.toJson()) as {
+      recovery: Record<string, unknown> & {
+        tasks: Record<string, unknown>[];
+        active: Record<string, unknown> | null;
+      };
+    };
+
+    const withExtraSession = structuredClone(base);
+    withExtraSession.recovery["extra"] = true;
+    expect(() => AnonymousWallet.fromJson(JSON.stringify(withExtraSession))).toThrow(
+      "RING_WALLET_DOCUMENT",
+    );
+
+    const withBadOwner = structuredClone(base);
+    withBadOwner.recovery["owner"] = "not-valid-hex";
+    expect(() => AnonymousWallet.fromJson(JSON.stringify(withBadOwner))).toThrow(
+      "RING_WALLET_DOCUMENT",
+    );
+
+    const withShortOwner = structuredClone(base);
+    withShortOwner.recovery["owner"] = "00".repeat(32);
+    expect(() => AnonymousWallet.fromJson(JSON.stringify(withShortOwner))).toThrow(
+      "RING_WALLET_DOCUMENT",
+    );
+
+    const withExtraTask = structuredClone(base);
+    withExtraTask.recovery.tasks[0]!["extra"] = 1;
+    expect(() => AnonymousWallet.fromJson(JSON.stringify(withExtraTask))).toThrow(
+      "RING_WALLET_DOCUMENT",
+    );
+
+    const withExtraActive = structuredClone(base);
+    withExtraActive.recovery.active = {
+      limit: 1,
+      token: null,
+      workOffset: 0,
+      nullifiers: ["00".repeat(32)],
+      extra: 1,
+    };
+    expect(() => AnonymousWallet.fromJson(JSON.stringify(withExtraActive))).toThrow(
+      "RING_WALLET_DOCUMENT",
+    );
+  });
 });
