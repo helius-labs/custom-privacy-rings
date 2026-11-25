@@ -62,6 +62,13 @@ use crate::instructions::*;
 #[cfg(all(feature = "bpf-entrypoint", not(feature = "no-entrypoint")))]
 mod entrypoint {
     pinocchio::entrypoint!(crate::process_instruction);
+
+    solana_security_txt::security_txt! {
+        name: "Solana Privacy Rings Custom Ring",
+        project_url: "https://github.com/helius-labs/zolana-custom-rings",
+        contacts: "email:privacydisclosures@helius.xyz",
+        policy: "Please report security vulnerabilities privately to privacydisclosures@helius.xyz."
+    }
 }
 
 pub fn process_instruction(

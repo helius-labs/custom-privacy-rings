@@ -33,7 +33,7 @@ use crate::{
 
 /// Roots a transfer proof may bind, applications in between leave it provable.
 pub const ROOT_HISTORY: usize = 32;
-/// One slot per list the enum can name, all eight enter the hash.
+/// One slot per list the enum can name, all nine enter the hash.
 pub const N_SOURCE_SLOTS: usize = zolana_ring_policy::MAX_SOURCES;
 
 /// Created only at its canonical PDA, an owned account with the discriminator needs no address check.
@@ -502,24 +502,6 @@ impl LiveRoots<'_> {
             .map_err(|_| CustomRingError::RootNotServed)
     }
 
-    /// Without the records, `None` at revision zero and `unread` otherwise.
-    pub fn own_if_read(
-        &self,
-        revision: Revision,
-        unread: CustomRingError,
-    ) -> Result<Option<[u8; 32]>, CustomRingError> {
-        Self::named(self.served(self.own, revision)?, revision, unread)
-    }
-
-    /// Without a curator, `None` at revision zero and `unread` otherwise.
-    pub fn curator_if_read(
-        &self,
-        revision: Revision,
-        unread: CustomRingError,
-    ) -> Result<Option<[u8; 32]>, CustomRingError> {
-        Self::named(self.served(self.curator, revision)?, revision, unread)
-    }
-
     fn served(
         &self,
         registry: Option<&StorageRegistry>,
@@ -532,17 +514,6 @@ impl LiveRoots<'_> {
                     .map_err(|_| CustomRingError::RootNotServed)
             })
             .transpose()
-    }
-
-    fn named(
-        root: Option<[u8; 32]>,
-        revision: Revision,
-        unread: CustomRingError,
-    ) -> Result<Option<[u8; 32]>, CustomRingError> {
-        match root {
-            None if revision.value() != 0 => Err(unread),
-            root => Ok(root),
-        }
     }
 }
 

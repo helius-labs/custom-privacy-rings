@@ -25,6 +25,7 @@ groth16-solana = { workspace = true, features = ["bsb22"] }
 pinocchio = { workspace = true, features = ["cpi"] }
 pinocchio-system = { workspace = true }
 solana-loader-v3-interface = { workspace = true, features = ["serde"] }
+solana-security-txt = { workspace = true }
 wincode = { workspace = true }
 spr-account-checks = { workspace = true }
 spr-hasher = { workspace = true }

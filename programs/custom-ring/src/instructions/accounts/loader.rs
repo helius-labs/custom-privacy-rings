@@ -53,7 +53,7 @@ pub fn load_mut<'a, T: RingAccount>(
     program_id: &Address,
     account: &'a mut AccountView,
 ) -> Result<RefMut<'a, T>, ProgramError> {
-    if !account.owned_by(program_id) {
+    if !account.owned_by(program_id) || !account.is_writable() {
         return Err(T::INVALID.into());
     }
     let data = account.try_borrow_mut().map_err(|_| T::INVALID)?;

@@ -119,28 +119,28 @@ impl TransactCheck<'_> {
         )?;
         // 4. The pairs and the delegate slot size the ring's prefix, every SPP index below counts from `spp`.
         let delegate_slot = co_signers_start + co_signers.accounts();
-        let delegate_signer = match self.signer {
-            RailSigner::Delegate { .. } => accounts
-                .get(delegate_slot)
-                .filter(|signer| signer.is_signer()),
-            RailSigner::Owners | RailSigner::Payer => None,
-        };
-        // A signer other than the ring's delegate names its mint in the next slot.
-        let mint_delegate =
-            delegate_signer.filter(|signer| ring.delegate() != Some(signer.address()));
-        let delegate_asset = match mint_delegate {
-            Some(signer) => {
-                load_mint_delegate_asset(account_at(accounts, delegate_slot + 1)?, signer.address())
+        let (delegate_asset, spp_start) = match self.signer {
+            RailSigner::Delegate { .. } => {
+                let delegate_signer = accounts
+                    .get(delegate_slot)
+                    .filter(|signer| signer.is_signer())
+                    .ok_or(CustomRingError::UnauthorizedDelegate)?;
+                // A signer other than the ring's delegate names its mint in the next slot.
+                if ring.delegate() != Some(delegate_signer.address()) {
+                    let asset = load_mint_delegate_asset(
+                        account_at(accounts, delegate_slot + 1)?,
+                        delegate_signer.address(),
+                    )
                     .map_err(|error| match ring.delegate() {
                         None => CustomRingError::DelegateDisabled,
                         Some(_) => error,
-                    })?
+                    })?;
+                    (asset, delegate_slot + 2)
+                } else {
+                    ([0; 32], delegate_slot + 1)
+                }
             }
-            None => [0; 32],
-        };
-        let spp_start = match self.signer {
-            RailSigner::Delegate { .. } => delegate_slot + 1 + usize::from(mint_delegate.is_some()),
-            RailSigner::Owners | RailSigner::Payer => delegate_slot,
+            RailSigner::Owners | RailSigner::Payer => ([0; 32], delegate_slot),
         };
         let spp = accounts
             .get(spp_start..)
@@ -159,6 +159,7 @@ impl TransactCheck<'_> {
         {
             return Err(CustomRingError::DelegatePublicLeg.into());
         }
+        let owners = data.owner_signers(spp, window.len())?;
         // 7. A funder signs for its own deposit leg, and SPP moves only that leg's amount under the
         // signature.
         let mut groups = window;
@@ -174,7 +175,6 @@ impl TransactCheck<'_> {
         // 8. Each rail names who authorizes the spend, and the statement binds that identity.
         let (sender, signers) = match self.signer {
             RailSigner::Payer => {
-                let owners = data.owner_signers(spp, window.len())?;
                 check_owner_run(owners, &co_signers)?;
                 // The proof holds each public owner's live input to the run, an empty run spends nothing.
                 if data.public_owners && !data.no_spend && owners.is_empty() {
@@ -183,7 +183,6 @@ impl TransactCheck<'_> {
                 ([0; 32], signer_set(owners, slots)?)
             }
             RailSigner::Owners => {
-                let owners = data.owner_signers(spp, window.len())?;
                 check_owner_run(owners, &co_signers)?;
                 // The in-proof owner signs inside SPP's anonymous rail proof, the frame names its key.
                 let sender = match data.in_proof_owner {
@@ -204,8 +203,8 @@ impl TransactCheck<'_> {
             RailSigner::Delegate { .. } => {
                 // SPP's authority rail admits no owner signer, the delegate slot is the move's one
                 // authorization beside governance's rail flag in `RingConfig`.
-                if delegate_signer.is_none() {
-                    return Err(CustomRingError::UnauthorizedDelegate.into());
+                if !owners.is_empty() {
+                    return Err(CustomRingError::InvalidSettlementAccounts.into());
                 }
                 ([0; 32], SignerSet::default())
             }

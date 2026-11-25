@@ -128,7 +128,7 @@ mod cpi {
             let accounts = [
                 InstructionAccount::readonly_signer(self.writer.address()),
                 InstructionAccount::readonly(self.policy.address()),
-                InstructionAccount::writable(self.ring_auth.address()),
+                InstructionAccount::readonly(self.ring_auth.address()),
                 InstructionAccount::writable(self.tracking.address()),
                 InstructionAccount::readonly_signer(self.vault.address()),
                 InstructionAccount::readonly(self.storage.address()),

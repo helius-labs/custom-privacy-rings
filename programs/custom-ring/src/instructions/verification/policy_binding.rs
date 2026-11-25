@@ -64,11 +64,17 @@ impl TableBinding<'_> {
             seen = seen.union(ListSet::single(list_id));
             let registry = match spec.source {
                 0 => Address::default(),
-                n => *self
-                    .curators
-                    .get(usize::from(n) - 1)
-                    .ok_or(CustomRingError::InvalidSource)?
-                    .address(),
+                n => {
+                    let address = *self
+                        .curators
+                        .get(usize::from(n) - 1)
+                        .ok_or(CustomRingError::InvalidSource)?
+                        .address();
+                    if address == Address::default() {
+                        return Err(CustomRingError::InvalidSource.into());
+                    }
+                    address
+                }
             };
             sources[list_id.slot()] = SourceSlot {
                 list_id: list_id as u8,

@@ -39,10 +39,7 @@ use spl_token_2022_interface::{
     extension::{permanent_delegate::get_permanent_delegate, PodStateWithExtensions},
     pod::PodMint,
 };
-use spr_hasher::{
-    primitives::{hash_bytes, solana_owner_identity},
-    HasherError,
-};
+use spr_hasher::{primitives::solana_owner_identity, HasherError};
 use spr_interface::{
     error::ShieldedPoolError,
     instruction::{
@@ -60,6 +57,7 @@ use spr_interface::{
     N_PUBLIC_SLOTS, SPL_TOKEN_2022_PROGRAM_ID,
 };
 use wincode::{containers, len::FixIntLen, Serialize};
+use zolana_ring_policy::{Member, MemberError};
 
 use crate::{
     anonymous_exit::ANONYMOUS_PARTIES,
@@ -159,7 +157,11 @@ impl MintDelegate<'_> {
         {
             return Err(CustomRingError::UnauthorizedDelegate);
         }
-        Ok(hash_bytes(self.mint.as_array())?)
+        let asset = Member::asset(self.mint).map_err(|error| match error {
+            MemberError::Hashing => CustomRingError::HashingFailed,
+            MemberError::Zero | MemberError::ZeroSalt => CustomRingError::UnauthorizedDelegate,
+        })?;
+        Ok(*asset.as_bytes())
     }
 }
 
@@ -1201,8 +1203,9 @@ impl<'a> RingTransactData<'a> {
         let cache_accounts = self.extensions.cache.map_or(0, |access| {
             usize::from(access.read_bitmap != 0) + 2 * usize::from(access.writes_cache())
         });
-        spp.len()
-            .checked_sub(settlements + cache_accounts)
+        settlements
+            .checked_add(cache_accounts)
+            .and_then(|tail| spp.len().checked_sub(tail))
             .and_then(|end| spp.get(start..end))
             .ok_or(CustomRingError::InvalidSettlementAccounts)
     }

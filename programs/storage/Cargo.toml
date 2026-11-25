@@ -18,6 +18,7 @@ custom-ring-interface = { workspace = true }
 pinocchio = { workspace = true, features = ["cpi"] }
 pinocchio-system = { workspace = true }
 solana-sdk-ids = { workspace = true }
+solana-security-txt = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }

@@ -1208,6 +1208,57 @@ fn the_enrollment_signature_is_the_shared_vector() {
 }
 
 #[test]
+fn parsed_storage_update_caches_private_writes_bitmap() {
+    use custom_ring_interface::storage_instruction::{AssetWrite, ParsedStorageUpdate};
+    use zolana_ring_policy::Member;
+
+    let apply = restrictive_apply_ix();
+    let mint = key(0x55);
+    let mut asset_write = list_write(ListId::PrivateAllow);
+    asset_write.member = *Member::asset(&mint).unwrap().as_bytes();
+    let mut owner_write = list_write(ListId::PrivateBlock);
+    owner_write.member = [0x04; 32];
+    let data = StorageUpdateIxData {
+        revision: 3u64.into(),
+        writes: vec![asset_write, owner_write],
+        asset_writes: vec![AssetWrite {
+            write_index: 0,
+            mint,
+        }],
+        tracking_revision: Some(5u64.into()),
+        apply: &apply,
+    };
+    let encoded = data.encode().unwrap();
+    let parsed = ParsedStorageUpdate::parse(&encoded).unwrap();
+    let expected_entries: Vec<_> = data
+        .writes
+        .iter()
+        .map(|write| write.storage_entry().unwrap())
+        .collect();
+    assert_eq!(parsed.data, data);
+    assert_eq!(parsed.entries(), expected_entries.as_slice());
+    assert_eq!(parsed.private_writes(), 0b10);
+    assert_eq!(parsed.private_writes(), data.private_writes().unwrap());
+}
+
+#[test]
+fn storage_update_refuses_revision_overflow() {
+    let apply = apply_ix();
+    let mut registry = public_registry(10);
+    registry.roots[0].revision = Revision::from(u64::MAX);
+    let before = registry;
+    let data = update_data(u64::MAX, ListId::Allow, &apply);
+    assert_eq!(
+        registry.update(RootUpdate {
+            slot: 1,
+            data: &data,
+        }),
+        Err(StorageError::RevisionOverflow)
+    );
+    assert_eq!(registry, before);
+}
+
+#[test]
 #[ignore = "rewrites test-vectors/rpc/enrollment_signature.json"]
 fn write_enrollment_signature_vector() {
     let json = serde_json::to_string_pretty(&signature_vector()).expect("json");

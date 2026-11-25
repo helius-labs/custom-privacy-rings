@@ -71,7 +71,7 @@ impl OwnerGrantIxData {
     pub fn check(&self) -> Result<(), StorageError> {
         let canonical = match self.reader[0] {
             READER_KEY_ED25519 => self.reader[33] == 0,
-            READER_KEY_P256 => true,
+            READER_KEY_P256 => matches!(self.reader[1], 0x02 | 0x03),
             _ => false,
         };
         if !canonical {
@@ -86,3 +86,28 @@ impl OwnerGrantIxData {
 
 const _: () = assert!(core::mem::align_of::<OwnerGrant>() == 1);
 const _: () = assert!(OwnerGrant::SIZE == 2);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn p256_reader_key_requires_compressed_sec1_prefix() {
+        for prefix in [0x02, 0x03] {
+            let mut reader = [7; 34];
+            reader[0] = READER_KEY_P256;
+            reader[1] = prefix;
+            assert_eq!(OwnerGrantIxData { reader, active: 1 }.check(), Ok(()));
+        }
+        for bad_prefix in [0x00, 0x01, 0x04, 0x06, 0xff] {
+            let mut reader = [7; 34];
+            reader[0] = READER_KEY_P256;
+            reader[1] = bad_prefix;
+            assert_eq!(
+                OwnerGrantIxData { reader, active: 1 }.check(),
+                Err(StorageError::InvalidReaderKey),
+                "bad_prefix={bad_prefix:#x}"
+            );
+        }
+    }
+}

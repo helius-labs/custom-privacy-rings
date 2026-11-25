@@ -6,14 +6,14 @@
 //! Read after `program-libs/interface/src/codec/stream.rs`. Read before `program-libs/interface/src/proof/verification.rs`,
 //! `programs/custom-ring/src/instructions/verification/verifier.rs`.
 
-use spr_interface::{shape::MAX_TRANSACTION_ADDRESSES, N_PUBLIC_SLOTS};
+use spr_interface::shape::MAX_TRANSACTION_ADDRESSES;
 
 use crate::{
     audit_stream::AuditKey, member_registry::APPLY_BATCH, storage_instruction::ENROLLMENT_BATCH,
     transact::RingRail,
 };
 
-pub use crate::ring_keys::RING_KEYS;
+pub use crate::ring_keys::{RING_KEYS, TRANSFER_SHAPES};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RingCircuit {
@@ -58,90 +58,14 @@ pub struct TransferShape {
     pub owners: u8,
     pub entry: bool,
     pub wide: bool,
+    /// Header wide bit, clear on narrow entry keys whose pools stay wide.
+    pub frame_wide: bool,
     /// The most tracking rows one inline transaction on the key opens.
     pub tracking: u8,
     /// Excludes input and public slot assets.
     pub records: u8,
+    pub pools: RecordPools,
 }
-
-const fn narrow(
-    outputs: u8,
-    inputs: u8,
-    withdrawals: u8,
-    owners: u8,
-    pools: [u8; 2],
-) -> TransferShape {
-    TransferShape {
-        outputs,
-        inputs,
-        withdrawals,
-        owners,
-        entry: false,
-        wide: false,
-        tracking: pools[0],
-        records: pools[1],
-    }
-}
-
-const fn wide(
-    outputs: u8,
-    inputs: u8,
-    withdrawals: u8,
-    owners: u8,
-    pools: [u8; 2],
-) -> TransferShape {
-    TransferShape {
-        entry: false,
-        wide: true,
-        ..narrow(outputs, inputs, withdrawals, owners, pools)
-    }
-}
-
-const fn entry(
-    outputs: u8,
-    inputs: u8,
-    withdrawals: u8,
-    owners: u8,
-    pools: [u8; 2],
-) -> TransferShape {
-    TransferShape {
-        entry: true,
-        wide: true,
-        ..narrow(outputs, inputs, withdrawals, owners, pools)
-    }
-}
-
-/// Ascending outputs, a frame takes the first that holds its SPP width.
-const NARROW_SHAPES: [TransferShape; 4] = [
-    narrow(2, 24, 4, 4, [6, 12]),
-    narrow(4, 24, 4, 4, [8, 16]),
-    narrow(8, 16, 4, 4, [12, 24]),
-    // No wide row holds 16 outputs, each owner row and output takes two salted reads.
-    narrow(16, 4, 4, 2, [21, 74]),
-];
-/// The wide flag takes the first row holding the frame, the last only past 24 inputs.
-const WIDE_SHAPES: [TransferShape; 2] =
-    [wide(8, 24, 32, 13, [42, 115]), wide(2, 40, 4, 9, [12, 19])];
-/// A frame takes the first row holding its width.
-const ENTRY_SHAPES: [TransferShape; 3] = [
-    entry(4, 8, 4, 8, [16, 52]),
-    entry(8, 2, 4, 2, [14, 50]),
-    entry(8, 5, 4, 4, [16, 56]),
-];
-const WIDE_ENTRY_SHAPE: TransferShape = entry(8, 8, 32, 8, [41, 110]);
-
-pub const TRANSFER_SHAPES: [TransferShape; 10] = [
-    NARROW_SHAPES[0],
-    NARROW_SHAPES[1],
-    NARROW_SHAPES[2],
-    NARROW_SHAPES[3],
-    WIDE_SHAPES[0],
-    WIDE_SHAPES[1],
-    ENTRY_SHAPES[0],
-    ENTRY_SHAPES[1],
-    ENTRY_SHAPES[2],
-    WIDE_ENTRY_SHAPE,
-];
 
 /// What names a frame's key, nothing else moves a recipient key's counter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,21 +79,19 @@ pub struct FrameKey {
 }
 
 impl FrameKey {
+    /// First catalog row holding the frame width.
     pub fn shape(self) -> Option<TransferShape> {
-        let holds = |shape: &TransferShape| {
-            self.outputs <= usize::from(shape.outputs) && self.inputs <= usize::from(shape.inputs)
-        };
         // SPP's authority rail holds every input to the ring.
         let delegate = matches!(self.rail, RingRail::Delegate | RingRail::AnonymousDelegate);
         if delegate && self.spends_default_ring {
             return None;
         }
-        match (self.spends_default_ring, self.wide) {
-            (true, false) => ENTRY_SHAPES.into_iter().find(holds),
-            (true, true) => Some(WIDE_ENTRY_SHAPE).filter(holds),
-            (false, true) => WIDE_SHAPES.into_iter().find(holds),
-            (false, false) => NARROW_SHAPES.into_iter().find(holds),
-        }
+        TRANSFER_SHAPES.into_iter().find(|shape| {
+            shape.entry == self.spends_default_ring
+                && shape.frame_wide == self.wide
+                && self.outputs <= usize::from(shape.outputs)
+                && self.inputs <= usize::from(shape.inputs)
+        })
     }
 }
 
@@ -178,10 +100,7 @@ impl TransferShape {
         (1..=usize::from(self.inputs)).contains(&spend.inputs)
             && spend.legs <= usize::from(self.withdrawals)
             && spend.owners <= usize::from(self.owners)
-            && self
-                .circuit()
-                .record_pools()
-                .is_some_and(|pools| spend.pools.within(pools))
+            && spend.pools.within(self.pools)
     }
 
     pub const fn audit_key(self) -> AuditKey {
@@ -387,15 +306,7 @@ impl RingCircuit {
 
     /// Each pool takes as many subjects as records, `None` outside the transfer keys.
     pub fn record_pools(self) -> Option<RecordPools> {
-        let shape = TransferShape::of(self)?;
-        // Withdrawals settle through the public slots, their assets are at most N_PUBLIC_SLOTS.
-        let withdrawal_assets = usize::from(shape.withdrawals).min(N_PUBLIC_SLOTS);
-        let records = usize::from(shape.records) + usize::from(shape.inputs);
-        Some(RecordPools {
-            own: records + withdrawal_assets.max(N_PUBLIC_SLOTS),
-            curator: records + withdrawal_assets,
-            tracking: usize::from(shape.tracking),
-        })
+        TransferShape::of(self).map(|shape| shape.pools)
     }
 }
 
@@ -474,16 +385,16 @@ mod tests {
         }
     }
 
-    const TWO: RingCircuit = NARROW_SHAPES[0].circuit();
-    const FOUR: RingCircuit = NARROW_SHAPES[1].circuit();
-    const EIGHT: RingCircuit = NARROW_SHAPES[2].circuit();
-    const SIXTEEN: RingCircuit = NARROW_SHAPES[3].circuit();
-    const WIDE: RingCircuit = WIDE_SHAPES[0].circuit();
-    const WIDE_INPUTS: RingCircuit = WIDE_SHAPES[1].circuit();
-    const ENTRY_FOUR: RingCircuit = ENTRY_SHAPES[0].circuit();
-    const ENTRY_EIGHT_TWO: RingCircuit = ENTRY_SHAPES[1].circuit();
-    const ENTRY_EIGHT_FIVE: RingCircuit = ENTRY_SHAPES[2].circuit();
-    const WIDE_ENTRY: RingCircuit = WIDE_ENTRY_SHAPE.circuit();
+    const TWO: RingCircuit = TRANSFER_SHAPES[0].circuit();
+    const FOUR: RingCircuit = TRANSFER_SHAPES[1].circuit();
+    const EIGHT: RingCircuit = TRANSFER_SHAPES[2].circuit();
+    const SIXTEEN: RingCircuit = TRANSFER_SHAPES[3].circuit();
+    const WIDE: RingCircuit = TRANSFER_SHAPES[4].circuit();
+    const WIDE_INPUTS: RingCircuit = TRANSFER_SHAPES[5].circuit();
+    const ENTRY_FOUR: RingCircuit = TRANSFER_SHAPES[6].circuit();
+    const ENTRY_EIGHT_TWO: RingCircuit = TRANSFER_SHAPES[7].circuit();
+    const ENTRY_EIGHT_FIVE: RingCircuit = TRANSFER_SHAPES[8].circuit();
+    const WIDE_ENTRY: RingCircuit = TRANSFER_SHAPES[9].circuit();
 
     #[test]
     fn every_rail_shares_the_key_of_its_output_width() {
@@ -765,7 +676,7 @@ mod tests {
                     wide,
                 };
                 let narrow = !spends_default_ring && !wide;
-                assert_eq!(key.shape(), narrow.then_some(NARROW_SHAPES[3]), "{key:?}");
+                assert_eq!(key.shape(), narrow.then_some(TRANSFER_SHAPES[3]), "{key:?}");
             }
         }
     }
@@ -773,9 +684,9 @@ mod tests {
     #[test]
     fn ordinary_seals_keep_key_positions_across_input_and_output_capacities() {
         for (smaller, larger) in [
-            (NARROW_SHAPES[0], WIDE_SHAPES[1]),
-            (NARROW_SHAPES[0], WIDE_SHAPES[0]),
-            (NARROW_SHAPES[2], WIDE_SHAPES[0]),
+            (TRANSFER_SHAPES[0], TRANSFER_SHAPES[5]),
+            (TRANSFER_SHAPES[0], TRANSFER_SHAPES[4]),
+            (TRANSFER_SHAPES[2], TRANSFER_SHAPES[4]),
         ] {
             assert!(smaller.seals_like(larger));
         }
@@ -783,6 +694,52 @@ mod tests {
 
     #[test]
     fn entry_seals_bind_input_capacity() {
-        assert!(!ENTRY_SHAPES[1].seals_like(ENTRY_SHAPES[2]));
+        assert!(!TRANSFER_SHAPES[7].seals_like(TRANSFER_SHAPES[8]));
+    }
+
+    #[test]
+    fn frame_key_selection_matches_every_family_boundary() {
+        let narrow = &TRANSFER_SHAPES[0..4];
+        let wide = &TRANSFER_SHAPES[4..6];
+        let entry = &TRANSFER_SHAPES[6..9];
+        let wide_entry = &TRANSFER_SHAPES[9..10];
+        for rail in [
+            RingRail::Confidential,
+            RingRail::Anonymous,
+            RingRail::Delegate,
+            RingRail::AnonymousDelegate,
+        ] {
+            let delegate = matches!(rail, RingRail::Delegate | RingRail::AnonymousDelegate);
+            for spends_default_ring in [false, true] {
+                for is_wide in [false, true] {
+                    let bucket = match (spends_default_ring, is_wide) {
+                        (false, false) => narrow,
+                        (false, true) => wide,
+                        (true, false) => entry,
+                        (true, true) => wide_entry,
+                    };
+                    for inputs in 0..=42 {
+                        for outputs in 0..=18 {
+                            let key = FrameKey {
+                                rail,
+                                inputs,
+                                outputs,
+                                spends_default_ring,
+                                wide: is_wide,
+                            };
+                            let expected = if delegate && spends_default_ring {
+                                None
+                            } else {
+                                bucket.iter().copied().find(|s| {
+                                    outputs <= usize::from(s.outputs)
+                                        && inputs <= usize::from(s.inputs)
+                                })
+                            };
+                            assert_eq!(key.shape(), expected, "{key:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 }

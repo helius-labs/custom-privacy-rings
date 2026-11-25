@@ -29,7 +29,7 @@ pub struct TrackingRecord {
     pub nullifier_pk: [u8; 32],
     pub ct_hash: [u8; 32],
     pub list_tag: [u8; 32],
-    /// `hash_bytes(viewing_u)`, an X25519 u can exceed the field and no circuit decides on it.
+    /// `tracking::viewing_hash`, no circuit decides on it.
     pub viewing_hash: [u8; 32],
 }
 

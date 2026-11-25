@@ -1689,3 +1689,20 @@ fn withdrawal_owner_metadata_is_required_in_transfer_order() {
     data.spl_withdrawal_owners = &owners[..1];
     assert!(data.encode().is_err());
 }
+
+#[test]
+fn parsed_transact_spp_instruction_data_matches_ring_transact_data() {
+    let fixture = Fixture::new();
+    let data = fixture.confidential_policy();
+    let ring = config();
+    let parsed = ParsedTransact::new(data.clone()).unwrap();
+    assert_eq!(
+        parsed.spp_instruction_data(&ring).unwrap(),
+        data.spp_instruction_data(&ring).unwrap()
+    );
+    let spp = [0u8; 4];
+    assert_eq!(
+        data.owner_signers(&spp, usize::MAX),
+        Err(CustomRingError::InvalidSettlementAccounts)
+    );
+}

@@ -4,16 +4,23 @@
 //! Read before `programs/custom-ring/src/instructions/transfer/processor.rs`.
 
 use spr_interface::instruction::{
-    instruction_data::transact::validate_interface_transfers, ExternalDataPreimage, InputUtxo,
-    MessageData, OwnerTag, TransactIxData, TransactIxDataRef, TransactOutput, TransactProof,
+    ExternalDataPreimage, InputUtxo, MessageData, OwnerTag, TransactIxData, TransactIxDataRef,
+    TransactOutput, TransactProof,
 };
 
-use super::{invalid, RingOutput, RingTransactData, Settlement, SlotBody};
+use super::{invalid, ParsedTransact, RingOutput, RingTransactData, Settlement, SlotBody};
 use crate::{
     error::CustomRingError,
     output::{encode_ring_sender_bundle_output, OutputPayload},
     tagged_x25519, AuditorMessage, RingPolicy,
 };
+
+impl ParsedTransact<'_> {
+    pub fn spp_instruction_data(&self, ring: &RingPolicy) -> Result<Vec<u8>, CustomRingError> {
+        self.data
+            .spp_instruction_data_validated(ring, self.data.spp_proof_points()?)
+    }
+}
 
 impl<'a> RingOutput<'a> {
     pub fn transact_output(&self, reply: &[u8]) -> Result<TransactOutput, CustomRingError> {
@@ -65,9 +72,16 @@ impl RingTransactData<'_> {
         ring: &RingPolicy,
         proof: TransactProof,
     ) -> Result<Vec<u8>, CustomRingError> {
-        let expanded = self.transact_ix_data(ring, proof)?;
-        // The refusal `TransactIxData::serialize` applies, here behind the SPP tag.
-        validate_interface_transfers(&expanded.interface_transfers).map_err(invalid)?;
+        self.validate_under(self.audit_stream()?)?;
+        self.spp_instruction_data_validated(ring, proof)
+    }
+
+    fn spp_instruction_data_validated(
+        &self,
+        ring: &RingPolicy,
+        proof: TransactProof,
+    ) -> Result<Vec<u8>, CustomRingError> {
+        let expanded = self.transact_ix_data_validated(ring, proof)?;
         let len = wincode::serialized_size(&expanded).map_err(invalid)?;
         let mut data = Vec::with_capacity(usize::try_from(len).map_err(invalid)?.saturating_add(1));
         data.push(self.rail.spp_tag());
@@ -105,6 +119,14 @@ impl RingTransactData<'_> {
         proof: TransactProof,
     ) -> Result<TransactIxData, CustomRingError> {
         self.validate_under(self.audit_stream()?)?;
+        self.transact_ix_data_validated(ring, proof)
+    }
+
+    fn transact_ix_data_validated(
+        &self,
+        ring: &RingPolicy,
+        proof: TransactProof,
+    ) -> Result<TransactIxData, CustomRingError> {
         // The auditor's `u` without its tag, the program takes it from the account and a frame names no reader.
         let view_tag = auditor_tag(ring);
         Ok(TransactIxData {

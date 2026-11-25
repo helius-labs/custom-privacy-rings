@@ -24,7 +24,7 @@ pub fn process_enroll_batch_ix(
     let mut iter = AccountIterator::new(accounts);
     let writer = iter.next_signer("writer")?;
     let ring = iter.next_account("ring")?;
-    let ring_auth = iter.next_mut("ring_auth")?;
+    let ring_auth = iter.next_account("ring_auth")?;
     let tracking = iter.next_mut("tracking_registry")?;
     let owner_authorization = iter.next_account("owner_authorization")?;
     let storage_program = iter.next_account("storage_program")?;
@@ -45,12 +45,7 @@ pub fn process_enroll_batch_ix(
     let storage_data = [&[storage_tag::APPLY_ENROLLMENTS][..], data].concat();
     placed.invoke_program(
         &STORAGE_PROGRAM_ID,
-        &[
-            &*ring_auth,
-            &*tracking,
-            &*owner_authorization,
-            &*storage_program,
-        ],
+        &[ring_auth, &*tracking, owner_authorization, storage_program],
         &storage_data,
     )
 }

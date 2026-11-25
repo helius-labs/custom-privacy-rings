@@ -42,7 +42,6 @@ pub fn process_transfer_ix(
         .split_first()
         .ok_or(ProgramError::InvalidInstructionData)?;
     let transfer = RingTransactData::parse(frame, signer.rail())?;
-    let data = transfer.data();
     // 3. Each account sits in the slot the statements and SPP read it from.
     let validated = TransactCheck {
         program_id,
@@ -53,8 +52,12 @@ pub fn process_transfer_ix(
         slot,
     }
     .validate(accounts)?;
+    let spp = accounts
+        .get(validated.spp..)
+        .ok_or(ProgramError::NotEnoughAccountKeys)?;
+    validate_spp_program(spp)?;
     // 4. A bad SPP proof point is refused before either pairing.
-    let spp_data = data.spp_instruction_data(&ring)?;
+    let spp_data = transfer.spp_instruction_data(&ring)?;
     // 5. The ring proof verifies the frame's approval mask and spend bit before the SPP call.
     // Step 3 demanded co-signers from those bits, the demand holds only because the proof fixes them.
     RingStatements {
@@ -66,9 +69,5 @@ pub fn process_transfer_ix(
     .verify()?;
     // 6. SPP verifies its own proof over the expanded data the ring PDA signs. The ring proof and
     // the SPP proof meet at the values `lib.rs` names, a refusal by SPP reverts the whole transfer.
-    let spp = accounts
-        .get(validated.spp..)
-        .ok_or(ProgramError::NotEnoughAccountKeys)?;
-    validate_spp_program(spp)?;
     validated.ring_auth.invoke(spp, &spp_data)
 }

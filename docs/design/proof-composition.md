@@ -234,9 +234,9 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 - The program forwards SPP's merge and reads the tracking root under the ring authority alone.
 - The circuit holds the output hash to the record's fields and the seed's blinding. It seals the record and the seed under `CRING/mro` to the owner's viewing key, and `eph_sk` with that key under `CRING/mrg` to the auditor.
-- The circuit holds a nonzero key to its owner's row. A zero key reads no row, and the statement names the owner for SPP's signature. No constraint holds the payer apart from the owner.
+- The circuit holds the owner's nullifier key to its enrolled row under the tracking root. Registration enrolls no zero key, so no zero-key merge proves. No constraint holds the payer apart from the owner.
 - SPP's proof ties every input to that owner, asset and sum, and refuses a note with a data hash. No list, guard, cap or co-signer rule is proven.
-- The tests are `TestMergeRefusals`, `TestMergeRecordOffItsOpening`, `TestMergeRecordIsSealedToTheEnvelopesKey`, `TestMergeTrackingRow`, `TestMergeModes`, `TestMergeZeroKeyIgnoresEveryRow`, `TestMergePayer` and `TestMergeRecordRebuildsTheOutput` in `prover/circuits`.
+- The tests are `TestMergeRefusals`, `TestMergeRecordOffItsOpening`, `TestMergeRecordIsSealedToTheEnvelopesKey`, `TestMergeTrackingRow`, `TestMergeRefusesTheZeroKey`, `TestMergePayer` and `TestMergeRecordRebuildsTheOutput` in `prover/circuits`.
 
 ### A deposit is a transfer that spends no note
 

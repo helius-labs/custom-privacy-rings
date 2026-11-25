@@ -61,6 +61,7 @@ pub(crate) fn merge_instruction(ring: &Ring, data: &CustomRingMergeIxData) -> In
         .collect();
     spp[RING_MERGE_RING_CONFIG_INDEX] = AccountMeta::new(ring_auth(), false);
     spp.push(AccountMeta::new(ring.payer.pubkey(), true));
+    spp.push(AccountMeta::new_readonly(SPP, false));
     let mut accounts = vec![AccountMeta::new_readonly(policy_pda(), false)];
     accounts.extend(ring.registries(RootRead::merge()));
     accounts.extend(spp);
@@ -203,4 +204,15 @@ fn a_forward_past_the_cpi_account_cap_is_refused() {
     ));
     // The record proof precedes the forward, the cap holds the forward alone.
     reaches_verification(ring.send(instruction, &[]));
+}
+
+#[test]
+fn a_merge_without_the_shielded_pool_program_refuses_before_verification() {
+    let mut ring = Ring::new(Setup::AuditOnly);
+    let mut instruction = ring_merge(&ring);
+    instruction.accounts.retain(|meta| meta.pubkey != SPP);
+    refused(
+        ring.send(instruction, &[]),
+        CustomRingError::InvalidShieldedPoolProgram,
+    );
 }

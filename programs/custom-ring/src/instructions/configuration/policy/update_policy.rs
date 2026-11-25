@@ -102,7 +102,9 @@ impl PolicyWrite<'_> {
             ListId::try_from(source.list_id).map_err(|_| CustomRingError::InvalidListId)?;
         let (registry, named) = match (source.source, self.trailing) {
             (0, _) => (Address::default(), Named::Nothing),
-            (1, [curator, ..]) => (*curator.address(), Named::Curator),
+            (1, [curator, ..]) if *curator.address() != Address::default() => {
+                (*curator.address(), Named::Curator)
+            }
             _ => return Err(CustomRingError::InvalidSource.into()),
         };
         if self.policy.sources[list_id.slot()].list_id == 0 {

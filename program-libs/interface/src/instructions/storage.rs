@@ -17,7 +17,7 @@ use crate::{
     domain,
     error::CustomRingError,
     instruction::{list_and_mint_entry, write_count},
-    member_registry::RecordWrite,
+    member_registry::{RecordWrite, APPLY_BATCH},
     storage::{RegistryId, Revision, StorageError},
     tracking::{check_viewing_key, TrackingEntry},
     ApplyRecordsIxData, CustomRingProof, ReaderKeyBytes, RecordWriteData,
@@ -209,6 +209,13 @@ pub struct StorageUpdateIxData<'a> {
     /// Names the tracking root the selected rows open under, the update raises the floor to it.
     pub tracking_revision: Option<Revision>,
     pub apply: &'a ApplyRecordsIxData,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedStorageUpdate<'a> {
+    pub data: StorageUpdateIxData<'a>,
+    entries: Vec<RecordWrite>,
+    private_writes: u16,
 }
 
 impl InitializeIxData {
@@ -427,6 +434,11 @@ where
 {
     /// One bit per write whose private mask needs its owner's tracking row.
     pub fn private_writes(self) -> Result<u16, StorageError> {
+        self.classify().map(|(_, private_writes)| private_writes)
+    }
+
+    fn classify(self) -> Result<(Vec<RecordWrite>, u16), StorageError> {
+        let mut entries = Vec::with_capacity(self.entries.size_hint().0.min(APPLY_BATCH));
         let mut assets = self.asset_writes.iter().peekable();
         let mut private_writes = 0u16;
         let mut count = 0;
@@ -454,17 +466,18 @@ where
             } else if private {
                 private_writes |= 1u16 << index;
             }
+            entries.push(entry);
         }
         // 3. Empty batches and asset positions outside the consumed writes have no valid statement.
         storage_write_count(count)?;
         if assets.next().is_some() {
             return Err(StorageError::InvalidAssetWrite);
         }
-        Ok(private_writes)
+        Ok((entries, private_writes))
     }
 }
 
-impl<'a> StorageUpdateIxData<'a> {
+impl<'a> ParsedStorageUpdate<'a> {
     pub fn parse(data: &'a [u8]) -> Result<Self, StorageError> {
         // 1. The bounded write count fixes every record boundary before optional proof metadata.
         let (revision, data) = data
@@ -500,11 +513,11 @@ impl<'a> StorageUpdateIxData<'a> {
             .map(|bytes| bytemuck::pod_read_unaligned(bytes))
             .collect();
         // 3. The derived bitmap, never a flag, decides whether a tracking revision follows.
-        let private_writes = RecordWriteClassification {
+        let (entries, private_writes) = RecordWriteClassification {
             entries: writes.iter().map(RecordWriteData::storage_entry),
             asset_writes: &asset_writes,
         }
-        .private_writes()?;
+        .classify()?;
         let (tracking_revision, rest) = match private_writes {
             0 => (None, rest),
             _ => {
@@ -517,16 +530,36 @@ impl<'a> StorageUpdateIxData<'a> {
         let apply =
             ApplyRecordsIxData::parse(rest).map_err(|_| StorageError::InvalidInstructionData)?;
         // 4. The restrictive bit has one encoding, the statement binds it.
-        if apply.restrictive > 1 {
+        if apply.restrictive > 1
+            || !(1..=crate::member_registry::QUAD_CAPACITY).contains(&apply.new_next_index())
+        {
             return Err(StorageError::InvalidInstructionData);
         }
         Ok(Self {
-            revision: Revision(*revision),
-            writes,
-            asset_writes,
-            tracking_revision,
-            apply,
+            data: StorageUpdateIxData {
+                revision: Revision(*revision),
+                writes,
+                asset_writes,
+                tracking_revision,
+                apply,
+            },
+            entries,
+            private_writes,
         })
+    }
+
+    pub fn entries(&self) -> &[RecordWrite] {
+        &self.entries
+    }
+
+    pub const fn private_writes(&self) -> u16 {
+        self.private_writes
+    }
+}
+
+impl<'a> StorageUpdateIxData<'a> {
+    pub fn parse(data: &'a [u8]) -> Result<Self, StorageError> {
+        ParsedStorageUpdate::parse(data).map(|parsed| parsed.data)
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, StorageError> {

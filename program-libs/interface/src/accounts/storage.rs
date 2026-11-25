@@ -163,6 +163,9 @@ impl StorageRegistry {
     /// Writes nothing on a refusal.
     pub fn update(&mut self, update: RootUpdate<'_>) -> Result<(), StorageError> {
         let RootUpdate { slot, data } = update;
+        if !(1..=QUAD_CAPACITY).contains(&data.apply.new_next_index()) {
+            return Err(StorageError::InvalidInstructionData);
+        }
         // 1. A private owner write needs a pinned tracking registry and raises the floor to its proven revision.
         // Parsing already paired the revision with a nonzero private bitmap.
         let floor = match data.tracking_revision {
@@ -351,3 +354,71 @@ impl From<StorageError> for ProgramError {
 // Byte fields only, the `Pod` image is the account data with no padding.
 const _: () = assert!(core::mem::align_of::<StorageRegistry>() == 1);
 const _: () = assert!(StorageRegistry::SIZE == 1657);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ApplyRecordsIxData, RecordWriteData, WriteRecordsIxData};
+
+    fn dummy_update(apply: &ApplyRecordsIxData) -> StorageUpdateIxData<'_> {
+        StorageUpdateIxData {
+            revision: Revision::from(0),
+            writes: vec![RecordWriteData {
+                member: [1; 32],
+                lists: WriteRecordsIxData {
+                    mask: 1u64.to_le_bytes(),
+                    value: 1u64.to_le_bytes(),
+                },
+                mint_policy: crate::mint_policy_write(None),
+            }],
+            asset_writes: Vec::new(),
+            tracking_revision: None,
+            apply,
+        }
+    }
+
+    #[test]
+    fn update_refuses_next_index_outside_quad_capacity() {
+        let mut registry = StorageRegistry::new(
+            Address::new_from_array([1; 32]),
+            &InitializeIxData {
+                registry_id: RegistryId([2; 32]),
+                grace_slots: 10u64.to_le_bytes(),
+                ring_id: [0; 32],
+                tracking_registry: Address::default(),
+            },
+        );
+        let before = registry;
+        for bad_index in [0, QUAD_CAPACITY + 1, u64::MAX] {
+            let apply = ApplyRecordsIxData {
+                new_root: [9; 32],
+                new_next_index: bad_index.to_le_bytes(),
+                ..ApplyRecordsIxData::zeroed()
+            };
+            let data = dummy_update(&apply);
+            assert_eq!(
+                registry.update(RootUpdate {
+                    slot: 10,
+                    data: &data,
+                }),
+                Err(StorageError::InvalidInstructionData),
+                "bad_index={bad_index}"
+            );
+            assert_eq!(registry, before);
+        }
+        let apply = ApplyRecordsIxData {
+            new_root: [9; 32],
+            new_next_index: QUAD_CAPACITY.to_le_bytes(),
+            ..ApplyRecordsIxData::zeroed()
+        };
+        let data = dummy_update(&apply);
+        registry
+            .update(RootUpdate {
+                slot: 10,
+                data: &data,
+            })
+            .unwrap();
+        assert_eq!(registry.next_index(), QUAD_CAPACITY);
+        assert!(StorageRegistry::from_data(bytemuck::bytes_of(&registry)).is_some());
+    }
+}

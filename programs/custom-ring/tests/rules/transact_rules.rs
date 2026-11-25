@@ -1629,7 +1629,7 @@ fn a_delegate_ignores_every_co_signer_record_and_carries_none() {
             spp,
             &[&co_signer, &delegate],
         ),
-        CustomRingError::MissingRingAuth,
+        CustomRingError::UnauthorizedDelegate,
     );
 }
 
@@ -1888,4 +1888,59 @@ fn an_in_proof_owner_signs_beside_a_co_owner_run() {
         spp,
         &[],
     ));
+}
+
+#[test]
+fn a_transfer_without_the_shielded_pool_program_refuses_before_verification() {
+    let fixture = Fixture::new();
+    let mut ring = Ring::new(Setup::AuditOnly);
+    let data = fixture.transfer(RingRail::Confidential, 2, 2, false);
+    let mut spp = spp_list(&ring.payer.pubkey(), &data, &payer_owner(&ring));
+    spp[2] = AccountMeta::new_readonly(Address::new_unique(), false);
+    refused(
+        send(
+            &mut ring,
+            tag::TRANSFER,
+            Vec::new(),
+            data.encode().unwrap(),
+            spp,
+            &[],
+        ),
+        CustomRingError::InvalidShieldedPoolProgram,
+    );
+}
+
+#[test]
+fn a_delegate_transfer_refuses_short_or_overlong_spp_accounts_before_verification() {
+    let fixture = Fixture::new();
+    let delegate = Keypair::new();
+    let mut ring = delegate_ring(&delegate);
+    let data = fixture.transfer(RingRail::Delegate, 2, 2, false);
+    let bytes = data.encode().unwrap();
+    let prefix = vec![AccountMeta::new_readonly(delegate.pubkey(), true)];
+    let mut short = spp_list(&ring.payer.pubkey(), &data, &[]);
+    short.pop();
+    refused(
+        send(
+            &mut ring,
+            tag::AUTHORITY_TRANSFER,
+            prefix.clone(),
+            bytes.clone(),
+            short,
+            &[&delegate],
+        ),
+        CustomRingError::InvalidSettlementAccounts,
+    );
+    let extra = spp_list(&ring.payer.pubkey(), &data, &payer_owner(&ring));
+    refused(
+        send(
+            &mut ring,
+            tag::AUTHORITY_TRANSFER,
+            prefix,
+            bytes,
+            extra,
+            &[&delegate],
+        ),
+        CustomRingError::InvalidSettlementAccounts,
+    );
 }
