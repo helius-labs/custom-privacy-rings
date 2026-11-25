@@ -278,3 +278,43 @@ async fn the_hub_spends_each_nonce_once_and_binds_the_writer() {
         "{replayed:?}"
     );
 }
+
+#[tokio::test]
+async fn unauthorized_registration_consumes_no_replay_capacity() {
+    let chain = registered_chain();
+    let service = Keypair::new_from_array([12; 32]);
+    let upstreams = Upstreams {
+        indexer_url: "http://127.0.0.1:1",
+        rpc_url: "http://127.0.0.1:1",
+        timeout: Duration::from_secs(1),
+    };
+    let identity = ServiceIdentity {
+        genesis_hash: CLUSTER,
+        service: Arc::new(service.insecure_clone()),
+    };
+    let hub = Hub::builder(ChainSource::connect(upstreams).expect("source"), identity)
+        .with_clock(Clock::Fixed(NOW))
+        .with_enrollment_applier(Arc::new(applier(&chain).await))
+        .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .expect("hub");
+    let stranger = Keypair::new_from_array([99; 32]);
+    let fake_ring = Address::new_from_array([77; 32]);
+    let request = RegisterEnrollmentRingRequest::register(
+        ReadTarget {
+            cluster: CLUSTER,
+            service: service.pubkey(),
+            ring: fake_ring,
+        },
+        stranger.pubkey(),
+        payer().pubkey(),
+    )
+    .at(NOW)
+    .sign(&stranger)
+    .expect("signed");
+
+    assert!(hub.register_enrollment_ring(&request).await.is_err());
+    let crate::replay::ReplayGuard::Local(nonces) = &hub.shared().replay else {
+        panic!("expected local nonces");
+    };
+    assert_eq!(nonces.ring_count(), 0);
+}

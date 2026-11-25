@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
-use custom_ring_sdk::RingClient;
-use spr_client::{AsyncProverClient, AsyncSolanaRpc, AsyncSprClient, AsyncSprIndexer};
 use zolana_operator_custody::SigningIdentity;
 
 use crate::{
-    database::Store, escrow_merge::RingSdkMergeBuilder, landing::SolanaChain,
+    database::Store, error::RingRpcError, escrow_merge::RingSdkMergeBuilder, landing::SolanaChain,
     managed_merge::MergeBuilder, relay::RelayParts, relay_prover::SdkRelayProver,
+    storage_chain::live_ring_client, upstream::Upstreams,
 };
 
 /// The relay and the managed merge pay through one fee payer.
@@ -24,33 +23,30 @@ pub(crate) struct MergeParts {
 pub struct RelayServicesInit<'a> {
     pub fee_payer: SigningIdentity,
     pub store: Store,
-    pub rpc_url: &'a str,
-    pub indexer_url: &'a str,
+    pub upstreams: Upstreams<'a>,
     pub prover_url: &'a str,
 }
 
 impl RelayServicesInit<'_> {
-    pub fn build(self) -> RelayServices {
-        let ring_client = || {
-            let zolana = AsyncSprClient::new(
-                AsyncSolanaRpc::new(self.rpc_url),
-                AsyncSprIndexer::new(self.indexer_url),
-                AsyncProverClient::new(self.prover_url.to_owned()),
-            );
-            RingClient::new(zolana, AsyncProverClient::new(self.prover_url.to_owned()))
-        };
+    pub fn build(self) -> Result<RelayServices, RingRpcError> {
         let builder = Arc::new(RingSdkMergeBuilder {
-            client: ring_client(),
+            client: live_ring_client(self.upstreams, self.prover_url)?,
             payer: self.fee_payer.address(),
         });
-        RelayServices {
+        Ok(RelayServices {
             parts: RelayParts {
                 store: self.store,
-                prover: Arc::new(SdkRelayProver::new(ring_client())),
+                prover: Arc::new(SdkRelayProver::new(live_ring_client(
+                    self.upstreams,
+                    self.prover_url,
+                )?)),
                 fee_payer: self.fee_payer,
-                chain: Arc::new(SolanaChain::new(self.rpc_url)),
+                chain: Arc::new(SolanaChain::with_timeout(
+                    self.upstreams.rpc_url,
+                    self.upstreams.timeout,
+                )),
             },
             merge: MergeParts { builder },
-        }
+        })
     }
 }

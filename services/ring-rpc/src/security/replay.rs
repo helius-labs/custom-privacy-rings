@@ -1,19 +1,26 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{atomic::AtomicU64, Mutex},
+};
 
 use solana_address::Address;
 
 use crate::{
-    authorize::{Unauthorized, AUTH_SKEW},
+    authorize::{AuthorizedNonce, Unauthorized, AUTH_SKEW},
     database::Store,
     error::RingRpcError,
     replay_nonces::NonceBook,
 };
 
+const MAX_REPLAY_RINGS: usize = 1_024;
 const MAX_REPLAY_ENTRIES: usize = 65_536;
 
 pub(crate) enum ReplayGuard {
     Local(LocalNonces),
-    Shared(Store),
+    Shared {
+        store: Store,
+        last_pruned: AtomicU64,
+    },
 }
 
 #[derive(Default)]
@@ -28,15 +35,27 @@ pub(crate) struct ReplayCheck {
 }
 
 impl ReplayGuard {
-    pub(crate) async fn accept(&self, check: ReplayCheck) -> Result<(), RingRpcError> {
+    pub(crate) fn shared(store: Store) -> Self {
+        Self::Shared {
+            store,
+            last_pruned: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) async fn accept(
+        &self,
+        authorized: AuthorizedNonce,
+        now: u64,
+    ) -> Result<(), RingRpcError> {
+        let check = authorized.into_check(now);
         match self {
             Self::Local(nonces) => Ok(nonces.accept(check)?),
-            Self::Shared(store) => {
+            Self::Shared { store, last_pruned } => {
                 check.fresh()?;
                 let book = NonceBook {
                     conn: store.connection(),
                 };
-                match book.spend(&check).await? {
+                match book.spend(&check, last_pruned).await? {
                     true => Ok(()),
                     false => Err(Unauthorized::Replay.into()),
                 }
@@ -50,6 +69,16 @@ impl LocalNonces {
     pub(crate) fn accept(&self, check: ReplayCheck) -> Result<(), Unauthorized> {
         check.fresh()?;
         let mut rings = self.0.lock().map_err(|_| Unauthorized::Replay)?;
+        if !rings.contains_key(&check.ring) && rings.len() >= MAX_REPLAY_RINGS {
+            rings.retain(|_, entries| {
+                entries
+                    .retain(|_, timestamp| check.now.abs_diff(*timestamp) <= AUTH_SKEW.as_secs());
+                !entries.is_empty()
+            });
+            if rings.len() >= MAX_REPLAY_RINGS {
+                return Err(Unauthorized::Replay);
+            }
+        }
         let accepted = rings.entry(check.ring).or_default();
         accepted.retain(|_, timestamp| check.now.abs_diff(*timestamp) <= AUTH_SKEW.as_secs());
         if accepted.len() >= MAX_REPLAY_ENTRIES
@@ -58,6 +87,11 @@ impl LocalNonces {
             return Err(Unauthorized::Replay);
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ring_count(&self) -> usize {
+        self.0.lock().expect("nonce set").len()
     }
 }
 
@@ -162,5 +196,33 @@ mod tests {
         guard
             .accept(check(RING, 0xff, later, later))
             .expect("expired entries evicted");
+    }
+
+    #[test]
+    fn ring_cap_evicts_expired_rings_before_refusing_new_rings() {
+        let guard = LocalNonces::default();
+        let now = 1_000;
+        let ring = |index: usize| {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            Address::new_from_array(bytes)
+        };
+        for index in 0..MAX_REPLAY_RINGS {
+            guard
+                .accept(check(ring(index), 1, now, now))
+                .expect("within ring cap");
+        }
+        assert_eq!(guard.ring_count(), MAX_REPLAY_RINGS);
+        assert_eq!(
+            guard.accept(check(ring(MAX_REPLAY_RINGS), 1, now, now)),
+            Err(Unauthorized::Replay)
+        );
+        assert_eq!(guard.ring_count(), MAX_REPLAY_RINGS);
+
+        let later = now + AUTH_SKEW.as_secs() + 1;
+        guard
+            .accept(check(ring(MAX_REPLAY_RINGS), 1, later, later))
+            .expect("expired rings evicted");
+        assert_eq!(guard.ring_count(), 1);
     }
 }

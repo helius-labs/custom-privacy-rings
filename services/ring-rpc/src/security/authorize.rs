@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use solana_address::Address;
 use solana_signature::Signature;
@@ -9,7 +9,7 @@ use zolana_ring_client::{
     ReaderKey,
 };
 
-use crate::{origins::Origins, webauthn};
+use crate::{origins::Origins, replay::ReplayCheck, webauthn};
 
 pub const AUTH_SKEW: Duration = Duration::from_secs(60);
 
@@ -154,6 +154,54 @@ impl AuthorityCheck<'_> {
             authority: auth.authority.0,
             nonce,
         })
+    }
+}
+
+#[must_use]
+pub(crate) struct PendingNonce {
+    pub ring: Address,
+    pub nonce: [u8; 32],
+    pub timestamp: u64,
+}
+
+#[must_use]
+pub(crate) struct AuthorizedNonce {
+    ring: Address,
+    nonce: [u8; 32],
+    timestamp: u64,
+}
+
+#[must_use]
+pub(crate) struct Authorized<T> {
+    pub value: T,
+    pub nonce: AuthorizedNonce,
+}
+
+impl PendingNonce {
+    pub(crate) async fn authorize<T, E, Fut>(self, check: Fut) -> Result<Authorized<T>, E>
+    where
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let value = check.await?;
+        Ok(Authorized {
+            value,
+            nonce: AuthorizedNonce {
+                ring: self.ring,
+                nonce: self.nonce,
+                timestamp: self.timestamp,
+            },
+        })
+    }
+}
+
+impl AuthorizedNonce {
+    pub(crate) const fn into_check(self, now: u64) -> ReplayCheck {
+        ReplayCheck {
+            ring: self.ring,
+            nonce: self.nonce,
+            timestamp: self.timestamp,
+            now,
+        }
     }
 }
 

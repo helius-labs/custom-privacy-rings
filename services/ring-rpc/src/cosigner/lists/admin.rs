@@ -14,7 +14,10 @@ use super::{
     decision::{ListEntry, Subject},
     store::StoredLists,
 };
-use crate::{cosign::CoSignError, error::RingRpcError, hub::Hub, upstream::TransactionSource};
+use crate::{
+    cosign::CoSignError, error::RingRpcError, hub::Hub, policy_authority::PolicyAction,
+    upstream::TransactionSource,
+};
 
 const LIST_PAGE: u64 = 256;
 
@@ -103,13 +106,23 @@ impl<S: TransactionSource> Hub<S> {
         auth: &PolicyAuthorityAuth,
         action: A,
     ) -> Result<StoredLists, RingRpcError> {
-        let authority = self.authorize_policy_action(ring, auth, action).await?;
         let shared = self.shared();
-        shared.require_ring_authority(ring, authority).await?;
         let store = shared
             .database
             .clone()
             .ok_or(RingRpcError::CoSignerStoreMissing)?;
+        let service = self.service(Some(ring))?;
+        PolicyAction {
+            hub: self,
+            ring,
+            auth,
+            action,
+        }
+        .authorize(|authority| async move {
+            service.require_served_policy_authority(authority).await?;
+            Ok(())
+        })
+        .await?;
         Ok(StoredLists(Arc::new(store)))
     }
 }

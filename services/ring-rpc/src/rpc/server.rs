@@ -2,7 +2,10 @@ use std::{
     future::Future,
     net::{IpAddr, SocketAddr},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -24,7 +27,10 @@ use jsonrpsee::{
 use serde::{de::DeserializeOwned, Serialize};
 use spr_rpc_http::{announce::Announcer, forward::UpstreamUrl, MethodPathLayer};
 use thiserror::Error;
-use tokio::net::TcpListener;
+use tokio::{
+    net::TcpListener,
+    sync::{watch, Semaphore},
+};
 use tower::Service;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -63,6 +69,8 @@ use crate::{
 
 const MAX_REQUEST_BODY_SIZE: u32 = 64 * 1024;
 const MAX_RESPONSE_BODY_SIZE: u32 = 16 * 1024 * 1024;
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Only a loopback bind keeps the decrypted audit data behind a TLS proxy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +113,14 @@ pub enum ServerError {
 pub async fn run_server<S: TransactionSource + 'static>(
     hub: Arc<Hub<S>>,
     options: ServerOptions,
+) -> Result<ServerHandle, ServerError> {
+    run_server_with_idle_timeout(hub, options, HEADER_READ_TIMEOUT).await
+}
+
+async fn run_server_with_idle_timeout<S: TransactionSource + 'static>(
+    hub: Arc<Hub<S>>,
+    options: ServerOptions,
+    idle_timeout: Duration,
 ) -> Result<ServerHandle, ServerError> {
     if options.bind_policy == BindPolicy::LoopbackOnly && !options.bind.is_loopback() {
         return Err(ServerError::PublicBind);
@@ -165,29 +181,54 @@ pub async fn run_server<S: TransactionSource + 'static>(
         });
     }
     // An owned accept loop, the jsonrpsee server hides the peer address from middleware.
+    let connections = Arc::new(Semaphore::new(
+        usize::try_from(options.max_connections.max(1)).unwrap_or(usize::MAX),
+    ));
     tokio::spawn(async move {
         loop {
             let (socket, peer) = tokio::select! {
                 accepted = listener.accept() => match accepted {
                     Ok(accepted) => accepted,
-                    Err(_) => continue,
+                    Err(_) => {
+                        tokio::select! {
+                            () = tokio::time::sleep(ACCEPT_ERROR_BACKOFF) => continue,
+                            () = stop.clone().shutdown() => break,
+                        }
+                    }
                 },
                 () = stop.clone().shutdown() => break,
             };
+            let Ok(permit) = connections.clone().try_acquire_owned() else {
+                drop(socket);
+                continue;
+            };
             let _ = socket.set_nodelay(true);
             let service = services.clone().build(methods.clone(), stop.clone());
+            let (activity, idle) = ConnectionActivity::new(idle_timeout);
             let connection =
                 tower::service_fn(move |request: HttpRequest<hyper::body::Incoming>| {
+                    let guard = activity.enter();
                     let mut request = request.map(HttpBody::new);
                     request.extensions_mut().insert(PeerAddress(peer));
                     let mut service = service.clone();
-                    async move { service.call(request).await }
+                    async move {
+                        let _guard = guard;
+                        service.call(request).await
+                    }
                 });
-            tokio::spawn(serve_with_graceful_shutdown(
+            let serving = tokio::spawn(serve_with_graceful_shutdown(
                 socket,
                 connection,
                 stop.clone().shutdown(),
             ));
+            tokio::spawn(async move {
+                let _permit = permit;
+                let mut serving = serving;
+                tokio::select! {
+                    _ = &mut serving => {}
+                    () = wait_idle_deadline(idle) => serving.abort(),
+                }
+            });
         }
     });
     Ok(handle)
@@ -238,7 +279,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         &mut module,
         RING_STATUS,
         |hub, request: RingStatusRequest| async move {
-            hub.admit(Lane::Public)?;
+            let _slot = hub.admit(Lane::Public)?;
             let service = hub.service(Some(request.ring_program_id.0))?;
             let configured = service.configured_auditor().await?;
             let chain = service.chain_status().await?;
@@ -361,7 +402,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         &mut module,
         GET_RECORD_UPDATE_STATUS,
         |hub, request: GetRecordUpdateStatusRequest| async move {
-            hub.admit(Lane::Public)?;
+            let _slot = hub.admit(Lane::Public)?;
             hub.record_writer()?.status(request).await
         },
     )?;
@@ -439,11 +480,78 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         },
     )?;
     if let Some(relay) = relay {
-        module.merge(relay_module(relay)?)?;
+        register_relay_methods(&mut module, relay)?;
     }
     Ok(module)
 }
 
+fn register_relay_methods<S: TransactionSource + 'static>(
+    module: &mut RpcModule<Arc<Hub<S>>>,
+    relay: Arc<Relay>,
+) -> Result<(), RegisterMethodError> {
+    let quote_relay = relay.clone();
+    method(
+        module,
+        GET_RELAY_QUOTE,
+        move |hub, request: GetRelayQuoteRequest| {
+            let relay = quote_relay.clone();
+            async move {
+                let _slot = hub.admit(Lane::Public)?;
+                relay.quote(&request).await
+            }
+        },
+    )?;
+    let prepare_relay = relay.clone();
+    method(
+        module,
+        PREPARE_RELAY,
+        move |hub, request: PrepareRelayRequest| {
+            let relay = prepare_relay.clone();
+            async move {
+                let _slot = hub.admit(Lane::Authentication)?;
+                relay.prepare(&request).await
+            }
+        },
+    )?;
+    let submit_relay = relay.clone();
+    method(
+        module,
+        SUBMIT_RELAY,
+        move |hub, request: SubmitRelayRequest| {
+            let relay = submit_relay.clone();
+            async move {
+                let _slot = hub.admit(Lane::Authentication)?;
+                relay.submit(&request).await
+            }
+        },
+    )?;
+    let co_sign_relay = relay.clone();
+    method(
+        module,
+        CO_SIGN_TRANSACTION,
+        move |hub, request: CoSignTransactionRequest| {
+            let relay = co_sign_relay.clone();
+            async move {
+                let _slot = hub.admit(Lane::Authentication)?;
+                relay.co_sign_transaction(&request).await
+            }
+        },
+    )?;
+    method(
+        module,
+        GET_RELAY_STATUS,
+        move |hub, request: GetRelayStatusRequest| {
+            let relay = relay.clone();
+            async move {
+                let _slot = hub.admit(Lane::Public)?;
+                relay.status(&request).await
+            }
+        },
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "test-fixtures")]
 pub fn relay_module(relay: Arc<Relay>) -> Result<RpcModule<Arc<Relay>>, RegisterMethodError> {
     let mut module = RpcModule::new(relay);
     method(
@@ -537,6 +645,70 @@ where
         }
     })?;
     Ok(())
+}
+
+struct ConnectionActivity {
+    in_flight: AtomicUsize,
+    deadline: watch::Sender<Option<tokio::time::Instant>>,
+    idle_timeout: Duration,
+}
+
+struct InFlightGuard {
+    activity: Arc<ConnectionActivity>,
+}
+
+impl ConnectionActivity {
+    fn new(idle_timeout: Duration) -> (Arc<Self>, watch::Receiver<Option<tokio::time::Instant>>) {
+        let initial = tokio::time::Instant::now() + idle_timeout;
+        let (deadline, receiver) = watch::channel(Some(initial));
+        (
+            Arc::new(Self {
+                in_flight: AtomicUsize::new(0),
+                deadline,
+                idle_timeout,
+            }),
+            receiver,
+        )
+    }
+
+    fn enter(self: &Arc<Self>) -> InFlightGuard {
+        if self.in_flight.fetch_add(1, Ordering::AcqRel) == 0 {
+            let _ = self.deadline.send(None);
+        }
+        InFlightGuard {
+            activity: self.clone(),
+        }
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        if self.activity.in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let next = tokio::time::Instant::now() + self.activity.idle_timeout;
+            let _ = self.activity.deadline.send(Some(next));
+        }
+    }
+}
+
+async fn wait_idle_deadline(mut receiver: watch::Receiver<Option<tokio::time::Instant>>) {
+    loop {
+        let target = *receiver.borrow_and_update();
+        match target {
+            Some(at) => tokio::select! {
+                () = tokio::time::sleep_until(at) => return,
+                changed = receiver.changed() => {
+                    if changed.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                }
+            },
+            None => {
+                if receiver.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    }
 }
 
 struct ReadyService<S, Inner> {
@@ -1340,13 +1512,13 @@ mod tests {
     fn authentication_attempts_do_not_consume_audit_capacity() {
         let hub = hub(source(), Origins::default());
         for _ in 0..MAX_REQUEST_UNITS_PER_SECOND {
-            hub.admit(Lane::Authentication).expect("authentication");
+            let _ = hub.admit(Lane::Authentication).expect("authentication");
         }
         assert!(matches!(
             hub.admit(Lane::Authentication),
             Err(RingRpcError::Busy)
         ));
-        hub.admit(Lane::Read).expect("audit capacity");
+        let _ = hub.admit(Lane::Read).expect("audit capacity");
     }
 
     #[test]
@@ -1397,6 +1569,98 @@ mod tests {
             .expect("ready");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.text().await.expect("body"), "unavailable cluster");
+        handle.stop().expect("stop");
+        handle.stopped().await;
+    }
+
+    #[tokio::test]
+    async fn max_connections_caps_concurrent_tcp_connections() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+
+        let listen_port = port();
+        let mut opts = options(listen_port, Duration::from_secs(2));
+        opts.max_connections = 1;
+        let handle = run_server(hub(source(), Origins::default()), opts)
+            .await
+            .expect("server");
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
+
+        let held = TcpStream::connect(addr).await.expect("first connect");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let mut excess = TcpStream::connect(addr).await.expect("second connect");
+        let _ = excess
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await;
+        let mut reply = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(1), excess.read_to_end(&mut reply))
+            .await
+            .expect("closed promptly");
+        assert!(
+            read.is_err() || reply.is_empty(),
+            "excess connection should be dropped, got {:?}",
+            String::from_utf8_lossy(&reply)
+        );
+
+        drop(held);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let ok = reqwest::get(format!("http://127.0.0.1:{listen_port}/health"))
+            .await
+            .expect("health after slot freed");
+        assert_eq!(ok.status(), StatusCode::OK);
+        handle.stop().expect("stop");
+        handle.stopped().await;
+    }
+
+    #[tokio::test]
+    async fn incomplete_headers_and_idle_keep_alive_release_connection_slots() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpStream;
+
+        let listen_port = port();
+        let mut opts = options(listen_port, Duration::from_secs(2));
+        opts.max_connections = 1;
+        let handle = run_server_with_idle_timeout(
+            hub(source(), Origins::default()),
+            opts,
+            Duration::from_millis(80),
+        )
+        .await
+        .expect("server");
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
+
+        let mut slowloris = TcpStream::connect(addr).await.expect("slowloris connect");
+        slowloris
+            .write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\n")
+            .await
+            .expect("partial header");
+        tokio::time::sleep(Duration::from_millis(140)).await;
+
+        let ok = reqwest::get(format!("http://127.0.0.1:{listen_port}/health"))
+            .await
+            .expect("health after slowloris timeout");
+        assert_eq!(ok.status(), StatusCode::OK);
+        let _ = ok.bytes().await;
+        drop(slowloris);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let mut keep_alive = TcpStream::connect(addr).await.expect("keep-alive connect");
+        keep_alive
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n")
+            .await
+            .expect("keep-alive request");
+        let mut buf = [0u8; 512];
+        let read = keep_alive.read(&mut buf).await.expect("keep-alive reply");
+        assert!(read > 0);
+        tokio::time::sleep(Duration::from_millis(140)).await;
+
+        let ok = reqwest::get(format!("http://127.0.0.1:{listen_port}/health"))
+            .await
+            .expect("health after keep-alive idle timeout");
+        assert_eq!(ok.status(), StatusCode::OK);
+        drop(keep_alive);
         handle.stop().expect("stop");
         handle.stopped().await;
     }

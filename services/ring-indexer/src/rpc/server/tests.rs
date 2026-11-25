@@ -221,3 +221,21 @@ async fn an_unreachable_photon_is_a_bad_gateway() {
     handle.stop().unwrap();
     handle.stopped().await;
 }
+
+#[tokio::test]
+async fn websocket_upgrade_is_refused() {
+    let (photon, _seen) = upstream().await;
+    let (url, handle) = indexer(&photon).await;
+    let response = reqwest::Client::new()
+        .get(&url)
+        .header("upgrade", "websocket")
+        .header("connection", "Upgrade")
+        .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+        .header("sec-websocket-version", "13")
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    handle.stop().unwrap();
+    handle.stopped().await;
+}

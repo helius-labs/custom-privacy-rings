@@ -893,3 +893,34 @@ async fn seeded_window_histories_match_direct_sums_through_refunds() {
         }
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_admissions_across_slot_ticks_never_fail_closed() {
+    let file = StoreFile::new("slot-ticks");
+    let window = Arc::new(Window::open(&file.url()).await);
+    window.limit(AssetLimits {
+        sender_cap: 10_000,
+        sender_window_slots: WINDOW,
+        ..AssetLimits::EMPTY
+    });
+    let mut tasks = tokio::task::JoinSet::new();
+    for nonce in 1..=24u8 {
+        let window = window.clone();
+        tasks.spawn(async move {
+            if nonce % 4 == 0 {
+                window.slot.fetch_add(1, Ordering::SeqCst);
+            }
+            window
+                .co_signer
+                .decide(&request(nonce, vec![flow(nonce, SOL, 10)]))
+                .await
+        });
+    }
+    while let Some(joined) = tasks.join_next().await {
+        let decision = joined.expect("task").expect("admitted across slot tick");
+        assert!(
+            matches!(decision, CoSignDecision::Signed(_)),
+            "{decision:?}"
+        );
+    }
+}

@@ -95,11 +95,15 @@ mod tests {
         let relay = RelayServicesInit {
             fee_payer: Arc::new(key(4)),
             store: store.clone(),
-            rpc_url: UNREACHABLE,
-            indexer_url: UNREACHABLE,
+            upstreams: Upstreams {
+                indexer_url: UNREACHABLE,
+                rpc_url: UNREACHABLE,
+                timeout: Duration::from_secs(1),
+            },
             prover_url: UNREACHABLE,
         }
-        .build();
+        .build()
+        .expect("relay services");
         let full = builder()
             .with_store(store)
             .with_storage_chain(chain(), Arc::new(key(2)))

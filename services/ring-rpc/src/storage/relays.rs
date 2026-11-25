@@ -143,13 +143,30 @@ pub(crate) enum RelayPhase {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingStatus {
+    Sent,
+    AwaitingSignature,
+}
+
 pub(crate) struct RelayStore<'a, C> {
     db: &'a C,
 }
 
 const PENDING: [&str; 2] = ["awaitingSignature", "sent"];
+pub(crate) const PENDING_PAGE_LEN: usize = 256;
+const PENDING_LIMIT: i64 = 256;
 const CONFIRMED: &str = "confirmed";
 const FAILED: &str = "failed";
+
+impl PendingStatus {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sent => PENDING[1],
+            Self::AwaitingSignature => PENDING[0],
+        }
+    }
+}
 
 impl RelayRevision {
     pub const FIRST: Self = Self(0);
@@ -352,9 +369,27 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
         })
     }
 
-    pub async fn pending(&self) -> Result<Vec<RelayId>, DbErr> {
-        let sql = "SELECT relay_id FROM relay_relays WHERE status IN ($1,$2)";
-        let values = PENDING.map(Value::from).to_vec();
+    pub async fn pending_page(
+        &self,
+        status: PendingStatus,
+        after: Option<&RelayId>,
+    ) -> Result<Vec<RelayId>, DbErr> {
+        let (sql, values) = match after {
+            None => (
+                "SELECT relay_id FROM relay_relays WHERE status=$1 \
+                 ORDER BY relay_id ASC LIMIT $2",
+                vec![Value::from(status.as_str()), Value::from(PENDING_LIMIT)],
+            ),
+            Some(after) => (
+                "SELECT relay_id FROM relay_relays WHERE status=$1 AND relay_id>$2 \
+                 ORDER BY relay_id ASC LIMIT $3",
+                vec![
+                    Value::from(status.as_str()),
+                    key(after),
+                    Value::from(PENDING_LIMIT),
+                ],
+            ),
+        };
         self.db
             .query_all(self.statement(sql, values))
             .await?
@@ -843,5 +878,40 @@ mod tests {
 
         let stored = relays.get(&id).await.expect("read").expect("row");
         assert_eq!(stored.record.state, state);
+    }
+
+    #[tokio::test]
+    async fn pending_query_is_bounded() {
+        let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let relays = RelayStore::new(store.connection());
+        let message = compile_message(
+            &FEE_PAYER,
+            &[],
+            Default::default(),
+            ComputeBudgetConfig::new(1),
+        )
+        .expect("message");
+        let total = usize::try_from(PENDING_LIMIT).expect("limit") + 5;
+        for index in 0..total {
+            let mut bytes = [0u8; 32];
+            bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            let id = RelayId(bytes.into());
+            let record = RelayRecord {
+                message: message.clone(),
+                last_valid_block_height: 1,
+                state: awaiting(&[SIGNER]),
+            };
+            assert!(relays.insert(&id, &record).await.expect("insert"));
+        }
+        let pending = relays
+            .pending_page(PendingStatus::AwaitingSignature, None)
+            .await
+            .expect("pending");
+        assert_eq!(pending.len(), PENDING_PAGE_LEN);
+        let rest = relays
+            .pending_page(PendingStatus::AwaitingSignature, pending.last())
+            .await
+            .expect("rest");
+        assert_eq!(rest.len(), 5);
     }
 }

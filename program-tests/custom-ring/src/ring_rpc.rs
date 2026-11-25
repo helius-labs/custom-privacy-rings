@@ -197,11 +197,15 @@ impl RingRpcSpec<'_> {
         RelayServicesInit {
             fee_payer: Arc::new(fee_payer),
             store,
-            rpc_url: &self.env.rpc_url,
-            indexer_url: &self.env.indexer_url,
+            upstreams: Upstreams {
+                indexer_url: &self.env.indexer_url,
+                rpc_url: &self.env.rpc_url,
+                timeout: Duration::from_secs(30),
+            },
             prover_url: &prover_url(),
         }
         .build()
+        .expect("relay services")
     }
 
     fn start(self, server: ServerParts) -> Result<Served> {

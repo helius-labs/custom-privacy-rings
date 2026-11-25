@@ -1,6 +1,7 @@
 use custom_ring_interface::{RecordWriteData, APPLY_BATCH};
 use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DbErr, QueryResult, Statement, TransactionTrait, Value,
+    ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, QueryResult, Statement,
+    TransactionTrait, Value,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -102,6 +103,54 @@ impl<'a> UpdateQueue<'a> {
     pub async fn contains(&self, id: &[u8; 32]) -> Result<bool, DbErr> {
         let sql = "SELECT 1 AS found FROM records_updates WHERE id=$1";
         Ok(self.query_one(sql, vec![bytes(id)]).await?.is_some())
+    }
+
+    pub async fn merge_unregistered(&self, id: &[u8; 32], owners: &[Address]) -> Result<(), DbErr> {
+        if owners.is_empty() {
+            return Ok(());
+        }
+        let transaction = self.db.begin().await?;
+        let select = match transaction.get_database_backend() {
+            DatabaseBackend::Postgres => {
+                "SELECT unregistered FROM records_updates WHERE id=$1 AND status IN ($2,$3) FOR UPDATE"
+            }
+            _ => "SELECT unregistered FROM records_updates WHERE id=$1 AND status IN ($2,$3)",
+        };
+        let Some(row) = transaction
+            .query_one(statement(
+                &transaction,
+                select,
+                vec![bytes(id), QUEUED.into(), PENDING_APPROVAL.into()],
+            ))
+            .await?
+        else {
+            return transaction.commit().await;
+        };
+        let mut merged = stored_owners(&row)?;
+        let before = merged.len();
+        for owner in owners {
+            if !merged.contains(owner) {
+                merged.push(*owner);
+            }
+        }
+        if merged.len() != before {
+            let encoded: Vec<u8> = merged.iter().flat_map(|owner| owner.to_bytes()).collect();
+            let update =
+                "UPDATE records_updates SET unregistered=$2 WHERE id=$1 AND status IN ($3,$4)";
+            transaction
+                .execute(statement(
+                    &transaction,
+                    update,
+                    vec![
+                        bytes(id),
+                        encoded.into(),
+                        QUEUED.into(),
+                        PENDING_APPROVAL.into(),
+                    ],
+                ))
+                .await?;
+        }
+        transaction.commit().await
     }
 
     /// A resubmitted update keeps its first row.

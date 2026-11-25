@@ -86,7 +86,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        Self::with_budget(0).await
+        Self::with_budget(FRAME_BUDGET).await
     }
 
     async fn with_budget(budget: u64) -> Self {
@@ -768,7 +768,7 @@ async fn a_delegate_frame_relays_under_the_delegates_signature() {
 
     assert!(matches!(step, RelayStep::SignMessage { .. }), "{step:?}");
     assert!(fixture.sent().is_empty());
-    assert_eq!(fixture.outstanding().await, 0);
+    assert_eq!(fixture.outstanding().await, TREE_FEES as i64 + 10_000);
     let connection = fixture.store.connection();
     let signer: Vec<u8> = connection
         .query_one(Statement::from_string(
@@ -805,11 +805,16 @@ async fn an_unsigned_or_foreign_delegate_request_consumes_nothing() {
     assert_eq!(fixture.committed().await, 0);
 }
 
-/// The relay's fee payer funds the create, only a missing account costs rent and holds the tree fees.
+/// Tree fees charge the budget even when the token account exists.
 #[tokio::test]
 async fn token_account_setup_reserves_the_rent_of_a_missing_account() {
     let (mint, token_owner) = (TOKEN_MINT, TOKEN_OWNER);
-    for (budget, exists) in [(0, false), (0, true), (FRAME_BUDGET, false)] {
+    for (budget, exists) in [
+        (0, false),
+        (0, true),
+        (FRAME_BUDGET, true),
+        (FRAME_BUDGET, false),
+    ] {
         let fixture = Fixture::with_budget(budget).await;
         let token_program = Address::new_from_array(SPL_TOKEN_PROGRAM_ID);
         let token_account = CreateAssociatedTokenAccount {
@@ -863,7 +868,7 @@ async fn token_account_setup_reserves_the_rent_of_a_missing_account() {
 
         let prepared = fixture.prepare(&request).await;
 
-        if budget == 0 && !exists {
+        if budget == 0 {
             assert!(
                 refused_with(&prepared, RelayError::BudgetUnset),
                 "{prepared:?}"
@@ -885,7 +890,7 @@ async fn token_account_setup_reserves_the_rent_of_a_missing_account() {
         );
         let fee = i64::from(fixture.sent()[0].message.header().num_required_signatures) * 5_000;
         let kept = if exists {
-            0
+            TREE_FEES as i64 + fee
         } else {
             RENT_LAMPORTS as i64 + TREE_FEES as i64 + fee
         };

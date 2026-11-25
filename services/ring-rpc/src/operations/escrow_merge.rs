@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use custom_ring_interface::{compute_unit_limit, InstructionTag};
 use custom_ring_sdk::{
-    CustomRing, CustomRingMerge, MergeProofInput, ProvenCustomRingMerge, RingClient, RingError,
-    RingIndexerBackend,
+    written_tree_fees, CustomRing, CustomRingMerge, MergeProofInput, ProvenCustomRingMerge,
+    RingClient, RingError, RingIndexerBackend,
 };
 use solana_address::Address;
 use spr_client::{compile_message, AsyncRpc, ComputeBudgetConfig};
@@ -36,6 +36,7 @@ where
         .await
         .map_err(RingRpcError::MergeBuild)?;
         let built = async {
+            let tree_fees = written_tree_fees(self.client.zolana(), proven.written_trees()).await?;
             let (blockhash, last_valid_block_height) =
                 self.client.zolana().get_latest_blockhash().await?;
             let message = compile_message(
@@ -47,6 +48,7 @@ where
             Ok::<_, RingError>(BuiltMerge {
                 message,
                 last_valid_block_height,
+                tree_fees,
             })
         };
         built

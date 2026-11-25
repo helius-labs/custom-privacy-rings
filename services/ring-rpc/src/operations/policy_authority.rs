@@ -2,6 +2,8 @@
 //! Read `record_update` after for the pending state, `record_writer` for how an approval lands, and
 //! `enrollment_applier` for the rings a registration serves.
 
+use std::future::Future;
+
 use solana_address::Address;
 use zolana_ring_client::rpc::{
     CreateRecords, CreateRecordsRegistryRequest, CreateRecordsRegistryResponse,
@@ -12,9 +14,19 @@ use zolana_ring_client::rpc::{
 };
 
 use crate::{
-    authorize::WalletCheck, error::RingRpcError, hub::Hub, replay::ReplayCheck,
+    authorize::{Authorized, PendingNonce, WalletCheck},
+    error::RingRpcError,
+    hub::Hub,
     upstream::TransactionSource,
 };
+
+#[must_use]
+pub(crate) struct PolicyAction<'a, S, A> {
+    pub hub: &'a Hub<S>,
+    pub ring: Address,
+    pub auth: &'a PolicyAuthorityAuth,
+    pub action: A,
+}
 
 impl<S: TransactionSource> Hub<S> {
     pub async fn pending_list_approvals(
@@ -22,16 +34,20 @@ impl<S: TransactionSource> Hub<S> {
         request: &GetPendingListApprovalsRequest,
     ) -> Result<GetPendingListApprovalsResponse, RingRpcError> {
         let ring = request.ring.0;
+        let writer = self.record_writer()?;
         let action = ListPendingApprovals {
             registry: request.registry.0,
             cursor: request.cursor.clone(),
         };
-        let authority = self
-            .authorize_policy_action(ring, &request.auth, action)
-            .await?;
-        self.record_writer()?
-            .pending_list_approvals(authority, request)
-            .await
+        let verified = PolicyAction {
+            hub: self,
+            ring,
+            auth: &request.auth,
+            action,
+        }
+        .authorize(|authority| writer.require_policy_authority(ring, authority))
+        .await?;
+        writer.pending_list_approvals(verified, request).await
     }
 
     pub async fn refuse_list_approval(
@@ -39,16 +55,20 @@ impl<S: TransactionSource> Hub<S> {
         request: &RefuseListApprovalRequest,
     ) -> Result<RecordUpdateStatus, RingRpcError> {
         let ring = request.ring.0;
+        let writer = self.record_writer()?;
         let action = RefuseListApproval {
             registry: request.registry.0,
             update_id: request.update_id.clone(),
         };
-        let authority = self
-            .authorize_policy_action(ring, &request.auth, action)
-            .await?;
-        self.record_writer()?
-            .refuse_list_approval(authority, request)
-            .await
+        let verified = PolicyAction {
+            hub: self,
+            ring,
+            auth: &request.auth,
+            action,
+        }
+        .authorize(|authority| writer.require_policy_authority(ring, authority))
+        .await?;
+        writer.refuse_list_approval(verified, request).await
     }
 
     /// The upgrade authority signs before `Initialize`, the policy authority after.
@@ -58,14 +78,21 @@ impl<S: TransactionSource> Hub<S> {
     ) -> Result<CreateRecordsRegistryResponse, RingRpcError> {
         let ring = request.ring.0;
         let writer = self.record_writer()?;
-        let authority = self
-            .authorize_policy_action(ring, &request.auth, CreateRecords)
-            .await?;
-        self.shared()
-            .require_ring_authority(ring, authority)
-            .await?;
+        let authority = PolicyAction {
+            hub: self,
+            ring,
+            auth: &request.auth,
+            action: CreateRecords,
+        }
+        .authorize(|authority| async move {
+            self.shared()
+                .require_ring_authority(ring, authority)
+                .await?;
+            Ok(authority)
+        })
+        .await?;
         Ok(CreateRecordsRegistryResponse {
-            registry: writer.create_records(ring).await?.into(),
+            registry: writer.create_records(ring, authority).await?.into(),
             storage_authority: writer.authority().into(),
         })
     }
@@ -80,21 +107,33 @@ impl<S: TransactionSource> Hub<S> {
         let action = RegisterEnrollment {
             writer: applier.payer(),
         };
-        let authority = self
-            .authorize_policy_action(ring, &request.auth, action)
-            .await?;
-        applier.register(ring, authority).await?;
+        let registration = PolicyAction {
+            hub: self,
+            ring,
+            auth: &request.auth,
+            action,
+        }
+        .authorize(|authority| applier.authorize_registration(ring, authority))
+        .await?;
+        applier.complete_registration(registration).await?;
         Ok(RegisterEnrollmentRingResponse {})
     }
+}
 
-    /// Signature and nonce only, the writer checks the policy authority.
-    pub(crate) async fn authorize_policy_action<A: PolicyAuthorityAction>(
-        &self,
-        ring: Address,
-        auth: &PolicyAuthorityAuth,
-        action: A,
-    ) -> Result<Address, RingRpcError> {
-        let shared = self.shared();
+impl<S: TransactionSource, A: PolicyAuthorityAction> PolicyAction<'_, S, A> {
+    pub(crate) async fn authorize<T, F, Fut>(self, authorize: F) -> Result<T, RingRpcError>
+    where
+        F: FnOnce(Address) -> Fut,
+        Fut: Future<Output = Result<T, RingRpcError>>,
+    {
+        let Self {
+            hub,
+            ring,
+            auth,
+            action,
+        } = self;
+        let shared = hub.shared();
+        shared.validate_ring(ring)?;
         let authority = auth.authority.0;
         let now = shared.clock.now()?;
         let nonce = WalletCheck {
@@ -114,15 +153,20 @@ impl<S: TransactionSource> Hub<S> {
             now,
         }
         .decide()?;
+        let Authorized {
+            value,
+            nonce: authorized,
+        } = PendingNonce {
+            ring,
+            nonce,
+            timestamp: auth.timestamp,
+        }
+        .authorize(authorize(authority))
+        .await?;
         shared
             .replay
-            .accept(ReplayCheck {
-                ring,
-                nonce,
-                timestamp: auth.timestamp,
-                now,
-            })
+            .accept(authorized, shared.clock.now()?)
             .await?;
-        Ok(authority)
+        Ok(value)
     }
 }

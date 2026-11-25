@@ -2,9 +2,12 @@ use custom_ring_interface::{tag, TransferApproval};
 use custom_ring_sdk::CustomRing;
 use solana_address::Address;
 use solana_message::{compiled_instruction::CompiledInstruction, VersionedMessage};
+use solana_sdk_ids::system_program;
 use zolana_ring_client::rpc::ApprovedTransfer;
 
 use crate::cosign::{CoSignError, CoSignFlows, CoSignRequest};
+
+const ADVANCE_NONCE_ACCOUNT: [u8; 4] = 4u32.to_le_bytes();
 
 #[must_use]
 pub(crate) struct SignerScope {
@@ -38,7 +41,16 @@ enum CoSigned {
 impl SignerScope {
     /// The signature covers every instruction, the key signs read-only in one co-signer slot or one approval alone.
     pub fn admit(self, message: VersionedMessage) -> Result<ScopedMessage, CoSignError> {
+        let VersionedMessage::V1(_) = message else {
+            return Err(CoSignError::MessageScope);
+        };
         let keys = message.static_account_keys();
+        if message.instructions().iter().any(|instruction| {
+            keys.get(usize::from(instruction.program_id_index)) == Some(&system_program::ID)
+                && instruction.data.starts_with(&ADVANCE_NONCE_ACCOUNT)
+        }) {
+            return Err(CoSignError::MessageScope);
+        }
         let header = message.header();
         let signed = usize::from(header.num_required_signatures);
         let read_only = signed.saturating_sub(usize::from(header.num_readonly_signed_accounts));
@@ -379,5 +391,86 @@ mod tests {
         let own = instruction(RING, vec![AccountMeta::new(PAYER, true), record(), signer]);
         assert!(admitted(PAYER, std::slice::from_ref(&own)));
         assert!(!admitted_with(PAYER, &[own], Some(call)));
+    }
+
+    #[test]
+    fn non_v1_messages_are_refused() {
+        let signer = AccountMeta::new_readonly(SIGNER, true);
+        let payer = AccountMeta::new(PAYER, true);
+        let co_signed = instruction(RING, vec![payer, record(), signer]);
+        let legacy = solana_message::Message::new(std::slice::from_ref(&co_signed), Some(&PAYER));
+        let v0 = solana_message::v0::Message::try_compile(
+            &PAYER,
+            &[co_signed],
+            &[],
+            solana_hash::Hash::default(),
+        )
+        .expect("v0 message");
+        for message in [VersionedMessage::Legacy(legacy), VersionedMessage::V0(v0)] {
+            assert_eq!(
+                SignerScope {
+                    ring: RING,
+                    signer: SIGNER,
+                    approved_transfer: None,
+                }
+                .admit(message)
+                .err(),
+                Some(CoSignError::MessageScope)
+            );
+        }
+    }
+
+    #[test]
+    fn advance_nonce_instructions_are_refused() {
+        let signer = AccountMeta::new_readonly(SIGNER, true);
+        let payer = AccountMeta::new(PAYER, true);
+        let nonce_account = Address::new_from_array([0x55; 32]);
+        let co_signed = instruction(RING, vec![payer.clone(), record(), signer]);
+        let system_transfer = Instruction {
+            program_id: system_program::ID,
+            accounts: vec![payer, AccountMeta::new(nonce_account, false)],
+            data: [2u32.to_le_bytes().as_slice(), &100u64.to_le_bytes()].concat(),
+        };
+        assert!(admitted(PAYER, &[system_transfer, co_signed.clone()]));
+
+        for data in [vec![4, 0, 0, 0], vec![4, 0, 0, 0, 0xff]] {
+            let advance = Instruction {
+                program_id: system_program::ID,
+                accounts: vec![
+                    AccountMeta::new(nonce_account, false),
+                    AccountMeta::new_readonly(
+                        solana_sdk_ids::sysvar::recent_blockhashes::ID,
+                        false,
+                    ),
+                    AccountMeta::new_readonly(PAYER, true),
+                ],
+                data,
+            };
+            assert!(!admitted(PAYER, &[advance.clone(), co_signed.clone()]));
+            assert!(!admitted(PAYER, &[co_signed.clone(), advance.clone()]));
+
+            let mut v1 = match compile_message(
+                &PAYER,
+                &[advance, co_signed.clone()],
+                solana_hash::Hash::default(),
+                ComputeBudgetConfig::new(1),
+            )
+            .expect("message")
+            {
+                VersionedMessage::V1(v1) => v1,
+                other => panic!("expected v1, got {other:?}"),
+            };
+            v1.instructions.rotate_right(1);
+            assert_eq!(
+                SignerScope {
+                    ring: RING,
+                    signer: SIGNER,
+                    approved_transfer: None,
+                }
+                .admit(VersionedMessage::V1(v1))
+                .err(),
+                Some(CoSignError::MessageScope)
+            );
+        }
     }
 }

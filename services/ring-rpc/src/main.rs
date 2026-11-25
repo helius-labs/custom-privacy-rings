@@ -94,11 +94,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             RelayServicesInit {
                 fee_payer,
                 store,
-                rpc_url: &args.rpc_url,
-                indexer_url: &args.indexer_url,
+                upstreams,
                 prover_url,
             }
-            .build(),
+            .build()?,
         ),
         _ => None,
     };
@@ -208,7 +207,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
     if let (Ok(writer), Some(prover_url)) = (hub.record_writer(), &args.prover_url) {
         info!("storage authority {}", writer.authority());
-        hub.serve_private_writes(live_ring_client(upstreams, prover_url))?;
+        hub.serve_private_writes(live_ring_client(upstreams, prover_url)?)?;
     }
     hub.spawn_workers();
     let handle = run_server(hub, options).await?;

@@ -113,3 +113,29 @@ async fn an_unauthorized_caller_is_refused_the_operator_read() {
         .await
         .expect("the authority reads it");
 }
+
+#[tokio::test]
+async fn spend_coverage_refuses_upgrade_authority_and_foreign_auditor() {
+    let fixture = Fixture::new();
+    let mut uninitialized = fixture.source().with_transactions(Vec::new());
+    uninitialized.configs.clear();
+    let service = fixture.hub(uninitialized).service(None).expect("service");
+    assert!(matches!(
+        service.spend_coverage(&coverage_request(&deployer())).await,
+        Err(RingRpcError::Unauthorized(Unauthorized::NoConfig))
+    ));
+
+    let mut foreign = fixture.source().with_transactions(Vec::new());
+    foreign
+        .configs
+        .get_mut(&RING)
+        .expect("config")
+        .auditor_pubkey = X25519Keypair::new().pubkey();
+    let service = fixture.hub(foreign).service(None).expect("service");
+    assert!(matches!(
+        service
+            .spend_coverage(&coverage_request(&authority()))
+            .await,
+        Err(RingRpcError::Unauthorized(Unauthorized::AuditorKeyMismatch))
+    ));
+}

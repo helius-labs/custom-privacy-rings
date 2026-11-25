@@ -376,22 +376,34 @@ impl AsyncRingIndexer for HistorySource<'_> {
     }
 }
 
+pub(crate) fn timed_rpc(rpc_url: &str, timeout: Duration) -> AsyncSolanaRpc {
+    AsyncSolanaRpc::with_client(NonblockingRpcClient::new_with_timeout_and_commitment(
+        rpc_url.to_owned(),
+        timeout,
+        CommitmentConfig::confirmed(),
+    ))
+}
+
+pub(crate) fn timed_indexer(
+    indexer_url: &str,
+    timeout: Duration,
+) -> Result<AsyncSprIndexer, ClientError> {
+    let http = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|error| ClientError::Rpc(format!("cannot build http client ({error})")))?;
+    Ok(AsyncSprIndexer::with_api(SprApi::with_client(
+        indexer_url,
+        http,
+    )))
+}
+
 impl ChainSource {
     pub fn connect(upstreams: Upstreams<'_>) -> Result<Self, ClientError> {
-        let http = reqwest::Client::builder()
-            .timeout(upstreams.timeout)
-            .build()
-            .map_err(|error| ClientError::Rpc(format!("http client: {error}")))?;
         Ok(Self {
             history: FinalizedHistory::default(),
-            indexer: AsyncSprIndexer::with_api(SprApi::with_client(upstreams.indexer_url, http)),
-            rpc: AsyncSolanaRpc::with_client(
-                NonblockingRpcClient::new_with_timeout_and_commitment(
-                    upstreams.rpc_url.to_owned(),
-                    upstreams.timeout,
-                    CommitmentConfig::confirmed(),
-                ),
-            ),
+            indexer: timed_indexer(upstreams.indexer_url, upstreams.timeout)?,
+            rpc: timed_rpc(upstreams.rpc_url, upstreams.timeout),
         })
     }
 

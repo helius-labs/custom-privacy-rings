@@ -20,7 +20,10 @@ use zolana_ring_member_registry::ApplyProofInputs;
 use crate::{
     error::RingRpcError,
     landing::{ChainOutcome, ChainSubmit, LatestBlockhash, Simulation, SolanaChain},
-    upstream::{ChainSource, OpeningFetch, RingConfiguration, TransactionSource, Upstreams},
+    upstream::{
+        timed_indexer, timed_rpc, ChainSource, OpeningFetch, RingConfiguration, TransactionSource,
+        Upstreams,
+    },
 };
 
 #[async_trait]
@@ -98,8 +101,8 @@ impl LiveStorageChain {
     pub fn connect(upstreams: Upstreams<'_>, prover_url: &str) -> Result<Self, RingRpcError> {
         Ok(Self {
             source: ChainSource::connect(upstreams)?,
-            client: live_ring_client(upstreams, prover_url),
-            submit: SolanaChain::new(upstreams.rpc_url),
+            client: live_ring_client(upstreams, prover_url)?,
+            submit: SolanaChain::with_timeout(upstreams.rpc_url, upstreams.timeout),
         })
     }
 }
@@ -107,13 +110,16 @@ impl LiveStorageChain {
 pub fn live_ring_client(
     upstreams: Upstreams<'_>,
     prover_url: &str,
-) -> RingClient<AsyncSolanaRpc, AsyncSprIndexer> {
+) -> Result<RingClient<AsyncSolanaRpc, AsyncSprIndexer>, RingRpcError> {
     let zolana = AsyncSprClient::new(
-        AsyncSolanaRpc::new(upstreams.rpc_url),
-        AsyncSprIndexer::new(upstreams.indexer_url),
+        timed_rpc(upstreams.rpc_url, upstreams.timeout),
+        timed_indexer(upstreams.indexer_url, upstreams.timeout)?,
         AsyncProverClient::new(prover_url.to_owned()),
     );
-    RingClient::new(zolana, AsyncProverClient::new(prover_url.to_owned()))
+    Ok(RingClient::new(
+        zolana,
+        AsyncProverClient::new(prover_url.to_owned()),
+    ))
 }
 
 #[async_trait]

@@ -27,7 +27,10 @@ use zolana_ring_client::{
 use zolana_ring_policy::Member;
 
 use crate::{
-    authorize::{AuthorityCheck, AuthorityClaim, ReadCheck, ReadClaim, Unauthorized, WalletCheck},
+    authorize::{
+        AuthorityCheck, AuthorityClaim, Authorized, AuthorizedNonce, PendingNonce, ReadCheck,
+        ReadClaim, Unauthorized, WalletCheck,
+    },
     error::{redacted, GrantRefusal, RingRpcError},
     frame_repairs::RepairBook,
     grant_rows::{GrantPair, GrantRow},
@@ -38,7 +41,6 @@ use crate::{
     projection_lease::{LeaseClaim, ProjectionLease},
     projection_reads::EnrollmentKey,
     record_writer::SaltedOwner,
-    replay::ReplayCheck,
     spend_machine::{InputRead, Observation},
     spent_index::{LoadSpends, LoadedProjection, NoteSeal, ProjectionWriter},
     tracking::{
@@ -84,9 +86,16 @@ pub(crate) struct AuditServiceInit<S> {
 /// Its nonce is spent when the read executes.
 struct Grant<'a, S> {
     service: &'a AuditService<S>,
-    nonce: [u8; 32],
-    timestamp: u64,
+    authorized: AuthorizedNonce,
     /// The config read at authorization names the rail its frames parse under.
+    mode: RingMode,
+    scope: ReadScope,
+    reader: ReaderKey,
+    _reader: ReaderPermit<'a>,
+}
+
+struct SpentGrant<'a, S> {
+    service: &'a AuditService<S>,
     mode: RingMode,
     scope: ReadScope,
     reader: ReaderKey,
@@ -329,6 +338,30 @@ impl<S: TransactionSource> AuditService<S> {
         Ok(config.filter(|config| config.auditor_pubkey == self.auditor.pubkey()))
     }
 
+    pub(crate) async fn require_served_config(&self) -> Result<RingConfiguration, RingRpcError> {
+        let config = self
+            .shared
+            .source
+            .ring_config(self.ring)
+            .await?
+            .ok_or(Unauthorized::NoConfig)?;
+        if config.auditor_pubkey != self.auditor.pubkey() {
+            return Err(Unauthorized::AuditorKeyMismatch.into());
+        }
+        Ok(config)
+    }
+
+    pub(crate) async fn require_served_policy_authority(
+        &self,
+        signer: Address,
+    ) -> Result<RingConfiguration, RingRpcError> {
+        let config = self.require_served_config().await?;
+        if config.roles.policy != signer {
+            return Err(Unauthorized::NotPolicyAuthority.into());
+        }
+        Ok(config)
+    }
+
     pub async fn chain_status(&self) -> Result<RingChainStatus, RingRpcError> {
         Ok(self.shared.source.ring_chain_status(self.ring).await?)
     }
@@ -368,8 +401,9 @@ impl<S: TransactionSource> AuditService<S> {
         };
         let grant = self
             .grant(&request.auth, &attestation, Some(wallet))
+            .await?
+            .spend()
             .await?;
-        grant.spend().await?;
         // The owner's leaf under the newest root and the queue answer, they need no scan.
         let enrollment = self
             .shared
@@ -404,8 +438,9 @@ impl<S: TransactionSource> AuditService<S> {
         };
         let grant = self
             .grant(&request.auth, &attestation, Some(wallet))
+            .await?
+            .spend()
             .await?;
-        grant.spend().await?;
         self.shared
             .store(self.ring)
             .release_wallet_snapshot(WalletSnapshotRelease {
@@ -439,17 +474,16 @@ impl<S: TransactionSource> AuditService<S> {
             now,
         }
         .decide()?;
-        self.shared
-            .require_ring_authority(self.ring, authority)
-            .await?;
+        let authorized = PendingNonce {
+            ring: self.ring,
+            nonce,
+            timestamp: request.timestamp,
+        }
+        .authorize(self.require_served_policy_authority(authority))
+        .await?;
         self.shared
             .replay
-            .accept(ReplayCheck {
-                ring: self.ring,
-                nonce,
-                timestamp: request.timestamp,
-                now,
-            })
+            .accept(authorized.nonce, self.shared.clock.now()?)
             .await?;
         let cursor = request.cursor.as_ref().map_or_else(
             || Ok(crate::spend_coverage::CoverageCursor::new(self.ring)),
@@ -483,17 +517,16 @@ impl<S: TransactionSource> AuditService<S> {
             now,
         }
         .decide()?;
-        self.shared
-            .require_ring_authority(self.ring, authority)
-            .await?;
+        let authorized = PendingNonce {
+            ring: self.ring,
+            nonce,
+            timestamp: auth.timestamp,
+        }
+        .authorize(self.shared.require_ring_authority(self.ring, authority))
+        .await?;
         self.shared
             .replay
-            .accept(ReplayCheck {
-                ring: self.ring,
-                nonce,
-                timestamp: auth.timestamp,
-                now: self.shared.clock.now()?,
-            })
+            .accept(authorized.nonce, self.shared.clock.now()?)
             .await?;
         Ok(AuditorKeyStatement {
             cluster: &self.shared.genesis_hash,
@@ -565,28 +598,36 @@ impl<S: TransactionSource> AuditService<S> {
         }
         .decide()?;
         let permit = ReaderPermit::acquire(&self.shared.active_readers, (self.ring, reader))?;
-        let source = &self.shared.source;
-        let config = source
-            .ring_config(self.ring)
-            .await?
-            .ok_or(Unauthorized::NoConfig)?;
-        if config.auditor_pubkey != self.auditor.pubkey() {
-            return Err(Unauthorized::AuditorKeyMismatch.into());
+        struct AuthorizedScope {
+            mode: RingMode,
+            scope: ReadScope,
         }
-        let scope = self
-            .shared
-            .read_scope(GrantQuery {
-                ring: self.ring,
-                reader,
-                wallet,
-            })
-            .await?;
-        Ok(Grant {
-            service: self,
+        let Authorized { value, nonce } = PendingNonce {
+            ring: self.ring,
             nonce,
             timestamp: auth.timestamp,
-            mode: config.mode,
-            scope,
+        }
+        .authorize(async {
+            let config = self.require_served_config().await?;
+            let scope = self
+                .shared
+                .read_scope(GrantQuery {
+                    ring: self.ring,
+                    reader,
+                    wallet,
+                })
+                .await?;
+            Ok::<_, RingRpcError>(AuthorizedScope {
+                mode: config.mode,
+                scope,
+            })
+        })
+        .await?;
+        Ok(Grant {
+            service: self,
+            authorized: nonce,
+            mode: value.mode,
+            scope: value.scope,
             reader,
             _reader: permit,
         })
@@ -605,41 +646,54 @@ impl<S: TransactionSource> AuditService<S> {
             .and_then(|tagged| ReaderKey::from_bytes(tagged).ok())
             .ok_or(Unauthorized::UnknownReaderKey)?;
         let wallet = request.wallet.map(|wallet| wallet.0);
-        let signer = match wallet {
-            Some(wallet) => wallet,
-            None => {
-                self.shared
-                    .source
-                    .ring_config(self.ring)
-                    .await?
-                    .ok_or(Unauthorized::NoConfig)?
-                    .roles
-                    .policy
-            }
-        };
         let attestation = ReaderGrantAttestation {
             target: self.read_target(),
             wallet,
             reader,
             action: request.action,
         };
-        let nonce = WalletCheck {
-            wallet: signer,
-            timestamp: request.timestamp,
-            nonce: &request.nonce,
-            signature: &request.signature,
-            attestation: &attestation,
-            now: self.shared.clock.now()?,
-        }
-        .decide()?;
+        let authorized = match wallet {
+            Some(wallet) => {
+                let nonce = WalletCheck {
+                    wallet,
+                    timestamp: request.timestamp,
+                    nonce: &request.nonce,
+                    signature: &request.signature,
+                    attestation: &attestation,
+                    now: self.shared.clock.now()?,
+                }
+                .decide()?;
+                PendingNonce {
+                    ring: self.ring,
+                    nonce,
+                    timestamp: request.timestamp,
+                }
+                .authorize(self.require_served_config())
+                .await?
+            }
+            None => {
+                let config = self.require_served_config().await?;
+                let nonce = WalletCheck {
+                    wallet: config.roles.policy,
+                    timestamp: request.timestamp,
+                    nonce: &request.nonce,
+                    signature: &request.signature,
+                    attestation: &attestation,
+                    now: self.shared.clock.now()?,
+                }
+                .decide()?;
+                PendingNonce {
+                    ring: self.ring,
+                    nonce,
+                    timestamp: request.timestamp,
+                }
+                .authorize(async { Ok::<_, RingRpcError>(config) })
+                .await?
+            }
+        };
         self.shared
             .replay
-            .accept(ReplayCheck {
-                ring: self.ring,
-                nonce,
-                timestamp: request.timestamp,
-                now: self.shared.clock.now()?,
-            })
+            .accept(authorized.nonce, self.shared.clock.now()?)
             .await?;
         rows.write(GrantRow {
             pair: GrantPair {
@@ -1263,20 +1317,22 @@ impl<S: TransactionSource> AuditService<S> {
     }
 }
 
-impl<S> Grant<'_, S> {
+impl<'a, S> Grant<'a, S> {
     /// The clock is read again, a nonce evicted while the read awaited stays spent.
-    async fn spend(&self) -> Result<(), RingRpcError> {
-        let service = self.service;
-        service
+    async fn spend(self) -> Result<SpentGrant<'a, S>, RingRpcError> {
+        let now = self.service.shared.clock.now()?;
+        self.service
             .shared
             .replay
-            .accept(ReplayCheck {
-                ring: service.ring,
-                nonce: self.nonce,
-                timestamp: self.timestamp,
-                now: service.shared.clock.now()?,
-            })
-            .await
+            .accept(self.authorized, now)
+            .await?;
+        Ok(SpentGrant {
+            service: self.service,
+            mode: self.mode,
+            scope: self.scope,
+            reader: self.reader,
+            _reader: self._reader,
+        })
     }
 }
 
@@ -1285,23 +1341,26 @@ impl<S: TransactionSource> AuthorizedRead<'_, S> {
         let ReadScope::Ring = self.grant.scope else {
             return Err(GrantRefusal::WalletScope.into());
         };
-        let service = self.grant.service;
-        self.grant.spend().await?;
-        service
-            .decrypted_transactions(self.page, self.grant.mode)
+        let grant = self.grant.spend().await?;
+        grant
+            .service
+            .decrypted_transactions(self.page, grant.mode)
             .await
     }
 
     pub(crate) async fn execute_wallet_activity(
         self,
     ) -> Result<GetWalletActivityResponse, RingRpcError> {
-        let ReadScope::Wallet(scope) = self.grant.scope else {
+        let ReadScope::Wallet(_) = self.grant.scope else {
             return Err(GrantRefusal::WalletScope.into());
         };
-        let service = self.grant.service;
-        self.grant.spend().await?;
+        let grant = self.grant.spend().await?;
+        let ReadScope::Wallet(scope) = grant.scope else {
+            return Err(GrantRefusal::WalletScope.into());
+        };
+        let service = grant.service;
         let response = service
-            .decrypted_transactions(self.page, self.grant.mode)
+            .decrypted_transactions(self.page, grant.mode)
             .await?;
         scope
             .activity(response, &service.shared.store(service.ring))
@@ -1309,8 +1368,8 @@ impl<S: TransactionSource> AuthorizedRead<'_, S> {
     }
 
     pub(crate) async fn execute_merges(self) -> Result<GetAuditedMergesResponse, RingRpcError> {
-        let service = self.grant.service;
-        self.grant.spend().await?;
+        let grant = self.grant.spend().await?;
+        let service = grant.service;
         let page = service
             .shared
             .source
@@ -1336,7 +1395,7 @@ impl<S: TransactionSource> AuthorizedRead<'_, S> {
                 value.opened.push((&output).into());
             }
         }
-        self.grant.scope.merges(&mut value);
+        grant.scope.merges(&mut value);
         Ok(GetAuditedMergesResponse {
             context: page.context,
             value,
@@ -1347,12 +1406,12 @@ impl<S: TransactionSource> AuthorizedRead<'_, S> {
 impl<S: TransactionSource> AuthorizedUtxos<'_, S> {
     /// The store answers alone, a UTXO no page or backfill opened yet reads `null`.
     async fn execute(self) -> Result<GetAuditedUtxosResponse, RingRpcError> {
-        let service = self.grant.service;
-        self.grant.spend().await?;
+        let grant = self.grant.spend().await?;
+        let service = grant.service;
         let store = service.shared.store(service.ring);
         let mut utxos = Vec::with_capacity(self.utxo_hashes.len());
         for hash in self.utxo_hashes.iter() {
-            utxos.push(self.grant.scope.utxo(store.view(hash).await?));
+            utxos.push(grant.scope.utxo(store.view(hash).await?));
         }
         Ok(GetAuditedUtxosResponse {
             context: store.context(),

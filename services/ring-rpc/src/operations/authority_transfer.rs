@@ -19,12 +19,11 @@ use zolana_ring_client::rpc::{
 
 use crate::{
     audit::{AuditService, WALLET_NOTE_PAGE_LIMIT},
-    authorize::WalletCheck,
+    authorize::{Authorized, PendingNonce, WalletCheck},
     error::{redacted, RingRpcError},
     hub::Hub,
     record_update::RecordUpdateRefusal,
     relay_prover::{DelegateSeal, SealedSource},
-    replay::ReplayCheck,
     tracking::TrackingRefusal,
     upstream::TransactionSource,
     utxos::{SpendableNotes, WalletCursor, WalletStatusQuery},
@@ -216,23 +215,27 @@ impl<S: TransactionSource> Hub<S> {
             now,
         }
         .decide()?;
-        let config = shared
-            .source
-            .ring_config(ring)
-            .await?
-            .filter(|config| config.delegate == Some(delegate))
-            .ok_or(AuthorityTransferError::NotDelegate)?;
-        if config.auditor_pubkey != self.service(Some(ring))?.auditor_pubkey() {
-            return Err(AuthorityTransferError::ForeignAuditor.into());
+        let authorized = PendingNonce {
+            ring,
+            nonce,
+            timestamp: request.timestamp,
         }
+        .authorize(async {
+            let config = shared
+                .source
+                .ring_config(ring)
+                .await?
+                .filter(|config| config.delegate == Some(delegate))
+                .ok_or(AuthorityTransferError::NotDelegate)?;
+            if config.auditor_pubkey != self.service(Some(ring))?.auditor_pubkey() {
+                return Err(AuthorityTransferError::ForeignAuditor.into());
+            }
+            Ok::<_, RingRpcError>(())
+        })
+        .await?;
         shared
             .replay
-            .accept(ReplayCheck {
-                ring,
-                nonce,
-                timestamp: request.timestamp,
-                now: shared.clock.now()?,
-            })
+            .accept(authorized.nonce, shared.clock.now()?)
             .await?;
         Ok(())
     }
@@ -261,37 +264,43 @@ impl<S: TransactionSource> Hub<S> {
         }
         .decide()?;
         // 2. The policy authority or the authority of a salted list's registry, under the auditor key held here.
-        let config = shared
-            .source
-            .ring_config(ring)
-            .await?
-            .ok_or(AuthorityTransferError::NotListWriter)?;
-        let writes = config.roles.policy == writer
-            || shared
+        let Authorized {
+            value: config,
+            nonce: authorized,
+        } = PendingNonce {
+            ring,
+            nonce,
+            timestamp: request.timestamp,
+        }
+        .authorize(async {
+            let config = shared
                 .source
-                .salted_list_writers(ring)
+                .ring_config(ring)
                 .await?
-                .contains(&writer);
-        if !writes {
-            return Err(AuthorityTransferError::NotListWriter.into());
-        }
-        if config.auditor_pubkey != service.auditor_pubkey() {
-            return Err(AuthorityTransferError::ForeignAuditor.into());
-        }
+                .ok_or(AuthorityTransferError::NotListWriter)?;
+            let writes = config.roles.policy == writer
+                || shared
+                    .source
+                    .salted_list_writers(ring)
+                    .await?
+                    .contains(&writer);
+            if !writes {
+                return Err(AuthorityTransferError::NotListWriter.into());
+            }
+            if config.auditor_pubkey != service.auditor_pubkey() {
+                return Err(AuthorityTransferError::ForeignAuditor.into());
+            }
+            Ok::<_, RingRpcError>(config)
+        })
+        .await?;
         shared
             .replay
-            .accept(ReplayCheck {
-                ring,
-                nonce,
-                timestamp: request.timestamp,
-                now,
-            })
+            .accept(authorized, shared.clock.now()?)
             .await?;
         let list_salt = service.enrolled_list_salt(&owner.to_bytes()).await?;
-        // 3. An owner with no row reads and writes the private lists under the ring salt.
-        let ring_salt = match list_salt {
-            Some(_) => None,
-            None => {
+        let ring_salt = match (list_salt.is_some(), config.ring_list_tag == [0; 32]) {
+            (true, true) => None,
+            _ => {
                 let salt = service.ring_salt()?;
                 RecordUpdateRefusal::unless_committed(&salt, &config.ring_list_tag)?;
                 Some(Hash(*salt))
@@ -342,29 +351,34 @@ impl<S: TransactionSource> Hub<S> {
         }
         // 2. The config names the key its delegate and the auditor key held here, any other key is
         //    the live permanent delegate of the one mint every leg names.
-        let config = shared
-            .source
-            .ring_config(ring)
-            .await?
-            .ok_or(AuthorityTransferError::NotDelegate)?;
-        if config.delegate != Some(delegate) {
-            let mint = sole_mint(transfer.mints()).ok_or(AuthorityTransferError::NotDelegate)?;
-            if !shared.source.is_mint_delegate(mint, delegate).await? {
-                return Err(AuthorityTransferError::NotDelegate.into());
+        let authorized = PendingNonce {
+            ring,
+            nonce,
+            timestamp: request.timestamp,
+        }
+        .authorize(async {
+            let config = shared
+                .source
+                .ring_config(ring)
+                .await?
+                .ok_or(AuthorityTransferError::NotDelegate)?;
+            if config.delegate != Some(delegate) {
+                let mint =
+                    sole_mint(transfer.mints()).ok_or(AuthorityTransferError::NotDelegate)?;
+                if !shared.source.is_mint_delegate(mint, delegate).await? {
+                    return Err(AuthorityTransferError::NotDelegate.into());
+                }
             }
-        }
-        if config.auditor_pubkey != service.auditor_pubkey() {
-            return Err(AuthorityTransferError::ForeignAuditor.into());
-        }
+            if config.auditor_pubkey != service.auditor_pubkey() {
+                return Err(AuthorityTransferError::ForeignAuditor.into());
+            }
+            Ok::<_, RingRpcError>(())
+        })
+        .await?;
         if !relay.holds(&relay_id).await? {
             shared
                 .replay
-                .accept(ReplayCheck {
-                    ring,
-                    nonce,
-                    timestamp: request.timestamp,
-                    now,
-                })
+                .accept(authorized.nonce, shared.clock.now()?)
                 .await?;
         }
         // 3. The backfill reads only rings a read opened, so a first request projects the history
@@ -924,7 +938,7 @@ mod tests {
             .await
             .expect("delegate read");
         assert_eq!(
-            read.nullifier_secret.expect("secret").0[1..],
+            read.nullifier_secret.as_ref().expect("secret").0[1..],
             *escrowed.secret()
         );
         let impostor = Keypair::new_from_array([22; 32]);
@@ -1029,7 +1043,7 @@ mod tests {
             .list_salt(&salt_request(&fixture, &writer, wallet.pubkey()))
             .await
             .expect("the writer reads");
-        assert_eq!(read.list_salt.expect("salt").0, LIST_SALT);
+        assert_eq!(read.list_salt.as_ref().expect("salt").0, LIST_SALT);
         assert_eq!(read.ring_salt, None);
         let impostor = Keypair::new_from_array([22; 32]);
         let refused = fixture
@@ -1067,8 +1081,17 @@ mod tests {
             .await
             .expect("an owner with no enrollment reads the committed ring salt");
         assert_eq!(
-            (none.list_salt, none.ring_salt),
-            (None, Some(Hash(*ring_salt)))
+            (&none.list_salt, &none.ring_salt),
+            (&None, &Some(Hash(*ring_salt)))
+        );
+        let both = fixture
+            .hub
+            .list_salt(&salt_request(&fixture, &writer, wallet.pubkey()))
+            .await
+            .expect("an enrolled owner on a ring with a committed tag reads both salts");
+        assert_eq!(
+            (&both.list_salt, &both.ring_salt),
+            (&Some(Hash(LIST_SALT)), &Some(Hash(*ring_salt)))
         );
     }
 

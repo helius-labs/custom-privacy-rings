@@ -1453,3 +1453,259 @@ async fn a_ring_salted_write_with_no_named_owner_sends_nothing() {
 
     assert!(records.chain.sent.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn an_empty_unregistered_owners_submit_cannot_poison_a_retry_with_valid_hints() {
+    let records = Records::new().await;
+    let held = records.serve_salted_owner();
+    records.commit_ring_salt(&RING_SALT);
+    let key = ring_salted_key(unregistered_owner(), &RING_SALT);
+    let original = signed(&authority(), vec![list_write(key, ListId::PrivateBlock)]);
+
+    let first = records.submit(original.clone()).await.expect("queued");
+    records.writer.flush().await.expect("flush without hints");
+    assert!(records.chain.sent.lock().unwrap().is_empty());
+
+    let bogus = original
+        .clone()
+        .with_unregistered_owners(&[Address::new_from_array([0x55; 32])]);
+    assert_eq!(
+        refusal(records.submit(bogus).await),
+        RecordUpdateRefusal::UnregisteredOwnerUnmatched.code()
+    );
+
+    let retried = records
+        .submit(original.with_unregistered_owners(&[unregistered_owner()]))
+        .await
+        .expect("retried with valid hint");
+    assert_eq!(retried.update_id, first.update_id);
+
+    let flushed = records.flushed().await;
+    assert_eq!(flushed.members, [key]);
+    assert_eq!(
+        *held.proved.lock().unwrap(),
+        [(0, unregistered_owner(), RING_SALT)]
+    );
+}
+
+#[tokio::test]
+async fn an_enrolled_owner_clears_both_salted_and_ring_salted_keys_with_deduplicated_hints() {
+    let records = Records::new().await;
+    let held = records.serve_salted_owner();
+    records.commit_ring_salt(&RING_SALT);
+    let ring_key = ring_salted_key(salted_owner(), &RING_SALT);
+    let bit = ListId::PrivateBlock.record_bit();
+    let clear = |member: [u8; 32]| {
+        RecordUpdateEntry::Write(RingListWriteView {
+            mint_policy: None,
+            member: Hash(member),
+            mask: bit,
+            value: 0,
+        })
+    };
+    let request = signed(&authority(), vec![clear(SALTED_KEY), clear(ring_key)])
+        .with_unregistered_owners(&[salted_owner(), salted_owner()]);
+
+    let queued = records.submit(request).await.expect("queued");
+    assert_eq!(records.status(&queued).await, RecordUpdateStatus::Queued);
+
+    let flushed = records.flushed().await;
+    assert_eq!(flushed.members, [SALTED_KEY, ring_key]);
+    assert_eq!(
+        *held.proved.lock().unwrap(),
+        [
+            (0, salted_owner(), LIST_SALT),
+            (1, salted_owner(), RING_SALT),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn submit_rejects_malformed_or_unsigned_requests_before_chain_reads() {
+    let records = Records::new().await;
+    records.chain.accounts.lock().unwrap().clear();
+
+    let too_many_entries = SubmitRecordUpdateRequest {
+        registry: REGISTRY.into(),
+        update: RecordUpdate {
+            genesis_hash: Hash(GENESIS),
+            ring: RING.into(),
+            entries: vec![
+                list_write([1; 32], ListId::Allow);
+                custom_ring_interface::APPLY_BATCH + 1
+            ],
+            valid_until_slot: NOW + 100,
+            awaited_lists: 0,
+        },
+        signer: authority().pubkey().into(),
+        signature: Signature::default().into(),
+        unregistered_owners: Vec::new(),
+    };
+    assert_eq!(
+        refusal(records.submit(too_many_entries).await),
+        RecordUpdateRefusal::EntryCount.code()
+    );
+
+    let too_many_owners = signed(&authority(), vec![list_write([1; 32], ListId::Allow)])
+        .with_unregistered_owners(&[unregistered_owner(), salted_owner()]);
+    assert_eq!(
+        refusal(records.submit(too_many_owners).await),
+        RecordUpdateRefusal::UnregisteredOwnerUnmatched.code()
+    );
+
+    let wrong_cluster = signed_update(
+        &authority(),
+        RecordUpdate {
+            genesis_hash: Hash([0x99; 32]),
+            ring: RING.into(),
+            entries: vec![list_write([1; 32], ListId::Allow)],
+            valid_until_slot: NOW + 100,
+            awaited_lists: 0,
+        },
+    );
+    assert_eq!(
+        refusal(records.submit(wrong_cluster).await),
+        RecordUpdateRefusal::WrongCluster.code()
+    );
+
+    let mut bad_sig = signed(&authority(), vec![list_write([1; 32], ListId::Allow)]);
+    bad_sig.signature = Signature::default().into();
+    assert_eq!(
+        refusal(records.submit(bad_sig).await),
+        RecordUpdateRefusal::Signature.code()
+    );
+}
+
+#[tokio::test]
+async fn create_records_registry_enforces_served_ring_and_uninitialized_cap() {
+    use zolana_ring_client::rpc::CreateRecordsRegistryRequest;
+
+    let records = Records::new().await;
+    let foreign_local = CreateRecordsRegistryRequest::create(
+        ReadTarget {
+            cluster: GENESIS,
+            service: records.hub.service_pubkey(),
+            ring: OTHER_RING,
+        },
+        deployer().pubkey(),
+    )
+    .sign(&deployer())
+    .expect("signed");
+    assert!(matches!(
+        records.hub.create_records_registry(&foreign_local).await,
+        Err(RingRpcError::RingNotServed)
+    ));
+    assert!(records.chain.sent.lock().unwrap().is_empty());
+
+    let fixture = Fixture::new();
+    let ring_one = Address::new_from_array([0x31; 32]);
+    let ring_two = Address::new_from_array([0x32; 32]);
+    let mut source = fixture.source();
+    source
+        .upgrade_authorities
+        .insert(ring_one, deployer().pubkey());
+    source
+        .upgrade_authorities
+        .insert(ring_two, deployer().pubkey());
+    source
+        .configs
+        .get_mut(&RING)
+        .expect("config")
+        .auditor_pubkey = X25519Keypair::new().pubkey();
+
+    let chain = Arc::new(StubChain {
+        slot: AtomicU64::new(NOW),
+        height: AtomicU64::new(NOW),
+        config: Mutex::new(RingConfiguration {
+            auditor_pubkey: fixture.auditor.pubkey(),
+            roles: custom_ring_interface::RingRoles {
+                policy: authority().pubkey(),
+                ..bytemuck::Zeroable::zeroed()
+            },
+            mode: RingMode::Confidential,
+            delegate: None,
+            ring_list_tag: [0; 32],
+        }),
+        accounts: Mutex::default(),
+        sent: Mutex::default(),
+        outcome: Mutex::new(Some(ChainOutcome::Confirmed { slot: NOW })),
+        lookups: Mutex::default(),
+        records: super::Records::listing(&[]),
+        proof_change: Mutex::default(),
+    });
+    let store = Store::open("sqlite::memory:", 1).await.expect("store");
+    let hub = Hub::builder(source, identity(GENESIS))
+        .with_store(store)
+        .with_storage_chain(chain.clone(), Arc::new(storage_authority()))
+        .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .expect("hub");
+
+    let foreign_auditor = CreateRecordsRegistryRequest::create(
+        ReadTarget {
+            cluster: GENESIS,
+            service: hub.service_pubkey(),
+            ring: RING,
+        },
+        authority().pubkey(),
+    )
+    .sign(&authority())
+    .expect("signed");
+    assert!(matches!(
+        hub.create_records_registry(&foreign_auditor).await,
+        Err(RingRpcError::Unauthorized(Unauthorized::AuditorKeyMismatch))
+    ));
+
+    let first = CreateRecordsRegistryRequest::create(
+        ReadTarget {
+            cluster: GENESIS,
+            service: hub.service_pubkey(),
+            ring: ring_one,
+        },
+        deployer().pubkey(),
+    )
+    .sign(&deployer())
+    .expect("signed");
+    let created = hub.create_records_registry(&first).await.expect("created");
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+
+    let second = CreateRecordsRegistryRequest::create(
+        ReadTarget {
+            cluster: GENESIS,
+            service: hub.service_pubkey(),
+            ring: ring_two,
+        },
+        deployer().pubkey(),
+    )
+    .sign(&deployer())
+    .expect("signed");
+    assert!(matches!(
+        hub.create_records_registry(&second).await,
+        Err(RingRpcError::RecordUpdate(
+            RecordUpdateRefusal::RecordsCreationLimit
+        ))
+    ));
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+
+    let existing_registry =
+        StorageRegistry::new(storage_authority().pubkey(), &initialize_records());
+    chain.accounts.lock().unwrap().insert(
+        created.registry.0,
+        owned(STORAGE_PROGRAM_ID, bytemuck::bytes_of(&existing_registry)),
+    );
+    let repeat = CreateRecordsRegistryRequest::create(
+        ReadTarget {
+            cluster: GENESIS,
+            service: hub.service_pubkey(),
+            ring: ring_one,
+        },
+        deployer().pubkey(),
+    )
+    .sign(&deployer())
+    .expect("signed");
+    let repeated = hub
+        .create_records_registry(&repeat)
+        .await
+        .expect("idempotent");
+    assert_eq!(repeated.registry, created.registry);
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+}

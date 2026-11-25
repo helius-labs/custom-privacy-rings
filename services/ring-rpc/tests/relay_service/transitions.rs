@@ -239,7 +239,7 @@ async fn duplicate_submissions_send_once_and_keep_the_co_sign_allowance() {
     let worker = || Worker {
         chain: Arc::new(WorkerChain::of(&fixture)),
         co_signer: Some(co_signer.clone()),
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     };
     let (first, second) = (worker().start(&fixture), worker().start(&fixture));
     let submit = signed_deposit(&fixture, &first).await;
@@ -281,13 +281,13 @@ async fn a_stale_worker_does_not_overwrite_a_settled_relay() {
     let live = Worker {
         chain: Arc::new(WorkerChain::of(&fixture)),
         co_signer: Some(co_signer.clone()),
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let stale = Worker {
         chain: stale_chain.clone(),
         co_signer: Some(co_signer.clone()),
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let submit = signed_deposit(&fixture, &live).await;
@@ -329,7 +329,7 @@ async fn a_restarted_service_resends_the_stored_attempt() {
             ..WorkerChain::of(&fixture)
         }),
         co_signer: None,
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let quote = fixture.quote(RelayOperation::Anonymous).await;
@@ -348,7 +348,7 @@ async fn a_restarted_service_resends_the_stored_attempt() {
     let after = Worker {
         chain: Arc::new(WorkerChain::of(&fixture)),
         co_signer: None,
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     after.track().await.expect("a tracking pass");
@@ -367,13 +367,13 @@ async fn a_refused_first_send_keeps_a_pending_tracker_copy_open() {
     let first = Worker {
         chain: first_chain.clone(),
         co_signer: Some(co_signer.clone()),
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let tracker = Worker {
         chain: Arc::new(WorkerChain::of(&fixture)),
         co_signer: Some(co_signer.clone()),
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let submit = signed_deposit(&fixture, &first).await;
@@ -419,7 +419,7 @@ async fn a_delayed_relay_leaves_another_relay_progressing() {
     let relay = Worker {
         chain: chain.clone(),
         co_signer: None,
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let quote = fixture.quote(RelayOperation::Anonymous).await;

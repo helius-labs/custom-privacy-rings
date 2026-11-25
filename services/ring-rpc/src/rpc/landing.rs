@@ -6,7 +6,7 @@ pub(crate) fn signature_fees(signatures: usize) -> u64 {
         .saturating_mul(LAMPORTS_PER_SIGNATURE)
 }
 
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use async_trait::async_trait;
 use custom_ring_sdk::SignatureHistory;
@@ -29,7 +29,7 @@ use solana_transaction_status_client_types::{
 };
 use spr_client::{AsyncRpc, AsyncSolanaRpc, ClientError, RpcSendTransactionConfig};
 
-use crate::{error::RingRpcError, relay::RelayError};
+use crate::{error::RingRpcError, relay::RelayError, upstream::timed_rpc};
 
 #[async_trait]
 pub trait ChainSubmit: Send + Sync {
@@ -169,6 +169,12 @@ impl SolanaChain {
     pub fn new(rpc_url: &str) -> Self {
         Self {
             rpc: AsyncSolanaRpc::new(rpc_url),
+        }
+    }
+
+    pub fn with_timeout(rpc_url: &str, timeout: Duration) -> Self {
+        Self {
+            rpc: timed_rpc(rpc_url, timeout),
         }
     }
 }

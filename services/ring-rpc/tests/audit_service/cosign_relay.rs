@@ -264,6 +264,10 @@ impl CappedRelay {
                 ApproveClass::Withdrawals,
                 ApproveClass::Deposits,
             ]))
+            .with_relay_budget(zolana_ring_rpc::RelayBudget {
+                total_lamports: 100_000_000,
+                signer_lamports: 100_000_000,
+            })
             .with_relay(RelayParts {
                 store: store.clone(),
                 prover: Arc::new(FramedProver {
@@ -1439,4 +1443,71 @@ async fn the_lists_decide_before_the_service_ingests_the_spent_note() {
     );
     relay.edit_list(&authority(), block).await.expect("blocked");
     assert_eq!(refusal(relay.pays(2).await), CoSignError::Blocked.code());
+}
+
+#[tokio::test]
+async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() {
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    let action = listing(CoSignList::Block, CoSignSubjectKind::Asset, SOL_MINT);
+    let foreign_target = ReadTarget {
+        cluster: GENESIS,
+        service: relay.hub.service_pubkey(),
+        ring: OTHER_RING,
+    };
+    let foreign_edit = EditCoSignListRequest::edit(foreign_target, deployer().pubkey(), action)
+        .sign(&deployer())
+        .expect("signed edit");
+    assert!(matches!(
+        relay.hub.edit_co_sign_list(&foreign_edit).await,
+        Err(RingRpcError::RingNotServed)
+    ));
+
+    let fixture = Fixture::new();
+    let mut source = fixture.source();
+    source.configs.remove(&OTHER_RING);
+    source
+        .upgrade_authorities
+        .insert(OTHER_RING, deployer().pubkey());
+    source
+        .configs
+        .get_mut(&RING)
+        .expect("config")
+        .auditor_pubkey = X25519Keypair::new().pubkey();
+    let store = Store::open("sqlite::memory:", 1).await.expect("store");
+    let hub = Hub::builder(source, identity(GENESIS))
+        .with_store(store)
+        .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .expect("hub");
+
+    let uninitialized_edit = EditCoSignListRequest::edit(
+        ReadTarget {
+            cluster: GENESIS,
+            service: hub.service_pubkey(),
+            ring: OTHER_RING,
+        },
+        deployer().pubkey(),
+        action,
+    )
+    .sign(&deployer())
+    .expect("signed edit");
+    assert!(matches!(
+        hub.edit_co_sign_list(&uninitialized_edit).await,
+        Err(RingRpcError::Unauthorized(Unauthorized::NoConfig))
+    ));
+
+    let foreign_auditor_edit = EditCoSignListRequest::edit(
+        ReadTarget {
+            cluster: GENESIS,
+            service: hub.service_pubkey(),
+            ring: RING,
+        },
+        authority().pubkey(),
+        action,
+    )
+    .sign(&authority())
+    .expect("signed edit");
+    assert!(matches!(
+        hub.edit_co_sign_list(&foreign_auditor_edit).await,
+        Err(RingRpcError::Unauthorized(Unauthorized::AuditorKeyMismatch))
+    ));
 }

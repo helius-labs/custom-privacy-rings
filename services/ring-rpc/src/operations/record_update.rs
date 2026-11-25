@@ -75,6 +75,8 @@ pub enum RecordUpdateRefusal {
     ListApprovalWindow = -32245,
     #[error("records registry creation did not land")]
     RecordsNotCreated = -32260,
+    #[error("records registry creation limit is reached")]
+    RecordsCreationLimit = -32261,
     #[error("signer no longer holds the ring policy role")]
     AuthorityLapsed = -32275,
     #[error("ring policy commits no tag of the service ring salt")]

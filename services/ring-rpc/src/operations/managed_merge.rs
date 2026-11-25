@@ -19,7 +19,7 @@ use zolana_ring_transaction::RingAssets;
 
 use crate::{
     audit::AuditService,
-    authorize::WalletCheck,
+    authorize::{Authorized, PendingNonce, WalletCheck},
     error::{redacted, RingRpcError},
     hub::Hub,
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
@@ -27,7 +27,6 @@ use crate::{
     merge_settings::{MergeSettingsBook, SignedMergeSettings},
     relay::{HeldMerge, Relay},
     relays::RelayPhase,
-    replay::ReplayCheck,
     upstream::TransactionSource,
     utxos::SpendableNotes,
 };
@@ -53,6 +52,7 @@ pub struct OwnerMerge<'a> {
 pub struct BuiltMerge {
     pub message: VersionedMessage,
     pub last_valid_block_height: u64,
+    pub tree_fees: u64,
 }
 
 #[async_trait]
@@ -450,13 +450,16 @@ impl<S: TransactionSource> ManagedMerge<S> {
     /// history spends them.
     async fn send(&self, merge: OwnerMerge<'_>) -> Result<RelayId, RingRpcError> {
         let ring = merge.ring;
+        let owner = merge.owner;
         let nullifiers: Vec<[u8; 32]> = merge.inputs.iter().map(|input| input.nullifier).collect();
         let built = self.builder.build(merge).await?;
         self.relay
             .send_merge(HeldMerge {
                 ring,
+                owner,
                 message: built.message,
                 last_valid_block_height: built.last_valid_block_height,
+                tree_fees: built.tree_fees,
                 nullifiers,
             })
             .await
@@ -473,8 +476,9 @@ impl<S: TransactionSource> Hub<S> {
         let book = shared.merge_settings()?;
         let ring = request.ring.0;
         let owner = request.owner.0;
+        let service = self.service(Some(ring))?;
         let attestation = MergeSettingsAttestation {
-            target: self.service(Some(ring))?.read_target(),
+            target: service.read_target(),
             owner,
             settings: request.settings,
         };
@@ -488,15 +492,14 @@ impl<S: TransactionSource> Hub<S> {
             now,
         }
         .decide()?;
-        shared
-            .replay
-            .accept(ReplayCheck {
-                ring,
-                nonce,
-                timestamp: request.timestamp,
-                now,
-            })
-            .await?;
+        let Authorized { nonce, .. } = PendingNonce {
+            ring,
+            nonce,
+            timestamp: request.timestamp,
+        }
+        .authorize(service.require_served_config())
+        .await?;
+        shared.replay.accept(nonce, shared.clock.now()?).await?;
         let saved = book
             .save(SignedMergeSettings {
                 ring,
@@ -714,6 +717,7 @@ pub(crate) mod tests {
     #[derive(Default)]
     struct RecordingBuilder {
         owners: Mutex<Vec<(Address, usize)>>,
+        tree_fees: Mutex<u64>,
     }
 
     #[async_trait]
@@ -730,6 +734,7 @@ pub(crate) mod tests {
                     ComputeBudgetConfig::new(400_000),
                 )?,
                 last_valid_block_height: LAST_VALID_BLOCK_HEIGHT,
+                tree_fees: *self.tree_fees.lock().expect("tree fees"),
             })
         }
     }
@@ -1264,6 +1269,96 @@ pub(crate) mod tests {
             *fixture.builder.owners.lock().expect("owners"),
             vec![(wallet.pubkey(), 3)]
         );
+    }
+
+    #[tokio::test]
+    async fn set_merge_settings_for_unserved_ring_writes_no_settings_or_nonce() {
+        use crate::authorize::Unauthorized;
+        use sea_orm::{ConnectionTrait, Statement};
+
+        let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let foreign_auditor = X25519Keypair::new();
+        let source = EscrowRingSource {
+            config: RingConfiguration {
+                auditor_pubkey: foreign_auditor.pubkey(),
+                roles: custom_ring_interface::RingRoles {
+                    policy: Address::new_from_array([2; 32]),
+                    ..bytemuck::Zeroable::zeroed()
+                },
+                mode: RingMode::Confidential,
+                delegate: None,
+                ring_list_tag: [0; 32],
+            },
+            ring_list_tag: Mutex::new([0; 32]),
+            origins: Mutex::new(HashMap::new()),
+            tracking: TrackingLedger::default(),
+        };
+        let hub = Hub::builder(
+            source,
+            ServiceIdentity {
+                genesis_hash: GENESIS,
+                service: Arc::new(Keypair::new_from_array([1; 32])),
+            },
+        )
+        .with_store(store.clone())
+        .local(RING, X25519Keypair::new())
+        .expect("hub");
+        let wallet = Keypair::new_from_array([11; 32]);
+        let signed = SignedRequest::new(MergeSettingsAttestation {
+            target: ReadTarget {
+                cluster: GENESIS,
+                service: hub.service_pubkey(),
+                ring: RING,
+            },
+            owner: wallet.pubkey(),
+            settings: MergeSettings {
+                mint: MINT.into(),
+                target_note_count: 2,
+                min_average_amount: 0,
+            },
+        })
+        .at(unix_now().expect("clock"))
+        .sign(&wallet)
+        .expect("signed settings");
+
+        let refused = hub.set_merge_settings(&signed).await;
+        assert!(
+            matches!(
+                refused,
+                Err(RingRpcError::Unauthorized(Unauthorized::AuditorKeyMismatch))
+            ),
+            "{refused:?}"
+        );
+        for table in ["merge_settings", "replay_nonces"] {
+            let count: i64 = store
+                .connection()
+                .query_one(Statement::from_string(
+                    store.connection().get_database_backend(),
+                    format!("SELECT COUNT(*) AS count FROM {table}"),
+                ))
+                .await
+                .expect("query")
+                .expect("row")
+                .try_get("", "count")
+                .expect("count");
+            assert_eq!(count, 0, "{table} must remain empty");
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_merge_tree_fees_respect_the_relay_signer_budget() {
+        let fixture = Fixture::new().await;
+        *fixture.builder.tree_fees.lock().expect("tree fees") = 1_000_001;
+        let wallet = Keypair::new_from_array([11; 32]);
+        fixture.escrow_notes(&wallet, 3).await;
+        fixture.settle(&wallet, 1).await;
+
+        assert!(fixture.merge_due().await.is_empty());
+        assert_eq!(*fixture.chain.sent.lock().expect("sent"), 0);
+
+        *fixture.builder.tree_fees.lock().expect("tree fees") = 10_000;
+        assert_eq!(fixture.merge_due().await.len(), 1);
+        assert_eq!(*fixture.chain.sent.lock().expect("sent"), 1);
     }
 }
 

@@ -109,6 +109,9 @@ struct SpentFees {
     rings: HashMap<Address, u64>,
 }
 
+#[must_use]
+pub(crate) struct AuthorizedRegistration(Address);
+
 /// The writer role a batch pass reads from the ring policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WriterRole {
@@ -247,8 +250,11 @@ impl EnrollmentApplier {
         self.budget.total > 0 && self.budget.per_ring > 0
     }
 
-    /// Serves the ring once its policy role signed and its policy names the payer as `EnrollmentWriter`.
-    pub async fn register(&self, ring: Address, signer: Address) -> Result<(), RingRpcError> {
+    pub(crate) async fn authorize_registration(
+        &self,
+        ring: Address,
+        signer: Address,
+    ) -> Result<AuthorizedRegistration, RingRpcError> {
         let tracking = ring_tracking(self.chain.as_ref(), ring)
             .await?
             .ok_or(EnrollmentRefusal::RingMissing)?;
@@ -258,6 +264,14 @@ impl EnrollmentApplier {
         if tracking.writer != self.payer.address() {
             return Err(EnrollmentRefusal::RingMissing.into());
         }
+        Ok(AuthorizedRegistration(ring))
+    }
+
+    pub(crate) async fn complete_registration(
+        &self,
+        registration: AuthorizedRegistration,
+    ) -> Result<(), RingRpcError> {
+        let ring = registration.0;
         if self.named.contains(&ring) {
             return Ok(());
         }
@@ -278,6 +292,12 @@ impl EnrollmentApplier {
             }
         }
         Ok(())
+    }
+
+    /// Serves the ring once its policy role signed and its policy names the payer as `EnrollmentWriter`.
+    pub async fn register(&self, ring: Address, signer: Address) -> Result<(), RingRpcError> {
+        let registration = self.authorize_registration(ring, signer).await?;
+        self.complete_registration(registration).await
     }
 
     /// Holds the write once every check storage runs on it passes.
@@ -443,15 +463,16 @@ impl EnrollmentApplier {
 impl RingPass<'_> {
     async fn run(mut self) -> Result<WriterRole, RingRpcError> {
         // 1. One batch at a time, a second proof from the same root could not land.
-        if let Some(in_flight) = self.state.in_flight.take() {
+        if let Some(in_flight) = self.state.in_flight.as_ref() {
             match in_flight.attempt.landing(self.chain).await? {
-                Landing::Pending => {
-                    self.state.in_flight = Some(in_flight);
-                    return Ok(WriterRole::Held);
+                Landing::Pending => return Ok(WriterRole::Held),
+                Landing::Landed(ChainOutcome::Confirmed { .. }) => {
+                    self.state.in_flight = None;
                 }
-                Landing::Landed(ChainOutcome::Confirmed { .. }) => {}
                 Landing::Landed(ChainOutcome::Failed { .. }) | Landing::Expired => {
-                    self.requeue(in_flight.writes);
+                    if let Some(in_flight) = self.state.in_flight.take() {
+                        self.requeue(in_flight.writes);
+                    }
                 }
             }
         }
@@ -491,7 +512,13 @@ impl RingPass<'_> {
                 return Err(error);
             }
         };
-        let current = ring_tracking(self.chain, self.ring.program_id()).await?;
+        let current = match ring_tracking(self.chain, self.ring.program_id()).await {
+            Ok(current) => current,
+            Err(error) => {
+                self.restore(writes);
+                return Err(error);
+            }
+        };
         if current.is_none_or(|current| current.account.newest().revision != proven.revision) {
             self.requeue(writes);
             return Ok(WriterRole::Held);

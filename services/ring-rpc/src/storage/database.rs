@@ -1,4 +1,9 @@
-use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection};
+use std::time::Duration;
+
+use sea_orm::{
+    sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    ConnectOptions, Database, DatabaseConnection, DbErr, RuntimeErr, SqlxSqliteConnector,
+};
 use sea_orm_migration::MigratorTrait;
 
 use sha2::{Digest, Sha256};
@@ -7,6 +12,7 @@ use crate::{error::RingRpcError, migration::Migrator, projection_lease::LeaseHol
 
 /// One flush at a time, the rest serve submits and status reads.
 pub const STORE_CONNECTIONS: u32 = 4;
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Migrated when opened, clones share one pool.
 #[derive(Clone)]
@@ -18,17 +24,29 @@ pub struct Store {
 impl Store {
     /// `url` is a `postgres://` or `sqlite://` URL.
     pub async fn open(url: &str, max_connections: u32) -> Result<Self, RingRpcError> {
-        let db = Database::connect(
-            ConnectOptions::new(url)
+        let db = if url.starts_with("sqlite:") && !url.contains(":memory:") {
+            let options = url
+                .parse::<SqliteConnectOptions>()
+                .map_err(|error| DbErr::Conn(RuntimeErr::SqlxError(error)))?
+                .journal_mode(SqliteJournalMode::Wal)
+                .busy_timeout(SQLITE_BUSY_TIMEOUT);
+            let pool = SqlitePoolOptions::new()
                 .max_connections(max_connections)
-                .sqlx_logging(false)
-                .to_owned(),
-        )
-        .await?;
-        if db.get_database_backend() == DatabaseBackend::Sqlite {
-            // Readers run beside the writer.
-            db.execute_unprepared("PRAGMA journal_mode=WAL").await?;
-        }
+                .acquire_timeout(SQLITE_BUSY_TIMEOUT)
+                .connect_with(options)
+                .await
+                .map_err(|error| DbErr::Conn(RuntimeErr::SqlxError(error)))?;
+            SqlxSqliteConnector::from_sqlx_sqlite_pool(pool)
+        } else {
+            Database::connect(
+                ConnectOptions::new(url)
+                    .max_connections(max_connections)
+                    .acquire_timeout(SQLITE_BUSY_TIMEOUT)
+                    .sqlx_logging(false)
+                    .to_owned(),
+            )
+            .await?
+        };
         Migrator::up(&db, None).await?;
         Ok(Self {
             db,

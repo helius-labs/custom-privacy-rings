@@ -117,6 +117,11 @@ pub(crate) enum Lane {
     Read,
 }
 
+#[must_use = "hold the lane permit for the request"]
+pub(crate) struct LanePermit<'a> {
+    _permit: Option<SemaphorePermit<'a>>,
+}
+
 /// Every read and auditor key attestation binds both.
 pub struct ServiceIdentity {
     pub genesis_hash: [u8; 32],
@@ -317,8 +322,14 @@ impl<S: TransactionSource> Shared<S> {
         ring: Address,
         signer: Address,
     ) -> Result<(), RingRpcError> {
+        let (_, auditor) = self.auditor(Some(ring))?;
         let ring_authority = match self.source.ring_config(ring).await? {
-            Some(config) => Some(config.roles.policy),
+            Some(config) => {
+                if config.auditor_pubkey != auditor.pubkey() {
+                    return Err(Unauthorized::AuditorKeyMismatch.into());
+                }
+                Some(config.roles.policy)
+            }
             None => self.source.upgrade_authority(ring).await?,
         };
         if ring_authority != Some(signer) {
@@ -417,7 +428,7 @@ impl<S: TransactionSource> Hub<S> {
     }
 
     /// The rate unit is spent even when every slot is taken.
-    pub(crate) fn admit(&self, lane: Lane) -> Result<Option<SemaphorePermit<'_>>, RingRpcError> {
+    pub(crate) fn admit(&self, lane: Lane) -> Result<LanePermit<'_>, RingRpcError> {
         let index = match lane {
             Lane::Public => 0,
             Lane::Authentication => 1,
@@ -425,10 +436,11 @@ impl<S: TransactionSource> Hub<S> {
         };
         let (rate, slots) = &self.shared.lanes[index];
         rate.accept(Instant::now())?;
-        slots
+        let permit = slots
             .as_ref()
             .map(|slots| slots.try_acquire().map_err(|_| RingRpcError::Busy))
-            .transpose()
+            .transpose()?;
+        Ok(LanePermit { _permit: permit })
     }
 
     pub fn mode(&self) -> KeyMode {
@@ -860,7 +872,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
             }),
             origins: self.origins,
             replay: match &self.store {
-                Some(store) => ReplayGuard::Shared(store.clone()),
+                Some(store) => ReplayGuard::shared(store.clone()),
                 None => ReplayGuard::Local(LocalNonces::default()),
             },
             active_readers: Mutex::new(HashSet::new()),

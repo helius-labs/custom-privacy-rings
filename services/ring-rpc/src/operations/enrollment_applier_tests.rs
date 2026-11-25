@@ -57,6 +57,7 @@ struct StubChain {
     blockhash_unavailable: AtomicBool,
     /// The next send reports a failure and records nothing.
     send_fails: AtomicBool,
+    outcome_fails: AtomicBool,
 }
 
 type DuringProof = Box<dyn Fn(&StubChain) + Send + Sync>;
@@ -160,6 +161,9 @@ impl ChainSubmit for StubChain {
     }
 
     async fn outcome(&self, _signature: Signature) -> Result<Option<ChainOutcome>, RingRpcError> {
+        if self.outcome_fails.swap(false, Ordering::Relaxed) {
+            return Err(RingRpcError::StateUnavailable);
+        }
         Ok(self.outcome.lock().unwrap().take())
     }
 
@@ -789,4 +793,24 @@ async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
     );
     assert_eq!(submitted.0, sent[0].signatures[0]);
     assert_eq!(service.budget.spent().total, fee);
+}
+
+#[tokio::test]
+async fn landing_error_keeps_in_flight_batch_for_retry() {
+    let chain = StubChain::new();
+    chain.enrolled([1]);
+    let service = applier(&chain).await;
+    service.submit(rotation(1)).await.expect("queued");
+    service.flush().await;
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+
+    chain.outcome_fails.store(true, Ordering::Relaxed);
+    service.flush().await;
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+
+    chain.landed(ChainOutcome::Failed {
+        reason: "reverted".to_owned(),
+    });
+    service.flush().await;
+    assert_eq!(chain.sent.lock().unwrap().len(), 2);
 }

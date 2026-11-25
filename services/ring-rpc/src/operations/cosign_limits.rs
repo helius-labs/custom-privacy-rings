@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     future::Future,
+    hash::{Hash, Hasher},
     sync::Arc,
 };
 
@@ -8,6 +9,7 @@ use async_trait::async_trait;
 use custom_ring_interface::CoSignScope;
 use sea_orm::{ConnectionTrait, DbErr, TransactionTrait};
 use solana_address::Address;
+use tokio::sync::Mutex as AsyncMutex;
 use zolana_operator_custody::SigningIdentity;
 use zolana_ring_policy::{
     ApprovalInputs, ApprovalMask, Member, MintPolicy, OwnerDebit, PublicGross,
@@ -88,12 +90,15 @@ pub struct LimitedCoSignerInit<L> {
 /// Window limits bind only the transactions that need its signature.
 pub type LimitedCoSigner<L> = CoSigner<WindowRule<L>>;
 
+const RING_GATE_STRIPES: usize = 64;
+
 /// The approval classes and the window caps of the ring's asset records.
 pub struct WindowRule<L> {
     signer: Address,
     limits: L,
     store: Arc<Store>,
     approval: CoSignerApproval,
+    gates: [AsyncMutex<()>; RING_GATE_STRIPES],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,8 +155,17 @@ impl<L: AssetLimitSource> LimitedCoSignerInit<L> {
             limits: self.limits,
             store: self.store,
             approval: self.approval,
+            gates: std::array::from_fn(|_| AsyncMutex::new(())),
         };
         CoSigner::new(self.signer, rule)
+    }
+}
+
+impl<L> WindowRule<L> {
+    fn gate(&self, ring: &Address) -> &AsyncMutex<()> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ring.as_array().hash(&mut hasher);
+        &self.gates[(hasher.finish() as usize) % RING_GATE_STRIPES]
     }
 }
 
@@ -238,56 +252,75 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
             return Ok(Verdict::Refused(CoSignRefusal::NotApproved));
         }
         let ticket = request.ticket;
-
-        let transaction = self.store.connection().begin().await?;
-        let ledger = UsageLedger { conn: &transaction };
-        let scope = AssetScope {
-            ring: &request.ring,
-            assets: &assets,
-        };
-        ledger.admit(scope).await?;
-        match ledger.reservation_state(&ticket).await? {
+        let _ring_gate = self.gate(&request.ring).lock().await;
+        match (UsageLedger {
+            conn: self.store.connection(),
+        })
+        .reservation_state(&ticket)
+        .await?
+        {
             Some(ReservationState::Held | ReservationState::Confirmed) => {
                 return Ok(Verdict::Admitted);
             }
             Some(ReservationState::Released) => return Err(CoSignError::ReleasedReservation.into()),
             None => {}
         }
-        let slot = self.limits.current_slot().await?;
-        if !ledger.slot_allowed(AdmissionSlot { scope, slot }).await? {
-            transaction.rollback().await?;
-            return Err(CoSignError::LimitsUnavailable.into());
+        for attempt in 0..2 {
+            let slot = self.limits.current_slot().await?;
+            if self.limits.current_slot().await? != slot {
+                return Err(CoSignError::LimitsUnavailable.into());
+            }
+            let transaction = self.store.connection().begin().await?;
+            let ledger = UsageLedger { conn: &transaction };
+            let scope = AssetScope {
+                ring: &request.ring,
+                assets: &assets,
+            };
+            ledger.admit(scope).await?;
+            match ledger.reservation_state(&ticket).await? {
+                Some(ReservationState::Held | ReservationState::Confirmed) => {
+                    return Ok(Verdict::Admitted);
+                }
+                Some(ReservationState::Released) => {
+                    return Err(CoSignError::ReleasedReservation.into());
+                }
+                None => {}
+            }
+            if !ledger.slot_allowed(AdmissionSlot { scope, slot }).await? {
+                transaction.rollback().await?;
+                if attempt == 0 && self.limits.current_slot().await? > slot {
+                    continue;
+                }
+                return Err(CoSignError::LimitsUnavailable.into());
+            }
+            let held = TotalsRead {
+                ring: &request.ring,
+                slot,
+                flows: &flows,
+                checks: &checks,
+            }
+            .read(&ledger)
+            .await?;
+            let decision = LimitDecision {
+                flows: &flows,
+                assets: &checks,
+                held: &held,
+            }
+            .decide();
+            if decision == Verdict::Admitted {
+                ledger
+                    .reserve(Reserve {
+                        ticket: &ticket,
+                        ring: &request.ring,
+                        slot,
+                        flows: &flows,
+                    })
+                    .await?;
+            }
+            transaction.commit().await?;
+            return Ok(decision);
         }
-        let held = TotalsRead {
-            ring: &request.ring,
-            slot,
-            flows: &flows,
-            checks: &checks,
-        }
-        .read(&ledger)
-        .await?;
-        let decision = LimitDecision {
-            flows: &flows,
-            assets: &checks,
-            held: &held,
-        }
-        .decide();
-        if decision == Verdict::Admitted {
-            ledger
-                .reserve(Reserve {
-                    ticket: &ticket,
-                    ring: &request.ring,
-                    slot,
-                    flows: &flows,
-                })
-                .await?;
-        }
-        if self.limits.current_slot().await? != slot {
-            transaction.rollback().await?;
-            return Err(CoSignError::LimitsUnavailable.into());
-        }
-        transaction.commit().await?;
-        Ok(decision)
+        Err(CoSignError::LimitsUnavailable.into())
     }
 
     async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {

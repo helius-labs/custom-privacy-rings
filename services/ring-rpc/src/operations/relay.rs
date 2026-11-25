@@ -49,8 +49,9 @@ use crate::{
     },
     relay_submit::{presigned_transaction, CollectedSignature},
     relays::{
-        Awaiting, Closing, Committed, PendingCoSign, RelayEvent, RelayRecord, RelayRevision,
-        RelayRow, RelayState, RelayStore, SignerAdmission, Transition, TransitionError,
+        Awaiting, Closing, Committed, PendingCoSign, PendingStatus, RelayEvent, RelayRecord,
+        RelayRevision, RelayRow, RelayState, RelayStore, SignerAdmission, Transition,
+        TransitionError, PENDING_PAGE_LEN,
     },
     transfer_debits::deposit_flows,
 };
@@ -64,8 +65,11 @@ const MANAGED_MERGE_DOMAIN: &[u8] = b"zolana/ring-rpc-managed-merge";
 /// One blockhash lifetime for the wallet to sign the stored message.
 pub const ABANDONED_AFTER_SLOTS: u64 = QUOTE_SLOTS;
 const SWEEP_PAGE: u64 = 16;
+const MAX_PENDING_PAGES: usize = 256;
 const ATTEMPT_KEY_DOMAIN: &[u8] = b"zolana/ring-rpc-attempt";
 const DELEGATE_KEY_DOMAIN: &[u8] = b"zolana/ring-rpc-attempt-delegate";
+const MERGE_KEY_DOMAIN: &[u8] = b"zolana/ring-rpc-attempt-merge";
+const SIGNER_KEY_DOMAIN: &[u8] = b"zolana/ring-rpc-signer";
 
 #[derive(Debug, Error)]
 pub enum RelayError {
@@ -170,8 +174,10 @@ pub struct Relay {
 #[must_use]
 pub(crate) struct HeldMerge {
     pub ring: Address,
+    pub owner: Address,
     pub message: VersionedMessage,
     pub last_valid_block_height: u64,
+    pub tree_fees: u64,
     pub nullifiers: Vec<[u8; 32]>,
 }
 
@@ -186,7 +192,7 @@ struct PrepareCheck<'a> {
 
 struct Checked {
     owner_signature: Option<[u8; 64]>,
-    signer: Option<Address>,
+    signer: Address,
     setup: Vec<CreateAssociatedTokenAccount>,
 }
 
@@ -386,19 +392,15 @@ impl Relay {
         }
         .check()?;
         // 1. Only a verified signature reaches the store, a stranger leaves no row and no lease.
-        let claim = match signer {
-            Some(signer) => Some(
-                self.admit(Admit {
-                    key: attempt_key(request)?,
-                    relay_id: &relay_id,
-                    signer,
-                    slot: self.chain.slot().await?,
-                })
-                .await?,
-            ),
-            None => None,
-        };
-        let lease = claim.as_ref().map(|claim| claim.lease);
+        let claim = self
+            .admit(Admit {
+                key: attempt_key(request)?,
+                relay_id: &relay_id,
+                signer,
+                slot: self.chain.slot().await?,
+            })
+            .await?;
+        let lease = claim.lease;
         let staged = async {
             let proven = {
                 let _proof = self
@@ -473,15 +475,13 @@ impl Relay {
     /// A failure yields at once, a lost yield only delays a retry until the lease lapses.
     async fn under_lease<T>(
         &self,
-        lease: Option<Lease>,
+        lease: Lease,
         work: impl Future<Output = Result<T, RingRpcError>>,
     ) -> Result<T, RingRpcError> {
         let result = work.await;
         if result.is_err() {
-            if let Some(lease) = lease {
-                if let Err(error) = self.reservations().yield_lease(&lease).await {
-                    warn!("relay lease did not yield {}", redacted(&error));
-                }
+            if let Err(error) = self.reservations().yield_lease(&lease).await {
+                warn!("relay lease did not yield {}", redacted(&error));
             }
         }
         result
@@ -577,11 +577,11 @@ impl Relay {
                 setup: Vec::new(),
                 proven,
                 parties,
-                lease: Some(lease),
+                lease,
             })
             .await
         };
-        self.under_lease(Some(lease), staged).await
+        self.under_lease(lease, staged).await
     }
 
     /// A relay awaiting no signer is co-signed before the record lands.
@@ -599,9 +599,8 @@ impl Relay {
             mut instructions,
             rent: setup_rent,
         } = self.missing_setup(&setup).await?;
-        let landing_rent = (setup_rent > 0)
-            .then_some(setup_rent)
-            .map(|rent| rent.saturating_add(proven.tree_fees));
+        let total_rent = setup_rent.saturating_add(proven.tree_fees);
+        let landing_rent = (total_rent > 0).then_some(total_rent);
         self.reserve(RelaySpend {
             proven: &proven,
             lease,
@@ -680,19 +679,6 @@ impl Relay {
             record,
             slot,
         } = staged;
-        let Some(lease) = lease else {
-            return Ok(
-                match self
-                    .relays()
-                    .insert(relay_id, record)
-                    .await
-                    .map_err(WriteError::Committing)?
-                {
-                    true => AttemptWrite::Stored,
-                    false => AttemptWrite::Existing,
-                },
-            );
-        };
         let transaction = self
             .store
             .connection()
@@ -753,7 +739,7 @@ impl Relay {
         };
         let fee = message_fee_of(&proven.instruction, fee_payer);
         self.fund(Fund {
-            lease: lease.ok_or(RelayError::OwnerSignature)?,
+            lease,
             lamports: landing_rent.saturating_add(fee),
             fee_allowance: fee,
             landing_rent,
@@ -817,7 +803,7 @@ impl Relay {
                 })
                 .await?)
         };
-        self.under_lease(Some(lease), released).await
+        self.under_lease(lease, released).await
     }
 
     /// Only the message fee and the landing rent stay spent.
@@ -885,55 +871,91 @@ impl Relay {
             )
             .into(),
         );
-        // A merge awaits no wallet signer and demands no co-signer.
-        let closing = Closing {
-            co_signature: None,
-            fee_payer: self.fee_payer_signature(&merge.message).await?,
-        };
-        let unsigned = Awaiting {
-            signatures: Vec::new(),
-            awaiting: Vec::new(),
-            co_sign: None,
-        };
-        let record = RelayRecord {
-            state: RelayState::open(unsigned, Some(closing))?,
-            message: merge.message,
-            last_valid_block_height: merge.last_valid_block_height,
-        };
-        let hold = HoldInputs {
-            ring: &merge.ring,
-            relay_id: &relay_id,
-            nullifiers: &merge.nullifiers,
-        };
-        match self.store_merge(&record, hold).await {
-            Ok(true) => {}
-            // The stored relay keeps the co-signer reservation.
-            Ok(false) => return Ok(relay_id),
-            Err(error) => {
-                let stored = self.relays().get(&relay_id).await;
-                self.free_unless_stored(FailedWrite {
-                    write: UnstoredWrite::Failed(&error),
-                    ticket: record.ticket(),
-                    stored: stored_record(&stored),
+        if self.relays().get(&relay_id).await?.is_some() {
+            return Ok(relay_id);
+        }
+        let claim = self
+            .admit(Admit {
+                key: merge_key(&relay_id),
+                relay_id: &relay_id,
+                signer: merge.owner,
+                slot: self.chain.slot().await?,
+            })
+            .await?;
+        let lease = claim.lease;
+        let staged = async {
+            if merge.tree_fees > 0 {
+                let fee = message_fee(&merge.message);
+                self.fund(Fund {
+                    lease,
+                    lamports: merge.tree_fees.saturating_add(fee),
+                    fee_allowance: fee,
+                    landing_rent: merge.tree_fees,
+                    budget: self.budget,
                 })
                 .await?;
-                return Err(error.into());
             }
-        }
-        let row = RelayRow {
-            revision: RelayRevision::FIRST,
-            record,
+            // A merge awaits no wallet signer and demands no co-signer.
+            let closing = Closing {
+                co_signature: None,
+                fee_payer: self.fee_payer_signature(&merge.message).await?,
+            };
+            let unsigned = Awaiting {
+                signatures: Vec::new(),
+                awaiting: Vec::new(),
+                co_sign: None,
+            };
+            let record = RelayRecord {
+                state: RelayState::open(unsigned, Some(closing))?,
+                message: merge.message,
+                last_valid_block_height: merge.last_valid_block_height,
+            };
+            let hold = HoldInputs {
+                ring: &merge.ring,
+                relay_id: &relay_id,
+                nullifiers: &merge.nullifiers,
+            };
+            let slot = self.chain.slot().await?;
+            let staged_merge = StagedMerge {
+                record: &record,
+                hold,
+                lease,
+                slot,
+            };
+            match self.store_merge(staged_merge).await {
+                Ok(AttemptWrite::Stored) => {}
+                Ok(AttemptWrite::Existing) => return Ok(relay_id),
+                Ok(AttemptWrite::Refused(refused)) => return Err(refused),
+                Err(error) => {
+                    let stored = self.relays().get(&relay_id).await;
+                    self.free_unless_stored(FailedWrite {
+                        write: UnstoredWrite::Failed(&error),
+                        ticket: record.ticket(),
+                        stored: stored_record(&stored),
+                    })
+                    .await?;
+                    return Err(error.into());
+                }
+            }
+            let row = RelayRow {
+                revision: RelayRevision::FIRST,
+                record,
+            };
+            let row = self.first_send(&relay_id, row).await?;
+            self.release_failed(&relay_id, &row.record.state).await?;
+            Ok(relay_id)
         };
-        self.first_send(&relay_id, row).await?;
-        Ok(relay_id)
+        self.under_lease(lease, staged).await
     }
 
-    /// `false` when the relay is stored already.
-    async fn store_merge(
-        &self,
-        record: &RelayRecord,
-        hold: HoldInputs<'_>,
-    ) -> Result<bool, WriteError> {
+    async fn store_merge(&self, staged: StagedMerge<'_>) -> Result<AttemptWrite, WriteError> {
+        let StagedMerge {
+            record,
+            hold,
+            lease,
+            slot,
+        } = staged;
+        let relay_id = hold.relay_id;
         let transaction = self
             .store
             .connection()
@@ -942,18 +964,34 @@ impl Relay {
             .map_err(WriteError::Uncommitted)?;
         let staged = async {
             if !RelayStore::new(&transaction)
-                .insert(hold.relay_id, record)
+                .insert(relay_id, record)
                 .await?
             {
-                return Ok(false);
+                return Ok(AttemptWrite::Existing);
             }
             MergeInputs { conn: &transaction }.hold(hold).await?;
-            Ok(true)
+            let bound = RelayReservations::new(&transaction)
+                .bind(Bind {
+                    lease,
+                    relay_id,
+                    fee: message_fee(&record.message),
+                    slot,
+                })
+                .await?;
+            Ok(match bound {
+                SpendCheck::Accepted => AttemptWrite::Stored,
+                SpendCheck::OverAllowance => AttemptWrite::Refused(RelayError::Allowance.into()),
+                SpendCheck::LeaseLost => AttemptWrite::Refused(RingRpcError::RelayProverBusy),
+            })
         }
         .await
         .map_err(WriteError::Uncommitted)?;
-        if staged {
-            transaction.commit().await.map_err(WriteError::Committing)?;
+        match staged {
+            AttemptWrite::Stored => transaction.commit().await.map_err(WriteError::Committing)?,
+            _ => transaction
+                .rollback()
+                .await
+                .map_err(WriteError::Uncommitted)?,
         }
         Ok(staged)
     }
@@ -1056,16 +1094,27 @@ impl Relay {
 
     /// One pass over the pending relays.
     pub async fn track(&self) -> Result<(), RingRpcError> {
-        for relay_id in self.relays().pending().await? {
-            let tracked = async {
-                let row = self.row(&relay_id).await?;
-                let row = self.advance(&relay_id, row).await?;
-                self.resend(&row.record).await?;
-                self.release_failed(&relay_id, &row.record.state).await
-            }
-            .await;
-            if let Err(error) = tracked {
-                warn!("relay {} did not advance {}", relay_id.0, redacted(&error));
+        for status in [PendingStatus::Sent, PendingStatus::AwaitingSignature] {
+            let mut after = None;
+            for _ in 0..MAX_PENDING_PAGES {
+                let page = self.relays().pending_page(status, after.as_ref()).await?;
+                let full = page.len() == PENDING_PAGE_LEN;
+                after = page.last().cloned();
+                for relay_id in page {
+                    let tracked = async {
+                        let row = self.row(&relay_id).await?;
+                        let row = self.advance(&relay_id, row).await?;
+                        self.resend(&row.record).await?;
+                        self.release_failed(&relay_id, &row.record.state).await
+                    }
+                    .await;
+                    if let Err(error) = tracked {
+                        warn!("relay {} did not advance {}", relay_id.0, redacted(&error));
+                    }
+                }
+                if !full {
+                    break;
+                }
             }
         }
         Ok(())
@@ -1117,6 +1166,7 @@ impl Relay {
         &self,
         request: &CoSignTransactionRequest,
     ) -> Result<CoSignTransactionResponse, RingRpcError> {
+        self.rings.check(request.ring.0).await?;
         DirectCoSign {
             chain: self.chain.as_ref(),
             policy: self.co_signer.as_ref(),
@@ -1380,22 +1430,29 @@ struct ProvenStep {
     setup: Vec<CreateAssociatedTokenAccount>,
     proven: ProvenRelay,
     parties: RelayParties,
-    /// Held when a wallet party's signature was verified, that party answers for the reservation.
-    lease: Option<Lease>,
+    lease: Lease,
 }
 
 struct RelaySpend<'a> {
     proven: &'a ProvenRelay,
-    lease: Option<Lease>,
+    lease: Lease,
     setup: &'a [Instruction],
     /// `None` holds nothing, `Some(0)` still holds its fee, `Some` counts the tree fees.
     landing_rent: Option<u64>,
 }
 
 struct StagedAttempt<'a> {
-    lease: Option<Lease>,
+    lease: Lease,
     relay_id: &'a RelayId,
     record: &'a RelayRecord,
+    slot: u64,
+}
+
+#[must_use]
+struct StagedMerge<'a> {
+    record: &'a RelayRecord,
+    hold: HoldInputs<'a>,
+    lease: Lease,
     slot: u64,
 }
 
@@ -1532,11 +1589,6 @@ impl PrepareCheck<'_> {
         if payload.ring_program_id() != request.ring.0 {
             return Err(RelayError::RingMismatch.into());
         }
-        let unsigned = Checked {
-            owner_signature: None,
-            signer: None,
-            setup: Vec::new(),
-        };
         let proof_inputs = match payload {
             RelayPayload::Transfer(proof_inputs) => proof_inputs,
             RelayPayload::Deposit(deposit) => {
@@ -1568,8 +1620,9 @@ impl PrepareCheck<'_> {
                     return Err(RelayError::DepositorSignature.into());
                 }
                 return Ok(Checked {
-                    signer: Some(depositor),
-                    ..unsigned
+                    owner_signature: None,
+                    signer: depositor,
+                    setup: Vec::new(),
                 });
             }
             RelayPayload::Merge(merge) => {
@@ -1595,8 +1648,9 @@ impl PrepareCheck<'_> {
                     return Err(RelayError::OwnerSignature.into());
                 }
                 return Ok(Checked {
-                    signer: Some(owner),
-                    ..unsigned
+                    owner_signature: None,
+                    signer: owner,
+                    setup: Vec::new(),
                 });
             }
         };
@@ -1615,7 +1669,7 @@ impl PrepareCheck<'_> {
             } => Some(<[u8; 64]>::from(owner_signature.0)),
             RelayIntent::Delegate { .. } => None,
             RelayIntent::Deposit { .. } | RelayIntent::Merge { .. } => {
-                return Ok(Checked { setup, ..unsigned })
+                return Err(RelayError::RailMismatch.into())
             }
         };
         let digest = proof_inputs
@@ -1637,9 +1691,9 @@ impl PrepareCheck<'_> {
                 return Err(RelayError::DelegateSignature.into());
             }
             return Ok(Checked {
-                signer: Some(*delegate),
+                owner_signature: None,
+                signer: *delegate,
                 setup,
-                ..unsigned
             });
         };
         match proof_inputs
@@ -1649,12 +1703,7 @@ impl PrepareCheck<'_> {
         {
             true => Ok(Checked {
                 owner_signature: Some(signature),
-                signer: proof_inputs
-                    .sender
-                    .signing_pubkey
-                    .as_ed25519()
-                    .ok()
-                    .map(Address::new_from_array),
+                signer: signer_address(&proof_inputs.sender.signing_pubkey),
                 setup,
             }),
             false => Err(RelayError::OwnerSignature.into()),
@@ -1746,6 +1795,27 @@ fn delegate_key(relay_id: &RelayId) -> [u8; 32] {
         .chain_update(relay_id.0 .0)
         .finalize()
         .into()
+}
+
+fn merge_key(relay_id: &RelayId) -> [u8; 32] {
+    Sha256::new()
+        .chain_update(MERGE_KEY_DOMAIN)
+        .chain_update(relay_id.0 .0)
+        .finalize()
+        .into()
+}
+
+fn signer_address(pubkey: &spr_keypair::PublicKey) -> Address {
+    match pubkey.confidential_view_tag() {
+        Ok(bytes) => Address::new_from_array(bytes),
+        Err(_) => Address::new_from_array(
+            Sha256::new()
+                .chain_update(SIGNER_KEY_DOMAIN)
+                .chain_update(pubkey.as_bytes())
+                .finalize()
+                .into(),
+        ),
+    }
 }
 
 fn refused_fit(error: FitError) -> RingRpcError {
@@ -1886,5 +1956,294 @@ mod tests {
             panic!("a relay refusal");
         };
         assert_eq!(ErrorObjectOwned::from(&refused).code(), -32216);
+    }
+
+    #[tokio::test]
+    async fn co_sign_transaction_refuses_unserved_ring() {
+        struct UnusedProver;
+
+        #[async_trait]
+        impl RelayProver for UnusedProver {
+            async fn prove(
+                &self,
+                _request: RelayProofRequest<'_>,
+            ) -> Result<ProvenRelay, RingRpcError> {
+                unreachable!("unused")
+            }
+
+            async fn seal_delegate(
+                &self,
+                _seal: DelegateSeal<'_>,
+                _parties: RelayParties,
+            ) -> Result<RelayProofInputs, RingRpcError> {
+                unreachable!("unused")
+            }
+        }
+
+        struct UnusedChain;
+
+        #[async_trait]
+        impl ChainSubmit for UnusedChain {
+            async fn slot(&self) -> Result<u64, RingRpcError> {
+                unreachable!("unused")
+            }
+            async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+                unreachable!("unused")
+            }
+            async fn block_height(&self) -> Result<u64, RingRpcError> {
+                unreachable!("unused")
+            }
+            async fn account_data(
+                &self,
+                _address: Address,
+            ) -> Result<Option<Vec<u8>>, RingRpcError> {
+                unreachable!("unused")
+            }
+            async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, RingRpcError> {
+                unreachable!("unused")
+            }
+            async fn send(
+                &self,
+                _transaction: &solana_transaction::versioned::VersionedTransaction,
+            ) -> Result<(), RingRpcError> {
+                unreachable!("unused")
+            }
+            async fn outcome(
+                &self,
+                _signature: solana_signature::Signature,
+            ) -> Result<Option<ChainOutcome>, RingRpcError> {
+                unreachable!("unused")
+            }
+            async fn simulate(
+                &self,
+                _message: &VersionedMessage,
+            ) -> Result<crate::landing::Simulation, RingRpcError> {
+                unreachable!("unused")
+            }
+        }
+
+        let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let relay = Relay::new(
+            RelayParts {
+                store,
+                prover: Arc::new(UnusedProver),
+                fee_payer: Arc::new(solana_keypair::Keypair::new_from_array([1; 32])),
+                chain: Arc::new(UnusedChain),
+            },
+            ServiceTarget {
+                cluster: [2; 32],
+                service: Address::new_from_array([3; 32]),
+            },
+        );
+        let refused = relay
+            .co_sign_transaction(&CoSignTransactionRequest {
+                ring: Address::new_from_array([9; 32]).into(),
+                message: Vec::new().into(),
+                approved_transfer: None,
+            })
+            .await;
+        assert!(
+            matches!(refused, Err(RingRpcError::Relay(RelayError::RingNotServed))),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn signer_address_maps_every_public_key_encoding_deterministically() {
+        let ed = [0x11; 32];
+        let pda = Address::new_from_array([0x22; 32]);
+        let ed_key = spr_keypair::PublicKey::from_ed25519(&ed);
+        let pda_key = spr_keypair::PublicKey::from_pda(&pda);
+        let zero_key = spr_keypair::PublicKey::zeroed();
+        assert_eq!(signer_address(&ed_key), Address::new_from_array(ed));
+        assert_eq!(signer_address(&pda_key), pda);
+        let hashed = signer_address(&zero_key);
+        assert_eq!(hashed, signer_address(&zero_key));
+        assert_ne!(hashed, Address::default());
+        assert_ne!(hashed, Address::new_from_array(ed));
+    }
+
+    #[tokio::test]
+    async fn track_never_starves_high_hash_sent_or_awaiting_relays_behind_256_low_hashes() {
+        use solana_signer::Signer;
+        use spr_client::ComputeBudgetConfig;
+
+        struct ConfirmingChain {
+            block_height: std::sync::atomic::AtomicU64,
+        }
+
+        #[async_trait]
+        impl ChainSubmit for ConfirmingChain {
+            async fn slot(&self) -> Result<u64, RingRpcError> {
+                Ok(10)
+            }
+            async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+                unreachable!("unused")
+            }
+            async fn block_height(&self) -> Result<u64, RingRpcError> {
+                Ok(self.block_height.load(std::sync::atomic::Ordering::Relaxed))
+            }
+            async fn account_data(
+                &self,
+                _address: Address,
+            ) -> Result<Option<Vec<u8>>, RingRpcError> {
+                Ok(None)
+            }
+            async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, RingRpcError> {
+                Ok(0)
+            }
+            async fn send(
+                &self,
+                _transaction: &solana_transaction::versioned::VersionedTransaction,
+            ) -> Result<(), RingRpcError> {
+                Ok(())
+            }
+            async fn outcome(
+                &self,
+                _signature: solana_signature::Signature,
+            ) -> Result<Option<ChainOutcome>, RingRpcError> {
+                Ok(Some(ChainOutcome::Confirmed { slot: 42 }))
+            }
+            async fn simulate(
+                &self,
+                _message: &VersionedMessage,
+            ) -> Result<crate::landing::Simulation, RingRpcError> {
+                unreachable!("unused")
+            }
+        }
+
+        struct UnusedProver;
+
+        #[async_trait]
+        impl RelayProver for UnusedProver {
+            async fn prove(
+                &self,
+                _request: RelayProofRequest<'_>,
+            ) -> Result<ProvenRelay, RingRpcError> {
+                unreachable!("unused")
+            }
+            async fn seal_delegate(
+                &self,
+                _seal: DelegateSeal<'_>,
+                _parties: RelayParties,
+            ) -> Result<RelayProofInputs, RingRpcError> {
+                unreachable!("unused")
+            }
+        }
+
+        let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let fee_payer = Arc::new(solana_keypair::Keypair::new_from_array([7; 32]));
+        let chain = Arc::new(ConfirmingChain {
+            block_height: std::sync::atomic::AtomicU64::new(50),
+        });
+        let relay = Relay::new(
+            RelayParts {
+                store: store.clone(),
+                prover: Arc::new(UnusedProver),
+                fee_payer: fee_payer.clone(),
+                chain: chain.clone(),
+            },
+            ServiceTarget {
+                cluster: [2; 32],
+                service: Address::new_from_array([3; 32]),
+            },
+        );
+        let relays = RelayStore::new(store.connection());
+        let awaited_signer = Address::new_from_array([9; 32]);
+        let message = compile_message(
+            &fee_payer.pubkey(),
+            &[],
+            solana_hash::Hash::default(),
+            ComputeBudgetConfig::new(1),
+        )
+        .expect("message");
+        for index in 0..(PENDING_PAGE_LEN + 10) {
+            let mut id = [0u8; 32];
+            id[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            let record = RelayRecord {
+                message: message.clone(),
+                last_valid_block_height: 100,
+                state: RelayState::AwaitingSignature(Awaiting {
+                    signatures: Vec::new(),
+                    awaiting: vec![awaited_signer],
+                    co_sign: None,
+                }),
+            };
+            assert!(relays
+                .insert(&RelayId(id.into()), &record)
+                .await
+                .expect("insert"));
+        }
+        let high_awaiting = RelayId([0xfe; 32].into());
+        assert!(relays
+            .insert(
+                &high_awaiting,
+                &RelayRecord {
+                    message: message.clone(),
+                    last_valid_block_height: 100,
+                    state: RelayState::AwaitingSignature(Awaiting {
+                        signatures: Vec::new(),
+                        awaiting: vec![awaited_signer],
+                        co_sign: None,
+                    }),
+                },
+            )
+            .await
+            .expect("high awaiting"));
+
+        let high_sent = RelayId([0xff; 32].into());
+        let signature = fee_payer.sign_message(&message.serialize());
+        let sent_state = RelayState::open(
+            Awaiting {
+                signatures: Vec::new(),
+                awaiting: Vec::new(),
+                co_sign: None,
+            },
+            Some(Closing {
+                co_signature: None,
+                fee_payer: CollectedSignature {
+                    signer: fee_payer.pubkey(),
+                    signature,
+                },
+            }),
+        )
+        .expect("sent state");
+        assert!(relays
+            .insert(
+                &high_sent,
+                &RelayRecord {
+                    message,
+                    last_valid_block_height: 100,
+                    state: sent_state,
+                },
+            )
+            .await
+            .expect("high sent"));
+
+        relay.track().await.expect("track");
+        let tracked_sent = relays.get(&high_sent).await.expect("read").expect("row");
+        assert!(
+            matches!(
+                tracked_sent.record.state,
+                RelayState::Confirmed { slot: 42, .. }
+            ),
+            "{:?}",
+            tracked_sent.record.state
+        );
+
+        chain
+            .block_height
+            .store(101, std::sync::atomic::Ordering::Relaxed);
+        relay.track().await.expect("expire track");
+        let tracked_awaiting = relays
+            .get(&high_awaiting)
+            .await
+            .expect("read")
+            .expect("row");
+        assert!(
+            matches!(tracked_awaiting.record.state, RelayState::Failed { .. }),
+            "{:?}",
+            tracked_awaiting.record.state
+        );
     }
 }
