@@ -699,7 +699,7 @@ async function anonymousRequest(
     assets,
   })
     .withAnonymousSigner(signingKeySpendSigner(signing))
-    .withTags(await freshWalletTags(sender, [bob]))
+    .withTags(await freshWalletTags(sender))
     .withPayment({
       to: new RingAddress({
         recipient: bob.shieldedAddress(),

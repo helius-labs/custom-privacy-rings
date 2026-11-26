@@ -59,7 +59,7 @@ it("wipes a deposit frame's encoded payload when the frame fails after encoding"
         keys: walletKeys(owner),
         listSalt: new Uint8Array(32).fill(1) as Bytes32,
       },
-      tags: await freshWalletTags(owner, [owner]),
+      tags: await freshWalletTags(owner),
       amount: 9n,
       ringRpc: {
         cluster: new Uint8Array(32).fill(1) as Bytes32,

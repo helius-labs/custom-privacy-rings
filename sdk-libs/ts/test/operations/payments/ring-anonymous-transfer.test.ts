@@ -110,7 +110,6 @@ import {
   prepareRingEntryRelay,
   prepareRingTransferRelay,
   prepareRingWithdrawalRelay,
-  tagRecipient,
 } from "../../../src/operations/payments/transfer.js";
 import { createRingTransferSubmission } from "../../../src/index.js";
 import type { PreparedRingRelay } from "../../../src/operations/payments/transfer-rails.js";
@@ -241,14 +240,6 @@ async function addressOf(fixture: Fixture, owner: ShieldedKeypair): Promise<Ring
     ringProgramId: fixture.ringProgramId,
     listSalt: new Uint8Array(32).fill(1) as Bytes32,
   });
-}
-
-/** The tags a wallet with no history selects for `payments`. */
-function selectedTags(sender: Sender, ...payments: readonly RingAddress[]): Promise<TransferTags> {
-  return ViewingHistory.create(sender.keypair.viewingPublicKey(), 0n).select(
-    walletKeys(sender.keypair),
-    payments.map(tagRecipient),
-  );
 }
 
 /** The anonymous transfer request, its circuit the key the program verifies under. */
@@ -520,51 +511,39 @@ describe("anonymous ring payment", () => {
     ]);
   });
 
-  it("publishes the wallet's selection, the sender tag on change and each request's tag on its payment, and one recipient's bootstrap tag once in a frame", async () => {
+  it("publishes the sender tag on change under the wallet's tags, each request's tag on its payment, and one recipient's bootstrap tag once in a frame", async () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const bob = ShieldedKeypair.generate();
     const to = await addressOf(fixture, bob);
-    const frame = async (tags?: TransferTags) => {
+    const frame = async (requestTags: readonly Bytes32[], tags?: TransferTags) => {
+      const requested = requestTags.map((requestTag) => ({ requestTag }));
       const proven = await rail({
         fixture,
         sender,
         transfer: spend(fixture, sender),
         ...(tags === undefined ? {} : { tags }),
       })
-        .withPayment({ to, asset: SOL_MINT, amount: 400n, reply: null })
-        .withPayment({ to, asset: SOL_MINT, amount: 300n, reply: null })
+        .withPayment({ to, asset: SOL_MINT, amount: 400n, reply: null, ...requested[0] })
+        .withPayment({ to, asset: SOL_MINT, amount: 300n, reply: null, ...requested[1] })
         .prove(fixture.client);
       const { data } = await expanded(fixture, proven, "anonymous");
       return data.outputs.slice(0, 3).map(tagOf).map(hex);
     };
     const bootstrap = hex(bootstrapSlotTag(bob.viewingPublicKey().u()));
     // Equal tags would show two slots share an owner, one match returns the whole transaction.
-    const [, first, second] = await frame();
+    const [, first, second] = await frame([]);
     expect([first, second === bootstrap]).toEqual([bootstrap, false]);
     const requests = [0x51, 0x52].map((byte) => new Uint8Array(32).fill(byte) as Bytes32);
-    const tags = await ViewingHistory.create(sender.keypair.viewingPublicKey(), 0n).select(
-      walletKeys(sender.keypair),
-      requests.map((request) => ({ viewingPublicKey: bob.viewingPublicKey(), request })),
-    );
-    expect(await frame(tags)).toEqual([tags.sender, ...requests.map(slotTag)].map(hex));
+    const tags = await freshWalletTags(sender.keypair);
+    expect(await frame(requests, tags)).toEqual([tags.sender, ...requests.map(slotTag)].map(hex));
   });
 
-  it("refuses a selection that counts another number of payments and a spend of no ring note without one", async () => {
+  it("refuses a spend of no ring note without the wallet's tags", async () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const bob = ShieldedKeypair.generate();
     const to = await addressOf(fixture, bob);
-    await expect(
-      rail({
-        fixture,
-        sender,
-        transfer: spend(fixture, sender),
-        tags: await freshWalletTags(sender.keypair, [bob, bob]),
-      })
-        .withPayment({ to, asset: SOL_MINT, amount: 400n, reply: null })
-        .prove(fixture.client),
-    ).rejects.toThrow(ringError("RING_PAYMENT_TAG_COUNT", { payments: 1, tags: 2 }));
     await expect(
       rail({ fixture, sender, transfer: spend(fixture, sender, { ring: "default" }) })
         .withPayment({ to, asset: SOL_MINT, amount: 400n, reply: null })
@@ -735,6 +714,14 @@ describe("anonymous plan tags", () => {
     // Without a sender tag no change slot names the wallet.
     const [first, second] = AnonymousPlan.create().tags([change, change]);
     expect(hex(first ?? ZERO_KEY)).not.toBe(hex(second ?? ZERO_KEY));
+  });
+
+  it("refuses a tag that is not 32 bytes", () => {
+    for (const length of [0, 8, 31, 33]) {
+      const tag = new Uint8Array(length) as Bytes32;
+      expect(() => slotTag(tag), `${length}`).toThrow();
+      expect(() => AnonymousPlan.create().withSenderTag(tag), `${length}`).toThrow();
+    }
   });
 });
 
@@ -974,7 +961,7 @@ describe("anonymous ring exits and entries", () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const to = await addressOf(fixture, ShieldedKeypair.generate());
-    const tags = await selectedTags(sender, to);
+    const tags = await freshWalletTags(sender.keypair);
     const proven = await rail({
       fixture,
       sender,
@@ -1010,7 +997,7 @@ describe("anonymous ring exits and entries", () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const to = await addressOf(fixture, ShieldedKeypair.generate());
-    const tags = await selectedTags(sender, to);
+    const tags = await freshWalletTags(sender.keypair);
     await checkFrameCounted(fixture, {
       payer: fixture.authority,
       prove: (approval) =>
@@ -1050,7 +1037,12 @@ describe("anonymous ring exits and entries", () => {
       fixture.authority,
     );
     const to = await addressOf(fixture, ShieldedKeypair.generate());
-    const proven = await rail({ fixture, sender, transfer, tags: await selectedTags(sender, to) })
+    const proven = await rail({
+      fixture,
+      sender,
+      transfer,
+      tags: await freshWalletTags(sender.keypair),
+    })
       .withPayment({ to, asset: SOL_MINT, amount: 400n, reply: null })
       .prove(fixture.client);
     const { data, call } = await expanded(fixture, proven, "anonymous");
@@ -1203,7 +1195,12 @@ describe("anonymous ring exits and entries", () => {
       });
       transfer.withShape({ inputs: 2, outputs: 2 });
       const to = await addressOf(fixture, ShieldedKeypair.generate());
-      const proven = await rail({ fixture, sender, transfer, tags: await selectedTags(sender, to) })
+      const proven = await rail({
+        fixture,
+        sender,
+        transfer,
+        tags: await freshWalletTags(sender.keypair),
+      })
         .withCoOwner({
           owner: coOwner.shieldedAddress().solanaAddress(),
           nullifierKey: coOwner.nullifierKey(),
@@ -1253,7 +1250,9 @@ describe("anonymous ring exits and entries", () => {
     });
     transfer.withShape({ inputs: 2, outputs: 2 });
     await expect(
-      rail({ fixture, sender, transfer, tags: await selectedTags(sender) }).prove(fixture.client),
+      rail({ fixture, sender, transfer, tags: await freshWalletTags(sender.keypair) }).prove(
+        fixture.client,
+      ),
     ).rejects.toThrow(ringError("RING_MISSING_CO_OWNER_KEY", { index: 1 }));
     noProofs(fixture);
   });
@@ -1435,7 +1434,7 @@ describe("anonymous ring exits and entries", () => {
     const transfer = spend(fixture, sender);
     transfer.send(sender.keypair.shieldedAddress(), SOL_MINT, 100n);
     transfer.send(sender.keypair.shieldedAddress(), SOL_MINT, 200n);
-    const tags = await selectedTags(sender);
+    const tags = await freshWalletTags(sender.keypair);
     const proven = await rail({ fixture, sender, transfer, tags }).prove(fixture.client);
     const { data, call } = await expanded(fixture, proven, "anonymous");
     expect(bodyKinds(fixture, sender.keypair, data).slice(0, 3)).toEqual([
@@ -1725,8 +1724,7 @@ describe("anonymous ring relay", () => {
     });
     const requests: RingApprovalRequest[] = [];
     const recipient = ShieldedKeypair.generate();
-    const pays = input.entry !== true && input.withdraw !== true;
-    const tags = await freshWalletTags(sender.keypair, pays ? [recipient] : []);
+    const tags = await freshWalletTags(sender.keypair);
     // A spend that may take no ring note proves under the wallet's selection alone.
     const tagged =
       input.entry === true || input.ring === "default" || input.defaultNotes !== undefined;
@@ -2048,9 +2046,7 @@ describe("anonymous ring relay", () => {
     const payer = await generateKeyPairSigner();
     const bob = ShieldedKeypair.generate();
     const history = ViewingHistory.create(sender.keypair.viewingPublicKey(), 0n);
-    const tags = await history.select(walletKeys(sender.keypair), [
-      { viewingPublicKey: bob.viewingPublicKey() },
-    ]);
+    const tags = await history.select(walletKeys(sender.keypair));
     const submission = await createRingTransferSubmission({
       ...plain,
       feePayer: payer.address,
@@ -2095,25 +2091,35 @@ describe("anonymous ring relay", () => {
     expect(first[0]).not.toBe(second[0]);
   });
 
-  it("relays the wallet's selection, the sender tag on change and the request's tag on its payment", async () => {
+  it("relays a request payment under the request's tag and a bare address payment under the bootstrap tag without the wallet's tags, the sender tag on change with them", async () => {
     const { fixture, params, sender, relay } = await anonymousSpend({ notes: 3, amount: 5n });
     await relay;
+    const { amount: _amount, ...spend } = params;
+    const to = await addressOf(fixture, ShieldedKeypair.generate());
     const request = new RingPaymentRequest({
       address: await addressOf(fixture, ShieldedKeypair.generate()),
       tag: new Uint8Array(32).fill(0x5a) as Bytes32,
     });
-    const tags = await ViewingHistory.create(sender.keypair.viewingPublicKey(), 0n).select(
-      walletKeys(sender.keypair),
-      [tagRecipient(request)],
-    );
-    const published = await publishedTags(
-      await prepareRingTransferRelay({
-        ...params,
-        recipient: request,
-        anonymous: { ...params.anonymous, tags },
-      }),
-    );
-    expect(published.slice(0, 2)).toEqual([tags.sender, slotTag(request.tag as Bytes32)].map(hex));
+    const published = async (anonymous: typeof params.anonymous) => {
+      const relayed = await prepareRingTransferRelay({
+        ...spend,
+        payments: [
+          { recipient: to, amount: 2n },
+          { recipient: request, amount: 3n },
+        ],
+        anonymous,
+      });
+      return (await publishedTags(relayed)).slice(0, 3);
+    };
+    const paid = [
+      bootstrapSlotTag(to.recipient.viewingPublicKey.u()),
+      slotTag(request.tag as Bytes32),
+    ].map(hex);
+    const tags = await freshWalletTags(sender.keypair);
+    const [change, ...untagged] = await published(params.anonymous);
+    expect(untagged).toEqual(paid);
+    expect(change).not.toBe(hex(tags.sender));
+    expect(await published({ ...params.anonymous, tags })).toEqual([hex(tags.sender), ...paid]);
   });
 
   it("pays a request and refuses one the payment contradicts before approval", async () => {
@@ -2812,7 +2818,7 @@ describe("anonymous entry key bound", () => {
       fixture.authority,
     );
     const to = await addressOf(fixture, ShieldedKeypair.generate());
-    return rail({ fixture, sender, transfer, tags: await selectedTags(sender, to) })
+    return rail({ fixture, sender, transfer, tags: await freshWalletTags(sender.keypair) })
       .withPayment({
         to,
         asset: SOL_MINT,
@@ -2895,8 +2901,8 @@ describe("ring payment adapters", () => {
         ? ownerRingTransfers(input)
         : anonymousRingTransfers({
             ...input,
-            payees: options.payee === "unknown" ? [] : [to],
-            tags: await selectedTags(sender, to),
+            payees: options.payee === "unknown" ? [] : [new RingPaymentRequest({ address: to })],
+            tags: await freshWalletTags(sender.keypair),
           });
     const owner = sender.keypair.shieldedAddress().solanaAddress();
     const proved = buildRingPaymentTransaction({

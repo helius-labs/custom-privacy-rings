@@ -191,7 +191,6 @@ exports[`ring error codes > pins the public codes and their order 1`] = `
   "RING_EXIT_RING_DATA",
   "RING_TRANSFER_SUPERSEDED",
   "RING_SENDER_TAG_REQUIRED",
-  "RING_PAYMENT_TAG_COUNT",
   "RING_DEPOSIT_BOOTSTRAP_TAG",
   "RING_REQUESTED_TAG_UNPUBLISHED",
 ]

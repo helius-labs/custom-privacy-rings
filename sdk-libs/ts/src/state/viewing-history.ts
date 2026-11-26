@@ -5,7 +5,6 @@ import type { RequestContext } from "@heliuslabs/spr";
 import { addressBytes, equalBytes, U64_MAX } from "@heliuslabs/spr/internal";
 import { X25519PublicKey, type ViewTag } from "@heliuslabs/spr/keypair";
 
-import { bootstrapSlotTag, slotTag } from "../crypto/derivation/ring-stream.js";
 import { RingError } from "../protocol/error.js";
 import { exactlyOne } from "./batch.js";
 import type { RingKeys, ViewTagRequest, ViewTagStream } from "./ring-keys.js";
@@ -68,21 +67,12 @@ export class StreamCounter {
   }
 }
 
-/** A payment's recipient as its sender tags it. */
-export interface TagRecipient {
-  readonly viewingPublicKey: X25519PublicKey;
-  /** Its payment request's tag, the bootstrap tag without one. */
-  readonly request?: ViewTag;
-}
-
-/** The tags one transfer publishes, `zolana/docs/spec.md` View Tag Selection. */
+/** The sender tag a wallet's history gives one transfer, a payment carries its own request tag. */
 export class TransferTags {
   /** The key the sender tag derives from. */
   readonly viewingPublicKey: X25519PublicKey;
   /** Published once in a frame, on the first slot the wallet's own key opens. */
   readonly sender: ViewTag;
-  /** One per payment in declared order. */
-  readonly payments: readonly ViewTag[];
   /** @internal */
   readonly _senderIndex: bigint;
 
@@ -92,12 +82,10 @@ export class TransferTags {
       viewingPublicKey: X25519PublicKey;
       sender: ViewTag;
       senderIndex: bigint;
-      payments: readonly ViewTag[];
     }>,
   ) {
     this.viewingPublicKey = fields.viewingPublicKey;
     this.sender = fields.sender;
-    this.payments = Object.freeze([...fields.payments]);
     this._senderIndex = fields.senderIndex;
     Object.freeze(this);
   }
@@ -420,16 +408,8 @@ export class ViewingHistory {
     return entry === undefined ? this : this.withEntry(at, entry._found(stream, index));
   }
 
-  /**
-   * The tags of one transfer under the current key, `withPublished` takes the sender index. A
-   * payment to the wallet's own key takes the sender tag, any other its request tag or its
-   * recipient's bootstrap tag.
-   */
-  async select(
-    keys: RingKeys,
-    recipients: readonly TagRecipient[],
-    context?: RequestContext,
-  ): Promise<TransferTags> {
+  /** The sender tag of one transfer under the current key, `withPublished` takes its index. */
+  async select(keys: RingKeys, context?: RequestContext): Promise<TransferTags> {
     const { viewingPublicKey, tx } = this.current();
     const senderIndex = tx.next;
     const sender = await derivedTag(
@@ -437,17 +417,7 @@ export class ViewingHistory {
       { viewingPublicKey, stream: "sender", index: senderIndex },
       context,
     );
-    return new TransferTags({
-      viewingPublicKey,
-      sender,
-      senderIndex,
-      payments: recipients.map((recipient) => {
-        if (recipient.viewingPublicKey.equals(viewingPublicKey)) return sender;
-        return recipient.request === undefined
-          ? bootstrapSlotTag(recipient.viewingPublicKey.u())
-          : slotTag(recipient.request);
-      }),
-    });
+    return new TransferTags({ viewingPublicKey, sender, senderIndex });
   }
 
   /** The history once the transfer of `tags` confirmed, past the sender index when `published` carries its tag. */

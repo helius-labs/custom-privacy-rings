@@ -18,7 +18,6 @@ import {
 
 import { slotTag } from "../../../src/crypto/derivation/ring-stream.js";
 import { RingAddress, RingPaymentRequest } from "../../../src/crypto/keys/ring-address.js";
-import { tagRecipient } from "../../../src/operations/payments/transfer.js";
 import {
   PreparedRingDeposit,
   type RingDepositClient,
@@ -158,11 +157,7 @@ describe("ring deposit", () => {
       address: to,
       tag: new Uint8Array(32).fill(0x5a) as Bytes32,
     });
-    const depositor = ShieldedKeypair.generate();
-    const select = (paid: RingAddress | RingPaymentRequest) =>
-      ViewingHistory.create(depositor.viewingPublicKey(), 0n).select(walletKeys(depositor), [
-        tagRecipient(paid),
-      ]);
+    const tags = await freshWalletTags(ShieldedKeypair.generate());
     const client = depositClient(fixture);
     const deposit = {
       client,
@@ -171,13 +166,18 @@ describe("ring deposit", () => {
       amount: 40n,
     };
     // A deposit publishes its funder, a bootstrap tag beside it would name the recipient.
-    await expect(
-      PreparedRingDeposit.prepare({
-        ...deposit,
-        recipient: { kind: "anonymousPayment", to },
-        tags: await select(to),
-      }),
-    ).rejects.toMatchObject({ causeCode: "RING_DEPOSIT_BOOTSTRAP_TAG" });
+    const bootstrap = new RingPaymentRequest({
+      address: to,
+      tag: recipient.viewingPublicKey().u(),
+    });
+    for (const paid of [to, bootstrap])
+      await expect(
+        PreparedRingDeposit.prepare({
+          ...deposit,
+          recipient: { kind: "anonymousPayment", to: paid },
+          tags,
+        }),
+      ).rejects.toMatchObject({ causeCode: "RING_DEPOSIT_BOOTSTRAP_TAG" });
     // The fresh sender spends no ring note, no sync finds a slot under random bytes.
     await expect(
       (
@@ -188,7 +188,6 @@ describe("ring deposit", () => {
       ).prove(client),
     ).rejects.toMatchObject({ causeCode: "RING_SENDER_TAG_REQUIRED" });
     expect(fixture.sppCalls).toEqual([]);
-    const tags = await select(request);
     const prepared = await PreparedRingDeposit.prepare({
       ...deposit,
       recipient: { kind: "anonymousPayment", to: request },
@@ -264,7 +263,7 @@ describe("ring deposit", () => {
       depositor: funder,
       depositorSigner,
       recipient: { kind: "anonymous", keys: walletKeys(owner), listSalt: SALT } as const,
-      tags: await freshWalletTags(owner, [owner]),
+      tags: await freshWalletTags(owner),
       amount: 9n,
       ringRpc: {
         cluster: new Uint8Array(32).fill(1) as Bytes32,

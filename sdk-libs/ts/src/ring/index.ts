@@ -166,7 +166,7 @@ export {
   ViewingHistory,
   ViewingKeyEntry,
 } from "../state/viewing-history.js";
-export type { AdvancedTag, RingPosition, TagRecipient } from "../state/viewing-history.js";
+export type { AdvancedTag, RingPosition } from "../state/viewing-history.js";
 export { AnonymousWallet } from "../state/anonymous-wallet.js";
 export type { AnonymousNoteState, PendingClaim } from "../state/anonymous-wallet.js";
 export {
@@ -350,7 +350,6 @@ export {
   prepareRingExitRelay,
   prepareRingTransferRelay,
   prepareRingWithdrawalRelay,
-  tagRecipient,
 } from "../operations/payments/transfer.js";
 export type {
   AnonymousRingSpend,

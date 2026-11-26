@@ -440,7 +440,7 @@ export class AnonymousTransfer {
     });
   }
 
-  /** The wallet's selection for the payments in declared order, Rust `with_tags`. */
+  /** The wallet's sender tag, Rust `with_tags`. */
   withTags(tags: TransferTags): AnonymousTransfer {
     return this.#with({ tags });
   }
@@ -639,7 +639,7 @@ export class PublicOwnerTransfer {
     });
   }
 
-  /** The wallet's selection for the payments in declared order, Rust `with_tags`. */
+  /** The wallet's sender tag, Rust `with_tags`. */
   withTags(tags: TransferTags): PublicOwnerTransfer {
     return this.#with({ tags });
   }

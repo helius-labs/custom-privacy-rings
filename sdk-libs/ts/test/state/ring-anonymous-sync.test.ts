@@ -529,40 +529,31 @@ describe("viewing history", () => {
     expect(ViewingHistory.fromJson(json).current().txCount).toBe((1n << 64n) - 2n);
   });
 
-  it("selects the sender tag at the stored counter, a payment's request tag or its recipient's bootstrap tag, the sender tag for the wallet's own key", async () => {
+  it("selects the sender tag at the stored counter", async () => {
     const { wallet, fresh, viewing } = holder(1);
-    const bob = key();
-    const requested = tag(0x5a);
-    const tags = await fresh.select(wallet.keys, [
-      { viewingPublicKey: bob },
-      { viewingPublicKey: bob, request: requested },
-      { viewingPublicKey: wallet.viewingKey },
-    ]);
+    const tags = await fresh.select(wallet.keys);
     expect(tags.viewingPublicKey.equals(wallet.viewingKey)).toBe(true);
     expect(tags.sender).toEqual(slotTag(viewing.senderViewTag(0n)));
-    expect(tags.payments).toEqual([bootstrapSlotTag(bob.u()), slotTag(requested), tags.sender]);
     // A selection takes no index, a transfer that never lands leaves the tag for the next one.
-    expect((await fresh.select(wallet.keys, [])).sender).toEqual(tags.sender);
+    expect((await fresh.select(wallet.keys)).sender).toEqual(tags.sender);
     viewing.destroy();
   });
 
   it("takes a sender index only when a confirmed frame carried its tag", async () => {
     const { wallet, fresh, viewing } = holder(1);
-    const tags = await fresh.select(wallet.keys, []);
+    const tags = await fresh.select(wallet.keys);
     for (const published of [[], [tag(7)], [bootstrapSlotTag(wallet.viewingKey.u())]])
       expect(fresh.withPublished(tags, published).current().txCount).toBe(0n);
     const taken = fresh.withPublished(tags, [tag(7), tags.sender]);
     expect(taken.current().txCount).toBe(1n);
-    expect((await taken.select(wallet.keys, [])).sender).toEqual(
-      slotTag(viewing.senderViewTag(1n)),
-    );
+    expect((await taken.select(wallet.keys)).sender).toEqual(slotTag(viewing.senderViewTag(1n)));
     // A stale selection never lowers the counter, a selection under a foreign key changes nothing.
-    const later = taken.withPublished(await taken.select(wallet.keys, []), [
+    const later = taken.withPublished(await taken.select(wallet.keys), [
       slotTag(viewing.senderViewTag(1n)),
     ]);
     expect(later.withPublished(tags, [tags.sender]).current().txCount).toBe(2n);
     const other = holder(2);
-    const foreign = await other.fresh.select(other.wallet.keys, []);
+    const foreign = await other.fresh.select(other.wallet.keys);
     expect(fresh.withPublished(foreign, [foreign.sender]).toJson()).toBe(fresh.toJson());
     viewing.destroy();
     other.viewing.destroy();

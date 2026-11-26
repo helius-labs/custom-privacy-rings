@@ -40,6 +40,7 @@ import {
   checkHiddenParties,
   checkHiddenOwnerSpends,
   checkEntryInputs,
+  paymentTag,
   type AnonymousPayment,
   type OwnerExposure,
   type AnonymousSpendSigner,
@@ -144,19 +145,13 @@ type TaggedPayments = Readonly<{
   tags: TransferTags | undefined;
 }>;
 
-/**
- * Without a selection each payment takes its recipient's bootstrap tag and change random bytes,
- * the note the wallet spends finds the change.
- */
+/** Without the wallet's sender tag change takes random bytes, the note the wallet spends finds it. */
 function taggedPlan(tagged: TaggedPayments): AnonymousPlan {
   const { prepared, sender, payments, tags } = tagged;
-  // 1. No nullifier of the wallet finds a spend of no ring note, its slots need the selection.
+  // 1. The ring reader follows the spends of ring notes alone, the sender tag finds the slots of
+  // any other spend.
   const spendsRingNote = prepared.inputs.some((input) => input.utxo.ringProgramId !== undefined);
   if (tags === undefined && !spendsRingNote) throw new RingError("RING_SENDER_TAG_REQUIRED");
-  if (tags !== undefined && tags.payments.length !== payments.length)
-    throw new RingError("RING_PAYMENT_TAG_COUNT", {
-      details: { payments: payments.length, tags: tags.payments.length },
-    });
   // 2. Change takes the sender tag only under the key the tags derive from, a deposit's
   // fresh sender holds another key and its change a random tag.
   const plan =
@@ -164,12 +159,12 @@ function taggedPlan(tagged: TaggedPayments): AnonymousPlan {
       ? AnonymousPlan.create().withSenderTag(tags.sender)
       : AnonymousPlan.create();
   // 3. The send call alone attaches a reply, no default path does.
-  return payments.reduce((planned, payment, index) => {
+  return payments.reduce((planned, payment) => {
     const paid = planned.withPayment({
       recipient: payment.to.recipient.viewingPublicKey,
       reply: payment.reply,
     });
-    const tag = tags?.payments[index];
+    const tag = paymentTag(payment, tags);
     return tag === undefined ? paid : paid.withTag(tag);
   }, plan);
 }

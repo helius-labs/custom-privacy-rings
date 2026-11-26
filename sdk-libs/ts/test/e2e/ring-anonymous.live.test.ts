@@ -98,7 +98,6 @@ async function syncRing(ring: AnonymousRing, actor: Member): Promise<void> {
 /** A member whose own deposit funds its hidden identity on the ring. */
 async function depositor(ring: AnonymousRing): Promise<Member> {
   const sender = await member(ring);
-  const { viewingPublicKey } = sender.keypair.shieldedAddress();
   const prepared = await PreparedRingDeposit.prepare({
     client: ring.client,
     ringProgramId: ring.ringProgramId,
@@ -109,7 +108,7 @@ async function depositor(ring: AnonymousRing): Promise<Member> {
       listSalt: new Uint8Array(32).fill(1) as Bytes32,
     },
     // The fresh sender spends no ring note, the deposit's note takes the wallet's sender tag.
-    tags: await sender.document.history().select(sender.keys, [{ viewingPublicKey }]),
+    tags: await sender.document.history().select(sender.keys),
     amount: DEPOSIT,
   });
   const { instruction } = await prepared.prove(ring.client);

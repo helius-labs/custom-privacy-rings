@@ -50,6 +50,7 @@ import { RingAddress, RingPaymentRequest } from "../../crypto/keys/ring-address.
 
 import {
   carriesNoData,
+  payeeOf,
   type AnonymousPayment,
   type AnonymousSpendSigner,
   type OwnerExposure,
@@ -69,7 +70,7 @@ import {
 } from "./transfer-rails.js";
 import type { RelayQuote, TokenAccountSetup } from "../../protocol/ring-rpc/ring-rpc-types.js";
 import { isZeroKeyNote } from "../../state/exposed-notes.js";
-import type { TagRecipient, TransferTags } from "../../state/viewing-history.js";
+import type { TransferTags } from "../../state/viewing-history.js";
 import {
   ringIntentMismatch,
   ringProofInputs,
@@ -108,7 +109,7 @@ export interface AnonymousSpendOwner {
   readonly exitTokenOwner?: Address;
   /** `AnonymousTransfer.withOwnerExposure`, `refused` when unset. */
   readonly ownerExposure?: OwnerExposure;
-  /** The wallet's selection for the payments, an entry is refused without it. */
+  /** The wallet's sender tag, an entry is refused without it. */
   readonly tags?: TransferTags;
 }
 
@@ -155,7 +156,7 @@ export interface RingPublicSpend {
   readonly wallet: Address;
   /** `null` sends no reply, named on every anonymous payment. */
   readonly reply?: ReplyMetadata | null;
-  /** The wallet's selection for the payments on an anonymous ring. */
+  /** The wallet's sender tag on an anonymous ring. */
   readonly tags?: TransferTags;
 }
 
@@ -512,7 +513,7 @@ function sendStrategy(
             transfer.send(resolved, asset, amount);
             return { recipient: resolved, amount };
           }
-          payment(resolved.to, asset, amount, resolved.reply);
+          payment({ ...resolved, asset, amount });
           return { recipient: resolved.to, amount };
         });
         return {
@@ -529,7 +530,7 @@ function sendStrategy(
       const [resolved] = recipients;
       if (resolved === undefined) throw new RingError("RING_ZERO_AMOUNT", { details: { asset } });
       if (!(resolved instanceof ShieldedAddress)) {
-        payment(resolved.to, asset, params.amount, resolved.reply);
+        payment({ ...resolved, asset, amount: params.amount });
         return {
           intent: {
             kind: "ringAnonymousTransfer",
@@ -659,12 +660,7 @@ interface RingSpendStrategy<R> {
       asset: Address;
       owner: ShieldedAddress;
       /** Pays a ring address on the anonymous rail. */
-      payment: (
-        to: RingAddress,
-        asset: Address,
-        amount: bigint,
-        reply: ReplyMetadata | null,
-      ) => void;
+      payment: (paid: AnonymousPayment) => void;
     }>,
   ): RingSpendPlan;
 }
@@ -909,12 +905,12 @@ async function stageRingSpend<R>(
     selected,
     asset,
     owner,
-    payment: (to, paidAsset, amount, reply) => {
+    payment: (paid) => {
       if (!anonymousRing)
         throw new RingError("RING_NOT_ANONYMOUS", {
           details: { ringProgramId: params.ringProgramId },
         });
-      anonymousPayments.push({ to, asset: paidAsset, amount, reply });
+      anonymousPayments.push(paid);
     },
   });
   const planned = ringIntentHash(plan.intent);
@@ -1048,10 +1044,7 @@ export function anonymousInputCap(selection: "ring" | "entry", payments = 1): nu
   return inputs;
 }
 
-type AnonymousRecipient = Readonly<{
-  to: RingAddress;
-  reply: ReplyMetadata | null;
-}>;
+type AnonymousRecipient = Pick<AnonymousPayment, "to" | "reply" | "requestTag">;
 
 /** One to `MAX_RING_TRANSFER_PAYMENTS` payments, each one nonzero. */
 function checkPayments(payments: readonly RingTransferPayment[]): void {
@@ -1072,13 +1065,14 @@ async function resolveSendRecipient(
 ): Promise<ShieldedAddress | AnonymousRecipient> {
   const { recipient } = paid;
   if (recipient instanceof RingAddress || recipient instanceof RingPaymentRequest) {
-    const to = recipient instanceof RingAddress ? recipient : recipient.address;
+    const payee = payeeOf(recipient);
+    const { to } = payee;
     if (destination !== "ring" || to.ringProgramId !== params.ringProgramId)
       throw new RingError("RING_FOREIGN_RING", {
         details: { address: to.ringProgramId, ring: params.ringProgramId },
       });
     checkRequestTerms(params, paid.amount, recipient);
-    return Object.freeze({ to, reply: replyChoice(params) });
+    return Object.freeze({ ...payee, reply: replyChoice(params) });
   }
   return resolveShieldedRecipient(
     { rpc: params.client, recipient },
@@ -1109,13 +1103,6 @@ function checkRequestTerms(
   if (recipient.amount !== undefined && recipient.amount !== amount)
     throw ringIntentMismatch("amount");
   if (recipient.mint !== undefined && recipient.mint !== asset) throw ringIntentMismatch("asset");
-}
-
-/** What the wallet's tag selection reads of a payment, Rust `RingPayment::tag_recipient`. */
-export function tagRecipient(to: RingAddress | RingPaymentRequest): TagRecipient {
-  if (to instanceof RingAddress) return { viewingPublicKey: to.recipient.viewingPublicKey };
-  const { viewingPublicKey } = to.address.recipient;
-  return to.tag === undefined ? { viewingPublicKey } : { viewingPublicKey, request: to.tag };
 }
 
 export function assetLabel(asset: Address): string {
@@ -1199,18 +1186,19 @@ export function ownerRingTransfers(input: RingTransfersInput): RingTransfers {
 
 /**
  * Rust `AnonymousRingTransfers`, a payee missing from `payees` must be under the zero key.
- * `tags` is the wallet's selection for the one payment, core spends no ring note to find its change by.
+ * `tags` is the wallet's sender tag, core spends no ring note to find its change by.
  */
 export function anonymousRingTransfers(
-  input: RingTransfersInput & Readonly<{ payees: readonly RingAddress[]; tags: TransferTags }>,
+  input: RingTransfersInput &
+    Readonly<{ payees: readonly RingPaymentRequest[]; tags: TransferTags }>,
 ): RingTransfers {
   const { payees, tags, ...rest } = input;
   return ringTransfers(rest, (take, { payment }, ring, signer) => {
     if (signer === undefined) throw new RingError("RING_ANONYMOUS_SIGNER_REQUIRED");
     const recipient = payment.recipient.toBytes();
-    const to =
+    const payee =
       payees.find(
-        (address) =>
+        ({ address }) =>
           address.ringProgramId === ring.ringProgramId &&
           equalBytes(address.recipient.toBytes(), recipient),
       ) ??
@@ -1222,6 +1210,11 @@ export function anonymousRingTransfers(
     return take()
       .withAnonymousSigner(signer)
       .withTags(tags)
-      .withPayment({ to, asset: payment.asset, amount: payment.amount, reply: null });
+      .withPayment({
+        ...payeeOf(payee),
+        asset: payment.asset,
+        amount: payment.amount,
+        reply: null,
+      });
   });
 }

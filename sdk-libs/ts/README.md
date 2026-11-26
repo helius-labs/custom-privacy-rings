@@ -143,18 +143,18 @@ relay. A deposit carries the recipient's.
 On an anonymous Ring the transfer proof binds each live recipient slot's
 ciphertext and its recipient. Each slot that is not an exit also publishes the
 last 8 bytes of a view tag. The sender's wallet selects the tag. No proof binds
-it. `ViewingHistory.select` returns the tags of one transfer. The first change
-slot takes the sender tag at the wallet's counter. A payment takes the tag of
-its `RingPaymentRequest`. Without a request it takes its recipient's bootstrap
-tag. The bootstrap tag is the public viewing key. A frame publishes each tag
-once. A slot that would repeat a tag takes random bytes.
-`tagRecipient` converts a `RingAddress` or a `RingPaymentRequest` into the
-recipient that `select` takes. Pass the selection as `tags` on `anonymous`, on
-`spendPublic` or on a deposit. A spend of Ring notes without `tags` publishes
-each recipient's bootstrap tag and random bytes on its change. An entry or a
-deposit spends no Ring note. The SDK refuses it without `tags`. A deposit
-refuses its recipient's bootstrap tag, because a deposit publishes its funder.
-After the transfer confirms, pass
+it. A payment takes the tag of its `RingPaymentRequest`. Without a request it
+takes its recipient's bootstrap tag. The bootstrap tag is the public viewing
+key. `AnonymousTransfer.withPayment` and `PublicOwnerTransfer.withPayment` take
+the request's tag as `requestTag`. `ViewingHistory.select` returns the sender
+tag at the wallet's counter. Pass it as `tags` on `anonymous`, on `spendPublic`
+or on a deposit. The wallet's first change slot then takes the sender tag. A
+payment or a deposit to the wallet's own viewing key also takes it. A frame
+publishes each tag once. A slot that would repeat a tag takes random bytes. A
+spend of Ring notes without `tags` publishes random bytes on its change. An
+entry or a deposit spends no Ring note. The SDK refuses it without `tags`. A
+deposit refuses its recipient's bootstrap tag, because a deposit publishes its
+funder. After the transfer confirms, pass
 `history.withPublished(tags, submission.confirmedSlotTags())` to
 `AnonymousWallet.updateHistory`.
 

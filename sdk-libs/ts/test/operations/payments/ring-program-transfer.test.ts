@@ -30,7 +30,7 @@ import {
 } from "@heliuslabs/spr/transaction";
 
 import { BLOCKHASH } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
-import { RingAddress } from "../../../src/crypto/keys/ring-address.js";
+import { RingAddress, RingPaymentRequest } from "../../../src/crypto/keys/ring-address.js";
 import { signingKeySpendSigner } from "../../../src/operations/payments/anonymous.js";
 import { CustomRingTransfer } from "../../../src/operations/payments/transfer-rails.js";
 import {
@@ -495,8 +495,8 @@ describe("ring transfer adapters", () => {
           ? ownerRingTransfers(input)
           : anonymousRingTransfers({
               ...input,
-              payees: [payee],
-              tags: await freshWalletTags(owner, [bob]),
+              payees: [new RingPaymentRequest({ address: payee })],
+              tags: await freshWalletTags(owner),
             });
       await expect(
         adapter.proveRingTransfer({

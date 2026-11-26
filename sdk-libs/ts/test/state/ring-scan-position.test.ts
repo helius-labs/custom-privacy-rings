@@ -256,7 +256,7 @@ describe("atomic progress", () => {
     const wallet = anonymousWallet(bob, bob.fresh());
     const scan = await bob.sync(indexer, wallet.history());
     const ring = randomAddress();
-    const tags = await wallet.history().select(bob.keys, []);
+    const tags = await wallet.history().select(bob.keys);
     wallet.updateHistory(wallet.history().withPublished(tags, [tags.sender]).withRing(ring));
     await wallet.absorb(scan);
     const entry = wallet.history().current();
@@ -289,7 +289,7 @@ describe("atomic progress", () => {
     const minted = (await base.requestTag(bob.keys)).history;
     wallet.updateHistory(minted);
     expect(() => wallet.updateHistory(base)).toThrow("RING_SCAN_PROGRESS_MOVED");
-    const tags = await minted.select(bob.keys, []);
+    const tags = await minted.select(bob.keys);
     wallet.updateHistory(minted.withPublished(tags, [tags.sender]));
     expect(() => wallet.updateHistory(minted)).toThrow("RING_SCAN_PROGRESS_MOVED");
     const { txCount, requestCount } = wallet.history().current();

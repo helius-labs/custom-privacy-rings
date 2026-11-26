@@ -46,7 +46,7 @@ import {
   type TransactionIntent,
 } from "@heliuslabs/spr/transaction";
 
-import { bootstrapSlotTag } from "../../crypto/derivation/ring-stream.js";
+import { bootstrapSlotTag, slotTag } from "../../crypto/derivation/ring-stream.js";
 import { RingAddress, type RingPaymentRequest } from "../../crypto/keys/ring-address.js";
 import { RingError, wrapRingError } from "../../protocol/error.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
@@ -82,6 +82,7 @@ import {
   type CustomRingTransferInput,
   type PublicOwnerTransfer,
 } from "./transfer-rails.js";
+import { payeeOf, paymentTag, type PaymentPayee } from "./anonymous.js";
 import { assetLabel, type RingTransferClient } from "./transfer.js";
 
 const base58 = getBase58Decoder();
@@ -119,7 +120,7 @@ export interface RingDepositParams {
   readonly splTokenProgram?: Address | null;
   /** Signs when a record covers deposits, the record must be its own. */
   readonly cosigner?: SignerAccount;
-  /** The depositor wallet's selection for the note, an anonymous deposit proves with no other tags. */
+  /** The depositor wallet's sender tag, an anonymous deposit proves with no other. */
   readonly tags?: TransferTags;
 }
 
@@ -365,22 +366,19 @@ export class PreparedRingDeposit {
     // 3. A confidential ring delivers to the recipient's tag, an anonymous ring pays a plan slot on
     //    the public owner rail, whose empty owner run the payer authorizes.
     let rail: DepositRail;
-    if (paid.to === undefined) {
+    if (paid.payee === undefined) {
       transfer.send(paid.address, asset, params.amount);
       rail = CustomRingTransfer.new(input);
     } else {
+      const { tags } = params;
+      const payment = { ...paid.payee, asset, amount: params.amount, reply: null };
       // A deposit publishes its funder, a bootstrap tag beside it would name the recipient.
-      const [tag] = params.tags?.payments ?? [];
-      const bootstrap = bootstrapSlotTag(paid.to.recipient.viewingPublicKey.u());
-      if (tag !== undefined && equalBytes(tag, bootstrap))
+      const tag = paymentTag(payment, tags);
+      const bootstrap = bootstrapSlotTag(payment.to.recipient.viewingPublicKey.u());
+      if (tags !== undefined && (tag === undefined || equalBytes(slotTag(tag), bootstrap)))
         throw new RingError("RING_DEPOSIT_BOOTSTRAP_TAG");
       const named = CustomRingTransfer.new(input).spendPublic(sender.solanaAddress());
-      rail = (params.tags === undefined ? named : named.withTags(params.tags)).withPayment({
-        to: paid.to,
-        asset,
-        amount: params.amount,
-        reply: null,
-      });
+      rail = (tags === undefined ? named : named.withTags(tags)).withPayment(payment);
     }
     return new PreparedRingDeposit({
       ringProgramId,
@@ -447,7 +445,7 @@ async function depositPayee(
   anonymous: boolean,
   context: RequestContext | undefined,
 ): Promise<
-  Readonly<{ address: ShieldedAddress; to?: RingAddress; listSalts: readonly RingListSalt[] }>
+  Readonly<{ address: ShieldedAddress; payee?: PaymentPayee; listSalts: readonly RingListSalt[] }>
 > {
   const { recipient, ringProgramId } = params;
   const salted = (address: ShieldedAddress, salt: Bytes32 | undefined): RingListSalt[] =>
@@ -466,19 +464,19 @@ async function depositPayee(
     return { address, listSalts: salted(address, recipient.listSalt) };
   }
   if (!anonymous) throw new RingError("RING_NOT_ANONYMOUS", { details: { operation: "deposit" } });
-  const to =
+  const payee = payeeOf(
     recipient.kind === "anonymous"
       ? new RingAddress({
           recipient: recipient.keys.address(),
           ringProgramId,
           listSalt: recipient.listSalt,
         })
-      : recipient.to instanceof RingAddress
-        ? recipient.to
-        : recipient.to.address;
+      : recipient.to,
+  );
+  const { to } = payee;
   return {
     address: to.recipient,
-    to,
+    payee,
     listSalts: salted(to.recipient, isZero(to.listSalt) ? undefined : to.listSalt),
   };
 }

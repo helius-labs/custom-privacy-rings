@@ -68,8 +68,9 @@ export function slotTag(tag: Bytes32): Bytes32 {
   return unframedSlotTag(framedSlotTag(tag));
 }
 
+/** A tag of another length would frame as zero bytes. */
 export function framedSlotTag(tag: Bytes32): Uint8Array {
-  return tag.slice(32 - SLOT_TAG_LEN);
+  return checkedBytes<Bytes32>(tag, 32, "slot tag").slice(32 - SLOT_TAG_LEN);
 }
 
 export function unframedSlotTag(framed: Uint8Array): Bytes32 {

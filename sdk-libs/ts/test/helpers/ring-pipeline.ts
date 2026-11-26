@@ -524,15 +524,9 @@ export function walletKeys(keypair: ShieldedKeypair): LocalKeys & RingKeys {
   );
 }
 
-/** The tags a wallet with no history selects, one payment to each of `payees` in order, Rust `fresh_wallet_tags`. */
-export function freshWalletTags(
-  sender: ShieldedKeypair,
-  payees: readonly ShieldedKeypair[] = [],
-): Promise<TransferTags> {
-  return ViewingHistory.create(sender.viewingPublicKey(), 0n).select(
-    walletKeys(sender),
-    payees.map((payee) => ({ viewingPublicKey: payee.viewingPublicKey() })),
-  );
+/** The sender tag a wallet with no history selects, Rust `fresh_wallet_tags`. */
+export function freshWalletTags(sender: ShieldedKeypair): Promise<TransferTags> {
+  return ViewingHistory.create(sender.viewingPublicKey(), 0n).select(walletKeys(sender));
 }
 
 /** A spendable note of `keypair` in `ring`, or in the default ring without one. */

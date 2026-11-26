@@ -21,19 +21,20 @@ import type { ChainReader, RpcAccount } from "@heliuslabs/spr/client";
 import { SPL_TOKEN_2022_PROGRAM_ID, SPL_TOKEN_PROGRAM_ID } from "@heliuslabs/spr/interface";
 import type { Address, Bytes32, Bytes64, RequestContext } from "@heliuslabs/spr/interface";
 import { ShieldedPublicKey } from "@heliuslabs/spr/keypair";
-import type { ShieldedAddress, SigningKey } from "@heliuslabs/spr/keypair";
+import type { ShieldedAddress, SigningKey, ViewTag } from "@heliuslabs/spr/keypair";
 import type {
   ProofInputUtxo,
   SettlementTransfer,
   SppProofInputs,
 } from "@heliuslabs/spr/transaction";
-import type { RingAddress } from "../../crypto/keys/ring-address.js";
+import { RingAddress, type RingPaymentRequest } from "../../crypto/keys/ring-address.js";
 
 import { RingError, type RingErrorCode } from "../../protocol/error.js";
 import { inputClassOf } from "../../proof/audit-proof.js";
 import { InputClass } from "../../protocol/codec/audit-stream.js";
 import { signMessage } from "../../rpc/ring-rpc.js";
 import type { ReplyMetadata } from "../../protocol/codec/anonymous-delivery.js";
+import type { TransferTags } from "../../state/viewing-history.js";
 
 /** The hidden owner's Ed25519 key, the signature lives inside the proof so the key may live in a wallet. */
 export interface AnonymousSpendSigner {
@@ -55,7 +56,6 @@ export interface ApplicationData {
   readonly bytes: Uint8Array;
 }
 
-/** Its tag derives from the slot secret. */
 export interface AnonymousPayment {
   readonly to: RingAddress;
   readonly asset: Address;
@@ -63,6 +63,26 @@ export interface AnonymousPayment {
   /** `null` sends no reply, the caller always names the choice. */
   readonly reply: ReplyMetadata | null;
   readonly data?: NoteData;
+  /** The tag of the request it pays, the recipient's bootstrap tag without one. */
+  readonly requestTag?: ViewTag;
+}
+
+export type PaymentPayee = Pick<AnonymousPayment, "to" | "requestTag">;
+
+/** Every payment to a request takes its tag here, Rust `RingPayment::to_request`. */
+export function payeeOf(to: RingAddress | RingPaymentRequest): PaymentPayee {
+  if (to instanceof RingAddress) return { to };
+  return to.tag === undefined ? { to: to.address } : { to: to.address, requestTag: to.tag };
+}
+
+/** A payment to the tags' own key takes the sender tag, `undefined` reads as the recipient's bootstrap tag. */
+export function paymentTag(
+  payment: PaymentPayee,
+  tags: TransferTags | undefined,
+): ViewTag | undefined {
+  return tags !== undefined && tags.viewingPublicKey.equals(payment.to.recipient.viewingPublicKey)
+    ? tags.sender
+    : payment.requestTag;
 }
 
 /** Signs with an in-process key, the caller keeps and destroys it. */
