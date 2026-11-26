@@ -12,7 +12,7 @@ use crate::{
     landing::Attempt,
     record_update::{
         authority_batch, ApprovalGrant, AuthorityHead, CheckedUpdate, PendingApproval,
-        QueuedUpdate, RecordUpdateRefusal, UpdateSigner, WalletBatch, MAX_BATCH_ATTEMPTS,
+        QueuedUpdate, RefusalReason, UpdateSigner, WalletBatch, MAX_BATCH_ATTEMPTS,
     },
 };
 
@@ -519,7 +519,7 @@ impl<'a> UpdateQueue<'a> {
                    WHERE id=$3 AND ring=$4 AND registry=$5 AND status=$6";
         let values = vec![
             REFUSED.into(),
-            RecordUpdateRefusal::ListApprovalRefused.to_string().into(),
+            RefusalReason::ListApprovalRefused.to_string().into(),
             bytes(id),
             bytes(scope.ring.as_array()),
             bytes(scope.registry.as_array()),
@@ -555,7 +555,7 @@ impl<'a> UpdateQueue<'a> {
                            WHERE (id=$3 OR joined=$3) AND ring=$4 AND registry=$5 AND status IN ($6,$7)";
                 let values = vec![
                     REFUSED.into(),
-                    RecordUpdateRefusal::Expired.to_string().into(),
+                    RefusalReason::Expired.to_string().into(),
                     bytes(&column_bytes(&head, "id")?),
                     bytes(scope.ring.as_array()),
                     bytes(scope.registry.as_array()),
@@ -569,9 +569,9 @@ impl<'a> UpdateQueue<'a> {
     }
 
     /// The updates joined to `id` share its refusal, or turn pending list approval again when its approver lost the policy role.
-    pub async fn refuse(&self, id: &[u8; 32], refusal: RecordUpdateRefusal) -> Result<(), DbErr> {
+    pub async fn refuse(&self, id: &[u8; 32], refusal: RefusalReason) -> Result<(), DbErr> {
         let transaction = self.db.begin().await?;
-        if refusal == RecordUpdateRefusal::AuthorityLapsed {
+        if refusal == RefusalReason::AuthorityLapsed {
             let sql =
                 "UPDATE records_updates SET status=$1, joined=NULL WHERE joined=$2 AND status=$3";
             let values = vec![PENDING_APPROVAL.into(), bytes(id), QUEUED.into()];
@@ -671,7 +671,7 @@ impl<'a> UpdateQueue<'a> {
                            attempts=attempts+1 WHERE batch=$3 AND attempts+1>=$4";
                 let values = vec![
                     REFUSED.into(),
-                    RecordUpdateRefusal::BatchFailed.to_string().into(),
+                    RefusalReason::BatchFailed.to_string().into(),
                     batch.into(),
                     integer(MAX_BATCH_ATTEMPTS)?,
                 ];
@@ -1153,7 +1153,7 @@ mod tests {
                 QueueWinner::Expiry => {
                     let expired = finish_updates(&transaction,
                         "UPDATE records_updates SET status=$1,reason=$2 WHERE registry=$3 AND status=$4",
-                        vec![REFUSED.into(), RecordUpdateRefusal::Expired.to_string().into(), bytes(registry.as_array()), QUEUED.into()],
+                        vec![REFUSED.into(), RefusalReason::Expired.to_string().into(), bytes(registry.as_array()), QUEUED.into()],
                     ).await.expect("winning expiry");
                     assert_eq!(expired, 2);
                 }

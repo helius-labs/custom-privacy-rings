@@ -56,7 +56,6 @@ pub(crate) use tracking::{
 
 /// The longest a stalled tip misses a chain move.
 pub(crate) const CONFIRMATION_AGE: Duration = Duration::from_millis(DEFAULT_MS_PER_SLOT);
-const MAX_CACHED_REGISTRIES: usize = 1_024;
 
 pub(crate) trait ChainSource {
     /// Fails unless `tip` is canonical and the registry account is no older.
@@ -96,6 +95,7 @@ pub(crate) struct CachedChain {
 }
 
 pub(crate) struct ReadCache<T> {
+    /// Keyed by indexed registries alone, one entry each.
     reads: Mutex<HashMap<[u8; 32], Arc<CacheEntry<T>>>>,
 }
 
@@ -143,27 +143,6 @@ impl<T> ReadCache<T> {
     ) -> Result<Confirmation<T>, RingApiError> {
         let entry = {
             let mut reads = self.reads.lock().unwrap_or_else(PoisonError::into_inner);
-            if !reads.contains_key(&key) && reads.len() >= MAX_CACHED_REGISTRIES {
-                reads.retain(|_, cached| {
-                    let Ok(guard) = cached.try_lock() else {
-                        return true;
-                    };
-                    guard
-                        .as_ref()
-                        .is_some_and(|hit| hit.read_at.elapsed() < CONFIRMATION_AGE)
-                });
-                if reads.len() >= MAX_CACHED_REGISTRIES {
-                    if let Some(evict) = reads
-                        .iter()
-                        .find_map(|(stored, value)| {
-                            (Arc::strong_count(value) == 1).then_some(*stored)
-                        })
-                        .or_else(|| reads.keys().next().copied())
-                    {
-                        reads.remove(&evict);
-                    }
-                }
-            }
             Arc::clone(reads.entry(key).or_default())
         };
         let mut cached = entry.lock().await;
@@ -718,37 +697,4 @@ fn validation(reason: impl Display) -> RingApiError {
 
 fn internal(error: impl Display) -> RingApiError {
     RingApiError::Internal(format!("{error:#}"))
-}
-
-#[cfg(test)]
-mod cache_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn read_cache_caps_entries_at_max_cached_registries() {
-        let cache: ReadCache<u8> = ReadCache::default();
-        let tip = BlockMetadata {
-            slot: 1,
-            block_time: 1,
-            ..BlockMetadata::default()
-        };
-        for index in 0..(MAX_CACHED_REGISTRIES + 16) {
-            let mut key = [0u8; 32];
-            key[..8].copy_from_slice(&(index as u64).to_le_bytes());
-            let _ = cache
-                .read(key, &tip, async {
-                    Ok(Confirmation {
-                        context: ApiContext {
-                            slot: 1,
-                            block_time: 1,
-                        },
-                        chain: Arc::new(1u8),
-                    })
-                })
-                .await
-                .expect("cached");
-            let count = cache.reads.lock().unwrap().len();
-            assert!(count <= MAX_CACHED_REGISTRIES, "cache grew to {count}");
-        }
-    }
 }

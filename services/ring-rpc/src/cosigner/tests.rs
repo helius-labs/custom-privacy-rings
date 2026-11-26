@@ -159,14 +159,14 @@ async fn an_admitted_message_carries_the_signers_signature() {
 #[tokio::test]
 async fn a_later_refusal_releases_the_earlier_rule_and_signs_nothing() {
     let (reserving, released) = recorded(Verdict::Admitted);
-    let (refusing, _) = recorded(Verdict::Refused(CoSignRefusal::Custom));
+    let (refusing, _) = recorded(Verdict::Refused(CoSignRefusal::Frozen));
     let signer = Counting::new(false);
     let request = request();
     let decision = CoSigner::new(signer.clone(), reserving.then(refusing))
         .decide(&request)
         .await
         .expect("decision");
-    assert_eq!(decision, CoSignDecision::Refused(CoSignRefusal::Custom));
+    assert_eq!(decision, CoSignDecision::Refused(CoSignRefusal::Frozen));
     assert_eq!(
         *released.lock().expect("released"),
         vec![CoSignSettlement::Failed(Ticket::of(
@@ -215,24 +215,23 @@ async fn a_failed_signature_keeps_the_reservation_for_the_repeat() {
 
 #[tokio::test]
 async fn an_earlier_refusal_stops_the_chain() {
-    let (refusing, _) = recorded(Verdict::Refused(CoSignRefusal::Custom));
+    let (refusing, _) = recorded(Verdict::Refused(CoSignRefusal::Frozen));
     let (later, settled) = recorded(Verdict::Refused(CoSignRefusal::OverLimit));
     let decision = CoSigner::new(Arc::new(Keypair::new()), refusing.then(later))
         .decide(&request())
         .await
         .expect("decision");
-    assert_eq!(decision, CoSignDecision::Refused(CoSignRefusal::Custom));
+    assert_eq!(decision, CoSignDecision::Refused(CoSignRefusal::Frozen));
     assert!(settled.lock().expect("settled").is_empty());
 }
 
 #[tokio::test]
-async fn an_absent_rule_admits_and_a_settlement_reaches_every_rule() {
+async fn a_settlement_reaches_every_rule() {
     let (first, first_settled) = recorded(Verdict::Admitted);
     let (last, last_settled) = recorded(Verdict::Admitted);
-    let absent: Option<Arc<dyn CoSignRule>> = None;
     let signer = Keypair::new();
     let ticket = Ticket::of(&signer.pubkey(), &request().message);
-    let co_signer = CoSigner::new(Arc::new(signer), first.then(absent).then(last));
+    let co_signer = CoSigner::new(Arc::new(signer), first.then(last));
     assert!(matches!(
         co_signer.decide(&request()).await.expect("decision"),
         CoSignDecision::Signed(_)

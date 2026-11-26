@@ -189,7 +189,7 @@ impl Ledger {
             vec![tag::APPLY_ENROLLMENTS],
             1,
         );
-        let event = StorageEvent::EnrollmentsApplied {
+        let event = StorageEvent {
             header,
             writes: borrowed,
         };
@@ -412,8 +412,7 @@ async fn an_event_off_the_projected_root_or_revision_stops_the_projection() {
         let (parent, event) = ledger
             .apply(&mut TrackingTree::new().unwrap(), &writes)
             .await;
-        let StorageEvent::EnrollmentsApplied { mut header, .. } =
-            StorageEvent::decode(&event.data).unwrap();
+        let StorageEvent { mut header, .. } = StorageEvent::decode(&event.data).unwrap();
         match forge {
             0 => header.new_root = field(8),
             1 => header.revision.0[0] ^= 1,

@@ -28,7 +28,7 @@ use crate::{
     config::{GrantRowsSecret, ReaderGrantStore, RootSecret},
     cosign::{CoSignPolicy, CoSignerApproval, RefusingCoSigner},
     cosign_limits::{LimitedCoSignerInit, RecordLimits},
-    cosigner::{CoSignRule, ListRule, StoredLists},
+    cosigner::{ListRule, StoredLists},
     database::Store,
     enrollment_applier::{EnrollmentApplier, EnrollmentRefusal},
     error::{redacted, RingRpcError},
@@ -142,7 +142,6 @@ pub struct HubBuilder<S> {
     grant_rows: Option<GrantRowsSecret>,
     co_signer: Option<SigningIdentity>,
     co_signer_approval: CoSignerApproval,
-    co_signer_rule: Option<Arc<dyn CoSignRule>>,
     relay_budget: RelayBudget,
     relay: Option<RelayParts>,
     merge: Option<MergeParts>,
@@ -419,7 +418,6 @@ impl<S: TransactionSource> Hub<S> {
             grant_rows: None,
             co_signer: None,
             co_signer_approval: CoSignerApproval::default(),
-            co_signer_rule: None,
             relay_budget: RelayBudget::default(),
             relay: None,
             merge: None,
@@ -725,6 +723,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
+    #[cfg(any(test, feature = "test-fixtures"))]
     #[must_use = "use the updated builder"]
     pub fn with_clock(mut self, clock: Clock) -> Self {
         self.clock = clock;
@@ -777,13 +776,6 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
     #[must_use = "use the updated builder"]
     pub fn with_co_signer_approval(mut self, approval: CoSignerApproval) -> Self {
         self.co_signer_approval = approval;
-        self
-    }
-
-    /// Judges after the lists and before the window limits.
-    #[must_use = "use the updated builder"]
-    pub fn with_co_signer_rule(mut self, rule: Arc<dyn CoSignRule>) -> Self {
-        self.co_signer_rule = Some(rule);
         self
     }
 
@@ -905,7 +897,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
                 }
                 .build();
                 // The window rule reserves, it runs last.
-                Arc::new(limited.after(lists.then(self.co_signer_rule)))
+                Arc::new(limited.after(lists))
             }
             None => Arc::new(RefusingCoSigner),
         };

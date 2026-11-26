@@ -8,9 +8,9 @@
 //! Read before `storage/update_queue.rs`.
 
 use std::{
-    collections::{hash_map::Entry, HashMap, VecDeque},
+    collections::{hash_map::Entry, HashMap},
     sync::{Arc, OnceLock},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -30,7 +30,7 @@ use sea_orm::DbErr;
 use solana_address::Address;
 use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_indexer_api::Hash;
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::Zeroizing;
 use zolana_operator_custody::{signed_transaction, SigningIdentity};
 use zolana_ring_client::{
     rpc::{
@@ -52,7 +52,8 @@ use crate::{
     landing::{Attempt, ChainOutcome, Landing},
     record_update::{
         limits_within_bounds, ApplyInputsCheck, CheckedUpdate, ListApproval, QueuedCheck,
-        QueuedState, QueuedUpdate, RecordUpdateCheck, RecordUpdateRefusal, UpdateContext,
+        QueuedState, QueuedUpdate, RecordUpdateCheck, RecordUpdateRefusal, RefusalReason,
+        UpdateContext,
     },
     storage_chain::{ring_policy, storage_registry, StorageChain},
     update_queue::{
@@ -66,26 +67,13 @@ pub const RECORD_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_BATCH_PLANS: usize = 2;
 const CONFIRM_POLL_INTERVAL: Duration = Duration::from_millis(400);
 const CREATE_COMPUTE_UNITS: u32 = 100_000;
-const CREATION_WINDOW: Duration = Duration::from_secs(3_600);
-const MAX_AUTHORITY_CREATIONS_PER_WINDOW: usize = 4;
-const MAX_CREATIONS_PER_WINDOW: usize = 16;
-const MAX_TOTAL_CREATIONS: usize = 256;
-const MAX_TRACKED_AUTHORITIES: usize = 256;
 
 /// The owner and list salt behind a salted list key.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SaltedOwner {
     pub owner: Address,
     pub list_salt: [u8; 32],
 }
-
-impl Drop for SaltedOwner {
-    fn drop(&mut self) {
-        self.list_salt.zeroize();
-    }
-}
-
-impl ZeroizeOnDrop for SaltedOwner {}
 
 /// The service that holds a ring's enrollments and auditor key resolves and proves salted owner writes.
 #[async_trait]
@@ -112,23 +100,8 @@ pub struct RecordWriter {
     /// Holds the queue check and the insert of one update together.
     submits: tokio::sync::Mutex<()>,
     /// One records creation at a time, a second request finds the first registry.
-    creations: tokio::sync::Mutex<CreationTracker>,
+    creations: tokio::sync::Mutex<()>,
     private_writes: OnceLock<Arc<dyn PrivateWrites>>,
-}
-
-#[must_use]
-pub(crate) struct VerifiedPolicyAuthority;
-
-#[derive(Default)]
-struct CreationTracker {
-    total_rings: usize,
-    window: VecDeque<Instant>,
-    authorities: HashMap<Address, AuthorityCreations>,
-}
-
-struct AuthorityCreations {
-    last_ring: (Address, Address),
-    window: VecDeque<Instant>,
 }
 
 enum BatchProof {
@@ -174,32 +147,13 @@ impl RecordWriter {
     }
 
     /// The writer authority owns and pays for the ring's records.
-    pub(crate) async fn create_records(
-        &self,
-        ring: Address,
-        authority: Address,
-    ) -> Result<Address, RingRpcError> {
+    pub(crate) async fn create_records(&self, ring: Address) -> Result<Address, RingRpcError> {
         let storage = InitializeStorage::records(CustomRing::new(ring), self.authority());
         let registry = storage.registry();
-        let mut creations = self.creations.lock().await;
+        let _creating = self.creations.lock().await;
         if self.registry(registry).await?.is_some() {
             return Ok(registry);
         }
-        if let Some((prev_ring, prev_registry)) = creations
-            .authorities
-            .get(&authority)
-            .map(|entry| entry.last_ring)
-            .filter(|(prev_ring, _)| *prev_ring != ring)
-        {
-            let pinned = self
-                .ring_policy(prev_ring)
-                .await?
-                .is_some_and(|policy| policy.records == prev_registry);
-            if !pinned {
-                return Err(RecordUpdateRefusal::RecordsCreationLimit.into());
-            }
-        }
-        creations.admit(authority, ring, registry, Instant::now())?;
         let latest = self.chain.latest_blockhash().await?;
         let message = compile_message(
             &self.authority(),
@@ -338,7 +292,6 @@ impl RecordWriter {
     /// One page of the ring's updates pending list approval, oldest first.
     pub(crate) async fn pending_list_approvals(
         &self,
-        _authority: VerifiedPolicyAuthority,
         request: &GetPendingListApprovalsRequest,
     ) -> Result<GetPendingListApprovalsResponse, RingRpcError> {
         let ring = request.ring.0;
@@ -377,7 +330,6 @@ impl RecordWriter {
 
     pub(crate) async fn refuse_list_approval(
         &self,
-        _authority: VerifiedPolicyAuthority,
         request: &RefuseListApprovalRequest,
     ) -> Result<RecordUpdateStatus, RingRpcError> {
         let scope = ApprovalScope {
@@ -393,7 +345,7 @@ impl RecordWriter {
             return Err(RecordUpdateRefusal::UnknownListApproval.into());
         }
         Ok(RecordUpdateStatus::Refused {
-            reason: RecordUpdateRefusal::ListApprovalRefused.to_string(),
+            reason: RefusalReason::ListApprovalRefused.to_string(),
         })
     }
 
@@ -673,7 +625,7 @@ impl RecordWriter {
         &self,
         ring: Address,
         signer: Address,
-    ) -> Result<VerifiedPolicyAuthority, RingRpcError> {
+    ) -> Result<(), RingRpcError> {
         let config = self
             .chain
             .ring_config(ring)
@@ -682,7 +634,7 @@ impl RecordWriter {
         if config.roles.policy != signer {
             return Err(RecordUpdateRefusal::NotPolicyAuthority.into());
         }
-        Ok(VerifiedPolicyAuthority)
+        Ok(())
     }
 
     async fn policy(&self, ring: Address) -> Result<RingPolicy, RingRpcError> {
@@ -799,62 +751,6 @@ impl RingSalted<'_> {
             &self.salt,
         )?;
         Ok(*key.as_bytes())
-    }
-}
-
-impl CreationTracker {
-    fn admit(
-        &mut self,
-        authority: Address,
-        ring: Address,
-        registry: Address,
-        now: Instant,
-    ) -> Result<(), RecordUpdateRefusal> {
-        prune_window(&mut self.window, now);
-        for entry in self.authorities.values_mut() {
-            prune_window(&mut entry.window, now);
-        }
-        let same_ring = self
-            .authorities
-            .get(&authority)
-            .is_some_and(|entry| entry.last_ring.0 == ring);
-        let new_ring_total = self.total_rings.saturating_add(usize::from(!same_ring));
-        if new_ring_total > MAX_TOTAL_CREATIONS || self.window.len() >= MAX_CREATIONS_PER_WINDOW {
-            return Err(RecordUpdateRefusal::RecordsCreationLimit);
-        }
-        if !self.authorities.contains_key(&authority)
-            && self.authorities.len() >= MAX_TRACKED_AUTHORITIES
-        {
-            return Err(RecordUpdateRefusal::RecordsCreationLimit);
-        }
-        if self
-            .authorities
-            .get(&authority)
-            .is_some_and(|entry| entry.window.len() >= MAX_AUTHORITY_CREATIONS_PER_WINDOW)
-        {
-            return Err(RecordUpdateRefusal::RecordsCreationLimit);
-        }
-        self.total_rings = new_ring_total;
-        self.window.push_back(now);
-        let entry = self
-            .authorities
-            .entry(authority)
-            .or_insert_with(|| AuthorityCreations {
-                last_ring: (ring, registry),
-                window: VecDeque::new(),
-            });
-        entry.last_ring = (ring, registry);
-        entry.window.push_back(now);
-        Ok(())
-    }
-}
-
-fn prune_window(window: &mut VecDeque<Instant>, now: Instant) {
-    while window
-        .front()
-        .is_some_and(|stamp| now.saturating_duration_since(*stamp) >= CREATION_WINDOW)
-    {
-        window.pop_front();
     }
 }
 

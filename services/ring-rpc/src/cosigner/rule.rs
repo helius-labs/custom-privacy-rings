@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use solana_address::Address;
 use solana_message::VersionedMessage;
@@ -83,34 +81,5 @@ impl<A: CoSignRule, B: CoSignRule> CoSignRule for Chain<A, B> {
     async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
         self.first.settle(settlement).await?;
         self.next.settle(settlement).await
-    }
-}
-
-/// An absent rule admits.
-#[async_trait]
-impl<R: CoSignRule> CoSignRule for Option<R> {
-    async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingRpcError> {
-        match self {
-            Some(rule) => rule.admit(operation).await,
-            None => Ok(Verdict::Admitted),
-        }
-    }
-
-    async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
-        match self {
-            Some(rule) => rule.settle(settlement).await,
-            None => Ok(()),
-        }
-    }
-}
-
-#[async_trait]
-impl<R: CoSignRule + ?Sized> CoSignRule for Arc<R> {
-    async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingRpcError> {
-        (**self).admit(operation).await
-    }
-
-    async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
-        (**self).settle(settlement).await
     }
 }

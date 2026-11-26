@@ -85,8 +85,6 @@ pub enum CoSignRefusal {
     Frozen,
     Blocked,
     NotAllowed,
-    /// An operator rule outside the service's own set.
-    Custom,
 }
 
 #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
@@ -112,8 +110,6 @@ pub enum CoSignError {
     Blocked = -32168,
     #[error("a party or an asset of the transaction is not on the allow list")]
     NotAllowed = -32169,
-    #[error("an operator rule refuses the transaction")]
-    CustomRefused = -32174,
     #[error("the list entry names no usable subject")]
     ListSubject = -32175,
     #[error("the simulation does not make the approved transfer call exactly once")]
@@ -187,7 +183,6 @@ impl From<CoSignRefusal> for CoSignError {
             CoSignRefusal::Frozen => Self::Frozen,
             CoSignRefusal::Blocked => Self::Blocked,
             CoSignRefusal::NotAllowed => Self::NotAllowed,
-            CoSignRefusal::Custom => Self::CustomRefused,
         }
     }
 }
@@ -244,7 +239,6 @@ mod tests {
             (Frozen, -32167),
             (Blocked, -32168),
             (NotAllowed, -32169),
-            (CustomRefused, -32174),
             (ListSubject, -32175),
             (ApprovedCallNotOnce, -32176),
             (UnrecordedAsset, -32296),

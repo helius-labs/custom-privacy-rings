@@ -72,9 +72,7 @@ impl RingCursor {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub(crate) struct BlockUndo {
-    #[serde(default)]
     pub storage: Vec<StorageUndo>,
-    #[serde(default)]
     pub tracking: Vec<TrackingUndo>,
 }
 

@@ -12,7 +12,6 @@ use crate::{
     replay_nonces::NonceBook,
 };
 
-const MAX_REPLAY_RINGS: usize = 1_024;
 const MAX_REPLAY_ENTRIES: usize = 65_536;
 
 pub(crate) enum ReplayGuard {
@@ -24,7 +23,13 @@ pub(crate) enum ReplayGuard {
 }
 
 #[derive(Default)]
-pub(crate) struct LocalNonces(Mutex<HashMap<Address, HashMap<[u8; 32], u64>>>);
+pub(crate) struct LocalNonces(Mutex<RingNonces>);
+
+#[derive(Default)]
+struct RingNonces {
+    rings: HashMap<Address, HashMap<[u8; 32], u64>>,
+    swept_at: u64,
+}
 
 #[must_use]
 pub(crate) struct ReplayCheck {
@@ -68,19 +73,18 @@ impl LocalNonces {
     /// `now` is read at acceptance, a nonce leaves the set only once its timestamp is stale.
     pub(crate) fn accept(&self, check: ReplayCheck) -> Result<(), Unauthorized> {
         check.fresh()?;
-        let mut rings = self.0.lock().map_err(|_| Unauthorized::Replay)?;
-        if !rings.contains_key(&check.ring) && rings.len() >= MAX_REPLAY_RINGS {
-            rings.retain(|_, entries| {
-                entries
-                    .retain(|_, timestamp| check.now.abs_diff(*timestamp) <= AUTH_SKEW.as_secs());
-                !entries.is_empty()
+        let mut nonces = self.0.lock().map_err(|_| Unauthorized::Replay)?;
+        let live = |timestamp: &u64| check.now.abs_diff(*timestamp) <= AUTH_SKEW.as_secs();
+        // One sweep per window drops every ring whose nonces all expired.
+        if check.now.abs_diff(nonces.swept_at) >= AUTH_SKEW.as_secs() {
+            nonces.swept_at = check.now;
+            nonces.rings.retain(|_, accepted| {
+                accepted.retain(|_, timestamp| live(timestamp));
+                !accepted.is_empty()
             });
-            if rings.len() >= MAX_REPLAY_RINGS {
-                return Err(Unauthorized::Replay);
-            }
         }
-        let accepted = rings.entry(check.ring).or_default();
-        accepted.retain(|_, timestamp| check.now.abs_diff(*timestamp) <= AUTH_SKEW.as_secs());
+        let accepted = nonces.rings.entry(check.ring).or_default();
+        accepted.retain(|_, timestamp| live(timestamp));
         if accepted.len() >= MAX_REPLAY_ENTRIES
             || accepted.insert(check.nonce, check.timestamp).is_some()
         {
@@ -91,7 +95,7 @@ impl LocalNonces {
 
     #[cfg(test)]
     pub(crate) fn ring_count(&self) -> usize {
-        self.0.lock().expect("nonce set").len()
+        self.0.lock().expect("nonce set").rings.len()
     }
 }
 
@@ -179,8 +183,8 @@ mod tests {
         let guard = LocalNonces::default();
         let now = 1_000;
         {
-            let mut rings = guard.0.lock().expect("nonce set");
-            let accepted = rings.entry(RING).or_default();
+            let mut nonces = guard.0.lock().expect("nonce set");
+            let accepted = nonces.rings.entry(RING).or_default();
             for index in 0..MAX_REPLAY_ENTRIES {
                 let mut nonce = [0u8; 32];
                 nonce[..8].copy_from_slice(&(index as u64).to_le_bytes());
@@ -199,30 +203,29 @@ mod tests {
     }
 
     #[test]
-    fn ring_cap_evicts_expired_rings_before_refusing_new_rings() {
+    fn a_new_ring_is_accepted_beside_many_stale_rings_and_they_are_evicted() {
         let guard = LocalNonces::default();
         let now = 1_000;
-        let ring = |index: usize| {
+        let ring = |index: u64| {
             let mut bytes = [0u8; 32];
-            bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+            bytes[..8].copy_from_slice(&index.to_le_bytes());
             Address::new_from_array(bytes)
         };
-        for index in 0..MAX_REPLAY_RINGS {
+        const STALE_RINGS: u64 = 4_096;
+        for index in 0..STALE_RINGS {
             guard
                 .accept(check(ring(index), 1, now, now))
-                .expect("within ring cap");
+                .expect("live ring");
         }
-        assert_eq!(guard.ring_count(), MAX_REPLAY_RINGS);
-        assert_eq!(
-            guard.accept(check(ring(MAX_REPLAY_RINGS), 1, now, now)),
-            Err(Unauthorized::Replay)
-        );
-        assert_eq!(guard.ring_count(), MAX_REPLAY_RINGS);
+        guard
+            .accept(check(ring(STALE_RINGS), 1, now, now))
+            .expect("a ring beside many live rings");
+        assert_eq!(guard.ring_count() as u64, STALE_RINGS + 1);
 
         let later = now + AUTH_SKEW.as_secs() + 1;
         guard
-            .accept(check(ring(MAX_REPLAY_RINGS), 1, later, later))
-            .expect("expired rings evicted");
+            .accept(check(ring(STALE_RINGS + 1), 1, later, later))
+            .expect("a ring beside many stale rings");
         assert_eq!(guard.ring_count(), 1);
     }
 }

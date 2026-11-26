@@ -39,7 +39,7 @@ impl<S: TransactionSource> Hub<S> {
             registry: request.registry.0,
             cursor: request.cursor.clone(),
         };
-        let verified = PolicyAction {
+        PolicyAction {
             hub: self,
             ring,
             auth: &request.auth,
@@ -47,7 +47,7 @@ impl<S: TransactionSource> Hub<S> {
         }
         .authorize(|authority| writer.require_policy_authority(ring, authority))
         .await?;
-        writer.pending_list_approvals(verified, request).await
+        writer.pending_list_approvals(request).await
     }
 
     pub async fn refuse_list_approval(
@@ -60,7 +60,7 @@ impl<S: TransactionSource> Hub<S> {
             registry: request.registry.0,
             update_id: request.update_id.clone(),
         };
-        let verified = PolicyAction {
+        PolicyAction {
             hub: self,
             ring,
             auth: &request.auth,
@@ -68,7 +68,7 @@ impl<S: TransactionSource> Hub<S> {
         }
         .authorize(|authority| writer.require_policy_authority(ring, authority))
         .await?;
-        writer.refuse_list_approval(verified, request).await
+        writer.refuse_list_approval(request).await
     }
 
     /// The upgrade authority signs before `Initialize`, the policy authority after.
@@ -78,21 +78,16 @@ impl<S: TransactionSource> Hub<S> {
     ) -> Result<CreateRecordsRegistryResponse, RingRpcError> {
         let ring = request.ring.0;
         let writer = self.record_writer()?;
-        let authority = PolicyAction {
+        PolicyAction {
             hub: self,
             ring,
             auth: &request.auth,
             action: CreateRecords,
         }
-        .authorize(|authority| async move {
-            self.shared()
-                .require_ring_authority(ring, authority)
-                .await?;
-            Ok(authority)
-        })
+        .authorize(|authority| self.shared().require_ring_authority(ring, authority))
         .await?;
         Ok(CreateRecordsRegistryResponse {
-            registry: writer.create_records(ring, authority).await?.into(),
+            registry: writer.create_records(ring).await?.into(),
             storage_authority: writer.authority().into(),
         })
     }
@@ -107,7 +102,7 @@ impl<S: TransactionSource> Hub<S> {
         let action = RegisterEnrollment {
             writer: applier.payer(),
         };
-        let registration = PolicyAction {
+        PolicyAction {
             hub: self,
             ring,
             auth: &request.auth,
@@ -115,7 +110,7 @@ impl<S: TransactionSource> Hub<S> {
         }
         .authorize(|authority| applier.authorize_registration(ring, authority))
         .await?;
-        applier.complete_registration(registration).await?;
+        applier.complete_registration(ring).await?;
         Ok(RegisterEnrollmentRingResponse {})
     }
 }

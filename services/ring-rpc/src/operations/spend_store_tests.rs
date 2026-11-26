@@ -1368,24 +1368,13 @@ async fn wallet_snapshot_survives_a_same_slot_spend_and_change() {
 }
 
 #[test]
-fn wallet_cursor_refuses_unknown_versions_and_old_positions() {
+fn wallet_cursor_holds_the_client_length_and_refuses_another() {
     assert_eq!(
         std::mem::size_of::<WalletCursor>(),
         zolana_ring_client::rpc::WALLET_SNAPSHOT_CURSOR_LEN
     );
     assert!(matches!(
         WalletCursor::decode(&[0; 32]),
-        Err(RingRpcError::InvalidCursor)
-    ));
-    let cursor = WalletCursor {
-        version: 1,
-        ring: [0; 32],
-        wallet: [0; 32],
-        snapshot: [0; 32],
-        after: [0; 32],
-    };
-    assert!(matches!(
-        WalletCursor::decode(bytemuck::bytes_of(&cursor)),
         Err(RingRpcError::InvalidCursor)
     ));
     let error = jsonrpsee::types::ErrorObjectOwned::from(RingRpcError::WalletSnapshotExpired);

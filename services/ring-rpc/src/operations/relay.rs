@@ -1198,8 +1198,7 @@ impl Relay {
             CoSignDecision::Refused(
                 listed @ (CoSignRefusal::Frozen
                 | CoSignRefusal::Blocked
-                | CoSignRefusal::NotAllowed
-                | CoSignRefusal::Custom),
+                | CoSignRefusal::NotAllowed),
             ) => Err(CoSignError::from(listed).into()),
         }
     }

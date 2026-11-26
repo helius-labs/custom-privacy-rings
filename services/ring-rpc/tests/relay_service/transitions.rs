@@ -169,7 +169,7 @@ impl Worker {
                 fee_payer: Arc::new(Keypair::new_from_array([31; 32])),
                 chain: self.chain,
             },
-            SERVICE,
+            *SERVICE,
         )
         .with_rings(Arc::new(OneRing(RING)))
         .with_budget(RelayBudget {

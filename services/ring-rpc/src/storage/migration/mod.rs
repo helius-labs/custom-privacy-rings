@@ -10,43 +10,16 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        std::iter::once(Box::new(Schema) as Box<dyn MigrationTrait>)
-            .chain(
-                ADDED_TABLES
-                    .into_iter()
-                    .map(|table| Box::new(table) as Box<dyn MigrationTrait>),
-            )
-            .collect()
+        vec![Box::new(Schema)]
     }
 }
 
 #[derive(DeriveMigrationName)]
 struct Schema;
 
-/// Runs after `Schema`, the migration takes the table's name.
-struct AddedTable {
-    name: &'static str,
-    create: fn(&str) -> String,
-}
-
-fn enrollment_rings(blob: &str) -> String {
-    format!(
-        "CREATE TABLE enrollment_rings (writer {blob} NOT NULL, ring {blob} NOT NULL, PRIMARY KEY(writer, ring))"
-    )
-}
-
-const ADDED_TABLES: [AddedTable; 2] = [
-    AddedTable {
-        name: "enrollment_rings",
-        create: enrollment_rings,
-    },
-    AddedTable {
-        name: "cosign_list_entries",
-        create: crate::cosigner::list_migration,
-    },
-];
-
-const TABLES: [&str; 24] = [
+const TABLES: [&str; 26] = [
+    "cosign_list_entries",
+    "enrollment_rings",
     "records_update_members",
     "projection_revisions",
     "owner_notes",
@@ -109,6 +82,8 @@ impl MigrationTrait for Schema {
             format!("CREATE TABLE tracking_cursors (ring {blob} NOT NULL PRIMARY KEY, next_leaf BIGINT NOT NULL)"),
             format!("CREATE TABLE held_enrollments (ring {blob} NOT NULL, member {blob} NOT NULL, sealed {blob} NOT NULL, owner_hash_tag {blob} NOT NULL, list_key_tag {blob} NOT NULL, revision BIGINT NOT NULL, PRIMARY KEY(ring, member))"),
             format!("CREATE TABLE pending_derivations (ring {blob} NOT NULL, member {blob} NOT NULL, after_tag {blob}, PRIMARY KEY(ring, member))"),
+            format!("CREATE TABLE enrollment_rings (writer {blob} NOT NULL, ring {blob} NOT NULL, PRIMARY KEY(writer, ring))"),
+            crate::cosigner::list_migration(blob),
             format!("CREATE TABLE projection_leases (ring {blob} NOT NULL PRIMARY KEY, holder {blob} NOT NULL, instance {blob} NOT NULL, token BIGINT NOT NULL, expires_at BIGINT NOT NULL)"),
             "CREATE INDEX spend_unread_order ON spend_unread_frames(ring, slot, tx_signature, event_index)".to_owned(),
             "CREATE INDEX spend_unread_due ON spend_unread_frames(ring, retry_after, slot, tx_signature, event_index)".to_owned(),
@@ -152,35 +127,6 @@ impl MigrationTrait for Schema {
                 .execute_unprepared(&format!("DROP TABLE {table}"))
                 .await?;
         }
-        Ok(())
-    }
-}
-
-impl MigrationName for AddedTable {
-    fn name(&self) -> &str {
-        self.name
-    }
-}
-
-#[async_trait::async_trait]
-impl MigrationTrait for AddedTable {
-    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        let blob = match manager.get_database_backend() {
-            DatabaseBackend::Postgres => "BYTEA",
-            _ => "BLOB",
-        };
-        manager
-            .get_connection()
-            .execute_unprepared(&(self.create)(blob))
-            .await?;
-        Ok(())
-    }
-
-    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        manager
-            .get_connection()
-            .execute_unprepared(&format!("DROP TABLE {}", self.name))
-            .await?;
         Ok(())
     }
 }

@@ -109,9 +109,6 @@ struct SpentFees {
     rings: HashMap<Address, u64>,
 }
 
-#[must_use]
-pub(crate) struct AuthorizedRegistration(Address);
-
 /// The writer role a batch pass reads from the ring policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WriterRole {
@@ -254,7 +251,7 @@ impl EnrollmentApplier {
         &self,
         ring: Address,
         signer: Address,
-    ) -> Result<AuthorizedRegistration, RingRpcError> {
+    ) -> Result<(), RingRpcError> {
         let tracking = ring_tracking(self.chain.as_ref(), ring)
             .await?
             .ok_or(EnrollmentRefusal::RingMissing)?;
@@ -264,14 +261,10 @@ impl EnrollmentApplier {
         if tracking.writer != self.payer.address() {
             return Err(EnrollmentRefusal::RingMissing.into());
         }
-        Ok(AuthorizedRegistration(ring))
+        Ok(())
     }
 
-    pub(crate) async fn complete_registration(
-        &self,
-        registration: AuthorizedRegistration,
-    ) -> Result<(), RingRpcError> {
-        let ring = registration.0;
+    pub(crate) async fn complete_registration(&self, ring: Address) -> Result<(), RingRpcError> {
         if self.named.contains(&ring) {
             return Ok(());
         }
@@ -295,9 +288,14 @@ impl EnrollmentApplier {
     }
 
     /// Serves the ring once its policy role signed and its policy names the payer as `EnrollmentWriter`.
-    pub async fn register(&self, ring: Address, signer: Address) -> Result<(), RingRpcError> {
-        let registration = self.authorize_registration(ring, signer).await?;
-        self.complete_registration(registration).await
+    #[cfg(test)]
+    pub(crate) async fn register(
+        &self,
+        ring: Address,
+        signer: Address,
+    ) -> Result<(), RingRpcError> {
+        self.authorize_registration(ring, signer).await?;
+        self.complete_registration(ring).await
     }
 
     /// Holds the write once every check storage runs on it passes.

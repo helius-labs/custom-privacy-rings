@@ -26,7 +26,6 @@ use zolana_ring_client::{
     rpc::{
         AuditedUtxoView, GetSpendCoverageResponse, GetWalletStatusResponse, SpendCoverageTotals,
         WalletBalance, WalletEnrollment, WalletNote, WalletNoteStatus,
-        WALLET_SNAPSHOT_CURSOR_VERSION,
     },
     AuditedMergeOutput, ConfirmedMerge, KnownUtxo, UtxoOwner,
 };
@@ -230,7 +229,6 @@ pub(crate) struct WalletStatusQuery {
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 #[repr(C)]
 pub(crate) struct WalletCursor {
-    version: u8,
     ring: [u8; 32],
     wallet: [u8; 32],
     pub(crate) snapshot: [u8; 32],
@@ -238,16 +236,10 @@ pub(crate) struct WalletCursor {
 }
 
 impl WalletCursor {
-    const VERSION: u8 = WALLET_SNAPSHOT_CURSOR_VERSION;
-
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, RingRpcError> {
-        let cursor = bytemuck::try_from_bytes::<Self>(bytes)
+        bytemuck::try_from_bytes::<Self>(bytes)
             .copied()
-            .map_err(|_| RingRpcError::InvalidCursor)?;
-        if cursor.version != Self::VERSION {
-            return Err(RingRpcError::InvalidCursor);
-        }
-        Ok(cursor)
+            .map_err(|_| RingRpcError::InvalidCursor)
     }
 }
 
@@ -505,7 +497,6 @@ impl SnapshotPage {
                 .collect(),
             cursor: last.filter(|_| page.more).zip(id).map(|(after, snapshot)| {
                 let cursor = WalletCursor {
-                    version: WalletCursor::VERSION,
                     ring: query.ring.to_bytes(),
                     wallet: query.wallet.to_bytes(),
                     snapshot,

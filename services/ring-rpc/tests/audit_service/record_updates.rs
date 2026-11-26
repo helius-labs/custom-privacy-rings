@@ -29,8 +29,8 @@ use zolana_ring_member_registry::ApplyProofInputs;
 use zolana_ring_policy::{AssetLimits, ListId, Member, MintPolicy, Rule, RuleTable, Subject};
 use zolana_ring_rpc::{
     ChainOutcome, ChainSubmit, LatestBlockhash, PrivateWrites, ReaderGrantStore,
-    RecordUpdateRefusal, RecordWriter, SaltedOwner, StorageChain, Store, BATCH_WINDOW_SLOTS,
-    MAX_LIMIT_WINDOW_SLOTS, MAX_LIST_APPROVAL_WINDOW_SLOTS,
+    RecordUpdateRefusal, RecordWriter, RefusalReason, SaltedOwner, StorageChain, Store,
+    BATCH_WINDOW_SLOTS, MAX_LIMIT_WINDOW_SLOTS, MAX_LIST_APPROVAL_WINDOW_SLOTS,
 };
 
 use super::*;
@@ -824,7 +824,7 @@ async fn an_authority_write_queued_before_a_policy_rotation_is_refused_and_a_wal
     assert_eq!(
         records.status(&approval).await,
         RecordUpdateStatus::Refused {
-            reason: RecordUpdateRefusal::AuthorityLapsed.to_string()
+            reason: RefusalReason::AuthorityLapsed.to_string()
         }
     );
     // The approval lapsed, the update it joined waits for the new policy authority.
@@ -862,7 +862,7 @@ async fn a_member_that_expires_during_proving_refuses_the_batch_and_preserves_ot
     assert_eq!(
         records.status(&expired).await,
         RecordUpdateStatus::Refused {
-            reason: RecordUpdateRefusal::Expired.to_string()
+            reason: RefusalReason::Expired.to_string()
         }
     );
     assert_eq!(records.flushed().await.members, [live_member]);
@@ -907,7 +907,7 @@ async fn a_policy_rotation_during_proving_refuses_the_approval_and_preserves_wal
     assert_eq!(
         records.status(&approval).await,
         RecordUpdateStatus::Refused {
-            reason: RecordUpdateRefusal::AuthorityLapsed.to_string()
+            reason: RefusalReason::AuthorityLapsed.to_string()
         }
     );
     assert_eq!(
@@ -1577,7 +1577,7 @@ async fn submit_rejects_malformed_or_unsigned_requests_before_chain_reads() {
 }
 
 #[tokio::test]
-async fn create_records_registry_enforces_served_ring_and_uninitialized_cap() {
+async fn create_records_registry_serves_its_rings_and_repeats_one_registry() {
     use zolana_ring_client::rpc::CreateRecordsRegistryRequest;
 
     let records = Records::new().await;
@@ -1599,14 +1599,10 @@ async fn create_records_registry_enforces_served_ring_and_uninitialized_cap() {
 
     let fixture = Fixture::new();
     let ring_one = Address::new_from_array([0x31; 32]);
-    let ring_two = Address::new_from_array([0x32; 32]);
     let mut source = fixture.source();
     source
         .upgrade_authorities
         .insert(ring_one, deployer().pubkey());
-    source
-        .upgrade_authorities
-        .insert(ring_two, deployer().pubkey());
     source
         .configs
         .get_mut(&RING)
@@ -1666,24 +1662,6 @@ async fn create_records_registry_enforces_served_ring_and_uninitialized_cap() {
     .sign(&deployer())
     .expect("signed");
     let created = hub.create_records_registry(&first).await.expect("created");
-    assert_eq!(chain.sent.lock().unwrap().len(), 1);
-
-    let second = CreateRecordsRegistryRequest::create(
-        ReadTarget {
-            cluster: GENESIS,
-            service: hub.service_pubkey(),
-            ring: ring_two,
-        },
-        deployer().pubkey(),
-    )
-    .sign(&deployer())
-    .expect("signed");
-    assert!(matches!(
-        hub.create_records_registry(&second).await,
-        Err(RingRpcError::RecordUpdate(
-            RecordUpdateRefusal::RecordsCreationLimit
-        ))
-    ));
     assert_eq!(chain.sent.lock().unwrap().len(), 1);
 
     let existing_registry =

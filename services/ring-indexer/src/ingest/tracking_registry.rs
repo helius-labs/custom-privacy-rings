@@ -66,7 +66,7 @@ pub(crate) fn decode_event<'a>(
     parent: &Instruction,
     event: &'a Instruction,
 ) -> Option<RegistryInstruction<TrackingCall<'a>>> {
-    let StorageEvent::EnrollmentsApplied { header, writes } = StorageEvent::decode(&event.data)?;
+    let StorageEvent { header, writes } = StorageEvent::decode(&event.data)?;
     let registry = header.registry;
     let named = parent.accounts.get(1) == Some(&registry);
     Some(RegistryInstruction {

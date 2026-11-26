@@ -18,9 +18,7 @@ use spr_interface::{
     pda, PROGRAM_ID_PUBKEY,
 };
 use spr_transaction::{instructions::transact::SettlementTransfer, SOL_MINT};
-use zolana_ring_client::{
-    AuditedTransaction, FramedRow, OutputOpening, OutputPayloadErrorKind, TransactionAudit,
-};
+use zolana_ring_client::{AuditedTransaction, FramedRow, OutputOpening, TransactionAudit};
 use zolana_ring_policy::{
     owner_debits, DebitInput, DebitOutput, DebitTransfer, Member, PublicGross,
 };
@@ -654,12 +652,7 @@ impl FrameFlows<'_> {
 
     /// A slot with no proven record could return funds, the outflow stays unknown.
     fn outputs(&self) -> Result<Vec<DebitOutput>, RingRpcError> {
-        let unopened = self
-            .audited
-            .payload_errors
-            .iter()
-            .any(|error| error.kind != OutputPayloadErrorKind::Payload);
-        if unopened {
+        if self.audited.unopened().is_some() {
             return Err(unavailable());
         }
         let mut outputs = Vec::new();

@@ -551,39 +551,6 @@ fn register_relay_methods<S: TransactionSource + 'static>(
     Ok(())
 }
 
-#[cfg(feature = "test-fixtures")]
-pub fn relay_module(relay: Arc<Relay>) -> Result<RpcModule<Arc<Relay>>, RegisterMethodError> {
-    let mut module = RpcModule::new(relay);
-    method(
-        &mut module,
-        GET_RELAY_QUOTE,
-        |relay, request: GetRelayQuoteRequest| async move { relay.quote(&request).await },
-    )?;
-    method(
-        &mut module,
-        PREPARE_RELAY,
-        |relay, request: PrepareRelayRequest| async move { relay.prepare(&request).await },
-    )?;
-    method(
-        &mut module,
-        SUBMIT_RELAY,
-        |relay, request: SubmitRelayRequest| async move { relay.submit(&request).await },
-    )?;
-    method(
-        &mut module,
-        CO_SIGN_TRANSACTION,
-        |relay, request: CoSignTransactionRequest| async move {
-            relay.co_sign_transaction(&request).await
-        },
-    )?;
-    method(
-        &mut module,
-        GET_RELAY_STATUS,
-        |relay, request: GetRelayStatusRequest| async move { relay.status(&request).await },
-    )?;
-    Ok(module)
-}
-
 #[derive(Clone, Serialize)]
 #[serde(untagged)]
 enum PagedResponse {

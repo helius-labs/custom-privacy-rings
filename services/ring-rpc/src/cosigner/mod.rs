@@ -10,7 +10,7 @@
 //!     async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingRpcError> {
 //!         Ok(match open_now() {
 //!             true => Verdict::Admitted,
-//!             false => Verdict::Refused(CoSignRefusal::Custom),
+//!             false => Verdict::Refused(CoSignRefusal::NotApproved),
 //!         })
 //!     }
 //! }

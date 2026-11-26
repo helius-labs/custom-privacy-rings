@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use sea_orm::{
-    sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    sqlx::{
+        sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+        ConnectOptions as _,
+    },
     ConnectOptions, Database, DatabaseConnection, DbErr, RuntimeErr, SqlxSqliteConnector,
 };
 use sea_orm_migration::MigratorTrait;
@@ -13,6 +16,7 @@ use crate::{error::RingRpcError, migration::Migrator, projection_lease::LeaseHol
 /// One flush at a time, the rest serve submits and status reads.
 pub const STORE_CONNECTIONS: u32 = 4;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const POOL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Migrated when opened, clones share one pool.
 #[derive(Clone)]
@@ -28,11 +32,13 @@ impl Store {
             let options = url
                 .parse::<SqliteConnectOptions>()
                 .map_err(|error| DbErr::Conn(RuntimeErr::SqlxError(error)))?
+                // Readers run beside the writer.
                 .journal_mode(SqliteJournalMode::Wal)
-                .busy_timeout(SQLITE_BUSY_TIMEOUT);
+                .busy_timeout(SQLITE_BUSY_TIMEOUT)
+                .disable_statement_logging();
             let pool = SqlitePoolOptions::new()
                 .max_connections(max_connections)
-                .acquire_timeout(SQLITE_BUSY_TIMEOUT)
+                .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
                 .connect_with(options)
                 .await
                 .map_err(|error| DbErr::Conn(RuntimeErr::SqlxError(error)))?;
@@ -41,7 +47,7 @@ impl Store {
             Database::connect(
                 ConnectOptions::new(url)
                     .max_connections(max_connections)
-                    .acquire_timeout(SQLITE_BUSY_TIMEOUT)
+                    .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
                     .sqlx_logging(false)
                     .to_owned(),
             )
@@ -87,28 +93,6 @@ mod tests {
             Store::open(&url, STORE_CONNECTIONS).await.expect("fresh");
             Store::open(&url, STORE_CONNECTIONS).await.expect("restart");
         }
-        let _ = std::fs::remove_dir_all(&directory);
-    }
-
-    #[tokio::test]
-    async fn a_store_from_before_the_enrollment_rings_upgrades() {
-        let directory = std::env::temp_dir().join(format!("store-upgrade-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&directory);
-        std::fs::create_dir_all(&directory).expect("directory");
-        let url = format!(
-            "sqlite://{}?mode=rwc",
-            directory.join("store.sqlite").display()
-        );
-        let first = Database::connect(url.as_str()).await.expect("connect");
-        Migrator::up(&first, Some(1))
-            .await
-            .expect("first migration");
-        let writer = solana_address::Address::new_from_array([9; 32]);
-        let ring = solana_address::Address::new_from_array([13; 32]);
-        let store = Store::open(&url, 1).await.expect("upgraded");
-        let book = crate::enrollment_rings::EnrollmentRingBook::new(store.connection(), writer);
-        book.insert(ring).await.expect("insert");
-        assert_eq!(book.rings().await.expect("rings"), [ring]);
         let _ = std::fs::remove_dir_all(&directory);
     }
 }

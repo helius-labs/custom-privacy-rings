@@ -155,7 +155,6 @@ pub(crate) struct RelayStore<'a, C> {
 
 const PENDING: [&str; 2] = ["awaitingSignature", "sent"];
 pub(crate) const PENDING_PAGE_LEN: usize = 256;
-const PENDING_LIMIT: i64 = 256;
 const CONFIRMED: &str = "confirmed";
 const FAILED: &str = "failed";
 
@@ -378,7 +377,10 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
             None => (
                 "SELECT relay_id FROM relay_relays WHERE status=$1 \
                  ORDER BY relay_id ASC LIMIT $2",
-                vec![Value::from(status.as_str()), Value::from(PENDING_LIMIT)],
+                vec![
+                    Value::from(status.as_str()),
+                    Value::from(PENDING_PAGE_LEN as u64),
+                ],
             ),
             Some(after) => (
                 "SELECT relay_id FROM relay_relays WHERE status=$1 AND relay_id>$2 \
@@ -386,7 +388,7 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
                 vec![
                     Value::from(status.as_str()),
                     key(after),
-                    Value::from(PENDING_LIMIT),
+                    Value::from(PENDING_PAGE_LEN as u64),
                 ],
             ),
         };
@@ -891,7 +893,7 @@ mod tests {
             ComputeBudgetConfig::new(1),
         )
         .expect("message");
-        let total = usize::try_from(PENDING_LIMIT).expect("limit") + 5;
+        let total = PENDING_PAGE_LEN + 5;
         for index in 0..total {
             let mut bytes = [0u8; 32];
             bytes[..8].copy_from_slice(&(index as u64).to_be_bytes());

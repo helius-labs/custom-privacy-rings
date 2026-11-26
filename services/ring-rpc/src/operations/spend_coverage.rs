@@ -24,7 +24,6 @@ use crate::{
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]
 pub(crate) struct CoverageCursor {
-    version: u8,
     unresolved_state: u8,
     unread_state: u8,
     fault_state: u8,
@@ -59,7 +58,6 @@ struct DetailPage<T, K> {
 impl CoverageCursor {
     pub(crate) fn new(ring: Address) -> Self {
         Self {
-            version: 1,
             ring: ring.to_bytes(),
             ..Self::zeroed()
         }
@@ -69,8 +67,7 @@ impl CoverageCursor {
         let cursor = bytemuck::try_from_bytes::<Self>(bytes)
             .copied()
             .map_err(|_| RingRpcError::InvalidCursor)?;
-        if cursor.version != 1
-            || cursor.ring != ring.to_bytes()
+        if cursor.ring != ring.to_bytes()
             || [
                 cursor.unresolved_state,
                 cursor.unread_state,
@@ -369,7 +366,6 @@ mod tests {
         let ring = Address::new_from_array([7; 32]);
         let cursor = CoverageCursor::new(ring);
         let bytes = bytemuck::bytes_of(&cursor);
-        assert_eq!(bytes.len(), 240);
         assert!(zolana_ring_client::rpc::cursor_in_bounds(bytes));
         assert!(CoverageCursor::decode(bytes, ring).is_ok());
         let mut invalid = cursor;

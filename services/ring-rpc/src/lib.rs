@@ -150,8 +150,8 @@ pub use managed_merge::{
 pub use migration::Migrator;
 pub use origins::{OriginError, OriginPolicy, OriginTransport, Origins};
 pub use record_update::{
-    RecordUpdateRefusal, BATCH_WINDOW_SLOTS, MAX_BATCH_ATTEMPTS, MAX_LIMIT_WINDOW_SLOTS,
-    MAX_LIST_APPROVAL_WINDOW_SLOTS,
+    RecordUpdateRefusal, RefusalReason, BATCH_WINDOW_SLOTS, MAX_BATCH_ATTEMPTS,
+    MAX_LIMIT_WINDOW_SLOTS, MAX_LIST_APPROVAL_WINDOW_SLOTS,
 };
 pub use record_writer::{PrivateWrites, RecordWriter, SaltedOwner, RECORD_FLUSH_INTERVAL};
 pub use relay::{
@@ -165,8 +165,6 @@ pub use relay_reservations::RelayBudget;
 pub use relay_services::{RelayServices, RelayServicesInit};
 pub use relay_submit::CollectedSignature;
 pub use role_pins::{RolePinError, RolePins};
-#[cfg(feature = "test-fixtures")]
-pub use server::relay_module;
 pub use server::{rpc_module, run_server, Announce, BindPolicy, ServerError, ServerOptions};
 pub use storage_chain::{live_ring_client, LiveStorageChain, StorageChain};
 #[cfg(feature = "test-fixtures")]

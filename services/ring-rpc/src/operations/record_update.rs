@@ -57,8 +57,6 @@ pub enum RecordUpdateRefusal {
     UnknownUpdate = -32149,
     #[error("record update names another cluster")]
     WrongCluster = -32190,
-    #[error("record update batch failed on every attempt")]
-    BatchFailed = -32193,
     #[error("service keeps reader grants in its database")]
     ReaderGrantsInDatabase = -32230,
     #[error("only a wallet may await allow, reader or approval from the ring's own records")]
@@ -67,18 +65,12 @@ pub enum RecordUpdateRefusal {
     NotPolicyAuthority = -32241,
     #[error("approved updates and the approval exceed one batch")]
     ListApprovalBatch = -32242,
-    #[error("policy authority refused the list approval")]
-    ListApprovalRefused = -32243,
     #[error("no update of the ring is pending list approval under the id")]
     UnknownListApproval = -32244,
     #[error("valid until slot is past the list approval window")]
     ListApprovalWindow = -32245,
     #[error("records registry creation did not land")]
     RecordsNotCreated = -32260,
-    #[error("records registry creation limit is reached")]
-    RecordsCreationLimit = -32261,
-    #[error("signer no longer holds the ring policy role")]
-    AuthorityLapsed = -32275,
     #[error("ring policy commits no tag of the service ring salt")]
     RingSaltNotCommitted = -32279,
     #[error("an unregistered owner keys no entry of the update under the ring salt")]
@@ -87,6 +79,19 @@ pub enum RecordUpdateRefusal {
     InvalidLimits = -32276,
     #[error("mint limits name an asset without a record")]
     LimitsWithoutRecord = -32277,
+}
+
+/// The status reason of a refused queued update, no RPC answer carries it.
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+pub enum RefusalReason {
+    #[error("{}", RecordUpdateRefusal::Expired)]
+    Expired,
+    #[error("record update batch failed on every attempt")]
+    BatchFailed,
+    #[error("policy authority refused the list approval")]
+    ListApprovalRefused,
+    #[error("signer no longer holds the ring policy role")]
+    AuthorityLapsed,
 }
 
 pub(crate) struct UpdateContext<'a> {
@@ -387,15 +392,15 @@ impl UpdateSigner {
 
 impl QueuedCheck<'_> {
     /// No update goes out past its valid until slot or after its signer lost the role it signed as.
-    pub fn check(self) -> Result<QueuedState, RecordUpdateRefusal> {
+    pub fn check(self) -> Result<QueuedState, RefusalReason> {
         if self.slot > self.update.valid_until_slot {
-            return Err(RecordUpdateRefusal::Expired);
+            return Err(RefusalReason::Expired);
         }
         let Some(policy_authority) = self.policy_authority else {
             return Ok(QueuedState::Deferred);
         };
         if !self.update.signer.holds_role(policy_authority) {
-            return Err(RecordUpdateRefusal::AuthorityLapsed);
+            return Err(RefusalReason::AuthorityLapsed);
         }
         Ok(QueuedState::Live)
     }

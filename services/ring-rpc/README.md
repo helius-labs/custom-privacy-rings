@@ -171,15 +171,12 @@ The ring program reads every root from the live registry account a transfer or m
 | -32147 | The signer may not write an entry |
 | -32149 | `getRecordUpdateStatus` names no stored update |
 | -32190 | The genesis hash is not the service's cluster |
-| -32193 | The update rode in `MAX_BATCH_ATTEMPTS` batches that did not apply, reported only as its status reason |
 | -32240 | `awaitedLists` comes from the policy authority or names a list outside `allow`, `reader` and `approval` that the ring's own records serve |
 | -32241 | The policy authority request signer is not the ring policy authority |
 | -32242 | An approval and the updates it approves exceed one `Update` |
-| -32243 | The policy authority refused the list approval, reported only as its status reason |
 | -32244 | `refuseListApproval` names no update of the ring pending list approval |
 | -32245 | The `validUntilSlot` of an update pending list approval lies past `MAX_LIST_APPROVAL_WINDOW_SLOTS` |
 | -32260 | The records creation did not land |
-| -32275 | The signer of a queued authority update no longer holds the policy role, reported only as its status reason |
 | -32276 | Mint limits pair a cap with no window or a window with no cap, or a window exceeds `MAX_LIMIT_WINDOW_SLOTS` |
 | -32277 | Mint limits name an asset with no record under the newest root of the ring's records registry |
 
