@@ -18,6 +18,7 @@ A pull request that changes a lockfile saves its own entry, the jobs of that pul
 
 The localnet matrix runs each shape and full capacity sweep of `program-tests/custom-ring/tests/ring_shapes.rs` as its own job.
 Those sweeps prove every catalog key.
+The ring localnet ports of `tools/test-ring-controls.sh` stay below 32768, the start of the Linux ephemeral range, so the kernel gives none of them to a client socket.
 The lifecycle slices run `program_owner` with `enrollment_vault.so` from the `ring_program` artifact.
 The `program update` job runs `just test-custom-ring-program-update`, the two `program_update` tests of a Xark program on a ring, with real proofs.
 `build / programs` ships `zk_ring_program.so` in `ring_program`, and `build / zolana cli` compiles the two circuits with their insecure test keys into `zk_ring_circuits` and fails when the verifier module it writes differs from the committed one.

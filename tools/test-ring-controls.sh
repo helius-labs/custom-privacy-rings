@@ -32,16 +32,16 @@ for artifact in target/deploy/custom_ring_program target/deploy/storage_program 
 done
 export ZOLANA_CONFIG_DIR="$ZOLANA_PROCESS_SCOPE_DIR/config"
 port_offset="${ZOLANA_PORT_OFFSET:-0}"
-export ZOLANA_LOCALNET_RPC_PORT="${RING_TEST_RPC_PORT:-$((40899 + port_offset))}"
-export ZOLANA_LOCALNET_PHOTON_PORT="${RING_TEST_PHOTON_PORT:-$((40784 + port_offset))}"
-ring_indexer_port="${RING_TEST_RING_INDEXER_PORT:-$((40786 + port_offset))}"
-prover_port="${RING_TEST_PROVER_PORT:-$((43001 + port_offset))}"
+export ZOLANA_LOCALNET_RPC_PORT="${RING_TEST_RPC_PORT:-$((23899 + port_offset))}"
+export ZOLANA_LOCALNET_PHOTON_PORT="${RING_TEST_PHOTON_PORT:-$((23784 + port_offset))}"
+ring_indexer_port="${RING_TEST_RING_INDEXER_PORT:-$((23786 + port_offset))}"
+prover_port="${RING_TEST_PROVER_PORT:-$((18001 + port_offset))}"
 # DEFAULT_METRICS_PORT minus DEFAULT_PROVER_PORT, zolana/cli/src/config.rs.
 prover_metrics_offset=6997
 metrics_port=$((prover_port + prover_metrics_offset))
 for port in "$ZOLANA_LOCALNET_RPC_PORT" "$ZOLANA_LOCALNET_PHOTON_PORT" "$ring_indexer_port" "$prover_port"; do
-  [[ "$port" =~ ^[1-9][0-9]{3,4}$ ]] && ((port >= 3001 && port <= 58538)) || {
-    echo "Test ports must be integers from 3001 to 58538 (including room for auxiliary ports)" >&2
+  [[ "$port" =~ ^[1-9][0-9]{3,4}$ ]] && ((port >= 3001 && port <= 25770)) || {
+    echo "Test ports must be integers from 3001 to 25770 (auxiliary ports stay below the ephemeral range at 32768)" >&2
     exit 2
   }
 done

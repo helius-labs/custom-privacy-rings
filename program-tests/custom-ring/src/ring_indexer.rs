@@ -78,8 +78,7 @@ impl RingIndexerLaunch<'_> {
         let deadline = Instant::now() + READY_TIMEOUT;
         let mut indexer = start()?;
         while !ready(port) {
-            // The port sits in the ephemeral range, a bind fails while another local socket holds
-            // it. An exited indexer starts again.
+            // The indexer exits when another local socket holds its port.
             if indexer.try_wait()?.is_some() {
                 indexer = start()?;
             }
