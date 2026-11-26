@@ -35,6 +35,7 @@ fn an_sdk_batch_deposit_settles_through_a_transfer() -> Result<()> {
                 })
                 .collect(),
             cosigner: None,
+            tags: None,
         };
         let prepared = env.run(batch.prepare(client.zolana()))?;
         let instruction = env.run(prepared.prove(client))?;

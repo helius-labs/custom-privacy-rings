@@ -250,6 +250,16 @@ pub enum RingError {
     ExitProofUnavailable,
     #[error("a deposit to an anonymous ring pays a ring address")]
     AnonymousDepositUntagged,
+    #[error(
+        "an entry spend needs its wallet's sender tag, no ring note leads the wallet to its change"
+    )]
+    SenderTagRequired,
+    #[error(
+        "a deposit under its recipient's bootstrap tag names that recipient beside the funder"
+    )]
+    DepositBootstrapTag,
+    #[error("only an anonymous ring payment publishes a requested tag")]
+    RequestedTagUnpublished,
     #[error("the ring is not anonymous, its owners sign in public")]
     NotAnonymousRing,
     #[error("an anonymous ring spends only through the hidden owner's proof")]

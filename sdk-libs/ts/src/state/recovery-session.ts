@@ -10,9 +10,7 @@ import { ViewingHistory } from "./viewing-history.js";
 const SESSION_FIELDS = new Set([
   "owner",
   "keys",
-  "mode",
   "rescan",
-  "senderFastPath",
   "ring",
   "history",
   "targetSlot",
@@ -57,9 +55,8 @@ export type RecoveryTask = RecoveryRing;
 export interface RecoverySession {
   owner: string;
   keys: string[];
-  mode: "tagHints" | "everySite";
   rescan: boolean;
-  senderFastPath: boolean;
+  /** Set on a full scan of the one ring. */
   ring: string | null;
   history: string;
   targetSlot: bigint | null;
@@ -81,10 +78,7 @@ export function recoverySessionJson(session: RecoverySession | null): string {
 export function restoreRecoverySession(value: unknown): RecoverySession | null {
   if (value === null || value === undefined) return null;
   const stored = record(value, SESSION_FIELDS);
-  const mode = stored.mode;
-  if (mode !== "tagHints" && mode !== "everySite") throw invalid();
-  if (typeof stored.rescan !== "boolean" || typeof stored.senderFastPath !== "boolean")
-    throw invalid();
+  if (typeof stored.rescan !== "boolean") throw invalid();
   const history = string(stored.history);
   ViewingHistory.fromJson(history);
   const keys = strings(stored.keys).map(key);
@@ -102,9 +96,7 @@ export function restoreRecoverySession(value: unknown): RecoverySession | null {
   const session: RecoverySession = {
     owner: ownerHex(stored.owner),
     keys,
-    mode,
     rescan: stored.rescan === true,
-    senderFastPath: stored.senderFastPath === true,
     ring: stored.ring === null ? null : address(string(stored.ring)),
     history,
     targetSlot: optionalSlot(stored.targetSlot),
@@ -140,7 +132,7 @@ export function restoreRecoverySession(value: unknown): RecoverySession | null {
     if (
       item.keys.length === 0 ||
       new Set(item.keys).size !== item.keys.length ||
-      (session.mode === "everySite" && item.ring !== session.ring) ||
+      (session.ring !== null && item.ring !== session.ring) ||
       item.keys.some((held) => !keys.includes(held))
     )
       throw invalid();

@@ -27,7 +27,6 @@ pub fn run(ctx: &Context, args: MergeArgs) -> Result<()> {
         WalletScan {
             keys: &held,
             assets: &assets,
-            config: &config,
         }
         .fetch(ctx)
     };

@@ -37,8 +37,9 @@ use zolana_ring_policy::{
     ListChange, ListId, ListSet, Member, MintPolicy, Rule, RuleTable, Subject,
 };
 
-use crate::shared::{
-    custom_ring_program_id, send, setup_with_extra_rings, RegisterRing, TestEnv, Tier,
+use crate::{
+    ring_wallet::fresh_wallet_tags,
+    shared::{custom_ring_program_id, send, setup_with_extra_rings, RegisterRing, TestEnv, Tier},
 };
 
 pub const DEPOSIT: u64 = 1_000_000_000;
@@ -125,23 +126,21 @@ impl RingNotes<'_> {
     /// A separate depositor keeps an anonymous owner out of public signatures.
     pub fn deposit_from(self, payer: &(dyn Signer + Sync)) -> Result<Vec<Utxo>> {
         let recipient = DepositRecipient::Confidential(self.owner.shielded_address()?);
-        self.deposit_to(recipient, payer)
+        self.land_each(&self.deposit_with(recipient, payer))
     }
 
-    /// Notes of the owner's hidden identity on an anonymous ring, each a payment its sync finds.
+    /// Notes of the owner's hidden identity on an anonymous ring, each under the owner's first sender tag.
     pub fn deposit_hidden_from(self, payer: &(dyn Signer + Sync)) -> Result<Vec<Utxo>> {
         let recipient = DepositRecipient::Anonymous { keys: self.owner };
-        self.deposit_to(recipient, payer)
+        let tags = fresh_wallet_tags(self.owner)?;
+        self.land_each(&RingDeposit {
+            tags: Some(&tags),
+            ..self.deposit_with(recipient, payer)
+        })
     }
 
-    fn deposit_to(
-        self,
-        recipient: DepositRecipient<'_>,
-        payer: &(dyn Signer + Sync),
-    ) -> Result<Vec<Utxo>> {
-        (0..self.count)
-            .map(|_| self.land(&self.deposit_with(recipient, payer)))
-            .collect()
+    fn land_each(&self, deposit: &RingDeposit<'_>) -> Result<Vec<Utxo>> {
+        (0..self.count).map(|_| self.land(deposit)).collect()
     }
 
     fn deposit_with<'d>(
@@ -159,6 +158,7 @@ impl RingNotes<'_> {
             cosigner: None,
             // The salt the owner enrolled under, a salted list refuses an enrolled recipient with none.
             list_salt: self.owner.list_salt(&self.ring.program_id()).ok(),
+            tags: None,
         }
     }
 

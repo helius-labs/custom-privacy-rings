@@ -1,24 +1,27 @@
-//! Confidential ring notes opened into a wallet, the pinned zolana scan skips them.
+//! Ring notes of both rails opened into a wallet by exact tag, the pinned zolana scan skips them.
 //!
 //! Only [`AnonymousWallet::absorb`] stores a sync's [`ScanCommit`], a crash before the absorb repeats the read.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{AsyncRpc, IndexerRpcConfig};
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
+use spr_keypair::viewing_key::ViewTag;
 use spr_transaction::{
     verify_owned, DecryptionResult, OwnedUtxos, ShieldedKeys, ShieldedTransaction, WalletUtxo,
 };
-use zolana_ring_keys::confidential_slot_tag;
-use zolana_ring_keys::RingKeys;
-use zolana_ring_transaction::RingAssets;
+use zolana_ring_keys::{
+    bootstrap_slot_tag, ring_body_output, RingKeys, ViewTagRequest, ViewTagStream,
+};
+use zolana_ring_transaction::{open_reply, RingAssets};
 
 use crate::{
-    anonymous::{AnonymousSync, AuditorRecovery},
-    anonymous_wallet::{AnonymousWallet, PendingNote, ScanCommit},
+    anonymous::{AnonymousSync, AuditorRecovery, SenderClaim},
+    anonymous_wallet::{AnonymousWallet, PendingClaim, PendingNote, ScanCommit},
     delivered::RingNoteCodec,
+    exactly_one_each,
     exposed_notes::{verify_ring_owned, RingOwnedUtxos},
     history::HistoryPosition,
     merge_audit::RingMergeBody,
@@ -48,6 +51,24 @@ pub struct RingConfidentialScan<'a, K: ?Sized> {
     keys: &'a K,
     assets: &'a RingAssets,
     config: Option<IndexerRpcConfig>,
+}
+
+#[derive(Clone, Copy)]
+struct Listed {
+    entry: usize,
+    stream: Option<(ViewTagStream, u64)>,
+}
+
+#[derive(Default)]
+struct Listing {
+    tags: HashMap<ViewTag, Listed>,
+    bounds: HashMap<(usize, ViewTagStream), u64>,
+}
+
+#[derive(Default)]
+struct TagRead {
+    rows: Vec<ShieldedTransaction>,
+    claims: Vec<PendingClaim>,
 }
 
 /// Every commitment rebuilt under the owner.
@@ -112,10 +133,11 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
     ) -> Result<ScanCommit, AnonymousError> {
         let mut reads = IndexerReads::configured(indexer, self.config);
         let mut history = wallet.history().clone();
-        // 1. Only rows above the committed positions come back, the ledger holds what earlier rows opened.
+        // 1. A tag read before returns only rows above its key's position and a tag never read
+        // returns all its rows, the ledger holds what earlier rows opened.
         let tagged = self.read_tags(&mut reads, &mut history).await?;
         // 2. Every event read so far opens once, later rounds follow only spends.
-        let rows = union_events(transactions, tagged);
+        let rows = union_events(transactions, tagged.rows);
         let opened = self.open_rows(&rows)?;
         let mut found = Found {
             notes: opened
@@ -155,7 +177,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
                 ..DecryptionResult::default()
             },
             pending: found.pending.into_iter().map(PendingNote::new).collect(),
-            claims: Vec::new(),
+            claims: tagged.claims,
             retried: wallet
                 .merge_retries()
                 .iter()
@@ -166,45 +188,175 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
         })
     }
 
-    /// Reads each held key's slot tag above its position, every read key moves to the lowest terminal slot.
+    /// Lists every stream of each held key and reads the tags no earlier round listed, until a round lists none.
     async fn read_tags<I: AsyncRpc + ?Sized>(
         &self,
         reads: &mut IndexerReads<'_, I>,
         history: &mut ViewingHistory,
-    ) -> Result<Vec<ShieldedTransaction>, AnonymousError> {
+    ) -> Result<TagRead, AnonymousError> {
         let held = self.keys.viewing_public_keys();
         // A held key with no entry would read nothing and report nothing missed.
         if held.iter().any(|key| history.entry(key).is_none()) {
             return Err(AnonymousError::HeldKeyNotInHistory);
         }
-        // 1. Keys at one position share a read, a new key reads from the first indexed block.
-        let mut groups: BTreeMap<Option<u64>, Vec<usize>> = BTreeMap::new();
-        for (index, entry) in history.entries().iter().enumerate() {
-            if held.contains(&entry.viewing_pubkey()) {
-                groups.entry(entry.tag_position()).or_default().push(index);
-            }
-        }
-        let mut rows = Vec::new();
+        let entries: Vec<usize> = (0..history.entries().len())
+            .filter(|index| held.contains(&history.entries()[*index].viewing_pubkey()))
+            .collect();
+        let mut listing = Listing::default();
+        let mut read = TagRead::default();
+        let mut seen = HashSet::new();
         let mut covered: Option<u64> = None;
-        for (position, entries) in &groups {
-            let tags: Vec<[u8; 32]> = entries
-                .iter()
-                .map(|index| confidential_slot_tag(history.entries()[*index].viewing_pubkey().u()))
-                .collect();
-            let from = position.map_or_else(HistoryPosition::default, HistoryPosition::after_slot);
-            let read = reads.tagged(&tags, from).await?;
-            rows.extend(read.rows);
-            if let Some(slot) = read.next.checkpoint() {
-                covered = Some(covered.map_or(slot, |lowest| lowest.min(slot)));
+        loop {
+            // 1. Keys at one position share a read, a moved counter lists more next round.
+            let groups = self.list(history, &entries, &mut listing)?;
+            if groups.is_empty() {
+                break;
+            }
+            let mut rows = Vec::new();
+            for (position, tags) in &groups {
+                let from =
+                    position.map_or_else(HistoryPosition::default, HistoryPosition::after_slot);
+                let page = reads.tagged(tags, from).await?;
+                rows.extend(page.rows);
+                if let Some(slot) = page.next.checkpoint() {
+                    covered = Some(covered.map_or(slot, |lowest| lowest.min(slot)));
+                }
+            }
+            // 2. Every row moves the counters whatever its ring, a tag proves no ownership.
+            for row in rows {
+                if seen.insert(event_identity(&row)) {
+                    self.count(&row, history, &listing, &mut read)?;
+                    read.rows.push(row);
+                }
             }
         }
-        // 2. One shared position keeps the next sync at one read.
+        // 3. One shared position lets the held keys share one read in the next sync.
         if let Some(slot) = covered {
-            for index in groups.into_values().flatten() {
+            for index in entries {
                 history.entries_mut()[index].set_tag_position(slot);
             }
         }
-        Ok(rows)
+        Ok(read)
+    }
+
+    /// The tags not listed before, grouped by the slot their read starts after.
+    /// An index within the window of a found one was read through its key's position, the stored state shows no read of any other.
+    fn list(
+        &self,
+        history: &ViewingHistory,
+        entries: &[usize],
+        listing: &mut Listing,
+    ) -> Result<BTreeMap<Option<u64>, Vec<ViewTag>>, AnonymousError> {
+        let first = listing.tags.is_empty();
+        let mut groups: BTreeMap<Option<u64>, Vec<ViewTag>> = BTreeMap::new();
+        let mut requests = Vec::new();
+        let mut asked = Vec::new();
+        for &index in entries {
+            let entry = &history.entries()[index];
+            let viewing_pubkey = entry.viewing_pubkey();
+            if first {
+                let tag = bootstrap_slot_tag(viewing_pubkey.u());
+                listing.tags.insert(
+                    tag,
+                    Listed {
+                        entry: index,
+                        stream: None,
+                    },
+                );
+                groups.entry(entry.tag_position()).or_default().push(tag);
+            }
+            for (stream, counter) in entry.streams() {
+                let bound = listing.bounds.entry((index, stream)).or_default();
+                let fresh = *bound..counter.listed().end;
+                *bound = fresh.end;
+                // A later round lists only tags no stored sync read.
+                let read_before = match first {
+                    true => counter.read_before().end,
+                    false => 0,
+                };
+                let split = read_before.min(fresh.end).max(fresh.start);
+                let parts = [
+                    (fresh.start..split, entry.tag_position()),
+                    (split..fresh.end, None),
+                ];
+                for (indices, position) in parts {
+                    if indices.is_empty() {
+                        continue;
+                    }
+                    asked.push((index, stream, indices.clone(), position));
+                    requests.push(ViewTagRequest {
+                        viewing_pubkey,
+                        stream,
+                        indices,
+                    });
+                }
+            }
+        }
+        let answers = exactly_one_each(self.keys.view_tags(&requests)?, requests.len())?;
+        for ((entry, stream, indices, position), tags) in asked.into_iter().zip(answers) {
+            let want = usize::try_from(indices.end - indices.start)
+                .map_err(|_| AnonymousError::CounterOverflow)?;
+            for (index, tag) in indices.zip(exactly_one_each(tags, want)?) {
+                listing.tags.insert(
+                    tag,
+                    Listed {
+                        entry,
+                        stream: Some((stream, index)),
+                    },
+                );
+                groups.entry(position).or_default().push(tag);
+            }
+        }
+        Ok(groups)
+    }
+
+    /// A reply is kept only on a body a held key rebuilds.
+    fn count(
+        &self,
+        row: &ShieldedTransaction,
+        history: &mut ViewingHistory,
+        listing: &Listing,
+        read: &mut TagRead,
+    ) -> Result<(), AnonymousError> {
+        let reply_of = |position: u32| {
+            usize::try_from(position)
+                .ok()
+                .and_then(|position| row.output_slots.get(position))
+                .and_then(|slot| Some((slot, ring_body_output(&slot.payload)?.1)))
+                .filter(|(_, reply)| !reply.is_empty())
+        };
+        let mut replies = false;
+        for (position, slot) in (0u32..).zip(&row.output_slots) {
+            if let Some(Listed {
+                entry,
+                stream: Some((stream, index)),
+            }) = listing.tags.get(&slot.view_tag)
+            {
+                history.entries_mut()[*entry].found(*stream, *index);
+            }
+            replies |= reply_of(position).is_some();
+        }
+        let Some(ring) = row.ring_program_id.filter(|_| replies) else {
+            return Ok(());
+        };
+        let codec = RingNoteCodec {
+            ring,
+            keys: self.keys,
+            assets: self.assets,
+        };
+        for opened in codec.opened(row)? {
+            let Some((slot, sealed)) = reply_of(opened.opening.slot_index) else {
+                continue;
+            };
+            if let Some(claim) = open_reply(sealed, &opened.secret)? {
+                read.claims.push(PendingClaim::of(&SenderClaim {
+                    utxo_hash: slot.output_context.hash,
+                    viewing_pubkey: opened.viewing_pubkey,
+                    claim,
+                }));
+            }
+        }
+        Ok(())
     }
 
     /// Rounds of nullifier reads until no unread nullifier of an unspent note remains.
@@ -236,7 +388,39 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
             found
                 .published
                 .extend(spends.iter().flat_map(|tx| tx.nullifiers.iter().copied()));
-            // 2. Each merge opens alone, an unregistered mint keeps only its own spends for the next sync.
+            // 2. A spend can return change no listed tag names, under a random tag or from a delegate's move.
+            // A merge opens on its own path below.
+            let transfers: Vec<ShieldedTransaction> = spends
+                .iter()
+                .filter(|tx| !is_ring_merge(tx))
+                .cloned()
+                .collect();
+            let returned = self.open_rows(&transfers)?;
+            found
+                .unknown_mints
+                .extend(returned.notes.owned.unknown_mints);
+            for utxo in returned
+                .notes
+                .owned
+                .utxos
+                .into_iter()
+                .chain(returned.notes.exposed_if_spent)
+            {
+                let mut held = wallet.notes().iter().chain(&found.notes);
+                if !held.any(|note| note.utxo_hash == utxo.utxo_hash) {
+                    found.notes.push(utxo);
+                }
+            }
+            for utxo in returned.pending {
+                if !found
+                    .pending
+                    .iter()
+                    .any(|note| note.utxo_hash == utxo.utxo_hash)
+                {
+                    found.pending.push(utxo);
+                }
+            }
+            // 3. Each merge opens alone, an unregistered mint keeps only its own spends for the next sync.
             for merge in RingMerges::among(spends).0 {
                 let spent: Vec<[u8; 32]> = merge
                     .nullifiers
@@ -351,18 +535,23 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
 }
 
 /// One transaction can emit several relevant events, only its signature and event index name one.
+fn event_identity(tx: &ShieldedTransaction) -> (Signature, Option<u16>) {
+    (tx.tx_signature, tx.event_index)
+}
+
 fn union_events(
     known: &[ShieldedTransaction],
     tagged: Vec<ShieldedTransaction>,
 ) -> Vec<ShieldedTransaction> {
-    let identity = |tx: &ShieldedTransaction| -> (Signature, Option<u16>) {
-        (tx.tx_signature, tx.event_index)
-    };
-    let mut seen: HashSet<_> = known.iter().map(identity).collect();
+    let mut seen: HashSet<_> = known.iter().map(event_identity).collect();
     known
         .iter()
         .cloned()
-        .chain(tagged.into_iter().filter(|tx| seen.insert(identity(tx))))
+        .chain(
+            tagged
+                .into_iter()
+                .filter(|tx| seen.insert(event_identity(tx))),
+        )
         .collect()
 }
 
@@ -420,8 +609,7 @@ mod tests {
     use zolana_ring_keys::encode_ring_body_output;
     use zolana_ring_keys::DeliveredSlot;
     use zolana_ring_keys::OutputRecord;
-    use zolana_ring_keys::SlotSecret;
-    use zolana_ring_keys::{RingDeliveryRequest, RingKeyError, RingTagFrame, ViewTagRequest};
+    use zolana_ring_keys::{RingDeliveryRequest, RingKeyError, ViewTagRequest};
     use zolana_ring_transaction::RecipientBody;
 
     use std::sync::Mutex;
@@ -621,14 +809,10 @@ mod tests {
             self.0.ring_delivery_secrets(requests)
         }
 
-        fn ring_tag_matches(
+        fn view_tags(
             &self,
-            frames: &[RingTagFrame],
-        ) -> Result<Vec<Vec<Option<SlotSecret>>>, RingKeyError> {
-            self.0.ring_tag_matches(frames)
-        }
-
-        fn view_tags(&self, requests: &[ViewTagRequest]) -> Result<Vec<ViewTag>, RingKeyError> {
+            requests: &[ViewTagRequest],
+        ) -> Result<Vec<Vec<ViewTag>>, RingKeyError> {
             self.0.view_tags(requests)
         }
     }
@@ -796,7 +980,7 @@ mod tests {
                 tx_viewing_pk: Some(tx_key.pubkey()),
                 salt: Some(salt),
                 output_slots: vec![OutputSlot {
-                    view_tag: confidential_slot_tag(view.u()),
+                    view_tag: bootstrap_slot_tag(view.u()),
                     output_context: output_context(hash),
                     payload: encode_ring_body_output(&body, &[]).unwrap(),
                 }],

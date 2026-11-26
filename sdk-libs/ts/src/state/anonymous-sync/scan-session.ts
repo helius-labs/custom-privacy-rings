@@ -4,20 +4,19 @@ import {
   DEFAULT_INDEXER_POLL_CONFIG,
   type IndexerRpcConfig,
 } from "@heliuslabs/spr/client";
-import { bytesKey, PAGE_LIMIT } from "@heliuslabs/spr/internal";
+import { bytesKey } from "@heliuslabs/spr/internal";
 import type { Address, Bytes32, RequestContext } from "@heliuslabs/spr/interface";
 import { X25519PublicKey, type ShieldedAddress } from "@heliuslabs/spr/keypair";
 import type { IndexedShieldedTransaction } from "@heliuslabs/spr/transaction";
 import { ringBodyOutput } from "../../protocol/transaction/output.js";
-import { HalvingPageLimit, readRingPages } from "../../rpc/history.js";
+import { HalvingPageLimit, readRingPages, TAGS_PER_REQUEST } from "../../rpc/history.js";
 import {
   RECOVERY_DIAGNOSTIC_SAMPLES,
   type RecoverySession,
   type RecoveryTask,
   type RecoveryPage,
 } from "../recovery-session.js";
-import { answered, unseen } from "../batch.js";
-import type { RingTagFrame } from "../ring-keys.js";
+import { unseen } from "../batch.js";
 import { RingError } from "../../protocol/error.js";
 import { ViewingHistory, type ViewingKeyEntry } from "../viewing-history.js";
 import {
@@ -30,19 +29,13 @@ import {
 } from "./scan-result.js";
 import { NoteLedger, maxSlot, keepRingMerges, openMerges, type MergeReads } from "./note-ledger.js";
 import {
-  sitesOf,
-  bodyAt,
-  TAG_HINT,
-  bodyProbe,
+  BodyRead,
   bodySecrets,
-  type Body,
-  ownTransactions,
-  FULL_SCAN,
+  ownTransactionKeys,
   readBodies,
+  ringBodies,
+  type Body,
 } from "./body-read.js";
-
-/** The indexer's cap on the tags or nullifiers one request names. */
-export const TAGS_PER_REQUEST = Number(PAGE_LIMIT);
 
 export class Scan {
   readonly #unopened = new Map<string, Bytes32>();
@@ -85,16 +78,13 @@ export class Scan {
     stored: RecoverySession | null,
     ring: Address | undefined,
   ): Promise<RecoverySession | null> {
-    const mode = ring === undefined ? "tagHints" : "everySite";
     const keys = this.#sync.keys.viewingPublicKeys().map(keyHex).sort();
     const owner = bytesToHex(this.#address.toBytes());
-    const session = stored ?? this.#newSession({ owner, keys, mode, ring });
+    const session = stored ?? this.#newSession({ owner, keys, ring });
     if (
       session.owner !== owner ||
-      session.mode !== mode ||
       session.ring !== (ring ?? null) ||
       session.rescan !== this.#sync.fullRescan ||
-      session.senderFastPath !== this.#sync.senderFastPath ||
       session.keys.length !== keys.length ||
       session.keys.some((key) => !keys.includes(key))
     )
@@ -196,7 +186,6 @@ export class Scan {
     input: Readonly<{
       owner: string;
       keys: string[];
-      mode: "tagHints" | "everySite";
       ring: Address | undefined;
     }>,
   ): RecoverySession {
@@ -234,7 +223,6 @@ export class Scan {
       ...input,
       ring: input.ring ?? null,
       rescan: this.#sync.fullRescan,
-      senderFastPath: this.#sync.senderFastPath,
       history: this.#history.toJson(),
       targetSlot: null,
       tasks: combined,
@@ -340,16 +328,14 @@ export class Scan {
     const rows = response.data.flatMap((item) => item.events);
     if (rows.some((row) => row.ringProgramId !== task.ring))
       throw new RingError("RING_HISTORY_PAGE_INVALID");
-    for (const key of task.keys) {
-      const viewingPublicKey = X25519PublicKey.fromBytes(hexToBytes(key));
-      if (session.mode === "everySite") await this.#tryEverySite(viewingPublicKey, rows);
-      else await this.#testTags(viewingPublicKey, rows);
-    }
+    for (const key of task.keys)
+      await this.#tryEverySite(X25519PublicKey.fromBytes(hexToBytes(key)), rows);
     if (this.#workOffset !== task.workOffset) throw new RingError("RING_HISTORY_PAGE_INVALID");
-    if (session.mode === "everySite") await keepRingMerges(this.#mergeReads(), rows);
+    const fullScan = session.ring !== null;
+    if (fullScan) await keepRingMerges(this.#mergeReads(), rows);
     await this.#ledger.assignNullifiers(this.#context);
     this.#ledger.noteSpends(rows);
-    if (session.mode === "everySite") this.#diagnostics(rows);
+    if (fullScan) this.#diagnostics(rows);
     task.token = response.paginationToken;
     task.workOffset = 0;
     if (task.token === null) {
@@ -386,7 +372,7 @@ export class Scan {
   async rings(): Promise<void> {
     const held = this.#sync.keys.viewingPublicKeys();
     for (const read of this.#history._ringReads(held, this.#sync.fullRescan))
-      await this.#readRing({ ...read, trial: "tagHints" });
+      await this.#readRing({ ...read, fullScan: false });
   }
 
   /** Recovery, every site tried under every held key from the ring's start. */
@@ -394,7 +380,7 @@ export class Scan {
     const keys = this.#history.entries
       .filter((held) => this.#holds(held))
       .map((entry) => entry.viewingPublicKey);
-    await this.#readRing({ ring, afterSlot: null, keys, trial: "everySite" });
+    await this.#readRing({ ring, afterSlot: null, keys, fullScan: true });
   }
 
   /** The spends of every found or held ring note, round after round, open the ring merges among them. */
@@ -461,10 +447,10 @@ export class Scan {
       ring: Address;
       afterSlot: bigint | null;
       keys: readonly X25519PublicKey[];
-      trial: "tagHints" | "everySite";
+      fullScan: boolean;
     }>,
   ): Promise<void> {
-    const { ring, afterSlot, keys, trial } = read;
+    const { ring, afterSlot, keys, fullScan } = read;
     const reach = await readRingPages(
       {
         client: this.#client,
@@ -475,14 +461,12 @@ export class Scan {
       },
       async (rows) => {
         // 1. Each page opens before the next arrives, the scan keeps no ring row past its page.
-        for (const viewingPublicKey of keys)
-          if (trial === "tagHints") await this.#testTags(viewingPublicKey, rows);
-          else await this.#tryEverySite(viewingPublicKey, rows);
-        // 2. A recovery reads every merge in its pages, a tag sync finds ring merges by nullifier.
-        if (trial === "everySite") await keepRingMerges(this.#mergeReads(), rows);
+        for (const viewingPublicKey of keys) await this.#tryEverySite(viewingPublicKey, rows);
+        // 2. A full scan reads every merge in its pages, any other read finds ring merges by nullifier.
+        if (fullScan) await keepRingMerges(this.#mergeReads(), rows);
         await this.#ledger.assignNullifiers(this.#context);
         this.#ledger.noteSpends(rows);
-        if (trial === "everySite") this.#diagnostics(rows);
+        if (fullScan) this.#diagnostics(rows);
       },
       this.#context,
     );
@@ -498,73 +482,26 @@ export class Scan {
     );
   }
 
-  /** One agreement per candidate per key inside the holder, only a matching tag opens a body. */
-  async #testTags(
-    viewingPublicKey: X25519PublicKey,
-    rows: readonly IndexedShieldedTransaction[],
-  ): Promise<void> {
-    const candidates = rows
-      .map((tx) => sitesOf(tx).flatMap((site) => bodyAt(tx, site, TAG_HINT) ?? []))
-      .filter((bodies) => bodies.length > 0);
-    if (candidates.length === 0) return;
-    const recognized = await this.#ownBundles(viewingPublicKey, candidates.flat());
-    const tested = candidates
-      .map((bodies) => bodies.filter((body) => !recognized.has(body)))
-      .filter((bodies) => bodies.length > 0);
-    const frames = tested.flatMap((bodies): RingTagFrame[] => {
-      const [first] = bodies;
-      if (first === undefined) return [];
-      const { txViewingPublicKey, salt, firstNullifier } = first.context;
-      return [
-        {
-          viewingPublicKey,
-          txViewingPublicKey,
-          salt,
-          firstNullifier,
-          probes: bodies.map(bodyProbe),
-        },
-      ];
-    });
-    const answers =
-      frames.length === 0 ? [] : await this.#sync.tagMatcher.ringTagMatches(frames, this.#context);
-    const matched = answered(tested, answers).flatMap(([bodies, frameAnswers]) =>
-      answered(bodies, frameAnswers).flatMap(([body, secret]) =>
-        secret === undefined ? [] : [[body, secret] as const],
-      ),
-    );
-    await this.#read(viewingPublicKey, [
-      ...matched,
-      ...(await bodySecrets(this.#sync.keys, viewingPublicKey, [...recognized], this.#context)),
-    ]);
-  }
-
-  /** The fast path's bundles, a proof under another transaction key keeps its tag test. */
-  async #ownBundles(
-    viewingPublicKey: X25519PublicKey,
-    bodies: readonly Body[],
-  ): Promise<ReadonlySet<Body>> {
-    if (!this.#sync.senderFastPath) return new Set();
-    const own = await ownTransactions(this.#sync.keys, viewingPublicKey, bodies, this.#context);
-    for (const key of own.values()) key.destroy();
-    return new Set(
-      bodies.filter(
-        (body) => body.site.kind === "message" && own.has(bytesKey(body.context.firstNullifier)),
-      ),
-    );
-  }
-
-  /** Recovers every rail without reading a tag, tags are unproved hints. */
+  /** No tag selects a site, a tag proves no ownership. */
   async #tryEverySite(
     viewingPublicKey: X25519PublicKey,
     rows: readonly IndexedShieldedTransaction[],
   ): Promise<void> {
-    const bodies = rows.flatMap((tx) =>
-      sitesOf(tx).flatMap((site) => bodyAt(tx, site, FULL_SCAN) ?? []),
-    );
+    const reads: BodyReads = this.#sync;
     await this.#read(
       viewingPublicKey,
-      await bodySecrets(this.#sync.keys, viewingPublicKey, bodies, this.#context),
+      await bodySecrets(this.#sync.keys, viewingPublicKey, rows.flatMap(ringBodies), this.#context),
     );
+    const sent = await ownTransactionKeys(this.#sync.keys, viewingPublicKey, rows, this.#context);
+    try {
+      for (const [tx, slot, txViewingKey] of sent) {
+        const read = new BodyRead(reads);
+        read.sentPayments(tx, slot, txViewingKey);
+        this.#ledger.absorb(viewingPublicKey, read);
+      }
+    } finally {
+      for (const [, , txViewingKey] of sent) txViewingKey.destroy();
+    }
   }
 
   async #read(
@@ -572,10 +509,10 @@ export class Scan {
     opened: readonly (readonly [Body, Bytes32])[],
   ): Promise<void> {
     const reads: BodyReads = this.#sync;
-    await readBodies(reads, viewingPublicKey, opened, this.#context, async (open) => {
+    await readBodies(reads, opened, async (open) => {
       const step = this.#workOffset++;
       if (this.#page !== undefined && step < this.#page.workOffset) return;
-      this.#ledger.absorb(viewingPublicKey, await open());
+      this.#ledger.absorb(viewingPublicKey, open());
       if (this.#page !== undefined) this.#page.workOffset = step + 1;
     });
   }

@@ -8,7 +8,6 @@ use spr_event::{OutputDataEncoding, CONFIDENTIAL_ENCRYPTED_SCHEME_TAG};
 
 use crate::{audit_stream::RING_RECORD_LEN, CustomRingError};
 
-pub const RING_SENDER_BUNDLE_SCHEME_TAG: u8 = 9;
 /// `u16le(body_len) || record || payload || reply`, one form on every rail, the reply absent without reply metadata.
 pub const RING_BODY_SCHEME_TAG: u8 = 10;
 
@@ -29,7 +28,6 @@ const BODY_OFFSET: usize = 1 + 4;
 pub enum OutputPayload<'a> {
     Confidential(&'a [u8]),
     Recipient { body: &'a [u8], reply: &'a [u8] },
-    SenderBundle(&'a [u8]),
 }
 
 pub(crate) struct OutputHeader {
@@ -50,7 +48,6 @@ impl<'a> OutputPayload<'a> {
                 }
                 (RING_BODY_SCHEME_TAG, body, reply, Some(len.to_le_bytes()))
             }
-            Self::SenderBundle(body) => (RING_SENDER_BUNDLE_SCHEME_TAG, body, &[][..], None),
         };
         // 2. The outer `u32` length covers the scheme byte, optional recipient length, body and reply.
         let len = BODY_OFFSET + 1 + body_prefix.map_or(0, |prefix| prefix.len());
@@ -76,9 +73,7 @@ impl<'a> OutputPayload<'a> {
         'a: 'header,
     {
         match self {
-            Self::Confidential(body) | Self::SenderBundle(body) => {
-                [&header.bytes[..header.len], body, &[]]
-            }
+            Self::Confidential(body) => [&header.bytes[..header.len], body, &[]],
             Self::Recipient { body, reply } => [&header.bytes[..header.len], body, reply],
         }
     }
@@ -87,8 +82,4 @@ impl<'a> OutputPayload<'a> {
         let header = self.header()?;
         Ok(self.segments(&header).concat())
     }
-}
-
-pub fn encode_ring_sender_bundle_output(body: &[u8]) -> Result<Vec<u8>, CustomRingError> {
-    OutputPayload::SenderBundle(body).encode()
 }

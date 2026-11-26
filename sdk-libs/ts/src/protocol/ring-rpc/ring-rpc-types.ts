@@ -313,6 +313,8 @@ export interface AuthorityPayment {
   readonly recipient: ShieldedAddress;
   readonly mint: Address;
   readonly amount: bigint;
+  /** The recipient's request tag on an anonymous ring payment, its bootstrap tag without one. */
+  readonly tag?: Bytes32;
 }
 
 export interface AuthorityWithdrawal {

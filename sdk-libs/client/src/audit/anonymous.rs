@@ -1,4 +1,4 @@
-//! Anonymous ring sync, each ring's history read from its stored position under the tag hints.
+//! The every-site read of a ring's history, each body tried under every held key with no use of its tag.
 
 #[path = "anonymous_recovery.rs"]
 mod recovery;
@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use custom_ring_interface::{AuditStreamLayout, RecordForm, RingMode, SENDER_BUNDLE_LEN};
+use custom_ring_interface::{AuditStreamLayout, RecordForm, RecordKind, RingMode};
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{AsyncRpc, IndexerRpcConfig};
@@ -20,12 +20,11 @@ use spr_transaction::{
     ShieldedTransaction, TransactionError, TransactionKeyRequest, WalletUtxo,
 };
 use zolana_ring_keys::ring_body_output;
-use zolana_ring_keys::ring_sender_bundle_output_body;
 use zolana_ring_keys::SlotSecret;
-use zolana_ring_keys::{RingDeliveryRequest, RingKeys, RingTagFrame, RingTagKind, RingTagProbe};
+use zolana_ring_keys::{RingDeliveryRequest, RingKeys};
 use zolana_ring_transaction::{
-    is_contributory, open_recipient_body, open_reply, open_sender_bundle, AnonymousOutput,
-    OpenedBody, OpenedNote, ReplyClaim, RingAssets,
+    is_contributory, open_recipient_body, open_reply, AnonymousOutput, OpenedBody, OpenedNote,
+    ReplyClaim, RingAssets,
 };
 
 use crate::history::HistoryPosition;
@@ -45,8 +44,6 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnonymousStream {
-    /// A transfer's slot or bundle whose tag hint matched.
-    TagHint,
     Merge {
         first_nullifier: [u8; 32],
     },
@@ -61,7 +58,7 @@ pub struct AnonymousRingUtxo {
     pub stream: AnonymousStream,
 }
 
-/// One payment the wallet's sender bundle lists, its body opened with the transaction key.
+/// One payment of the wallet's own transfer, its body opened with the transaction key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SentPayment {
     pub tx_signature: Signature,
@@ -97,8 +94,7 @@ pub struct SenderAuditFrame {
     pub auditor_pk: X25519Pubkey,
 }
 
-/// The sender bundle carries the output seed alone, a sender reads its payments' keys from the
-/// auditor stream its transaction key sealed.
+/// A sender reads its payments' keys from the auditor stream its transaction key sealed.
 #[async_trait]
 pub trait SenderAuditFrames: Sync {
     /// `None` for a transaction of a ring the source does not serve.
@@ -163,7 +159,7 @@ pub struct AnonymousScan {
     pub utxos: Vec<AnonymousRingUtxo>,
     /// Bodies that rebuilt under no mint of `assets`, each among the pending notes.
     pub unmatched: Vec<[u8; 32]>,
-    /// The wallet's payments in the transfers whose bundle it opened, a body that fails to open left out.
+    /// The wallet's payments in its own transfers, a body that fails to open left out.
     pub sent: Vec<SentPayment>,
     /// Filled by a full scan alone.
     pub auditor_recovery: AuditorRecovery,
@@ -206,7 +202,7 @@ impl AnonymousScan {
         &self.pending
     }
 
-    /// Replies on the wallet's notes, unauthenticated, [`ViewingHistory::confirm_sender`] is the only trust path.
+    /// Replies on the wallet's notes, unauthenticated.
     pub fn sender_claims(&self) -> &[SenderClaim] {
         &self.sender_claims
     }
@@ -232,7 +228,7 @@ impl AnonymousScan {
     }
 }
 
-/// Reads every ring stream of each held viewing key, each tag answered by `keys`.
+/// Reads a ring's whole history and opens each body under the held viewing keys, no tag selects a body.
 #[must_use]
 pub struct AnonymousSync<'a, K: ?Sized> {
     keys: &'a K,
@@ -242,7 +238,6 @@ pub struct AnonymousSync<'a, K: ?Sized> {
     full_ring: Option<Address>,
     page_budget: usize,
     recipients: &'a [ShieldedAddress],
-    sender_fast_path: bool,
     sender_audit: Option<&'a dyn SenderAuditFrames>,
 }
 
@@ -262,7 +257,6 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
             full_ring: None,
             page_budget: 32,
             recipients: &[],
-            sender_fast_path: false,
             sender_audit: None,
         }
     }
@@ -272,13 +266,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
         self
     }
 
-    /// A bundle under the wallet's own transaction key skips its tag test, every other candidate keeps it.
-    pub fn with_sender_fast_path(mut self) -> Self {
-        self.sender_fast_path = true;
-        self
-    }
-
-    /// Every stream and ring from its start, for a wallet that keeps no notes between syncs.
+    /// Every ring from its start, for a wallet that keeps no notes between syncs.
     pub fn with_full_rescan(mut self) -> Self {
         self.from = ScanFrom::Start;
         self
@@ -370,11 +358,6 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
     }
 }
 
-fn sites_of(tx: &ShieldedTransaction) -> impl Iterator<Item = Site> {
-    let outputs = (0..tx.output_slots.len()).map(Site::Output);
-    outputs.chain((0..tx.messages.len()).map(Site::Message))
-}
-
 /// One history query, every entry listed shares its position and pays one read.
 struct RingRead {
     ring: Address,
@@ -405,61 +388,28 @@ struct Scan<'s, 'a, 'r, I: ?Sized, K: ?Sized> {
     sender_claims: Vec<SenderClaim>,
 }
 
-/// A recipient body at an output, a sender bundle in a message.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum Site {
-    Output(usize),
-    Message(usize),
-}
-
-/// A ring body or sender bundle payload the entry's key may open.
 struct Body<'t> {
     tx: &'t ShieldedTransaction,
-    site: Site,
-    /// The frame's `m` on a bundle, a recipient body's own index otherwise.
-    slot_index: u32,
+    position: usize,
     context: RingDeliveryContext,
     found: AnonymousStream,
 }
 
 impl<'t> Body<'t> {
-    fn probe(&self) -> RingTagProbe {
-        let (kind, tag) = match self.site {
-            Site::Output(position) => (
-                RingTagKind::Recipient,
-                self.tx.output_slots[position].view_tag,
-            ),
-            Site::Message(message) => (
-                RingTagKind::SenderBundle,
-                self.tx.messages[message].view_tag,
-            ),
-        };
-        RingTagProbe {
-            kind,
-            output_index: self.slot_index,
-            tag,
-        }
-    }
-
-    /// `None` on a site of another scheme or a bundle of another length.
-    fn of(tx: &'t ShieldedTransaction, site: Site, found: AnonymousStream) -> Option<Self> {
-        let slot_index = match site {
-            Site::Output(position) => {
-                ring_body_output(&tx.output_slots[position].payload)?;
-                position
-            }
-            Site::Message(message) => {
-                let bundle = ring_sender_bundle_output_body(&tx.messages[message].data)?;
-                (bundle.len() == SENDER_BUNDLE_LEN).then_some(tx.output_slots.len())?
-            }
-        };
+    fn of(tx: &'t ShieldedTransaction, position: usize, found: AnonymousStream) -> Option<Self> {
+        ring_body_output(&tx.output_slots.get(position)?.payload)?;
         Some(Self {
             tx,
-            site,
-            slot_index: u32::try_from(slot_index).ok()?,
+            position,
             context: RingDeliveryContext::of(tx)?,
             found,
         })
+    }
+
+    fn every(tx: &'t ShieldedTransaction) -> Vec<Self> {
+        (0..tx.output_slots.len())
+            .filter_map(|position| Self::of(tx, position, AnonymousStream::FullScan))
+            .collect()
     }
 }
 
@@ -497,68 +447,6 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
             .collect()
     }
 
-    /// One agreement per candidate per key inside the holder, only a matching tag opens a body.
-    fn tag_bodies<'t>(
-        &self,
-        index: usize,
-        rows: &'t [ShieldedTransaction],
-    ) -> Result<Vec<(Body<'t>, SlotSecret)>, AnonymousError> {
-        let viewing_pubkey = self.history.entries()[index].viewing_pubkey();
-        let mut candidates: Vec<Vec<Body<'_>>> = Vec::new();
-        for tx in rows {
-            let bodies: Vec<Body<'_>> = sites_of(tx)
-                .filter_map(|site| Body::of(tx, site, AnonymousStream::TagHint))
-                .collect();
-            if !bodies.is_empty() {
-                candidates.push(bodies);
-            }
-        }
-        if candidates.is_empty() {
-            return Ok(Vec::new());
-        }
-        let own = match self.sync.sender_fast_path {
-            true => {
-                let bundles: Vec<&Body<'_>> = candidates.iter().flatten().collect();
-                self.own_transactions(viewing_pubkey, &bundles)?
-            }
-            false => HashMap::new(),
-        };
-        let mut recognized = Vec::new();
-        let mut frames = Vec::with_capacity(candidates.len());
-        let mut tested: Vec<Vec<Body<'_>>> = Vec::with_capacity(candidates.len());
-        for bodies in candidates {
-            let (skip, test): (Vec<Body<'_>>, Vec<Body<'_>>) =
-                bodies.into_iter().partition(|body| {
-                    matches!(body.site, Site::Message(_))
-                        && own.contains_key(&body.context.first_nullifier)
-                });
-            recognized.extend(skip);
-            if let Some(first) = test.first() {
-                frames.push(RingTagFrame {
-                    viewing_pubkey,
-                    tx_viewing_pk: first.context.tx_viewing_pk,
-                    salt: first.context.salt,
-                    first_nullifier: first.context.first_nullifier,
-                    probes: test.iter().map(Body::probe).collect(),
-                });
-                tested.push(test);
-            }
-        }
-        let answers = exactly_one_each(self.sync.keys.ring_tag_matches(&frames)?, frames.len())?;
-        let mut matched: Vec<(Body<'_>, SlotSecret)> = Vec::new();
-        for (bodies, answers) in tested.into_iter().zip(answers) {
-            let answers = exactly_one_each(answers, bodies.len())?;
-            matched.extend(
-                bodies
-                    .into_iter()
-                    .zip(answers)
-                    .filter_map(|(body, answer)| answer.map(|secret| (body, secret))),
-            );
-        }
-        matched.extend(self.body_secrets(viewing_pubkey, recognized)?);
-        Ok(matched)
-    }
-
     /// Each body's slot secret, one agreement per transaction inside the holder.
     fn body_secrets<'t>(
         &self,
@@ -568,16 +456,19 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
         if bodies.is_empty() {
             return Ok(Vec::new());
         }
-        let requests: Vec<RingDeliveryRequest> = bodies
+        let requests = bodies
             .iter()
-            .map(|body| RingDeliveryRequest {
-                viewing_pubkey,
-                tx_viewing_pk: body.context.tx_viewing_pk,
-                salt: body.context.salt,
-                output_index: body.slot_index,
-                first_nullifier: body.context.first_nullifier,
+            .map(|body| {
+                Ok(RingDeliveryRequest {
+                    viewing_pubkey,
+                    tx_viewing_pk: body.context.tx_viewing_pk,
+                    salt: body.context.salt,
+                    output_index: u32::try_from(body.position)
+                        .map_err(|_| TransactionError::TooManyOutputs)?,
+                    first_nullifier: body.context.first_nullifier,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<RingDeliveryRequest>, AnonymousError>>()?;
         let secrets = exactly_one_each(
             self.sync.keys.ring_delivery_secrets(&requests)?,
             requests.len(),
@@ -589,40 +480,18 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
             .collect()
     }
 
-    /// The transaction key of each transaction the entry's key sent, keyed by its first nullifier.
-    fn own_transactions(
+    /// `None` when another key sent the transaction.
+    fn own_transaction_key(
         &self,
         viewing_pubkey: X25519Pubkey,
-        bodies: &[&Body<'_>],
-    ) -> Result<HashMap<[u8; 32], ViewingKey>, AnonymousError> {
-        let mut contexts: Vec<RingDeliveryContext> = Vec::new();
-        for body in bodies {
-            if matches!(body.site, Site::Message(_))
-                && contexts
-                    .iter()
-                    .all(|held| held.first_nullifier != body.context.first_nullifier)
-            {
-                contexts.push(body.context);
-            }
-        }
-        if contexts.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let requests: Vec<TransactionKeyRequest> = contexts
-            .iter()
-            .map(|context| TransactionKeyRequest {
+        context: &RingDeliveryContext,
+    ) -> Result<Option<ViewingKey>, AnonymousError> {
+        let derived =
+            crate::exactly_one(self.sync.keys.transaction_keys(&[TransactionKeyRequest {
                 viewing_pubkey,
                 first_nullifier: context.first_nullifier,
-            })
-            .collect();
-        let keys = exactly_one_each(self.sync.keys.transaction_keys(&requests)?, requests.len())?;
-        Ok(contexts
-            .iter()
-            .zip(keys)
-            // Another viewing key sent the transaction.
-            .filter(|(context, tx_viewing_key)| tx_viewing_key.pubkey() == context.tx_viewing_pk)
-            .map(|(context, tx_viewing_key)| (context.first_nullifier, tx_viewing_key))
-            .collect())
+            }])?)?;
+        Ok(Some(derived).filter(|key| key.pubkey() == context.tx_viewing_pk))
     }
 
     /// Only a rebuilt commitment proves the note the wallet's, every other body stays silent.
@@ -649,7 +518,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
             }
             Ok(None) | Err(_) => return Ok(()),
         }
-        if let Ok(Some(claim)) = open_reply(reply, secret) {
+        if let Some(claim) = open_reply(reply, secret).ok().flatten() {
             let viewing_pubkey = self.history.entries()[index].viewing_pubkey();
             self.sender_claims.push(SenderClaim {
                 utxo_hash: slot.output_context.hash,
@@ -660,85 +529,29 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
         Ok(())
     }
 
-    /// Change publishes a zero tag and opens by trial under the entry's key.
-    async fn open_bundle(
+    /// Only the wallet's own transaction key reopens the auditor stream it sealed.
+    async fn list_sent(
         &mut self,
         index: usize,
-        body: &Body<'_>,
-        message: usize,
-        secret: &SlotSecret,
-        own: Option<&ViewingKey>,
+        tx: &ShieldedTransaction,
     ) -> Result<(), AnonymousError> {
-        // 1. Only a bundle that opens marks the transaction the entry's own.
-        let Some(ciphertext) = ring_sender_bundle_output_body(&body.tx.messages[message].data)
+        let (Some(frames), Some(context)) = (self.sync.sender_audit, RingDeliveryContext::of(tx))
         else {
             return Ok(());
         };
-        if open_sender_bundle(ciphertext, secret).is_err() {
-            return Ok(());
-        }
-        // 2. Every ring body not yet found is a change candidate, `open_body` accepts a rebuilt
-        // commitment alone.
         let viewing_pubkey = self.history.entries()[index].viewing_pubkey();
-        let candidates: Vec<u32> = (0u32..)
-            .zip(&body.tx.output_slots)
-            .filter(|(_, slot)| {
-                ring_body_output(&slot.payload).is_some()
-                    && !self.found_hashes.contains(&slot.output_context.hash)
-            })
-            .map(|(position, _)| position)
-            .collect();
-        let requests: Vec<RingDeliveryRequest> = candidates
-            .iter()
-            .map(|&position| RingDeliveryRequest {
-                viewing_pubkey,
-                tx_viewing_pk: body.context.tx_viewing_pk,
-                salt: body.context.salt,
-                output_index: position,
-                first_nullifier: body.context.first_nullifier,
-            })
-            .collect();
-        let secrets = exactly_one_each(
-            self.sync.keys.ring_delivery_secrets(&requests)?,
-            requests.len(),
-        )?;
-        let mut change = Vec::new();
-        for (position, secret) in candidates.into_iter().zip(secrets) {
-            let position = position as usize;
-            let Some((ciphertext, _)) = ring_body_output(&body.tx.output_slots[position].payload)
-            else {
-                continue;
-            };
-            let opened = self
-                .output_at(body, &self.address, position)
-                .open(ciphertext, &SlotSecret::new(secret)?)
-                .ok()
-                .flatten();
-            match opened {
-                Some(OpenedBody::Note(note)) => {
-                    self.accept(index, body.tx, body.found, position, note)?
-                }
-                Some(OpenedBody::UnknownMint(note)) => self.hold_back(body.tx, position, note)?,
-                None => continue,
-            }
-            change.push(position);
-        }
-        // 3. Only the wallet's own transaction key reopens the auditor stream it sealed.
-        let Some(tx_viewing_key) = own else {
+        let Some(tx_viewing_key) = self.own_transaction_key(viewing_pubkey, &context)? else {
             return Ok(());
         };
-        let Some(frames) = self.sync.sender_audit else {
-            return Ok(());
-        };
-        let keys = frames.frame(body.tx).await.and_then(|frame| {
+        let keys = frames.frame(tx).await.and_then(|frame| {
             frame
                 .map(|frame| {
                     SealedRecipientKeys {
-                        transaction: body.tx,
+                        transaction: tx,
                         layout: frame.layout,
                         auditor_pk: &frame.auditor_pk,
                     }
-                    .open(tx_viewing_key)
+                    .open(&tx_viewing_key)
                 })
                 .transpose()
         });
@@ -747,40 +560,29 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
             Err(error) if error.disposition() == RowDisposition::Retry => {
                 return Err(AnonymousError::SenderAudit(Box::new(error)))
             }
-            // A frame the stream does not reopen lists no payment, its change already opened.
+            // A frame the stream does not reopen lists no payment.
             Ok(None) | Err(_) => return Ok(()),
         };
-        let listed: Vec<_> = keys
-            .into_iter()
-            .map(|key| key.u())
-            .enumerate()
-            .filter(|(position, key)| *key != viewing_pubkey.u() && !change.contains(position))
-            .collect();
-        self.record_sent(body, &listed, tx_viewing_key);
-        Ok(())
-    }
-
-    /// Each key beside its slot, an exit carries no ring body.
-    fn record_sent(
-        &mut self,
-        body: &Body<'_>,
-        listed: &[(usize, [u8; 32])],
-        tx_viewing_key: &ViewingKey,
-    ) {
-        for &(position, key) in listed {
+        // A slot sealed to a held key is the wallet's own change.
+        let held = self.sync.keys.viewing_public_keys();
+        for (position, key) in keys.into_iter().map(|key| key.u()).enumerate() {
             let Ok(recipient) = X25519Pubkey::from_u(key) else {
                 continue;
             };
-            if key == [0; 32] || !is_contributory(&recipient) {
+            if key == [0; 32] || !is_contributory(&recipient) || held.contains(&recipient) {
                 continue;
             }
-            if let Some(sent) = self.sent_payment(body, position, &recipient, tx_viewing_key) {
+            // An exit carries no ring body.
+            let Some(body) = Body::of(tx, position, AnonymousStream::FullScan) else {
+                continue;
+            };
+            if let Some(sent) = self.sent_payment(&body, position, &recipient, &tx_viewing_key) {
                 self.sent.push(sent);
             }
         }
+        Ok(())
     }
 
-    /// `None` unless the tag at `position` matches and the body opens under the recipient's key.
     fn sent_payment(
         &self,
         body: &Body<'_>,
@@ -802,13 +604,13 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
         }
         .secret()
         .ok()?;
-        // A dummy publishes a tag from a random preimage, never from the listed key.
-        if secret.anonymous_slot_tag().ok()? != slot.view_tag {
-            return None;
-        }
         // The amount sits in the record's head, the same bytes under every form.
         let plain = RecordForm::of_recipient_body(ciphertext.len())
             .find_map(|form| open_recipient_body(ciphertext, &secret, form).ok())?;
+        // A dummy's key is in the stream too, its proven record names no note.
+        if plain.record.kind != RecordKind::Ring {
+            return None;
+        }
         let verified = self
             .sync
             .recipients

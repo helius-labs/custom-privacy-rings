@@ -16,26 +16,16 @@ import {
 } from "@heliuslabs/spr/keypair";
 import { Data } from "@heliuslabs/spr/transaction";
 
-import { RingDomain } from "../../../src/crypto/derivation/ring-domain.js";
-import {
-  bundleTag,
-  deliveredSlotSecret,
-  txKeySlotSecret,
-  slotTag,
-} from "../../../src/crypto/derivation/ring-stream.js";
-import { anonymousTag } from "../../../src/operations/payments/output-rail.js";
+import { deliveredSlotSecret } from "../../../src/crypto/derivation/ring-stream.js";
 import { x25519FromU } from "../../../src/crypto/keys/x25519.js";
 import {
   MIN_REPLY_LEN,
   openReply,
-  openSenderBundle,
-  SENDER_BUNDLE_LEN,
   sealReply,
-  sealSenderBundle,
 } from "../../../src/protocol/codec/anonymous-delivery.js";
 import { ownerDebits } from "../../../src/protocol/membership/owner-debits.js";
-import { ciphertextDigest, signerBinding } from "../../../src/protocol/proof/statement.js";
-import { LocalRingKeys, type RingTagProbe } from "../../../src/state/ring-keys.js";
+import { signerBinding } from "../../../src/protocol/proof/statement.js";
+import { LocalRingKeys } from "../../../src/state/ring-keys.js";
 
 function bytes<T extends Uint8Array>(value: string, length: number): T {
   const decoded = Uint8Array.from(Buffer.from(value, "hex"));
@@ -69,118 +59,55 @@ describe("signer_set.json", () => {
 });
 
 describe("anonymous_bodies.json", () => {
-  it("reads the published tags through the holder under each reader's own key", async () => {
-    const holderOf = (secret: string): LocalRingKeys => {
-      const viewing = ViewingKey.fromBytes(field(secret));
-      const nullifierKey = NullifierKey.fromSecret(new Uint8Array(31).fill(7) as Bytes31);
-      return LocalRingKeys.fromKeys({
-        address: ShieldedAddress.fromPublicKeys(
-          ShieldedKeypair.generate().signingPublicKey(),
-          nullifierKey.publicKey(),
-          viewing.publicKey(),
-        ),
-        viewingKeys: [viewing],
-        listRoot: viewing,
-        nullifierKey,
-      });
-    };
-    const txViewing = X25519Keypair.fromBytes(field(bodies.tx_viewing_sk));
-    const frame = (holder: LocalRingKeys, probes: readonly RingTagProbe[]) => ({
-      viewingPublicKey: holder.address().viewingPublicKey,
-      txViewingPublicKey: txViewing.publicKey(),
-      salt: bytes<Bytes16>(bodies.salt, 16),
-      firstNullifier: field(bodies.first_nullifier),
-      probes,
+  const recipientKey = bodies.recipient_keys[bodies.body_index] ?? "";
+  const salt = bytes<Bytes16>(bodies.salt, 16);
+  const firstNullifier = field(bodies.first_nullifier);
+
+  it("reads the body's slot secret through the holder under the recipient's own key", async () => {
+    const viewing = ViewingKey.fromBytes(field(bodies.recipient_viewing_sk));
+    const nullifierKey = NullifierKey.fromSecret(new Uint8Array(31).fill(7) as Bytes31);
+    const recipient = LocalRingKeys.fromKeys({
+      address: ShieldedAddress.fromPublicKeys(
+        ShieldedKeypair.generate().signingPublicKey(),
+        nullifierKey.publicKey(),
+        viewing.publicKey(),
+      ),
+      viewingKeys: [viewing],
+      listRoot: viewing,
+      nullifierKey,
     });
-    const recipient = holderOf(bodies.recipient_viewing_sk);
-    const [recipientMatches] = await recipient.ringTagMatches([
-      frame(recipient, [
-        { kind: "recipient", outputIndex: bodies.body_index, tag: slotTag(field(bodies.body_tag)) },
-        {
-          kind: "recipient",
-          outputIndex: bodies.body_index,
-          tag: slotTag(field(bodies.dummy_tag)),
-        },
-      ]),
+    const txViewing = X25519Keypair.fromBytes(field(bodies.tx_viewing_sk));
+    const { viewingPublicKey } = recipient.address();
+    expect(hex(viewingPublicKey.u())).toBe(recipientKey);
+    const secrets = await recipient.ringDeliverySecrets([
+      {
+        viewingPublicKey,
+        txViewingPublicKey: txViewing.publicKey(),
+        salt,
+        outputIndex: bodies.body_index,
+        firstNullifier,
+      },
     ]);
-    expect(recipientMatches?.map((secret) => secret && hex(secret))).toEqual([
-      bodies.body_slot_secret,
-      undefined,
-    ]);
-    const sender = holderOf(bodies.sender_viewing_sk);
-    const [senderMatches] = await sender.ringTagMatches([
-      frame(sender, [
-        { kind: "senderBundle", outputIndex: bodies.output_count, tag: field(bodies.bundle_tag) },
-      ]),
-    ]);
-    expect(senderMatches?.map((secret) => secret && hex(secret))).toEqual([
-      bodies.bundle_slot_secret,
-    ]);
+    expect(secrets.map(hex)).toEqual([bodies.body_slot_secret]);
+    txViewing.destroy();
   });
 
-  const recipientKey = bodies.recipient_keys[bodies.body_index] ?? "";
-  // The bundle names no slot, the sender reads each key back from the auditor stream.
-  const bundle = { outputSeed: field(bodies.output_seed) };
-
-  it("rebuilds both CRDS slot secrets, the bundle's at index m", () => {
+  it("rebuilds the body's CRDS slot secret from the transaction key", () => {
     const txViewing = X25519Keypair.fromBytes(field(bodies.tx_viewing_sk));
-    const secret = (u: string, outputIndex: number): string => {
-      const recipientViewingKey = x25519FromU(field(u));
-      return hex(
+    const recipientViewingKey = x25519FromU(field(recipientKey));
+    expect(
+      hex(
         deliveredSlotSecret({
           agreement: txViewing.ecdh(recipientViewingKey),
           txViewingKey: txViewing.publicKey(),
           recipientViewingKey,
-          salt: bytes<Bytes16>(bodies.salt, 16),
-          outputIndex,
-          firstNullifier: field(bodies.first_nullifier),
+          salt,
+          outputIndex: bodies.body_index,
+          firstNullifier,
         }),
-      );
-    };
-    expect(secret(recipientKey, bodies.body_index)).toBe(bodies.body_slot_secret);
-    expect(secret(bodies.sender_viewing_key, bodies.output_count)).toBe(bodies.bundle_slot_secret);
+      ),
+    ).toBe(bodies.body_slot_secret);
     txViewing.destroy();
-  });
-
-  it("derives every published tag through the rail's own functions", () => {
-    expect(bodies.recipient_tag_domain).toBe(RingDomain.recipientTagDomain.toString(16));
-    expect(bodies.sender_tag_domain).toBe(RingDomain.senderTagDomain.toString(16));
-    const txViewingKey = ViewingKey.fromBytes(field(bodies.tx_viewing_sk));
-    const slotSecret = (u: string, outputIndex: number): Bytes32 =>
-      txKeySlotSecret({
-        txViewingKey,
-        recipientViewingKey: x25519FromU(field(u)),
-        salt: bytes<Bytes16>(bodies.salt, 16),
-        outputIndex,
-        firstNullifier: field(bodies.first_nullifier),
-      });
-    const recipient = x25519FromU(field(recipientKey));
-    const unreached = (): Bytes32 => {
-      throw new Error("no slot secret on this slot");
-    };
-    const payment = anonymousTag({ kind: "payment", payment: { recipient, reply: null } }, (key) =>
-      slotSecret(hex(key.u()), bodies.body_index),
-    );
-    expect(hex(payment ?? ZERO_32)).toBe(hex(slotTag(field(bodies.body_tag))));
-    const dummy = anonymousTag(
-      { kind: "dummy", preimage: field(bodies.dummy_tag_preimage) },
-      unreached,
-    );
-    expect(hex(dummy ?? ZERO_32)).toBe(hex(slotTag(field(bodies.dummy_tag))));
-    expect(anonymousTag({ kind: "change" }, unreached)).toEqual(ZERO_32);
-    expect(anonymousTag({ kind: "exit" }, unreached)).toBeUndefined();
-    expect(hex(bundleTag(slotSecret(bodies.sender_viewing_key, bodies.output_count)))).toBe(
-      bodies.bundle_tag,
-    );
-    txViewingKey.destroy();
-  });
-
-  it("seals and opens the sender bundle and hashes its digest", () => {
-    const secret = field(bodies.bundle_slot_secret);
-    const sealed = bytes(bodies.bundle, SENDER_BUNDLE_LEN);
-    expect(hex(sealSenderBundle(secret, bundle))).toBe(bodies.bundle);
-    expect(openSenderBundle(secret, sealed)).toEqual(bundle);
-    expect(hex(ciphertextDigest(sealed))).toBe(bodies.bundle_digest);
   });
 
   it("opens a reply under the slot's secret", () => {

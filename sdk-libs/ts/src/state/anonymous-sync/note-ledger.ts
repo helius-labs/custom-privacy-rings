@@ -148,7 +148,8 @@ export class NoteLedger {
 
   /** A claim stays with its note, a note found twice adds none. */
   absorb(viewingPublicKey: X25519PublicKey, read: BodyRead): void {
-    for (const { utxo, nullifierPublicKey, body, position, claim, pending } of read.notes) {
+    for (const { utxo, nullifierPublicKey, body, claim, pending } of read.notes) {
+      const { position } = body;
       const slot = body.tx.outputSlots[position];
       if (slot === undefined || this.isFound(slot.outputContext.hash)) continue;
       this.keep(

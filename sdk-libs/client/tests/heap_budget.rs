@@ -340,7 +340,6 @@ fn frame<'a>(fixture: &'a Fixture, pool: &'a Pool, case: Widest) -> Option<RingT
         })
         .collect();
     if anonymous {
-        data.sender = fixture.sender();
         data.anonymous = Some(AnonymousProofData {
             commitment: &fixture.bytes[20],
             commitment_pok: &fixture.bytes[21],

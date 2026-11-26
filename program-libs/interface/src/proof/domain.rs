@@ -9,10 +9,6 @@ use spr_hasher::{primitives::right_align, Hasher, HasherError, Poseidon};
 
 /// `"CRDS"`
 pub const DELIVERED_SLOT_SECRET: u32 = 0x4352_4453;
-/// `"CRRT"`, a recipient or dummy slot's view tag.
-pub const RECIPIENT_TAG: u32 = 0x4352_5254;
-/// `"CRST"`, the sender bundle's view tag.
-pub const SENDER_TAG: u32 = 0x4352_5354;
 /// `"CRBS"`
 pub const BLINDING_SEED: u32 = 0x4352_4253;
 /// `"CR_S"`, the root of every auditor stream.

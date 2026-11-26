@@ -119,7 +119,6 @@ impl FramedProver {
                 .collect(),
             disclosure: &disclosure,
             auditor: &self.auditor,
-            rail: Rail::Delivered,
         });
         transfer.frame(TransferFrame {
             tx: &tx,

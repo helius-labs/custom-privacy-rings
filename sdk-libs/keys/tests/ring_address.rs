@@ -1,6 +1,7 @@
 //! `test-vectors/wallet/ring_address.json` pins the `zolana:` payment request form for every
 //! implementation, the ignored `print_ring_address_vectors` regenerates it.
 
+use custom_ring_interface::stream::slot_tag;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use solana_address::Address;
@@ -28,6 +29,7 @@ struct ValidCase {
     amount: Option<String>,
     mint: Option<String>,
     label: Option<String>,
+    tag: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
@@ -75,6 +77,7 @@ fn valid_case(name: &str, request: &RingPaymentRequest) -> ValidCase {
         amount: request.amount.map(|amount| amount.to_string()),
         mint: request.mint.map(|mint| mint.to_string()),
         label: request.label.clone(),
+        tag: request.tag.map(hex::encode),
     }
 }
 
@@ -110,10 +113,15 @@ fn compute() -> RingAddressVectors {
         label: Some("rent".into()),
         ..bare.clone()
     };
+    let tagged = RingPaymentRequest {
+        tag: Some(slot_tag([0x5a; 32])),
+        ..bare.clone()
+    };
     let valid = vec![
         valid_case("bare", &bare),
         valid_case("amount_mint_label", &full),
         valid_case("label_only", &labelled),
+        valid_case("request_tag", &tagged),
     ];
 
     let address = &bare.address;
@@ -142,7 +150,11 @@ fn compute() -> RingAddressVectors {
             "non_canonical_salt",
             uri(&with_checksum(non_canonical_salt)),
         ),
-        ("delivery_tag_key", format!("zolana:{base58}?tag={tag}")),
+        ("hex_tag", format!("zolana:{base58}?tag={tag}")),
+        (
+            "short_tag",
+            format!("{bare}?tag={}", bs58::encode([0x5a; 31]).into_string()),
+        ),
         (
             "deposit_tag_key",
             format!("zolana:{base58}?deposit_tag={tag}"),
@@ -194,7 +206,8 @@ fn shared_vectors_match() {
         ("bad_viewing_key", "InvalidPublicKey"),
         ("zero_salt_on_keyed_address", "InvalidRingAddressListSalt"),
         ("non_canonical_salt", "InvalidRingAddressListSalt"),
-        ("delivery_tag_key", "UnknownRingPaymentKey"),
+        ("hex_tag", "InvalidRingPaymentTag"),
+        ("short_tag", "InvalidRingPaymentTag"),
         ("deposit_tag_key", "UnknownRingPaymentKey"),
         ("unknown_query_key", "UnknownRingPaymentKey"),
         ("duplicate_query_key", "DuplicateRingPaymentKey"),
@@ -239,6 +252,7 @@ fn request_round_trips_every_field() {
         amount: Some(u64::MAX),
         mint: Some(Address::new_from_array([0x44; 32])),
         label: Some("a=b&c?d/é".into()),
+        tag: Some(slot_tag([0x5a; 32])),
         ..fixture_request()
     };
     assert_eq!(

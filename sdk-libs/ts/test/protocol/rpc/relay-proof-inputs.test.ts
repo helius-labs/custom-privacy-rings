@@ -92,10 +92,7 @@ function anonymousPayload() {
   const proofInputs: RelayProofInputs = {
     rail: {
       kind: "anonymous",
-      plan: AnonymousPlan.fromDummyPreimages(
-        [{ recipient: owner.viewingPublicKey(), reply: null }],
-        Array.from({ length: 16 }, () => filled(25) as Bytes32),
-      ),
+      plan: AnonymousPlan.fromRecipients([owner.viewingPublicKey()]),
       ownerExposed: false,
     },
     ringProgramId: ring,
@@ -205,7 +202,6 @@ describe("relay proof inputs", () => {
     );
     expect(delegated.rail).toMatchObject({ kind: "delegate", delegate: recipient });
     const plainPlan = (delegated.rail as Extract<RelayRail, { kind: "delegate" }>).plan;
-    expect(plainPlan?.dummyPreimages()).toEqual(plan.dummyPreimages());
     expect(plainPlan?.payments.map((payment) => payment.recipient.toBytes())).toEqual(
       plan.payments.map((payment) => payment.recipient.toBytes()),
     );

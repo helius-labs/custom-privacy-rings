@@ -30,7 +30,7 @@ import {
 } from "@heliuslabs/spr/transaction";
 
 import { BLOCKHASH } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
-import { RingAddress } from "../../../src/crypto/keys/ring-address.js";
+import { RingAddress, RingPaymentRequest } from "../../../src/crypto/keys/ring-address.js";
 import { signingKeySpendSigner } from "../../../src/operations/payments/anonymous.js";
 import { CustomRingTransfer } from "../../../src/operations/payments/transfer-rails.js";
 import {
@@ -54,6 +54,7 @@ import {
 } from "../../../src/protocol/transaction/transfer-approval.js";
 import {
   filled,
+  freshWalletTags,
   hex,
   noteInput,
   pdaKeys,
@@ -492,7 +493,11 @@ describe("ring transfer adapters", () => {
       const adapter =
         mode === "confidential"
           ? ownerRingTransfers(input)
-          : anonymousRingTransfers({ ...input, payees: [payee] });
+          : anonymousRingTransfers({
+              ...input,
+              payees: [new RingPaymentRequest({ address: payee })],
+              tags: await freshWalletTags(owner),
+            });
       await expect(
         adapter.proveRingTransfer({
           transfer,

@@ -1,6 +1,6 @@
 # Audit and recovery
 
-The auditor holds one viewing key for the ring's life. Every operation proves a record per output, sealed to a recipient key the auditor reads. Payloads, non-exit tags and the sender bundle stay outside every proof. [Spec](../spec.md)
+The auditor holds one viewing key for the ring's life. Every operation proves a record per output, sealed to a recipient key the auditor reads. Payloads and non-exit tags stay outside every proof. [Spec](../spec.md)
 
 ## Transfers
 
@@ -44,7 +44,7 @@ The auditor holds one viewing key for the ring's life. Every operation proves a 
 ## Recipient delivery
 
 - The proof makes each record's encryption to its supplied recipient key correct. It does not tie that key to the intended recipient, and choosing it is the sender's responsibility.
-- Discovery tags, payloads, replies and the sender bundle stay outside the circuit. SPP's external data hash binds the bytes a frame submits. A replaced byte fails SPP's verification, and a correct proof says nothing about what those bytes contain.
+- Discovery tags, payloads and replies stay outside the circuit. SPP's external data hash binds the bytes a frame submits. A replaced byte fails SPP's verification, and a correct proof says nothing about what those bytes contain.
 - A transaction with a correct proof can therefore carry a wrong key, a payload or a tag its recipient cannot use. Nothing promises delivery.
 - A full scan repairs a bad discovery tag. It never repairs a record sealed to another key, since no held key rebuilds that note's commitment. A malformed payload loses the application data alone.
 - Auditor recovery is a separate authorized fallback. It depends on Ring RPC, and an owner with no Ring RPC cannot open a note sealed to another key.
@@ -61,10 +61,20 @@ The sender's SDK pays a nonzero key to any owner, enrolled or not, since only th
 
 ## Wallet scanning
 
-- `AnonymousSync` reads the history of each ring the wallet's `ViewingHistory` names, then tests each slot and bundle tag for each held key.
-- The key holder runs one agreement per candidate per key and returns a slot secret on a match. Raw agreements stay inside the holder.
+- A sync asks the indexer for exact tags, and it reads ring history only in a recovery scan. One tag read serves both ring modes. Rust syncs through `RingWalletSync`, and TypeScript through `syncRingWallet`.
+- Per retained viewing key the wallet stores a `tx` and a `request` counter and one tag position. A recovery scan adds one position per ring. A counter's `next` is zolana's `tx_count` or `request_count`, and its `scanned` is one past the highest index a sync found.
+- For each held key the wallet lists the bootstrap tag, and the sender and request streams from index 0. A stream's list ends `TAG_WINDOW = 64` indices past its `next`. zolana's First Time Sync Wallet sets that rule and names no window size. 64 is `DEFAULT_TAG_WINDOW` of zolana's test wallet.
+- The key holder derives each listed tag and each body's slot secret. No viewing key and no raw agreement leaves the holder.
+- One indexer call names at most `TAGS_PER_REQUEST = 1000` tags, so a longer list takes more calls.
+- In a sync's first round the bootstrap tag reads from the key's stored tag position. So does each index below `scanned + TAG_WINDOW` of a stream whose `scanned` is above zero. Every other index, and every index a later round lists, reads from the first indexed block.
+- Each returned transaction moves the counters past every listed stream tag it publishes, whatever its ring. A tag proves no ownership.
+- The wallet lists again after a round that moves a `next` counter, and the sync ends at a round that lists no tag. It sets the tag position of every held key to the lowest final slot of its reads.
+- The wallet tries each ring body of a returned transaction under every held key, with no use of its tag. A note counts only when its commitment rebuilds.
+- The wallet then reads the spends of its unspent notes by nullifier and opens those transactions the same way. That read finds change under random bytes and a delegate's move.
+- A reply on a body the wallet rebuilt joins its pending claims, unauthenticated. The nullifier read collects no reply.
 - A deposit is found through its tag stream. A merge is found from its nullifiers, and the ring proof binds the ciphertext the wallet opens.
-- Full recovery reads a ring from its first row and tries every output and message without a tag. Rust uses `AnonymousSync::new(keys, assets).with_full_scan(ring).fetch_wallet(indexer, wallet)`. TypeScript uses `fullScanWallet(client, wallet, ring)`.
+- Full recovery reads a ring from its first row and tries every ring body without a tag. Rust uses `AnonymousSync::new(keys, assets).with_full_scan(ring).fetch_wallet(indexer, wallet)`. TypeScript uses `fullScanWallet(client, wallet, ring)`.
+- The recovery scan reads each ring the wallet watches from that ring's stored position, and tries every ring body without a tag. It opens a note only when its body is sealed to a key the wallet holds. Rust runs it ahead of the tag read with `RingWalletSync::with_recovery_scan`, and the CLI with `balance --recover`.
 - A body a full scan leaves unopened stays in `auditor_recovery.unopened`, foreign notes and dummies among them.
 - A wallet rebuilds a ring note under its own nullifier key, or under the zero key the record's bit names, and reads no registry. A note under the wallet's key opens before that key is enrolled, and it spends only once the key is enrolled.
 - A zero-key note enters the wallet as exposed if spent. No automatic path selects it.
@@ -81,6 +91,27 @@ An unspent note whose nullifier check has not reached the target reads `PendingS
 TypeScript sets its target at or above the saved recovery floor, ring and tag positions, core checkpoints, private-transaction slots and configured `requireSlot`. The recovery floor retains the highest committed target or authenticated note observation. Imported notes without publication slots supply no additional floor.
 
 History-only calls do not preserve a wallet recovery session. A paused Rust `fetch` or `full_scan` result must be absorbed and resumed through `fetch_wallet`. TypeScript refuses to absorb a paused history-only scan with `RING_SYNC_INCOMPLETE`, and `fetchWallet` or `fullScanWallet` resumes it.
+
+### Tags on a transfer
+
+- A wallet's history gives one anonymous transfer its sender tag, in Rust with `ViewingHistory::select`. The tag takes the index `tx.next` of the current viewing key, and the selection returns the history with the counter past that index. The wallet stores that history before it builds the transfer, so two transfers never take one index from one store.
+- Each payment takes its request's tag, or with no request its recipient's bootstrap tag. A payment to the wallet's current viewing key takes the sender tag. The SDKs publish each tag of an anonymous frame once, see [Discovery](../spec/crypto/disclosure.md#discovery).
+- A selection whose transfer never lands leaves its index unused. A sync still reads every index, since it lists each stream from index 0 to a window past its counter.
+- A spend of ring notes builds without the sender tag. Each payment takes its request's tag, or with no request its recipient's bootstrap tag. Each change slot takes random bytes, and the ring sync follows the spent ring note by its nullifier to the change.
+- An entry spend, default-ring notes and no ring note, is refused without the sender tag. A core sync that reads the spend of a default-ring note ahead of the ring sync hands that transaction to no later sync, so the sender tag is the one lead to the change short of a recovery scan.
+- A deposit to another member's request builds without the sender tag, it returns no change. A deposit to the depositor's own address with no request is refused without it, its note would publish the depositor's bootstrap tag beside the funder.
+- A recipient mints a request tag at its `request.next` and stores the moved counter. The wallet refuses a mint only at the `u64` limit and while it is in a recovery scan. No count of unpaid requests refuses one. The CLI mints one with `address`, and `address --bootstrap` prints the bare address with no tag.
+
+### Limits of the tag read
+
+- The indexer receives every tag the wallet lists and learns that wallet's transfers as they land, see [who else sees what](privacy.md#who-else-sees-what).
+- The list holds one tag for each request a key ever minted and each transfer it ever tagged, and 64 more per stream. Every sync sends the whole list, at most `TAGS_PER_REQUEST` tags a call.
+- A wrong tag hides a payment from the sync, unless another read of the sync returns its transaction. The recovery scan finds it when its body is sealed to a held key. A note sealed to another key opens under neither.
+- Tags repeat across transactions, and zolana's View Tags say a tag should not be reused. The bootstrap tag repeats on every payment with no request. A request tag repeats when its request is paid twice, and a sender tag when two transfers take one index. The SDKs publish each tag once inside one anonymous frame.
+- Two devices on one seed keep separate counters and take the same indices. Equal sender tags then link their transfers in public, and both devices mint the same request tags. A sync finds every transfer under a repeated tag.
+- A wallet restored from its seed alone starts each counter at zero. Its sync stops at the first 64 unpaid requests in a row and finds no later one. `ViewingHistory::with_request_count` states how many requests the key minted, and the list then covers them. The CLI states that count with `address --request-count <n>`. The recovery scan finds the notes without it.
+- A member's bootstrap tag is public, so anyone can publish a slot under it. The wallet pays the trial opens of that transaction, each ring body under each held key.
+- A transfer with the sender tag needs the wallet's stored counters, since the tag takes its index from them. A wallet that sends from stale counters repeats an index, as two devices do.
 
 ## Deposits and merges
 

@@ -16,17 +16,12 @@ mod recipient_delivery;
 use std::cell::RefCell;
 
 use custom_ring_interface::{
-    encode_ring_sender_bundle_output, RecordForm, RecordKind, RingOutput, SlotBody,
-    RECIPIENT_PAYLOAD_LENGTH_LEN,
+    RecordForm, RecordKind, RingOutput, SlotBody, RECIPIENT_PAYLOAD_LENGTH_LEN,
 };
 use rand::{rngs::OsRng, RngCore};
 use spr_event::MessageData;
 use spr_interface::instruction::instruction_data::transact::{OwnerTag, TransactOutput};
-use spr_keypair::{
-    random_salt,
-    viewing_key::{Salt, ViewTag},
-    ShieldedAddress, ViewingKey, X25519Pubkey,
-};
+use spr_keypair::{random_salt, viewing_key::Salt, ShieldedAddress, ViewingKey, X25519Pubkey};
 use spr_transaction::{
     instructions::transact::{
         ConfidentialTransaction, OutputEncoder, OutputEncryption, ResolvedOwnerTag, Shape,
@@ -35,7 +30,7 @@ use spr_transaction::{
     serialization::confidential::{Confidential, ConfidentialEncode, ConfidentialOutputPlaintext},
     SppProofOutputUtxo, TransactionError, UtxoSerialization,
 };
-use zolana_ring_keys::confidential_slot_tag;
+use zolana_ring_keys::bootstrap_slot_tag;
 use zolana_ring_keys::dummy_recipient_key;
 use zolana_ring_keys::ring_blinding_seed;
 use zolana_ring_keys::DeliveredSlot;
@@ -44,24 +39,24 @@ use zolana_ring_keys::SlotSecret;
 
 pub use anonymous_rail::published_outputs;
 use anonymous_rail::{is_change, lead_change, AnonymousSeal};
-pub use anonymous_rail::{random_tag_preimage, AnonymousPlan, AnonymousSlot};
+pub use anonymous_rail::{AnonymousPlan, AnonymousSlot};
 pub use assets::RingAssets;
 pub use error::RingRailError;
 pub use input_map::{address_chain, note_count, ClassifiedInput, InputClass};
 pub use merge_seed::MergeSeed;
 pub use published::PublishedSlot;
 pub use recipient_delivery::{
-    carried_key, is_contributory, open_recipient_body, open_reply, open_sender_bundle,
-    published_nullifier_pk, recipient_payload, record_key, seal_reply, seal_sender_bundle,
-    AnonymousOutput, OpenedBody, OpenedNote, OpenedRecipientBody, OutputBlindings, PayloadRead,
-    RecipientBody, ReplyClaim, ReplyMetadata,
+    carried_key, is_contributory, open_recipient_body, open_reply, published_nullifier_pk,
+    recipient_payload, record_key, seal_no_reply, seal_reply, AnonymousOutput, OpenedBody,
+    OpenedNote, OpenedRecipientBody, OutputBlindings, PayloadRead, RecipientBody, ReplyClaim,
+    ReplyMetadata,
 };
 
 #[derive(Clone, Debug)]
 pub enum RingDelivery {
     /// A body under the owner's viewing key, the owner tag its `u`.
     Delivered,
-    /// Ring body under view tags at each recipient output, sender bundle in a message.
+    /// Ring body under a view tag at each recipient output.
     Anonymous(Box<AnonymousPlan>),
 }
 
@@ -313,38 +308,6 @@ impl RingOutputRail {
         .seal(&secret)
     }
 
-    /// The tag slot `slot_index` publishes, `None` on an exit since its owner tag is no view tag.
-    pub fn anonymous_tag(
-        &self,
-        slot: &AnonymousSlot,
-        first_nullifier: &[u8; 32],
-        slot_index: u32,
-    ) -> Result<Option<ViewTag>, RingRailError> {
-        Ok(match slot {
-            AnonymousSlot::Exit => None,
-            AnonymousSlot::Change => Some([0; 32]),
-            AnonymousSlot::Dummy { preimage } => {
-                Some(SlotSecret::new(*preimage)?.anonymous_slot_tag()?)
-            }
-            AnonymousSlot::Payment { recipient } => Some(
-                self.slot_secret(recipient, first_nullifier, slot_index)?
-                    .anonymous_slot_tag()?,
-            ),
-        })
-    }
-
-    /// The bundle's tag at index `m`, the frame's output count.
-    pub fn sender_bundle_tag(
-        &self,
-        sender: &X25519Pubkey,
-        first_nullifier: &[u8; 32],
-        published: u32,
-    ) -> Result<ViewTag, RingRailError> {
-        Ok(self
-            .slot_secret(sender, first_nullifier, published)?
-            .sender_tag()?)
-    }
-
     /// The record then, on a data frame, the payload, sealed to the slot's recipient key.
     pub(crate) fn seal_body(
         &self,
@@ -441,58 +404,46 @@ impl RingOutputRail {
             form: BodyForm::of(published)?,
         };
         let tree_id = inputs.output_tree_id;
-        let blindings = OutputBlindings::new(&first_nullifier, &inputs.blinding_seed)?;
-        let sender_bundle = seal.sender_bundle(&blindings, sender)?;
         let mut outputs = Vec::with_capacity(slots.len());
         let mut resolved = Vec::with_capacity(slots.len());
-        for (index, (output, slot)) in published.iter().zip(&slots).enumerate() {
+        for (index, (output, tag)) in published.iter().zip(plan.tags(&slots)).enumerate() {
             let hash = output.hash(tree_id)?;
             let position = u32::try_from(index).map_err(|_| TransactionError::TooManyOutputs)?;
-            let (transact_output, owner_tag) =
-                match self.anonymous_tag(slot, &first_nullifier, position)? {
-                    Some(tag) => {
-                        let sealed = seal.body(index)?;
-                        let record = record_of(&sealed.body, seal.form.records, index)?;
-                        let wire = RingOutput {
-                            hash: &hash,
-                            owner_tag: tag,
-                            body: SlotBody::Recipient(&sealed.body),
-                            record,
-                        };
-                        (wire.transact_output(&sealed.reply)?, tag)
-                    }
-                    None => {
-                        let owner_tag = output
-                            .owner_address
-                            .ok_or(TransactionError::OutputWithoutOwner { slot_index: index })?
-                            .signing_pubkey
-                            .confidential_view_tag()?;
-                        let message = self.exit_slot(output, owner_tag, position)?;
-                        (
-                            TransactOutput {
-                                utxo_hash: hash,
-                                owner_tag: OwnerTag::Inline(owner_tag),
-                                data: Some(message.data),
-                            },
-                            owner_tag,
-                        )
-                    }
-                };
+            let (transact_output, owner_tag) = match tag {
+                Some(tag) => {
+                    let sealed = seal.body(index)?;
+                    let record = record_of(&sealed.body, seal.form.records, index)?;
+                    let wire = RingOutput {
+                        hash: &hash,
+                        owner_tag: tag,
+                        body: SlotBody::Recipient(&sealed.body),
+                        record,
+                    };
+                    (wire.transact_output(&sealed.reply)?, tag)
+                }
+                None => {
+                    let owner_tag = output
+                        .owner_address
+                        .ok_or(TransactionError::OutputWithoutOwner { slot_index: index })?
+                        .signing_pubkey
+                        .confidential_view_tag()?;
+                    let message = self.exit_slot(output, owner_tag, position)?;
+                    (
+                        TransactOutput {
+                            utxo_hash: hash,
+                            owner_tag: OwnerTag::Inline(owner_tag),
+                            data: Some(message.data),
+                        },
+                        owner_tag,
+                    )
+                }
+            };
             outputs.push(transact_output);
             resolved.push(owner_tag);
         }
         inputs.external_data.outputs = outputs;
         inputs.external_data.resolved_owner_tags = resolved;
-        let frame_outputs =
-            u32::try_from(slots.len()).map_err(|_| TransactionError::TooManyOutputs)?;
-        inputs.external_data.messages = vec![MessageData {
-            view_tag: self.sender_bundle_tag(
-                &sender.viewing_pubkey,
-                &first_nullifier,
-                frame_outputs,
-            )?,
-            data: encode_ring_sender_bundle_output(&sender_bundle)?,
-        }];
+        inputs.external_data.messages.clear();
         Ok(())
     }
 
@@ -548,7 +499,7 @@ impl RingOutputRail {
             let resolved = match self.slot(output) {
                 Slot::Exit => owner_tag.resolved,
                 Slot::Ring { .. } | Slot::Dummy => {
-                    confidential_slot_tag(self.recipient_key(output, index)?.u())
+                    bootstrap_slot_tag(self.recipient_key(output, index)?.u())
                 }
             };
             *owner_tag = ResolvedOwnerTag {

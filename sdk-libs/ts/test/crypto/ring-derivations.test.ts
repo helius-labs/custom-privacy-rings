@@ -30,8 +30,6 @@ describe("ring domains", () => {
   it("spells every domain from its ASCII tag, no two alike", () => {
     expect(RingDomain).toEqual({
       deliveredSlotSecret: ascii("CRDS"),
-      recipientTagDomain: ascii("CRRT"),
-      senderTagDomain: ascii("CRST"),
       blindingSeed: ascii("CRBS"),
       transferStatement: ascii("CRTX"),
       policyTable: ascii("CRTB"),

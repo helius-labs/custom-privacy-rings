@@ -40,6 +40,7 @@ import {
   checkHiddenParties,
   checkHiddenOwnerSpends,
   checkEntryInputs,
+  paymentTag,
   type AnonymousPayment,
   type OwnerExposure,
   type AnonymousSpendSigner,
@@ -49,7 +50,7 @@ import { fetchRingPolicy, requireActiveRing } from "../../protocol/membership/co
 import { RingError, RingProgramError } from "../../protocol/error.js";
 import { chargedOutflowsOf, relayListSalts } from "../../proof/policy-proof.js";
 import { transferApprovalOf } from "../../proof/transfer-proof.js";
-import { isDefaultRingNote } from "../../proof/audit-proof.js";
+import { isDefaultRingNote, spentNotes } from "../../proof/audit-proof.js";
 import { anonymousPartyIdentities } from "../../protocol/membership/parties.js";
 import {
   proveStagedTransfer,
@@ -72,6 +73,7 @@ import {
 } from "../workflow/program-commitment.js";
 import type { SealRow } from "../workflow/transfer-plan.js";
 import { isSmallOrder } from "../../crypto/keys/x25519.js";
+import type { TransferTags } from "../../state/viewing-history.js";
 import { RingOutputRail, type RingDelivery } from "./output-rail.js";
 import { AnonymousPlan } from "../../protocol/transaction/anonymous-plan.js";
 import { current, type TransferLine } from "./transfer-line.js";
@@ -135,15 +137,37 @@ function inProofOwnerKey(
   return signing.ed25519();
 }
 
-function anonymousPlan(payments: readonly AnonymousPayment[]): AnonymousPlan {
-  return payments.reduce(
-    (planned, payment) =>
-      planned.withPayment({
-        recipient: payment.to.recipient.viewingPublicKey,
-        reply: payment.reply,
-      }),
-    AnonymousPlan.create(),
-  );
+/** One spend's payments with the wallet's tag selection, Rust `TaggedPayments`. */
+type TaggedPayments = Readonly<{
+  prepared: PreparedTransfer;
+  sender: ShieldedAddress;
+  payments: readonly AnonymousPayment[];
+  tags: TransferTags | undefined;
+}>;
+
+/** Without the wallet's sender tag change takes random bytes, the note the wallet spends finds it. */
+function taggedPlan(tagged: TaggedPayments): AnonymousPlan {
+  const { prepared, sender, payments, tags } = tagged;
+  // 1. An entry spends default-ring notes alone, a core sync that reads their spend first leaves
+  // only the sender tag to find the change.
+  const notes = spentNotes(prepared.inputs);
+  const entry = notes.length > 0 && notes.every(isDefaultRingNote);
+  if (tags === undefined && entry) throw new RingError("RING_SENDER_TAG_REQUIRED");
+  // 2. Change takes the sender tag only under the key the tags derive from, a deposit's
+  // fresh sender holds another key and its change a random tag.
+  const plan =
+    tags !== undefined && tags.viewingPublicKey.equals(sender.viewingPublicKey)
+      ? AnonymousPlan.create().withSenderTag(tags.sender)
+      : AnonymousPlan.create();
+  // 3. The send call alone attaches a reply, no default path does.
+  return payments.reduce((planned, payment) => {
+    const paid = planned.withPayment({
+      recipient: payment.to.recipient.viewingPublicKey,
+      reply: payment.reply,
+    });
+    const tag = paymentTag(payment, tags);
+    return tag === undefined ? paid : paid.withTag(tag);
+  }, plan);
 }
 
 export type ConfidentialRail = Readonly<{
@@ -155,6 +179,7 @@ export type AnonymousRail = Readonly<{
   kind: "anonymous";
   signer: AnonymousSpendSigner;
   payments: readonly AnonymousPayment[];
+  tags: TransferTags | undefined;
   exitTokenOwner: Address | undefined;
   readCache: ReadCache | undefined;
   exposure: OwnerExposure;
@@ -166,6 +191,7 @@ export type PublicOwnersRail = Readonly<{
   /** Set when the rail it came from signs inside the proof, staging refuses it. */
   inProofOwner: boolean;
   payments: readonly AnonymousPayment[];
+  tags: TransferTags | undefined;
 }>;
 
 type OwnerRail = ConfidentialRail | AnonymousRail | PublicOwnersRail;
@@ -213,6 +239,7 @@ export async function stageTransfer(
       ? await hiddenOwner({ rail, deposits: owner.deposits, client, sender, prepared }, context)
       : undefined;
   const payments = rail.kind === "confidential" ? [] : rail.payments;
+  const tags = rail.kind === "confidential" ? undefined : rail.tags;
   if (anonymous && payments.some((payment) => isSmallOrder(payment.to.recipient.viewingPublicKey)))
     throw new RingError("RING_RECIPIENT_KEY_NOT_CONTRIBUTORY");
   const spent = prepared.inputs.find((input) => input.utxo.amount > 0n)?.utxo.asset;
@@ -221,7 +248,9 @@ export async function stageTransfer(
       key: await transactionKey(keys, sender, prepared, context),
       prepared,
       delivery: () =>
-        anonymous ? { kind: "anonymous", plan: anonymousPlan(payments) } : { kind: "delivered" },
+        anonymous
+          ? { kind: "anonymous", plan: taggedPlan({ prepared, sender, payments, tags }) }
+          : { kind: "delivered" },
       payments,
       salt,
       sender,
@@ -410,7 +439,7 @@ function stagedSpend(
 type OutputSeal = Readonly<{
   key: ViewingKey;
   prepared: PreparedTransfer;
-  /** Read after `key`, the plan draws its tags then. */
+  /** Read inside the seal, a refusal destroys `key`. */
   delivery: () => RingDelivery;
   payments: readonly AnonymousPayment[];
   /** Fixed by a program commitment or its plan. */

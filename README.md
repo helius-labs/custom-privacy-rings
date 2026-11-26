@@ -5,7 +5,8 @@ tagged with its program id. The zolana shielded pool (SPP) moves a ring note
 only on an instruction the ring program signs. Every transfer proves that the
 ring's auditor can open it, and a policy ring also proves its rule table. A
 confidential ring hides assets and amounts. An anonymous ring also hides
-senders and recipients.
+senders, and it hides a recipient whose payment takes a request tag, see
+[privacy](docs/design/privacy.md#anonymous-rings).
 
 ## Split with zolana
 

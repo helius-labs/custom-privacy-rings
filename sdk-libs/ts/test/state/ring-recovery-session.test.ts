@@ -154,10 +154,10 @@ describe("durable recovery", () => {
     const held = wallet(bob);
     const sync = AnonymousSync.create(bob.keys, ASSETS).withScanLimits({ maxPages: 1 });
     const scan = await sync.fetchWallet(source.client(), held);
-    await held.takeSenderTag(bob.keys);
+    await held.takeRequestTag(bob.keys);
     await expect(held.absorb(scan)).rejects.toThrow("RING_SCAN_HISTORY_CHANGED");
     expect(held.recoveryCoverage().status).toBe("Complete");
-    expect(held.history().current().tx.next).toBe(1n);
+    expect(held.history().current().request.next).toBe(1n);
   });
 
   it("refuses a changed recovery scope and another wallet instance", async () => {
@@ -282,7 +282,7 @@ describe("durable recovery", () => {
     expect(count).toBe(80n);
     expect(source.spendQueries).toEqual([]);
   });
-  it("wipes opened recipient secrets when transaction key derivation fails", async () => {
+  it("wipes every opened recipient secret before it asks for a transaction key, a failure there leaves none", async () => {
     const source = new RecoverySource();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
@@ -295,7 +295,7 @@ describe("durable recovery", () => {
     });
     const transaction = vi.fn<typeof bob.keys.transactionKeys>(async () => {
       expect(retained.length).toBeGreaterThan(0);
-      expect(retained.every((secret) => secret.some((byte) => byte !== 0))).toBe(true);
+      expect(retained.every((secret) => secret.every((byte) => byte === 0))).toBe(true);
       throw new Error("key holder unavailable");
     });
     const keys = extended(bob.keys, {

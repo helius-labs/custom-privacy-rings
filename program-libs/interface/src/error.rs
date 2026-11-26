@@ -82,7 +82,7 @@ ring_errors! {
         "an anonymous SPL withdrawal's destination is no initialized token program account",
     OutputBodyLength = 8253 => "a ring output body exceeds its length prefix",
     OutputCountOutOfRange = 8257 => "the published output count is zero or above the key's capacity",
-    TooManyApplicationMessages = 8269 => "application messages exceed what SPP takes beside the auditor message and the sender bundle",
+    TooManyApplicationMessages = 8269 => "application messages exceed what SPP takes beside the auditor message",
     ReplyLength = 8259 => "reply metadata is shorter than its keys or misses one reply per body-bearing slot",
     RecordsRegistryOtherRing = 8266 => "the records registry serves another ring",
     ListNotPolicyReadable = 8255 => "a policy rule reads a list outside the policy lists",

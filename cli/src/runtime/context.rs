@@ -303,11 +303,11 @@ pub(crate) fn cached<T>(cell: &OnceCell<T>, load: impl FnOnce() -> Result<T>) ->
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::ui::Defaults;
 
-    fn open_with_urls(rpc: &str, indexer: &str, prover: &str) -> Result<Context> {
+    pub(crate) fn open_with_urls(rpc: &str, indexer: &str, prover: &str) -> Result<Context> {
         let config: RingConfig = toml::from_str(&format!(
             "name = \"ctx\"\ntarget = \"localnet\"\nprogram_id = \"11111111111111111111111111111111\"\n\n\
              [localnet]\nrpc = \"{rpc}\"\nindexer = \"{indexer}\"\nprover = \"{prover}\"\nring_rpc = \"http://127.0.0.1:8785\"\n\n\

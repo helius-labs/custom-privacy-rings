@@ -22,8 +22,12 @@
 //! state keys it by `Operation::ticket` and frees it in `settle`. The relay settles its own send,
 //! the rule settles a `Sender::Wallet` reservation in `sweep`. Put a rule that reserves last, a
 //! refusal after it releases the reservation.
+//!
+//! [`ExitVelocity`] is an example of a rule that reserves. It settles no wallet send, and the
+//! service's chain does not hold it.
 
 mod direct;
+mod exit_velocity;
 mod lists;
 mod rule;
 mod scope;
@@ -34,6 +38,7 @@ use zolana_operator_custody::SigningIdentity;
 
 pub use self::direct::DirectCoSign;
 pub use self::{
+    exit_velocity::{ExitCap, ExitVelocity},
     lists::{
         co_sign_lists, edit_co_sign_list, FrameParties, List, ListDecision, ListEntry, ListRule,
         ListStore, Lists, Parties, PartySource, StoredLists, Subject, SubjectKind,

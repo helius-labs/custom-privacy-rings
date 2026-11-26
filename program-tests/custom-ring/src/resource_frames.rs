@@ -1,4 +1,4 @@
-use custom_ring_interface::{AppMessage, RingPolicy, RingTransactData};
+use custom_ring_interface::{AppMessage, RingPolicy, RingTransactData, MAX_APPLICATION_MESSAGES};
 use solana_message::v1::MAX_TRANSACTION_SIZE;
 use spr_interface::instruction::TransactProof;
 use zolana_ring_client::FrameEncode;
@@ -57,7 +57,7 @@ impl MaximumPayload<'_, '_> {
             data.extensions.messages.pop();
             let extra = ((FRAME_CEILING - compact) / compact_stride)
                 .min((MAX_CPI_DATA_LEN - expanded) / expanded_stride)
-                .min(usize::from(u8::MAX) - 2 - usize::from(data.sender.is_some()));
+                .min(MAX_APPLICATION_MESSAGES - data.extensions.messages.len());
             data.extensions.messages.extend((0..extra).map(|_| empty));
             compact += extra * compact_stride;
             expanded += extra * expanded_stride;

@@ -14,7 +14,7 @@ Every ring proof has one public input. It is the fold of a statement its verifie
 
 Use [Proof composition](../../design/proof-composition.md) to review the constraint handoffs and program-derived fields.
 
-One statement serves every rail. It covers the audit, the policy and the approval mask. No payload, tag, sender bundle or reply enters it. SPP's external data hash binds those bytes, see [Disclosure](disclosure.md).
+One statement serves every rail. It covers the audit, the policy and the approval mask. No payload, tag or reply enters it. SPP's external data hash binds those bytes, see [Disclosure](disclosure.md).
 
 `n` is the frame's nullifier count and `m` its published slots. `N` is the key's output capacity and `S` its signer slots. The record chain is zero-filled to `N`, so `output_count` alone carries `m`.
 

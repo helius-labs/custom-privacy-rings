@@ -6,7 +6,7 @@ use spr_instruction::instruction::{
 };
 use spr_interface::{
     instruction::{instruction_data::transact::TransactOutput, InterfaceTransfer},
-    pda, MAX_OUTPUTS, ZERO_NULLIFIER_PUBKEY,
+    pda, ZERO_NULLIFIER_PUBKEY,
 };
 use spr_keypair::{
     constants::BLINDING_LEN, KeypairError, NullifierKey, ShieldedAddress, ViewingKey,
@@ -72,7 +72,7 @@ pub enum RelayRail {
     Confidential,
     Delegate {
         delegate: Address,
-        /// Present exactly on an anonymous ring, the frame's sender bundle reads it.
+        /// Present exactly on an anonymous ring.
         plan: Option<Box<AnonymousPlan>>,
     },
     /// Spends only dummies, the funder signs the returned message.
@@ -393,7 +393,6 @@ enum RailWire {
 struct PlanWire {
     #[wincode(with = "containers::Vec<[u8; 33], FixIntLen<u8>>")]
     recipients: Vec<[u8; 33]>,
-    dummy_preimages: [[u8; 32]; MAX_OUTPUTS],
 }
 
 #[derive(SchemaWrite, SchemaRead)]
@@ -500,14 +499,6 @@ impl ProofInputsWire {
         }
         for salt in &mut self.list_salts {
             salt.list_salt.zeroize();
-        }
-        match &mut self.rail {
-            RailWire::Anonymous { plan, .. } => plan.dummy_preimages.zeroize(),
-            RailWire::Delegate {
-                plan: Some(plan), ..
-            }
-            | RailWire::Deposit { plan: Some(plan) } => plan.dummy_preimages.zeroize(),
-            _ => {}
         }
     }
 
@@ -697,20 +688,17 @@ impl PlanWire {
         Self {
             recipients: plan
                 .recipients()
-                .iter()
                 .map(|recipient| *recipient.as_bytes())
                 .collect(),
-            dummy_preimages: *plan.dummy_preimages(),
         }
     }
 
     fn plan(&self) -> Result<AnonymousPlan, RelayProofInputsError> {
-        Ok(AnonymousPlan::from_parts(
+        Ok(AnonymousPlan::from_recipients(
             self.recipients
                 .iter()
                 .map(|recipient| X25519Pubkey::from_bytes(*recipient))
-                .collect::<Result<_, KeypairError>>()?,
-            self.dummy_preimages,
+                .collect::<Result<Vec<_>, KeypairError>>()?,
         ))
     }
 }
@@ -1077,9 +1065,6 @@ mod tests {
         }));
         assert!(wire.outputs.iter().all(|output| output.blinding == [0; 32]));
         assert!(wire.list_salts.iter().all(|salt| salt.list_salt == [0; 32]));
-        if let RailWire::Anonymous { plan, .. } = &wire.rail {
-            assert_eq!(plan.dummy_preimages, [[0; 32]; MAX_OUTPUTS]);
-        }
 
         let mut decoded = RelayProofInputs::decode(&encoded.0).unwrap();
         decoded.approval_blinder = Some([7; 32]);

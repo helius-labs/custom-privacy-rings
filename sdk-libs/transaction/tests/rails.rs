@@ -1,12 +1,11 @@
 //! The ring output rails, read back as a recipient and the ring program read them.
 
 use custom_ring_interface::{
-    RecordForm, RecordKind, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN, MIN_REPLY_LEN,
-    RING_RECORD_LEN, SENDER_BUNDLE_LEN,
+    stream::slot_tag, RecordForm, RecordKind, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN,
+    MIN_REPLY_LEN, RING_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
-use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_interface::{instruction::instruction_data::transact::OwnerTag, ZERO_NULLIFIER_PUBKEY};
 use spr_keypair::{ShieldedAddress, ShieldedKeypair, SigningKey, ViewingKey, X25519Pubkey};
 use spr_transaction::{
@@ -19,13 +18,12 @@ use zolana_ring_keys::DeliveredSlot;
 use zolana_ring_keys::OutputRecord;
 use zolana_ring_keys::RecipientPayload;
 use zolana_ring_keys::RecordKey;
-use zolana_ring_keys::SenderBundle;
 use zolana_ring_keys::SlotSecret;
 use zolana_ring_transaction::{
-    open_recipient_body, open_reply, open_sender_bundle, random_tag_preimage, record_key,
-    seal_reply, AnonymousOutput, AnonymousPlan, AnonymousSlot, BodyForm, OpenedBody, OpenedNote,
-    OpenedRecipientBody, OutputBlindings, PayloadRead, PublishedSlot, RecipientBody, ReplyMetadata,
-    RingAssets, RingDelivery, RingOutputRail, RingRailError as E, ShapedSeal,
+    open_recipient_body, open_reply, record_key, seal_no_reply, seal_reply, AnonymousOutput,
+    AnonymousPlan, AnonymousSlot, BodyForm, OpenedBody, OpenedNote, OpenedRecipientBody,
+    OutputBlindings, PayloadRead, PublishedSlot, RecipientBody, ReplyMetadata, RingAssets,
+    RingDelivery, RingOutputRail, RingRailError as E, ShapedSeal,
 };
 
 const RING: Address = Address::new_from_array([42; 32]);
@@ -172,17 +170,6 @@ fn payload(body: &OpenedRecipientBody) -> RecipientPayload {
     }
 }
 
-/// The sender bundle at index `m`, `m` read from the frame's published slots.
-fn bundle(reader: &ViewingKey, rail: &RingOutputRail, proof: &SppProofInputs) -> SenderBundle {
-    let sender = rail
-        .published_sender(proof, &reader.pubkey())
-        .unwrap()
-        .unwrap();
-    let outputs = &proof.external_data.outputs;
-    let secret = delivered_secret(reader, proof, rail, u32::try_from(outputs.len()).unwrap());
-    open_sender_bundle(sender.body, &secret).unwrap()
-}
-
 /// `V_i` of each published slot, the keys the auditor stream seals and the sender reads back.
 fn sealed_keys(rail: &RingOutputRail, proof: &SppProofInputs) -> Vec<[u8; 32]> {
     rail.recipient_keys(&proof.output_utxos, proof.external_data.outputs.len())
@@ -245,14 +232,6 @@ fn reader<'a>(
         tree_id: TREE,
         utxo_hash: &proof.external_data.outputs[position].utxo_hash,
     }
-}
-
-/// The output seed the sender re-derives from its transaction key and the published salt.
-fn output_seed(rail: &RingOutputRail, proof: &SppProofInputs) -> [u8; 32] {
-    let seed = ring_blinding_seed(&rail.tx_viewing_key().secret_bytes(), &rail.salt()).unwrap();
-    *OutputBlindings::new(&proof.input_utxos[0].nullifier(), &seed)
-        .unwrap()
-        .output_seed()
 }
 
 struct PaidFrame {
@@ -439,14 +418,20 @@ fn a_delivered_transfer_leads_with_its_change_the_spl_ahead_of_the_sol() {
 
 /// The change leads under the sender tag with no data.
 #[test]
-fn an_anonymous_transfer_seals_each_payment_at_its_position_and_the_bundle_after_them() {
+fn an_anonymous_transfer_seals_each_payment_at_its_position() {
     let sender = keypair(1);
     let receiver = keypair(2);
     let recipient = address(&receiver);
     let paid = payment(&recipient);
+    let sender_tag = sender.get_sender_view_tag(0).unwrap();
     let (mut tx, tx_key) = ring_transfer(&sender, false);
     tx.transfer_sol(&recipient, 3).unwrap();
-    let rail = anonymous(tx_key, AnonymousPlan::new().with_payment(paid));
+    let rail = anonymous(
+        tx_key,
+        AnonymousPlan::new()
+            .with_payment(paid)
+            .with_sender_tag(sender_tag),
+    );
     let proof = rail.encrypt(tx, &address(&sender)).unwrap();
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
     let assets = RingAssets::new([]).unwrap();
@@ -455,34 +440,26 @@ fn an_anonymous_transfer_seals_each_payment_at_its_position_and_the_bundle_after
     assert_eq!(published[0].anonymous, Some(AnonymousSlot::Change));
     assert_eq!(
         published[1].anonymous,
-        Some(AnonymousSlot::Payment { recipient: paid })
+        Some(AnonymousSlot::Payment {
+            recipient: paid,
+            tag: slot_tag(recipient.viewing_pubkey.u()),
+        })
     );
     assert_eq!(
         proof.external_data.outputs[0].owner_tag,
-        OwnerTag::Inline([0; 32]),
-        "a change slot publishes zero"
+        OwnerTag::Inline(slot_tag(sender_tag)),
+        "a change slot publishes the sender tag"
     );
-    let n0 = proof.input_utxos[0].nullifier();
-    let recipient_secret = delivered_secret(&receiver.viewing_key, &proof, &rail, 1);
     assert_eq!(
         proof.external_data.outputs[1].owner_tag,
-        OwnerTag::Inline(custom_ring_interface::stream::slot_tag(
-            recipient_secret.recipient_tag().unwrap()
-        ))
+        OwnerTag::Inline(slot_tag(paid.u())),
+        "a payment without a request publishes the bootstrap tag"
     );
-    let sender_secret = delivered_secret(&sender.viewing_key, &proof, &rail, 2);
-    assert_eq!(
-        proof.external_data.messages[0].view_tag,
-        sender_secret.sender_tag().unwrap()
-    );
-    assert_eq!(
-        rail.sender_bundle_tag(&address(&sender).viewing_pubkey, &n0, 2)
-            .unwrap(),
-        proof.external_data.messages[0].view_tag
+    assert!(
+        proof.external_data.messages.is_empty(),
+        "the rail adds no message"
     );
 
-    // The bundle carries the seed alone, the keys come from the auditor stream.
-    let sent = bundle(&sender.viewing_key, &rail, &proof);
     let keys = sealed_keys(&rail, &proof);
     assert_eq!(
         keys,
@@ -491,7 +468,6 @@ fn an_anonymous_transfer_seals_each_payment_at_its_position_and_the_bundle_after
             recipient.viewing_pubkey.u()
         ]
     );
-    assert_eq!(sent.output_seed, output_seed(&rail, &proof));
     let change = change_at(&sender, &rail, &assets, &proof, 0);
     assert_eq!((change.asset, change.amount), (Mint::SOL, 7));
 
@@ -525,7 +501,7 @@ fn an_anonymous_transfer_seals_each_payment_at_its_position_and_the_bundle_after
 }
 
 #[test]
-fn the_bundle_carries_the_spl_and_the_sol_change() {
+fn the_spl_and_the_sol_change_each_open_under_the_sender_key() {
     let sender = keypair(1);
     let recipient = address(&keypair(2));
     let (mut tx, tx_key) = ring_spend(
@@ -535,9 +511,12 @@ fn the_bundle_carries_the_spl_and_the_sol_change() {
     );
     tx.transfer_with_ring(&recipient, USDC, 4, Some(RING))
         .unwrap();
+    let sender_tag = sender.get_sender_view_tag(0).unwrap();
     let rail = anonymous(
         tx_key,
-        AnonymousPlan::new().with_payment(payment(&recipient)),
+        AnonymousPlan::new()
+            .with_payment(payment(&recipient))
+            .with_sender_tag(sender_tag),
     );
     let proof = rail.encrypt(tx, &address(&sender)).unwrap();
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
@@ -548,9 +527,10 @@ fn the_bundle_carries_the_spl_and_the_sol_change() {
     for change in &published[..2] {
         assert!(matches!(change.body, SlotBody::Recipient(_)));
     }
+    // Equal tags would show the two change slots share an owner.
+    assert_eq!(published[0].owner_tag, &slot_tag(sender_tag));
+    assert_ne!(published[1].owner_tag, &slot_tag(sender_tag));
     let assets = RingAssets::new([USDC]).unwrap();
-    // The bundle opens to the sender, the keys come from the auditor stream.
-    bundle(&sender.viewing_key, &rail, &proof);
     let keys = sealed_keys(&rail, &proof);
     assert_eq!(keys[2], recipient.viewing_pubkey.u());
     for (position, (asset, amount)) in [(USDC, 6), (Mint::SOL, 5)].into_iter().enumerate() {
@@ -579,8 +559,6 @@ fn a_zero_amount_change_slot_opens_under_the_sender_key() {
     })
     .unwrap();
     let proof = rail.encrypt(tx, &address(&sender)).unwrap();
-    // The bundle opens to the sender, the keys come from the auditor stream.
-    bundle(&sender.viewing_key, &rail, &proof);
     let keys = sealed_keys(&rail, &proof);
     assert_eq!(keys[0], address(&sender).viewing_pubkey.u());
     let assets = RingAssets::new([]).unwrap();
@@ -859,7 +837,7 @@ fn a_rebuilt_body_of_an_unregistered_mint_names_the_mint() {
 }
 
 #[test]
-fn a_dummy_publishes_the_tag_of_its_preimage_and_a_recipient_length_body() {
+fn a_dummy_publishes_a_random_tag_and_a_recipient_length_body() {
     let sender = keypair(1);
     let recipient = address(&keypair(2));
     let (mut tx, tx_key) = ring_transfer(&sender, false);
@@ -877,20 +855,16 @@ fn a_dummy_publishes_the_tag_of_its_preimage_and_a_recipient_length_body() {
     .unwrap();
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
     for dummy in &published[2..] {
-        let Some(AnonymousSlot::Dummy { preimage }) = dummy.anonymous else {
-            panic!("dummy slot expected")
-        };
-        let tag = custom_ring_interface::stream::slot_tag(
-            SlotSecret::new(preimage).unwrap().recipient_tag().unwrap(),
-        );
-        assert_eq!(dummy.owner_tag, &tag);
+        assert_eq!(dummy.anonymous, Some(AnonymousSlot::Dummy));
         assert!(matches!(
             dummy.body,
             SlotBody::Recipient(body) if body.len() == RING_RECORD_LEN
         ));
     }
-    // The bundle opens to the sender, the keys come from the auditor stream.
-    bundle(&sender.viewing_key, &rail, &proof);
+    // The untagged change and each dummy draw their own tag at the slot width.
+    let drawn = std::collections::BTreeSet::from([0, 2, 3].map(|slot| *published[slot].owner_tag));
+    assert_eq!(drawn.len(), 3, "a constant tag would mark its slot");
+    assert!(drawn.iter().all(|tag| tag[..24] == [0; 24]));
     let keys = sealed_keys(&rail, &proof);
     assert_eq!(
         keys[..2],
@@ -923,8 +897,6 @@ fn a_transfer_that_returns_nothing_leads_with_a_zero_change_in_its_spare_slot() 
         (proof.output_utxos[0].asset, proof.output_utxos[0].amount),
         (Mint::SOL, 0)
     );
-    // The bundle opens to the sender, the keys come from the auditor stream.
-    bundle(&sender.viewing_key, &rail, &proof);
     let keys = sealed_keys(&rail, &proof);
     assert_eq!(
         keys[..2],
@@ -938,7 +910,7 @@ fn a_transfer_that_returns_nothing_leads_with_a_zero_change_in_its_spare_slot() 
 }
 
 #[test]
-fn the_bundle_names_the_sender_at_each_change_output_of_any_asset() {
+fn each_change_output_of_any_asset_seals_to_the_sender() {
     let sender = keypair(1);
     let (mut tx, tx_key) = ring_spend(&sender, vec![input(&sender, USDC, 10, 1)], false);
     for _ in 0..2 {
@@ -947,8 +919,6 @@ fn the_bundle_names_the_sender_at_each_change_output_of_any_asset() {
     }
     let rail = anonymous(tx_key, AnonymousPlan::new());
     let proof = rail.encrypt(tx, &address(&sender)).unwrap();
-    // The bundle opens to the sender, the keys come from the auditor stream.
-    bundle(&sender.viewing_key, &rail, &proof);
     let keys = sealed_keys(&rail, &proof);
     // The shape's padding dummy seals to its derived key.
     let sender_u = address(&sender).viewing_pubkey.u();
@@ -1006,7 +976,6 @@ fn a_recipient_differing_in_its_nullifier_key_is_no_change() {
     ));
 }
 
-/// Compact padding leaves the frame, the bundle length and each kept slot index follow `m`.
 #[test]
 fn compact_padding_omits_a_suffix_and_keeps_every_index() {
     let sender = keypair(1);
@@ -1029,11 +998,6 @@ fn compact_padding_omits_a_suffix_and_keeps_every_index() {
     assert_eq!(proof.external_data.outputs.len(), 2);
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
     assert_eq!(published.len(), 2);
-    let framed = rail
-        .published_sender(&proof, &address(&sender).viewing_pubkey)
-        .unwrap()
-        .unwrap();
-    assert_eq!(framed.body.len(), SENDER_BUNDLE_LEN);
     let body = decrypt(&receiver.viewing_key, &rail, &proof, &published[1], 1);
     assert_eq!(body.record.blinding, proof.output_utxos[1].blinding);
     let assets = RingAssets::new([]).unwrap();
@@ -1099,7 +1063,8 @@ fn a_reply_frame_gives_every_body_one_length() {
     let sender = keypair(1);
     let receiver = keypair(2);
     let recipient = address(&receiver);
-    let other = address(&keypair(3));
+    let unanswered = keypair(3);
+    let other = address(&unanswered);
     let (mut tx, tx_key) = ring_transfer(&sender, false);
     tx.transfer_sol(&recipient, 3).unwrap();
     tx.transfer_sol(&other, 2).unwrap();
@@ -1118,9 +1083,16 @@ fn a_reply_frame_gives_every_body_one_length() {
     .encrypt(tx)
     .unwrap();
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
-    // The change at slot 0 carries random reply bytes too.
     for slot in &published {
         assert_eq!(slot.reply.len(), MIN_REPLY_LEN);
+    }
+    // Random bytes on a slot its owner opens would decode as a reply by chance.
+    for (slot, owner) in [(0u32, &sender), (2, &unanswered)] {
+        let secret = delivered_secret(&owner.viewing_key, &proof, &rail, slot);
+        let reply = &published[slot as usize].reply;
+        let empty = seal_no_reply(MIN_REPLY_LEN, &secret).unwrap();
+        assert_eq!(*reply, empty.as_slice());
+        assert!(open_reply(reply, &secret).unwrap().is_none());
     }
     let data = proof.external_data.outputs[1].data.as_ref().unwrap();
     let (_, reply) = ring_body_output(data).unwrap();
@@ -1190,15 +1162,6 @@ fn a_body_and_a_reply_under_one_secret_read_different_keystreams() {
 }
 
 #[test]
-fn a_bundle_longer_than_its_seed_is_refused() {
-    let secret = SlotSecret::new([3; 32]).unwrap();
-    assert!(matches!(
-        open_sender_bundle(&[0; 96], &secret),
-        Err(E::SenderBundleLength { len: 96 })
-    ));
-}
-
-#[test]
 fn an_exit_to_the_hidden_sender_is_refused() {
     let sender = keypair(1);
     let (mut tx, tx_key) = ring_transfer(&sender, false);
@@ -1229,8 +1192,6 @@ fn an_exit_publishes_scheme_3_under_its_owner_tag() {
         proof.external_data.outputs[1].owner_tag,
         OwnerTag::Inline(exit.signing_pubkey.confidential_view_tag().unwrap())
     );
-    // The bundle opens to the sender, the keys come from the auditor stream.
-    bundle(&sender.viewing_key, &rail, &proof);
     let keys = sealed_keys(&rail, &proof);
     assert_eq!(
         keys[1],
@@ -1315,49 +1276,61 @@ fn a_dataless_delivered_slot_takes_the_plain_body_length() {
     }
 }
 
+/// A tag on another payment's slot hides both payments from their recipients.
 #[test]
-fn a_dummy_preimage_is_a_canonical_field_value_with_a_free_top_byte() {
-    let mut top_bytes = std::collections::BTreeSet::new();
-    for _ in 0..256 {
-        let preimage = random_tag_preimage();
-        assert!(is_canonical_bn254_scalar_be(&preimage));
-        top_bytes.insert(preimage[0]);
+fn each_payment_publishes_the_tag_its_plan_names() {
+    let sender = keypair(1);
+    let [bootstrap, requested, untagged] = [2, 3, 4].map(|seed| address(&keypair(seed)));
+    let (mut tx, tx_key) = ring_transfer(&sender, false);
+    for recipient in [&bootstrap, &requested, &untagged] {
+        tx.transfer_sol(recipient, 1).unwrap();
     }
-    assert!(
-        top_bytes.len() > 1,
-        "a zero led sampler would mark every dummy"
+    let request_tag = keypair(3).get_recipient_request_view_tag(0).unwrap();
+    let rail = anonymous(
+        tx_key,
+        AnonymousPlan::new()
+            .with_payment(payment(&bootstrap))
+            .with_payment(payment(&requested))
+            .with_tag(request_tag)
+            .with_payment(payment(&untagged))
+            .with_random_tag(),
     );
+    let proof = rail.encrypt(tx, &address(&sender)).unwrap();
+    let published = rail.published_slots(&proof, &address(&sender)).unwrap();
+    assert_eq!(
+        published[1].owner_tag,
+        &slot_tag(bootstrap.viewing_pubkey.u())
+    );
+    assert_eq!(published[2].owner_tag, &slot_tag(request_tag));
+    assert_ne!(
+        published[3].owner_tag,
+        &slot_tag(untagged.viewing_pubkey.u()),
+        "no tag finds an untagged payment"
+    );
+    assert_eq!(published[3].owner_tag[..24], [0; 24]);
 }
 
-/// A frame whose tag differs from its slot's derivation never reaches a proof.
+/// Equal tags on two slots would show they share a recipient, one match returns both slots.
 #[test]
-fn a_published_tag_other_than_the_slots_own_is_refused_at_build() {
+fn a_frame_publishes_a_repeated_tag_once() {
     let sender = keypair(1);
     let recipient = address(&keypair(2));
     let (mut tx, tx_key) = ring_transfer(&sender, false);
-    tx.transfer_sol(&recipient, 3).unwrap();
+    for _ in 0..2 {
+        tx.transfer_sol(&recipient, 1).unwrap();
+    }
     let rail = anonymous(
         tx_key,
-        AnonymousPlan::new().with_payment(payment(&recipient)),
+        AnonymousPlan::new()
+            .with_payment(payment(&recipient))
+            .with_payment(payment(&recipient)),
     );
-    let sealed = rail.encrypt(tx, &address(&sender)).unwrap();
-    for (slot, tag) in [(0, [1; 32]), (1, recipient.viewing_pubkey.u())] {
-        let mut forged = sealed.clone();
-        forged.external_data.outputs[slot].owner_tag = OwnerTag::Inline(tag);
-        assert!(
-            matches!(
-                rail.published_slots(&forged, &address(&sender)),
-                Err(E::RingOutputFraming { slot_index }) if slot_index == slot
-            ),
-            "{slot}"
-        );
-    }
-    let mut forged = sealed.clone();
-    forged.external_data.messages[0].view_tag = [1; 32];
-    assert!(matches!(
-        rail.published_sender(&forged, &address(&sender).viewing_pubkey),
-        Err(E::SenderBundleFraming)
-    ));
+    let proof = rail.encrypt(tx, &address(&sender)).unwrap();
+    let published = rail.published_slots(&proof, &address(&sender)).unwrap();
+    let bootstrap = slot_tag(recipient.viewing_pubkey.u());
+    assert_eq!(published[1].owner_tag, &bootstrap);
+    assert_ne!(published[2].owner_tag, &bootstrap);
+    assert_eq!(published[2].owner_tag[..24], [0; 24]);
 }
 
 /// Data under a zero hash binds to no commitment, the note opens without it.

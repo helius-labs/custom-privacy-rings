@@ -24,10 +24,7 @@ use spr_event::MessageData;
 use spr_instruction::instruction::{
     TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
 };
-use spr_interface::{
-    instruction::instruction_data::transact::{OwnerTag, TransactOutput},
-    MAX_OUTPUTS,
-};
+use spr_interface::instruction::instruction_data::transact::{OwnerTag, TransactOutput};
 use spr_keypair::{NullifierKey, ShieldedKeypair, SigningKey, ViewingKey, X25519Keypair};
 use spr_transaction::{
     instructions::transact::{ExternalData, SettlementTransfer},
@@ -268,10 +265,7 @@ pub fn owner_wallet() -> solana_keypair::Keypair {
 
 pub fn anonymous_rail() -> RelayRail {
     RelayRail::Anonymous {
-        plan: Box::new(AnonymousPlan::from_parts(
-            vec![owner().viewing_pubkey()],
-            [[25; 32]; MAX_OUTPUTS],
-        )),
+        plan: Box::new(AnonymousPlan::from_recipients([owner().viewing_pubkey()])),
         exit_token_owner: None,
         owner_exposed: false,
     }

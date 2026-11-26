@@ -15,6 +15,7 @@ import type { ProofDataSourceContext, ProofService } from "@heliuslabs/spr/clien
 import { LocalKeys } from "@heliuslabs/spr/client";
 import {
   checkIntentApproval,
+  equalBytes,
   isZero,
   resolveDepositSettlement,
   resolveShieldedRecipient,
@@ -45,6 +46,7 @@ import {
   type TransactionIntent,
 } from "@heliuslabs/spr/transaction";
 
+import { bootstrapSlotTag, slotTag } from "../../crypto/derivation/ring-stream.js";
 import { RingAddress, type RingPaymentRequest } from "../../crypto/keys/ring-address.js";
 import { RingError, wrapRingError } from "../../protocol/error.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
@@ -61,6 +63,7 @@ import {
   type RingServiceTarget,
 } from "../../rpc/ring-rpc.js";
 import type { RingKeys } from "../../state/ring-keys.js";
+import type { TransferTags } from "../../state/viewing-history.js";
 import { ringComputeUnitLimit } from "../management/admin.js";
 import {
   boundState,
@@ -79,6 +82,7 @@ import {
   type CustomRingTransferInput,
   type PublicOwnerTransfer,
 } from "./transfer-rails.js";
+import { payeeOf, paymentTag, type PaymentPayee } from "./anonymous.js";
 import { assetLabel, type RingTransferClient } from "./transfer.js";
 
 const base58 = getBase58Decoder();
@@ -116,6 +120,8 @@ export interface RingDepositParams {
   readonly splTokenProgram?: Address | null;
   /** Signs when a record covers deposits, the record must be its own. */
   readonly cosigner?: SignerAccount;
+  /** The depositor wallet's sender tag, a deposit to its own address with no request is refused without it. */
+  readonly tags?: TransferTags;
 }
 
 /** Rust `RingDeposit::prepare_relay`. */
@@ -360,13 +366,19 @@ export class PreparedRingDeposit {
     // 3. A confidential ring delivers to the recipient's tag, an anonymous ring pays a plan slot on
     //    the public owner rail, whose empty owner run the payer authorizes.
     let rail: DepositRail;
-    if (paid.to === undefined) {
+    if (paid.payee === undefined) {
       transfer.send(paid.address, asset, params.amount);
       rail = CustomRingTransfer.new(input);
     } else {
-      rail = CustomRingTransfer.new(input)
-        .spendPublic(sender.solanaAddress())
-        .withPayment({ to: paid.to, asset, amount: params.amount, reply: null });
+      const { tags } = params;
+      const payment = { ...paid.payee, asset, amount: params.amount, reply: null };
+      const named = CustomRingTransfer.new(input).spendPublic(sender.solanaAddress());
+      rail = (tags === undefined ? named : named.withTags(tags)).withPayment(payment);
+      // A deposit publishes its funder, a bootstrap tag beside it would name the recipient.
+      const tag = paymentTag(payment, tags);
+      const bootstrap = bootstrapSlotTag(payment.to.recipient.viewingPublicKey.u());
+      if (tag === undefined || equalBytes(slotTag(tag), bootstrap))
+        throw new RingError("RING_DEPOSIT_BOOTSTRAP_TAG");
     }
     return new PreparedRingDeposit({
       ringProgramId,
@@ -433,7 +445,7 @@ async function depositPayee(
   anonymous: boolean,
   context: RequestContext | undefined,
 ): Promise<
-  Readonly<{ address: ShieldedAddress; to?: RingAddress; listSalts: readonly RingListSalt[] }>
+  Readonly<{ address: ShieldedAddress; payee?: PaymentPayee; listSalts: readonly RingListSalt[] }>
 > {
   const { recipient, ringProgramId } = params;
   const salted = (address: ShieldedAddress, salt: Bytes32 | undefined): RingListSalt[] =>
@@ -452,19 +464,19 @@ async function depositPayee(
     return { address, listSalts: salted(address, recipient.listSalt) };
   }
   if (!anonymous) throw new RingError("RING_NOT_ANONYMOUS", { details: { operation: "deposit" } });
-  const to =
+  const payee = payeeOf(
     recipient.kind === "anonymous"
       ? new RingAddress({
           recipient: recipient.keys.address(),
           ringProgramId,
           listSalt: recipient.listSalt,
         })
-      : recipient.to instanceof RingAddress
-        ? recipient.to
-        : recipient.to.address;
+      : recipient.to,
+  );
+  const { to } = payee;
   return {
     address: to.recipient,
-    to,
+    payee,
     listSalts: salted(to.recipient, isZero(to.listSalt) ? undefined : to.listSalt),
   };
 }

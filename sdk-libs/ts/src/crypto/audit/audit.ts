@@ -32,7 +32,6 @@ export const NF_KEY_ENC_INFO = new TextEncoder().encode("CRING/nfk");
 /** One slot's record then its payload, the recipient and the auditor open it under `CRDS_i`. */
 export const OUTPUT_RECORD_ENC_INFO = new TextEncoder().encode("CRING/rcp");
 export const REPLY_ENC_INFO = new TextEncoder().encode("CRING/rpl");
-export const SENDER_BUNDLE_ENC_INFO = new TextEncoder().encode("CRING/snd");
 /** The merge envelope to the auditor. */
 export const MERGE_RECORD_ENC_INFO = new TextEncoder().encode("CRING/mrg");
 /** Rust `MERGE_OUTPUT_LABEL`, the merge record to its owner. */

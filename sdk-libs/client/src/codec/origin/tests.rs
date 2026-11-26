@@ -1253,7 +1253,6 @@ fn origin_of_frame(
         wide_owners: false,
         outputs: vec![output, output],
         replies: None,
-        sender: None,
         envelope: &[],
         recipient_keys: &keys,
         vouched: false,

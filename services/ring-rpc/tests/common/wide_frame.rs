@@ -58,7 +58,6 @@ pub fn wide_frame(tag: u8) -> Vec<u8> {
         wide_owners: false,
         outputs: vec![output, output],
         replies: None,
-        sender: None,
         envelope: &[],
         recipient_keys: &keys,
         vouched: false,

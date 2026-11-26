@@ -2,7 +2,7 @@
 //!
 //! Read after `program-libs/interface/src/codec/output.rs`. Read before `program-libs/interface/src/proof/key_catalog.rs`.
 
-/// The bytes of a ring slot tag a frame carries, a false match costs one trial open.
+/// The bytes of a ring slot tag a frame carries, a false match costs the trial opens of one row.
 pub const SLOT_TAG_LEN: usize = 8;
 
 /// A ring slot's tag reaches the indexer alone, its leading bytes stay zero and off the frame.

@@ -35,6 +35,7 @@ export function encodeRelayTransferTerms(terms: RelayTransferTerms): string {
       treeId: opening.treeId,
       dataHash: encodeBase58(opening.dataHash),
       ringDataHash: encodeBase58(opening.ringDataHash),
+      ...(opening.tag === undefined ? {} : { tag: encodeBase58(opening.tag) }),
     })),
     nullifiers: terms.nullifiers.map(encodeBase58),
     legs: terms.legs.map(encodeLeg),
@@ -135,17 +136,21 @@ function decodeLeg(entry: unknown): PublicLeg {
 }
 
 function decodeSlotOpening(value: unknown): SlotOpening {
-  const row = fields(value, [
-    "slot",
-    "owner",
-    "nullifierPk",
-    "mint",
-    "amount",
-    "blinding",
-    "treeId",
-    "dataHash",
-    "ringDataHash",
-  ]);
+  const row = fields(
+    value,
+    [
+      "slot",
+      "owner",
+      "nullifierPk",
+      "mint",
+      "amount",
+      "blinding",
+      "treeId",
+      "dataHash",
+      "ringDataHash",
+    ],
+    ["tag"],
+  );
   return Object.freeze({
     slot: scalar.count(row["slot"], "slot", 0xffff_ffff),
     owner: address(row["owner"] as string),
@@ -156,14 +161,22 @@ function decodeSlotOpening(value: unknown): SlotOpening {
     treeId: scalar.count(row["treeId"], "treeId", 0xffff),
     dataHash: scalar.hash(row["dataHash"], "dataHash"),
     ringDataHash: scalar.hash(row["ringDataHash"], "ringDataHash"),
+    ...((row["tag"] ?? null) === null ? {} : { tag: scalar.hash(row["tag"], "tag") }),
   });
 }
 
-/** Rust `deny_unknown_fields` with every field required. */
-function fields(value: unknown, names: readonly string[]): Readonly<Record<string, unknown>> {
+/** Rust `deny_unknown_fields`, every field of `names` required and each of `optional` a serde `default`. */
+function fields(
+  value: unknown,
+  names: readonly string[],
+  optional: readonly string[] = [],
+): Readonly<Record<string, unknown>> {
   if (typeof value !== "object" || value === null) throw mismatch("Undecodable");
   const present = Object.keys(value);
-  if (present.length !== names.length || !names.every((name) => present.includes(name)))
+  if (
+    !names.every((name) => present.includes(name)) ||
+    !present.every((name) => names.includes(name) || optional.includes(name))
+  )
     throw mismatch("Undecodable");
   return value as Readonly<Record<string, unknown>>;
 }

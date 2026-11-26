@@ -15,7 +15,7 @@ import type {
   RequestContext,
   TransactWithdrawal,
 } from "@heliuslabs/spr/interface";
-import type { NullifierKey, ShieldedAddress } from "@heliuslabs/spr/keypair";
+import type { NullifierKey, ShieldedAddress, ViewTag } from "@heliuslabs/spr/keypair";
 import type { ExpectedSealed } from "../../rpc/relay-message.js";
 import { randomSalt, ViewingKey } from "@heliuslabs/spr/keypair";
 import type {
@@ -85,6 +85,8 @@ import {
 } from "./rail-staging.js";
 import { checkCoOwnerKeys, ringSpendAuthority, standIn } from "./ring-spend.js";
 import { type CoOwner } from "../../protocol/ring-rpc/relay-proof-inputs.js";
+import { bootstrapSlotTag, slotTag } from "../../crypto/derivation/ring-stream.js";
+import type { TransferTags } from "../../state/viewing-history.js";
 
 /** Notes SPP reads from a cache account instead of proving their inclusion, Rust `ReadCache`. */
 export interface ReadCache {
@@ -374,6 +376,7 @@ export class AnonymousTransfer {
   readonly #signer: AnonymousSpendSigner;
   /** In declared order, the order of their ring outputs. */
   readonly #payments: readonly AnonymousPayment[];
+  readonly #tags: TransferTags | undefined;
   readonly #shape: Shape | undefined;
   readonly #exitTokenOwner: Address | undefined;
   readonly #coOwners: readonly CoOwner[];
@@ -385,6 +388,7 @@ export class AnonymousTransfer {
     this.#withdrawal = fields.withdrawal;
     this.#signer = fields.signer;
     this.#payments = fields.payments;
+    this.#tags = fields.tags;
     this.#shape = fields.shape;
     this.#exitTokenOwner = fields.exitTokenOwner;
     this.#coOwners = fields.coOwners;
@@ -411,6 +415,7 @@ export class AnonymousTransfer {
       withdrawal: input.withdrawal,
       signer: input.signer,
       payments: Object.freeze([]),
+      tags: undefined,
       shape: undefined,
       exitTokenOwner: undefined,
       coOwners: input.coOwners ?? [],
@@ -433,6 +438,11 @@ export class AnonymousTransfer {
       owner: paid.line,
       payments: Object.freeze([...this.#payments, paid.written]),
     });
+  }
+
+  /** The wallet's sender tag, Rust `with_tags`. */
+  withTags(tags: TransferTags): AnonymousTransfer {
+    return this.#with({ tags });
   }
 
   /** Named notes spend from `cache`, SPP checks each slot against the frame's selector, Rust `with_read_cache`. */
@@ -539,6 +549,7 @@ export class AnonymousTransfer {
         kind: "anonymous",
         signer: this.#signer,
         payments: this.#payments,
+        tags: this.#tags,
         exitTokenOwner: this.#exitTokenOwner,
         readCache: this.#readCache,
         exposure: this.#exposure,
@@ -552,6 +563,7 @@ export class AnonymousTransfer {
       withdrawal: this.#withdrawal,
       signer: this.#signer,
       payments: this.#payments,
+      tags: this.#tags,
       shape: this.#shape,
       exitTokenOwner: this.#exitTokenOwner,
       coOwners: this.#coOwners,
@@ -566,6 +578,7 @@ interface AnonymousFields {
   readonly withdrawal: TransactWithdrawal | undefined;
   readonly signer: AnonymousSpendSigner;
   readonly payments: readonly AnonymousPayment[];
+  readonly tags: TransferTags | undefined;
   readonly shape: Shape | undefined;
   readonly exitTokenOwner: Address | undefined;
   readonly coOwners: readonly CoOwner[];
@@ -582,6 +595,7 @@ export class PublicOwnerTransfer {
   readonly #coOwners: readonly CoOwner[];
   /** In declared order, the order of their ring outputs. */
   readonly #payments: readonly AnonymousPayment[];
+  readonly #tags: TransferTags | undefined;
 
   private constructor(fields: PublicOwnerFields) {
     this.#held = fields.owner;
@@ -590,6 +604,7 @@ export class PublicOwnerTransfer {
     this.#inProofOwner = fields.inProofOwner;
     this.#coOwners = fields.coOwners;
     this.#payments = fields.payments;
+    this.#tags = fields.tags;
     Object.freeze(this);
   }
 
@@ -611,28 +626,37 @@ export class PublicOwnerTransfer {
       ...input,
       withdrawal: input.withdrawal,
       payments: Object.freeze([]),
+      tags: undefined,
     });
   }
 
   /** Every ring output owner other than the wallet is paid here, Rust `with_payment`. */
   withPayment(payment: AnonymousPayment): PublicOwnerTransfer {
     const paid = payOn(this.#held, payment);
-    return this.#with(paid.line, Object.freeze([...this.#payments, paid.written]));
+    return this.#with({
+      owner: paid.line,
+      payments: Object.freeze([...this.#payments, paid.written]),
+    });
+  }
+
+  /** The wallet's sender tag, Rust `with_tags`. */
+  withTags(tags: TransferTags): PublicOwnerTransfer {
+    return this.#with({ tags });
   }
 
   /** The frame carries a digest of its totals, the opening reads as `approvalOpening`. */
   withExactApproval(): PublicOwnerTransfer {
-    return this.#with({ ...this.#owner, exactApproval: true });
+    return this.#with({ owner: { ...this.#owner, exactApproval: true } });
   }
 
   /** `voucher` signs the transfer inside the proof, its allow entry stands in for every sender and payment owner. */
   withVoucher(voucher: VouchSigner): PublicOwnerTransfer {
-    return this.#with({ ...this.#owner, voucher });
+    return this.#with({ owner: { ...this.#owner, voucher } });
   }
 
   /** Staging seals under the committed salt and refuses another hash, each co-signer approves the program's call. */
   withProgram(commitment: ProgramCommitment): PublicOwnerTransfer {
-    return this.#with({ ...this.#owner, program: commitment });
+    return this.#with({ owner: { ...this.#owner, program: commitment } });
   }
 
   /** Draws the salt, a transfer changed after the plan stages another hash, Rust `plan_for_program`. */
@@ -677,14 +701,16 @@ export class PublicOwnerTransfer {
     );
   }
 
-  #with(owner: Owned, payments: readonly AnonymousPayment[] = this.#payments): PublicOwnerTransfer {
+  #with(changed: Partial<PublicOwnerFields>): PublicOwnerTransfer {
     return new PublicOwnerTransfer({
-      owner,
+      owner: this.#held,
       withdrawal: this.#withdrawal,
       wallet: this.#wallet,
       inProofOwner: this.#inProofOwner,
       coOwners: this.#coOwners,
-      payments,
+      payments: this.#payments,
+      tags: this.#tags,
+      ...changed,
     });
   }
 
@@ -698,6 +724,7 @@ export class PublicOwnerTransfer {
         wallet: this.#wallet,
         inProofOwner: this.#inProofOwner,
         payments: this.#payments,
+        tags: this.#tags,
       },
     };
   }
@@ -710,6 +737,7 @@ interface PublicOwnerFields {
   readonly inProofOwner: boolean;
   readonly coOwners: readonly CoOwner[];
   readonly payments: readonly AnonymousPayment[];
+  readonly tags: TransferTags | undefined;
 }
 
 function checkPaymentRing(payment: AnonymousPayment, ringProgramId: Address): void {
@@ -726,6 +754,8 @@ export interface DelegateOutput {
   readonly amount: bigint;
   /** Pays a default-ring note under SPP's `ring_authority_exit` circuit. */
   readonly exit?: boolean;
+  /** Unset on an exit and on a co-source's change, the note that source spent finds the change. */
+  readonly tag?: ViewTag;
 }
 
 /** A delegate's public withdrawal, its settlement accounts named. */
@@ -829,6 +859,16 @@ export class DelegateTransfer {
     });
     checkWithdrawalAccounts(prepared, input.withdrawal?.accounts);
     const anonymous = isAnonymousFrame(railKind);
+    // The confidential rail publishes each recipient's bootstrap tag and no other.
+    if (
+      !anonymous &&
+      input.outputs.some(
+        ({ tag, recipient }) =>
+          tag !== undefined &&
+          !equalBytes(slotTag(tag), bootstrapSlotTag(recipient.viewingPublicKey.u())),
+      )
+    )
+      throw new RingError("RING_REQUESTED_TAG_UNPUBLISHED");
     // The member never signs, the transaction key seals the move to the auditor.
     const sealed = sealOutputs(
       {
@@ -838,9 +878,7 @@ export class DelegateTransfer {
             : ViewingKey.fromBytes(input.txViewingKey.slice() as Bytes32),
         prepared,
         delivery: () =>
-          anonymous
-            ? { kind: "anonymous", plan: delegatePlan(input.outputs) }
-            : { kind: "delivered" },
+          anonymous ? { kind: "anonymous", plan: delegatePlan(input) } : { kind: "delivered" },
         payments: [],
         salt: undefined,
         sender: input.source,
@@ -899,15 +937,20 @@ export class DelegateTransfer {
   }
 }
 
-/** Ring outputs in declared order, an exit carries no payment. */
-function delegatePlan(outputs: readonly DelegateOutput[]): AnonymousPlan {
-  return outputs
+/** An output back to the source reads as change, its tag goes to the next change slot. */
+function delegatePlan(input: DelegateTransferInput): AnonymousPlan {
+  const source = input.source.toBytes();
+  return input.outputs
     .filter((output) => output.exit !== true)
-    .reduce(
-      (planned, output) =>
-        planned.withPayment({ recipient: output.recipient.viewingPublicKey, reply: null }),
-      AnonymousPlan.create(),
-    );
+    .reduce((planned, output) => {
+      if (equalBytes(output.recipient.toBytes(), source))
+        return output.tag === undefined ? planned : planned.withSenderTag(output.tag);
+      const paid = planned.withPayment({
+        recipient: output.recipient.viewingPublicKey,
+        reply: null,
+      });
+      return output.tag === undefined ? paid.withRandomTag() : paid.withTag(output.tag);
+    }, AnonymousPlan.create());
 }
 
 /** SPP's authority builder takes no leg, the withdrawal holds a slot through its change sum and leaves padding. */

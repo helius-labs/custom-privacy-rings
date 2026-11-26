@@ -68,7 +68,7 @@ export function authorityTransferAttestation(
       ).flatMap(([kind, outputs]) =>
         outputs.map(
           (output) =>
-            `${kind}: ${shieldedAddressText(output.recipient)} ${output.mint} ${output.amount}`,
+            `${kind}: ${shieldedAddressText(output.recipient)} ${output.mint} ${output.amount} ${output.tag === undefined ? "-" : base58Decoder.decode(output.tag)}`,
         ),
       ),
       ...input.transfer.withdrawals.map(

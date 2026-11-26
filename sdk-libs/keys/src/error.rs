@@ -38,4 +38,6 @@ pub enum RingKeyError {
     InvalidRingPaymentMint,
     #[error("ring payment label is not percent-encoded UTF-8")]
     InvalidRingPaymentLabel,
+    #[error("ring payment tag is not 32 base58 bytes")]
+    InvalidRingPaymentTag,
 }

@@ -12,24 +12,6 @@ import (
 	"github.com/helius-labs/zolana/prover/server/prover-test/spp/spptest"
 )
 
-// senderBundleEncInfo mirrors SENDER_BUNDLE_LABEL.
-const senderBundleEncInfo = "CRING/snd"
-
-// SenderBundle is the sender bundle plaintext, the recipient keys travel in the auditor stream alone.
-type SenderBundle struct {
-	OutputSeed *big.Int
-}
-
-// SenderBundleLen mirrors SENDER_BUNDLE_LEN, the same for every m.
-const SenderBundleLen = 32
-
-func (b SenderBundle) Seal(t testing.TB, slotSecret *big.Int) []byte {
-	t.Helper()
-	seed := spptest.MustFieldBytes(t, b.OutputSeed)
-	key, nonce := AuditStreamKeys(t, slotSecret, senderBundleEncInfo)
-	return CTREncrypt(t, key, nonce, seed[:])
-}
-
 // Clamped is the RFC 7748 clamping of secret, the one encoding the circuit accepts as plaintext.
 func Clamped(secret [32]byte) [32]byte {
 	secret[0] &= 248

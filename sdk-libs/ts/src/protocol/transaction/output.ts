@@ -5,7 +5,6 @@ import { TransactionError } from "@heliuslabs/spr/transaction";
 /** The schemes a ring output publishes, SPP stores the ring-owned ones unparsed. */
 export const RingScheme = Object.freeze({
   confidential: 3,
-  ringSenderBundle: 9,
   /** `u16le(body_len) ‖ record_ct ‖ payload_ct ‖ reply`, one form on every rail. */
   ringBody: 10,
 } as const);
@@ -87,18 +86,4 @@ export function ringBodyOutput(
   const rest = payload.subarray(2);
   if (length > rest.length || length < RING_RECORD_LEN) return undefined;
   return Object.freeze({ body: rest.subarray(0, length), reply: rest.subarray(length) });
-}
-
-export function senderBundleOutputBody(data: Uint8Array): Uint8Array | undefined {
-  return encryptedOutputBody(data, RingScheme.ringSenderBundle);
-}
-
-function encryptedOutputBody(data: Uint8Array, scheme: RingScheme): Uint8Array | undefined {
-  let frame: RingOutputFrame;
-  try {
-    frame = readRingOutput(data);
-  } catch {
-    return undefined;
-  }
-  return frame.encoding === "encrypted" && frame.scheme === scheme ? frame.body : undefined;
 }

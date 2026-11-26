@@ -191,7 +191,7 @@ pub use crate::transfer_accounts::{
     ListRegistry, PolicySources, WithdrawalLeg, SYSTEM_PROGRAM_ID, TRANSFER_APPROVAL_DATA_LEN,
 };
 pub use crate::viewing_history::{
-    AdvancedTag, StreamCounter, ViewingHistory, ViewingKeyEntry, PENDING_RETENTION,
+    AdvancedTag, StreamCounter, TransferTags, ViewingHistory, ViewingKeyEntry, TAG_WINDOW,
 };
 pub use crate::vouch::VouchMessage;
 pub use crate::{

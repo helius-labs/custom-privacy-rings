@@ -128,7 +128,6 @@ import {
   type FrameExtensions,
   type InputTrees,
   type PolicyProof,
-  type PublishedSenderBundle,
   type RingRail,
 } from "../../protocol/transaction/transact.js";
 import {
@@ -389,7 +388,6 @@ export interface SealedTransfer {
   readonly published: readonly PublishedSlot[];
   /** The spent notes in SPP order, compact padding left out. */
   readonly inputs: readonly ProofInputUtxo[];
-  readonly senderBundle: PublishedSenderBundle | undefined;
   readonly shape: Shape;
   /** The owner signs its `messageHash`. */
   readonly proofInputs: SppProofInputs;
@@ -417,8 +415,9 @@ export function sealedTransferTerms(
   const slots = Object.freeze(
     sealed.published.map(({ output }, slot) => {
       const owner = output.ownerAddress;
-      return Object.freeze(
-        owner === undefined || output.isDummy()
+      const published = proofInputs.externalData.outputs[slot]?.ownerTag;
+      return Object.freeze({
+        ...(owner === undefined || output.isDummy()
           ? {
               slot,
               owner: ZERO_ADDRESS,
@@ -440,8 +439,9 @@ export function sealedTransferTerms(
               treeId: proofInputs.outputTreeId,
               dataHash: output.dataHash ?? ZERO_32,
               ringDataHash: output.ringDataHash ?? ZERO_32,
-            },
-      );
+            }),
+        ...(published?.kind === "inline" ? { tag: published.value } : {}),
+      });
     }),
   );
   return staged.ownerSigners.map((signer) => {
@@ -617,7 +617,6 @@ function sealStagedTransfer(
   const shape = staged.proofInputs.checkShape();
   const inputs = publishedNotes(staged.proofInputs);
   const published = rail.publishedSlots(staged.proofInputs, sender, config.auditorPublicKey);
-  const senderBundle = rail.publishedSender(staged.proofInputs, sender.viewingPublicKey);
   const auditor = config.auditorPublicKey;
   // The auditor message precedes every hash over the external data.
   const sealed = sealAudit({
@@ -634,7 +633,6 @@ function sealStagedTransfer(
       plan,
       published,
       inputs,
-      senderBundle,
       shape,
       proofInputs: withAuditorMessage(
         staged.proofInputs,
@@ -660,7 +658,7 @@ async function assembleStagedTransfer<T>(
   const delegate = isDelegateRail(ringRail);
   const { demandInput, demand, addresses, plan } = await selectStagedKey(input, context);
   const { circuit } = plan;
-  const { sealed, published, inputs, senderBundle, shape, proofInputs } = sealStagedTransfer({
+  const { sealed, published, inputs, shape, proofInputs } = sealStagedTransfer({
     ...input,
     plan,
   });
@@ -753,7 +751,6 @@ async function assembleStagedTransfer<T>(
       inputs,
       published,
       sealed,
-      ...(senderBundle === undefined ? {} : { sender: senderBundle }),
       txViewingU: rail.txViewingKey.publicKey().u(),
       privateTxHash,
       policy,
@@ -1014,7 +1011,6 @@ function previewData(
     inputs: readonly ProofInputUtxo[];
     published: readonly PublishedSlot[];
     sealed: SealedAudit;
-    sender?: PublishedSenderBundle;
     txViewingU: Bytes32;
     privateTxHash: Bytes32;
     policy: PolicyInputs;
@@ -1071,7 +1067,6 @@ function previewData(
             region: concatBytes(...replies),
           }),
         }),
-    ...(input.sender === undefined ? {} : { sender: input.sender }),
     envelope: sealed.envelope,
     recipientKeys: concatBytes(
       ...sealed.recipientKeys,

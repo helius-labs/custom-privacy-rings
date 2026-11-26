@@ -4,8 +4,6 @@ import { type Bytes32, poseidon } from "@heliuslabs/spr/keypair";
 /** Distinct ASCII tags, the first Poseidon input, mirroring Rust `custom_ring_interface::domain`. */
 export const RingDomain = Object.freeze({
   deliveredSlotSecret: 0x4352_4453, // "CRDS"
-  recipientTagDomain: 0x4352_5254, // "CRRT"
-  senderTagDomain: 0x4352_5354, // "CRST"
   blindingSeed: 0x4352_4253, // "CRBS"
   transferStatement: 0x4352_5458, // "CRTX"
   policyTable: 0x4352_5442, // "CRTB"

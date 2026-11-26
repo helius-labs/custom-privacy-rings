@@ -1,5 +1,5 @@
 /** Transfers found by scanning each ring's history, Rust `zolana_ring_client::anonymous`. */
-export { TAGS_PER_REQUEST } from "./anonymous-sync/scan-session.js";
+export { TAGS_PER_REQUEST } from "../rpc/history.js";
 export {
   type AnonymousStream,
   type AnonymousRingUtxo,

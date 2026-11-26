@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use custom_ring_interface::{CustomRingError, MintDelegate, RingRail};
+use custom_ring_interface::{stream::slot_tag, CustomRingError, MintDelegate, RingRail};
 use solana_account::Account;
 use solana_address::Address;
 use spr_client::AsyncRpc;
@@ -8,11 +8,12 @@ use spr_interface::{
     shape::{Shape, RING_AUTHORITY_WIDTHS},
     MAX_INPUT_TREES,
 };
-use spr_keypair::{NullifierKey, PublicKey, ShieldedAddress, ViewingKey};
+use spr_keypair::{viewing_key::ViewTag, NullifierKey, PublicKey, ShieldedAddress, ViewingKey};
 use spr_transaction::{
     instructions::transact::{ConfidentialTransaction, SppProofOutputUtxo},
     AssetRegistry, TransactionError, WalletUtxo,
 };
+use zolana_ring_keys::bootstrap_slot_tag;
 use zolana_ring_transaction::{AnonymousPlan, RingDelivery, RingOutputRail, ShapedSeal};
 
 use super::{
@@ -32,6 +33,8 @@ pub struct DelegateOutput {
     pub recipient: ShieldedAddress,
     pub asset: Address,
     pub amount: u64,
+    /// A payment's tag, `None` on an exit and on a co-source's change, its spent note finds it.
+    pub tag: Option<ViewTag>,
 }
 
 /// A deposit leg would bring an unlisted asset in.
@@ -49,6 +52,8 @@ pub struct DelegatePayment {
     pub recipient: ShieldedAddress,
     pub mint: Address,
     pub amount: u64,
+    /// The recipient's request tag on an anonymous ring payment, its bootstrap tag without one.
+    pub tag: Option<ViewTag>,
 }
 
 #[must_use = "select the inputs of the move"]
@@ -128,6 +133,7 @@ impl From<crate::rpc::AuthorityPayment> for DelegatePayment {
             recipient: payment.recipient.0,
             mint: payment.mint.0,
             amount: payment.amount,
+            tag: payment.tag.map(|tag| tag.0),
         }
     }
 }
@@ -306,6 +312,10 @@ impl<'a> DelegateMove<'a> {
 
     /// Every note of a mint but the last is spent whole, so its change is that note's owner's.
     fn transfer(&self, spent: Vec<SpentMint>) -> Result<DelegateTransfer<'a>, RingError> {
+        // An exit publishes its owner key, a requested tag would be signed and dropped.
+        if self.exits.iter().any(|exit| exit.tag.is_some()) {
+            return Err(RingError::RequestedTagUnpublished);
+        }
         let owner_of = |utxo: &WalletUtxo| {
             self.sources
                 .iter()
@@ -323,6 +333,11 @@ impl<'a> DelegateMove<'a> {
                 recipient: payment.recipient,
                 asset: payment.mint,
                 amount: payment.amount,
+                tag: Some(
+                    payment
+                        .tag
+                        .unwrap_or_else(|| payment.recipient.viewing_pubkey.u()),
+                ),
             })
             .collect();
         // The sender's change pads in, another owner's is a slot of its own.
@@ -333,6 +348,7 @@ impl<'a> DelegateMove<'a> {
                     recipient: owner.address,
                     asset: mint.mint,
                     amount: mint.change,
+                    tag: None,
                 });
             }
         }
@@ -366,6 +382,7 @@ impl<'a> DelegateMove<'a> {
                 recipient: exit.recipient,
                 asset: exit.mint,
                 amount: exit.amount,
+                tag: None,
             })
         });
         let transfer = self
@@ -646,19 +663,39 @@ impl Delegated<'_> {
         let ring_rail = RingRail::delegate(config.mode);
         let delivery = match ring_rail.anonymous_frame() {
             true => RingDelivery::Anonymous(Box::new(
-                // An output back to the source reads as change and takes no payment slot.
+                // An output back to the source reads as change and takes no payment slot, a
+                // payment to the source still publishes its tag on a change slot.
                 self.outputs
                     .iter()
-                    .filter(|output| output.recipient != self.source)
                     .fold(AnonymousPlan::new(), |plan, output| {
-                        plan.with_payment(output.recipient.viewing_pubkey)
+                        if output.recipient == self.source {
+                            return match output.tag {
+                                Some(tag) => plan.with_sender_tag(tag),
+                                None => plan,
+                            };
+                        }
+                        let plan = plan.with_payment(output.recipient.viewing_pubkey);
+                        match output.tag {
+                            Some(tag) => plan.with_tag(tag),
+                            None => plan.with_random_tag(),
+                        }
                     }),
             )),
-            false => DeliveredRail {
-                outputs: shape.n_outputs(),
-                rail: ring_rail,
+            false => {
+                // The confidential rail publishes each recipient's bootstrap tag and no other.
+                let requested = self.outputs.iter().any(|output| {
+                    let bootstrap = bootstrap_slot_tag(output.recipient.viewing_pubkey.u());
+                    output.tag.is_some_and(|tag| slot_tag(tag) != bootstrap)
+                });
+                if requested {
+                    return Err(RingError::RequestedTagUnpublished);
+                }
+                DeliveredRail {
+                    outputs: shape.n_outputs(),
+                    rail: ring_rail,
+                }
+                .delivery()?
             }
-            .delivery()?,
         };
         let rail =
             RingOutputRail::new(self.tx_viewing_key.clone(), config.auditor_pubkey, delivery);

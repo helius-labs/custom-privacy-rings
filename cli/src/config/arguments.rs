@@ -313,6 +313,12 @@ pub struct AddressArgs {
     pub mint: Option<Mint>,
     #[arg(long)]
     pub label: Option<String>,
+    /// Prints the bare address with no request tag. A payment to it carries the member's public viewing key tag, every observer reads its recipient.
+    #[arg(long)]
+    pub bootstrap: bool,
+    /// The requests minted before a restore from the seed alone. A sync then reads them and the next request takes an index past them.
+    #[arg(long)]
+    pub request_count: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -389,9 +395,12 @@ pub struct TransferArgs {
     /// The fewest output slots, dummies fill what the payments and the change leave.
     #[arg(long)]
     pub outputs: Option<usize>,
-    /// Attach the sender's address to each anonymous payment, an unauthenticated claim the recipient must confirm.
-    #[arg(long)]
+    /// Require the sender's address on each anonymous payment, the transfer fails when it is too large to carry the address.
+    #[arg(long, conflicts_with = "no_reply")]
     pub reply: bool,
+    /// Leave the sender's address out of each anonymous payment, by default a transfer with room for it names the sender to each recipient as an unauthenticated claim.
+    #[arg(long)]
+    pub no_reply: bool,
     /// An anonymous ring pays each shielded recipient a default-ring note, the value leaves the ring.
     #[arg(long)]
     pub default_ring: bool,
@@ -410,6 +419,9 @@ pub struct BalanceArgs {
     /// Registered mint, `sol` by default.
     #[arg(long)]
     pub mint: Option<Mint>,
+    /// Also reads the ring's whole history and opens every body under each held key. It finds a note no listed tag names, after a restore from the seed or a payment under a wrong tag.
+    #[arg(long)]
+    pub recover: bool,
 }
 
 #[derive(Debug, Args)]

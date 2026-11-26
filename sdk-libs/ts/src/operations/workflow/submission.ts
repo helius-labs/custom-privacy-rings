@@ -22,7 +22,6 @@ import {
   compileUnsignedTransaction,
 } from "@heliuslabs/spr/internal";
 import type { BlockhashProvider, ChainReader, KitRpcAccess } from "@heliuslabs/spr/client";
-import type { ViewingHistory } from "../../state/viewing-history.js";
 import { savePersistedWallet, type WalletPersistence } from "@heliuslabs/spr/wallet";
 import type { Bytes32, RequestContext, Transaction } from "@heliuslabs/spr/interface";
 import {
@@ -58,8 +57,6 @@ export interface RingSubmissionAttempt extends RingBoundState {
   readonly lastValidBlockHeight: bigint;
   readonly intentHash: Bytes32;
   readonly ringInstructionIndex: number;
-  /** The anonymous depositor's viewing history past the attempt's tag, every attempt the same. */
-  readonly viewingHistory?: ViewingHistory;
   /** Absent off a transfer. */
   readonly chargedOutflows?: readonly OwnerDebit[];
 }
@@ -193,11 +190,6 @@ export class RingTransactionSubmission {
     this.#wallet = input.wallet;
     this.#id = input.reservationId ?? bytesKey(crypto.getRandomValues(new Uint8Array(16)));
     this.#utxoHashes = (input.utxoHashes ?? []).map((hash) => new Uint8Array(hash) as Bytes32);
-  }
-
-  /** An anonymous depositor stores it before the first `send`. */
-  get viewingHistory(): ViewingHistory | undefined {
-    return this.#attempt.viewingHistory;
   }
 
   /** @internal The reservation `build` records outlives every attempt. */

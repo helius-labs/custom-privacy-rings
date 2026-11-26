@@ -1,7 +1,7 @@
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, stream::slot_tag, AnonymousProofData, AppMessage,
-    CustomRingProof, FrameExtensions, FramedSenderBundle, InputTrees, PlainGroth16Proof, Replies,
-    RingOutput, SlotBody, MIN_REPLY_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
+    CustomRingProof, FrameExtensions, InputTrees, PlainGroth16Proof, Replies, RingOutput, SlotBody,
+    MIN_REPLY_LEN, RING_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -252,7 +252,7 @@ fn zero_key_notes_are_named_by_no_merge() {
     ));
 }
 
-/// An anonymous transfer of `inputs` x `outputs`, slot 0 change, each other slot a body and a reply.
+/// An anonymous transfer of `inputs` x `outputs`, each slot a body and a reply.
 fn anonymous_transfer(inputs: usize, outputs: usize, reply_len: Option<usize>) -> Instruction {
     anonymous_transfer_with(inputs, outputs, reply_len, FrameExtensions::default())
 }
@@ -268,7 +268,6 @@ fn anonymous_transfer_with(
     let field = [1; 32];
     let salt = [2; 16];
     let body = [4; RING_RECORD_LEN];
-    let bundle = [5; SENDER_BUNDLE_LEN];
     let nullifiers = vec![field; inputs];
     let region = vec![6; reply_len.unwrap_or(0) * outputs];
     let keys = vec![8; 32 * outputs];
@@ -294,21 +293,14 @@ fn anonymous_transfer_with(
         entry: false,
         wide_owners: false,
         outputs: (0..outputs)
-            .map(|slot| RingOutput {
+            .map(|_| RingOutput {
                 hash: &field,
-                owner_tag: match slot {
-                    0 => [0; 32],
-                    _ => slot_tag(field),
-                },
+                owner_tag: slot_tag(field),
                 body: SlotBody::Recipient(&body),
                 record: &body,
             })
             .collect(),
         replies: reply_len.map(|len| Replies::new(len as u16, &region).unwrap()),
-        sender: Some(FramedSenderBundle {
-            tag: &field,
-            body: &bundle,
-        }),
         envelope: &[],
         recipient_keys: &keys,
         vouched: false,
@@ -339,7 +331,7 @@ fn anonymous_transfer_with(
     }
 }
 
-/// A message count past SPP's list names the rail's limit, the fit never reads it as an unparsed frame.
+/// A message count past SPP's list names the limit, the fit never reads it as an unparsed frame.
 #[test]
 fn a_frame_past_the_application_message_limit_is_refused_by_name() {
     let view_tag = [8; 32];
@@ -369,7 +361,7 @@ fn a_frame_past_the_application_message_limit_is_refused_by_name() {
     assert!(matches!(
         fit(&past),
         Err(FitError::ApplicationMessages { limit })
-            if limit == custom_ring_interface::max_application_messages(RingRail::Anonymous)
+            if limit == custom_ring_interface::MAX_APPLICATION_MESSAGES
     ));
 }
 

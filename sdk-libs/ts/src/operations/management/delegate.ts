@@ -72,6 +72,7 @@ export interface RingDelegateTransferParams {
   readonly approve?: ApprovalHandler;
   readonly delegate: SignerAccount;
   readonly feePayer: Address;
+  /** A payment without a tag takes its recipient's bootstrap tag. */
   readonly outputs: readonly DelegateOutput[];
   /** A public withdrawal, a delegate takes no deposit leg. */
   readonly withdrawal?: DelegateWithdrawal;
@@ -234,6 +235,9 @@ async function buildDelegateTransaction(
   let spender: ReturnType<typeof delegateProofs> | undefined;
   let reservation: UtxoReservation | undefined;
   try {
+    // An exit publishes its owner key, a requested tag would be signed and dropped.
+    if (outputs.some((output) => output.exit === true && output.tag !== undefined))
+      throw new RingError("RING_REQUESTED_TAG_UNPUBLISHED");
     if (
       source.kind === "keys" &&
       !owners.every((owner) => equalBytes(owner.toBytes(), wallet.identity.toBytes()))
@@ -289,8 +293,15 @@ async function buildDelegateTransaction(
     const owner = firstMint.owner;
     const coSources = delegateCoSources(source, selected.map(ownerOf), owner);
     // The sender's change pads in, another owner's is a slot of its own.
-    const moved = [
-      ...outputs,
+    const moved: readonly DelegateOutput[] = [
+      ...outputs.map((output) =>
+        output.exit === true
+          ? output
+          : Object.freeze({
+              ...output,
+              tag: output.tag ?? output.recipient.viewingPublicKey.u(),
+            }),
+      ),
       ...spentMints
         .filter((mint) => mint.change > 0n && !equalBytes(mint.owner.toBytes(), owner.toBytes()))
         .map((mint) =>

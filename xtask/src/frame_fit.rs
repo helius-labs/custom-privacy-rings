@@ -16,10 +16,10 @@ use custom_ring_interface::{
     storage::Revision,
     stream::slot_tag,
     tag, AnonymousProofData, AppMessage, CustomRingError, CustomRingProof, FrameExtensions,
-    FramedSenderBundle, InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof, RecordForm,
-    RecordKind, Replies, RingOutput, RingPolicy, RingRail, RingTransactData, RootRead, SlotBody,
-    TransferApproval, TransferLayout, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, MIN_REPLY_LEN,
-    RECIPIENT_KEY_LEN, SENDER_BUNDLE_LEN, TAGGED_X25519_KEY_LEN, TRANSFER_RECORD_LEN,
+    InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof, RecordForm, RecordKind, Replies,
+    RingOutput, RingPolicy, RingRail, RingTransactData, RootRead, SlotBody, TransferApproval,
+    TransferLayout, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, MIN_REPLY_LEN, RECIPIENT_KEY_LEN,
+    TAGGED_X25519_KEY_LEN, TRANSFER_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -428,7 +428,6 @@ impl Transfer {
         let nullifiers: Vec<[u8; 32]> = (0..inputs)
             .map(|input| indexed(0xb0, input).to_bytes())
             .collect();
-        let bundle = [12u8; SENDER_BUNDLE_LEN];
         let revision = Revision::from(1);
 
         let legs = self.legs(frame);
@@ -522,10 +521,6 @@ impl Transfer {
             replies: (load.replies && anonymous_frame)
                 .then(|| Replies::new(reply_len, &reply_region))
                 .transpose()?,
-            sender: anonymous_frame.then_some(FramedSenderBundle {
-                tag: &field,
-                body: &bundle,
-            }),
             envelope: &[],
             recipient_keys: &[],
             vouched: false,

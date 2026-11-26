@@ -1,7 +1,7 @@
 //! Readers and writers of ring output bodies in SPP's encrypted output framing.
 
 use custom_ring_interface::{
-    output::{OutputPayload, RING_BODY_SCHEME_TAG, RING_SENDER_BUNDLE_SCHEME_TAG},
+    output::{OutputPayload, RING_BODY_SCHEME_TAG},
     CustomRingError, RING_RECORD_LEN,
 };
 use spr_event::OutputDataEncoding;
@@ -20,10 +20,6 @@ pub fn ring_body_output(data: &[u8]) -> Option<(&[u8], &[u8])> {
     let (body_len, rest) = payload.split_first_chunk()?;
     rest.split_at_checked(usize::from(u16::from_le_bytes(*body_len)))
         .filter(|(body, _)| body.len() >= RING_RECORD_LEN)
-}
-
-pub fn ring_sender_bundle_output_body(data: &[u8]) -> Option<&[u8]> {
-    encrypted_output_body(data, RING_SENDER_BUNDLE_SCHEME_TAG)
 }
 
 fn encrypted_output_body(data: &[u8], scheme: u8) -> Option<&[u8]> {

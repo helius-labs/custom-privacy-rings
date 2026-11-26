@@ -90,6 +90,7 @@ pub fn run_move(ctx: &Context, args: DelegateMoveArgs) -> Result<()> {
                     recipient: *to,
                     mint,
                     amount,
+                    tag: None,
                 })
                 .collect(),
             assets: assets.registry(),

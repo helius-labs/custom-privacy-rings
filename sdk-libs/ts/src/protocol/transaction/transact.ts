@@ -46,7 +46,7 @@ import {
   type AuditStreamLayout,
   type RecordForm,
 } from "../codec/ring-disclosure-layout.js";
-import { MIN_REPLY_LEN, SENDER_BUNDLE_LEN } from "../codec/anonymous-delivery.js";
+import { MIN_REPLY_LEN } from "../codec/anonymous-delivery.js";
 import {
   SLOT_TAG_LEN,
   framedSlotTag,
@@ -147,12 +147,6 @@ export interface RingOutput {
   readonly body: SlotBody;
 }
 
-/** Sender bundle, forwarded under its tag as the first SPP message, the tag derived for index `m`. */
-export interface PublishedSenderBundle {
-  readonly tag: Bytes32;
-  readonly body: Uint8Array;
-}
-
 /** Rust `SlotBody::record_len`, the one length the slot's kind takes under the frame's form. */
 export function slotRecordLen(body: Pick<SlotBody, "kind">, form: RecordForm): number {
   return publishedRecordLen(form, body.kind === "exit" ? RecordKind.exit : RecordKind.ring);
@@ -208,8 +202,6 @@ export interface RingTransactData {
   readonly outputs: readonly RingOutput[];
   /** Set exactly under the reply flag. */
   readonly replies?: Replies;
-  /** Present exactly on the anonymous frame. */
-  readonly sender?: PublishedSenderBundle;
   /** `envelope_ct`, the transmitted length is the stream layout's. */
   readonly envelope: Uint8Array;
   /** `keys_ct`, one sealed `V_i` of 32 bytes per published slot, then the voucher's sealed key under `vouched`. */
@@ -254,7 +246,7 @@ export function landedRingRail(instruction: Uint8Array, sppAnonymous: boolean): 
   );
 }
 
-/** SPP's authority rail names neither ring mode, the frame parses under one, the sender bundle moves every length. */
+/** SPP's authority rail names neither ring mode, a frame without replies parses under both and reads `delegate`. */
 function authorityRail(instruction: Uint8Array): RingRail {
   for (const rail of ["delegate", "anonymousDelegate"] as const) {
     try {
@@ -289,14 +281,12 @@ export const MAX_SPP_MESSAGES = 0xff;
 /** Rust `MAX_CPI_DATA_LEN`, the runtime's ceiling on the SPP data a transfer forwards. */
 export const MAX_CPI_DATA_LEN = 10 * 1024;
 
-/** Rust `max_application_messages`, SPP also receives the auditor message and an anonymous frame's sender bundle. */
-export function maxApplicationMessages(rail: RingRail): number {
-  return MAX_SPP_MESSAGES - 1 - (isAnonymousFrame(rail) ? 1 : 0);
-}
+/** Rust `MAX_APPLICATION_MESSAGES`, SPP also receives the auditor message. */
+export const MAX_APPLICATION_MESSAGES = MAX_SPP_MESSAGES - 1;
 
 /** Runs ahead of the message list's allocation, as Rust `check_message_count`. */
-function checkMessageCount(count: number, rail: RingRail): void {
-  if (count > maxApplicationMessages(rail)) throw invalid("TooManyApplicationMessages");
+function checkMessageCount(count: number): void {
+  if (count > MAX_APPLICATION_MESSAGES) throw invalid("TooManyApplicationMessages");
 }
 
 export function railSppTag(rail: RingRail): number {
@@ -641,7 +631,7 @@ function readCompact(bytes: Reader, rail: RingRail): RingTransactData {
   const expiryUnixTs = bytes.u32("expiryUnixTs");
   const txViewingU = field32(bytes, "txViewingU");
   const salt = bytes.bytes(16, "salt") as Bytes16;
-  const extensions = has(flags, Flag.extensions) ? readExtensions(bytes, rail) : NO_EXTENSIONS;
+  const extensions = has(flags, Flag.extensions) ? readExtensions(bytes) : NO_EXTENSIONS;
   checkExtensions(extensions, rail);
   const stream = streamOf(rail, header);
   const interfaceTransfers = within("InvalidInstructionData", () =>
@@ -659,12 +649,6 @@ function readCompact(bytes: Reader, rail: RingRail): RingTransactData {
     readSlot(bytes, stream.records, bitAt(exits, slot)),
   );
   const replies = has(flags, Flag.replyMetadata) ? readReplies(bytes, outputs) : undefined;
-  const sender: PublishedSenderBundle | undefined = isAnonymousFrame(rail)
-    ? Object.freeze({
-        tag: field32(bytes, "sender.tag"),
-        body: bytes.bytes(SENDER_BUNDLE_LEN, "sender.body"),
-      })
-    : undefined;
   const envelope = bytes.bytes(envelopeRegion(stream).length, "envelope");
   const recipientKeys = bytes.bytes(recipientKeysLen(stream), "recipientKeys");
   const privateTxHash = field32(bytes, "privateTxHash");
@@ -717,7 +701,6 @@ function readCompact(bytes: Reader, rail: RingRail): RingTransactData {
     vouched: header.flags.vouched,
     outputs: Object.freeze(outputs),
     ...(replies === undefined ? {} : { replies }),
-    ...(sender === undefined ? {} : { sender }),
     envelope,
     recipientKeys,
     privateTxHash,
@@ -784,7 +767,7 @@ const NO_EXTENSIONS: FrameExtensions = Object.freeze({});
 /** The cached selector's reads then its write slots, little endian. */
 const CACHE_ACCESS_WRITES = MAX_CACHE_WRITES;
 
-function readExtensions(bytes: Reader, rail: RingRail): FrameExtensions {
+function readExtensions(bytes: Reader): FrameExtensions {
   const flags = bytes.u8("extensions");
   if ((flags & ~KNOWN_EXTENSIONS) !== 0) throw invalid("FlagNotAllowed");
   const dataHash = has(flags, ExtensionFlag.dataHash) ? field32(bytes, "dataHash") : undefined;
@@ -792,7 +775,7 @@ function readExtensions(bytes: Reader, rail: RingRail): FrameExtensions {
     ? field32(bytes, "ringDataHash")
     : undefined;
   const count = has(flags, ExtensionFlag.messages) ? bytes.u8("messages.length") : 0;
-  if (has(flags, ExtensionFlag.messages)) checkMessageCount(count, rail);
+  if (has(flags, ExtensionFlag.messages)) checkMessageCount(count);
   const messages = has(flags, ExtensionFlag.messages)
     ? Array.from({ length: count }, (): AppMessage => {
         const viewTag = field32(bytes, "message.viewTag");
@@ -833,9 +816,9 @@ function extensionsEmpty(extensions: FrameExtensions): boolean {
   );
 }
 
-function writeExtensions(out: Writer, extensions: FrameExtensions, rail: RingRail): void {
+function writeExtensions(out: Writer, extensions: FrameExtensions): void {
   const messages = extensions.messages ?? [];
-  checkMessageCount(messages.length, rail);
+  checkMessageCount(messages.length);
   const bits: readonly (readonly [boolean, number])[] = [
     [extensions.dataHash !== undefined, ExtensionFlag.dataHash],
     [extensions.ringDataHash !== undefined, ExtensionFlag.ringDataHash],
@@ -895,7 +878,6 @@ function writeCompact(data: RingTransactData): Uint8Array {
   checkExtensions(data.extensions, data.rail);
   const stream = streamOf(data.rail, header);
   checkPayloads(data);
-  const anonymousFrame = isAnonymousFrame(data.rail);
   const hiddenOwnerProof = data.rail === "anonymous" && !data.publicOwners;
   const ownersExpected = has(flags, Flag.ownRoot)
     ? data.interfaceTransfers.filter((transfer) => transfer.kind === "splWithdrawal").length
@@ -903,8 +885,6 @@ function writeCompact(data: RingTransactData): Uint8Array {
   if (
     data.splWithdrawalOwners.length !== ownersExpected ||
     (data.anonymous !== undefined) !== hiddenOwnerProof ||
-    (data.sender !== undefined) !== anonymousFrame ||
-    (data.sender !== undefined && data.sender.body.length !== SENDER_BUNDLE_LEN) ||
     data.envelope.length !== envelopeRegion(stream).length ||
     data.recipientKeys.length !== recipientKeysLen(stream) ||
     !data.outputs.every((output) => slotFits(output, stream.records))
@@ -927,7 +907,7 @@ function writeCompact(data: RingTransactData): Uint8Array {
     .u32(data.expiryUnixTs, "expiryUnixTs")
     .bytes(data.txViewingU, 32, "txViewingU")
     .bytes(data.salt, 16, "salt");
-  if (has(flags, Flag.extensions)) writeExtensions(out, data.extensions, data.rail);
+  if (has(flags, Flag.extensions)) writeExtensions(out, data.extensions);
   out.u8(data.interfaceTransfers.length, "interfaceTransfers.length");
   for (const transfer of data.interfaceTransfers) writeInterfaceTransfer(out, transfer);
   for (const owner of data.splWithdrawalOwners) out.bytes(owner, 32, "splWithdrawalOwner");
@@ -938,8 +918,6 @@ function writeCompact(data: RingTransactData): Uint8Array {
   for (const output of data.outputs) writeSlot(out, output, stream.records);
   if (data.replies !== undefined)
     out.u16(data.replies.length, "replyLen").bytes(data.replies.region);
-  if (data.sender !== undefined)
-    out.bytes(data.sender.tag, 32, "sender.tag").bytes(data.sender.body);
   out.bytes(data.envelope).bytes(data.recipientKeys);
   out.bytes(data.privateTxHash, 32, "privateTxHash");
   if (data.anonymous !== undefined) {
@@ -1196,14 +1174,6 @@ function transactIxData(
     throw invalid("InvalidAuditorPubkey");
   const replies = RingTransactData.slotReplies(data);
   const messages: MessageData[] = [
-    ...(data.sender === undefined
-      ? []
-      : [
-          Object.freeze({
-            viewTag: checkedField(data.sender.tag, "sender.tag"),
-            data: encodeRingOutput(RingScheme.ringSenderBundle, data.sender.body),
-          }),
-        ]),
     ...(data.extensions.messages ?? []),
     // The auditor message stays last.
     Object.freeze({

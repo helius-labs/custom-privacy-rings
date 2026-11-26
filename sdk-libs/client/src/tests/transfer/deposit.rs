@@ -1,4 +1,4 @@
-use custom_ring_interface::{CoSignScope, CustomRingError, RingMode, RingRail};
+use custom_ring_interface::{stream::slot_tag, CoSignScope, CustomRingError, RingMode, RingRail};
 use solana_address::Address;
 use solana_signer::Signer;
 use spr_indexer_api::SerializablePubkey;
@@ -12,7 +12,7 @@ use crate::{
         RelayIntent, RelayProofInputs, RelayQuote, RelayRail, RelayRequestAttestation,
         ServiceTarget,
     },
-    tests::support::{keypair, ring, Chain, RingSettings, TREE_ID},
+    tests::support::{fresh_wallet_tags, keypair, ring, Chain, RingSettings, TREE_ID},
     DepositAsset, DepositOutput, DepositRecipient, PreparedRingDeposit, RelayedTransferInput,
     RingDeposit, RingDepositBatch, RingError, RingTransfer,
 };
@@ -27,6 +27,7 @@ fn deposit<'a>(payer: &'a (dyn Signer + Sync), recipient: DepositRecipient<'a>) 
         amount: 5,
         cosigner: None,
         list_salt: None,
+        tags: None,
     }
 }
 
@@ -60,9 +61,19 @@ async fn a_deposit_proves_a_transfer_frame_of_only_dummies() {
         let paid = to(&member);
         let target = match mode {
             RingMode::Confidential => DepositRecipient::Confidential(recipient),
-            RingMode::Anonymous => DepositRecipient::AnonymousPayment { to: &paid },
+            RingMode::Anonymous => DepositRecipient::AnonymousPayment {
+                to: &paid,
+                request_tag: None,
+            },
         };
-        let prepared = deposit(&payer, target).prepare(&chain).await.unwrap();
+        let tags = fresh_wallet_tags(&member);
+        let prepared = RingDeposit {
+            tags: (mode == RingMode::Anonymous).then_some(&tags),
+            ..deposit(&payer, target)
+        }
+        .prepare(&chain)
+        .await
+        .unwrap();
         assert_eq!(
             prepared.sender.shielded_address().unwrap().nullifier_pubkey,
             spr_interface::ZERO_NULLIFIER_PUBKEY
@@ -87,6 +98,122 @@ async fn a_deposit_proves_a_transfer_frame_of_only_dummies() {
             .iter()
             .any(|output| { output.owner_address == Some(recipient) && output.amount == 5 }));
     }
+}
+
+#[tokio::test]
+async fn an_anonymous_deposit_publishes_no_bootstrap_tag_of_its_recipient() {
+    let (wallet, member, payer) = (keypair(1), keypair(2), keypair(9));
+    let recipient = member.shielded_address().unwrap();
+    let chain = Chain::ring(RingSettings::new(RingMode::Anonymous)).with_tracking(&[recipient]);
+    let paid = to(&member);
+    let target = |request_tag| DepositRecipient::AnonymousPayment {
+        to: &paid,
+        request_tag,
+    };
+    let requested = [0x5a; 32];
+    let tags = fresh_wallet_tags(&wallet);
+    for sender_tag in [None, Some(&tags)] {
+        for request in [None, Some(recipient.viewing_pubkey.u()), Some(requested)] {
+            let prepared = RingDeposit {
+                tags: sender_tag,
+                ..deposit(&payer, target(request))
+            }
+            .prepare(&chain)
+            .await
+            .unwrap();
+            let assembled = assemble(&prepared, &chain).await;
+            if request != Some(requested) {
+                assert!(matches!(assembled, Err(RingError::DepositBootstrapTag)));
+                continue;
+            }
+            let assembled = assembled.unwrap();
+            let slot = assembled
+                .proof_inputs()
+                .output_utxos
+                .iter()
+                .position(|output| output.owner_address == Some(recipient))
+                .unwrap();
+            assert_eq!(
+                assembled.parts().outputs[slot].owner_tag,
+                slot_tag(requested)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_deposit_publishes_the_wallets_sender_tag_on_the_note_to_its_own_key_alone() {
+    let (member, payer) = (keypair(1), keypair(9));
+    let recipient = member.shielded_address().unwrap();
+    let chain = Chain::ring(RingSettings::new(RingMode::Anonymous)).with_tracking(&[recipient]);
+    let paid = to(&member);
+    let tags = fresh_wallet_tags(&member);
+    let prepared = RingDeposit {
+        tags: Some(&tags),
+        ..deposit(
+            &payer,
+            DepositRecipient::AnonymousPayment {
+                to: &paid,
+                request_tag: None,
+            },
+        )
+    }
+    .prepare(&chain)
+    .await
+    .unwrap();
+    let assembled = assemble(&prepared, &chain).await.unwrap();
+    let outputs = &assembled.proof_inputs().output_utxos;
+    for owner in [prepared.sender.shielded_address().unwrap(), recipient] {
+        assert!(outputs
+            .iter()
+            .any(|output| output.owner_address == Some(owner)));
+    }
+    for (output, published) in outputs.iter().zip(&assembled.parts().outputs) {
+        assert_eq!(
+            published.owner_tag == tags.sender(),
+            output.owner_address == Some(recipient)
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_batch_deposit_of_two_own_notes_publishes_the_sender_tag_once() {
+    let (member, payer) = (keypair(1), keypair(9));
+    let recipient = member.shielded_address().unwrap();
+    let chain = Chain::ring(RingSettings::new(RingMode::Anonymous)).with_tracking(&[recipient]);
+    let paid = to(&member);
+    let tags = fresh_wallet_tags(&member);
+    let output = DepositOutput {
+        recipient: DepositRecipient::AnonymousPayment {
+            to: &paid,
+            request_tag: None,
+        },
+        asset: DepositAsset::Sol,
+        amount: 5,
+        list_salt: None,
+    };
+    let prepared = RingDepositBatch {
+        ring: ring(),
+        payer: &payer,
+        tree: pda::tree(TREE_ID),
+        outputs: vec![output; 2],
+        cosigner: None,
+        tags: Some(&tags),
+    }
+    .prepare(&chain)
+    .await
+    .unwrap();
+    let assembled = assemble(&prepared, &chain).await.unwrap();
+    let own: Vec<bool> = assembled
+        .proof_inputs()
+        .output_utxos
+        .iter()
+        .zip(&assembled.parts().outputs)
+        .filter(|(output, _)| output.owner_address == Some(recipient))
+        .map(|(_, published)| published.owner_tag == tags.sender())
+        .collect();
+    assert_eq!(own.len(), 2);
+    assert_eq!(own.iter().filter(|tagged| **tagged).count(), 1);
 }
 
 #[tokio::test]
@@ -122,7 +249,10 @@ async fn a_deposit_refuses_an_address_of_another_ring() {
         ..to(&keypair(2))
     };
     assert!(matches!(
-        deposit(&payer, DepositRecipient::AnonymousPayment { to: &foreign })
+        deposit(&payer, DepositRecipient::AnonymousPayment {
+            to: &foreign,
+            request_tag: None,
+        })
             .prepare(&chain)
             .await,
         Err(RingError::ForeignRingAddress { address, ring: paid })
@@ -155,6 +285,7 @@ async fn a_batch_past_the_frame_is_refused_before_any_read() {
         tree: pda::tree(TREE_ID),
         outputs,
         cosigner: None,
+        tags: None,
     };
     for outputs in [
         vec![output(DepositAsset::Sol); 9],
@@ -294,19 +425,23 @@ mod relay {
             let chain = Chain::ring(RingSettings::new(mode)).with_tracking(&[recipient]);
             let target = match mode {
                 RingMode::Confidential => DepositRecipient::Confidential(recipient),
-                RingMode::Anonymous => DepositRecipient::AnonymousPayment { to: &paid },
+                RingMode::Anonymous => DepositRecipient::AnonymousPayment {
+                    to: &paid,
+                    request_tag: None,
+                },
             };
-            relayed_deposit_stages(&payer, target, chain, mode).await;
+            let tags = fresh_wallet_tags(&member);
+            let deposit = RingDeposit {
+                tags: (mode == RingMode::Anonymous).then_some(&tags),
+                ..deposit(&payer, target)
+            };
+            relayed_deposit_stages(deposit, chain, mode).await;
         }
     }
 
-    async fn relayed_deposit_stages(
-        payer: &spr_keypair::ShieldedKeypair,
-        target: DepositRecipient<'_>,
-        chain: Chain,
-        mode: RingMode,
-    ) {
-        let prepared = deposit(payer, target)
+    async fn relayed_deposit_stages(deposit: RingDeposit<'_>, chain: Chain, mode: RingMode) {
+        let payer = deposit.payer;
+        let prepared = deposit
             .prepare_relay(&chain, SERVICE, quote())
             .await
             .unwrap();

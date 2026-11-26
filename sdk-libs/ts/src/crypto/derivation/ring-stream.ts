@@ -68,8 +68,9 @@ export function slotTag(tag: Bytes32): Bytes32 {
   return unframedSlotTag(framedSlotTag(tag));
 }
 
+/** A tag of another length would frame as zero bytes. */
 export function framedSlotTag(tag: Bytes32): Uint8Array {
-  return tag.slice(32 - SLOT_TAG_LEN);
+  return checkedBytes<Bytes32>(tag, 32, "slot tag").slice(32 - SLOT_TAG_LEN);
 }
 
 export function unframedSlotTag(framed: Uint8Array): Bytes32 {
@@ -78,26 +79,9 @@ export function unframedSlotTag(framed: Uint8Array): Bytes32 {
   return tag as Bytes32;
 }
 
-/**
- * An anonymous payment's tag, fresh per transaction and slot, since a tag stable per recipient
- * would link every payment to one recipient in public.
- */
-export function anonymousSlotTag(slotSecret: Bytes32): Bytes32 {
-  return slotTag(recipientTag(slotSecret));
-}
-
-/** `Poseidon(CRRT, slot_secret)`, published for a live recipient and proven against its body's secret. */
-export function recipientTag(slotSecret: Bytes32): Bytes32 {
-  return domainHash(RingDomain.recipientTagDomain, [
-    checkedBytes<Bytes32>(slotSecret, 32, "slot secret"),
-  ]);
-}
-
-/** `Poseidon(CRST, slot_secret)` at index `m`, the domain keeps it apart from every recipient tag. */
-export function bundleTag(slotSecret: Bytes32): Bytes32 {
-  return domainHash(RingDomain.senderTagDomain, [
-    checkedBytes<Bytes32>(slotSecret, 32, "slot secret"),
-  ]);
+/** Rust `bootstrap_slot_tag`, every holder of the address links the slots under it. */
+export function bootstrapSlotTag(viewingU: Bytes32): Bytes32 {
+  return slotTag(viewingU);
 }
 
 /** Rust `ring_id_field`, `hash_bytes` of the ring program address. */

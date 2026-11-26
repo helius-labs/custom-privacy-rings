@@ -576,8 +576,8 @@ fn compute_vectors() -> StatementVectors {
                       HashChain4(Poseidon(exit_i, hash_bytes(record_i))) with each output's exit claim, input_count, private_tx_hash, the sender, delegate_asset, the \
                       party identities, signer_count, signer_chain, policy_hash, own_root, \
                       curator_root, tracking_root, asset, net and gross per public \
-                      slot, withdrawal_hash and the element count. No body, tag, \
-                      bundle or reply digest and no slot class enters it. Every per-slot chain is \
+                      slot, withdrawal_hash and the element count. No body, tag \
+                      or reply digest and no slot class enters it. Every per-slot chain is \
                       zero filled to the capacity. signer_chain is HashChain4 over the deduplicated \
                       owner identities zero filled to the key's S, and zero when signer_count is \
                       zero on every rail. The apply statement ends at the restrictive bit, and \

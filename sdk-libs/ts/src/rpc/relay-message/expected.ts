@@ -10,6 +10,7 @@ import { getAssociatedTokenAddress } from "@heliuslabs/spr/addresses";
 import { encodeBase58, equalBytes, splInterfaceWithBump } from "@heliuslabs/spr/internal";
 import type { NullifierKey, ShieldedAddress, X25519PublicKey } from "@heliuslabs/spr/keypair";
 import { ProofInputUtxo, SOL_MINT, type WalletUtxo } from "@heliuslabs/spr/transaction";
+import { bootstrapSlotTag, slotTag } from "../../crypto/derivation/ring-stream.js";
 import { RingError } from "../../protocol/error.js";
 import type { ApprovalOpening } from "../../protocol/membership/approval-totals.js";
 import type { OwnerDebit } from "../../protocol/membership/owner-debits.js";
@@ -124,6 +125,8 @@ export interface ExpectedPayment {
   readonly owner: ExpectedOwner;
   readonly mint: Address;
   readonly amount: bigint;
+  /** The published owner tag, an exit's owner key or a payment's slot tag. */
+  readonly tag: Bytes32;
 }
 
 /** Rust `ExpectedDelegate`. */
@@ -197,6 +200,8 @@ export interface SlotOpening {
   readonly treeId: number;
   readonly dataHash: Bytes32;
   readonly ringDataHash: Bytes32;
+  /** The tag a non-exit slot publishes, no proof holds it and a slot under another is lost to its recipient's sync. */
+  readonly tag?: Bytes32;
 }
 
 export interface TokenAccountCreate {
@@ -354,14 +359,21 @@ export async function expectedDelegate(
       [
         ...transfer.payments.map((payment) => ({ kind: RecordKind.ring, payment })),
         ...transfer.exits.map((payment) => ({ kind: RecordKind.exit, payment })),
-      ].map(({ kind, payment }) =>
-        Object.freeze({
+      ].map(({ kind, payment }) => {
+        const owner = expectedOwner(payment.recipient);
+        return Object.freeze({
           kind,
-          owner: expectedOwner(payment.recipient),
+          owner,
           mint: payment.mint,
           amount: payment.amount,
-        }),
-      ),
+          tag:
+            kind === RecordKind.exit
+              ? owner.ownerKey
+              : payment.tag === undefined
+                ? bootstrapSlotTag(owner.viewingU)
+                : slotTag(payment.tag),
+        });
+      }),
     ),
     withdrawals: Object.freeze(await Promise.all(transfer.withdrawals.map(expectedWithdrawal))),
     allowed,

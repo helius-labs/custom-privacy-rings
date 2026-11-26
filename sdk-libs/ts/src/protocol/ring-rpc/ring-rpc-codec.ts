@@ -559,7 +559,7 @@ export function encodePrepareAuthorityTransferRequest(
     ring: checkedAddress(value.ring, "ring"),
     delegate: checkedAddress(value.delegate, "delegate"),
     transfer: encodeAuthorityTransfer(value.transfer),
-    txViewingKey: getBase64Decoder().decode(checkedTxKey(value.txViewingKey)),
+    txViewingKey: getBase64Decoder().decode(checked32(value.txViewingKey, "txViewingKey")),
     timestamp: toU64(value.timestamp, "timestamp"),
     nonce: checkedBase64(value.nonce, "nonce"),
     signature: checkedSignature(value.signature, "signature"),
@@ -578,9 +578,9 @@ export function encodeGetListSaltRequest(value: GetListSaltRequest): WireObject 
   };
 }
 
-function checkedTxKey(key: Bytes32): Bytes32 {
-  if (key.length !== 32) throw new RingError("RING_RPC", { details: { path: "txViewingKey" } });
-  return key;
+function checked32(bytes: Bytes32, path: string): Bytes32 {
+  if (bytes.length !== 32) throw new RingError("RING_RPC", { details: { path } });
+  return bytes;
 }
 
 function encodeAuthorityPayment(payment: AuthorityPayment, path: string): WireObject {
@@ -588,6 +588,9 @@ function encodeAuthorityPayment(payment: AuthorityPayment, path: string): WireOb
     recipient: shieldedAddressText(payment.recipient),
     mint: checkedAddress(payment.mint, `${path}.mint`),
     amount: toU64(payment.amount, `${path}.amount`),
+    ...(payment.tag === undefined
+      ? {}
+      : { tag: base58.decode(checked32(payment.tag, `${path}.tag`)) }),
   };
 }
 

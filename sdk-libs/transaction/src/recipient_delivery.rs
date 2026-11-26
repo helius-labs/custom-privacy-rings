@@ -1,10 +1,10 @@
-//! Ring bodies, sender bundles and reply metadata, each under its own label over a CRDS slot secret.
+//! Ring bodies and reply metadata, each under its own label over a CRDS slot secret.
 //!
 //! A ring body is the slot's proven record and its unproven payload, one stream. The proof binds the
 //! record, its data hashes included, to the slot's opening and its ciphertext to the statement. The
 //! payload holds the application data alone and stays the sender's word.
 
-use custom_ring_interface::{RecordForm, RecordKind, SENDER_BUNDLE_LEN};
+use custom_ring_interface::{RecordForm, RecordKind};
 use solana_address::Address;
 use spr_hasher::primitives::is_canonical_x25519_public_key;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
@@ -19,12 +19,10 @@ use zolana_ring_keys::OutputRecord;
 use zolana_ring_keys::RecipientBodyForms;
 use zolana_ring_keys::RecipientPayload;
 use zolana_ring_keys::RecordKey;
-use zolana_ring_keys::SenderBundle;
 use zolana_ring_keys::SlotSecret;
 use zolana_ring_keys::RECIPIENT_BODY_LABEL;
 use zolana_ring_keys::RECORD_ZERO_KEY_BIT;
 use zolana_ring_keys::REPLY_LABEL;
-use zolana_ring_keys::SENDER_BUNDLE_LABEL;
 
 use crate::{RingAssets, RingRailError};
 
@@ -206,42 +204,27 @@ pub fn recipient_payload(output: &SppProofOutputUtxo) -> RecipientPayload {
     }
 }
 
-/// `slot_secret` sits at index `m`, past every body's index.
-pub fn seal_sender_bundle(
-    bundle: &SenderBundle,
-    slot_secret: &SlotSecret,
-) -> Result<Vec<u8>, RingRailError> {
-    let mut ciphertext = bundle.encode().to_vec();
-    symmetric_apply_audit(slot_secret.as_bytes(), SENDER_BUNDLE_LABEL, &mut ciphertext)?;
-    Ok(ciphertext)
-}
-
-pub fn open_sender_bundle(
-    ciphertext: &[u8],
-    slot_secret: &SlotSecret,
-) -> Result<SenderBundle, RingRailError> {
-    if ciphertext.len() != SENDER_BUNDLE_LEN {
-        return Err(RingRailError::SenderBundleLength {
-            len: ciphertext.len(),
-        });
-    }
-    let mut plaintext = Zeroizing::new(ciphertext.to_vec());
-    symmetric_apply_audit(slot_secret.as_bytes(), SENDER_BUNDLE_LABEL, &mut plaintext)?;
-    Ok(SenderBundle::decode(&plaintext)?)
-}
-
 /// Shares slot `i`'s secret, its own label keeps the body's counter from restarting.
 pub fn seal_reply(
     reply: &ReplyMetadata,
     reply_len: usize,
     slot_secret: &SlotSecret,
 ) -> Result<Vec<u8>, RingRailError> {
-    let mut ciphertext = reply.encode(reply_len)?.to_vec();
-    symmetric_apply_audit(slot_secret.as_bytes(), REPLY_LABEL, &mut ciphertext)?;
-    Ok(ciphertext)
+    sealed_reply(reply.encode(reply_len)?.to_vec(), slot_secret)
 }
 
-/// `None` on a reply that never decodes, a hidden dummy reads as random bytes.
+/// The reply bytes of a slot that names no sender. Its zero `viewing_u` never decodes, where
+/// random bytes would decode as a reply by chance.
+pub fn seal_no_reply(reply_len: usize, slot_secret: &SlotSecret) -> Result<Vec<u8>, RingRailError> {
+    sealed_reply(vec![0; reply_len], slot_secret)
+}
+
+fn sealed_reply(mut bytes: Vec<u8>, slot_secret: &SlotSecret) -> Result<Vec<u8>, RingRailError> {
+    symmetric_apply_audit(slot_secret.as_bytes(), REPLY_LABEL, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// `None` on a slot that names no sender.
 pub fn open_reply(
     ciphertext: &[u8],
     slot_secret: &SlotSecret,
@@ -387,24 +370,12 @@ impl OutputBlindings {
         })
     }
 
-    pub fn published(first_nullifier: &[u8; 32], output_seed: &[u8; 32]) -> Self {
-        Self {
-            first_nullifier: *first_nullifier,
-            output_seed: Zeroizing::new(*output_seed),
-        }
-    }
-
     pub fn at(&self, position: u32) -> Result<Blinding, RingRailError> {
         Ok(derive_transact_output_blinding(
             &self.first_nullifier,
             &self.output_seed,
             position,
         )?)
-    }
-
-    /// The seed the sender bundle publishes, every change blinding derives from it.
-    pub fn output_seed(&self) -> &[u8; 32] {
-        &self.output_seed
     }
 }
 

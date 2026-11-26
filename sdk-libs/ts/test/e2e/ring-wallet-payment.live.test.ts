@@ -5,7 +5,7 @@ import { buildDepositTransaction, buildRingPaymentTransaction, SOL_MINT } from "
 import type { Bytes32 } from "@heliuslabs/spr/interface";
 
 import { anonymousRingTransfers, syncRingWallet } from "../../src/ring/index.js";
-import { RingAddress } from "../../src/crypto/keys/ring-address.js";
+import { RingAddress, RingPaymentRequest } from "../../src/crypto/keys/ring-address.js";
 import { AnonymousWallet } from "../../src/state/anonymous-wallet.js";
 import { ViewingHistory } from "../../src/state/viewing-history.js";
 import { currentSlot, signSendAndConfirm, type Actor } from "./live-helpers.js";
@@ -62,13 +62,16 @@ describe("core wallet payment into an anonymous ring", () => {
       ringProgramId: ring.ringProgramId,
       listSalt: new Uint8Array(32).fill(1) as Bytes32,
     });
+    // A core sync that reads the entry's spend first leaves only the sender tag to find its change.
+    const tags = await senderDocument.takeTransferTags(ringKeys(sender));
     const payment = await buildRingPaymentTransaction({
       client: ring.client,
       ring: anonymousRingTransfers({
         client: ring.client,
         ringProgramId: ring.ringProgramId,
         assets: sender.wallet.registry,
-        payees: [to],
+        payees: [new RingPaymentRequest({ address: to })],
+        tags,
       }),
       wallet: sender.wallet,
       keys: sender.keys,

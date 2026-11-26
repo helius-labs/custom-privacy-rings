@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
 import {
-  concatBytes,
   encodeMergeOutputData,
   encryptMergeOutput,
   mergeOutputBlinding,
@@ -23,26 +22,13 @@ import {
   type AnonymousStream,
 } from "../../src/state/anonymous-sync.js";
 import { AnonymousWallet } from "../../src/state/anonymous-wallet.js";
+import { TAG_WINDOW, ViewingHistory } from "../../src/state/viewing-history.js";
 import {
-  PENDING_RETENTION,
-  StreamCounter,
-  ViewingHistory,
-} from "../../src/state/viewing-history.js";
-import {
-  sealSenderBundle,
-  SENDER_BUNDLE_LEN,
-} from "../../src/protocol/codec/anonymous-delivery.js";
-import {
+  bootstrapSlotTag,
   deliveredSlotSecret,
-  recipientTag,
   slotTag,
 } from "../../src/crypto/derivation/ring-stream.js";
-import {
-  encodeRingOutput,
-  RingScheme,
-  senderBundleOutputBody,
-  encodeRingBodyOutput,
-} from "../../src/protocol/transaction/output.js";
+import { encodeRingBodyOutput } from "../../src/protocol/transaction/output.js";
 import { TREE, TREE_ID } from "../helpers/ring-pipeline.js";
 import {
   ASSETS,
@@ -69,16 +55,16 @@ function stream(scan: AnonymousScan, utxoHash: Bytes32): AnonymousStream {
 }
 
 describe("anonymous sync", () => {
-  it("finds a payment under its recipient tag and the change under the bundle tag", async () => {
+  it("finds a payment and the sender's change with no use of a tag", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
     const paid = await alice.pay(indexer, [{ to: bob.address, amount: 30n }]);
     const received = await bob.sync(indexer, bob.fresh());
-    expect(stream(received, output(paid, 1))).toEqual({ kind: "tagHint" });
+    expect(stream(received, output(paid, 1))).toEqual({ kind: "fullScan" });
     expect(received.utxos.map((note) => note.utxo.amount)).toEqual([30n]);
     const change = await alice.sync(indexer, alice.fresh());
-    expect(stream(change, output(paid, 0))).toEqual({ kind: "tagHint" });
+    expect(stream(change, output(paid, 0))).toEqual({ kind: "fullScan" });
     expect(change.utxos.map((note) => note.utxo.amount)).toEqual([70n]);
     expect(indexer.transactionTagReads).toBe(0);
   });
@@ -119,7 +105,7 @@ describe("anonymous sync", () => {
     expect(scanned.unmatched).toEqual([]);
   });
 
-  it("finds change on no-change and two-output frames through one bundle test", async () => {
+  it("finds change on no-change and two-output frames", async () => {
     const indexer = new ScanIndexer();
     const carol = new ScanWallet(3);
     const bob = new ScanWallet(4);
@@ -198,7 +184,7 @@ describe("anonymous sync", () => {
     ]);
   });
 
-  it("finds change under another transaction key by the bundle tag, listing no sent row", async () => {
+  it("finds change under another transaction key, listing no sent row", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
@@ -210,7 +196,6 @@ describe("anonymous sync", () => {
       decrypt: alice.keys.decrypt.bind(alice.keys),
       derive: alice.keys.derive.bind(alice.keys),
       ringDeliverySecrets: alice.keys.ringDeliverySecrets.bind(alice.keys),
-      ringTagMatches: alice.keys.ringTagMatches.bind(alice.keys),
       viewTags: alice.keys.viewTags.bind(alice.keys),
       // A relayer drew the frame's key, the wallet's own derivation names another.
       transactionKeys: async (requests: readonly unknown[]) =>
@@ -218,7 +203,7 @@ describe("anonymous sync", () => {
     };
     indexer.publish(relayed);
     const scan = await AnonymousSync.create(keys, ASSETS).fetch(indexer.client(), alice.fresh());
-    expect(stream(scan, output(relayed, 0))).toEqual({ kind: "tagHint" });
+    expect(stream(scan, output(relayed, 0))).toEqual({ kind: "fullScan" });
     expect(scan.sent).toEqual([]);
   });
 
@@ -234,10 +219,10 @@ describe("anonymous sync", () => {
     indexer.publish({ ...paid, outputSlots: paid.outputSlots.with(1, { ...slot, payload }) });
     const scan = await alice.sync(indexer, alice.fresh());
     expect(scan.sent).toEqual([]);
-    expect(stream(scan, output(paid, 0))).toEqual({ kind: "tagHint" });
+    expect(stream(scan, output(paid, 0))).toEqual({ kind: "fullScan" });
   });
 
-  it("never fails on sender-chosen garbage under a matching tag", async () => {
+  it("never fails on sender-chosen garbage sealed to the wallet's key", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
@@ -261,10 +246,6 @@ describe("anonymous sync", () => {
       amount: 5n,
       mint: SOL_MINT,
     });
-    // Opens under bob's key, no slot publishes a zero tag and no message carries an auditor stream.
-    const bundle = sealSenderBundle(secret(3), {
-      outputSeed: new Uint8Array(32).fill(0x0b) as Bytes32,
-    });
     const payloads = [
       new Uint8Array(),
       encodeRingBodyOutput(noise, new Uint8Array()),
@@ -279,7 +260,7 @@ describe("anonymous sync", () => {
       txViewingPublicKey: txKey.publicKey(),
       salt,
       outputSlots: payloads.map((payload, position) => ({
-        viewTag: slotTag(recipientTag(secret(position))),
+        viewTag: bootstrapSlotTag(bob.viewingKey.u()),
         outputContext: {
           hash: unmatched,
           tree: TREE,
@@ -288,12 +269,7 @@ describe("anonymous sync", () => {
         },
         payload,
       })),
-      messages: [
-        {
-          viewTag: ZERO,
-          data: encodeRingOutput(RingScheme.ringSenderBundle, bundle),
-        },
-      ],
+      messages: [],
       nullifiers: [firstNullifier],
       proofless: false,
       ringProgramId: RING,
@@ -302,7 +278,6 @@ describe("anonymous sync", () => {
     const scanned = await bob.sync(indexer, bob.fresh());
     expect(found(scanned)).toEqual([hex(output(paid, 1))]);
     expect(scanned.unmatched).toEqual([]);
-    expect(scanned.history.current().knownSenders()).toEqual([]);
   });
 
   it("finds a merge of the wallet's notes and marks them spent", async () => {
@@ -410,7 +385,6 @@ describe("anonymous sync", () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const entered = await alice.pay(indexer, [{ to: alice.address, amount: 25n }]);
-    expect(entered.outputSlots.slice(0, 2).map((slot) => slot.viewTag)).toEqual([ZERO, ZERO]);
     const scan = await alice.sync(indexer, alice.fresh());
     expect(found(scan)).toEqual([hex(output(entered, 0)), hex(output(entered, 1))]);
     expect(scan.utxos.map((note) => note.utxo.amount).sort()).toEqual([25n, 75n]);
@@ -423,13 +397,12 @@ describe("anonymous sync", () => {
     const bob = new ScanWallet(2).address;
     const paid = await alice.pay(indexer, [{ to: bob, amount: 100n }]);
     expect(paid.outputSlots[0]?.payload.length).toBeGreaterThan(0);
-    expect(paid.outputSlots[0]?.viewTag).toEqual(ZERO);
     const scan = await alice.sync(indexer, alice.fresh());
     expect(found(scan)).toEqual([hex(output(paid, 0))]);
     expect(scan.utxos[0]?.utxo.amount).toBe(0n);
   });
 
-  it("holds a reply as a claim the wallet confirms and learns nothing without one", async () => {
+  it("holds a reply as a claim, a confirmation clears it and moves no counter", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
@@ -437,13 +410,11 @@ describe("anonymous sync", () => {
     await carol.pay(indexer, [{ to: bob.address, amount: 5n }]);
     const bare = await bob.sync(indexer, bob.fresh());
     expect(bare.senderClaims).toEqual([]);
-    expect(bare.history.current().knownSenders()).toEqual([]);
 
     const paid = await alice.pay(indexer, [
       { to: bob.address, amount: 30n, reply: alice.replyTo() },
     ]);
     const scan = await bob.sync(indexer, bob.fresh());
-    expect(scan.history.current().knownSenders()).toEqual([]);
     const claim = scan.senderClaims[0];
     if (claim === undefined) throw new Error("no claim");
     expect(hex(claim.utxoHash)).toBe(hex(output(paid, 1)));
@@ -457,10 +428,11 @@ describe("anonymous sync", () => {
     expect(wallet.pendingClaims().map((pending) => hex2(pending.claimedViewingKey))).toEqual([
       hex2(alice.viewingKey),
     ]);
-    expect(wallet.history().current().knownSenders()).toEqual([]);
+    const stored = wallet.history().toJson();
     expect(() => wallet.confirmClaim(carol.viewingKey)).toThrow("RING_UNKNOWN_SENDER_CLAIM");
     wallet.confirmClaim(alice.viewingKey);
-    expect(wallet.history().current().knownSenders().map(hex2)).toEqual([hex2(alice.viewingKey)]);
+    // A reply is an unauthenticated claim, it pairs no sender and takes no tag.
+    expect(wallet.history().toJson()).toBe(stored);
     expect(wallet.pendingClaims()).toEqual([]);
     expect(() => wallet.confirmClaim(alice.viewingKey)).toThrow("RING_UNKNOWN_SENDER_CLAIM");
   });
@@ -486,53 +458,6 @@ describe("anonymous sync", () => {
     expect(found(undecodable)).toEqual([hex(output(paid, 2))]);
     expect(undecodable.senderClaims).toEqual([]);
   });
-
-  it("opens the bundle at its one length and skips a bundle of another length", async () => {
-    const indexer = new ScanIndexer();
-    const alice = new ScanWallet(1);
-    const bob = new ScanWallet(2).address;
-    const paid = alice.seal(indexer, [{ to: bob, amount: 30n }], { compact: true });
-    expect(paid.outputSlots).toHaveLength(2);
-    const [message] = paid.messages;
-    if (message === undefined) throw new Error("no bundle");
-    expect(senderBundleOutputBody(message.data)).toHaveLength(SENDER_BUNDLE_LEN);
-
-    indexer.publish(paid);
-    const opened = await alice.sync(indexer, alice.fresh());
-    expect(found(opened)).toEqual([hex(output(paid, 0))]);
-
-    const stretched = new ScanIndexer();
-    const body = senderBundleOutputBody(message.data);
-    if (body === undefined) throw new Error("no bundle");
-    stretched.publish({
-      ...paid,
-      messages: [
-        {
-          ...message,
-          data: encodeRingOutput(
-            RingScheme.ringSenderBundle,
-            concatBytes(body, new Uint8Array(32)),
-          ),
-        },
-      ],
-    });
-    const skipped = await alice.sync(stretched, alice.fresh());
-    expect(skipped.utxos).toEqual([]);
-    expect(skipped.unmatched).toEqual([]);
-    expect(skipped.sent).toEqual([]);
-  });
-
-  it("takes the fast path on the wallet's own bundle and keeps the tag test for every other candidate", async () => {
-    const indexer = new ScanIndexer();
-    const alice = new ScanWallet(1);
-    const bob = new ScanWallet(2);
-    const own = await alice.pay(indexer, [{ to: bob.address, amount: 5n }]);
-    const paid = await bob.pay(indexer, [{ to: alice.address, amount: 6n }]);
-    const scan = await AnonymousSync.create(alice.keys, ASSETS)
-      .withSenderFastPath()
-      .fetch(indexer.client(), alice.fresh());
-    expect([...found(scan)].sort()).toEqual([hex(output(own, 0)), hex(output(paid, 1))].sort());
-  });
 });
 
 function hex2(key: Readonly<{ toBytes(): Uint8Array }>): string {
@@ -541,21 +466,25 @@ function hex2(key: Readonly<{ toBytes(): Uint8Array }>): string {
 
 describe("viewing history", () => {
   const key = () => X25519Keypair.generate().publicKey();
+  const holder = (seed: number) => {
+    const wallet = new ScanWallet(seed);
+    const fresh = ViewingHistory.create(wallet.viewingKey, 0n);
+    return { wallet, fresh, viewing: wallet.keypair.viewingKey() };
+  };
 
-  it("writes the form sorted by key text", () => {
-    const ringB = "So11111111111111111111111111111111111111112" as typeof RING;
-    const ringA = "11111111111111111111111111111111" as typeof RING;
+  it("writes the stored form key for key, each ring by address bytes as Rust orders them", () => {
+    // Bytes 0x06.. sort ahead of 0xff.., the base58 text of the second sorts first.
+    const ringA = "So11111111111111111111111111111111111111112" as typeof RING;
+    const ringB = getBase58Decoder().decode(new Uint8Array(32).fill(0xff)) as typeof RING;
+    expect(ringB < ringA).toBe(true);
     const viewingPublicKey = key();
-    const senders = [key(), key()];
-    const history = senders.reduce(
-      (held, sender) => held.withEntry(0, held.current().withKnownSender(sender)),
-      ViewingHistory.create(viewingPublicKey, 3n).withRing(ringB, 8n).withRing(ringA),
-    );
-    const sorted = senders.map(hex2).sort();
-    const counter = '{"next":0,"scanned":0,"pending":[]}';
+    const history = ViewingHistory.create(viewingPublicKey, 3n)
+      .withRing(ringB, 8n)
+      .withRing(ringA)
+      .withRequestCount(5n);
     expect(history.toJson()).toBe(
       `{"viewingHistory":[{"viewingPubkey":"${hex2(viewingPublicKey)}","createdAt":3,` +
-        `"tx":${counter},"knownSenders":["${sorted[0]}","${sorted[1]}"],` +
+        `"tx":{"next":0,"scanned":0},"request":{"next":5,"scanned":0},` +
         `"ringPositions":[{"ring":"${ringA}","afterSlot":null},{"ring":"${ringB}","afterSlot":8}],"tagPosition":null}]}`,
     );
     expect(ViewingHistory.fromJson(history.toJson()).toJson()).toBe(history.toJson());
@@ -569,25 +498,20 @@ describe("viewing history", () => {
     );
     const rotated = history.withRotatedKey(key(), 5n);
     expect(() => rotated.withRotatedKey(key(), 5n)).toThrow("RING_ROTATED_KEY_NOT_NEWER");
-    const counter = StreamCounter.restore({
-      next: PENDING_RETENTION + 2n,
-      scanned: PENDING_RETENTION + 2n,
-      pending: [2n, 3n],
-    });
-    const withCounter = history.withEntry(0, history.current().withTxCounter(counter));
-    expect(ViewingHistory.fromJson(withCounter.toJson()).toJson()).toBe(withCounter.toJson());
-    const parsed = JSON.parse(withCounter.toJson()) as {
-      viewingHistory: { tx: { pending: number[] } }[];
-    };
-    for (const pending of [[0], [2, 2], [3, 2], [Number(PENDING_RETENTION) + 2]]) {
-      const refused = structuredClone(parsed);
-      const [first] = refused.viewingHistory;
-      if (first === undefined) throw new Error("no entry");
-      first.tx.pending = pending;
-      expect(() => ViewingHistory.fromJson(JSON.stringify(refused)), String(pending)).toThrow(
-        "RING_VIEWING_HISTORY_INVALID",
-      );
-    }
+    const counter = '"request":{"next":0,"scanned":0}';
+    expect(history.toJson()).toContain(counter);
+    for (const refused of [
+      '"request":{"next":1,"scanned":2}',
+      '"request":{"next":0,"scanned":0,"pending":[]}',
+      '"request":{"next":0}',
+      '"request":{"next":-1,"scanned":0}',
+      `"request":{"next":${1n << 64n},"scanned":0}`,
+      '"knownSenders":[]',
+    ])
+      expect(
+        () => ViewingHistory.fromJson(history.toJson().replace(counter, refused)),
+        refused,
+      ).toThrow("RING_VIEWING_HISTORY_INVALID");
     const enrolled = history.withRing(RING);
     const row = `{"ring":"${RING}","afterSlot":null}`;
     expect(() => ViewingHistory.fromJson(enrolled.toJson().replace(row, `${row},${row}`))).toThrow(
@@ -602,5 +526,54 @@ describe("viewing history", () => {
     const history = ViewingHistory.create(key(), 0n);
     const json = history.toJson().replace('"tx":{"next":0', `"tx":{"next":${(1n << 64n) - 2n}`);
     expect(ViewingHistory.fromJson(json).current().txCount).toBe((1n << 64n) - 2n);
+  });
+
+  it("takes the next sender index on each selection", async () => {
+    const { wallet, fresh, viewing } = holder(1);
+    const first = await fresh.select(wallet.keys);
+    const second = await first.history.select(wallet.keys);
+    expect(first.tag.viewingPublicKey.equals(wallet.viewingKey)).toBe(true);
+    expect([first, second].map(({ tag }) => hex(tag.sender))).toEqual(
+      [0n, 1n].map((index) => hex(slotTag(viewing.senderViewTag(index)))),
+    );
+    expect(hex(first.tag.sender)).not.toBe(hex(second.tag.sender));
+    expect([first, second].map(({ history }) => history.current().txCount)).toEqual([1n, 2n]);
+    expect(second.history.current().requestCount).toBe(0n);
+    const ceiling = ViewingHistory.fromJson(
+      fresh.toJson().replace('"tx":{"next":0', `"tx":{"next":${(1n << 64n) - 1n}`),
+    );
+    await expect(ceiling.select(wallet.keys)).rejects.toThrow("RING_COUNTER_OVERFLOW");
+    viewing.destroy();
+  });
+
+  it("mints each request tag at the counter and refuses nothing but a counter at the u64 ceiling", async () => {
+    const { wallet, fresh, viewing } = holder(1);
+    let history = fresh;
+    // No index past the window is refused, a sync lists the window past the stored counter.
+    for (let index = 0n; index <= TAG_WINDOW; index += 1n) {
+      const minted = await history.requestTag(wallet.keys);
+      expect(minted.tag, String(index)).toEqual(slotTag(viewing.recipientRequestViewTag(index)));
+      history = minted.history;
+    }
+    expect(history.current().requestCount).toBe(TAG_WINDOW + 1n);
+    expect(history.current().txCount).toBe(0n);
+    const ceiling = ViewingHistory.fromJson(
+      fresh.toJson().replace('"request":{"next":0', `"request":{"next":${(1n << 64n) - 1n}`),
+    );
+    await expect(ceiling.requestTag(wallet.keys)).rejects.toThrow("RING_COUNTER_OVERFLOW");
+    viewing.destroy();
+  });
+
+  it("raises the request counter to a count the wallet states and never lowers it", async () => {
+    const { wallet, fresh, viewing } = holder(1);
+    const restored = fresh.withRequestCount(70n);
+    expect(restored.current().requestCount).toBe(70n);
+    expect(restored.withRequestCount(3n).current().requestCount).toBe(70n);
+    expect((await restored.requestTag(wallet.keys)).tag).toEqual(
+      slotTag(viewing.recipientRequestViewTag(70n)),
+    );
+    for (const count of [-1n, 1n << 64n])
+      expect(() => fresh.withRequestCount(count)).toThrow("RING_VIEWING_HISTORY_INVALID");
+    viewing.destroy();
   });
 });

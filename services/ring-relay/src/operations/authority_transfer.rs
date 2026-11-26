@@ -408,8 +408,8 @@ pub async fn prepare_authority_transfer<S: TransactionSource>(
         }
     }
     let payments: Vec<DelegatePayment> =
-        transfer.payments.iter().copied().map(Into::into).collect();
-    let exits: Vec<DelegatePayment> = transfer.exits.iter().copied().map(Into::into).collect();
+        transfer.payments.iter().cloned().map(Into::into).collect();
+    let exits: Vec<DelegatePayment> = transfer.exits.iter().cloned().map(Into::into).collect();
     let withdrawals: Vec<DelegateWithdrawal> = transfer
         .withdrawals
         .iter()
@@ -696,6 +696,7 @@ mod tests {
                     recipient: recipient.into(),
                     mint: MINT.into(),
                     amount: 15,
+                    tag: None,
                 }],
             },
         });
@@ -714,6 +715,8 @@ mod tests {
         let mut transfer = request(&fixture, &delegate, address(&wallet, &escrowed)).transfer;
         transfer.payments[0].amount = 3;
         transfer.exits = transfer.payments.clone();
+        let bootstrap = transfer.payments[0].recipient.0.viewing_pubkey.u();
+        transfer.payments[0].tag = Some(Hash(bootstrap));
         transfer.withdrawals = vec![zolana_ring_client::rpc::AuthorityWithdrawal {
             recipient: wallet.pubkey().into(),
             mint: MINT.into(),
@@ -994,7 +997,7 @@ mod tests {
             signed(|transfer| {
                 transfer.exits = vec![AuthorityPayment {
                     mint: Address::new_from_array([7; 32]).into(),
-                    ..transfer.payments[0]
+                    ..transfer.payments[0].clone()
                 }]
             }),
             signed(|transfer| {

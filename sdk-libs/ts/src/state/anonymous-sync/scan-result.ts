@@ -15,10 +15,8 @@ import type { RingKeys } from "../ring-keys.js";
 import { RingError } from "../../protocol/error.js";
 import type { ViewingHistory } from "../viewing-history.js";
 
-/** How a sync found a note. */
+/** How a scan found a note. */
 export type AnonymousStream =
-  /** A transfer's slot or bundle whose tag matched. */
-  | Readonly<{ kind: "tagHint" }>
   | Readonly<{ kind: "merge"; firstNullifier: Bytes32 }>
   /** Tried with no use of its tag. */
   | Readonly<{ kind: "fullScan" }>;
@@ -49,7 +47,7 @@ export interface SentPayment {
   readonly check: SentCheck;
 }
 
-/** An unauthenticated sender claim, `AnonymousWallet.confirmClaim` alone learns from it. */
+/** A decrypted reply, an unauthenticated claim about who paid, never a verified sender. */
 export interface SenderClaim {
   readonly utxoHash: Bytes32;
   readonly claim: ReplyClaim;
@@ -146,8 +144,6 @@ export interface SyncFields extends BodyReads {
   readonly fullRescan: boolean;
   readonly held: readonly WalletUtxo[];
   readonly limits: ScanLimits;
-  readonly senderFastPath: boolean;
-  readonly tagMatcher: Pick<RingKeys, "ringTagMatches">;
 }
 
 export class RecoveryPaused extends Error {}

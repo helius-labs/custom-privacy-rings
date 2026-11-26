@@ -30,6 +30,7 @@ fn an_old_tree_note_migrates_into_the_active_tree() -> Result<()> {
         amount: DEFAULT_DEPOSIT,
         cosigner: None,
         list_salt: None,
+        tags: None,
     };
     let RingDepositReceipt { utxo, .. } = env.run(deposit.send(env.client.ring_client()))?;
     let mut prepared = ConfidentialTransaction::new_with_ring(

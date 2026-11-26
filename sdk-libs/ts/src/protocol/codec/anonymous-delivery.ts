@@ -1,14 +1,10 @@
-/** The anonymous frame's sender bundle and replies, Rust `zolana_ring_transaction::recipient_delivery`. */
+/** The anonymous frame's replies, Rust `zolana_ring_transaction::recipient_delivery`. */
 import { checkedBytes, encodeData, Reader, readData } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
 import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
 import type { Data } from "@heliuslabs/spr/transaction";
 
-import {
-  REPLY_ENC_INFO,
-  SENDER_BUNDLE_ENC_INFO,
-  symmetricAuditApply,
-} from "../../crypto/audit/audit.js";
+import { REPLY_ENC_INFO, symmetricAuditApply } from "../../crypto/audit/audit.js";
 import { x25519FromU } from "../../crypto/keys/x25519.js";
 import { checkedViewingU } from "../membership/member-opening.js";
 import { STREAM_FIRST_COUNTER } from "./ring-disclosure-layout.js";
@@ -21,9 +17,6 @@ const REPLY_HEAD_LEN = 3 * FIELD_LEN;
 /** A reply holding empty data. */
 export const MIN_REPLY_LEN = REPLY_HEAD_LEN + 1;
 
-/** `output_seed`, the same at every `m`. */
-export const SENDER_BUNDLE_LEN = FIELD_LEN;
-
 /** Semantics unproved, the statement binds only its presence, length and bytes. */
 export interface ReplyMetadata {
   readonly viewingKey: X25519PublicKey;
@@ -35,11 +28,6 @@ export interface ReplyMetadata {
 /** A decrypted reply, an unverified sender claim no authorization reads, Rust `ReplyClaim`. */
 export interface ReplyClaim {
   readonly claimed: ReplyMetadata;
-}
-
-/** The sender reads each `V_k` back from the auditor stream it sealed, the bundle names none. */
-export interface SenderBundle {
-  readonly outputSeed: Bytes32;
 }
 
 /** The longest reply `replies` encode to, every body of a frame shares one length. */
@@ -67,6 +55,11 @@ export function sealReply(slotSecret: Bytes32, reply: ReplyMetadata, length: num
   });
 }
 
+/** The reply bytes of a slot that names no sender, its zero `viewing_u` never decodes, random bytes can decode by chance. */
+export function sealNoReply(slotSecret: Bytes32, length: number): Uint8Array {
+  return seal(slotSecret, REPLY_ENC_INFO, () => new Uint8Array(length));
+}
+
 /** The proof binds the bytes alone, `undefined` on a reply that never decodes. */
 export function openReply(slotSecret: Bytes32, ciphertext: Uint8Array): ReplyClaim | undefined {
   if (ciphertext.length < MIN_REPLY_LEN) return undefined;
@@ -83,18 +76,6 @@ export function openReply(slotSecret: Bytes32, ciphertext: Uint8Array): ReplyCla
       }),
     });
   });
-}
-
-export function sealSenderBundle(slotSecret: Bytes32, bundle: SenderBundle): Uint8Array {
-  return seal(slotSecret, SENDER_BUNDLE_ENC_INFO, () =>
-    checkedBytes<Bytes32>(bundle.outputSeed, FIELD_LEN, "outputSeed").slice(),
-  );
-}
-
-export function openSenderBundle(slotSecret: Bytes32, ciphertext: Uint8Array): SenderBundle {
-  return open(slotSecret, SENDER_BUNDLE_ENC_INFO, ciphertext, SENDER_BUNDLE_LEN, (plaintext) =>
-    Object.freeze({ outputSeed: plaintext.slice() as Bytes32 }),
-  );
 }
 
 /** One data field then zero padding, `undefined` on any other bytes. */

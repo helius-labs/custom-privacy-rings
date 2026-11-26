@@ -8,7 +8,6 @@ import {
   envelopeRegion,
   recipientKeysLen,
 } from "../../src/protocol/codec/ring-disclosure-layout.js";
-import { SENDER_BUNDLE_LEN } from "../../src/protocol/codec/anonymous-delivery.js";
 import { RingInstructionTag } from "../../src/protocol/transaction/instruction-tag.js";
 import { RING_AUTHORITY_SHAPES } from "../../src/protocol/transaction/spp.js";
 import {
@@ -101,7 +100,6 @@ export function ringFrame(
     wideOwners: input.wideOwners ?? false,
     vouched: input.vouched ?? false,
     outputs: Array.from({ length: outputs }, (_, index) => slot(index)),
-    ...(anonymous ? { sender: { tag: field(1), body: new Uint8Array(SENDER_BUNDLE_LEN) } } : {}),
     envelope: new Uint8Array(envelopeRegion(layout).length).fill(3),
     recipientKeys: new Uint8Array(recipientKeysLen(layout)).fill(9),
     privateTxHash: field(4),

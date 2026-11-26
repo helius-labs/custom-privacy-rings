@@ -13,14 +13,13 @@ use zolana_ring_keys::SealedLayout;
 use custom_ring_interface::{
     cosign::ApprovalMask, input_flag, key_catalog::RingCircuit, output_flag, shape_flag,
     stream::slot_tag, transact_flag, AuditKey, AuditStreamLayout, AuditorMessage,
-    ConfidentialSender, CustomRingError, FramedSenderBundle, ParsedTransact, PlainGroth16Proof,
-    Replies, RingPolicy, RingRail, RingTransactData, SignerSet, SlotBody, TransferBinding,
-    TransferFamily, TransferRoots, ANONYMOUS_PARTIES,
+    ConfidentialSender, CustomRingError, ParsedTransact, PlainGroth16Proof, Replies, RingPolicy,
+    RingRail, RingTransactData, SignerSet, SlotBody, TransferBinding, TransferFamily,
+    TransferRoots, ANONYMOUS_PARTIES,
 };
 use custom_ring_interface::{
-    encode_ring_sender_bundle_output, CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN,
-    MIN_REPLY_LEN, RING_BODY_SCHEME_TAG, RING_RECORD_LEN, RING_SENDER_BUNDLE_SCHEME_TAG,
-    SENDER_BUNDLE_LEN,
+    CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN, MIN_REPLY_LEN, RING_BODY_SCHEME_TAG,
+    RING_RECORD_LEN,
 };
 use serde::{Deserialize, Serialize};
 use spr_event::{
@@ -33,7 +32,6 @@ use spr_interface::{
 use zolana_ring_client::Settlement;
 use zolana_ring_keys::encode_ring_body_output;
 use zolana_ring_keys::ring_body_output;
-use zolana_ring_keys::ring_sender_bundle_output_body;
 
 const SHAPE_FLAG_BYTE: usize = 1;
 const INPUT_FLAG_BYTE: usize = 2;
@@ -123,9 +121,7 @@ fn compute_vectors() -> ExpansionVectors {
                       of ceil(m / 8) bytes each. A slot is a u16 body length under has_data, its \
                       hash, its tag of 8 bytes or 32 on an exit and its body, 72 bytes for a recipient body and 83 for an exit \
                       without has_data. Under reply metadata a u16 reply_len and reply_len bytes \
-                      per body-bearing slot follow the slots. The anonymous frame's sender bundle \
-                      follows as a 32-byte tag and 32 + 40 c + 32 (m - c) bytes for c bodiless \
-                      slots, then the envelope, \
+                      per body-bearing slot follow the slots. The envelope follows, \
                       a record of 105 bytes per recipient slot and 137 per exit, each 32 longer under has_data \
                       and a recipient's 32 longer under ring_data, the lengths \
                       those of ring-disclosure-ranges.json. The auditor message is 0x04 || tx_viewing_u \
@@ -166,31 +162,21 @@ fn ring_transact_expansion_vector() {
         let spp = data.expand(&config).unwrap();
         assert_eq!(spp.proof.b, spp_b());
         assert_eq!(&spp.salt, data.salt, "{}", case.name);
-        let (auditor, sender) = spp.messages.split_last().unwrap();
+        let (auditor, application) = spp.messages.split_last().unwrap();
         assert_eq!(auditor.view_tag, config.auditor_pubkey[1..]);
         assert_eq!(auditor.data, data.auditor_message(), "{}", case.name);
         assert_eq!(auditor.data.capacity(), auditor.data.len(), "{}", case.name);
-        let sender: Vec<_> = sender
+        let application: Vec<_> = application
             .iter()
             .map(|message| (message.view_tag, message.data.clone()))
             .collect();
         let expected: Vec<_> = data
-            .sender
+            .extensions
+            .messages
             .iter()
-            .map(|bundle| {
-                (
-                    *bundle.tag,
-                    encode_ring_sender_bundle_output(bundle.body).unwrap(),
-                )
-            })
-            .chain(
-                data.extensions
-                    .messages
-                    .iter()
-                    .map(|message| (*message.view_tag, message.data.to_vec())),
-            )
+            .map(|message| (*message.view_tag, message.data.to_vec()))
             .collect();
-        assert_eq!(sender, expected, "{}", case.name);
+        assert_eq!(application, expected, "{}", case.name);
         for ((output, slot), reply) in spp
             .outputs
             .iter()
@@ -288,11 +274,6 @@ fn recipient_and_exit_slots_keep_the_borsh_framing_at_exact_capacity() {
             &body_and_reply[..],
         ),
         (
-            encode_ring_sender_bundle_output(&fixture.sender_body).unwrap(),
-            RING_SENDER_BUNDLE_SCHEME_TAG,
-            &fixture.sender_body[..],
-        ),
-        (
             fixture
                 .exit(1, &fixture.payload)
                 .transact_output(&[])
@@ -316,12 +297,13 @@ fn recipient_and_exit_slots_keep_the_borsh_framing_at_exact_capacity() {
         ring_body_output(&framed),
         Some((&fixture.records[1][..RING_RECORD_LEN], &reply[..]))
     );
-    let bundle = encode_ring_sender_bundle_output(&fixture.sender_body).unwrap();
-    assert_eq!(
-        ring_sender_bundle_output_body(&bundle),
-        Some(&fixture.sender_body[..])
-    );
-    assert_eq!(ring_body_output(&bundle), None);
+    let exit = fixture
+        .exit(1, &fixture.payload)
+        .transact_output(&[])
+        .unwrap()
+        .data
+        .unwrap();
+    assert_eq!(ring_body_output(&exit), None);
     let short_body = &fixture.records[1][..RING_RECORD_LEN - 1];
     assert_eq!(
         encode_ring_body_output(short_body, &[]),
@@ -458,7 +440,6 @@ fn every_non_exit_slot_forwards_its_record() {
             "slot {slot}"
         );
     }
-    assert_eq!(parsed.sender.unwrap().body.len(), SENDER_BUNDLE_LEN);
     // A body whose head is not the slot's record names a record the statement does not bind.
     let mut moved = data.clone();
     moved.outputs[1].record = &fixture.records[0][..RING_RECORD_LEN];
@@ -1061,21 +1042,6 @@ fn the_external_data_hash_binds_every_delivery_byte() {
     let mut exit = confidential.clone();
     exit.outputs[3].body = SlotBody::Exit(&other_payload);
     assert_ne!(hash(&exit), hash(&confidential), "exit body");
-    let honest = fixture.anonymous();
-    let mut bundle = honest.clone();
-    let body = bundle.sender.unwrap().body;
-    bundle.sender = Some(FramedSenderBundle {
-        tag: &fixture.tags[6],
-        body,
-    });
-    assert_ne!(hash(&bundle), hash(&honest), "bundle tag");
-    let mut bundle = honest.clone();
-    let tag = bundle.sender.unwrap().tag;
-    bundle.sender = Some(FramedSenderBundle {
-        tag,
-        body: &fixture.envelope[..SENDER_BUNDLE_LEN],
-    });
-    assert_ne!(hash(&bundle), hash(&honest), "bundle body");
     let replied = fixture.anonymous_replies(MIN_REPLY_LEN as u16);
     let mut reply = replied.clone();
     reply.replies =
@@ -1203,7 +1169,6 @@ fn a_mixed_anonymous_output_set_round_trips_and_frames_each_body() {
         .unwrap()
         .into_data();
     assert_eq!(parsed.outputs, data.outputs);
-    assert_eq!(parsed.sender, data.sender);
     let framed = |scheme: u8, body: &[u8]| {
         Some(
             borsh::to_vec(&OutputDataEncoding::Encrypted(
@@ -1240,38 +1205,6 @@ fn a_mixed_anonymous_output_set_round_trips_and_frames_each_body() {
         assert_eq!(spp.owner_tag, OwnerTag::Inline(owner_tag), "slot {slot}");
         assert_eq!(spp.data, data, "slot {slot}");
     }
-}
-
-#[test]
-fn the_sender_bundle_has_one_length() {
-    let fixture = Fixture::new();
-    let mut data = fixture.anonymous();
-    let longer = [&fixture.sender_body[..], &[0; 32]].concat();
-    for body in [
-        &fixture.sender_body[..0],
-        &fixture.sender_body[..31],
-        &longer[..],
-    ] {
-        data.sender = Some(FramedSenderBundle {
-            tag: &fixture.tags[0],
-            body,
-        });
-        assert_eq!(data.encode(), Err(CustomRingError::RingTransactLength));
-    }
-}
-
-#[test]
-fn the_sender_bundle_is_present_exactly_on_the_anonymous_frame() {
-    let fixture = Fixture::new();
-    let mut anonymous = fixture.anonymous();
-    anonymous.sender = None;
-    assert_eq!(anonymous.encode(), Err(CustomRingError::RingTransactLength));
-    let mut confidential = fixture.confidential_policy();
-    confidential.sender = fixture.sender();
-    assert_eq!(
-        confidential.encode(),
-        Err(CustomRingError::RingTransactLength)
-    );
 }
 
 #[test]

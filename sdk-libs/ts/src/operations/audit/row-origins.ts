@@ -1,15 +1,20 @@
 import type { Address } from "@solana/kit";
 
+import type { ChainReader } from "@heliuslabs/spr/client";
 import type { RequestContext } from "@heliuslabs/spr/interface";
 import { KeypairError } from "@heliuslabs/spr/keypair";
 import { TransactionError, type IndexedShieldedTransaction } from "@heliuslabs/spr/transaction";
 
 import { RingKeyError } from "../../crypto/error.js";
+import type { RingMode } from "../../protocol/codec/ring-codecs.js";
 import { RingError } from "../../protocol/error.js";
+import { fetchRingPolicy } from "../../protocol/membership/config.js";
+import { RingInstructionTag } from "../../protocol/transaction/instruction-tag.js";
 import type {
   ConfirmedRingTransaction,
   TransactionOrigin,
 } from "../../protocol/transaction/origin.js";
+import { isDelegateRail, ringRailOf } from "../../protocol/transaction/transact.js";
 import type { SkippedRingTransaction } from "../../rpc/ring-rpc.js";
 
 /** `test-vectors/audit/row-dispositions.json`, `retry` keeps the reader's position and `invalid` passes a row that never opens. */
@@ -77,6 +82,34 @@ export function auditFailureKind(error: unknown): AuditFailureKind {
       return "auditData";
     default:
       return "transport";
+  }
+}
+
+/** An authority frame without replies parses under both ring modes, the ring account names its rail. */
+export class RingModeOrigin implements TransactionOrigin {
+  readonly #modes = new Map<Address, RingMode>();
+
+  constructor(
+    private readonly origin: TransactionOrigin,
+    private readonly chain: Pick<ChainReader, "getAccount">,
+  ) {}
+
+  async confirmedTransaction(
+    transaction: IndexedShieldedTransaction,
+    ring: Address,
+    context?: RequestContext,
+  ): Promise<ConfirmedRingTransaction | undefined> {
+    const confirmed = await this.origin.confirmedTransaction(transaction, ring, context);
+    if (confirmed?.kind !== "transfer" || !isDelegateRail(confirmed.rail)) return confirmed;
+    let mode = this.#modes.get(ring);
+    if (mode === undefined) {
+      mode = (await fetchRingPolicy(this.chain, ring, context)).mode;
+      this.#modes.set(ring, mode);
+    }
+    return Object.freeze({
+      ...confirmed,
+      rail: ringRailOf(RingInstructionTag.authorityTransfer, mode),
+    });
   }
 }
 

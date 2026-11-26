@@ -8,48 +8,38 @@ import type {
   ShieldedKeys,
   Utxo,
 } from "@heliuslabs/spr/transaction";
-import { anonymousSlotTag, txKeySlotSecret } from "../../crypto/derivation/ring-stream.js";
+import { txKeySlotSecret } from "../../crypto/derivation/ring-stream.js";
 import { isSmallOrder, x25519FromU } from "../../crypto/keys/x25519.js";
-import {
-  openSenderBundle,
-  SENDER_BUNDLE_LEN,
-  type ReplyClaim,
-} from "../../protocol/codec/anonymous-delivery.js";
+import type { ReplyClaim } from "../../protocol/codec/anonymous-delivery.js";
 import { parseAuditorMessage } from "../../crypto/audit/audit.js";
 import { openOutputSlot, openSealedDisclosure } from "../../crypto/audit/ring-disclosure.js";
-import type { OutputRecord } from "../../protocol/codec/audit-stream.js";
+import { RecordKind, type OutputRecord } from "../../protocol/codec/audit-stream.js";
 import {
   auditorMessageLen,
   recipientBodyForms,
   type AuditStreamLayout,
 } from "../../protocol/codec/ring-disclosure-layout.js";
 import { TRANSFER_SHAPES } from "../../protocol/proof/transfer-shapes.js";
-import { ringBodyOutput, senderBundleOutputBody } from "../../protocol/transaction/output.js";
+import { ringBodyOutput } from "../../protocol/transaction/output.js";
 import { openRecipientBody } from "../../crypto/derivation/blinding.js";
 import { answered, decoded } from "../batch.js";
 import { registeredMint } from "../../operations/workflow/recover.js";
 import { claimOf } from "../ring-sync.js";
-import type { RingKeys, RingTagFrame } from "../ring-keys.js";
-import { RingError } from "../../protocol/error.js";
+import type { RingKeys } from "../ring-keys.js";
 import type { AnonymousStream, SentPayment, BodyReads } from "./scan-result.js";
 
 /** Rust `RingDeliveryContext`. */
-interface SlotContext {
+export interface SlotContext {
   readonly ring: Address;
   readonly txViewingPublicKey: X25519PublicKey;
   readonly salt: Bytes16;
   readonly firstNullifier: Bytes32;
 }
 
-/** A recipient body at an output, a sender bundle in a message. */
-type Site =
-  | Readonly<{ kind: "output"; position: number }>
-  | Readonly<{ kind: "message"; message: number }>;
-
-/** A ring body or a sender bundle a held key may open. */
+/** A ring body a held key may open, Rust `Body`. */
 export interface Body {
   readonly tx: IndexedShieldedTransaction;
-  readonly site: Site;
+  readonly position: number;
   readonly ciphertext: Uint8Array;
   readonly reply: Uint8Array;
   readonly context: SlotContext;
@@ -66,7 +56,6 @@ type Rebuilt = Readonly<{
 /** A body the reader's own keys rebuilt. */
 interface RebuiltNote extends Rebuilt {
   readonly body: Body;
-  readonly position: number;
   readonly claim: ReplyClaim | undefined;
   readonly pending: boolean;
 }
@@ -84,114 +73,90 @@ export class BodyRead {
     this.#owner = reads.keys.address();
   }
 
-  recipientBody(body: Body, position: number, secret: Bytes32): void {
-    this.#note(body, position, secret, body.ciphertext, claimOf(body.reply, secret));
-  }
-
-  /** Rust `SenderBundle` and `Scan::open_bundle`, change candidates are the zero-tag bodies alone. */
-  async senderBundle(
-    body: Body,
-    secret: Bytes32,
-    txViewingKey: ViewingKey | undefined,
-    changeSecrets: (positions: readonly number[]) => Promise<readonly Bytes32[]>,
-  ): Promise<void> {
-    const bundle = decoded(() => openSenderBundle(secret, body.ciphertext));
-    if (bundle === undefined) return;
-    bundle.outputSeed.fill(0);
-    const own = this.#owner.viewingPublicKey.u();
-    const change = body.tx.outputSlots.flatMap((slot, position) =>
-      isZero(slot.viewTag) && ringBodyOutput(slot.payload) !== undefined ? [position] : [],
-    );
-    const secrets = change.length === 0 ? [] : await changeSecrets(change);
-    try {
-      change.forEach((position, index) => {
-        const slot = body.tx.outputSlots[position];
-        const parts = slot === undefined ? undefined : ringBodyOutput(slot.payload);
-        const changeSecret = secrets[index];
-        if (parts === undefined || changeSecret === undefined) return;
-        this.#note(body, position, changeSecret, parts.body, undefined);
-      });
-    } finally {
-      secrets.forEach((changeSecret) => changeSecret.fill(0));
-    }
-    if (txViewingKey === undefined) return;
-    const sent = new Set<number>();
-    for (const keys of sentRecipientKeys(body.tx, txViewingKey))
-      for (const [position, recipient] of listedRecipients(keys, own)) {
-        if (sent.has(position)) continue;
-        const payment = this.#sentPayment(body, position, recipient, txViewingKey);
-        if (payment === undefined) continue;
-        sent.add(position);
-        this.sent.push(payment);
-      }
-  }
-
   /** Only a rebuilt commitment counts, the cipher authenticates nothing. */
-  #note(
-    body: Body,
-    position: number,
-    secret: Bytes32,
-    ciphertext: Uint8Array,
-    claim: ReplyClaim | undefined,
-  ): void {
-    const slot = body.tx.outputSlots[position];
+  recipientBody(body: Body, secret: Bytes32): void {
+    const slot = body.tx.outputSlots[body.position];
     if (slot === undefined) return;
     const rebuilt = rebuild(this.#reads.assets, this.#owner, slot, body.context.ring, {
       secret,
-      ciphertext,
+      ciphertext: body.ciphertext,
     });
-    if (rebuilt !== undefined) this.#keep(body, position, rebuilt, claim);
-  }
-
-  /** A mint the registry lacks holds the note back, the scan still moves past it. */
-  #keep(body: Body, position: number, rebuilt: Rebuilt, claim: ReplyClaim | undefined): void {
-    const slot = body.tx.outputSlots[position];
-    if (slot === undefined) return;
+    if (rebuilt === undefined) return;
+    // A mint the registry lacks holds the note back, the scan still moves past it.
     const mint = rebuilt.utxo.asset;
     const pending = registeredMint(this.#reads.assets, mint) === undefined;
     if (pending) this.unknownMints.push(mint);
-    this.notes.push({ ...rebuilt, body, position, claim, pending });
+    this.notes.push({ ...rebuilt, body, claim: claimOf(body.reply, secret), pending });
   }
 
-  /** `undefined` unless `recipient` derives the slot's published tag and the body opens under it. */
-  #sentPayment(
-    body: Body,
-    position: number,
-    recipient: X25519PublicKey,
+  /** Rust `Scan::list_sent`, an unverified payment is listed only under the one candidate layout or one naming a held key. */
+  sentPayments(
+    tx: IndexedShieldedTransaction,
+    context: SlotContext,
     txViewingKey: ViewingKey,
+  ): void {
+    const held = this.#reads.keys.viewingPublicKeys().map((key) => key.u());
+    const holds = (key: Bytes32): boolean => held.some((own) => equalBytes(own, key));
+    const candidates = [
+      ...new Map(
+        sentRecipientKeys(tx, txViewingKey).map((keys) => [keys.map(bytesKey).join(), keys]),
+      ).values(),
+    ];
+    const listed = new Set<number>();
+    for (const keys of candidates) {
+      const bound = candidates.length === 1 || keys.some(holds);
+      for (const [position, recipient] of listedRecipients(keys, holds)) {
+        if (listed.has(position)) continue;
+        const payment = this.#sentPayment({ tx, context, position, recipient, txViewingKey });
+        if (payment === undefined || (!bound && payment.check.kind !== "verified")) continue;
+        listed.add(position);
+        this.sent.push(payment);
+      }
+    }
+  }
+
+  /** `undefined` on an exit, on a dummy and on a body `recipient` does not open. */
+  #sentPayment(
+    sealed: Readonly<{
+      tx: IndexedShieldedTransaction;
+      context: SlotContext;
+      position: number;
+      recipient: X25519PublicKey;
+      txViewingKey: ViewingKey;
+    }>,
   ): SentPayment | undefined {
-    const slot = body.tx.outputSlots[position];
+    const { tx, context, position, recipient } = sealed;
+    const slot = tx.outputSlots[position];
     const parts = slot === undefined ? undefined : ringBodyOutput(slot.payload);
     if (slot === undefined || parts === undefined) return undefined;
     const secret = txKeySlotSecret({
-      txViewingKey,
+      txViewingKey: sealed.txViewingKey,
       recipientViewingKey: recipient,
-      salt: body.context.salt,
+      salt: context.salt,
       outputIndex: position,
-      firstNullifier: body.context.firstNullifier,
+      firstNullifier: context.firstNullifier,
     });
     let record: OutputRecord | undefined;
     let verified: ShieldedAddress | undefined;
     try {
-      // The tag binds `V_k` to its slot, a key read under another layout derives another tag.
-      if (!equalBytes(anonymousSlotTag(secret), slot.viewTag)) return undefined;
-      const sealed = { secret, ciphertext: parts.body };
       // The amount sits in the record's head, the same bytes under every form.
       for (const form of recipientBodyForms(parts.body.length)) {
         record = decoded(() => openOutputSlot(secret, parts.body, form))?.record;
         if (record !== undefined) break;
       }
-      if (record === undefined) return undefined;
+      // A dummy's key is in the stream too, its proven record names no note.
+      if (record?.kind !== RecordKind.ring) return undefined;
+      const body = { secret, ciphertext: parts.body };
       verified = this.#reads.recipients.find(
         (address) =>
           address.viewingPublicKey.equals(recipient) &&
-          rebuild(this.#reads.assets, address, slot, body.context.ring, sealed) !== undefined,
+          rebuild(this.#reads.assets, address, slot, context.ring, body) !== undefined,
       );
     } finally {
       secret.fill(0);
     }
     return Object.freeze({
-      txSignature: body.tx.txSignature,
+      txSignature: tx.txSignature,
       utxoHash: slot.outputContext.hash,
       position,
       recipientViewingPublicKey: recipient,
@@ -221,7 +186,7 @@ export async function bodySecrets(
         viewingPublicKey,
         txViewingPublicKey: body.context.txViewingPublicKey,
         salt: body.context.salt,
-        outputIndex: outputIndex(body),
+        outputIndex: body.position,
         firstNullifier: body.context.firstNullifier,
       })),
       context,
@@ -232,84 +197,46 @@ export async function bodySecrets(
 /** Wipes every secret it reads. */
 export async function readBodies(
   reads: BodyReads,
-  viewingPublicKey: X25519PublicKey,
   opened: readonly (readonly [Body, Bytes32])[],
-  context: RequestContext | undefined,
-  visit: (open: () => Promise<BodyRead>) => Promise<void>,
+  visit: (open: () => BodyRead) => Promise<void>,
 ): Promise<void> {
-  let own: ReadonlyMap<string, ViewingKey> = new Map();
   try {
-    own = await ownTransactions(
-      reads.keys,
-      viewingPublicKey,
-      opened.map(([body]) => body),
-      context,
-    );
     for (const [body, secret] of opened)
-      await visit(async () => {
+      await visit(() => {
         const read = new BodyRead(reads);
-        if (body.site.kind === "output") read.recipientBody(body, body.site.position, secret);
-        else
-          await read.senderBundle(
-            body,
-            secret,
-            own.get(bytesKey(body.context.firstNullifier)),
-            async (positions) =>
-              answered(
-                positions,
-                await reads.keys.ringDeliverySecrets(
-                  positions.map((outputIndex) => ({
-                    viewingPublicKey,
-                    txViewingPublicKey: body.context.txViewingPublicKey,
-                    salt: body.context.salt,
-                    outputIndex,
-                    firstNullifier: body.context.firstNullifier,
-                  })),
-                  context,
-                ),
-              ).map(([, changeSecret]) => changeSecret),
-          );
+        read.recipientBody(body, secret);
         return read;
       });
   } finally {
     for (const [, secret] of opened) secret.fill(0);
-    for (const txViewingKey of own.values()) txViewingKey.destroy();
   }
 }
 
-/** The transaction key of each transaction the entry's key sent, keyed by its first nullifier. */
-export async function ownTransactions(
+/** The transaction key of each row the entry's key sent, the caller destroys each. */
+export async function ownTransactionKeys(
   keys: ShieldedKeys,
   viewingPublicKey: X25519PublicKey,
-  bodies: readonly Body[],
+  rows: readonly IndexedShieldedTransaction[],
   context: RequestContext | undefined,
-): Promise<ReadonlyMap<string, ViewingKey>> {
-  const contexts = new Map<string, SlotContext>();
-  for (const body of bodies)
-    if (body.site.kind === "message")
-      contexts.set(bytesKey(body.context.firstNullifier), body.context);
-  if (contexts.size === 0) return new Map();
-  const held = [...contexts.values()];
+): Promise<readonly (readonly [IndexedShieldedTransaction, SlotContext, ViewingKey])[]> {
+  const sealed = rows.flatMap((tx) => {
+    const slot = slotContext(tx);
+    return slot === undefined ? [] : [[tx, slot] as const];
+  });
+  if (sealed.length === 0) return [];
   const derived = answered(
-    held,
+    sealed,
     await keys.transactionKeys(
-      held.map((slot) => ({
-        viewingPublicKey,
-        firstNullifier: slot.firstNullifier,
-      })),
+      sealed.map(([, slot]) => ({ viewingPublicKey, firstNullifier: slot.firstNullifier })),
       context,
     ),
   );
-  const own = new Map<string, ViewingKey>();
-  derived.forEach(([slot, txViewingKey]) => {
-    // Another viewing key sent the transaction.
-    if (!txViewingKey.publicKey().equals(slot.txViewingPublicKey)) {
-      txViewingKey.destroy();
-      return;
-    }
-    own.set(bytesKey(slot.firstNullifier), txViewingKey);
+  return derived.flatMap(([[tx, slot], txViewingKey]) => {
+    if (txViewingKey.publicKey().equals(slot.txViewingPublicKey))
+      return [[tx, slot, txViewingKey] as const];
+    txViewingKey.destroy();
+    return [];
   });
-  return own;
 }
 
 /** Tries the registered key then the zero key, a third key misses. */
@@ -335,7 +262,7 @@ function rebuild(
  * `V_k` of every slot from the auditor stream under the sender's own transaction key, Rust
  * `AuditEnvelope::open_sealed`, the auditor key read from the last message's view tag. The frame
  * names no key class, and an entry key's envelope moves the key counters, so each class the
- * catalog keys at `n` gives one candidate and the slot tag decides.
+ * catalog keys at `n` gives one candidate.
  */
 function sentRecipientKeys(
   tx: IndexedShieldedTransaction,
@@ -394,13 +321,13 @@ function senderAuditLayouts(
   );
 }
 
-/** Key `k` names slot `k`, zero keys, the sender's own change keys and keys no ECDH accepts left out. */
+/** Key `k` names slot `k`, zero keys, the wallet's own change keys and keys no ECDH accepts left out. */
 function listedRecipients(
   keys: readonly Bytes32[],
-  own: Bytes32,
+  holds: (key: Bytes32) => boolean,
 ): readonly (readonly [number, X25519PublicKey])[] {
   return keys.flatMap((key, position) => {
-    if (isZero(key) || equalBytes(key, own)) return [];
+    if (isZero(key) || holds(key)) return [];
     const recipient = decoded(() => x25519FromU(key));
     return recipient === undefined || isSmallOrder(recipient)
       ? []
@@ -408,50 +335,19 @@ function listedRecipients(
   });
 }
 
-export function sitesOf(tx: IndexedShieldedTransaction): readonly Site[] {
-  return [
-    ...tx.outputSlots.map((_, position): Site => ({ kind: "output", position })),
-    ...tx.messages.map((_, message): Site => ({ kind: "message", message })),
-  ];
-}
-
-/** `undefined` for a site that holds no well formed body or bundle. */
-export function bodyAt(
-  tx: IndexedShieldedTransaction,
-  site: Site,
-  found: AnonymousStream,
-): Body | undefined {
+/** Every ring body of `tx`, none selected by its tag, Rust `Body::every`. */
+export function ringBodies(tx: IndexedShieldedTransaction): readonly Body[] {
   const context = slotContext(tx);
-  if (context === undefined) return undefined;
-  if (site.kind === "output") {
-    const slot = tx.outputSlots[site.position];
-    const parts = slot === undefined ? undefined : ringBodyOutput(slot.payload);
+  if (context === undefined) return [];
+  return tx.outputSlots.flatMap((slot, position) => {
+    const parts = ringBodyOutput(slot.payload);
     return parts === undefined
-      ? undefined
-      : {
-          tx,
-          site,
-          ciphertext: parts.body,
-          reply: parts.reply,
-          context,
-          found,
-        };
-  }
-  const message = tx.messages[site.message];
-  const bundle = message === undefined ? undefined : senderBundleOutputBody(message.data);
-  // Compact slots never reach the event, a bundle of any other `m` opens under another secret.
-  return bundle?.length === SENDER_BUNDLE_LEN
-    ? { tx, site, ciphertext: bundle, reply: new Uint8Array(), context, found }
-    : undefined;
+      ? []
+      : [{ tx, position, ciphertext: parts.body, reply: parts.reply, context, found: FULL_SCAN }];
+  });
 }
 
-/** A body at its position, a bundle at `m`, past every body's index. */
-function outputIndex(body: Body): number {
-  return body.site.kind === "output" ? body.site.position : body.tx.outputSlots.length;
-}
-
-export const FULL_SCAN: AnonymousStream = Object.freeze({ kind: "fullScan" });
-export const TAG_HINT: AnonymousStream = Object.freeze({ kind: "tagHint" });
+const FULL_SCAN: AnonymousStream = Object.freeze({ kind: "fullScan" });
 
 /** `undefined` without a ring, a contributory key, a salt or a canonical first nullifier. */
 function slotContext(tx: IndexedShieldedTransaction): SlotContext | undefined {
@@ -467,18 +363,4 @@ function slotContext(tx: IndexedShieldedTransaction): SlotContext | undefined {
   )
     return undefined;
   return { ring, txViewingPublicKey, salt, firstNullifier };
-}
-
-/** A slot answers under the recipient domain, a bundle under the sender's at index `m`. */
-export function bodyProbe(body: Body): RingTagFrame["probes"][number] {
-  const { site, tx } = body;
-  const published =
-    site.kind === "output" ? tx.outputSlots[site.position] : tx.messages[site.message];
-  if (published === undefined)
-    throw new RingError("RING_VIEWING_HISTORY_INVALID", { details: { reason: "no such site" } });
-  return {
-    kind: site.kind === "output" ? "recipient" : "senderBundle",
-    outputIndex: outputIndex(body),
-    tag: published.viewTag,
-  };
 }

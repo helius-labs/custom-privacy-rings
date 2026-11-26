@@ -69,19 +69,17 @@ function recover(
 }
 
 describe("full scan recovery", () => {
-  it("finds a note under a wrong tag only in recovery", async () => {
+  it("finds a note under a wrong tag with no tag read and moves no tag counter", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
     const wrong = underWrongTags(alice.seal(indexer, [{ to: bob.address, amount: 30n }]));
     indexer.publish(wrong);
-    expect((await bob.sync(indexer, bob.fresh())).utxos).toEqual([]);
-    expect((await alice.sync(indexer, alice.fresh())).utxos).toEqual([]);
     const byTag = vi.fn(async () => {
       throw new Error("tag reads unavailable");
     });
     const byNullifier = vi.fn(indexer.client().getShieldedTransactionsByNullifiers);
-    const history = (await ViewingHistory.create(bob.viewingKey, 0n).senderTag(bob.keys)).history;
+    const history = (await ViewingHistory.create(bob.viewingKey, 0n).requestTag(bob.keys)).history;
     const recovered = await AnonymousSync.create(bob.keys, ASSETS).fullScan(
       {
         ...indexer.client(),
@@ -102,12 +100,13 @@ describe("full scan recovery", () => {
     expect(recovered.spentNullifiers).toEqual([]);
     expect(recovered.status).toBe("Complete");
     expect(recovered.history.current().tx).toEqual(history.current().tx);
+    expect(recovered.history.current().request).toEqual(history.current().request);
     expect(found(recovered)).toEqual([hex(output(wrong, 1))]);
     expect(recovered.found[0]?.stream).toEqual({ kind: "fullScan" });
     expect((await recover(alice, indexer)).utxos.map((note) => note.utxo.amount)).toEqual([70n]);
   });
 
-  it("recovers a body and a bundle under wrong tags, under a retired key too", async () => {
+  it("recovers a body under a wrong tag, under a retired key too", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = keypair(2);
@@ -130,8 +129,11 @@ describe("full scan recovery", () => {
       [hex(output(tx, 0)), { kind: "fullScan" }],
     ]);
     expect(sender.utxos.map((note) => note.utxo.amount)).toEqual([50n]);
-    // The slot tag binds a listed key, a wrong tag lists no sent payment.
-    expect(sender.sent).toEqual([]);
+    // No tag binds a body, the sender lists each payment from the stream its own key sealed.
+    expect(sender.sent.map((row) => [row.position, row.amount])).toEqual([
+      [1, 30n],
+      [2, 20n],
+    ]);
 
     const holder = LocalRingKeys.fromKeys({
       address: bob.shieldedAddress(),
@@ -189,7 +191,7 @@ describe("full scan recovery", () => {
     expect(indexer.ringReads.at(-1)?.filters).toBeUndefined();
   });
 
-  it("recovers change and no-change bundles", async () => {
+  it("recovers the change of a frame that returns value and of one that returns none", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
@@ -204,11 +206,7 @@ describe("full scan recovery", () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     alice.fundFirst(SCAN_USDC, 40n);
-    const paid = await alice.pay(indexer, [{ to: alice.address, amount: 25n }]);
-    expect(paid.outputSlots.slice(0, 2).map((slot) => slot.viewTag)).toEqual([
-      new Uint8Array(32),
-      new Uint8Array(32),
-    ]);
+    await alice.pay(indexer, [{ to: alice.address, amount: 25n }]);
     const recovered = await recover(alice, indexer);
     expect(recovered.utxos.map((note) => [note.utxo.asset, note.utxo.amount]).toSorted()).toEqual([
       [SCAN_USDC, 15n],
@@ -291,7 +289,7 @@ describe("full scan recovery", () => {
     expect(recovered.spentNullifiers.map(hex).sort()).toEqual(nullifiers.map(hex).sort());
   });
 
-  it("finds what a tag scan finds on one history", async () => {
+  it("finds what a read of the stored ring positions finds on one history", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
@@ -413,21 +411,22 @@ describe("full scan recovery", () => {
     const scan = (reader: ScanWallet, indexer: ScanIndexer) =>
       ringFullScan({ keys: reader.keys, assets: ASSETS, client: indexer.client(), ring: RING });
 
-    it("finds a note under a wrong tag, the tag read misses it", async () => {
+    it("opens a note under a wrong tag from any row it reads, the full scan reads every row", async () => {
       const indexer = new ScanIndexer();
       const bob = new ScanWallet(2);
       const hash = deliver(indexer, bob, (slot) => ({
         ...slot,
         viewTag: new Uint8Array(32).fill(0x55) as Bytes32,
       }));
-      const tagged = new Wallet({ identity: bob.address, registry: ASSETS });
+      const opened = new Wallet({ identity: bob.address, registry: ASSETS });
       await decryptTransactions({
-        wallet: tagged,
+        wallet: opened,
         keys: bob.keys,
         transactions: indexer.transactions,
         ring: ringNoteCodec({ ringProgramId: RING, keys: bob.keys, assets: ASSETS }),
       });
-      expect(tagged.utxos()).toEqual([]);
+      // No tag selects a body, the commitment rebuild alone names the owner.
+      expect(opened.utxos().map((note) => hex(note.outputContext.hash))).toEqual([hex(hash)]);
       const recovered = await scan(bob, indexer);
       expect(recovered.utxos.map((note) => hex(note.outputContext.hash))).toEqual([hex(hash)]);
       expect(recovered.auditorRecovery.unopened.map(hex)).not.toContain(hex(hash));

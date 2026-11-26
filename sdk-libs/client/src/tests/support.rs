@@ -58,7 +58,8 @@ use zolana_ring_policy::{Member, RuleTable};
 
 use crate::{
     client::RingClient, trees::PoolTree, AsyncRingIndexer, CustomRing, NullifierKeyEnvelope,
-    RingIndexerError, SealedNullifierKey, TrackingRegistryHost, REDACTED,
+    RingIndexerError, SealedNullifierKey, TrackingRegistryHost, TransferTags, ViewingHistory,
+    REDACTED,
 };
 
 pub(crate) const SLOT: u64 = 2_359_301;
@@ -92,6 +93,13 @@ pub(crate) fn auditor() -> X25519Keypair {
 
 pub(crate) fn keypair(seed: u8) -> ShieldedKeypair {
     ShieldedKeypair::from_keypair(SigningKey::from_ed25519_bytes(&[seed; 32])).unwrap()
+}
+
+pub(crate) fn fresh_wallet_tags(sender: &ShieldedKeypair) -> TransferTags {
+    ViewingHistory::new(sender.viewing_pubkey(), 0)
+        .select(sender)
+        .unwrap()
+        .tag
 }
 
 pub(crate) fn owner_identity(owner: &ShieldedKeypair) -> Member {

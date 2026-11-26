@@ -1,11 +1,12 @@
-use crate::confidential_slot_tag;
+use core::ops::Range;
+
 use crate::DeliveredSlot;
 use crate::SlotSecret;
-use crate::StreamError;
+use custom_ring_interface::stream::slot_tag;
 use spr_keypair::{
     shielded::{ShieldedAddress, ShieldedKeypair},
     viewing_key::{Salt, ViewTag},
-    NullifierKey, ViewingKey, X25519Pubkey,
+    KeypairError, NullifierKey, ViewingKey, X25519Pubkey,
 };
 use spr_transaction::{
     DecryptRequest, DeriveRequest, LocalShieldedKeys, ShieldedKeys, TransactionError,
@@ -25,58 +26,19 @@ pub struct RingDeliveryRequest {
     pub first_nullifier: [u8; 32],
 }
 
-/// The derivation a published tag follows, one reader answers every kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RingTagKind {
-    /// A confidential output, tagged by the recipient key.
-    Confidential,
-    /// An anonymous payment, tagged by its slot secret.
-    Recipient,
-    SenderBundle,
-}
-
-impl RingTagKind {
-    fn tag(
-        self,
-        viewing_pubkey: &X25519Pubkey,
-        secret: &SlotSecret,
-    ) -> Result<ViewTag, StreamError> {
-        Ok(match self {
-            Self::Confidential => confidential_slot_tag(viewing_pubkey.u()),
-            Self::Recipient => secret.anonymous_slot_tag()?,
-            Self::SenderBundle => secret.sender_tag()?,
-        })
-    }
-}
-
-/// One published tag, `output_index` is `m` on a sender bundle.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RingTagProbe {
-    pub kind: RingTagKind,
-    pub output_index: u32,
-    pub tag: ViewTag,
-}
-
-/// The published tags of one transaction under one viewing key.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RingTagFrame {
-    pub viewing_pubkey: X25519Pubkey,
-    pub tx_viewing_pk: X25519Pubkey,
-    pub salt: Salt,
-    pub first_nullifier: [u8; 32],
-    pub probes: Vec<RingTagProbe>,
-}
-
-/// One own-key spec view tag of an anonymous ring under a wallet viewing key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The spec's tags a wallet derives by index, `zolana/docs/spec.md` View Tags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ViewTagStream {
-    Sender { tx_count: u64 },
+    /// On the first slot of a frame sealed to the wallet's own key.
+    Sender,
+    Request,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewTagRequest {
     pub viewing_pubkey: X25519Pubkey,
     pub stream: ViewTagStream,
+    pub indices: Range<u64>,
 }
 
 /// The ring derivations of a key holder, no viewing key or agreement output leaves it.
@@ -87,14 +49,8 @@ pub trait RingKeys {
         requests: &[RingDeliveryRequest],
     ) -> Result<Vec<[u8; 32]>, RingKeyError>;
 
-    /// Per frame one answer per probe, the slot secret when the probe's tag matches.
-    fn ring_tag_matches(
-        &self,
-        frames: &[RingTagFrame],
-    ) -> Result<Vec<Vec<Option<SlotSecret>>>, RingKeyError>;
-
-    /// One tag per request.
-    fn view_tags(&self, requests: &[ViewTagRequest]) -> Result<Vec<ViewTag>, RingKeyError>;
+    /// Per request one tag per index, at the width a ring slot publishes.
+    fn view_tags(&self, requests: &[ViewTagRequest]) -> Result<Vec<Vec<ViewTag>>, RingKeyError>;
 }
 
 /// One identity under its current and every retired viewing key, a note sealed to any of them opens here.
@@ -221,14 +177,7 @@ impl RingKeys for ShieldedKeypair {
         delivery_secrets(self, requests)
     }
 
-    fn ring_tag_matches(
-        &self,
-        frames: &[RingTagFrame],
-    ) -> Result<Vec<Vec<Option<SlotSecret>>>, RingKeyError> {
-        tag_matches(self, frames)
-    }
-
-    fn view_tags(&self, requests: &[ViewTagRequest]) -> Result<Vec<ViewTag>, RingKeyError> {
+    fn view_tags(&self, requests: &[ViewTagRequest]) -> Result<Vec<Vec<ViewTag>>, RingKeyError> {
         view_tags(self, requests)
     }
 }
@@ -241,14 +190,7 @@ impl RingKeys for RotatingRingKeys {
         delivery_secrets(self, requests)
     }
 
-    fn ring_tag_matches(
-        &self,
-        frames: &[RingTagFrame],
-    ) -> Result<Vec<Vec<Option<SlotSecret>>>, RingKeyError> {
-        tag_matches(self, frames)
-    }
-
-    fn view_tags(&self, requests: &[ViewTagRequest]) -> Result<Vec<ViewTag>, RingKeyError> {
+    fn view_tags(&self, requests: &[ViewTagRequest]) -> Result<Vec<Vec<ViewTag>>, RingKeyError> {
         view_tags(self, requests)
     }
 }
@@ -275,46 +217,24 @@ fn delivery_secrets<H: HeldKeys>(
         .collect()
 }
 
-fn tag_matches<H: HeldKeys>(
-    holder: &H,
-    frames: &[RingTagFrame],
-) -> Result<Vec<Vec<Option<SlotSecret>>>, RingKeyError> {
-    let mut agreements = Agreements::new(holder);
-    frames
-        .iter()
-        .map(|frame| {
-            let agreement = agreements.of(&frame.viewing_pubkey, &frame.tx_viewing_pk)?;
-            frame
-                .probes
-                .iter()
-                .map(|probe| {
-                    let secret = slot_secret(
-                        agreement,
-                        &frame.tx_viewing_pk,
-                        &frame.viewing_pubkey,
-                        &frame.salt,
-                        probe.output_index,
-                        &frame.first_nullifier,
-                    )?;
-                    let tag = probe.kind.tag(&frame.viewing_pubkey, &secret)?;
-                    Ok((tag == probe.tag).then_some(secret))
-                })
-                .collect()
-        })
-        .collect()
-}
-
 fn view_tags<H: HeldKeys>(
     holder: &H,
     requests: &[ViewTagRequest],
-) -> Result<Vec<ViewTag>, RingKeyError> {
+) -> Result<Vec<Vec<ViewTag>>, RingKeyError> {
     requests
         .iter()
         .map(|request| {
             let key = holder.held(&request.viewing_pubkey)?;
-            Ok(match request.stream {
-                ViewTagStream::Sender { tx_count } => key.get_sender_view_tag(tx_count)?,
-            })
+            let indices = request.indices.clone();
+            let tags: Result<Vec<ViewTag>, KeypairError> = match request.stream {
+                ViewTagStream::Sender => indices
+                    .map(|index| key.get_sender_view_tag(index))
+                    .collect(),
+                ViewTagStream::Request => indices
+                    .map(|index| key.get_recipient_request_view_tag(index))
+                    .collect(),
+            };
+            Ok(tags?.into_iter().map(slot_tag).collect())
         })
         .collect()
 }
@@ -382,7 +302,6 @@ fn slot_secret(
 
 #[cfg(test)]
 mod tests {
-    use crate::SlotSecret;
     use spr_keypair::SigningKey;
 
     use super::*;
@@ -391,104 +310,47 @@ mod tests {
         ShieldedKeypair::from_keypair(SigningKey::from_ed25519_bytes(&[3; 32])).unwrap()
     }
 
-    fn frame(
-        tx: &ViewingKey,
+    fn tags(
+        holder: &impl RingKeys,
         viewing_pubkey: X25519Pubkey,
-        probes: Vec<RingTagProbe>,
-    ) -> RingTagFrame {
-        RingTagFrame {
+        stream: ViewTagStream,
+    ) -> Result<Vec<ViewTag>, RingKeyError> {
+        let mut answers = holder.view_tags(&[ViewTagRequest {
             viewing_pubkey,
-            tx_viewing_pk: tx.pubkey(),
-            salt: [5; 16],
-            first_nullifier: [0; 32],
-            probes,
+            stream,
+            indices: 3..5,
+        }])?;
+        Ok(answers.remove(0))
+    }
+
+    #[test]
+    fn each_stream_answers_the_spec_tag_at_the_ring_width() {
+        let holder = keypair();
+        let key = &holder.viewing_key;
+        let published = |tag: Result<ViewTag, KeypairError>| slot_tag(tag.unwrap());
+        let expected = [
+            (
+                ViewTagStream::Sender,
+                [3, 4].map(|index| published(key.get_sender_view_tag(index))),
+            ),
+            (
+                ViewTagStream::Request,
+                [3, 4].map(|index| published(key.get_recipient_request_view_tag(index))),
+            ),
+        ];
+        for (stream, expected) in expected {
+            let answered = tags(&holder, key.pubkey(), stream).unwrap();
+            assert_eq!(answered, expected, "{stream:?}");
+            assert!(answered.iter().all(|tag| tag[..24] == [0; 24]));
         }
     }
 
-    fn sealed(tx: &ViewingKey, viewing_pubkey: &X25519Pubkey, output_index: u32) -> SlotSecret {
-        slot_secret(
-            &tx.ecdh(viewing_pubkey).unwrap(),
-            &tx.pubkey(),
-            viewing_pubkey,
-            &[5; 16],
-            output_index,
-            &[0; 32],
-        )
-        .unwrap()
-    }
-
     #[test]
-    fn a_probe_answers_only_under_its_own_domain_and_index() {
+    fn a_tag_request_under_a_key_the_holder_lacks_is_refused() {
         let holder = keypair();
-        let viewing_pubkey = holder.viewing_key.pubkey();
-        let tx = ViewingKey::new();
-        let body = sealed(&tx, &viewing_pubkey, 1);
-        let bundle = sealed(&tx, &viewing_pubkey, 2);
-        let probe = |kind, output_index, tag| RingTagProbe {
-            kind,
-            output_index,
-            tag,
-        };
-        let answers = holder
-            .ring_tag_matches(&[frame(
-                &tx,
-                viewing_pubkey,
-                vec![
-                    probe(
-                        RingTagKind::Recipient,
-                        1,
-                        body.anonymous_slot_tag().unwrap(),
-                    ),
-                    probe(RingTagKind::SenderBundle, 2, bundle.sender_tag().unwrap()),
-                    probe(
-                        RingTagKind::Confidential,
-                        1,
-                        confidential_slot_tag(viewing_pubkey.u()),
-                    ),
-                    probe(
-                        RingTagKind::Recipient,
-                        0,
-                        body.anonymous_slot_tag().unwrap(),
-                    ),
-                    probe(
-                        RingTagKind::SenderBundle,
-                        2,
-                        bundle.recipient_tag().unwrap(),
-                    ),
-                    probe(
-                        RingTagKind::Confidential,
-                        1,
-                        body.anonymous_slot_tag().unwrap(),
-                    ),
-                ],
-            )])
-            .unwrap();
-        let hits: Vec<_> = answers[0]
-            .iter()
-            .map(|answer| answer.as_ref().map(SlotSecret::as_bytes))
-            .collect();
-        assert_eq!(
-            hits,
-            [
-                Some(body.as_bytes()),
-                Some(bundle.as_bytes()),
-                Some(body.as_bytes()),
-                None,
-                None,
-                None
-            ]
-        );
-    }
-
-    #[test]
-    fn a_probe_under_a_key_the_holder_lacks_is_refused() {
-        let holder = keypair();
-        let tx = ViewingKey::new();
         let other = ViewingKey::new().pubkey();
         assert_eq!(
-            holder
-                .ring_tag_matches(&[frame(&tx, other, Vec::new())])
-                .err(),
+            tags(&holder, other, ViewTagStream::Sender).err(),
             Some(RingKeyError::UnknownViewingKey)
         );
     }
@@ -516,25 +378,10 @@ mod tests {
         let current = rotated.address().unwrap().viewing_pubkey;
         assert_ne!(current, old);
         assert_eq!(rotated.viewing_public_keys(), [current, old]);
-        let tx = ViewingKey::new();
-        for key in [old, current] {
-            let tag = sealed(&tx, &key, 0).anonymous_slot_tag().unwrap();
-            let answers = rotated
-                .ring_tag_matches(&[frame(
-                    &tx,
-                    key,
-                    vec![RingTagProbe {
-                        kind: RingTagKind::Recipient,
-                        output_index: 0,
-                        tag,
-                    }],
-                )])
-                .unwrap();
-            assert!(answers[0][0].is_some());
-        }
-        let stranger = frame(&tx, ViewingKey::new().pubkey(), Vec::new());
+        let under = |key| tags(&rotated, key, ViewTagStream::Sender);
+        assert_ne!(under(old).unwrap(), under(current).unwrap());
         assert_eq!(
-            rotated.ring_tag_matches(&[stranger]).err(),
+            under(ViewingKey::new().pubkey()).err(),
             Some(RingKeyError::UnknownViewingKey)
         );
     }

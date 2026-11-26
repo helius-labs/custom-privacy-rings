@@ -8,7 +8,7 @@ use custom_ring_interface::{
     AuditStreamLayout, CustomRingError, RecordForm, RecordKind, StreamRegion,
     DEFAULT_INPUT_BITS_LEN, ENTRY_RECORD_LEN, ENVELOPE_HEAD_LEN, ENVELOPE_KEY_LEN, EXIT_RECORD_LEN,
     MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, RECIPIENT_PAYLOAD_LENGTH_LEN, RING_RECORD_LEN,
-    SEALED_KEY_BLOCKS, SEALED_KEY_LEN, SENDER_BUNDLE_LEN, TRANSFER_RECORD_LEN,
+    SEALED_KEY_BLOCKS, SEALED_KEY_LEN, TRANSFER_RECORD_LEN,
 };
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
 
@@ -508,27 +508,6 @@ impl RecipientPayload {
             true => Ok(Self { data }),
             false => Err(CustomRingError::RingTransactLength),
         }
-    }
-}
-
-/// `output_seed` outside the proof, the sender reads each `V_i` from the auditor stream, the key record `i` is sealed to.
-/// Sealed to the sender's viewing key at index `m`, an opening marks a candidate the sender checks further.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SenderBundle {
-    pub output_seed: [u8; 32],
-}
-
-impl SenderBundle {
-    pub const fn encode(&self) -> [u8; SENDER_BUNDLE_LEN] {
-        self.output_seed
-    }
-
-    pub fn decode(plaintext: &[u8]) -> Result<Self, CustomRingError> {
-        read_all(plaintext, |bytes| {
-            Ok(Self {
-                output_seed: *bytes.array()?,
-            })
-        })
     }
 }
 

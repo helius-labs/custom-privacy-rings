@@ -1,6 +1,6 @@
 # Disclosure
 
-A ring transfer opens through one proven record per output slot. Each record is sealed to the recipient key the sender supplies for its slot. One AES-256-CTR stream, the auditor stream, seals the transaction viewing secret, the note count and every slot's recipient key to the auditor. Payloads, non-exit tags, replies and the sender bundle stay outside every proof. [Spec](../../spec.md) [Envelope](envelope.md)
+A ring transfer opens through one proven record per output slot. Each record is sealed to the recipient key the sender supplies for its slot. One AES-256-CTR stream, the auditor stream, seals the transaction viewing secret, the note count and every slot's recipient key to the auditor. Payloads, non-exit tags and replies stay outside every proof. [Spec](../../spec.md) [Envelope](envelope.md)
 
 ## Verified audit recovery
 
@@ -21,17 +21,28 @@ Each published slot carries an owner tag. A non-exit slot's tag is an unproved h
 |---|---|
 | Ring output, confidential frame | low 8 bytes of the recipient's `viewing_u` |
 | Dummy, confidential frame | low 8 bytes of the slot's [dummy recipient key](hashing.md#slot-secret) |
-| Ring output, anonymous frame | low 8 bytes of `Poseidon(CRRT, CRDS_i)` |
-| Change, anonymous frame | zero |
-| Dummy, anonymous frame | low 8 bytes of `Poseidon(CRRT, s)`, `s` drawn uniform below `q` |
+| Payment to a payment request, anonymous frame | low 8 bytes of the request's `recipient_request_view_tag` |
+| Payment with no request, anonymous frame | low 8 bytes of the recipient's `recipient_bootstrap_view_tag`, its `viewing_u` |
+| Payment to the paying wallet's current viewing key, anonymous frame | low 8 bytes of the wallet's `sender_view_tag(tx_count)` |
+| First change slot, anonymous frame | low 8 bytes of the paying wallet's `sender_view_tag(tx_count)` |
+| Dummy, anonymous frame | 8 random bytes |
 | Exit | SPP's 32-byte owner tag, which SPP's proof holds to the exit's owner |
-| Sender bundle | `Poseidon(CRST, CRDS_m)`, 32 bytes |
 
-`CRDS_i` is the [slot secret](hashing.md#slot-secret) that also keys slot `i`'s record and payload. A wrong tag hides no decryptable note, because a full scan tries every body without a tag. [Wallet scanning](../../design/audit-and-recovery.md#wallet-scanning) states how a reader finds its notes.
+`sender_view_tag`, `recipient_request_view_tag` and `recipient_bootstrap_view_tag` are zolana's [View Tags](../../../zolana/docs/spec.md#view-tags), and the ring adds no derivation. `tx_count` is the paying wallet's sender index under its current viewing key. No slot takes zolana's `recipient_shared_view_tag`, and no record names its sender, so no payment pairs a sender with its recipient.
+
+The SDKs publish each tag of an anonymous frame once. A slot whose tag an earlier slot of the frame publishes takes 8 random bytes in its place. Such slots are a second change slot, a second payment under the same tag and a note the wallet pays itself beside its change. The indexer returns every slot of a transaction for one matching tag, so one slot leads the reader to all of them. Equal tags would show an observer that two slots share an owner. Across transactions a tag repeats, see [limits of the tag read](../../design/audit-and-recovery.md#limits-of-the-tag-read).
+
+The paying wallet chooses every non-exit tag, and a delegate's request chooses the tag of each payment it moves. A transfer built without its wallet's sender tag publishes each payment's request tag, or with no request its recipient's bootstrap tag. Each of its change slots publishes random bytes. The SDKs build such a transfer only when it spends a ring note. A slot that returns change to a key whose tags the builder does not hold publishes random bytes. A deposit's fresh sender and the sources of a delegate move are such keys. A delegate's payment to the source whose change leads the frame sits among that change, and one change slot publishes its tag.
+
+A tag only selects a candidate, and the rebuilt commitment proves ownership. A frame therefore spends 8 bytes on each tag under the 4,096-byte transaction ceiling. SPP and the indexer hold a non-exit tag as 24 zero bytes and its 8 tag bytes. A reader asks for that form, and a query for a full 32-byte zolana tag matches no ring slot. Two unrelated tags can agree in 8 bytes. Such a match costs the reader the trial opens of that transaction, each ring body under each held key.
+
+A payment request is the text `zolana:<address>?amount=&mint=&label=&tag=`, with `<address>` the recipient's ring address in base58. `tag` is 32 bytes in base58, and the paying wallet publishes its low 8 bytes. The SDK mints it as 24 zero bytes and the low 8 bytes of the recipient's request tag. The query part is unauthenticated.
+
+A wrong tag hides a note from its recipient's sync, unless another read of that sync returns its transaction. A full scan tries every body without a tag and finds a note sealed to a key the reader holds. [Wallet scanning](../../design/audit-and-recovery.md#wallet-scanning) states how a reader finds its notes.
 
 ## Auditor message
 
-The auditor message is SPP's last message, under the auditor's `u` as its view tag. Its data is:
+A frame's SPP messages are its application messages in frame order, then the auditor message. An application message is a view tag and data the frame hands to SPP unchanged. SPP counts its messages in one byte, so a frame carries at most `MAX_APPLICATION_MESSAGES = 254` application messages. The auditor message is SPP's last message, under the auditor's `u` as its view tag. Its data is:
 
 ```text
 0x04 || tx_viewing_u || envelope_ct || keys_ct || exit_record_ct of each exit in slot order
@@ -141,17 +152,7 @@ A frame opts in with `REPLY_METADATA`, on an anonymous frame only. The reply fol
 viewing_u || owner_key || nullifier_pk || wincode(Data), zero padded to reply_len
 ```
 
-`reply_len` is one length per frame, at least 97. Every non-exit slot carries one, and a slot with no reply or a dummy carries random bytes of that length. SPP's external data hash binds the bytes, and no proof reads their meaning. A reply is an unauthenticated claim about the sender. A reader never turns it into a verified sender identity.
-
-## Sender bundle
-
-Scheme 9 is `RING_SENDER_BUNDLE_SCHEME_TAG`, the tag of the sender bundle alone, and no slot body takes it. It is the first SPP message of an anonymous frame, under `CRING/snd` and the slot secret at `i = m` of the sender's viewing key:
-
-```text
-output_seed                                                                     32 bytes
-```
-
-The bundle has one length at every `m`, and it carries no recipient key and no count. The sender selects its bundle by the message tag, and a bundle that opens marks the transfer as the sender's own. The sender then tries each ring body it has not found at that slot's secret, and accepts as change only a commitment that rebuilds. `output_seed` is `TXOS(n0, CRBS(tx_viewing_sk, salt))`.
+`reply_len` is one length per frame, at least 97. Every non-exit slot carries one. A slot with no reply seals the empty reply, zero bytes of that length under its slot secret, and its owner's decoder refuses the zero `viewing_u`. A dummy carries random bytes of that length. SPP's external data hash binds the bytes, and no proof reads their meaning. A reply is an unauthenticated claim about the sender. A reader never turns it into a verified sender identity.
 
 ## Opening a transfer
 

@@ -27,7 +27,7 @@ import {
   sppRingRegistration,
   trackingRegistryAccount,
 } from "../../helpers/ring-accounts.js";
-import { TRACKING_REVISION, trackingEntry } from "../../helpers/ring-pipeline.js";
+import { TRACKING_REVISION, freshWalletTags, trackingEntry } from "../../helpers/ring-pipeline.js";
 import { signingKeySpendSigner } from "../../../src/operations/payments/anonymous.js";
 import type { RingMode } from "../../../src/protocol/codec/ring-codecs.js";
 import { ringPolicyPda } from "../../../src/protocol/pda/index.js";
@@ -554,6 +554,7 @@ describe("ring approval summary", () => {
         quote: { feePayer: PAYER, validUntilSlot: 1n },
         nullifierKey: keypair.nullifierKey(),
         signer: signingKeySpendSigner(SigningKey.fromEd25519Bytes(filled(42))),
+        tags: await freshWalletTags(keypair),
       },
     }).catch((cause: unknown) => cause);
     return { error, requests };
@@ -600,6 +601,7 @@ describe("ring approval summary", () => {
         quote: { feePayer: PAYER, validUntilSlot: 1n },
         nullifierKey: keypair.nullifierKey(),
         signer: signingKeySpendSigner(SigningKey.fromEd25519Bytes(filled(42))),
+        tags: await freshWalletTags(keypair),
       },
     }).catch((cause: unknown) => cause);
     expect(requests.map((request) => request.intent)).toMatchObject([

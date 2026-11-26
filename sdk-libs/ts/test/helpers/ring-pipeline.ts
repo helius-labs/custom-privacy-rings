@@ -1,5 +1,11 @@
 import { bn254 } from "@noble/curves/bn254.js";
-import { AccountRole, getAddressDecoder, type Address, type Instruction } from "@solana/kit";
+import {
+  AccountRole,
+  getAddressDecoder,
+  getBase58Decoder,
+  type Address,
+  type Instruction,
+} from "@solana/kit";
 import { expect } from "vitest";
 
 import {
@@ -50,6 +56,7 @@ import type { ShieldedPda } from "@heliuslabs/spr/program";
 import {
   AssetRegistry,
   SOL_MINT,
+  type IndexedShieldedTransaction,
   type SppProofInputs,
   ProofInputUtxo,
   Utxo,
@@ -122,6 +129,7 @@ import { settlementAccounts } from "../../src/protocol/transaction/spp.js";
 import { checkTransactionFits } from "../../src/operations/workflow/compile.js";
 import { openRecipientBody, ringOutputBlinding } from "../../src/crypto/derivation/blinding.js";
 import { LocalRingKeys, ringWalletKeys, type RingKeys } from "../../src/state/ring-keys.js";
+import { ViewingHistory, type TransferTags } from "../../src/state/viewing-history.js";
 import { x25519FromU } from "../../src/crypto/keys/x25519.js";
 
 export const TREE_ID = DEFAULT_TREE_ID;
@@ -523,7 +531,12 @@ export function walletKeys(keypair: ShieldedKeypair): LocalKeys & RingKeys {
   );
 }
 
-/** A spendable note of `keypair` in `ring`, or in the default ring without one. */
+/** The sender tag a wallet with no history selects, no store holds the history past it, Rust `fresh_wallet_tags`. */
+export async function freshWalletTags(sender: ShieldedKeypair): Promise<TransferTags> {
+  const fresh = ViewingHistory.create(sender.viewingPublicKey(), 0n);
+  return (await fresh.select(walletKeys(sender))).tag;
+}
+
 /** Role keys of a program's PDA owner, no signing secret. */
 export function pdaKeys(holder: ShieldedPda): LocalKeys & RingKeys {
   const viewing = holder.viewingKey();
@@ -601,6 +614,35 @@ export async function expanded(fixture: Fixture, proven: ProvenRingTransfer, rai
     ),
   ).toEqual(call.proofInputs.externalData.hash());
   return { instruction, data, call };
+}
+
+/** The ring row Photon serves for the frame the fixture proved last. */
+export function indexedFrame(fixture: Fixture): IndexedShieldedTransaction {
+  const call = fixture.sppCalls.at(-1);
+  if (call === undefined) throw new Error("no SPP proof");
+  const { proofInputs } = call;
+  const { externalData } = proofInputs;
+  return {
+    slot: 3n,
+    txSignature: getBase58Decoder().decode(new Uint8Array(64).fill(9)) as never,
+    eventIndex: 0,
+    txViewingPublicKey: externalData.txViewingPublicKey,
+    salt: externalData.salt,
+    outputSlots: externalData.outputs.map((output, index) => ({
+      viewTag: externalData.resolvedOwnerTags[index] ?? new Uint8Array(32),
+      outputContext: {
+        hash: output.utxoHash,
+        tree: TREE,
+        treeId: TREE_ID,
+        leafIndex: BigInt(index),
+      },
+      payload: output.data ?? new Uint8Array(),
+    })) as IndexedShieldedTransaction["outputSlots"],
+    messages: externalData.messages,
+    nullifiers: proofInputs.inputUtxos.map((spent) => spent.nullifier()),
+    proofless: false,
+    ringProgramId: fixture.ringProgramId,
+  };
 }
 
 type AccountEntry = Readonly<{ address: Address; role: AccountRole }>;

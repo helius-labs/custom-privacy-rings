@@ -96,11 +96,10 @@ describe("public owner rail", () => {
     ).not.toThrow();
   });
 
-  it("settles a public owner frame on SPP's confidential rail beside its sender bundle", () => {
+  it("settles a public owner frame on SPP's confidential rail", () => {
     const frame = ringFrame({ rail: "anonymous", inputs: 2, outputs: 2, publicOwners: true });
     const parsed = RingTransactData.parse(RingTransactData.encode(frame), "anonymous");
     expect(parsed.publicOwners).toBe(true);
-    expect(parsed.sender).toBeDefined();
     expect(parsed.anonymous).toBeUndefined();
     expect(RingTransactData.circuit(parsed).kind).toBe("confidentialRingEddsa");
   });

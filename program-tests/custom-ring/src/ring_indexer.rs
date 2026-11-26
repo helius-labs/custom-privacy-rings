@@ -58,27 +58,35 @@ impl RingIndexerLaunch<'_> {
         fs::create_dir_all(log_dir)?;
         let log_path = log_dir.join("ring-indexer.log");
         let log = File::create(&log_path)?;
-        Command::new(&binary)
-            .arg("--db-url")
-            .arg(format!(
-                "sqlite://{}?mode=rwc",
-                data.join("index.db").display()
-            ))
-            .args(["--rpc-url", rpc_url])
-            .args(["--photon-url", photon_url])
-            .args(["--port", &port.to_string()])
-            .args(["--start-slot", "latest"])
-            .stdin(Stdio::null())
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .spawn()
-            .with_context(|| format!("start {}", binary.display()))?;
+        let start = || {
+            Command::new(&binary)
+                .arg("--db-url")
+                .arg(format!(
+                    "sqlite://{}?mode=rwc",
+                    data.join("index.db").display()
+                ))
+                .args(["--rpc-url", rpc_url])
+                .args(["--photon-url", photon_url])
+                .args(["--port", &port.to_string()])
+                .args(["--start-slot", "latest"])
+                .stdin(Stdio::null())
+                .stdout(log.try_clone()?)
+                .stderr(log.try_clone()?)
+                .spawn()
+                .with_context(|| format!("start {}", binary.display()))
+        };
         let deadline = Instant::now() + READY_TIMEOUT;
+        let mut indexer = start()?;
         while !ready(port) {
+            // The indexer exits when another local socket holds its port.
+            if indexer.try_wait()?.is_some() {
+                indexer = start()?;
+            }
             if Instant::now() > deadline {
+                let _ = indexer.kill();
                 bail!(
-                    "the ring indexer on port {port} is not ready, see {}",
-                    log_path.display()
+                    "the ring indexer on port {port} is not ready\n{}",
+                    log_tail(&log_path)
                 );
             }
             thread::sleep(POLL);

@@ -87,10 +87,6 @@ impl FrameEncode for RingTransactData<'_> {
             out.extend_from_slice(&replies.byte_len().to_le_bytes());
             out.extend_from_slice(replies.region());
         }
-        if let Some(sender) = self.sender {
-            out.extend_from_slice(sender.tag);
-            out.extend_from_slice(sender.body);
-        }
         out.extend_from_slice(self.envelope);
         out.extend_from_slice(self.recipient_keys);
         out.extend_from_slice(self.private_tx_hash);

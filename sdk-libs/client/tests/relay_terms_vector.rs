@@ -31,6 +31,7 @@ fn compute_vector() -> Value {
             tree_id: 8,
             data_hash: Hash([9; 32]),
             ring_data_hash: Hash([10; 32]),
+            tag: Some(Hash([19; 32])),
         }],
         nullifiers: vec![Hash([11; 32])],
         legs: vec![

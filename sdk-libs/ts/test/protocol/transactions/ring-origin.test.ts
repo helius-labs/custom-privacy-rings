@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { address, getBase58Decoder, type Address, type Signature } from "@solana/kit";
 import { encodeRingTransactInstructionData } from "../../../src/protocol/proof/circuit.js";
@@ -47,6 +47,9 @@ import {
 } from "../../../src/crypto/audit/merge-disclosure.js";
 import { solanaRpcReads } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import { ringFrame, ringInstructionData } from "../../helpers/ring-frame.js";
+import { ownedAccount, ringPolicyData } from "../../helpers/ring-accounts.js";
+import { RingModeOrigin } from "../../../src/operations/audit/row-origins.js";
+import { ringPolicyPda } from "../../../src/protocol/pda/index.js";
 
 // Mirrors sdk-libs/client/src/codec/origin/tests.rs.
 const RING = address("zYYvj4LTBF4Lz2FBhDaAbJ7CsVWvHjyanxQJPmN2dSU");
@@ -957,11 +960,12 @@ describe("RpcTransactionOrigin", () => {
     },
   );
 
+  // An authority frame without replies parses under both ring modes, both read `delegate` here.
   it.each([
     [55, InstructionTag.ringTransact, false, "confidential"],
     [55, InstructionTag.ringTransact, true, "anonymous"],
     [56, InstructionTag.ringAuthorityTransact, false, "delegate"],
-    [56, InstructionTag.ringAuthorityTransact, true, "anonymousDelegate"],
+    [56, InstructionTag.ringAuthorityTransact, true, "delegate"],
   ] as const)("binds tag %i to its rail, anonymous %s", async (outer, tag, anonymous, rail) => {
     const { indexed, confirmed, frame, ringData } = transferFixture(1, tag, { anonymous });
     expect(ringData[0]).toBe(outer);
@@ -973,6 +977,45 @@ describe("RpcTransactionOrigin", () => {
       rail,
       layout: RingTransactData.streamLayout(frame),
     });
+  });
+
+  it.each([
+    ["anonymous", "anonymousDelegate"],
+    ["confidential", "delegate"],
+  ] as const)(
+    "names an authority frame's rail from the %s ring account, read once",
+    async (mode, rail) => {
+      const [policy, bump] = await ringPolicyPda(RING);
+      const getAccount = vi.fn(async (account: Address) =>
+        account === policy ? ownedAccount(RING, ringPolicyData({ bump, mode })) : undefined,
+      );
+      const { indexed, confirmed } = transferFixture(1, InstructionTag.ringAuthorityTransact, {
+        anonymous: mode === "anonymous",
+      });
+      const origin = new RingModeOrigin(new RpcTransactionOrigin(rpcWith(confirmed)), {
+        getAccount,
+      });
+      for (const _ of [0, 1])
+        await expect(origin.confirmedTransaction(indexed, RING)).resolves.toMatchObject({ rail });
+      expect(getAccount).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("reads no ring account for a transfer frame and fails an authority frame without one", async () => {
+    const getAccount = vi.fn(async () => undefined);
+    const transfer = transferFixture(1, InstructionTag.ringTransact, { anonymous: true });
+    await expect(
+      new RingModeOrigin(new RpcTransactionOrigin(rpcWith(transfer.confirmed)), {
+        getAccount,
+      }).confirmedTransaction(transfer.indexed, RING),
+    ).resolves.toMatchObject({ rail: "anonymous" });
+    expect(getAccount).not.toHaveBeenCalled();
+    const moved = transferFixture(1, InstructionTag.ringAuthorityTransact);
+    await expect(
+      new RingModeOrigin(new RpcTransactionOrigin(rpcWith(moved.confirmed)), {
+        getAccount,
+      }).confirmedTransaction(moved.indexed, RING),
+    ).rejects.toMatchObject({ code: "RING_POLICY_MISSING" });
   });
 
   describe("tag 57", () => {

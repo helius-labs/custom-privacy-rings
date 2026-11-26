@@ -1,102 +1,100 @@
-//! The anonymous rail's slots, the sender's change leading at output 0, one record body per
-//! non-exit slot and the sender bundle after them.
+//! The anonymous rail's slots, the sender's change leading at output 0 and one record body per
+//! non-exit slot.
 
-use custom_ring_interface::MIN_REPLY_LEN;
+use custom_ring_interface::{stream::slot_tag, MIN_REPLY_LEN};
 use rand::{rngs::OsRng, RngCore};
-use spr_hasher::primitives::is_canonical_bn254_scalar_be;
-use spr_interface::{instruction::instruction_data::transact::TransactOutput, MAX_OUTPUTS};
-use spr_keypair::{ShieldedAddress, X25519Pubkey};
+use spr_interface::instruction::instruction_data::transact::TransactOutput;
+use spr_keypair::{viewing_key::ViewTag, ShieldedAddress, X25519Pubkey};
 use spr_transaction::{
     instructions::transact::SppProofInputs, Mint, SppProofOutputUtxo, TransactionError,
 };
-use zeroize::Zeroize;
-use zolana_ring_keys::SenderBundle;
+use zolana_ring_keys::bootstrap_slot_tag;
 
 use crate::{
-    recipient_delivery::{seal_reply, seal_sender_bundle},
+    recipient_delivery::{seal_no_reply, seal_reply},
     OutputBlindings, ReplyMetadata, RingRailError,
 };
 
-const REDACTED: &str = "<redacted>";
-
-/// The recipients of one anonymous transfer in declared order, a live tag derives from its slot.
-#[must_use]
-#[derive(Clone)]
-pub struct AnonymousPlan {
-    recipients: Vec<X25519Pubkey>,
-    /// One per payment, a frame without any carries no reply bytes.
-    replies: Vec<Option<ReplyMetadata>>,
-    /// Drawn ahead, every encoding of a dummy slot publishes one tag.
-    dummy_preimages: [[u8; 32]; MAX_OUTPUTS],
-    change_asset: Mint,
+#[derive(Clone, Debug)]
+struct Payment {
+    recipient: X25519Pubkey,
+    tag: ViewTag,
+    reply: Option<ReplyMetadata>,
 }
 
-impl core::fmt::Debug for AnonymousPlan {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            recipients,
-            replies,
-            dummy_preimages: _,
-            change_asset,
-        } = self;
-        f.debug_struct("AnonymousPlan")
-            .field("recipients", recipients)
-            .field("replies", replies)
-            .field("dummy_preimages", &REDACTED)
-            .field("change_asset", change_asset)
-            .finish()
-    }
+/// The payments of one anonymous transfer in declared order.
+#[must_use]
+#[derive(Clone, Debug)]
+pub struct AnonymousPlan {
+    payments: Vec<Payment>,
+    /// One per change slot in slot order, a change slot past them takes random bytes.
+    change_tags: Vec<ViewTag>,
+    change_asset: Mint,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnonymousSlot {
-    /// A live output at the sender's exact address, its tag zero, its record sealed to the sender.
+    /// A live output at the sender's exact address, its record sealed to the sender.
     Change,
     Payment {
         recipient: X25519Pubkey,
+        tag: ViewTag,
     },
     Exit,
-    /// The tag is `Poseidon(CRRT, preimage)`.
-    Dummy {
-        preimage: [u8; 32],
-    },
+    Dummy,
 }
 
 impl AnonymousPlan {
     pub fn new() -> Self {
         Self {
-            recipients: Vec::new(),
-            replies: Vec::new(),
-            dummy_preimages: core::array::from_fn(|_| random_tag_preimage()),
+            payments: Vec::new(),
+            change_tags: Vec::new(),
             change_asset: Mint::SOL,
         }
     }
 
-    /// `dummy_preimages` must be the ones the sealed outputs publish.
-    pub fn from_parts(
-        recipients: Vec<X25519Pubkey>,
-        dummy_preimages: [[u8; 32]; MAX_OUTPUTS],
-    ) -> Self {
-        let replies = vec![None; recipients.len()];
-        Self {
-            recipients,
-            replies,
-            dummy_preimages,
-            change_asset: Mint::SOL,
-        }
+    /// A relay's plan, the sealed outputs already publish the wallet's tags.
+    pub fn from_recipients(recipients: impl IntoIterator<Item = X25519Pubkey>) -> Self {
+        recipients.into_iter().fold(Self::new(), Self::with_payment)
     }
 
+    /// Under the recipient's bootstrap tag until a later call replaces it.
     pub fn with_payment(mut self, recipient: X25519Pubkey) -> Self {
-        self.recipients.push(recipient);
-        self.replies.push(None);
+        self.payments.push(Payment {
+            recipient,
+            tag: bootstrap_slot_tag(recipient.u()),
+            reply: None,
+        });
+        self
+    }
+
+    /// Tags the latest payment, at the width a ring slot publishes.
+    pub fn with_tag(mut self, tag: ViewTag) -> Self {
+        if let Some(payment) = self.payments.last_mut() {
+            payment.tag = slot_tag(tag);
+        }
+        self
+    }
+
+    /// No tag finds the latest payment, a note its recipient spends in the same frame does.
+    pub fn with_random_tag(mut self) -> Self {
+        if let Some(payment) = self.payments.last_mut() {
+            payment.tag = random_slot_tag();
+        }
         self
     }
 
     /// Attaches a reply to the latest payment, no other path sets one.
     pub fn with_reply(mut self, reply: ReplyMetadata) -> Self {
-        if let Some(slot) = self.replies.last_mut() {
-            *slot = Some(reply);
+        if let Some(payment) = self.payments.last_mut() {
+            payment.reply = Some(reply);
         }
+        self
+    }
+
+    /// A tag one change slot publishes, each call names the next change slot.
+    pub fn with_sender_tag(mut self, tag: ViewTag) -> Self {
+        self.change_tags.push(slot_tag(tag));
         self
     }
 
@@ -110,20 +108,16 @@ impl AnonymousPlan {
         self.change_asset
     }
 
-    pub fn recipients(&self) -> &[X25519Pubkey] {
-        &self.recipients
+    pub fn recipients(&self) -> impl Iterator<Item = X25519Pubkey> + '_ {
+        self.payments.iter().map(|payment| payment.recipient)
     }
 
-    pub fn dummy_preimages(&self) -> &[[u8; 32]; MAX_OUTPUTS] {
-        &self.dummy_preimages
-    }
-
-    /// One length per frame, a slot without a reply carries random bytes of it.
+    /// One length per frame, a slot without a reply carries an empty reply of it.
     pub fn reply_len(&self) -> Result<Option<usize>, RingRailError> {
-        self.replies
+        self.payments
             .iter()
-            .flatten()
-            .map(|reply| reply.encoded_len())
+            .filter_map(|payment| payment.reply.as_ref())
+            .map(ReplyMetadata::encoded_len)
             .try_fold(None, |longest: Option<usize>, len| {
                 Ok(Some(longest.unwrap_or(MIN_REPLY_LEN).max(len?)))
             })
@@ -137,16 +131,12 @@ impl AnonymousPlan {
     ) -> Result<Vec<AnonymousSlot>, RingRailError> {
         let published = published_outputs(outputs);
         let change = leading_change(published, sender);
-        let mut recipients = self.recipients.iter();
+        let mut payments = self.payments.iter();
         let mut slots = Vec::with_capacity(published.len());
         for (slot_index, output) in published.iter().enumerate() {
-            let preimage = *self
-                .dummy_preimages
-                .get(slot_index)
-                .ok_or(TransactionError::TooManyOutputs)?;
             let slot = match output.owner_address {
                 _ if slot_index < change => AnonymousSlot::Change,
-                None => AnonymousSlot::Dummy { preimage },
+                None => AnonymousSlot::Dummy,
                 Some(_) if is_change(output, sender) => {
                     return Err(RingRailError::AnonymousChange { slot_index });
                 }
@@ -156,10 +146,11 @@ impl AnonymousPlan {
                     }
                     AnonymousSlot::Exit
                 }
-                Some(owner) => match recipients.next() {
-                    Some(recipient) if *recipient == owner.viewing_pubkey => {
+                Some(owner) => match payments.next() {
+                    Some(payment) if payment.recipient == owner.viewing_pubkey => {
                         AnonymousSlot::Payment {
-                            recipient: *recipient,
+                            recipient: payment.recipient,
+                            tag: payment.tag,
                         }
                     }
                     Some(_) => return Err(RingRailError::RingPaymentSlot { slot_index }),
@@ -168,7 +159,7 @@ impl AnonymousPlan {
             };
             slots.push(slot);
         }
-        match recipients.next() {
+        match payments.next() {
             Some(_) => Err(RingRailError::RingPaymentSlot {
                 slot_index: published.len(),
             }),
@@ -176,21 +167,43 @@ impl AnonymousPlan {
         }
     }
 
-    fn slot_replies(&self, slots: &[AnonymousSlot]) -> Vec<Option<&ReplyMetadata>> {
-        let mut replies = self.replies.iter();
+    /// The tag each slot publishes, `None` on an exit since its owner tag is no view tag.
+    /// A frame publishes each tag once and random bytes on a slot that would repeat one, a match
+    /// returns every slot of the transaction and equal tags would show two slots share an owner.
+    pub(crate) fn tags(&self, slots: &[AnonymousSlot]) -> Vec<Option<ViewTag>> {
+        let mut published: Vec<ViewTag> = Vec::new();
+        let mut once = |tag: ViewTag| match published.contains(&tag) {
+            true => random_slot_tag(),
+            false => {
+                published.push(tag);
+                tag
+            }
+        };
+        let mut change_tags = self.change_tags.iter().copied();
         slots
             .iter()
             .map(|slot| match slot {
-                AnonymousSlot::Payment { .. } => replies.next().and_then(Option::as_ref),
-                _ => None,
+                AnonymousSlot::Exit => None,
+                AnonymousSlot::Change => {
+                    Some(change_tags.next().map_or_else(random_slot_tag, &mut once))
+                }
+                AnonymousSlot::Dummy => Some(random_slot_tag()),
+                AnonymousSlot::Payment { tag, .. } => Some(once(*tag)),
             })
             .collect()
     }
-}
 
-impl Drop for AnonymousPlan {
-    fn drop(&mut self) {
-        self.dummy_preimages.zeroize();
+    fn slot_replies(&self, slots: &[AnonymousSlot]) -> Vec<Option<&ReplyMetadata>> {
+        let mut payments = self.payments.iter();
+        slots
+            .iter()
+            .map(|slot| match slot {
+                AnonymousSlot::Payment { .. } => {
+                    payments.next().and_then(|payment| payment.reply.as_ref())
+                }
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -295,37 +308,29 @@ impl AnonymousSeal<'_> {
         let body = self
             .rail
             .seal_body(output, &self.first_nullifier, slot_index, self.form)?;
-        let replies = self.plan.slot_replies(self.slots);
-        let reply = match (self.slots[slot_index], replies[slot_index], reply_len) {
-            (AnonymousSlot::Payment { recipient }, Some(reply), Some(reply_len)) => {
+        let Some(reply_len) = reply_len else {
+            return Ok(SealedBody {
+                body,
+                reply: Vec::new(),
+            });
+        };
+        // The owner of a slot opens its reply bytes, so a slot with no reply seals the empty one.
+        // No owner opens a dummy.
+        let reply = match output.owner_address {
+            None => random_bytes(reply_len),
+            Some(owner) => {
                 let index =
                     u32::try_from(slot_index).map_err(|_| TransactionError::TooManyOutputs)?;
-                let secret = self
-                    .rail
-                    .slot_secret(&recipient, &self.first_nullifier, index)?;
-                seal_reply(reply, reply_len, &secret)?
+                let secret =
+                    self.rail
+                        .slot_secret(&owner.viewing_pubkey, &self.first_nullifier, index)?;
+                match self.plan.slot_replies(self.slots)[slot_index] {
+                    Some(reply) => seal_reply(reply, reply_len, &secret)?,
+                    None => seal_no_reply(reply_len, &secret)?,
+                }
             }
-            _ => random_bytes(reply_len.unwrap_or(0)),
         };
         Ok(SealedBody { body, reply })
-    }
-
-    /// The bundle at index `m` opens under a retained or reproducible sender viewing key and
-    /// published values alone.
-    pub fn sender_bundle(
-        &self,
-        blindings: &OutputBlindings,
-        sender: &ShieldedAddress,
-    ) -> Result<Vec<u8>, RingRailError> {
-        let bundle = SenderBundle {
-            output_seed: *blindings.output_seed(),
-        };
-        let published =
-            u32::try_from(self.slots.len()).map_err(|_| TransactionError::TooManyOutputs)?;
-        let secret =
-            self.rail
-                .slot_secret(&sender.viewing_pubkey, &self.first_nullifier, published)?;
-        seal_sender_bundle(&bundle, &secret)
     }
 }
 
@@ -339,16 +344,11 @@ pub fn published_outputs(outputs: &[SppProofOutputUtxo]) -> &[SppProofOutputUtxo
     &outputs[..outputs.len() - omitted]
 }
 
-/// Uniform below `q` by rejection, a live tag's preimage is a Poseidon output.
-pub fn random_tag_preimage() -> [u8; 32] {
-    loop {
-        let mut value = [0u8; 32];
-        OsRng.fill_bytes(&mut value);
-        value[0] &= 0x3f;
-        if is_canonical_bn254_scalar_be(&value) {
-            return value;
-        }
-    }
+/// Uniform over the published bytes, as a sender tag and a request tag are.
+fn random_slot_tag() -> ViewTag {
+    let mut tag = [0u8; 32];
+    OsRng.fill_bytes(&mut tag);
+    slot_tag(tag)
 }
 
 fn random_bytes(len: usize) -> Vec<u8> {
@@ -368,25 +368,11 @@ fn note_of(output: &SppProofOutputUtxo) -> (Option<ShieldedAddress>, Mint, u64) 
     (output.owner_address, output.asset, output.amount)
 }
 
-/// A bundle cell holds no data, a data note travels in its own body.
+/// A change carries no data, a data note to the sender takes a payment slot.
 pub(crate) fn is_change(output: &SppProofOutputUtxo, sender: &ShieldedAddress) -> bool {
     let carries_data = [output.data_hash, output.ring_data_hash]
         .into_iter()
         .flatten()
         .any(|hash| hash != [0; 32]);
     output.owner_address == Some(*sender) && output.ring_program_id.is_some() && !carries_data
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn anonymous_plan_debug_redacts_dummy_preimages() {
-        let preimage = [0xa5; 32];
-        let plan = AnonymousPlan::from_parts(Vec::new(), [preimage; MAX_OUTPUTS]);
-        let rendered = format!("{plan:?}");
-        assert!(rendered.contains(REDACTED), "{rendered}");
-        assert!(!rendered.contains(&format!("{preimage:?}")), "{rendered}");
-    }
 }

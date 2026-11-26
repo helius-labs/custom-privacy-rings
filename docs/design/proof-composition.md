@@ -193,7 +193,9 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 - SPP takes one signature as authorization for every data-bearing output of that signer. No statement element counts them.
 - A relayed signer's SDK requires one opening per published slot, each rebuilding its slot's commitment, before it signs. That check is the reader's and binds nobody else.
-- The test is `a_data_recipient_reads_every_slot_and_signs` in `sdk-libs/client/src/tests/transfer/pipeline/relay.rs`.
+- No proof holds a non-exit tag, and Ring RPC checks none on a frame it relays. A public signer's SDK refuses a non-exit slot under a tag its opening does not name. A transfer that publishes no tag its recipient lists and spends none of its notes stays out of that recipient's sync.
+- A delegate's SDK holds each payment to its requested tag, or with none to its recipient's bootstrap tag. On an anonymous frame some non-exit slot must publish that tag. The check holds an anonymous output that returns to a requested source to no tag.
+- The tests are `a_data_recipient_reads_every_slot_and_signs`, `a_public_owner_signs_only_the_slot_tags_its_terms_name`, `an_anonymous_delegate_holds_each_payment_to_a_published_tag` and `an_anonymous_delegate_refuses_a_payment_to_a_source_under_no_published_tag` in `sdk-libs/client/src/tests/transfer/pipeline/relay.rs`.
 
 ### Roots come from the ring's registries
 
@@ -247,7 +249,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 ## What no proof covers
 
-- The circuit constrains no payload, slot tag, sender bundle or reply, and no recipient key choice. `the_external_data_hash_binds_every_delivery_byte` in `sdk-libs/client/tests/transact.rs` pins the byte binding.
+- The circuit constrains no payload, slot tag or reply, and no recipient key choice. `the_external_data_hash_binds_every_delivery_byte` in `sdk-libs/client/tests/transact.rs` pins the byte binding.
 - A reader rebuilds a commitment under its own keys, and that match is its only authentication. [Recipient delivery](audit-and-recovery.md#recipient-delivery) states what recovers a bad tag, a wrong key and a bad payload.
 - A reader's coverage describes finalized history, and no proof backs it. [Reading through Ring RPC](audit-and-recovery.md#reading-through-ring-rpc) states what it claims.
 - A hidden owner's privacy rests on the conditions in [privacy](privacy.md). No constraint covers them.

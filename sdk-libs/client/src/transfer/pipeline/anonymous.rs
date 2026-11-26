@@ -9,7 +9,7 @@ use solana_account::Account;
 use solana_address::Address;
 use spr_client::{AsyncRpc, Shape};
 use spr_interface::{pda, SPL_TOKEN_2022_PROGRAM_ID, SPL_TOKEN_PROGRAM_ID};
-use spr_keypair::{NullifierKey, PublicKey, ShieldedAddress, SigningKey};
+use spr_keypair::{viewing_key::ViewTag, NullifierKey, PublicKey, ShieldedAddress, SigningKey};
 use spr_transaction::{
     instructions::transact::{
         ConfidentialTransaction, SettlementTransfer, SppProofInputs, SppProofOutputUtxo,
@@ -31,6 +31,7 @@ use super::{
 use crate::{
     client::{RingClient, RingIndexerBackend},
     rpc::SubjectListSalt,
+    viewing_history::TransferTags,
     AnonymousExitDestination, CustomRing, CustomRingConfig, RingError,
 };
 
@@ -42,6 +43,8 @@ pub struct AnonymousPayment {
     /// An unauthenticated claim to its recipient, [`Self::with_reply`] opts in.
     pub reply: Option<ReplyMetadata>,
     pub data: NoteData,
+    /// The tag of the request it pays, the recipient's bootstrap tag without one.
+    pub request_tag: Option<ViewTag>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +54,8 @@ pub struct RingPayment {
     /// An unauthenticated claim to its recipient, [`Self::with_reply`] opts in.
     pub reply: Option<ReplyMetadata>,
     pub data: NoteData,
+    /// The tag of the request it pays, the recipient's bootstrap tag without one.
+    pub request_tag: Option<ViewTag>,
 }
 
 /// What a paid note commits beside its amount, the recipient's body carries it.
@@ -79,6 +84,13 @@ impl AnonymousPayment {
     pub fn with_data(mut self, data: NoteData) -> Self {
         self.data = data;
         self
+    }
+
+    /// A payment to the tags' own key takes the sender tag, `None` reads as the recipient's bootstrap tag.
+    pub(crate) fn tag(&self, tags: Option<&TransferTags>) -> Option<ViewTag> {
+        tags.filter(|tags| tags.viewing_pubkey() == self.to.recipient.viewing_pubkey)
+            .map(TransferTags::sender)
+            .or(self.request_tag)
     }
 
     pub(super) fn add_to(
@@ -118,6 +130,7 @@ impl RingPayment {
             amount,
             reply: None,
             data: NoteData::default(),
+            request_tag: None,
         }
     }
 
@@ -140,6 +153,18 @@ impl RingPayment {
             amount: request.amount.unwrap_or(amount),
             data: NoteData::default(),
             reply: None,
+            request_tag: request.tag,
+        }
+    }
+
+    pub fn in_asset(&self, asset: Mint) -> AnonymousPayment {
+        AnonymousPayment {
+            to: self.to.clone(),
+            asset,
+            amount: self.amount,
+            reply: self.reply.clone(),
+            data: self.data.clone(),
+            request_tag: self.request_tag,
         }
     }
 }
@@ -159,6 +184,8 @@ pub struct AnonymousMove<'a> {
     pub entry: EntrySpend,
     /// Read only when the ring demands a co-signer.
     pub co_signer: Option<Address>,
+    /// The wallet's sender tag. Change takes random bytes without it, and an entry spend is refused.
+    pub tags: Option<&'a TransferTags>,
 }
 
 /// A default-ring spend publishes the hidden owner's key, a move takes one only when allowed.
@@ -202,6 +229,7 @@ pub struct Anonymous<'a> {
     pub(super) exposure: OwnerExposure,
     /// In declared order, the order of their ring outputs.
     pub(super) payments: Vec<AnonymousPayment>,
+    tags: Option<TransferTags>,
     pub(super) exit_token_owner: Option<Address>,
     co_owners: Vec<CoOwner<'a>>,
     read_cache: Option<ReadCache>,
@@ -249,6 +277,7 @@ impl<'a> RingTransfer<Owner<'a>> {
                 signer,
                 exposure: OwnerExposure::Refused,
                 payments: Vec::new(),
+                tags: None,
                 exit_token_owner: None,
                 co_owners: Vec::new(),
                 read_cache: None,
@@ -283,6 +312,13 @@ impl<'a> RingTransfer<Anonymous<'a>> {
         payment.add_to(&mut self.rail.owner.transaction)?;
         self.rail.payments.push(payment);
         Ok(self)
+    }
+
+    /// The wallet's sender tag, the first slot sealed to its key publishes it.
+    #[must_use = "use the updated transfer"]
+    pub fn with_tags(mut self, tags: TransferTags) -> Self {
+        self.rail.tags = Some(tags);
+        self
     }
 
     /// Unset, staging pads to the smallest supported shape.
@@ -385,16 +421,14 @@ impl<'a> AnonymousMove<'a> {
             })
         }
         .with_anonymous_signer(self.signer);
+        let transfer = match self.tags {
+            Some(tags) => transfer.with_tags(tags.clone()),
+            None => transfer,
+        };
         self.payments
             .iter()
             .try_fold(transfer, |transfer, payment| {
-                transfer.with_payment(AnonymousPayment {
-                    to: payment.to.clone(),
-                    asset: self.asset,
-                    amount: payment.amount,
-                    reply: payment.reply.clone(),
-                    data: payment.data.clone(),
-                })
+                transfer.with_payment(payment.in_asset(self.asset))
             })?
             .with_shape(shape)
     }
@@ -483,7 +517,15 @@ impl Anonymous<'_> {
             keys,
             sender: &sender,
             auditor: config.auditor_pubkey,
-            delivery: RingDelivery::Anonymous(Box::new(anonymous_plan(&self.payments))),
+            delivery: RingDelivery::Anonymous(Box::new(
+                TaggedPayments {
+                    transaction: &transaction,
+                    sender: &sender,
+                    payments: &self.payments,
+                    tags: self.tags.as_ref(),
+                }
+                .plan()?,
+            )),
             shape,
             program_salt: None,
         }
@@ -579,15 +621,55 @@ pub(super) fn payment_salts(
         .collect()
 }
 
-/// The send call alone attaches a reply, no default path does.
-pub(super) fn anonymous_plan(payments: &[AnonymousPayment]) -> AnonymousPlan {
-    payments.iter().fold(AnonymousPlan::new(), |plan, payment| {
-        let plan = plan.with_payment(payment.to.recipient.viewing_pubkey);
-        match &payment.reply {
-            Some(reply) => plan.with_reply(reply.clone()),
-            None => plan,
+pub(super) struct TaggedPayments<'a> {
+    pub transaction: &'a ConfidentialTransaction,
+    pub sender: &'a ShieldedAddress,
+    pub payments: &'a [AnonymousPayment],
+    pub tags: Option<&'a TransferTags>,
+}
+
+impl TaggedPayments<'_> {
+    /// Without the wallet's sender tag change takes random bytes, the ring note the wallet spends
+    /// leads its ring sync to the change.
+    pub fn plan(self) -> Result<AnonymousPlan, RingError> {
+        let Self {
+            transaction,
+            sender,
+            payments,
+            tags,
+        } = self;
+        // 1. An entry spends default-ring notes alone. A core scan that reads their spend ahead of
+        // the ring sync hands the transaction to no later sync, so only the sender tag finds the
+        // change. A deposit spends a dummy and returns no change.
+        let mut notes = transaction
+            .inputs()
+            .iter()
+            .filter(|input| input.is_note())
+            .peekable();
+        let entry =
+            notes.peek().is_some() && notes.all(|input| input.utxo.ring_program_id.is_none());
+        if tags.is_none() && entry {
+            return Err(RingError::SenderTagRequired);
         }
-    })
+        // 2. Change takes the sender tag only under the key the tags derive from, a deposit's
+        // fresh sender holds another key and its change takes a random tag.
+        let plan = match tags.filter(|tags| tags.viewing_pubkey() == sender.viewing_pubkey) {
+            Some(tags) => AnonymousPlan::new().with_sender_tag(tags.sender()),
+            None => AnonymousPlan::new(),
+        };
+        // 3. The send call alone attaches a reply, no default path does.
+        Ok(payments.iter().fold(plan, |plan, payment| {
+            let plan = plan.with_payment(payment.to.recipient.viewing_pubkey);
+            let plan = match payment.tag(tags) {
+                Some(tag) => plan.with_tag(tag),
+                None => plan,
+            };
+            match &payment.reply {
+                Some(reply) => plan.with_reply(reply.clone()),
+                None => plan,
+            }
+        }))
+    }
 }
 
 /// The hidden owner's note is ring input 0, a frame of only public owners takes the confidential

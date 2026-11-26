@@ -18,7 +18,7 @@ import {
   type RequestContext,
   type Signature,
 } from "@heliuslabs/spr/interface";
-import { slotTag, txKeySlotSecret } from "../../crypto/derivation/ring-stream.js";
+import { bootstrapSlotTag, txKeySlotSecret } from "../../crypto/derivation/ring-stream.js";
 import {
   addressBytes,
   encodeBase58,
@@ -337,46 +337,52 @@ function checkMoved(
         return equalBytes(record.key.nullifierPk, owner.nullifierPk);
     }
   };
+  const anonymous = isAnonymousFrame(frame.rail);
+  // An anonymous frame publishes each tag once, a match returns every slot of the transaction.
+  const published = frame.outputs
+    .filter((output) => output.body.kind !== "exit")
+    .map((output) => output.ownerTag);
   const unpaid = [...expected.payments];
   records.forEach((record, slot) => {
     if (record.kind === RecordKind.dummy) return;
-    const published = frame.outputs[slot];
+    const output = frame.outputs[slot];
     const sealedTo = (owner: ExpectedOwner): boolean =>
       (record.kind === RecordKind.exit ||
         (recipientKeys[slot] !== undefined && equalBytes(recipientKeys[slot], owner.viewingU))) &&
-      published !== undefined &&
-      rebuilds(expected, published.hash, record, owner);
+      output !== undefined &&
+      rebuilds(expected, output.hash, record, owner);
+    const matches = (payment: ExpectedPayment): boolean =>
+      record.kind === payment.kind &&
+      owns(payment.owner, record) &&
+      record.mint === payment.mint &&
+      record.amount === payment.amount;
+    // A payment no published tag finds is lost to its recipient's sync.
+    const tagged = (payment: ExpectedPayment): boolean =>
+      anonymous && payment.kind === RecordKind.ring
+        ? published.some((tag) => equalBytes(tag, payment.tag))
+        : output !== undefined && equalBytes(payment.tag, output.ownerTag);
     const paid = unpaid.findIndex(
-      (payment) =>
-        record.kind === payment.kind &&
-        record.mint === payment.mint &&
-        record.amount === payment.amount &&
-        owns(payment.owner, record) &&
-        sealedTo(payment.owner),
+      (payment) => matches(payment) && tagged(payment) && sealedTo(payment.owner),
     );
+    if (paid >= 0) return swapRemove(unpaid, paid);
     const source =
-      paid < 0 && record.kind === RecordKind.ring
-        ? expected.sources.find((source) => owns(source, record) && sealedTo(source))
+      record.kind === RecordKind.ring
+        ? expected.sources.find((owner) => owns(owner, record) && sealedTo(owner))
         : undefined;
-    const owner = unpaid[paid]?.owner ?? source;
-    if (owner === undefined) throw mismatch("Recipients");
-    if (paid >= 0) {
-      // Rust `swap_remove`, the order decides the equal payment a later record takes.
-      unpaid[paid] = unpaid[unpaid.length - 1] as ExpectedPayment;
-      unpaid.pop();
-    }
-    const tag = frame.outputs[slot]?.ownerTag;
-    // A confidential reader finds its note by the tag, a change under another tag is lost to its source.
-    const expectedTag =
-      record.kind === RecordKind.exit
-        ? owner.ownerKey
-        : !isAnonymousFrame(frame.rail)
-          ? slotTag(owner.viewingU)
-          : undefined;
-    if (expectedTag !== undefined && (tag === undefined || !equalBytes(tag, expectedTag)))
+    if (source === undefined) throw mismatch("Recipients");
+    // An anonymous source finds its change by the note it spent.
+    if (anonymous) return;
+    // A confidential source finds its change by the tag.
+    if (output === undefined || !equalBytes(output.ownerTag, bootstrapSlotTag(source.viewingU)))
       throw mismatch("Recipients");
   });
   if (unpaid.length !== 0) throw mismatch("Recipients");
+}
+
+/** Rust `swap_remove`, the order decides the equal payment a later record takes. */
+function swapRemove<Item>(list: Item[], at: number): void {
+  const last = list.pop();
+  if (last !== undefined && at < list.length) list[at] = last;
 }
 
 /** The rail carries no data, so both data hashes are zero, Rust `ExpectedDelegate::rebuilds`. */
@@ -492,8 +498,8 @@ function frameRecords(
 }
 
 /**
- * SPP reads one signature as approval of every data-bearing output its signer owns, and each
- * published owner tag of a ring output is zero, so no frame field names those outputs. The signer
+ * SPP reads one signature as approval of every data-bearing output its signer owns, and a ring
+ * output's published tag names no signer, so no frame field names those outputs. The signer
  * reads every published output before it signs, no data output stays out of its view.
  */
 function checkOpenings(
@@ -510,20 +516,17 @@ function checkOpenings(
   )
     throw mismatch("UnopenedOutput");
   // 2. Each opening rebuilds the commitment published at its slot, so the signer reads each owner,
-  // amount and data hash the proof commits.
+  // amount and data hash the proof commits, and the tag a non-exit slot publishes.
   terms.slots.forEach((opening, slot) => {
     const published = frame.outputs[slot];
-    if (
-      published === undefined ||
-      !equalBytes(
-        // An exit commits no ring, a ring id here would refuse every exit.
-        withMismatch("Recipients", () =>
-          openingHash(opening, published.body.kind === "exit" ? undefined : terms.ring),
-        ),
-        published.hash,
-      )
-    )
-      throw mismatch("Recipients");
+    if (published === undefined) throw mismatch("Recipients");
+    const exit = published.body.kind === "exit";
+    // An exit commits no ring, a ring id here would refuse every exit.
+    const rebuilt = withMismatch("Recipients", () =>
+      openingHash(opening, exit ? undefined : terms.ring),
+    );
+    const tagged = opening.tag !== undefined && equalBytes(opening.tag, published.ownerTag);
+    if (!equalBytes(rebuilt, published.hash) || (!exit && !tagged)) throw mismatch("Recipients");
   });
   const among = (list: readonly Uint8Array[], nullifier: Uint8Array): boolean =>
     list.some((held) => equalBytes(held, nullifier));

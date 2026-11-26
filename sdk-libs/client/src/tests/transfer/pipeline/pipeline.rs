@@ -14,16 +14,17 @@ use spr_program::instruction::{TransactSolTransferAccounts, TransactSplWithdrawa
 use spr_transaction::{
     instructions::transact::ConfidentialTransaction, AssetRegistry, Mint, WalletUtxo,
 };
+use zolana_ring_keys::bootstrap_slot_tag;
 use zolana_ring_keys::ring_body_output;
-use zolana_ring_keys::ring_sender_bundle_output_body;
 use zolana_ring_keys::RingAddress;
-use zolana_ring_keys::SenderBundle;
-use zolana_ring_transaction::{open_recipient_body, open_sender_bundle, RingDelivery};
+use zolana_ring_transaction::{open_recipient_body, RingDelivery};
 
 use super::*;
 use crate::{
     client::RingClient,
-    tests::support::{account, empty, ring, ring_utxo, zero_key, Chain, RingSettings, TREE_ID},
+    tests::support::{
+        account, empty, fresh_wallet_tags, ring, ring_utxo, zero_key, Chain, RingSettings, TREE_ID,
+    },
     ApprovalEncode,
 };
 
@@ -82,6 +83,7 @@ fn payment(to: &RingAddress, amount: u64) -> AnonymousPayment {
         amount,
         reply: None,
         data: crate::NoteData::default(),
+        request_tag: None,
     }
 }
 
@@ -372,42 +374,46 @@ fn payment_at(
     open_recipient_body(body, &slot_secret(staged, reader, position), form).unwrap()
 }
 
-/// The sender bundle, the first message, opened under the sender's own viewing key.
-fn bundle(staged: &Staged<'_>, sender: &ShieldedKeypair) -> SenderBundle {
-    let external = &staged.proof_inputs.external_data;
-    let message = &external.messages[0];
-    let body = ring_sender_bundle_output_body(&message.data).expect("a sender bundle");
-    open_sender_bundle(body, &slot_secret(staged, sender, external.outputs.len())).unwrap()
-}
-
-/// Change leads under a zero tag, each slot opens under its party's key and the bundle carries the seed.
+/// One change slot leads under the sender tag, a payment takes its request tag or its recipient's bootstrap tag, each slot opens under its party's key.
 #[tokio::test]
-async fn an_anonymous_transfer_publishes_each_payment_and_the_sender_bundle() {
+async fn an_anonymous_transfer_publishes_each_slot_under_its_tag() {
     use crate::tests::support::keypair;
+    use custom_ring_interface::stream::slot_tag;
     let sender = &keypair(1);
     let bootstrap = keypair(2);
     let requester = keypair(3);
     let usdc = Mint::new(Address::new_from_array([0x31; 32]), 2);
-    let transaction = ring_transaction(vec![
-        ring_utxo(sender, usdc, 10, 0),
-        ring_utxo(sender, Mint::SOL, 10, 1),
-    ]);
-    let transfer = owner_transfer(sender, transaction)
-        .with_anonymous_signer(&sender.signing_key)
-        .with_payment(AnonymousPayment {
-            asset: usdc,
-            ..payment(&ring_address(&bootstrap), 3)
-        })
-        .unwrap()
-        .with_payment(AnonymousPayment {
-            ..payment(&ring_address(&requester), 2)
-        })
-        .unwrap()
-        .with_shape(spr_client::Shape::IN2_OUT8)
-        .unwrap();
-    let staged = stage_anonymous(&transfer, &Chain::ring(anonymous()))
-        .await
-        .unwrap();
+    let requested = [0x5a; 32];
+    let tags = fresh_wallet_tags(sender);
+    let transfer = |tags: Option<crate::TransferTags>| {
+        let transaction = ring_transaction(vec![
+            ring_utxo(sender, usdc, 10, 0),
+            ring_utxo(sender, Mint::SOL, 10, 1),
+        ]);
+        let transfer =
+            owner_transfer(sender, transaction).with_anonymous_signer(&sender.signing_key);
+        let transfer = match tags {
+            Some(tags) => transfer.with_tags(tags),
+            None => transfer,
+        };
+        transfer
+            .with_payment(AnonymousPayment {
+                asset: usdc,
+                ..payment(&ring_address(&bootstrap), 3)
+            })
+            .unwrap()
+            .with_payment(AnonymousPayment {
+                request_tag: Some(requested),
+                ..payment(&ring_address(&requester), 2)
+            })
+            .unwrap()
+            .with_shape(spr_client::Shape::IN2_OUT8)
+            .unwrap()
+    };
+    let chain = Chain::ring(anonymous());
+    let (unselected, selected) = (transfer(None), transfer(Some(tags.clone())));
+    let unselected = stage_anonymous(&unselected, &chain).await.unwrap();
+    let staged = stage_anonymous(&selected, &chain).await.unwrap();
     let outputs = &staged.proof_inputs.output_utxos;
     let sender_address = sender.shielded_address().unwrap();
     assert_eq!(
@@ -421,16 +427,28 @@ async fn an_anonymous_transfer_publishes_each_payment_and_the_sender_bundle() {
         ]
     );
     let slots = published(&staged);
-    assert_eq!(slots[0].0, [0; 32], "change publishes zero");
-    assert_eq!(slots[1].0, [0; 32], "change publishes zero");
-    assert_ne!(slots[2].0, bootstrap.viewing_pubkey().u());
-    assert_ne!(slots[3].0, requester.viewing_pubkey().u());
-    assert_ne!(slots[2].0, slots[3].0);
+    assert_eq!(slots[0].0, tags.sender(), "change publishes the sender tag");
+    assert_ne!(slots[1].0, tags.sender(), "one slot alone carries it");
+    assert_eq!(
+        slots[2].0,
+        bootstrap_slot_tag(bootstrap.viewing_pubkey().u())
+    );
+    assert_eq!(slots[3].0, slot_tag(requested));
+    let without = published(&unselected);
+    assert_ne!(
+        without[0].0,
+        tags.sender(),
+        "the sender tag needs a selection"
+    );
+    assert_eq!(
+        [without[2].0, without[3].0],
+        [slots[2].0, slots[3].0],
+        "a payment's tag needs none"
+    );
     assert!(slots.iter().all(|(_, body)| body.is_some()));
-    for (tag, _) in &slots[2..] {
+    for (tag, _) in &slots {
         assert!(is_canonical_bn254_scalar_be(tag), "a tag is a field value");
     }
-    bundle(&staged, sender);
     let opened = |reader, position| {
         let record = payment_at(&staged, reader, position).record;
         (record.mint, record.amount)
@@ -461,31 +479,8 @@ async fn a_transfer_returning_nothing_leads_with_a_zero_sol_change() {
         (leading.owner_address, leading.asset, leading.amount),
         (Some(sender.shielded_address().unwrap()), Mint::SOL, 0)
     );
-    bundle(&staged, sender);
     assert_eq!(payment_at(&staged, sender, 0).record.amount, 0);
     assert_eq!(payment_at(&staged, &keypair(2), 1).record.amount, 10);
-}
-
-/// Two payments to one recipient share no tag, the slot secret binds each frame.
-#[tokio::test]
-async fn a_repeat_payment_to_one_recipient_publishes_a_fresh_tag() {
-    use crate::tests::support::keypair;
-    let sender = &keypair(1);
-    let paid = ring_address(&keypair(2));
-    let pay = || {
-        owner_transfer(
-            sender,
-            ring_transaction(vec![ring_utxo(sender, Mint::SOL, 10, 0)]),
-        )
-        .with_anonymous_signer(&sender.signing_key)
-        .with_payment(payment(&paid, 4).with_reply(own_reply(sender)))
-        .unwrap()
-    };
-    let (first, second) = (pay(), pay());
-    let chain = Chain::ring(anonymous());
-    let first = stage_anonymous(&first, &chain).await.unwrap();
-    let second = stage_anonymous(&second, &chain).await.unwrap();
-    assert_ne!(published(&first)[1].0, published(&second)[1].0);
 }
 
 /// SPP publishes the hidden owner's key beside a default-ring spend, the preview sizes it.
@@ -508,6 +503,7 @@ async fn a_default_ring_spend_previews_the_hidden_owners_published_key() {
     );
     let transfer = owner_transfer(sender, ring_transaction(vec![entry]))
         .with_anonymous_signer(&sender.signing_key)
+        .with_tags(fresh_wallet_tags(sender))
         .with_payment(payment(&paid, 4))
         .unwrap();
     let unwitnessed = transfer
@@ -544,6 +540,7 @@ impl<'a> MoveSender<'a> {
             payments,
             entry: EntrySpend::Allow,
             co_signer: None,
+            tags: None,
         }
     }
 }
@@ -562,6 +559,82 @@ fn default_ring_utxo(owner: &ShieldedKeypair, amount: u64, leaf: u64) -> WalletU
         TREE_ID,
         leaf,
     )
+}
+
+#[tokio::test]
+async fn an_entry_without_the_sender_tag_is_refused() {
+    use crate::tests::support::{keypair, payer};
+    let sender = &keypair(1);
+    let payee = keypair(2);
+    let paid = ring_address(&payee);
+    let utxos = [default_ring_utxo(sender, 10, 0)];
+    let entry = || {
+        owner_transfer(sender, ring_transaction(utxos.to_vec()))
+            .with_anonymous_signer(&sender.signing_key)
+            .with_payment(payment(&paid, 4))
+            .unwrap()
+    };
+    let chain = enrolled(&[sender, &payee]);
+    let untagged = entry();
+    assert!(matches!(
+        stage_anonymous(&untagged, &chain).await,
+        Err(RingError::SenderTagRequired)
+    ));
+    let tags = fresh_wallet_tags(sender);
+    let tagged = entry().with_tags(tags.clone());
+    let staged = stage_anonymous(&tagged, &chain).await.unwrap();
+    let slots = published(&staged);
+    assert_eq!(slots[0].0, tags.sender());
+    assert_eq!(slots[1].0, bootstrap_slot_tag(payee.viewing_pubkey().u()));
+
+    let owner = MoveSender {
+        sender,
+        payer: payer(),
+    };
+    let selection = owner
+        .anonymous_move(&utxos, vec![RingPayment::new(paid.clone(), 4)])
+        .select(&chain.client())
+        .await;
+    assert!(matches!(selection, Err(RingError::SenderTagRequired)));
+}
+
+#[tokio::test]
+async fn an_own_data_note_beside_change_publishes_the_sender_tag_once() {
+    use crate::tests::support::keypair;
+    let sender = &keypair(1);
+    let tags = fresh_wallet_tags(sender);
+    let own = AnonymousPayment {
+        data: crate::NoteData {
+            ring_data_hash: None,
+            application: Some(crate::ApplicationData {
+                hash: [4; 32],
+                bytes: b"app".to_vec(),
+            }),
+        },
+        ..payment(&ring_address(sender), 4)
+    };
+    let transfer = owner_transfer(
+        sender,
+        ring_transaction(vec![ring_utxo(sender, Mint::SOL, 10, 0)]),
+    )
+    .with_anonymous_signer(&sender.signing_key)
+    .with_tags(tags.clone())
+    .with_payment(own)
+    .unwrap();
+    let staged = stage_anonymous(&transfer, &Chain::ring(anonymous()))
+        .await
+        .unwrap();
+    let address = sender.shielded_address().unwrap();
+    let own: Vec<bool> = staged
+        .proof_inputs
+        .output_utxos
+        .iter()
+        .zip(published(&staged))
+        .filter(|(output, _)| output.owner_address == Some(address))
+        .map(|(_, (tag, _))| tag == tags.sender())
+        .collect();
+    assert_eq!(own.len(), 2);
+    assert_eq!(own.iter().filter(|tagged| **tagged).count(), 1);
 }
 
 #[tokio::test]
@@ -654,9 +727,12 @@ async fn an_anonymous_move_spends_ring_utxos_before_an_entry() {
         sender: &sender,
         payer: payer(),
     };
+    let tags = crate::tests::support::fresh_wallet_tags(&sender);
     let spend = |amount| {
-        let anonymous_move =
-            owner.anonymous_move(&utxos, vec![RingPayment::new(paid.clone(), amount)]);
+        let anonymous_move = AnonymousMove {
+            tags: Some(&tags),
+            ..owner.anonymous_move(&utxos, vec![RingPayment::new(paid.clone(), amount)])
+        };
         async move {
             let transfer = anonymous_move.select(client).await.unwrap();
             transfer.assemble(client).await.unwrap()
@@ -700,9 +776,12 @@ async fn an_anonymous_entry_selects_largest_first() {
         sender: &sender,
         payer: payer(),
     };
+    let tags = crate::tests::support::fresh_wallet_tags(&sender);
     let spent = |amount| {
-        let anonymous_move =
-            owner.anonymous_move(&utxos, vec![RingPayment::new(paid.clone(), amount)]);
+        let anonymous_move = AnonymousMove {
+            tags: Some(&tags),
+            ..owner.anonymous_move(&utxos, vec![RingPayment::new(paid.clone(), amount)])
+        };
         let client = &client;
         async move {
             let assembled = anonymous_move
@@ -746,7 +825,13 @@ async fn an_anonymous_entry_reports_capacity_without_ring_funding() {
     let payments = core::iter::once(RingPayment::new(paid.clone(), 1).with_reply(reply))
         .chain((1..7).map(|_| RingPayment::new(paid.clone(), 1)))
         .collect();
-    let result = owner.anonymous_move(&utxos, payments).select(&client).await;
+    let tags = crate::tests::support::fresh_wallet_tags(&sender);
+    let result = AnonymousMove {
+        tags: Some(&tags),
+        ..owner.anonymous_move(&utxos, payments)
+    }
+    .select(&client)
+    .await;
     assert!(
         matches!(&result, Err(RingError::TransferTooWide { .. })),
         "{:?}",
@@ -859,6 +944,7 @@ async fn an_anonymous_transfer_led_by_an_address_stages_reads_a_cache_and_writes
         .unwrap();
         let transfer = owner_transfer(sender, transaction)
             .with_anonymous_signer(&sender.signing_key)
+            .with_tags(fresh_wallet_tags(sender))
             .with_payment(payment(&paid, 10))
             .unwrap();
         assert!(stage_anonymous(&transfer, &chain).await.is_ok());
@@ -1062,6 +1148,7 @@ async fn a_delegate_move_pads_to_any_ring_authority_shape_it_is_given() {
                 recipient: source,
                 asset: Mint::SOL.asset,
                 amount: 2,
+                tag: None,
             }],
         })
         .with_assets(&assets)
@@ -1121,6 +1208,7 @@ impl<'a> MoveFixture<'a> {
                     recipient: self.recipient,
                     mint: Mint::SOL.asset,
                     amount: *amount,
+                    tag: None,
                 })
                 .collect(),
             assets: self.assets,
@@ -1209,6 +1297,47 @@ async fn a_delegate_move_takes_the_fewest_utxos() {
             selected(wide.select(&client).await.unwrap(), &client).await,
             (spr_client::Shape::IN2_OUT2, 1)
         );
+    }
+}
+
+#[tokio::test]
+async fn a_delegate_move_refuses_a_tag_its_frame_does_not_publish() {
+    use crate::tests::support::{keypair, payer};
+    let member = keypair(1);
+    let recipient = keypair(2);
+    let delegate = Address::new_from_array([0x44; 32]);
+    let client = move_chain([&member, &recipient], delegate).client();
+    let assets = AssetRegistry::default();
+    let fixture = MoveFixture {
+        member: &member,
+        recipient: recipient.shielded_address().unwrap(),
+        delegate,
+        assets: &assets,
+    };
+    let utxos = [ring_utxo(&member, Mint::SOL, 10, 0)];
+    let moving = || {
+        fixture.delegate_move(MoveCase {
+            utxos: &utxos,
+            payer: payer(),
+            amounts: &[4],
+        })
+    };
+    let mut payment = moving();
+    payment.payments[0].tag = Some([0x5a; 32]);
+    let mut exit = moving();
+    exit.exits = core::mem::take(&mut exit.payments);
+    exit.exits[0].tag = Some([0x5a; 32]);
+    for tagged in [payment, exit] {
+        assert!(matches!(
+            tagged.select(&client).await,
+            Err(RingError::RequestedTagUnpublished)
+        ));
+    }
+    let viewing_u = recipient.viewing_pubkey().u();
+    for bootstrap in [viewing_u, bootstrap_slot_tag(viewing_u)] {
+        let mut stated = moving();
+        stated.payments[0].tag = Some(bootstrap);
+        assert!(stated.select(&client).await.is_ok());
     }
 }
 
@@ -1337,6 +1466,7 @@ async fn stage_delegate(case: DelegateCase<'_>) -> Result<Option<DelegateMint>, 
             recipient: source,
             asset: spent.asset,
             amount: 2,
+            tag: None,
         }],
     })
     .with_assets(&assets);
@@ -2306,7 +2436,7 @@ fn ceiling_entry(reply_len: usize) -> Measure {
 }
 
 /// The widest reply [`ceiling_entry`] carries under the transaction ceiling.
-const CEILING_REPLY_LEN: usize = 1245;
+const CEILING_REPLY_LEN: usize = 1277;
 
 include!("size_pins.rs");
 
@@ -2713,7 +2843,8 @@ impl Measure {
                 let accounts = with_legs(&mut transaction);
                 let mut transfer = owner_transfer(&sender, transaction)
                     .with_interface_transfer_accounts(accounts)
-                    .with_anonymous_signer(&sender.signing_key);
+                    .with_anonymous_signer(&sender.signing_key)
+                    .with_tags(fresh_wallet_tags(&sender));
                 for owner in &co_owner_keys {
                     transfer = transfer.with_co_owner(CoOwner {
                         owner: owner.shielded_address().unwrap().solana_address().unwrap(),
@@ -2748,6 +2879,7 @@ impl Measure {
                             recipient: recipient.shielded_address().unwrap(),
                             asset: Mint::SOL.asset,
                             amount: 1,
+                            tag: Some(recipient.viewing_pubkey().u()),
                         })
                         .collect(),
                 })
@@ -3068,8 +3200,8 @@ async fn every_frame_boundary_takes_its_modelled_bytes() {
         ..relayed(Measured::ConfidentialPolicy, Shape::new(16, 8))
     };
     for (measure, bytes) in [
-        (with_reply(Measured::AnonymousEntry, 5), 4247),
-        (with_reply(Measured::Anonymous, 12), 3982),
+        (with_reply(Measured::AnonymousEntry, 5), 4183),
+        (with_reply(Measured::Anonymous, 12), 3918),
         (
             relayed(Measured::ConfidentialPolicy, Shape::new(16, 8)),
             3433,
@@ -3080,7 +3212,7 @@ async fn every_frame_boundary_takes_its_modelled_bytes() {
         ),
         (compact_fifteen, 3368),
         (key_escrow_co_signed, 3375),
-        (loaded_commitment, 3160),
+        (loaded_commitment, 3096),
     ] {
         assert_eq!(
             measure.bytes().await,
@@ -3159,7 +3291,7 @@ async fn a_second_input_tree_takes_its_account_context_and_bitmap() {
         ),
         (
             Measure::pinned(Measured::Anonymous, Shape::new(2, 2)),
-            1492 + 38,
+            1428 + 38,
         ),
         (
             Measure::pinned(Measured::ConfidentialPolicy, Shape::new(16, 8)),
@@ -3894,6 +4026,7 @@ async fn a_delegate_exit_and_withdrawal_read_no_policy() {
             recipient: keypair(2).shielded_address().unwrap(),
             asset: Mint::SOL.asset,
             amount: 3,
+            tag: None,
         })
         .with_withdrawal(DelegateWithdrawal {
             asset: Mint::SOL.asset,
@@ -3934,6 +4067,7 @@ async fn a_delegate_frame_on_an_anonymous_ring_stays_anonymous() {
             recipient: keypair(2).shielded_address().unwrap(),
             asset: Mint::SOL.asset,
             amount: 3,
+            tag: Some(keypair(2).viewing_pubkey().u()),
         }],
     })
     .with_assets(&assets);
@@ -3944,7 +4078,7 @@ async fn a_delegate_frame_on_an_anonymous_ring_stays_anonymous() {
         .unwrap();
     let parts = &framed.frame.parts;
     assert_eq!(parts.rail, RingRail::AnonymousDelegate);
-    assert!(parts.sender.is_some() && parts.anonymous.is_none());
+    assert!(parts.anonymous.is_none());
 }
 
 /// The anonymous frame names no hidden sender, the wallet signs on SPP's confidential rail.
@@ -4246,18 +4380,10 @@ impl zolana_ring_keys::RingKeys for ProgramOwner {
         self.keys.ring_delivery_secrets(requests)
     }
 
-    fn ring_tag_matches(
-        &self,
-        frames: &[zolana_ring_keys::RingTagFrame],
-    ) -> Result<Vec<Vec<Option<zolana_ring_keys::SlotSecret>>>, zolana_ring_keys::RingKeyError>
-    {
-        self.keys.ring_tag_matches(frames)
-    }
-
     fn view_tags(
         &self,
         requests: &[zolana_ring_keys::ViewTagRequest],
-    ) -> Result<Vec<spr_keypair::viewing_key::ViewTag>, zolana_ring_keys::RingKeyError> {
+    ) -> Result<Vec<Vec<spr_keypair::viewing_key::ViewTag>>, zolana_ring_keys::RingKeyError> {
         self.keys.view_tags(requests)
     }
 }
@@ -4334,6 +4460,7 @@ async fn a_delegate_moves_wallet_and_pda_notes_and_refuses_an_unnamed_owner() {
                     recipient: source,
                     asset: Mint::SOL.asset,
                     amount: 2,
+                    tag: None,
                 }],
             })
             .with_assets(&assets)
@@ -4413,6 +4540,7 @@ async fn a_delegate_move_selects_a_zero_key_balance_alone() {
             recipient: address,
             mint: Mint::SOL.asset,
             amount: 4,
+            tag: None,
         }],
         assets: &assets,
         tx_viewing_key: spr_keypair::ViewingKey::new(),
@@ -4700,6 +4828,7 @@ async fn delegate_selection_shares_the_input_budget_across_assets() {
                 recipient: recipient.shielded_address().unwrap(),
                 mint: mint.asset,
                 amount,
+                tag: None,
             })
             .to_vec(),
         assets: &assets,
@@ -4769,6 +4898,7 @@ async fn delegate_spent_trees(
                 recipient: recipient.shielded_address().unwrap(),
                 mint: Mint::SOL.asset,
                 amount: *amount,
+                tag: None,
             })
             .collect(),
         assets: &AssetRegistry::default(),

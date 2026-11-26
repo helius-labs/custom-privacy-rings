@@ -1,6 +1,6 @@
 //! A member's viewing history, notes and scan positions between runs, and the scans that read them.
 //!
-//! Every ring mode keeps one ledger per identity, an anonymous ring adds the anonymous sync.
+//! Every ring mode keeps one ledger per identity and syncs it by the same tag read.
 
 use std::{
     fs, io,
@@ -9,14 +9,13 @@ use std::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use custom_ring_interface::RingMode;
 use solana_address::Address;
 use spr_client::{BlockingIndexer, BlockingRpc, IndexerRpcConfig, Rpc};
 use spr_keypair::X25519Pubkey;
 use spr_transaction::SpendableDecryptionResult;
 use zolana_ring_client::{
-    AnonymousError, AnonymousWallet, CustomRingConfig, RingSenderAudit, RingWalletNotes,
-    RingWalletSync, RingWalletSynced, ViewingHistory,
+    AnonymousError, AnonymousWallet, RecoveryStatus, RingWalletNotes, RingWalletSync,
+    RingWalletSynced, TransferTags, ViewingHistory,
 };
 use zolana_ring_keys::RotatingRingKeys;
 use zolana_ring_transaction::RingAssets;
@@ -43,13 +42,13 @@ pub struct StoreLocation<'a> {
 pub struct WalletScan<'a> {
     pub keys: &'a RotatingRingKeys,
     pub assets: &'a RingAssets,
-    pub config: &'a CustomRingConfig,
 }
 
 #[must_use]
 struct ScanAt<'a> {
     sync: RingWalletSync<'a, RotatingRingKeys>,
     store: &'a AnonymousWalletStore,
+    /// The ring a recovery scan reads the history of.
     watch: Option<Address>,
 }
 
@@ -108,15 +107,17 @@ impl AnonymousWalletStore {
         Ok(outcome)
     }
 
-    /// Stores `advanced` in place of `from`, refused once another run moved the history.
-    pub fn commit(&self, from: &ViewingHistory, advanced: ViewingHistory) -> Result<()> {
-        self.update(|stored| {
+    /// The wallet's sender tag for one transfer, the same write moves the stored counter past it.
+    pub fn select(&self, keys: &RotatingRingKeys) -> Result<TransferTags> {
+        self.update(|wallet| {
+            // A history in recovery takes no counter, refused ahead of the transfer.
             ensure!(
-                stored.history() == from,
-                "the viewing history moved while the transfer was built, run it again"
+                matches!(wallet.recovery_status(), RecoveryStatus::Complete),
+                "the wallet is in a recovery scan, finish it before a send"
             );
-            stored.update_history(advanced)?;
-            Ok(())
+            let selected = wallet.history().select(keys)?;
+            wallet.update_history(selected.history)?;
+            Ok(selected.tag)
         })
     }
 
@@ -143,21 +144,28 @@ impl WalletScan<'_> {
     }
 
     pub fn fetch_notes(self, ctx: &Context) -> Result<RingWalletNotes> {
+        self.scan(ctx, None)
+    }
+
+    /// Also opens every body of the ring's history under each held key, it finds a note no listed tag names.
+    pub fn recover_notes(self, ctx: &Context) -> Result<RingWalletNotes> {
+        self.scan(ctx, Some(ctx.ring.program_id()))
+    }
+
+    fn scan(self, ctx: &Context, watch: Option<Address>) -> Result<RingWalletNotes> {
         let store = ctx.anonymous_wallet_store(self.keys.identity_viewing_pubkey());
-        let sender_audit = RingSenderAudit {
-            origin: ctx.chain().rpc(),
-            ring: ctx.ring.program_id(),
-            mode: self.config.mode,
-            auditor_pk: self.config.auditor_pubkey,
-        };
         let rpc = ctx.rpc();
+        let chain_assets = || crate::assets::ring_assets(rpc);
+        let sync = RingWalletSync::new(self.keys, self.assets)
+            .with_indexer_config(IndexerRpcConfig::at_slot(rpc.get_slot()?))
+            .with_chain_assets(&chain_assets);
         ScanAt {
-            sync: RingWalletSync::new(self.keys, self.assets)
-                .with_indexer_config(IndexerRpcConfig::at_slot(rpc.get_slot()?))
-                .with_chain_assets(&|| crate::assets::ring_assets(rpc))
-                .with_sender_audit(&sender_audit),
+            sync: match watch {
+                Some(_) => sync.with_recovery_scan(),
+                None => sync,
+            },
             store: &store,
-            watch: (self.config.mode == RingMode::Anonymous).then_some(ctx.ring.program_id()),
+            watch,
         }
         .fetch(&ctx.zolana)
     }
@@ -270,6 +278,9 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use spr_keypair::viewing_key::ViewTag;
     use zolana_ring_client::AnonymousError;
 
     use super::{
@@ -308,21 +319,23 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_lands_only_on_the_history_it_was_built_from() {
-        let member = Member::new(1, "commit");
-        let keys = &member.keys;
-        let loaded = member.store.load().unwrap();
-        let loaded = loaded.history();
-        let first = loaded.sender_tag(keys).unwrap().history;
-        member.store.commit(loaded, first.clone()).unwrap();
-        assert_eq!(*member.store.load().unwrap().history(), first);
-        let stale = loaded.sender_tag(keys).unwrap().history;
-        let refused = member.store.commit(loaded, stale).unwrap_err();
-        assert!(refused.to_string().contains("moved"), "{refused}");
-        assert_eq!(
-            member.store.load().unwrap().history().current().tx_count(),
-            1
-        );
+    fn concurrent_selections_take_distinct_sender_indices() {
+        let member = Member::new(1, "select");
+        let (store, member_keys) = (&member.store, &member.keys);
+        let selected: BTreeSet<ViewTag> = std::thread::scope(|scope| {
+            let sends: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(move || {
+                        let keys = RotatingRingKeys::new(member_keys).unwrap();
+                        store.select(&keys).unwrap().sender()
+                    })
+                })
+                .collect();
+            sends.into_iter().map(|send| send.join().unwrap()).collect()
+        });
+        assert_eq!(selected.len(), 16);
+        let stored = store.load().unwrap();
+        assert_eq!(stored.history().current().tx_count(), 16);
     }
 
     #[test]
@@ -334,7 +347,7 @@ mod tests {
                 scope.spawn(move || {
                     store
                         .update(|wallet| {
-                            let minted = wallet.history().sender_tag(keys)?.history;
+                            let minted = wallet.history().request_tag(keys)?.history;
                             wallet.update_history(minted)?;
                             Ok(())
                         })
@@ -342,7 +355,8 @@ mod tests {
                 });
             }
         });
-        assert_eq!(store.load().unwrap().history().current().tx_count(), 16);
+        let stored = store.load().unwrap();
+        assert_eq!(stored.history().current().request_count(), 16);
     }
 
     #[test]
