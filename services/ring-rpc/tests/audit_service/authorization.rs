@@ -32,7 +32,9 @@ async fn only_granted_readers_with_the_configured_auditor_key_can_read() {
                     wallet: None,
                 })
                 .await,
-            Err(RingRpcError::Unauthorized(Unauthorized::NotGranted))
+            Err(RingRpcError::Service(ServiceError::Unauthorized(
+                Unauthorized::NotGranted
+            )))
         ));
     }
 
@@ -41,14 +43,14 @@ async fn only_granted_readers_with_the_configured_auditor_key_can_read() {
         RING,
         RingConfiguration {
             auditor_pubkey: X25519Keypair::new().pubkey(),
-            roles: custom_ring_interface::RingRoles {
-                policy: authority().pubkey(),
+            mode: RingMode::Confidential,
+            policy: custom_ring_interface::RingPolicy {
+                roles: custom_ring_interface::RingRoles {
+                    policy: authority().pubkey(),
+                    ..bytemuck::Zeroable::zeroed()
+                },
                 ..bytemuck::Zeroable::zeroed()
             },
-            mode: RingMode::Confidential,
-            delegate: None,
-            ring_list_tag: [0; 32],
-            policy: bytemuck::Zeroable::zeroed(),
         },
     );
     let service = fixture.hub(source).service(None).expect("service");
@@ -62,7 +64,9 @@ async fn only_granted_readers_with_the_configured_auditor_key_can_read() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::Unauthorized(Unauthorized::AuditorKeyMismatch))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::AuditorKeyMismatch
+        )))
     ));
 }
 
@@ -267,14 +271,14 @@ async fn a_ring_registered_with_another_auditor_stays_closed() {
         ring,
         RingConfiguration {
             auditor_pubkey: fixture.auditor.pubkey(),
-            roles: custom_ring_interface::RingRoles {
-                policy: authority().pubkey(),
+            mode: RingMode::Confidential,
+            policy: custom_ring_interface::RingPolicy {
+                roles: custom_ring_interface::RingRoles {
+                    policy: authority().pubkey(),
+                    ..bytemuck::Zeroable::zeroed()
+                },
                 ..bytemuck::Zeroable::zeroed()
             },
-            mode: RingMode::Confidential,
-            delegate: None,
-            ring_list_tag: [0; 32],
-            policy: bytemuck::Zeroable::zeroed(),
         },
     )]);
     let hub = Hub::builder(source, identity(GENESIS))
@@ -308,7 +312,9 @@ async fn a_ring_registered_with_another_auditor_stays_closed() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::Unauthorized(Unauthorized::AuditorKeyMismatch))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::AuditorKeyMismatch
+        )))
     ));
 }
 
@@ -415,7 +421,9 @@ async fn a_read_signed_for_another_method_cluster_or_service_is_refused() {
                     wallet: None,
                 })
                 .await,
-            Err(RingRpcError::Unauthorized(Unauthorized::BadSignature))
+            Err(RingRpcError::Service(ServiceError::Unauthorized(
+                Unauthorized::BadSignature
+            )))
         ));
     }
     let valid = signed(PagedRead::DecryptedTransactions, target(RING));

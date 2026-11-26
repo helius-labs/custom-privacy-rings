@@ -1,8 +1,9 @@
 use spr_keypair::NullifierKey;
 
 use super::*;
+use ring_service_core::database::Store;
+
 use crate::{
-    database::Store,
     projection_lease::{LeaseClaim, PROJECTION_LEASE_TTL},
     spend_machine::{InputRead, Observation},
     utxos::{AuditStore, PageWork},

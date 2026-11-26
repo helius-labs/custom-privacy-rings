@@ -36,7 +36,7 @@ export PROVER_INDEXER_URL := localnet-ring-indexer-url
 export PROVER_BIN := justfile_directory() / "target/prover-server"
 # Mirrored by GENESIS_PROGRAMS in cli/src/commands/ring/localnet.rs.
 ring-genesis-programs := "--sbf-program rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL target/deploy/storage_program.so"
-sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-keys zolana-ring-transaction zolana-ring-rpc custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
+sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-keys zolana-ring-transaction zolana-ring-rpc ring-service-core ring-writer custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
 
 default:
     @just --list
@@ -171,7 +171,7 @@ test-postgres:
     cargo test --locked -p ring-indexer --lib --features surfpool-fixture -- --ignored
     export RING_RPC_TEST_POSTGRES_URL="postgres://postgres@127.0.0.1:$port/ring_rpc"
     # One store, one test at a time.
-    cargo test --locked -p zolana-ring-rpc --lib -- --test-threads=1 --include-ignored postgres relay_reservations
+    cargo test --locked -p zolana-ring-rpc -p ring-writer --lib -- --test-threads=1 --include-ignored postgres relay_reservations
     cargo test --locked -p zolana-ring-rpc --test relay_service -- --test-threads=1
     cargo test --locked -p zolana-ring-rpc --test audit_service -- --test-threads=1 --ignored
 

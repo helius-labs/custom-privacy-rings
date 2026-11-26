@@ -1,0 +1,780 @@
+//! The one writer of a ring's records, it batches signed updates, proves each batch and sends it.
+//!
+//! A batch with salted owner writes proves each owner's applied tracking row in the same update that
+//! moves the root, and Storage raises the source's tracking floor to the root's revision with it.
+//! Without a wired private write source such a batch fails its flush and stays queued.
+//!
+//! Read after `operations/record_update.rs` and `zolana_ring_client::PrivateStorageWrite`.
+//! Read before `storage/update_queue.rs`.
+
+use std::{
+    collections::{hash_map::Entry, HashMap},
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
+
+use async_trait::async_trait;
+use custom_ring_interface::{
+    storage::{Revision, StorageRegistry},
+    storage_instruction::{RecordWriteClassification, StorageUpdateIxData},
+    ApplyRecordsIxData, CustomRingError, RecordWrite, RecordWriteData, RingPolicy, APPLY_BATCH,
+};
+use log::warn;
+use ring_service_core::{
+    database::Store,
+    error::CarriedFault,
+    keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
+    landing::{Attempt, ChainOutcome, Landing},
+    redact::redacted,
+    upstream::VerifiedOpenings,
+};
+use sea_orm::DbErr;
+use solana_address::Address;
+use spr_client::{compile_message, ComputeBudgetConfig};
+use spr_indexer_api::Hash;
+use zeroize::Zeroizing;
+use zolana_operator_custody::{signed_transaction, SigningIdentity};
+use zolana_ring_client::{
+    rpc::{
+        GetPendingListApprovalsRequest, GetPendingListApprovalsResponse,
+        GetRecordUpdateStatusRequest, PendingListApproval, RecordUpdateError, RecordUpdateId,
+        RecordUpdateStatus, RefuseListApprovalRequest, SubmitRecordUpdateRequest,
+        SubmitRecordUpdateResponse, PENDING_LIST_APPROVALS_PAGE_LIMIT,
+    },
+    CustomRing, InitializeStorage, PrivateStorageWrite, ProvenPrivateWrite, RingError,
+    SaltedOwnerWrite, StorageTip, UpdateStorage, PROOF_UNITS,
+};
+use zolana_ring_indexer::rpc::{GetStorageApplyProofInputsRequest, StorageWriteView};
+use zolana_ring_member_registry::ApplyProofInputs;
+
+use crate::{
+    error::WriterError,
+    record_update::{
+        limits_within_bounds, ApplyInputsCheck, CheckedUpdate, ListApproval, QueuedCheck,
+        QueuedState, QueuedUpdate, ReaderGrantStore, RecordUpdateCheck, RecordUpdateRefusal,
+        RefusalReason, UpdateContext,
+    },
+    storage_chain::{ring_policy, storage_registry, StorageChain},
+    update_queue::{
+        ApprovalCandidates, ApprovalScope, BatchOutcome, NewBatch, NewUpdate, OpenBatch,
+        PendingApprovalPage, UpdateQueue,
+    },
+};
+
+pub const RECORD_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_BATCH_PLANS: usize = 2;
+const CONFIRM_POLL_INTERVAL: Duration = Duration::from_millis(400);
+const CREATE_COMPUTE_UNITS: u32 = 100_000;
+
+/// The owner and list salt behind a salted list key.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SaltedOwner {
+    pub owner: Address,
+    pub list_salt: [u8; 32],
+}
+
+/// The service that holds a ring's enrollments and auditor key resolves and proves salted owner writes.
+#[async_trait]
+pub trait PrivateWrites: Send + Sync {
+    /// `None` when no held enrollment of `ring` opens to `written_key`.
+    async fn salted_owner(
+        &self,
+        ring: Address,
+        written_key: [u8; 32],
+    ) -> Result<Option<SaltedOwner>, Box<dyn CarriedFault>>;
+
+    async fn ring_salt(&self, ring: Address) -> Result<[u8; 32], Box<dyn CarriedFault>>;
+
+    async fn prove(&self, write: PrivateStorageWrite<'_>) -> Result<ProvenPrivateWrite, RingError>;
+}
+
+/// The one writer of every registry its authority key holds.
+pub struct RecordWriter {
+    store: Store,
+    chain: Arc<dyn StorageChain>,
+    authority: SigningIdentity,
+    genesis_hash: [u8; 32],
+    reader_grants: ReaderGrantStore,
+    /// Holds the queue check and the insert of one update together.
+    submits: tokio::sync::Mutex<()>,
+    /// One records creation at a time, a second request finds the first registry.
+    creations: tokio::sync::Mutex<()>,
+    private_writes: OnceLock<Arc<dyn PrivateWrites>>,
+}
+
+enum BatchProof {
+    Public(Box<ApplyRecordsIxData>),
+    Private(Box<ProvenPrivateWrite>),
+}
+
+#[must_use]
+pub struct WriterParts {
+    pub store: Store,
+    pub chain: Arc<dyn StorageChain>,
+    pub authority: SigningIdentity,
+    pub genesis_hash: [u8; 32],
+    pub reader_grants: ReaderGrantStore,
+}
+
+impl WriterParts {
+    pub fn writer(self) -> RecordWriter {
+        RecordWriter {
+            store: self.store,
+            chain: self.chain,
+            authority: self.authority,
+            genesis_hash: self.genesis_hash,
+            reader_grants: self.reader_grants,
+            submits: tokio::sync::Mutex::default(),
+            creations: tokio::sync::Mutex::default(),
+            private_writes: OnceLock::new(),
+        }
+    }
+}
+
+impl RecordWriter {
+    pub fn authority(&self) -> Address {
+        self.authority.address()
+    }
+
+    /// Set once, a second source is returned.
+    pub fn serve_private_writes(
+        &self,
+        source: Arc<dyn PrivateWrites>,
+    ) -> Result<(), Arc<dyn PrivateWrites>> {
+        self.private_writes.set(source)
+    }
+
+    /// The writer authority owns and pays for the ring's records.
+    pub async fn create_records(&self, ring: Address) -> Result<Address, WriterError> {
+        let storage = InitializeStorage::records(CustomRing::new(ring), self.authority());
+        let registry = storage.registry();
+        let _creating = self.creations.lock().await;
+        if self.registry(registry).await?.is_some() {
+            return Ok(registry);
+        }
+        let latest = self.chain.latest_blockhash().await?;
+        let message = compile_message(
+            &self.authority(),
+            &[storage.instruction()],
+            latest.blockhash,
+            ComputeBudgetConfig::new(CREATE_COMPUTE_UNITS),
+        )?;
+        let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
+        let attempt = Attempt {
+            signature: transaction.signatures[0],
+            last_valid_block_height: latest.last_valid_block_height,
+        };
+        self.chain.send(&transaction).await?;
+        loop {
+            match attempt.landing(self.chain.as_ref()).await? {
+                Landing::Pending => tokio::time::sleep(CONFIRM_POLL_INTERVAL).await,
+                Landing::Landed(ChainOutcome::Confirmed { .. }) => return Ok(registry),
+                Landing::Landed(ChainOutcome::Failed { .. }) | Landing::Expired => {
+                    return Err(RecordUpdateRefusal::RecordsNotCreated.into())
+                }
+            }
+        }
+    }
+
+    /// A resubmitted update returns the id it was queued under.
+    pub async fn submit(
+        &self,
+        mut request: SubmitRecordUpdateRequest,
+    ) -> Result<SubmitRecordUpdateResponse, WriterError> {
+        let entries_len = request.update.entries.len();
+        if !(1..=APPLY_BATCH).contains(&entries_len) {
+            return Err(RecordUpdateRefusal::EntryCount.into());
+        }
+        if request.unregistered_owners.len() > entries_len {
+            return Err(RecordUpdateRefusal::UnregisteredOwnerUnmatched.into());
+        }
+        // Precedes the id, an unpaired cap hashes to no statement.
+        if !request.update.entries.iter().all(limits_within_bounds) {
+            return Err(RecordUpdateRefusal::InvalidLimits.into());
+        }
+        if request.update.genesis_hash.0 != self.genesis_hash {
+            return Err(RecordUpdateRefusal::WrongCluster.into());
+        }
+        let id = request.verify().map_err(|error| match error {
+            RecordUpdateError::Signature => RecordUpdateRefusal::Signature,
+            _ => RecordUpdateRefusal::InvalidEntry,
+        })?;
+        dedup_owners(&mut request.unregistered_owners);
+        let queue = self.queue();
+        if request.unregistered_owners.is_empty() && queue.contains(&id.0 .0).await? {
+            return Ok(SubmitRecordUpdateResponse { update_id: id });
+        }
+        let ring = request.update.ring.0;
+        let config = self
+            .chain
+            .ring_config(ring)
+            .await?
+            .ok_or(RecordUpdateRefusal::UnknownRing)?;
+        let policy = self.policy(ring).await?;
+        let registry = self
+            .registry(request.registry.0)
+            .await?
+            .ok_or(RecordUpdateRefusal::RegistryNotServed)?;
+        let slot = self.chain.slot().await?;
+        let update = RecordUpdateCheck {
+            request: &request,
+            context: UpdateContext {
+                genesis_hash: &self.genesis_hash,
+                config: &config,
+                policy: &policy,
+                registry: &registry,
+                writer: self.authority(),
+                slot,
+                reader_grants: self.reader_grants,
+            },
+        }
+        .check()?;
+        self.check_unregistered_owners(&request, &update, &policy)
+            .await?;
+        let records = StorageTip::newest(policy.records, &registry);
+        self.check_limited_assets(&update, &records).await?;
+        let _queueing = self.submits.lock().await;
+        if queue.contains(&update.id.0 .0).await? {
+            if !request.unregistered_owners.is_empty() {
+                let owners: Vec<Address> = request
+                    .unregistered_owners
+                    .iter()
+                    .map(|owner| owner.0)
+                    .collect();
+                queue.merge_unregistered(&update.id.0 .0, &owners).await?;
+            }
+            return Ok(SubmitRecordUpdateResponse {
+                update_id: update.id,
+            });
+        }
+        // An expired pending update joins no approval.
+        queue.expire(request.registry.0, slot).await?;
+        let grants = update.approval_grants()?;
+        let approves = ListApproval {
+            update: &update,
+            pending: &queue
+                .pending_approvals(ApprovalCandidates {
+                    scope: ApprovalScope {
+                        ring,
+                        registry: request.registry.0,
+                    },
+                    grants: &grants,
+                    slot,
+                })
+                .await?,
+        }
+        .decide()?;
+        queue
+            .insert(NewUpdate {
+                request: &request,
+                update: &update,
+                queued_slot: slot,
+                approves: &approves,
+            })
+            .await?;
+        Ok(SubmitRecordUpdateResponse {
+            update_id: update.id,
+        })
+    }
+
+    pub async fn status(
+        &self,
+        request: GetRecordUpdateStatusRequest,
+    ) -> Result<RecordUpdateStatus, WriterError> {
+        self.queue()
+            .status(&request.update_id.0 .0)
+            .await?
+            .ok_or_else(|| RecordUpdateRefusal::UnknownUpdate.into())
+    }
+
+    /// One page of the ring's updates pending list approval, oldest first.
+    pub async fn pending_list_approvals(
+        &self,
+        request: &GetPendingListApprovalsRequest,
+    ) -> Result<GetPendingListApprovalsResponse, WriterError> {
+        let ring = request.ring.0;
+        let mut pending = self
+            .queue()
+            .pending_approval_page(PendingApprovalPage {
+                scope: ApprovalScope {
+                    ring,
+                    registry: request.registry.0,
+                },
+                cursor: request.cursor.as_ref().map(|cursor| cursor.0 .0),
+                limit: PENDING_LIST_APPROVALS_PAGE_LIMIT + 1,
+            })
+            .await?
+            .ok_or(RecordUpdateRefusal::UnknownUpdate)?
+            .into_iter()
+            .map(|approval| PendingListApproval {
+                update_id: RecordUpdateId(Hash(approval.id)),
+                wallet: approval.wallet.into(),
+                member: Hash(approval.member),
+                awaited_lists: approval.lists.record_bits(),
+                valid_until_slot: approval.valid_until_slot,
+            })
+            .collect::<Vec<_>>();
+        let next_cursor = (pending.len() > PENDING_LIST_APPROVALS_PAGE_LIMIT).then(|| {
+            pending.truncate(PENDING_LIST_APPROVALS_PAGE_LIMIT);
+            pending[PENDING_LIST_APPROVALS_PAGE_LIMIT - 1]
+                .update_id
+                .clone()
+        });
+        Ok(GetPendingListApprovalsResponse {
+            pending,
+            next_cursor,
+        })
+    }
+
+    pub async fn refuse_list_approval(
+        &self,
+        request: &RefuseListApprovalRequest,
+    ) -> Result<RecordUpdateStatus, WriterError> {
+        let scope = ApprovalScope {
+            ring: request.ring.0,
+            registry: request.registry.0,
+        };
+        let _queueing = self.submits.lock().await;
+        if !self
+            .queue()
+            .refuse_pending_approval(scope, &request.update_id.0 .0)
+            .await?
+        {
+            return Err(RecordUpdateRefusal::UnknownListApproval.into());
+        }
+        Ok(RecordUpdateStatus::Refused {
+            reason: RefusalReason::ListApprovalRefused.to_string(),
+        })
+    }
+
+    /// Every `interval`, the first at once, each registry on its own task.
+    ///
+    /// A registry still flushing sits out the tick, a stalled send never holds another registry.
+    pub async fn run(self: Arc<Self>, interval: Duration) {
+        let registries = KeyedTasks::new(MAX_CONCURRENT_KEYED_TASKS);
+        let mut ticks = tokio::time::interval(interval);
+        loop {
+            ticks.tick().await;
+            let due = match self.queue().registries().await {
+                Ok(due) => due,
+                Err(error) => {
+                    warn!("record flush failed because {}", redacted(&error));
+                    continue;
+                }
+            };
+            registries.spawn_idle(due, |registry| {
+                let writer = self.clone();
+                async move { writer.flush_logged(registry).await }
+            });
+        }
+    }
+
+    /// One pass over every registry with work, a failing registry never holds up another.
+    pub async fn flush(&self) -> Result<(), WriterError> {
+        for registry in self.queue().registries().await? {
+            self.flush_logged(registry).await;
+        }
+        Ok(())
+    }
+
+    async fn flush_logged(&self, registry: Address) {
+        if let Err(error) = self.flush_registry(registry).await {
+            warn!(
+                "record flush of registry {registry} failed because {}",
+                redacted(&error)
+            );
+        }
+    }
+
+    async fn flush_registry(&self, registry: Address) -> Result<(), WriterError> {
+        let queue = self.queue();
+        // 1. An open batch settles before the next one, so revisions stay in submit order.
+        if let Some(batch) = queue.open_batch(registry).await? {
+            return self.settle(batch).await;
+        }
+        let slot = self.chain.slot().await?;
+        queue.expire(registry, slot).await?;
+        // 2. One batch per flush, a refused update leaves the queue and the plan reads the heads
+        //    again.
+        for _ in 0..MAX_BATCH_PLANS {
+            let Some(batch) = queue.plan(registry, slot).await? else {
+                return Ok(());
+            };
+            // 3. Each planned signer still holds the role it signed as, an unread ring account
+            //    holds the registry.
+            let policies = self.queued_authorities(batch.iter()).await?;
+            let mut refused = false;
+            for update in &batch {
+                let check = QueuedCheck {
+                    update,
+                    slot,
+                    policy_authority: policies.get(&update.ring).copied().flatten(),
+                };
+                match check.check() {
+                    Ok(QueuedState::Live) => {}
+                    Ok(QueuedState::Deferred) => return Ok(()),
+                    Err(refusal) => {
+                        queue.refuse(&update.id, refusal).await?;
+                        refused = true;
+                    }
+                }
+            }
+            if !refused {
+                return self.prove_and_send(registry, &batch).await;
+            }
+        }
+        Ok(())
+    }
+
+    async fn prove_and_send(
+        &self,
+        registry: Address,
+        batch: &[QueuedUpdate],
+    ) -> Result<(), WriterError> {
+        // 1. The proof starts at the registry's current root and covers the batch in order.
+        let writes: Vec<_> = batch
+            .iter()
+            .flat_map(|update| update.writes.iter().copied())
+            .collect();
+        let entries = writes
+            .iter()
+            .map(RecordWriteData::storage_entry)
+            .collect::<Result<Vec<RecordWrite>, _>>()
+            .map_err(|_| DbErr::Custom("stored record update writes are invalid".to_owned()))?;
+        let state = self
+            .registry(registry)
+            .await?
+            .ok_or(RecordUpdateRefusal::RegistryNotServed)?;
+        let response = self
+            .chain
+            .apply_inputs(GetStorageApplyProofInputsRequest {
+                registry: registry.into(),
+                writes: entries.iter().map(StorageWriteView::from).collect(),
+            })
+            .await?;
+        let checked = ApplyInputsCheck {
+            response: &response,
+            registry: &state,
+            entries: &entries,
+        }
+        .check()?;
+        // 2. A private batch names the tracking revision its rows opened under.
+        let ring = batch
+            .first()
+            .map(|update| update.ring)
+            .ok_or(DbErr::Custom("a planned batch holds no update".to_owned()))?;
+        let unregistered: Vec<_> = batch
+            .iter()
+            .flat_map(|update| update.unregistered.iter().copied())
+            .collect();
+        let proof = BatchWrites {
+            ring,
+            inputs: &checked.inputs,
+            registry: &state,
+            entries: &entries,
+            unregistered: &unregistered,
+        }
+        .prove(self)
+        .await?;
+        // 3. The storage update is the transaction's one instruction.
+        let data = StorageUpdateIxData {
+            revision: checked.revision,
+            writes,
+            asset_writes: Vec::new(),
+            tracking_revision: proof.tracking_revision(),
+            apply: proof.apply(),
+        };
+        let instruction = UpdateStorage {
+            authority: self.authority(),
+            registry,
+            tracking_registry: state.tracking_registry,
+            data,
+        }
+        .instruction()
+        .map_err(|error| WriterError::StorageUpdate(error.into()))?;
+        let latest = self.chain.latest_blockhash().await?;
+        let message = compile_message(
+            &self.authority(),
+            &[instruction],
+            latest.blockhash,
+            ComputeBudgetConfig::new(PROOF_UNITS),
+        )?;
+        // Signed ahead of the checks, a slow signer never ages the slot they read.
+        let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
+        let policies = self.queued_authorities(batch.iter()).await?;
+        let slot = self.chain.slot().await?;
+        let mut rejected = false;
+        for update in batch {
+            match (QueuedCheck {
+                update,
+                slot,
+                policy_authority: policies.get(&update.ring).copied().flatten(),
+            })
+            .check()
+            {
+                Ok(QueuedState::Live) => {}
+                Ok(QueuedState::Deferred) => rejected = true,
+                Err(refusal) => {
+                    self.queue().refuse(&update.id, refusal).await?;
+                    rejected = true;
+                }
+            }
+        }
+        if rejected {
+            return Ok(());
+        }
+        // 4. The batch is durable before it is sent, a restart settles it by its signature.
+        self.queue()
+            .record_batch(NewBatch {
+                registry,
+                attempt: Attempt {
+                    signature: transaction.signatures[0],
+                    last_valid_block_height: latest.last_valid_block_height,
+                },
+                revision: checked.revision.value(),
+                updates: batch,
+            })
+            .await?;
+        self.chain.send(&transaction).await?;
+        Ok(())
+    }
+
+    async fn queued_authorities<'a>(
+        &self,
+        updates: impl Iterator<Item = &'a QueuedUpdate>,
+    ) -> Result<HashMap<Address, Option<Address>>, WriterError> {
+        let mut authorities = HashMap::new();
+        for update in updates {
+            if let Entry::Vacant(ring) = authorities.entry(update.ring) {
+                ring.insert(
+                    self.ring_policy(update.ring)
+                        .await?
+                        .map(|policy| policy.roles.policy),
+                );
+            }
+        }
+        Ok(authorities)
+    }
+
+    async fn settle(&self, batch: OpenBatch) -> Result<(), WriterError> {
+        let outcome = match batch.attempt.landing(self.chain.as_ref()).await? {
+            Landing::Pending => return Ok(()),
+            Landing::Landed(ChainOutcome::Confirmed { .. }) => BatchOutcome::Applied,
+            Landing::Landed(ChainOutcome::Failed { .. }) | Landing::Expired => {
+                BatchOutcome::Requeued
+            }
+        };
+        Ok(self.queue().settle(batch.id, outcome).await?)
+    }
+
+    /// Unsigned hint, admitted only on a key match under the committed ring salt.
+    async fn check_unregistered_owners(
+        &self,
+        request: &SubmitRecordUpdateRequest,
+        update: &CheckedUpdate,
+        policy: &RingPolicy,
+    ) -> Result<(), WriterError> {
+        if request.unregistered_owners.is_empty() {
+            return Ok(());
+        }
+        let source = self
+            .private_writes
+            .get()
+            .ok_or(RecordUpdateRefusal::Disabled)?;
+        let salt = Zeroizing::new(source.ring_salt(request.update.ring.0).await?);
+        RecordUpdateRefusal::unless_committed(&salt, &policy.ring_list_tag)?;
+        let owners: Vec<_> = request
+            .unregistered_owners
+            .iter()
+            .map(|owner| owner.0)
+            .collect();
+        let ring_salted = RingSalted {
+            owners: &owners,
+            salt,
+        };
+        let matched = owners.iter().all(|owner| {
+            ring_salted
+                .key(owner)
+                .is_ok_and(|key| update.entries.iter().any(|entry| entry.member == key))
+        });
+        match matched {
+            true => Ok(()),
+            false => Err(RecordUpdateRefusal::UnregisteredOwnerUnmatched.into()),
+        }
+    }
+
+    async fn check_limited_assets(
+        &self,
+        update: &CheckedUpdate,
+        records: &StorageTip,
+    ) -> Result<(), WriterError> {
+        let assets = update.limited_assets()?;
+        if assets.is_empty() {
+            return Ok(());
+        }
+        let openings = self.chain.verified_openings(records, &assets).await?;
+        if openings.iter().any(|opening| opening.record().is_none()) {
+            return Err(RecordUpdateRefusal::LimitsWithoutRecord.into());
+        }
+        Ok(())
+    }
+
+    pub async fn require_policy_authority(
+        &self,
+        ring: Address,
+        signer: Address,
+    ) -> Result<(), WriterError> {
+        let config = self
+            .chain
+            .ring_config(ring)
+            .await?
+            .ok_or(RecordUpdateRefusal::UnknownRing)?;
+        if config.roles().policy != signer {
+            return Err(RecordUpdateRefusal::NotPolicyAuthority.into());
+        }
+        Ok(())
+    }
+
+    async fn policy(&self, ring: Address) -> Result<RingPolicy, WriterError> {
+        self.ring_policy(ring)
+            .await?
+            .ok_or_else(|| RecordUpdateRefusal::RegistryNotServed.into())
+    }
+
+    async fn ring_policy(&self, ring: Address) -> Result<Option<RingPolicy>, WriterError> {
+        ring_policy(self.chain.as_ref(), ring).await
+    }
+
+    async fn registry(&self, address: Address) -> Result<Option<StorageRegistry>, WriterError> {
+        storage_registry(self.chain.as_ref(), address).await
+    }
+
+    fn queue(&self) -> UpdateQueue<'_> {
+        UpdateQueue::new(self.store.connection())
+    }
+}
+
+#[must_use]
+struct BatchWrites<'a> {
+    ring: Address,
+    inputs: &'a ApplyProofInputs,
+    registry: &'a StorageRegistry,
+    entries: &'a [RecordWrite],
+    unregistered: &'a [Address],
+}
+
+impl BatchWrites<'_> {
+    async fn prove(self, writer: &RecordWriter) -> Result<BatchProof, WriterError> {
+        let Self {
+            ring,
+            inputs,
+            registry,
+            entries,
+            unregistered,
+        } = self;
+        let storage = |error: RingError| WriterError::StorageUpdate(Box::new(error));
+        // 1. Storage derives the private writes from the masks, the writer reads them the same way.
+        let private_writes = RecordWriteClassification {
+            entries: entries.iter().map(|entry| Ok::<_, CustomRingError>(*entry)),
+            asset_writes: &[],
+        }
+        .private_writes()
+        .map_err(|error| storage(error.into()))?;
+        if private_writes == 0 {
+            let apply = writer.chain.prove_apply(inputs, registry).await?;
+            return Ok(BatchProof::Public(Box::new(apply)));
+        }
+        let source = writer
+            .private_writes
+            .get()
+            .ok_or(RecordUpdateRefusal::Disabled)?;
+        // 2. Each salted key names its owner through an enrollment the auditor key opens, or an
+        //    owner the submit matched under the ring salt.
+        let ring_salted = match unregistered.is_empty() {
+            true => RingSalted::default(),
+            false => RingSalted {
+                owners: unregistered,
+                salt: Zeroizing::new(source.ring_salt(ring).await?),
+            },
+        };
+        let mut owners = Vec::new();
+        for (write_index, entry) in (0u8..).zip(entries) {
+            if private_writes & (1 << write_index) == 0 {
+                continue;
+            }
+            let owner = match source.salted_owner(ring, entry.member).await? {
+                Some(owner) => Some(owner),
+                None => ring_salted.owner_of(&entry.member),
+            }
+            .ok_or_else(|| storage(RingError::WriteOwnerNotEnrolled { write_index }))?;
+            owners.push(SaltedOwnerWrite {
+                write_index,
+                owner: owner.owner,
+                list_salt: owner.list_salt,
+            });
+        }
+        // 3. The proof and the floor raise travel together in one update.
+        let write = PrivateStorageWrite {
+            ring: CustomRing::new(ring),
+            inputs,
+            registry,
+            asset_writes: &[],
+            owners: &owners,
+        };
+        let proven = source.prove(write).await.map_err(storage)?;
+        Ok(BatchProof::Private(Box::new(proven)))
+    }
+}
+
+#[derive(Default)]
+struct RingSalted<'a> {
+    owners: &'a [Address],
+    salt: Zeroizing<[u8; 32]>,
+}
+
+impl RingSalted<'_> {
+    fn owner_of(&self, written_key: &[u8; 32]) -> Option<SaltedOwner> {
+        self.owners
+            .iter()
+            .find(|owner| self.key(owner).is_ok_and(|key| key == *written_key))
+            .map(|owner| SaltedOwner {
+                owner: *owner,
+                list_salt: *self.salt,
+            })
+    }
+
+    fn key(&self, owner: &Address) -> Result<[u8; 32], zolana_ring_policy::MemberError> {
+        let key = zolana_ring_policy::Member::ring_salted(
+            &zolana_ring_policy::Member::owner_tag(owner.as_array())?,
+            &self.salt,
+        )?;
+        Ok(*key.as_bytes())
+    }
+}
+
+fn dedup_owners(owners: &mut Vec<spr_indexer_api::SerializablePubkey>) {
+    let mut seen = Vec::with_capacity(owners.len());
+    owners.retain(|owner| {
+        if seen.contains(&owner.0) {
+            return false;
+        }
+        seen.push(owner.0);
+        true
+    });
+}
+
+impl BatchProof {
+    fn apply(&self) -> &ApplyRecordsIxData {
+        match self {
+            Self::Public(apply) => apply,
+            Self::Private(proven) => &proven.apply,
+        }
+    }
+
+    fn tracking_revision(&self) -> Option<Revision> {
+        match self {
+            Self::Public(_) => None,
+            Self::Private(proven) => Some(proven.tracking_revision),
+        }
+    }
+}

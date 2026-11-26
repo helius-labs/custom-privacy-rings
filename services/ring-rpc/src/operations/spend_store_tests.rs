@@ -6,9 +6,9 @@ use spr_keypair::NullifierKey;
 use zolana_ring_client::{rpc::WalletNoteStatus, CreatedUtxo, KnownUtxo, UtxoOwner};
 
 use super::{page_work::MAX_LATE_NOTES, *};
+use ring_service_core::{clock::Clock, database::Store};
+
 use crate::{
-    database::Store,
-    hub::Clock,
     owner_notes::{OwnerNotesPage, OPENED_ROWS},
     projection_lease::LeaseClaim,
     spend_machine::{InputRead, Observation},

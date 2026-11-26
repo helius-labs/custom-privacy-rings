@@ -1231,9 +1231,9 @@ async fn a_direct_request_is_simulated_then_signed_under_the_same_rules() {
     *relay.chain.simulation_refusal.lock().expect("refusal") = Some("proof".to_owned());
     assert_eq!(
         refusal(direct().await),
-        RelayError::SendRefused {
+        jsonrpsee::types::ErrorObjectOwned::from(ServiceError::SendRefused {
             reason: String::new()
-        }
+        })
         .code()
     );
     *relay.chain.simulation_refusal.lock().expect("refusal") = None;
@@ -1542,7 +1542,9 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
     .expect("signed edit");
     assert!(matches!(
         hub.edit_co_sign_list(&uninitialized_edit).await,
-        Err(RingRpcError::Unauthorized(Unauthorized::NoConfig))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::NoConfig
+        )))
     ));
 
     let foreign_auditor_edit = EditCoSignListRequest::edit(
@@ -1558,6 +1560,8 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
     .expect("signed edit");
     assert!(matches!(
         hub.edit_co_sign_list(&foreign_auditor_edit).await,
-        Err(RingRpcError::Unauthorized(Unauthorized::AuditorKeyMismatch))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::AuditorKeyMismatch
+        )))
     ));
 }

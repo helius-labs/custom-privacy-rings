@@ -2,7 +2,8 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, QueryResult};
 use solana_address::Address;
 use zolana_ring_client::rpc::MergeSettings;
 
-use crate::{error::RingRpcError, sql};
+use crate::error::RingRpcError;
+use ring_service_core::sql;
 
 #[must_use]
 pub(crate) struct SignedMergeSettings<'a> {

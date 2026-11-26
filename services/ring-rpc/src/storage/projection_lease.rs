@@ -9,17 +9,10 @@
 use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, TransactionTrait};
 use solana_address::Address;
 
-use crate::sql;
+use ring_service_core::{database::LeaseHolder, sql};
 
 /// Seconds a lease outlives its last claim or commit, a few backfill intervals.
 pub(crate) const PROJECTION_LEASE_TTL: u64 = 90;
-
-/// `replica` survives a restart, `instance` is drawn per open.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct LeaseHolder {
-    pub replica: [u8; 32],
-    pub instance: [u8; 16],
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ProjectionLease {

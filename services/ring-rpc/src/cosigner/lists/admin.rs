@@ -14,10 +14,9 @@ use super::{
     decision::{ListEntry, Subject},
     store::StoredLists,
 };
-use crate::{
-    cosign::CoSignError, error::RingRpcError, hub::Hub, policy_authority::PolicyAction,
-    upstream::TransactionSource,
-};
+use ring_service_core::upstream::TransactionSource;
+
+use crate::{cosign::CoSignError, error::RingRpcError, hub::Hub, policy_authority::PolicyAction};
 
 const LIST_PAGE: u64 = 256;
 
@@ -120,7 +119,7 @@ impl<S: TransactionSource> Hub<S> {
         }
         .authorize(|authority| async move {
             service.require_served_policy_authority(authority).await?;
-            Ok(())
+            Ok::<_, RingRpcError>(())
         })
         .await?;
         Ok(StoredLists(Arc::new(store)))

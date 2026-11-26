@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use sea_orm::{ConnectionTrait, DatabaseTransaction, DbErr, QueryResult, Value};
 use solana_address::Address;
 
-use crate::{
-    cosign::{AssetFlow, CoSignSettlement, OwnerFlow, Ticket},
-    sql::{self, placeholders, read_address, read_bytes, read_integer, statement},
+use crate::cosign::{AssetFlow, CoSignSettlement, OwnerFlow, Ticket};
+use ring_service_core::sql::{
+    self, placeholders, read_address, read_bytes, read_integer, statement,
 };
 
 #[path = "cosign_window_index.rs"]

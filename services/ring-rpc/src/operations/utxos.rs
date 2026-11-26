@@ -32,11 +32,14 @@ use zolana_ring_client::{
 use zolana_ring_policy::Member;
 use zolana_ring_transaction::RingAssets;
 
-use crate::{
+use ring_service_core::{
     bounded_map::{BoundedMap, Cached},
-    cosign_limits::SpendRead,
     database::Store,
-    error::RingRpcError,
+};
+
+use crate::{
+    cosign_limits::SpendRead,
+    error::{RingRpcError, ServiceError},
     frame_repairs::RepairBook,
     managed_merge::{MergeTarget, MergeTotals},
     owner_notes::{OwnerNotesPage, OWNER_ROW_BATCH},
@@ -591,7 +594,7 @@ impl AuditStore {
                 ring: *ring,
                 seal,
             })),
-            Backing::Unavailable => Err(RingRpcError::StateUnavailable),
+            Backing::Unavailable => Err(RingRpcError::Service(ServiceError::StateUnavailable)),
         }
     }
 
@@ -764,7 +767,7 @@ impl AuditStore {
             }
             .read(store.connection())
             .await?),
-            Backing::Unavailable => Err(RingRpcError::StateUnavailable),
+            Backing::Unavailable => Err(RingRpcError::Service(ServiceError::StateUnavailable)),
         }
     }
 
@@ -837,7 +840,9 @@ impl AuditStore {
                     snapshots.capture(query).await?
                 }
             }
-            Backing::Unavailable => return Err(RingRpcError::StateUnavailable),
+            Backing::Unavailable => {
+                return Err(RingRpcError::Service(ServiceError::StateUnavailable))
+            }
         };
         Ok(page.response(query))
     }
@@ -867,7 +872,7 @@ impl AuditStore {
                 .release(release)
                 .await
             }
-            Backing::Unavailable => Err(RingRpcError::StateUnavailable),
+            Backing::Unavailable => Err(RingRpcError::Service(ServiceError::StateUnavailable)),
         }
     }
 
@@ -948,7 +953,9 @@ impl AuditStore {
                 scan.visit_database(&reads, &mut visit).await?;
                 snapshot.commit().await?;
             }
-            Backing::Unavailable => return Err(RingRpcError::StateUnavailable),
+            Backing::Unavailable => {
+                return Err(RingRpcError::Service(ServiceError::StateUnavailable))
+            }
         }
         Ok(())
     }
@@ -989,7 +996,9 @@ impl AuditStore {
                 snapshot.commit().await?;
                 selected
             }
-            Backing::Unavailable => return Err(RingRpcError::StateUnavailable),
+            Backing::Unavailable => {
+                return Err(RingRpcError::Service(ServiceError::StateUnavailable))
+            }
         };
         Ok(selections.finish())
     }
@@ -1430,7 +1439,7 @@ impl AuditStore {
             store, ring, seal, ..
         } = &self.backing
         {
-            let clock = crate::hub::Clock::System;
+            let clock = ring_service_core::clock::Clock::System;
             let lease = crate::projection_lease::LeaseClaim {
                 db: store.connection(),
                 ring: *ring,
@@ -1488,7 +1497,11 @@ impl AuditStore {
     /// Entries the cache holds of notes, the note index and spend rows.
     pub(crate) fn cached_entries(&self) -> [usize; 3] {
         let book = self.read_book();
-        [book.notes.len(), book.by_nullifier.len(), book.rows.len()]
+        [
+            book.notes.iter().count(),
+            book.by_nullifier.iter().count(),
+            book.rows.iter().count(),
+        ]
     }
 
     pub(crate) fn dump(&self) -> StoreDump {

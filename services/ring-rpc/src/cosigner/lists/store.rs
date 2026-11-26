@@ -4,7 +4,9 @@ use sea_orm::{ConnectionTrait, DbErr, QueryResult, Value};
 use solana_address::Address;
 
 use super::decision::{List, ListEntry, Lists, Subject, SubjectKind};
-use crate::{database::Store, error::RingRpcError, sql};
+use ring_service_core::{database::Store, sql};
+
+use crate::error::RingRpcError;
 
 pub trait ListStore: Send + Sync {
     /// The entries of `ring` that name one of `subjects`, with one allow entry of each closed kind.
@@ -17,15 +19,6 @@ pub trait ListStore: Send + Sync {
 
 #[derive(Clone)]
 pub struct StoredLists(pub Arc<Store>);
-
-pub(crate) fn migration(blob: &str) -> String {
-    format!(
-        "CREATE TABLE cosign_list_entries (ring {blob} NOT NULL, list TEXT NOT NULL \
-         CHECK(list IN ('allow','block','freeze')), kind TEXT NOT NULL \
-         CHECK(kind IN ('owner','asset','destination')), subject {blob} NOT NULL, \
-         PRIMARY KEY(ring, list, kind, subject))"
-    )
-}
 
 fn stored_name<T: Copy>(
     all: [T; 3],

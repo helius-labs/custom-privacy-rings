@@ -71,19 +71,19 @@ impl ChainSubmit for WorkerChain {
     async fn simulate(
         &self,
         message: &solana_message::VersionedMessage,
-    ) -> Result<zolana_ring_rpc::Simulation, RingRpcError> {
+    ) -> Result<zolana_ring_rpc::Simulation, ServiceError> {
         self.chain.simulate(message).await
     }
 
-    async fn slot(&self) -> Result<u64, RingRpcError> {
+    async fn slot(&self) -> Result<u64, ServiceError> {
         self.chain.slot().await
     }
 
-    async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+    async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
         self.chain.latest_blockhash().await
     }
 
-    async fn block_height(&self) -> Result<u64, RingRpcError> {
+    async fn block_height(&self) -> Result<u64, ServiceError> {
         self.height_gate.pass().await;
         match self.height {
             Some(height) => Ok(height),
@@ -91,15 +91,15 @@ impl ChainSubmit for WorkerChain {
         }
     }
 
-    async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, RingRpcError> {
+    async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, ServiceError> {
         self.chain.account_data(address).await
     }
 
-    async fn rent_exempt_lamports(&self, data_len: usize) -> Result<u64, RingRpcError> {
+    async fn rent_exempt_lamports(&self, data_len: usize) -> Result<u64, ServiceError> {
         self.chain.rent_exempt_lamports(data_len).await
     }
 
-    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), RingRpcError> {
+    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), ServiceError> {
         self.send_gate.pass().await;
         match self.lost_sends {
             true => Ok(()),
@@ -107,7 +107,7 @@ impl ChainSubmit for WorkerChain {
         }
     }
 
-    async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, RingRpcError> {
+    async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, ServiceError> {
         self.outcome_gate.pass().await;
         self.chain.outcome(signature).await
     }

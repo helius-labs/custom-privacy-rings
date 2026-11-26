@@ -1,0 +1,817 @@
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    Mutex,
+};
+
+use async_trait::async_trait;
+use bytemuck::Zeroable;
+use custom_ring_interface::{
+    storage::{Revision, StorageRegistry},
+    storage_instruction::{EnrollIxData, EnrollmentWrite},
+    tracking::viewing_hash,
+    ApplyRecordsIxData, CustomRingProof, RingPolicy, RingRoles, RING_POLICY, STORAGE_PROGRAM_ID,
+};
+use solana_account::Account;
+use solana_instruction::Instruction;
+use solana_keypair::Keypair;
+use solana_message::VersionedMessage;
+use solana_signature::Signature;
+use solana_signer::Signer;
+use solana_transaction::versioned::VersionedTransaction;
+use spr_keypair::X25519Keypair;
+use zolana_operator_custody::CustodyError;
+use zolana_ring_client::{OwnedChange, OwnerEnrollment, SealedNullifierKey, TrackingLeaf};
+use zolana_ring_indexer::rpc::{
+    GetStorageApplyProofInputsRequest, GetStorageApplyProofInputsResponse,
+    GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
+};
+use zolana_ring_member_registry::{ApplyProofInputs, TrackingRecord};
+
+use ring_service_core::{
+    landing::{ChainSubmit, LatestBlockhash, Simulation},
+    upstream::RingConfiguration,
+    ServiceError,
+};
+
+use super::*;
+
+const RING: Address = Address::new_from_array([1; 32]);
+const REGISTRY: Address = Address::new_from_array([2; 32]);
+const UNINITIALIZED_RING: Address = Address::new_from_array([11; 32]);
+const SLOT: u64 = 1_000;
+/// Block heights a blockhash stays valid past the height it was read at.
+const BLOCKHASH_WINDOW: u64 = 100;
+
+#[derive(Default)]
+struct StubChain {
+    slot: std::sync::atomic::AtomicU64,
+    accounts: Mutex<HashMap<Address, Account>>,
+    proofs: AtomicUsize,
+    /// Each proof's registry and write count.
+    proved: Mutex<Vec<(Address, usize)>>,
+    sent: Mutex<Vec<VersionedTransaction>>,
+    outcome: Mutex<Option<ChainOutcome>>,
+    during_proof: Mutex<Option<DuringProof>>,
+    /// Owner to the viewing hash its leaf holds.
+    leaves: Mutex<HashMap<[u8; 32], [u8; 32]>>,
+    height: AtomicU64,
+    blockhash_unavailable: AtomicBool,
+    /// The next send reports a failure and records nothing.
+    send_fails: AtomicBool,
+    outcome_fails: AtomicBool,
+}
+
+type DuringProof = Box<dyn Fn(&StubChain) + Send + Sync>;
+
+fn stored(owner: Address, data: &[u8]) -> Account {
+    Account {
+        lamports: 1,
+        data: data.to_vec(),
+        owner,
+        executable: false,
+        rent_epoch: 0,
+    }
+}
+
+impl StubChain {
+    fn new() -> Arc<Self> {
+        let chain = Self::default();
+        chain.slot.store(SLOT, Ordering::Relaxed);
+        chain.policy(RING, RingRoles::zeroed());
+        chain.tracking(|_| {});
+        Arc::new(chain)
+    }
+
+    /// The ring's policy over the shared tracking registry.
+    fn policy(&self, ring: Address, roles: RingRoles) {
+        let mut policy = RingPolicy::zeroed();
+        policy.discriminator = RING_POLICY;
+        policy.tracking = REGISTRY;
+        policy.roles = roles;
+        self.accounts.lock().unwrap().insert(
+            CustomRing::new(ring).policy_pda(),
+            stored(ring, bytemuck::bytes_of(&policy)),
+        );
+    }
+
+    fn tracking(&self, write: impl FnOnce(&mut TrackingRegistry)) {
+        let mut accounts = self.accounts.lock().unwrap();
+        let account = accounts.entry(REGISTRY).or_insert_with(|| {
+            let mut registry = TrackingRegistry::zeroed();
+            registry.discriminator = TrackingRegistry::DISCRIMINATOR;
+            registry.next_index = 1u64.to_le_bytes();
+            stored(STORAGE_PROGRAM_ID, bytemuck::bytes_of(&registry))
+        });
+        write(bytemuck::from_bytes_mut(&mut account.data));
+    }
+
+    /// Each owner holds a leaf at the viewing hash its rotation replaces.
+    fn enrolled(&self, seeds: impl IntoIterator<Item = u8>) {
+        let mut leaves = self.leaves.lock().unwrap();
+        for seed in seeds {
+            leaves.insert(owner(seed).pubkey().to_bytes(), prior_viewing_hash(seed));
+        }
+    }
+
+    fn proved(&self) -> Vec<(Address, usize)> {
+        self.proved.lock().unwrap().clone()
+    }
+
+    fn landed(&self, outcome: ChainOutcome) {
+        *self.outcome.lock().unwrap() = Some(outcome);
+    }
+}
+
+#[async_trait]
+impl ChainSubmit for StubChain {
+    async fn account_data(
+        &self,
+        _address: solana_address::Address,
+    ) -> Result<Option<Vec<u8>>, ServiceError> {
+        Ok(None)
+    }
+
+    async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
+        Ok(0)
+    }
+
+    async fn slot(&self) -> Result<u64, ServiceError> {
+        Ok(self.slot.load(Ordering::Relaxed))
+    }
+
+    async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
+        if self.blockhash_unavailable.load(Ordering::Relaxed) {
+            return Err(ServiceError::StateUnavailable);
+        }
+        Ok(LatestBlockhash {
+            blockhash: solana_hash::Hash::new_from_array([7; 32]),
+            last_valid_block_height: self.height.load(Ordering::Relaxed) + BLOCKHASH_WINDOW,
+        })
+    }
+
+    async fn block_height(&self) -> Result<u64, ServiceError> {
+        Ok(self.height.load(Ordering::Relaxed))
+    }
+
+    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), ServiceError> {
+        if self.send_fails.swap(false, Ordering::Relaxed) {
+            return Err(ServiceError::StateUnavailable);
+        }
+        self.sent.lock().unwrap().push(transaction.clone());
+        Ok(())
+    }
+
+    async fn outcome(&self, _signature: Signature) -> Result<Option<ChainOutcome>, ServiceError> {
+        if self.outcome_fails.swap(false, Ordering::Relaxed) {
+            return Err(ServiceError::StateUnavailable);
+        }
+        Ok(self.outcome.lock().unwrap().take())
+    }
+
+    async fn simulate(&self, _message: &VersionedMessage) -> Result<Simulation, ServiceError> {
+        Ok(Simulation::Passed { calls: Vec::new() })
+    }
+}
+
+#[async_trait]
+impl StorageChain for StubChain {
+    async fn account(&self, address: Address) -> Result<Option<Account>, WriterError> {
+        Ok(self.accounts.lock().unwrap().get(&address).cloned())
+    }
+
+    async fn ring_config(&self, _ring: Address) -> Result<Option<RingConfiguration>, WriterError> {
+        unreachable!("an applier reads no ring role")
+    }
+
+    async fn member_openings(
+        &self,
+        _request: GetStorageMemberOpeningsRequest,
+    ) -> Result<GetStorageMemberOpeningsResponse, ServiceError> {
+        unreachable!("an applier reads no policy leaf")
+    }
+
+    async fn apply_inputs(
+        &self,
+        _request: GetStorageApplyProofInputsRequest,
+    ) -> Result<GetStorageApplyProofInputsResponse, WriterError> {
+        unreachable!("an applier writes no policy leaf")
+    }
+
+    async fn prove_apply(
+        &self,
+        _inputs: &ApplyProofInputs,
+        _registry: &StorageRegistry,
+    ) -> Result<ApplyRecordsIxData, WriterError> {
+        unreachable!("an applier writes no policy leaf")
+    }
+
+    async fn prove_enrollments(
+        &self,
+        batch: EnrollBatch<'_>,
+    ) -> Result<ProvenEnrollBatch, WriterError> {
+        self.proofs.fetch_add(1, Ordering::Relaxed);
+        self.proved
+            .lock()
+            .unwrap()
+            .push((batch.tracking_registry, batch.writes.len()));
+        let revision = self
+            .accounts
+            .lock()
+            .unwrap()
+            .get(&batch.tracking_registry)
+            .and_then(|account| TrackingRegistry::decode(&account.owner, &account.data))
+            .expect("registry")
+            .newest()
+            .revision;
+        if let Some(act) = self.during_proof.lock().unwrap().take() {
+            act(self);
+        }
+        let instruction = |program_id| Instruction {
+            program_id,
+            accounts: Vec::new(),
+            data: Vec::new(),
+        };
+        Ok(ProvenEnrollBatch {
+            instructions: [instruction(STORAGE_PROGRAM_ID), instruction(RING)],
+            revision,
+        })
+    }
+
+    async fn tracking_leaves(
+        &self,
+        registry: Address,
+        owners: &[[u8; 32]],
+    ) -> Result<HashMap<[u8; 32], TrackingLeaf>, WriterError> {
+        assert_eq!(registry, REGISTRY);
+        let leaves = self.leaves.lock().unwrap();
+        Ok(owners
+            .iter()
+            .filter_map(|owner| {
+                let viewing_hash = *leaves.get(owner)?;
+                let leaf = TrackingLeaf {
+                    record: TrackingRecord {
+                        viewing_hash,
+                        ..TrackingRecord::default()
+                    },
+                    owner: Address::new_from_array(*owner),
+                    viewing_u: [0; 32],
+                    seq: 0,
+                    seal: SealedNullifierKey {
+                        eph_pk: X25519Keypair::from_bytes(&[1; 32]).pubkey(),
+                        ciphertext: [0; 64],
+                    },
+                };
+                Some((*owner, leaf))
+            })
+            .collect())
+    }
+}
+
+fn parts(chain: &Arc<StubChain>) -> EnrollmentApplierParts {
+    EnrollmentApplierParts {
+        chain: chain.clone(),
+        payer: Arc::new(payer()),
+        rings: vec![RING, UNINITIALIZED_RING],
+        budget_lamports: u64::MAX,
+        ring_budget_lamports: u64::MAX,
+        max_rings: 2,
+        store: None,
+    }
+}
+
+async fn applier(chain: &Arc<StubChain>) -> EnrollmentApplier {
+    parts(chain).applier().await.expect("applier")
+}
+
+async fn budgeted(chain: &Arc<StubChain>, budget_lamports: u64) -> EnrollmentApplier {
+    EnrollmentApplierParts {
+        budget_lamports,
+        ring_budget_lamports: budget_lamports,
+        ..parts(chain)
+    }
+    .applier()
+    .await
+    .expect("applier")
+}
+
+fn payer() -> Keypair {
+    Keypair::new_from_array([9; 32])
+}
+
+fn owner(seed: u8) -> Keypair {
+    Keypair::new_from_array([seed; 32])
+}
+
+fn enrollment(owner: &Keypair, change: OwnedChange) -> OwnerEnrollment {
+    OwnerEnrollment {
+        ring: CustomRing::new(RING),
+        tracking_registry: REGISTRY,
+        owner: owner.pubkey(),
+        change,
+    }
+}
+
+/// A rotation needs no proof, the owner's signature alone authorizes it.
+fn rotation(seed: u8) -> SubmitEnrollmentRequest {
+    rotation_in(RING, seed)
+}
+
+fn rotation_in(ring: Address, seed: u8) -> SubmitEnrollmentRequest {
+    let viewing_u = X25519Keypair::from_bytes(&[seed; 32]).pubkey().u();
+    let owner = owner(seed);
+    let change = OwnedChange::Rotate {
+        viewing_u,
+        prior_viewing_u: [seed; 32],
+        prior_seq: [0; 8],
+    };
+    OwnerEnrollment {
+        ring: CustomRing::new(ring),
+        ..enrollment(&owner, change)
+    }
+    .sign(&owner)
+    .expect("signed")
+}
+
+/// The viewing hash the owner's leaf holds before the rotation, a field element as every leaf hash is.
+fn prior_viewing_hash(seed: u8) -> [u8; 32] {
+    viewing_hash(&[seed; 32], 0).expect("viewing hash")
+}
+
+fn refusal<T: std::fmt::Debug>(result: Result<T, WriterError>) -> EnrollmentRefusal {
+    match result {
+        Err(WriterError::Enrollment(refusal)) => refusal,
+        other => panic!("an enrollment refusal, not {other:?}"),
+    }
+}
+
+/// Settles the sent batch as failed, its writes requeue for the next pass.
+fn refused(chain: &StubChain) {
+    chain.landed(ChainOutcome::Failed {
+        reason: String::new(),
+    });
+}
+
+#[tokio::test]
+async fn a_write_the_program_would_refuse_is_never_held() {
+    let chain = StubChain::new();
+    let applier = applier(&chain).await;
+    let unserved = SubmitEnrollmentRequest {
+        ring: Address::new_from_array([12; 32]).into(),
+        ..rotation(3)
+    };
+    assert_eq!(
+        refusal(applier.submit(unserved).await),
+        EnrollmentRefusal::NotServed
+    );
+    let uninitialized = SubmitEnrollmentRequest {
+        ring: UNINITIALIZED_RING.into(),
+        ..rotation(3)
+    };
+    assert_eq!(
+        refusal(applier.submit(uninitialized).await),
+        EnrollmentRefusal::RingMissing
+    );
+    let mut truncated = rotation(3);
+    truncated.write.0.pop();
+    assert_eq!(
+        refusal(applier.submit(truncated).await),
+        EnrollmentRefusal::InvalidWrite
+    );
+    let forged = SubmitEnrollmentRequest {
+        signature: rotation(4).signature,
+        ..rotation(3)
+    };
+    assert_eq!(
+        refusal(applier.submit(forged).await),
+        EnrollmentRefusal::InvalidWrite
+    );
+    let owner = owner(5);
+    let mut ix = EnrollIxData::zeroed();
+    ix.viewing_u[31] = 9;
+    ix.nullifier_pk[31] = 1;
+    let unproven = enrollment(
+        &owner,
+        OwnedChange::Enroll {
+            ix,
+            proof: Box::new(CustomRingProof::zeroed()),
+        },
+    )
+    .sign(&owner)
+    .expect("signed");
+    assert_eq!(
+        refusal(applier.submit(unproven).await),
+        EnrollmentRefusal::RegisterKeyProof
+    );
+    applier.flush().await;
+    assert!(chain.proved().is_empty());
+}
+
+/// The owner signs the enrollment text, a signature over the binary `CRING/enr` message is refused.
+#[tokio::test]
+async fn a_write_signed_over_the_binary_message_is_refused() {
+    let chain = StubChain::new();
+    let applier = applier(&chain).await;
+    let request = rotation(3);
+    let (write, _) = EnrollmentWrite::parse(&request.write.0).expect("write");
+    let entry = write.signed(&REGISTRY).expect("signed").entry_hash;
+    let binary = [
+        &b"CRING/enr"[..],
+        REGISTRY.as_ref(),
+        write.owner.as_ref(),
+        &entry,
+    ]
+    .concat();
+    let stale = SubmitEnrollmentRequest {
+        signature: owner(3).sign_message(&binary).into(),
+        ..request.clone()
+    };
+    assert_eq!(
+        refusal(applier.submit(stale).await),
+        EnrollmentRefusal::InvalidWrite
+    );
+    applier.submit(request).await.expect("held");
+}
+
+struct UnavailablePayer;
+
+#[async_trait]
+impl OperatorSigner for UnavailablePayer {
+    fn address(&self) -> Address {
+        payer().pubkey()
+    }
+
+    async fn sign(&self, _: &[u8]) -> Result<Signature, CustodyError> {
+        Err(CustodyError::Service(
+            std::io::Error::from(std::io::ErrorKind::TimedOut).into(),
+        ))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum UnsentBatch {
+    SignerUnavailable,
+    BlockhashUnavailable,
+}
+
+#[tokio::test]
+async fn a_batch_that_fails_ahead_of_its_send_keeps_its_writes_attempts_and_budget() {
+    for fault in [
+        UnsentBatch::SignerUnavailable,
+        UnsentBatch::BlockhashUnavailable,
+    ] {
+        let chain = StubChain::new();
+        chain.enrolled([3]);
+        let mut applier = budgeted(&chain, signature_fees(2)).await;
+        let signer = applier.payer.clone();
+        match fault {
+            UnsentBatch::SignerUnavailable => applier.payer = Arc::new(UnavailablePayer),
+            UnsentBatch::BlockhashUnavailable => {
+                chain.blockhash_unavailable.store(true, Ordering::Relaxed)
+            }
+        }
+        applier.submit(rotation(3)).await.expect("held");
+        for _ in 0..MAX_ENROLLMENT_ATTEMPTS {
+            applier.flush().await;
+        }
+        assert!(chain.sent.lock().unwrap().is_empty());
+        {
+            let state = applier.ring_state(RING);
+            let state = state.lock().await;
+            assert!(state.in_flight.is_none());
+            assert_eq!(state.queued.front().expect("restored").attempts, 0);
+        }
+        assert_eq!(applier.budget.spent().total, 0);
+
+        applier.payer = signer;
+        chain.blockhash_unavailable.store(false, Ordering::Relaxed);
+        applier.flush().await;
+        assert_eq!(chain.sent.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn a_batch_whose_send_failed_stays_in_flight_and_its_landing_ends_it() {
+    let chain = StubChain::new();
+    chain.enrolled([3, 4]);
+    let applier = applier(&chain).await;
+    applier.submit(rotation(3)).await.expect("held");
+    chain.send_fails.store(true, Ordering::Relaxed);
+
+    applier.flush().await;
+    applier.flush().await;
+    assert_eq!(chain.proofs.load(Ordering::Relaxed), 1);
+
+    chain.landed(ChainOutcome::Confirmed { slot: SLOT });
+    applier.submit(rotation(4)).await.expect("held");
+    applier.flush().await;
+    assert_eq!(chain.proved(), [(REGISTRY, 1), (REGISTRY, 1)]);
+}
+
+#[tokio::test]
+async fn a_batch_whose_send_failed_requeues_at_expiry_with_one_attempt() {
+    let chain = StubChain::new();
+    chain.enrolled([3]);
+    let applier = budgeted(&chain, 2 * signature_fees(2)).await;
+    applier.submit(rotation(3)).await.expect("held");
+    chain.send_fails.store(true, Ordering::Relaxed);
+    applier.flush().await;
+    assert!(chain.sent.lock().unwrap().is_empty());
+
+    chain.height.store(BLOCKHASH_WINDOW + 1, Ordering::Relaxed);
+    applier.flush().await;
+
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+    let state = applier.ring_state(RING);
+    let state = state.lock().await;
+    let resent = state
+        .in_flight
+        .as_ref()
+        .expect("the requeued write is sent again");
+    assert_eq!(resent.writes[0].attempts, 1);
+    assert_eq!(applier.budget.spent().total, 2 * signature_fees(2));
+}
+
+#[tokio::test]
+async fn the_budget_pays_batch_fees_and_a_spent_one_refuses_the_next_write() {
+    let chain = StubChain::new();
+    chain.enrolled([3, 4]);
+    assert_eq!(
+        refusal(budgeted(&chain, 0).await.submit(rotation(3)).await),
+        EnrollmentRefusal::Budget
+    );
+    let applier = budgeted(&chain, signature_fees(2)).await;
+    applier.submit(rotation(3)).await.expect("held");
+    applier.flush().await;
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+    assert_eq!(
+        refusal(applier.submit(rotation(4)).await),
+        EnrollmentRefusal::Budget
+    );
+}
+
+#[tokio::test]
+async fn a_full_ring_refuses_and_a_resubmission_is_held_once() {
+    let chain = StubChain::new();
+    let applier = applier(&chain).await;
+    applier.submit(rotation(0)).await.expect("held");
+    applier.submit(rotation(0)).await.expect("held once");
+    for seed in 1..MAX_HELD_ENROLLMENTS as u8 {
+        applier.submit(rotation(seed)).await.expect("held");
+    }
+    assert_eq!(
+        refusal(applier.submit(rotation(MAX_HELD_ENROLLMENTS as u8)).await),
+        EnrollmentRefusal::Full
+    );
+}
+
+#[tokio::test]
+async fn a_pass_proves_one_batch_under_the_payer_alone_and_waits_for_its_landing() {
+    let chain = StubChain::new();
+    let applier = applier(&chain).await;
+    chain.enrolled(0..ENROLLMENT_BATCH as u8 + 2);
+    for seed in 0..ENROLLMENT_BATCH as u8 + 2 {
+        applier.submit(rotation(seed)).await.expect("held");
+    }
+
+    applier.flush().await;
+    assert_eq!(chain.proved(), [(REGISTRY, ENROLLMENT_BATCH)]);
+    let sent = chain.sent.lock().unwrap().clone();
+    let [transaction] = sent.as_slice() else {
+        panic!("one batch, {sent:?}");
+    };
+    assert_eq!(transaction.signatures.len(), 1);
+    assert_eq!(
+        transaction.message.static_account_keys()[0],
+        applier.payer()
+    );
+
+    applier.flush().await;
+    assert_eq!(chain.proofs.load(Ordering::Relaxed), 1);
+
+    chain.landed(ChainOutcome::Confirmed { slot: SLOT });
+    applier.flush().await;
+    assert_eq!(chain.proved()[1], (REGISTRY, 2));
+}
+
+#[tokio::test]
+async fn a_failed_batch_requeues_its_writes_until_their_attempts_run_out() {
+    let chain = StubChain::new();
+    chain.enrolled([3]);
+    let applier = applier(&chain).await;
+    applier.submit(rotation(3)).await.expect("held");
+    applier.flush().await;
+    for attempt in 1..MAX_ENROLLMENT_ATTEMPTS {
+        refused(&chain);
+        applier.flush().await;
+        assert_eq!(
+            chain.proofs.load(Ordering::Relaxed),
+            usize::from(attempt) + 1
+        );
+    }
+    refused(&chain);
+    applier.flush().await;
+    assert_eq!(
+        chain.proofs.load(Ordering::Relaxed),
+        usize::from(MAX_ENROLLMENT_ATTEMPTS)
+    );
+}
+
+#[tokio::test]
+async fn a_pass_waits_out_the_grace_of_the_oldest_root() {
+    let chain = StubChain::new();
+    chain.tracking(|registry| {
+        registry.roots[TRACKING_ROOT_HISTORY - 1].expires_at = (SLOT + 1).to_le_bytes()
+    });
+    chain.enrolled([3]);
+    let applier = applier(&chain).await;
+    applier.submit(rotation(3)).await.expect("held");
+    applier.flush().await;
+    assert!(chain.proved().is_empty());
+}
+
+#[tokio::test]
+async fn a_root_moved_during_the_proof_sends_nothing() {
+    let chain = StubChain::new();
+    *chain.during_proof.lock().unwrap() = Some(Box::new(|chain: &StubChain| {
+        chain.tracking(|registry| registry.roots[0].revision = Revision::from(1))
+    }));
+    chain.enrolled([3]);
+    let applier = applier(&chain).await;
+    applier.submit(rotation(3)).await.expect("held");
+
+    applier.flush().await;
+    assert!(chain.sent.lock().unwrap().is_empty());
+
+    applier.flush().await;
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+}
+
+/// A Rotate of an absent owner or from another viewing hash would fail the whole batch.
+#[tokio::test]
+async fn a_pass_drops_a_rotation_the_running_leaves_refuse() {
+    let chain = StubChain::new();
+    chain.enrolled([3]);
+    chain
+        .leaves
+        .lock()
+        .unwrap()
+        .insert(owner(4).pubkey().to_bytes(), [0x44; 32]);
+    let applier = applier(&chain).await;
+    for seed in [3, 4, 5] {
+        applier.submit(rotation(seed)).await.expect("held");
+    }
+    applier.flush().await;
+    assert_eq!(chain.proved(), [(REGISTRY, 1)]);
+}
+
+#[path = "enrollment_registration_tests.rs"]
+mod enrollment_registration_tests;
+
+#[tokio::test]
+async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
+    use zolana_ring_client::rpc::{
+        SignedVaultEnrollment, VaultEnrollmentBlock, VaultEnrollmentRequest,
+    };
+    use zolana_ring_client::VaultEnrollmentMessage;
+
+    let chain = StubChain::new();
+    let fee = signature_fees(2);
+    let service = budgeted(&chain, fee).await;
+    let writer = service.payer();
+    chain.policy(
+        RING,
+        RingRoles {
+            enrollment_writer: writer,
+            ..RingRoles::zeroed()
+        },
+    );
+    let program = Address::new_from_array([0x63; 32]);
+    let manager = Keypair::new();
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../test-vectors/registry/pda-enrollment.json"
+    ))
+    .unwrap();
+    let inner = hex::decode(vector["enroll"].as_str().unwrap()).unwrap();
+    let request = VaultEnrollmentRequest {
+        ring: RING.into(),
+        program: program.into(),
+        manager: manager.pubkey().into(),
+        vault: Address::find_program_address(&[b"owner"], &program)
+            .0
+            .into(),
+        payload: spr_indexer_api::Base64String(inner),
+    };
+    assert_eq!(
+        refusal(service.prepare_vault(request.clone()).await),
+        EnrollmentRefusal::NotServed
+    );
+    let service = service.with_vault_programs([program]);
+    let block = service.prepare_vault(request.clone()).await.unwrap();
+    let compile = |request: &VaultEnrollmentRequest, block: &VaultEnrollmentBlock| {
+        VaultEnrollmentMessage {
+            request,
+            writer,
+            registry: REGISTRY,
+        }
+        .compile(block)
+        .unwrap()
+    };
+    let unissued = VaultEnrollmentBlock {
+        blockhash: spr_indexer_api::Hash([9; 32]),
+        ..block.clone()
+    };
+    let unissued_bytes = compile(&request, &unissued).serialize();
+    assert_eq!(
+        refusal(
+            service
+                .submit_vault(SignedVaultEnrollment {
+                    enrollment: request.clone(),
+                    block: unissued,
+                    signature: manager.sign_message(&unissued_bytes).into(),
+                })
+                .await
+        ),
+        EnrollmentRefusal::InvalidWrite
+    );
+    let message = compile(&request, &block);
+    let bytes = message.serialize();
+    let mut signed = SignedVaultEnrollment {
+        enrollment: request,
+        block,
+        signature: Keypair::new().sign_message(&bytes).into(),
+    };
+    assert_eq!(
+        refusal(service.submit_vault(signed.clone()).await),
+        EnrollmentRefusal::InvalidWrite
+    );
+    assert!(chain.sent.lock().unwrap().is_empty());
+    signed.signature = manager.sign_message(&bytes).into();
+    let submitted = service.submit_vault(signed.clone()).await.unwrap();
+    let vault_rotation = VaultEnrollmentRequest {
+        payload: spr_indexer_api::Base64String(
+            hex::decode(vector["rotate"].as_str().unwrap()).unwrap(),
+        ),
+        ..signed.enrollment.clone()
+    };
+    let rotation_bytes = compile(&vault_rotation, &signed.block).serialize();
+    assert_eq!(
+        refusal(
+            service
+                .submit_vault(SignedVaultEnrollment {
+                    enrollment: vault_rotation.clone(),
+                    block: signed.block.clone(),
+                    signature: manager.sign_message(&rotation_bytes).into(),
+                })
+                .await
+        ),
+        EnrollmentRefusal::InFlight
+    );
+    assert_eq!(
+        service.submit_vault(signed.clone()).await.unwrap(),
+        submitted
+    );
+    chain.landed(ChainOutcome::Confirmed { slot: SLOT });
+    service.flush().await;
+    assert_eq!(
+        refusal(
+            service
+                .submit_vault(SignedVaultEnrollment {
+                    enrollment: vault_rotation,
+                    block: signed.block.clone(),
+                    signature: manager.sign_message(&rotation_bytes).into(),
+                })
+                .await
+        ),
+        EnrollmentRefusal::Budget
+    );
+    let sent = chain.sent.lock().unwrap();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1], sent[0]);
+    assert_eq!(sent[0].message, message);
+    assert_eq!(
+        sent[0].signatures,
+        [payer().sign_message(&bytes), manager.sign_message(&bytes)]
+    );
+    assert_eq!(submitted.0, sent[0].signatures[0]);
+    assert_eq!(service.budget.spent().total, fee);
+}
+
+#[tokio::test]
+async fn landing_error_keeps_in_flight_batch_for_retry() {
+    let chain = StubChain::new();
+    chain.enrolled([1]);
+    let service = applier(&chain).await;
+    service.submit(rotation(1)).await.expect("queued");
+    service.flush().await;
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+
+    chain.outcome_fails.store(true, Ordering::Relaxed);
+    service.flush().await;
+    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+
+    chain.landed(ChainOutcome::Failed {
+        reason: "reverted".to_owned(),
+    });
+    service.flush().await;
+    assert_eq!(chain.sent.lock().unwrap().len(), 2);
+}

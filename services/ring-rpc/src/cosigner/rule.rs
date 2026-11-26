@@ -3,10 +3,11 @@ use solana_address::Address;
 use solana_message::VersionedMessage;
 
 use super::scope::ApprovedCall;
+use ring_service_core::landing::FinalizedTip;
+
 use crate::{
     cosign::{CoSignFlows, CoSignRefusal, CoSignSettlement, FrameSource, Sender, Ticket},
     error::RingRpcError,
-    landing::FinalizedTip,
 };
 
 #[derive(Clone, Copy)]

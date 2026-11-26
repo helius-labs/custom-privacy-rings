@@ -4,11 +4,10 @@ use sea_orm::{ConnectionTrait, DatabaseTransaction, DbErr, QueryResult, Value};
 use solana_address::Address;
 
 use super::{address_value, Measure, MEASURE_CEILING};
-use crate::{
-    cosign::AssetFlow,
-    record_update::MAX_LIMIT_WINDOW_SLOTS,
-    sql::{integer, placeholders, read_address, read_bytes as bytes, statement},
-};
+use ring_writer::record_update::MAX_LIMIT_WINDOW_SLOTS;
+
+use crate::cosign::AssetFlow;
+use ring_service_core::sql::{integer, placeholders, read_address, read_bytes as bytes, statement};
 
 pub(super) const EPOCH_SLOTS: u64 = MAX_LIMIT_WINDOW_SLOTS.next_power_of_two();
 const NODE_BATCH: usize = 64;

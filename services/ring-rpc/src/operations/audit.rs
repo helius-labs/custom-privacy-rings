@@ -26,29 +26,34 @@ use zolana_ring_client::{
 };
 use zolana_ring_policy::Member;
 
-use crate::{
+use ring_service_core::{
     authorize::{
         AuthorityCheck, AuthorityClaim, Authorized, AuthorizedNonce, PendingNonce, ReadCheck,
         ReadClaim, Unauthorized, WalletCheck,
     },
-    error::{redacted, GrantRefusal, RingRpcError},
+    keys::RingSaltDerivation,
+    limits::ReaderPermit,
+    redact::redacted,
+    upstream::{
+        Finality, MergeAuditRequest, RingConfiguration, RingFrame, RingHistoryPage,
+        TransactionPage, TransactionSource,
+    },
+};
+
+use ring_writer::record_writer::SaltedOwner;
+
+use crate::{
+    error::{GrantRefusal, RingRpcError, ServiceError},
     frame_repairs::RepairBook,
     grant_rows::{GrantPair, GrantRow},
     grants::{GrantQuery, Grants, ReadScope},
     hub::Shared,
-    keys::RingSaltDerivation,
-    limits::ReaderPermit,
     projection_lease::{LeaseClaim, ProjectionLease},
     projection_reads::EnrollmentKey,
-    record_writer::SaltedOwner,
     spend_machine::{InputRead, Observation},
     spent_index::{LoadSpends, LoadedProjection, NoteSeal, ProjectionWriter},
     tracking::{
         HeldEnrollment, OwnerEnrollment, ScanEnd, TrackingCursor, TrackingScan, TrackingSource,
-    },
-    upstream::{
-        Finality, MergeAuditRequest, RingConfiguration, RingFrame, RingHistoryPage,
-        TransactionPage, TransactionSource,
     },
     utxos::{
         AuditStore, Backfill, CreatedIn, PageDelta, PageWork, WalletCursor, WalletStatusQuery,
@@ -206,12 +211,12 @@ impl<S: TransactionSource> AuditService<S> {
 
     /// Leaves the service only through `getListSalt`, never logged.
     pub(crate) fn ring_salt(&self) -> Result<zeroize::Zeroizing<[u8; 32]>, RingRpcError> {
-        RingSaltDerivation {
+        Ok(RingSaltDerivation {
             auditor: &self.auditor,
             genesis_hash: &self.shared.genesis_hash,
             ring: self.ring,
         }
-        .derive()
+        .derive()?)
     }
 
     pub fn auditor_view_tag(&self) -> [u8; 32] {
@@ -356,7 +361,7 @@ impl<S: TransactionSource> AuditService<S> {
         signer: Address,
     ) -> Result<RingConfiguration, RingRpcError> {
         let config = self.require_served_config().await?;
-        if config.roles.policy != signer {
+        if config.roles().policy != signer {
             return Err(Unauthorized::NotPolicyAuthority.into());
         }
         Ok(config)
@@ -674,7 +679,7 @@ impl<S: TransactionSource> AuditService<S> {
             None => {
                 let config = self.require_served_config().await?;
                 let nonce = WalletCheck {
-                    wallet: config.roles.policy,
+                    wallet: config.roles().policy,
                     timestamp: request.timestamp,
                     nonce: &request.nonce,
                     signature: &request.signature,
@@ -871,7 +876,7 @@ impl<S: TransactionSource> AuditService<S> {
             let mut next = *position;
             let end = next
                 .advance(&response, limit.get())
-                .map_err(|_| RingRpcError::InvalidIndexerResponse)?;
+                .map_err(|_| RingRpcError::Service(ServiceError::InvalidIndexerResponse))?;
             self.validate_indexer_response(&response)?;
             // Read after the page, an enrollment finalized before a note on it is held unless the refresh stops early.
             self.refresh_or_warn(store, tracking_cursor, durable).await;
@@ -1072,7 +1077,7 @@ impl<S: TransactionSource> AuditService<S> {
             .await?;
         let _ = position
             .advance(&response, limit.get())
-            .map_err(|_| RingRpcError::InvalidIndexerResponse)?;
+            .map_err(|_| RingRpcError::Service(ServiceError::InvalidIndexerResponse))?;
         self.validate_indexer_response(&response)?;
         let context = response.context;
         let cursor = query.next_cursor(&position).map(Into::into);
@@ -1114,7 +1119,7 @@ impl<S: TransactionSource> AuditService<S> {
                         .is_err())
             });
         if unsupported {
-            return Err(RingRpcError::InvalidIndexerResponse);
+            return Err(RingRpcError::Service(ServiceError::InvalidIndexerResponse));
         }
         Ok(())
     }
@@ -1165,7 +1170,9 @@ impl<S: TransactionSource> AuditService<S> {
             if tx.ring_program_id != Some(self.ring) {
                 continue;
             }
-            let event_index = tx.event_index.ok_or(RingRpcError::InvalidIndexerResponse)?;
+            let event_index = tx
+                .event_index
+                .ok_or(RingRpcError::Service(ServiceError::InvalidIndexerResponse))?;
             if only.is_some_and(|frame| {
                 frame.tx_signature != tx.tx_signature || frame.event_index != event_index
             }) {
@@ -1376,11 +1383,14 @@ impl<S: TransactionSource> AuthorizedRead<'_, S> {
             .merge_audit_page(MergeAuditRequest {
                 ring: service.ring,
                 auditor: &service.auditor,
-                page: self.page,
+                cursor: self.page.history_cursor(),
+                limit: self.page.limit(),
             })
             .await
             .map_err(|error| match error {
-                AuditError::InvalidHistoryPage => RingRpcError::InvalidIndexerResponse,
+                AuditError::InvalidHistoryPage => {
+                    RingRpcError::Service(ServiceError::InvalidIndexerResponse)
+                }
                 AuditError::HistoryCursor(_) => RingRpcError::InvalidPage,
                 error => error.into(),
             })?;

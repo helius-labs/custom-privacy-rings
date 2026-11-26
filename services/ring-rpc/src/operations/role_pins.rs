@@ -1,10 +1,9 @@
 use solana_address::Address;
 use thiserror::Error;
 
-use crate::{
-    error::RingRpcError,
-    storage_chain::{ring_policy, storage_registry, StorageChain},
-};
+use ring_writer::storage_chain::{ring_policy, storage_registry, StorageChain};
+
+use crate::error::RingRpcError;
 
 #[must_use]
 pub struct RolePins {
@@ -69,7 +68,7 @@ impl HeldRoles {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::HashMap;
 
     use async_trait::async_trait;
@@ -91,8 +90,11 @@ mod tests {
     };
     use zolana_ring_member_registry::ApplyProofInputs;
 
+    use ring_writer::WriterError;
+
     use super::*;
-    use crate::{
+    use crate::error::ServiceError;
+    use ring_service_core::{
         landing::{ChainOutcome, ChainSubmit, LatestBlockhash, Simulation},
         upstream::RingConfiguration,
     };
@@ -104,7 +106,7 @@ mod tests {
     const OTHER: Address = Address::new_from_array([5; 32]);
 
     /// `None` fails every account read.
-    struct RingAccounts(Option<HashMap<Address, Account>>);
+    pub(crate) struct RingAccounts(pub(crate) Option<HashMap<Address, Account>>);
 
     #[derive(Clone, Copy)]
     enum Initialized {
@@ -113,7 +115,7 @@ mod tests {
         PolicyAndRecords,
     }
 
-    fn account(owner: Address, data: &[u8]) -> Account {
+    pub(crate) fn account(owner: Address, data: &[u8]) -> Account {
         Account {
             lamports: 1,
             data: data.to_vec(),
@@ -163,67 +165,70 @@ mod tests {
 
     #[async_trait]
     impl ChainSubmit for RingAccounts {
-        async fn account_data(&self, _address: Address) -> Result<Option<Vec<u8>>, RingRpcError> {
+        async fn account_data(&self, _address: Address) -> Result<Option<Vec<u8>>, ServiceError> {
             unreachable!("a role check reads whole accounts")
         }
 
-        async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, RingRpcError> {
+        async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
             unreachable!("a role check funds nothing")
         }
 
-        async fn slot(&self) -> Result<u64, RingRpcError> {
+        async fn slot(&self) -> Result<u64, ServiceError> {
             unreachable!("a role check reads no slot")
         }
 
-        async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+        async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
             unreachable!("a role check sends nothing")
         }
 
-        async fn block_height(&self) -> Result<u64, RingRpcError> {
+        async fn block_height(&self) -> Result<u64, ServiceError> {
             unreachable!("a role check sends nothing")
         }
 
-        async fn send(&self, _transaction: &VersionedTransaction) -> Result<(), RingRpcError> {
+        async fn send(&self, _transaction: &VersionedTransaction) -> Result<(), ServiceError> {
             unreachable!("a role check sends nothing")
         }
 
         async fn outcome(
             &self,
             _signature: Signature,
-        ) -> Result<Option<ChainOutcome>, RingRpcError> {
+        ) -> Result<Option<ChainOutcome>, ServiceError> {
             unreachable!("a role check sends nothing")
         }
 
-        async fn simulate(&self, _message: &VersionedMessage) -> Result<Simulation, RingRpcError> {
+        async fn simulate(&self, _message: &VersionedMessage) -> Result<Simulation, ServiceError> {
             unreachable!("a role check sends nothing")
         }
     }
 
     #[async_trait]
     impl StorageChain for RingAccounts {
-        async fn account(&self, address: Address) -> Result<Option<Account>, RingRpcError> {
-            let accounts = self.0.as_ref().ok_or(RingRpcError::StateUnavailable)?;
+        async fn account(&self, address: Address) -> Result<Option<Account>, WriterError> {
+            let accounts = self
+                .0
+                .as_ref()
+                .ok_or(WriterError::Service(ServiceError::StateUnavailable))?;
             Ok(accounts.get(&address).cloned())
         }
 
         async fn ring_config(
             &self,
             _ring: Address,
-        ) -> Result<Option<RingConfiguration>, RingRpcError> {
+        ) -> Result<Option<RingConfiguration>, WriterError> {
             unreachable!("a role check reads the policy account")
         }
 
         async fn member_openings(
             &self,
             _request: GetStorageMemberOpeningsRequest,
-        ) -> Result<GetStorageMemberOpeningsResponse, RingRpcError> {
+        ) -> Result<GetStorageMemberOpeningsResponse, ServiceError> {
             unreachable!("a role check reads no leaf")
         }
 
         async fn apply_inputs(
             &self,
             _request: GetStorageApplyProofInputsRequest,
-        ) -> Result<GetStorageApplyProofInputsResponse, RingRpcError> {
+        ) -> Result<GetStorageApplyProofInputsResponse, WriterError> {
             unreachable!("a role check writes no leaf")
         }
 
@@ -231,14 +236,14 @@ mod tests {
             &self,
             _inputs: &ApplyProofInputs,
             _registry: &StorageRegistry,
-        ) -> Result<ApplyRecordsIxData, RingRpcError> {
+        ) -> Result<ApplyRecordsIxData, WriterError> {
             unreachable!("a role check proves nothing")
         }
 
         async fn prove_enrollments(
             &self,
             _batch: EnrollBatch<'_>,
-        ) -> Result<ProvenEnrollBatch, RingRpcError> {
+        ) -> Result<ProvenEnrollBatch, WriterError> {
             unreachable!("a role check proves nothing")
         }
 
@@ -246,7 +251,7 @@ mod tests {
             &self,
             _registry: Address,
             _owners: &[[u8; 32]],
-        ) -> Result<HashMap<[u8; 32], TrackingLeaf>, RingRpcError> {
+        ) -> Result<HashMap<[u8; 32], TrackingLeaf>, WriterError> {
             unreachable!("a role check reads no leaf")
         }
     }

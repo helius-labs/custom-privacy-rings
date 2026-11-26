@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use clap::ValueEnum;
 use custom_ring_interface::CoSignScope;
 use jsonrpsee::types::ErrorObjectOwned;
+use ring_service_core::{landing::FinalizedTip, upstream::ScopeUnreadable};
 use sha2::{Digest, Sha256};
 use solana_address::Address;
 use solana_message::VersionedMessage;
@@ -11,7 +12,7 @@ use solana_signature::Signature;
 use thiserror::Error;
 use zolana_ring_policy::Member;
 
-use crate::{cosigner::ApprovedCall, error::RingRpcError, landing::FinalizedTip};
+use crate::{cosigner::ApprovedCall, error::RingRpcError};
 
 /// One class of the five a ring's `CoSigner` records hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -189,6 +190,12 @@ impl Ticket {
 impl CoSignError {
     pub const fn code(self) -> i32 {
         self as i32
+    }
+}
+
+impl From<ScopeUnreadable> for CoSignError {
+    fn from(_: ScopeUnreadable) -> Self {
+        Self::LimitsUnavailable
     }
 }
 

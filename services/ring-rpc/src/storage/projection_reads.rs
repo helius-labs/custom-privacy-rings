@@ -13,10 +13,10 @@ use crate::{
         read_enrollment, read_frame, read_note, read_spend_row, NoteSeal, ENROLLMENT_COLUMNS,
         NOTE_COLUMNS, ROW_COLUMNS,
     },
-    sql,
     tracking::HeldEnrollment,
     utxos::{CreatedIn, StoredUtxo},
 };
+use ring_service_core::sql;
 
 /// The key an enrollment lookup names, each read through its own column.
 #[derive(Clone, Copy, Debug)]

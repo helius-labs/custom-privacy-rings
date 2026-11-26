@@ -7,7 +7,6 @@ use std::future::Future;
 use async_trait::async_trait;
 use solana_address::Address;
 
-pub(crate) use self::store::migration;
 pub use self::{
     decision::{List, ListDecision, ListEntry, Lists, Parties, Subject, SubjectKind},
     store::{ListStore, StoredLists},

@@ -81,7 +81,9 @@ fn activity(result: Result<GetWalletActivityResponse, RingRpcError>) -> Vec<Wall
 fn not_granted<T>(result: Result<T, RingRpcError>) -> bool {
     matches!(
         result,
-        Err(RingRpcError::Unauthorized(Unauthorized::NotGranted))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::NotGranted
+        )))
     )
 }
 

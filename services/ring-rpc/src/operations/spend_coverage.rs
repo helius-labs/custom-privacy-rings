@@ -17,9 +17,9 @@ use crate::{
     spent_index::{
         first_unread, read_frame, read_snapshot, read_spend_row, state_name, ROW_COLUMNS,
     },
-    sql::{self, read_bytes},
     utxos::{history_through, CreatedIn},
 };
+use ring_service_core::sql::{self, read_bytes};
 
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 #[repr(C)]

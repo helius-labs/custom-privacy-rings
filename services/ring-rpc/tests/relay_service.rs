@@ -44,8 +44,8 @@ use zolana_ring_client::{
 use zolana_ring_rpc::{
     rpc_module, ChainOutcome, Hub, MergeAuditRequest, Migrator, RecordsTip, Relay, RelayBudget,
     RelayError, RelayParts, RingConfiguration, RingFrame, RingHistoryPage, RingRpcError,
-    ServedRings, ServiceIdentity, Store, TransactionPage, TransactionSource, ABANDONED_AFTER_SLOTS,
-    STORE_CONNECTIONS,
+    ServedRings, ServiceError, ServiceIdentity, Store, TransactionPage, TransactionSource,
+    ABANDONED_AFTER_SLOTS, STORE_CONNECTIONS,
 };
 use zolana_ring_transaction::RingAssets;
 
@@ -128,11 +128,11 @@ impl TransactionSource for RingSource {
     async fn ring_config(&self, ring: Address) -> Result<Option<RingConfiguration>, ClientError> {
         Ok((ring == RING).then(|| RingConfiguration {
             auditor_pubkey: self.auditor,
-            roles: bytemuck::Zeroable::zeroed(),
             mode: custom_ring_interface::RingMode::Confidential,
-            delegate: Some(ring_delegate().pubkey()),
-            ring_list_tag: [0; 32],
-            policy: bytemuck::Zeroable::zeroed(),
+            policy: custom_ring_interface::RingPolicy {
+                delegate: ring_delegate().pubkey(),
+                ..bytemuck::Zeroable::zeroed()
+            },
         }))
     }
 

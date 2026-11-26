@@ -75,7 +75,7 @@ struct StubChain {
 
 impl StubChain {
     fn rotate_policy_authority(&self, authority: Address) {
-        self.config.lock().unwrap().roles.policy = authority;
+        self.config.lock().unwrap().policy.roles.policy = authority;
         let mut accounts = self.accounts.lock().unwrap();
         let account = accounts
             .get_mut(&CustomRing::new(RING).policy_pda())
@@ -90,30 +90,30 @@ impl ChainSubmit for StubChain {
     async fn simulate(
         &self,
         _message: &solana_message::VersionedMessage,
-    ) -> Result<zolana_ring_rpc::Simulation, RingRpcError> {
+    ) -> Result<zolana_ring_rpc::Simulation, ServiceError> {
         Ok(zolana_ring_rpc::Simulation::Passed { calls: Vec::new() })
     }
 
     async fn account_data(
         &self,
         _address: solana_address::Address,
-    ) -> Result<Option<Vec<u8>>, RingRpcError> {
+    ) -> Result<Option<Vec<u8>>, ServiceError> {
         Ok(None)
     }
 
-    async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, RingRpcError> {
+    async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
         Ok(0)
     }
 
-    async fn slot(&self) -> Result<u64, RingRpcError> {
+    async fn slot(&self) -> Result<u64, ServiceError> {
         Ok(self.slot.load(Ordering::Relaxed))
     }
 
-    async fn block_height(&self) -> Result<u64, RingRpcError> {
+    async fn block_height(&self) -> Result<u64, ServiceError> {
         Ok(self.height.load(Ordering::Relaxed))
     }
 
-    async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+    async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
         let height = self.height.load(Ordering::Relaxed);
         Ok(LatestBlockhash {
             blockhash: solana_hash::Hash::new_from_array([height as u8; 32]),
@@ -121,12 +121,12 @@ impl ChainSubmit for StubChain {
         })
     }
 
-    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), RingRpcError> {
+    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), ServiceError> {
         self.sent.lock().unwrap().push(transaction.clone());
         Ok(())
     }
 
-    async fn outcome(&self, _signature: Signature) -> Result<Option<ChainOutcome>, RingRpcError> {
+    async fn outcome(&self, _signature: Signature) -> Result<Option<ChainOutcome>, ServiceError> {
         let scripted = self.lookups.lock().unwrap().pop_front();
         Ok(scripted.unwrap_or_else(|| self.outcome.lock().unwrap().clone()))
     }
@@ -134,12 +134,12 @@ impl ChainSubmit for StubChain {
 
 #[async_trait::async_trait]
 impl StorageChain for StubChain {
-    async fn account(&self, address: Address) -> Result<Option<Account>, RingRpcError> {
+    async fn account(&self, address: Address) -> Result<Option<Account>, WriterError> {
         Ok(self.accounts.lock().unwrap().get(&address).cloned())
     }
 
     /// Read from the ring account, `None` while it is unread.
-    async fn ring_config(&self, ring: Address) -> Result<Option<RingConfiguration>, RingRpcError> {
+    async fn ring_config(&self, ring: Address) -> Result<Option<RingConfiguration>, WriterError> {
         let read = self
             .accounts
             .lock()
@@ -151,7 +151,7 @@ impl StorageChain for StubChain {
     async fn member_openings(
         &self,
         request: GetStorageMemberOpeningsRequest,
-    ) -> Result<GetStorageMemberOpeningsResponse, RingRpcError> {
+    ) -> Result<GetStorageMemberOpeningsResponse, ServiceError> {
         let root = self.records.root();
         assert_eq!(request.expected_root, root.root);
         Ok(GetStorageMemberOpeningsResponse {
@@ -171,7 +171,7 @@ impl StorageChain for StubChain {
     async fn apply_inputs(
         &self,
         request: GetStorageApplyProofInputsRequest,
-    ) -> Result<GetStorageApplyProofInputsResponse, RingRpcError> {
+    ) -> Result<GetStorageApplyProofInputsResponse, WriterError> {
         let registry = StorageRegistry::new(Address::default(), &initialize_records());
         let empty = || Hash([0; 32]);
         let path = || RingRecordPathView {
@@ -219,7 +219,7 @@ impl StorageChain for StubChain {
         &self,
         inputs: &ApplyProofInputs,
         _registry: &StorageRegistry,
-    ) -> Result<ApplyRecordsIxData, RingRpcError> {
+    ) -> Result<ApplyRecordsIxData, WriterError> {
         match self.proof_change.lock().unwrap().take() {
             Some(ProofChange::Slot(slot)) => self.slot.store(slot, Ordering::Relaxed),
             Some(ProofChange::PolicyAuthority(authority)) => {
@@ -236,7 +236,7 @@ impl StorageChain for StubChain {
     async fn prove_enrollments(
         &self,
         _batch: zolana_ring_client::EnrollBatch<'_>,
-    ) -> Result<zolana_ring_client::ProvenEnrollBatch, RingRpcError> {
+    ) -> Result<zolana_ring_client::ProvenEnrollBatch, WriterError> {
         unreachable!("the record writer applies no enrollment")
     }
 
@@ -244,7 +244,7 @@ impl StorageChain for StubChain {
         &self,
         _registry: Address,
         _owners: &[[u8; 32]],
-    ) -> Result<std::collections::HashMap<[u8; 32], zolana_ring_client::TrackingLeaf>, RingRpcError>
+    ) -> Result<std::collections::HashMap<[u8; 32], zolana_ring_client::TrackingLeaf>, WriterError>
     {
         unreachable!("the record writer reads no tracking leaf")
     }
@@ -288,14 +288,14 @@ impl RecordsSetup<'_> {
             height: AtomicU64::new(NOW),
             config: Mutex::new(RingConfiguration {
                 auditor_pubkey: X25519Keypair::new().pubkey(),
-                roles: custom_ring_interface::RingRoles {
-                    policy: authority().pubkey(),
+                mode: RingMode::Confidential,
+                policy: custom_ring_interface::RingPolicy {
+                    roles: custom_ring_interface::RingRoles {
+                        policy: authority().pubkey(),
+                        ..bytemuck::Zeroable::zeroed()
+                    },
                     ..bytemuck::Zeroable::zeroed()
                 },
-                mode: RingMode::Confidential,
-                delegate: None,
-                ring_list_tag: [0; 32],
-                policy: bytemuck::Zeroable::zeroed(),
             }),
             accounts: Mutex::default(),
             sent: Mutex::default(),
@@ -1293,7 +1293,7 @@ impl PrivateWrites for HeldOwner {
         &self,
         ring: Address,
         written_key: [u8; 32],
-    ) -> Result<Option<SaltedOwner>, RingRpcError> {
+    ) -> Result<Option<SaltedOwner>, Box<dyn CarriedFault>> {
         Ok(
             (ring == RING && written_key == SALTED_KEY).then_some(SaltedOwner {
                 owner: salted_owner(),
@@ -1302,7 +1302,7 @@ impl PrivateWrites for HeldOwner {
         )
     }
 
-    async fn ring_salt(&self, ring: Address) -> Result<[u8; 32], RingRpcError> {
+    async fn ring_salt(&self, ring: Address) -> Result<[u8; 32], Box<dyn CarriedFault>> {
         assert_eq!(ring, RING);
         Ok(RING_SALT)
     }
@@ -1617,14 +1617,14 @@ async fn create_records_registry_serves_its_rings_and_repeats_one_registry() {
         height: AtomicU64::new(NOW),
         config: Mutex::new(RingConfiguration {
             auditor_pubkey: fixture.auditor.pubkey(),
-            roles: custom_ring_interface::RingRoles {
-                policy: authority().pubkey(),
+            mode: RingMode::Confidential,
+            policy: custom_ring_interface::RingPolicy {
+                roles: custom_ring_interface::RingRoles {
+                    policy: authority().pubkey(),
+                    ..bytemuck::Zeroable::zeroed()
+                },
                 ..bytemuck::Zeroable::zeroed()
             },
-            mode: RingMode::Confidential,
-            delegate: None,
-            ring_list_tag: [0; 32],
-            policy: bytemuck::Zeroable::zeroed(),
         }),
         accounts: Mutex::default(),
         sent: Mutex::default(),
@@ -1652,7 +1652,9 @@ async fn create_records_registry_serves_its_rings_and_repeats_one_registry() {
     .expect("signed");
     assert!(matches!(
         hub.create_records_registry(&foreign_auditor).await,
-        Err(RingRpcError::Unauthorized(Unauthorized::AuditorKeyMismatch))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::AuditorKeyMismatch
+        )))
     ));
 
     let first = CreateRecordsRegistryRequest::create(

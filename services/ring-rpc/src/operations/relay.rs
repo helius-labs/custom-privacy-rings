@@ -34,6 +34,13 @@ use zolana_ring_client::{
 };
 use zolana_ring_transaction::ClassifiedInput;
 
+use ring_service_core::{
+    database::Store,
+    landing::{signature_fees, Attempt, ChainOutcome, ChainSubmit, Landing, LatestBlockhash},
+    redact::redacted,
+    relay_submit::{presigned_transaction, CollectedSignature},
+};
+
 use crate::{
     authority_transfer::AuthorityTransferError,
     cosign::{
@@ -41,16 +48,13 @@ use crate::{
         CoSignSettlement, RefusingCoSigner, Sender, Ticket,
     },
     cosigner::DirectCoSign,
-    database::Store,
-    error::{redacted, RingRpcError},
-    landing::{signature_fees, Attempt, ChainOutcome, ChainSubmit, Landing, LatestBlockhash},
+    error::{RingRpcError, ServiceError},
     merge_inputs::{HoldInputs, MergeInputs},
     relay_prover::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver},
     relay_reservations::{
         Admission, Admit, AttemptEnd, Bind, Claim, ClaimCleanup, Fund, FundOutcome, Lease,
         RelayBudget, RelayReservations, Release, Reservation, SpendCheck, LEASE_SLOTS,
     },
-    relay_submit::{presigned_transaction, CollectedSignature},
     relays::{
         Awaiting, Closing, Committed, PendingCoSign, PendingStatus, RelayEvent, RelayRecord,
         RelayRevision, RelayRow, RelayState, RelayStore, SignerAdmission, Transition,
@@ -102,8 +106,6 @@ pub enum RelayError {
     UnexpectedSigner,
     #[error("the signature does not sign the relay message")]
     SignerSignature,
-    #[error("the cluster refused the transaction because {reason}")]
-    SendRefused { reason: String },
     #[error(transparent)]
     TokenAccountSetup(#[from] TokenAccountSetupError),
     #[error("the depositor is the relay fee payer")]
@@ -251,7 +253,6 @@ impl RelayError {
             Self::UnknownRelay => -32110,
             Self::UnexpectedSigner => -32111,
             Self::SignerSignature => -32112,
-            Self::SendRefused { .. } => -32113,
             Self::TokenAccountSetup(_) => -32200,
             Self::DepositorIsFeePayer => -32201,
             Self::Budget => -32203,
@@ -272,8 +273,8 @@ impl RelayError {
     /// A refused transfer is the caller's, an unreachable chain or prover is the service's.
     pub(crate) fn proof(error: RingError) -> RingRpcError {
         match error {
-            RingError::Client(error) => RingRpcError::Upstream(error),
-            RingError::Indexer(refused) => RingRpcError::Refused(refused),
+            RingError::Client(error) => RingRpcError::Service(ServiceError::Upstream(error)),
+            RingError::Indexer(refused) => RingRpcError::Service(ServiceError::Refused(refused)),
             RingError::ResealRequired { row } => Self::Reseal { row }.into(),
             oversized @ (RingError::TransferTooWide { .. }
             | RingError::TransactionTooLarge { .. }
@@ -365,7 +366,7 @@ impl Relay {
     pub async fn prepare(&self, request: &PrepareRelayRequest) -> Result<RelayStep, RingRpcError> {
         let relay_id = request
             .relay_id()
-            .map_err(|_| RingRpcError::StateUnavailable)?;
+            .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))?;
         if let Some(step) = self.stored(&relay_id).await? {
             return Ok(step);
         }
@@ -663,7 +664,9 @@ impl Relay {
             }
             return Ok(step(
                 relay_id,
-                &read?.ok_or(RingRpcError::StateUnavailable)?.record,
+                &read?
+                    .ok_or(RingRpcError::Service(ServiceError::StateUnavailable))?
+                    .record,
             ));
         }
         // 4. A crash past the commit leaves `Sent` for the tracker, the same signature resends.
@@ -733,7 +736,7 @@ impl Relay {
     ) -> Result<(), RingRpcError> {
         // Only a version 1 header names the whole fee.
         let VersionedMessage::V1(_) = message else {
-            return Err(RingRpcError::StateUnavailable);
+            return Err(RingRpcError::Service(ServiceError::StateUnavailable));
         };
         let fee = message_fee(message);
         self.fund(Fund {
@@ -766,7 +769,7 @@ impl Relay {
                         .chain
                         .account_data(create.mint)
                         .await?
-                        .ok_or(RingRpcError::StateUnavailable)?,
+                        .ok_or(RingRpcError::Service(ServiceError::StateUnavailable))?,
                 )?,
             };
             rent = rent.saturating_add(self.chain.rent_exempt_lamports(data_len).await?);
@@ -1219,7 +1222,7 @@ impl Relay {
     ) -> Result<RelayRow, RingRpcError> {
         match self.resend(&row.record).await {
             Ok(()) => Ok(row),
-            Err(RingRpcError::Relay(RelayError::SendRefused { .. })) => {
+            Err(RingRpcError::Service(ServiceError::SendRefused { .. })) => {
                 self.advance(relay_id, row).await
             }
             Err(error) => Err(error),
@@ -1231,7 +1234,7 @@ impl Relay {
         match &record.state {
             RelayState::Sent(sent) => {
                 let transaction = presigned_transaction(&record.message, &sent.signatures)?;
-                self.chain.send(&transaction).await
+                Ok(self.chain.send(&transaction).await?)
             }
             _ => Ok(()),
         }
@@ -1544,7 +1547,9 @@ impl From<TransitionError> for RingRpcError {
     fn from(error: TransitionError) -> Self {
         match error {
             TransitionError::UnexpectedSigner => RelayError::UnexpectedSigner.into(),
-            TransitionError::Closing | TransitionError::Unsent => Self::StateUnavailable,
+            TransitionError::Closing | TransitionError::Unsent => {
+                ServiceError::StateUnavailable.into()
+            }
         }
     }
 }
@@ -1749,22 +1754,22 @@ fn message_fee(message: &VersionedMessage) -> u64 {
 
 /// The size the associated token program allocates for a mint, its required extensions included.
 fn token_2022_account_len(mint: &[u8]) -> Result<usize, RingRpcError> {
-    let mint =
-        StateWithExtensions::<Mint>::unpack(mint).map_err(|_| RingRpcError::StateUnavailable)?;
+    let mint = StateWithExtensions::<Mint>::unpack(mint)
+        .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))?;
     let mint_extensions = mint
         .get_extension_types()
-        .map_err(|_| RingRpcError::StateUnavailable)?;
+        .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))?;
     let mut extensions = ExtensionType::get_required_init_account_extensions(&mint_extensions);
     extensions.push(ExtensionType::ImmutableOwner);
     ExtensionType::try_calculate_account_len::<Account>(&extensions)
-        .map_err(|_| RingRpcError::StateUnavailable)
+        .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))
 }
 
 /// Every part of the request but the quote, a fresh quote still finds the row its old message holds.
 fn attempt_key(request: &PrepareRelayRequest) -> Result<[u8; 32], RingRpcError> {
     let unquoted = serde_json::to_vec(&(&request.ring, &request.intent, &request.co_signers))
         .map(Zeroizing::new)
-        .map_err(|_| RingRpcError::StateUnavailable)?;
+        .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))?;
     Ok(Sha256::new()
         .chain_update(ATTEMPT_KEY_DOMAIN)
         .chain_update(&*unquoted)
@@ -1969,40 +1974,40 @@ mod tests {
 
         #[async_trait]
         impl ChainSubmit for UnusedChain {
-            async fn slot(&self) -> Result<u64, RingRpcError> {
+            async fn slot(&self) -> Result<u64, ServiceError> {
                 unreachable!("unused")
             }
-            async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+            async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
                 unreachable!("unused")
             }
-            async fn block_height(&self) -> Result<u64, RingRpcError> {
+            async fn block_height(&self) -> Result<u64, ServiceError> {
                 unreachable!("unused")
             }
             async fn account_data(
                 &self,
                 _address: Address,
-            ) -> Result<Option<Vec<u8>>, RingRpcError> {
+            ) -> Result<Option<Vec<u8>>, ServiceError> {
                 unreachable!("unused")
             }
-            async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, RingRpcError> {
+            async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
                 unreachable!("unused")
             }
             async fn send(
                 &self,
                 _transaction: &solana_transaction::versioned::VersionedTransaction,
-            ) -> Result<(), RingRpcError> {
+            ) -> Result<(), ServiceError> {
                 unreachable!("unused")
             }
             async fn outcome(
                 &self,
                 _signature: solana_signature::Signature,
-            ) -> Result<Option<ChainOutcome>, RingRpcError> {
+            ) -> Result<Option<ChainOutcome>, ServiceError> {
                 unreachable!("unused")
             }
             async fn simulate(
                 &self,
                 _message: &VersionedMessage,
-            ) -> Result<crate::landing::Simulation, RingRpcError> {
+            ) -> Result<ring_service_core::landing::Simulation, ServiceError> {
                 unreachable!("unused")
             }
         }
@@ -2059,40 +2064,40 @@ mod tests {
 
         #[async_trait]
         impl ChainSubmit for ConfirmingChain {
-            async fn slot(&self) -> Result<u64, RingRpcError> {
+            async fn slot(&self) -> Result<u64, ServiceError> {
                 Ok(10)
             }
-            async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+            async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
                 unreachable!("unused")
             }
-            async fn block_height(&self) -> Result<u64, RingRpcError> {
+            async fn block_height(&self) -> Result<u64, ServiceError> {
                 Ok(self.block_height.load(std::sync::atomic::Ordering::Relaxed))
             }
             async fn account_data(
                 &self,
                 _address: Address,
-            ) -> Result<Option<Vec<u8>>, RingRpcError> {
+            ) -> Result<Option<Vec<u8>>, ServiceError> {
                 Ok(None)
             }
-            async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, RingRpcError> {
+            async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
                 Ok(0)
             }
             async fn send(
                 &self,
                 _transaction: &solana_transaction::versioned::VersionedTransaction,
-            ) -> Result<(), RingRpcError> {
+            ) -> Result<(), ServiceError> {
                 Ok(())
             }
             async fn outcome(
                 &self,
                 _signature: solana_signature::Signature,
-            ) -> Result<Option<ChainOutcome>, RingRpcError> {
+            ) -> Result<Option<ChainOutcome>, ServiceError> {
                 Ok(Some(ChainOutcome::Confirmed { slot: 42 }))
             }
             async fn simulate(
                 &self,
                 _message: &VersionedMessage,
-            ) -> Result<crate::landing::Simulation, RingRpcError> {
+            ) -> Result<ring_service_core::landing::Simulation, ServiceError> {
                 unreachable!("unused")
             }
         }

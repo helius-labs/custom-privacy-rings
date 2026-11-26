@@ -17,15 +17,20 @@ use zolana_ring_client::{
     DelegateWithdrawal, ResolvedSource, SourceEnrollment,
 };
 
+use ring_service_core::{
+    authorize::{Authorized, PendingNonce, WalletCheck},
+    redact::redacted,
+    upstream::TransactionSource,
+};
+
+use ring_writer::record_update::RecordUpdateRefusal;
+
 use crate::{
     audit::{AuditService, WALLET_NOTE_PAGE_LIMIT},
-    authorize::{Authorized, PendingNonce, WalletCheck},
-    error::{redacted, RingRpcError},
+    error::{RingRpcError, ServiceError},
     hub::Hub,
-    record_update::RecordUpdateRefusal,
     relay_prover::{DelegateSeal, SealedSource},
     tracking::TrackingRefusal,
-    upstream::TransactionSource,
     utxos::{SpendableNotes, WalletCursor, WalletStatusQuery},
     wallet_snapshots::WalletSnapshotRelease,
 };
@@ -225,7 +230,7 @@ impl<S: TransactionSource> Hub<S> {
                 .source
                 .ring_config(ring)
                 .await?
-                .filter(|config| config.delegate == Some(delegate))
+                .filter(|config| config.delegate() == Some(delegate))
                 .ok_or(AuthorityTransferError::NotDelegate)?;
             if config.auditor_pubkey != self.service(Some(ring))?.auditor_pubkey() {
                 return Err(AuthorityTransferError::ForeignAuditor.into());
@@ -278,7 +283,7 @@ impl<S: TransactionSource> Hub<S> {
                 .ring_config(ring)
                 .await?
                 .ok_or(AuthorityTransferError::NotListWriter)?;
-            let writes = config.roles.policy == writer
+            let writes = config.roles().policy == writer
                 || shared
                     .source
                     .salted_list_writers(ring)
@@ -298,11 +303,11 @@ impl<S: TransactionSource> Hub<S> {
             .accept(authorized, shared.clock.now()?)
             .await?;
         let list_salt = service.enrolled_list_salt(&owner.to_bytes()).await?;
-        let ring_salt = match (list_salt.is_some(), config.ring_list_tag == [0; 32]) {
+        let ring_salt = match (list_salt.is_some(), *config.ring_list_tag() == [0; 32]) {
             (true, true) => None,
             _ => {
                 let salt = service.ring_salt()?;
-                RecordUpdateRefusal::unless_committed(&salt, &config.ring_list_tag)?;
+                RecordUpdateRefusal::unless_committed(&salt, config.ring_list_tag())?;
                 Some(Hash(*salt))
             }
         };
@@ -345,7 +350,7 @@ impl<S: TransactionSource> Hub<S> {
             .map_err(|_| AuthorityTransferError::TxViewingKey)?;
         let relay_id = request
             .relay_id()
-            .map_err(|_| RingRpcError::StateUnavailable)?;
+            .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))?;
         if let Some(step) = relay.stored(&relay_id).await? {
             return Ok(step);
         }
@@ -362,7 +367,7 @@ impl<S: TransactionSource> Hub<S> {
                 .ring_config(ring)
                 .await?
                 .ok_or(AuthorityTransferError::NotDelegate)?;
-            if config.delegate != Some(delegate) {
+            if config.delegate() != Some(delegate) {
                 let mint =
                     sole_mint(transfer.mints()).ok_or(AuthorityTransferError::NotDelegate)?;
                 if !shared.source.is_mint_delegate(mint, delegate).await? {
@@ -513,8 +518,9 @@ mod tests {
     use zolana_ring_client::{DelegatePayment, DelegateWithdrawal};
 
     use super::*;
+    use ring_service_core::database::Store;
+
     use crate::{
-        database::Store,
         managed_merge::tests::{
             fee_payer, list_writer, mint_delegate, Fixture, ScriptedChain, GENESIS, LIST_SALT,
             MINT, RING,
@@ -862,7 +868,7 @@ mod tests {
         let prover = Arc::new(SealingProver::default());
         let chain = Arc::new(ScriptedChain::default());
         *chain.outcome.lock().expect("outcome") =
-            Some(crate::landing::ChainOutcome::Confirmed { slot: 1 });
+            Some(ring_service_core::landing::ChainOutcome::Confirmed { slot: 1 });
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
         let relay = RelayParts {
             store: store.clone(),

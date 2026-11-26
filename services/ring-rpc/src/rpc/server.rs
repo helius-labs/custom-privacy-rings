@@ -56,16 +56,20 @@ use zolana_ring_client::rpc::{
     SUBMIT_VAULT_ENROLLMENT,
 };
 
+use ring_service_core::{
+    client_identity::PeerAddress,
+    limits::Lane,
+    origins::{OriginError, Origins},
+    upstream::TransactionSource,
+};
+
 use crate::{
     audit::{AuditRead, Page},
-    client_identity::PeerAddress,
     client_rate::{ClientLayer, ClientLimits, ClientRate, ClientRateLimiter},
     error::RingRpcError,
     health::health,
-    hub::{Hub, Lane, ReadinessStatus},
-    origins::{OriginError, Origins},
+    hub::{Hub, ReadinessStatus},
     relay::Relay,
-    upstream::TransactionSource,
 };
 
 const MAX_REQUEST_BODY_SIZE: u32 = 64 * 1024;
@@ -394,7 +398,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         SUBMIT_RECORD_UPDATE,
         |hub, request: SubmitRecordUpdateRequest| async move {
             let _slot = hub.admit(Lane::Authentication)?;
-            hub.record_writer()?.submit(request).await
+            Ok(hub.record_writer()?.submit(request).await?)
         },
     )?;
     method(
@@ -402,7 +406,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         PREPARE_VAULT_ENROLLMENT,
         |hub, request: VaultEnrollmentRequest| async move {
             let _slot = hub.admit(Lane::Authentication)?;
-            hub.enrollment_applier()?.prepare_vault(request).await
+            Ok(hub.enrollment_applier()?.prepare_vault(request).await?)
         },
     )?;
     method(
@@ -410,7 +414,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         SUBMIT_VAULT_ENROLLMENT,
         |hub, request: SignedVaultEnrollment| async move {
             let _slot = hub.admit(Lane::Authentication)?;
-            hub.enrollment_applier()?.submit_vault(request).await
+            Ok(hub.enrollment_applier()?.submit_vault(request).await?)
         },
     )?;
     method(
@@ -418,7 +422,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         SUBMIT_ENROLLMENT,
         |hub, request: SubmitEnrollmentRequest| async move {
             let _slot = hub.admit(Lane::Authentication)?;
-            hub.enrollment_applier()?.submit(request).await
+            Ok(hub.enrollment_applier()?.submit(request).await?)
         },
     )?;
     method(
@@ -426,7 +430,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         GET_RECORD_UPDATE_STATUS,
         |hub, request: GetRecordUpdateStatusRequest| async move {
             let _slot = hub.admit(Lane::Public)?;
-            hub.record_writer()?.status(request).await
+            Ok(hub.record_writer()?.status(request).await?)
         },
     )?;
     method(
@@ -787,24 +791,29 @@ mod tests {
     use spr_indexer_api::Hash;
     use zolana_ring_client::rpc::RecordUpdate;
 
-    use crate::{
+    use ring_service_core::{
         client_identity::ClientIdentityPolicy,
-        client_rate::{BucketRate, ClientRates, RateLimit, NETWORK_CLIENTS},
-        config::RootSecret,
-        error::RingRpcError,
-        hub::ServiceIdentity,
+        keys::RootSecret,
         limits::{
             MAX_CONCURRENT_AUTHENTICATIONS, MAX_CONCURRENT_READS, MAX_REQUEST_UNITS_PER_SECOND,
         },
         origins::OriginPolicy,
-        record_update::RecordUpdateRefusal,
         upstream::{
             MergeAuditRequest, RecordsTip, RingConfiguration, RingFrame, RingHistoryPage,
             TransactionPage,
         },
     };
 
+    use ring_writer::record_update::RecordUpdateRefusal;
+
+    use crate::{
+        client_rate::{BucketRate, ClientRates, RateLimit, NETWORK_CLIENTS},
+        error::RingRpcError,
+        hub::ServiceIdentity,
+    };
+
     use super::*;
+    use crate::error::ServiceError;
 
     const SERVED_RING: Address = Address::new_from_array([8; 32]);
     const TEST_GENESIS: [u8; 32] = [3; 32];
@@ -942,14 +951,14 @@ mod tests {
         let auditor = X25519Keypair::new();
         source.config = Some(RingConfiguration {
             auditor_pubkey: auditor.pubkey(),
-            roles: custom_ring_interface::RingRoles {
-                policy: Address::new_from_array([2; 32]),
+            mode: custom_ring_interface::RingMode::Confidential,
+            policy: custom_ring_interface::RingPolicy {
+                roles: custom_ring_interface::RingRoles {
+                    policy: Address::new_from_array([2; 32]),
+                    ..bytemuck::Zeroable::zeroed()
+                },
                 ..bytemuck::Zeroable::zeroed()
             },
-            mode: custom_ring_interface::RingMode::Confidential,
-            delegate: None,
-            ring_list_tag: [0; 32],
-            policy: bytemuck::Zeroable::zeroed(),
         });
         Arc::new(
             Hub::builder(source, identity(TEST_GENESIS))
@@ -1505,7 +1514,10 @@ mod tests {
             .map(|_| hub.admit(Lane::Read).expect("read slot"))
             .collect::<Vec<_>>();
 
-        assert!(matches!(hub.admit(Lane::Read), Err(RingRpcError::Busy)));
+        assert!(matches!(
+            hub.admit(Lane::Read),
+            Err(RingRpcError::Service(ServiceError::Busy))
+        ));
         drop(held);
         let _reopened = hub.admit(Lane::Read).expect("released slot");
     }
@@ -1518,7 +1530,7 @@ mod tests {
         }
         assert!(matches!(
             hub.admit(Lane::Authentication),
-            Err(RingRpcError::Busy)
+            Err(RingRpcError::Service(ServiceError::Busy))
         ));
         let _ = hub.admit(Lane::Read).expect("audit capacity");
     }
@@ -1535,7 +1547,7 @@ mod tests {
 
         assert!(matches!(
             hub.admit(Lane::Authentication),
-            Err(RingRpcError::Busy)
+            Err(RingRpcError::Service(ServiceError::Busy))
         ));
         drop(held);
         let _reopened = hub.admit(Lane::Authentication).expect("released slot");

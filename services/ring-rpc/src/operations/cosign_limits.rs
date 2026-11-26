@@ -14,6 +14,15 @@ use zolana_ring_policy::{
     ApprovalInputs, ApprovalMask, Member, MintPolicy, OwnerDebit, PublicGross,
 };
 
+use ring_service_core::{
+    database::Store,
+    landing::FinalizedTip,
+    redact::redacted,
+    upstream::{RecordsTip, TransactionSource, VerifiedOpenings},
+};
+
+use ring_writer::record_update::MAX_LIMIT_WINDOW_SLOTS;
+
 use crate::{
     cosign::{
         AssetFlow, CoSignError, CoSignFlows, CoSignRefusal, CoSignSettlement, CoSignerApproval,
@@ -24,13 +33,9 @@ use crate::{
         WindowSum, MAX_USAGE_FLOWS,
     },
     cosigner::{CoSignRule, CoSigner, FrameParties, PartySource, Verdict},
-    database::Store,
-    error::{redacted, RingRpcError},
+    error::RingRpcError,
     hub::Shared,
-    landing::FinalizedTip,
-    record_update::MAX_LIMIT_WINDOW_SLOTS,
     transfer_debits::TransferDebits,
-    upstream::{RecordsTip, TransactionSource, VerifiedOpenings},
 };
 
 pub trait AssetLimitSource: Send + Sync {
@@ -1523,7 +1528,7 @@ mod tests {
     }
 
     async fn co_signer(url: &str) -> Arc<LimitedCoSigner<FixedLimits>> {
-        let store = Store::open(url, crate::database::STORE_CONNECTIONS)
+        let store = Store::open(url, ring_service_core::database::STORE_CONNECTIONS)
             .await
             .expect("store");
         Arc::new(signer_over(store, within_limits()))

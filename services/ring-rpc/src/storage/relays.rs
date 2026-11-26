@@ -11,11 +11,8 @@ use thiserror::Error;
 use zolana_ring_client::rpc::RelayId;
 use zolana_ring_policy::Member;
 
-use crate::{
-    cosign::{AssetFlow, CoSignFlows, OwnerFlow, Ticket},
-    relay_submit::CollectedSignature,
-    sql,
-};
+use crate::cosign::{AssetFlow, CoSignFlows, OwnerFlow, Ticket};
+use ring_service_core::{relay_submit::CollectedSignature, sql};
 
 /// Holds no proof input.
 #[derive(Clone)]
@@ -658,7 +655,7 @@ mod tests {
     use spr_client::{compile_message, ComputeBudgetConfig};
 
     use super::*;
-    use crate::database::Store;
+    use ring_service_core::database::Store;
 
     const SIGNER: Address = Address::new_from_array([2; 32]);
     const FEE_PAYER: Address = Address::new_from_array([3; 32]);

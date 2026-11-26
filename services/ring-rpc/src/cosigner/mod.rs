@@ -32,7 +32,7 @@ use async_trait::async_trait;
 use solana_address::Address;
 use zolana_operator_custody::SigningIdentity;
 
-pub(crate) use self::{direct::DirectCoSign, lists::migration as list_migration};
+pub(crate) use self::direct::DirectCoSign;
 pub use self::{
     lists::{
         FrameParties, List, ListDecision, ListEntry, ListRule, ListStore, Lists, Parties,
@@ -41,10 +41,11 @@ pub use self::{
     rule::{Chain, CoSignRule, Operation, Verdict},
     scope::ApprovedCall,
 };
+use ring_service_core::landing::FinalizedTip;
+
 use crate::{
     cosign::{CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement, Ticket},
     error::RingRpcError,
-    landing::FinalizedTip,
 };
 
 /// Signs what its rule admits.

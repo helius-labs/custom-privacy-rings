@@ -14,20 +14,21 @@ use solana_hash::Hash;
 use spr_keypair::X25519Keypair;
 use spr_rpc_http::forward::UpstreamUrl;
 use thiserror::Error;
-use zeroize::Zeroizing;
 use zolana_operator_custody::{
     CustodyError, KeyArn, Kms, KmsEndpoint, RpcCustody, SecretContext, SecretPurpose, SignerRef,
     SigningIdentity, WrappedSecret,
 };
 
 use crate::{
-    client_rate::ClientLimitArgs,
-    cosign::ApproveClass,
-    keys::KeySource,
-    origins::{loopback_url, OriginTransport},
-    server::BindPolicy,
+    client_rate::ClientLimitArgs, cosign::ApproveClass, server::BindPolicy,
     wallet_snapshots::WalletSnapshotLimits,
 };
+use ring_service_core::{
+    keys::KeySource,
+    keys::{GrantRowsSecret, RootSecret},
+    origins::{loopback_url, OriginTransport},
+};
+use ring_writer::record_update::ReaderGrantStore;
 
 const DEFAULT_ENROLLMENT_MAX_RINGS: usize = 256;
 
@@ -168,15 +169,6 @@ pub struct ServeArgs {
     pub client_limits: ClientLimitArgs,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
-pub enum ReaderGrantStore {
-    /// `Reader` lists of the ring's own storage tree.
-    #[default]
-    Tree,
-    /// Sealed rows of the service store, signed through `setReaderGrant`.
-    Database,
-}
-
 #[derive(Debug, Args)]
 struct KmsArgs {
     /// AWS KMS region, defaults to AWS_REGION.
@@ -234,9 +226,6 @@ pub struct ServeKeys {
     pub enrollment_applier: Option<SigningIdentity>,
 }
 
-pub struct GrantRowsSecret(Zeroizing<[u8; 32]>);
-pub struct RootSecret(Zeroizing<[u8; 32]>);
-
 #[derive(Debug, Error)]
 pub enum CustodyConfigError {
     #[error("cannot read the custody manifest")]
@@ -270,10 +259,6 @@ pub enum CustodyConfigError {
     #[error(transparent)]
     Kms(#[from] CustodyError),
 }
-
-#[derive(Debug, Error)]
-#[error("root secret cannot be zero")]
-pub struct RootSecretError;
 
 impl ProvisionArgs {
     pub async fn provision(self) -> Result<WrappedSecret, CustodyConfigError> {
@@ -367,7 +352,7 @@ impl ServeArgs {
                 if bool::from(secret.as_slice().ct_eq(grant.as_slice())) {
                     return Err(CustodyConfigError::SharedSecret);
                 }
-                Some(GrantRowsSecret(grant))
+                Some(GrantRowsSecret::unwrapped(grant))
             }
             None => None,
         };
@@ -376,7 +361,7 @@ impl ServeArgs {
                 ring,
                 auditor: X25519Keypair::from_bytes(&secret),
             },
-            None => KeySource::Derived(RootSecret(secret)),
+            None => KeySource::Derived(RootSecret::unwrapped(secret)),
         };
         let (service, storage_authority, co_signer, fee_payer, enrollment_applier) = tokio::try_join!(
             kms.signer(&manifest.service),
@@ -476,31 +461,6 @@ impl KmsArgs {
     }
 }
 
-impl RootSecret {
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, RootSecretError> {
-        if bytes == [0; 32] {
-            return Err(RootSecretError);
-        }
-        Ok(Self(Zeroizing::new(bytes)))
-    }
-
-    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-impl GrantRowsSecret {
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(Zeroizing::new(bytes))
-    }
-
-    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
 async fn optional_signer(
     kms: &Kms,
     identity: Option<&SignerRef>,
@@ -520,12 +480,14 @@ mod tests {
     use solana_signer::Signer;
 
     use super::*;
-    use crate::{
+    use ring_service_core::{
         database::Store,
-        hub::{Hub, ServiceIdentity},
-        storage_chain::LiveStorageChain,
         upstream::{ChainSource, Upstreams},
     };
+
+    use ring_writer::storage_chain::LiveStorageChain;
+
+    use crate::hub::{Hub, ServiceIdentity};
 
     const KEY_ARN: &str =
         "arn:aws:kms:us-east-1:123456789012:key/1a2b3c4d-0000-4000-8000-000000000000";

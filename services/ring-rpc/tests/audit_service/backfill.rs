@@ -70,7 +70,9 @@ async fn audited_utxos_refuse_an_ungranted_reader_a_bad_count_a_changed_hash_and
         .expect("signed UTXO read");
     assert!(matches!(
         service.audited_utxos(&stranger_request).await,
-        Err(RingRpcError::Unauthorized(Unauthorized::NotGranted))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::NotGranted
+        )))
     ));
     for count in [0, AUDITED_UTXOS_LIMIT + 1] {
         let hashes = vec![Hash([0x77; 32]); count];
@@ -91,13 +93,17 @@ async fn audited_utxos_refuse_an_ungranted_reader_a_bad_count_a_changed_hash_and
     changed.utxo_hashes = vec![Hash([0x78; 32])];
     assert!(matches!(
         service.audited_utxos(&changed).await,
-        Err(RingRpcError::Unauthorized(Unauthorized::BadSignature))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::BadSignature
+        )))
     ));
     let request = utxos_request(hashes);
     assert!(service.audited_utxos(&request).await.is_ok());
     assert!(matches!(
         service.audited_utxos(&request).await,
-        Err(RingRpcError::Unauthorized(Unauthorized::Replay))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::Replay
+        )))
     ));
 }
 
@@ -153,7 +159,7 @@ async fn the_utxo_context_moves_only_at_the_scan_frontier() {
     let service = fixture.hub(source).service(None).expect("service");
     assert!(matches!(
         service.backfill_utxos().await,
-        Err(RingRpcError::InvalidIndexerResponse)
+        Err(RingRpcError::Service(ServiceError::InvalidIndexerResponse))
     ));
     let hash = Hash(fixture.audited.output_slots[0].output_context.hash);
     let found = service
@@ -395,7 +401,7 @@ async fn a_snapshot_behind_the_floor_refuses_the_page_and_keeps_the_position() {
     *context.lock().unwrap() = Some(through - 1);
     assert!(matches!(
         service.backfill_utxos().await,
-        Err(RingRpcError::InvalidIndexerResponse)
+        Err(RingRpcError::Service(ServiceError::InvalidIndexerResponse))
     ));
     assert_eq!(history_through(&service).await, through);
 

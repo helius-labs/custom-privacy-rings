@@ -13,15 +13,15 @@ use solana_address::Address;
 use zolana_ring_client::rpc::{WalletBalance, WalletEnrollment};
 
 use crate::{
-    error::RingRpcError,
+    error::{RingRpcError, ServiceError},
     owner_notes::{snapshot_history_through, OwnerNotesPage, OWNER_ROW_BATCH},
     spent_index::{read_revision, read_snapshot, NoteSeal},
-    sql,
     utxos::{
         Balances, IndexedNote, OwnerPage, OwnerRange, WalletCursor, WalletCursorScope,
         WalletStatusQuery,
     },
 };
+use ring_service_core::sql;
 
 const SNAPSHOT_TTL_SECONDS: u64 = 300;
 
@@ -99,7 +99,7 @@ impl SnapshotMetadata {
             expires_at: query
                 .now
                 .checked_add(SNAPSHOT_TTL_SECONDS)
-                .ok_or(RingRpcError::StateUnavailable)?,
+                .ok_or(RingRpcError::Service(ServiceError::StateUnavailable))?,
             through,
             revision: None,
             enrollment: query.enrollment,
@@ -233,7 +233,7 @@ impl MemoryWalletSnapshots {
             if !captured.more {
                 break;
             }
-            range.after = Some(last.ok_or(RingRpcError::StateUnavailable)?);
+            range.after = Some(last.ok_or(RingRpcError::Service(ServiceError::StateUnavailable))?);
         }
         metadata.balances = balances.into_values();
         let id = loop {
@@ -406,7 +406,7 @@ impl WalletSnapshots<'_> {
                     .execute_unprepared("UPDATE wallet_snapshot_admission SET id=id WHERE id=1")
                     .await?;
                 if admitted.rows_affected() != 1 {
-                    return Err(RingRpcError::StateUnavailable);
+                    return Err(RingRpcError::Service(ServiceError::StateUnavailable));
                 }
                 transaction
             }
@@ -486,7 +486,8 @@ impl WalletSnapshots<'_> {
             batch.range.after = Some(last.key);
         }
         metadata.balances = balances.into_values();
-        let body = serde_json::to_vec(&metadata).map_err(|_| RingRpcError::StateUnavailable)?;
+        let body = serde_json::to_vec(&metadata)
+            .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))?;
         let key = self.seal.tags.snapshot_metadata(&id)?;
         let sealed = self.seal.seal(&key, &body)?;
         transaction
@@ -557,12 +558,12 @@ impl WalletSnapshots<'_> {
         let body = self
             .seal
             .open(&key, &row.try_get::<Vec<u8>>("", "sealed")?)?;
-        let mut metadata: SnapshotMetadata =
-            serde_json::from_slice(&body).map_err(|_| RingRpcError::StateUnavailable)?;
+        let mut metadata: SnapshotMetadata = serde_json::from_slice(&body)
+            .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))?;
         if stored_expiry == 0 {
             metadata.expires_at = 0;
         } else if u64::try_from(stored_expiry).ok() != Some(metadata.expires_at) {
-            return Err(RingRpcError::StateUnavailable);
+            return Err(RingRpcError::Service(ServiceError::StateUnavailable));
         }
         Ok(Some(metadata))
     }
@@ -576,12 +577,14 @@ impl WalletSnapshots<'_> {
             db,
             "SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ring=$1 AND scope_tag=$2 THEN 1 ELSE 0 END),0) AS scoped FROM wallet_snapshots",
             vec![sql::bytes(admission.ring.as_ref()), sql::bytes(&admission.scope)],
-        )).await?.ok_or(RingRpcError::StateUnavailable)?;
+        )).await?.ok_or(RingRpcError::Service(ServiceError::StateUnavailable))?;
         let total = row.try_get::<i64>("", "total")?;
         let scoped = row.try_get::<i64>("", "scoped")?;
-        if usize::try_from(total).map_err(|_| RingRpcError::StateUnavailable)?
+        if usize::try_from(total)
+            .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))?
             >= self.limits.store.get()
-            || usize::try_from(scoped).map_err(|_| RingRpcError::StateUnavailable)?
+            || usize::try_from(scoped)
+                .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))?
                 >= self.limits.principal_wallet.get()
         {
             return Err(RingRpcError::WalletSnapshotCapacity);
@@ -624,6 +627,6 @@ impl WalletSnapshotCleanup<'_> {
             vec![id.into()],
         )).await?;
         transaction.commit().await?;
-        usize::try_from(deleted).map_err(|_| RingRpcError::StateUnavailable)
+        usize::try_from(deleted).map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))
     }
 }

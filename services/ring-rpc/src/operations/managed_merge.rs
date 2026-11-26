@@ -19,17 +19,21 @@ use zolana_ring_client::{
 };
 use zolana_ring_transaction::RingAssets;
 
+use ring_service_core::{
+    authorize::{Authorized, PendingNonce, WalletCheck},
+    keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
+    redact::redacted,
+    upstream::TransactionSource,
+};
+
 use crate::{
     audit::AuditService,
-    authorize::{Authorized, PendingNonce, WalletCheck},
-    error::{redacted, RingRpcError},
+    error::RingRpcError,
     hub::Hub,
-    keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
     merge_inputs::HeldInput,
     merge_settings::{MergeSettingsBook, SignedMergeSettings},
     relay::{HeldMerge, Relay},
     relays::RelayPhase,
-    upstream::TransactionSource,
     utxos::SpendableNotes,
 };
 
@@ -545,22 +549,24 @@ pub(crate) mod tests {
     use zolana_ring_indexer::tracking::{GetTrackingRecordsRequest, GetTrackingRecordsResponse};
 
     use super::*;
-    use crate::{
+    use crate::error::ServiceError;
+    use ring_service_core::{
         database::Store,
-        hub::ServiceIdentity,
         landing::{signature_fees, ChainOutcome, ChainSubmit, LatestBlockhash},
-        owner_notes::OPENED_ROWS,
-        relay::RelayParts,
-        relay_prover::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver},
-        relay_reservations::{RelayBudget, RelayReservations},
-        tracking::{
-            fixture::{Enrollment, TrackingLedger},
-            HeldEnrollment,
-        },
         upstream::{
             Finality, MergeAuditRequest, RecordsTip, RingConfiguration, RingFrame, RingHistoryPage,
             TrackingRoot, TransactionPage,
         },
+    };
+
+    use crate::{
+        hub::ServiceIdentity,
+        owner_notes::OPENED_ROWS,
+        relay::RelayParts,
+        relay_prover::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver},
+        relay_reservations::{RelayBudget, RelayReservations},
+        tracking::fixture::{Enrollment, TrackingLedger},
+        tracking::HeldEnrollment,
         utxos::CreatedIn,
     };
 
@@ -661,10 +667,9 @@ pub(crate) mod tests {
             &self,
             _ring: Address,
         ) -> Result<Option<RingConfiguration>, ClientError> {
-            Ok(Some(RingConfiguration {
-                ring_list_tag: *self.ring_list_tag.lock().unwrap(),
-                ..self.config
-            }))
+            let mut config = self.config;
+            config.policy.ring_list_tag = *self.ring_list_tag.lock().unwrap();
+            Ok(Some(config))
         }
 
         async fn ring_chain_status(&self, _ring: Address) -> Result<RingChainStatus, ClientError> {
@@ -766,36 +771,36 @@ pub(crate) mod tests {
         async fn simulate(
             &self,
             _message: &solana_message::VersionedMessage,
-        ) -> Result<crate::landing::Simulation, RingRpcError> {
-            Ok(crate::landing::Simulation::Passed { calls: Vec::new() })
+        ) -> Result<ring_service_core::landing::Simulation, ServiceError> {
+            Ok(ring_service_core::landing::Simulation::Passed { calls: Vec::new() })
         }
 
         async fn account_data(
             &self,
             _address: solana_address::Address,
-        ) -> Result<Option<Vec<u8>>, RingRpcError> {
+        ) -> Result<Option<Vec<u8>>, ServiceError> {
             Ok(None)
         }
 
-        async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, RingRpcError> {
+        async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
             Ok(0)
         }
 
-        async fn slot(&self) -> Result<u64, RingRpcError> {
+        async fn slot(&self) -> Result<u64, ServiceError> {
             Ok(1)
         }
 
-        async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+        async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
             Ok((Hash::new_from_array([4; 32]), LAST_VALID_BLOCK_HEIGHT).into())
         }
 
-        async fn block_height(&self) -> Result<u64, RingRpcError> {
+        async fn block_height(&self) -> Result<u64, ServiceError> {
             Ok(*self.height.lock().expect("height"))
         }
 
-        async fn send(&self, _transaction: &VersionedTransaction) -> Result<(), RingRpcError> {
+        async fn send(&self, _transaction: &VersionedTransaction) -> Result<(), ServiceError> {
             if *self.down.lock().expect("down") {
-                return Err(RingRpcError::Upstream(ClientError::Rpc("down".to_owned())));
+                return Err(ServiceError::Upstream(ClientError::Rpc("down".to_owned())));
             }
             *self.sent.lock().expect("sent") += 1;
             Ok(())
@@ -804,7 +809,7 @@ pub(crate) mod tests {
         async fn outcome(
             &self,
             _signature: Signature,
-        ) -> Result<Option<ChainOutcome>, RingRpcError> {
+        ) -> Result<Option<ChainOutcome>, ServiceError> {
             Ok(self.outcome.lock().expect("outcome").clone())
         }
     }
@@ -817,7 +822,7 @@ pub(crate) mod tests {
             &self,
             _request: RelayProofRequest<'_>,
         ) -> Result<ProvenRelay, RingRpcError> {
-            Err(RingRpcError::StateUnavailable)
+            Err(RingRpcError::Service(ServiceError::StateUnavailable))
         }
 
         async fn seal_delegate(
@@ -825,7 +830,7 @@ pub(crate) mod tests {
             _seal: DelegateSeal<'_>,
             _parties: RelayParties,
         ) -> Result<zolana_ring_client::rpc::RelayProofInputs, RingRpcError> {
-            Err(RingRpcError::StateUnavailable)
+            Err(RingRpcError::Service(ServiceError::StateUnavailable))
         }
     }
 
@@ -904,14 +909,15 @@ pub(crate) mod tests {
             let source = EscrowRingSource {
                 config: RingConfiguration {
                     auditor_pubkey: auditor.pubkey(),
-                    roles: custom_ring_interface::RingRoles {
-                        policy: Address::new_from_array([2; 32]),
+                    mode: RingMode::Confidential,
+                    policy: custom_ring_interface::RingPolicy {
+                        roles: custom_ring_interface::RingRoles {
+                            policy: Address::new_from_array([2; 32]),
+                            ..bytemuck::Zeroable::zeroed()
+                        },
+                        delegate: delegate.unwrap_or_default(),
                         ..bytemuck::Zeroable::zeroed()
                     },
-                    mode: RingMode::Confidential,
-                    delegate,
-                    ring_list_tag: [0; 32],
-                    policy: bytemuck::Zeroable::zeroed(),
                 },
                 ring_list_tag: Mutex::default(),
                 origins: Mutex::default(),
@@ -1289,7 +1295,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn set_merge_settings_for_unserved_ring_writes_no_settings_or_nonce() {
-        use crate::authorize::Unauthorized;
+        use ring_service_core::authorize::Unauthorized;
         use sea_orm::{ConnectionTrait, Statement};
 
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
@@ -1297,14 +1303,14 @@ pub(crate) mod tests {
         let source = EscrowRingSource {
             config: RingConfiguration {
                 auditor_pubkey: foreign_auditor.pubkey(),
-                roles: custom_ring_interface::RingRoles {
-                    policy: Address::new_from_array([2; 32]),
+                mode: RingMode::Confidential,
+                policy: custom_ring_interface::RingPolicy {
+                    roles: custom_ring_interface::RingRoles {
+                        policy: Address::new_from_array([2; 32]),
+                        ..bytemuck::Zeroable::zeroed()
+                    },
                     ..bytemuck::Zeroable::zeroed()
                 },
-                mode: RingMode::Confidential,
-                delegate: None,
-                ring_list_tag: [0; 32],
-                policy: bytemuck::Zeroable::zeroed(),
             },
             ring_list_tag: Mutex::new([0; 32]),
             origins: Mutex::new(HashMap::new()),
@@ -1342,7 +1348,9 @@ pub(crate) mod tests {
         assert!(
             matches!(
                 refused,
-                Err(RingRpcError::Unauthorized(Unauthorized::AuditorKeyMismatch))
+                Err(RingRpcError::Service(ServiceError::Unauthorized(
+                    Unauthorized::AuditorKeyMismatch
+                )))
             ),
             "{refused:?}"
         );

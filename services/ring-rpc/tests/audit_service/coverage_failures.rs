@@ -122,7 +122,9 @@ async fn spend_coverage_refuses_upgrade_authority_and_foreign_auditor() {
     let service = fixture.hub(uninitialized).service(None).expect("service");
     assert!(matches!(
         service.spend_coverage(&coverage_request(&deployer())).await,
-        Err(RingRpcError::Unauthorized(Unauthorized::NoConfig))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::NoConfig
+        )))
     ));
 
     let mut foreign = fixture.source().with_transactions(Vec::new());
@@ -136,6 +138,8 @@ async fn spend_coverage_refuses_upgrade_authority_and_foreign_auditor() {
         service
             .spend_coverage(&coverage_request(&authority()))
             .await,
-        Err(RingRpcError::Unauthorized(Unauthorized::AuditorKeyMismatch))
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::AuditorKeyMismatch
+        )))
     ));
 }

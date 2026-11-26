@@ -101,7 +101,7 @@ const fn tip(slot: u64, block_height: u64) -> FinalizedTip {
 
 impl Wallet {
     async fn open(url: &str) -> Self {
-        let store = Store::open(url, crate::database::STORE_CONNECTIONS)
+        let store = Store::open(url, ring_service_core::database::STORE_CONNECTIONS)
             .await
             .expect("store");
         let co_signer = LimitedCoSignerInit {

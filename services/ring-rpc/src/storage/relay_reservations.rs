@@ -4,7 +4,7 @@ use sea_orm::{ConnectionTrait, DbErr, QueryResult, TransactionTrait, Value};
 use solana_address::Address;
 use zolana_ring_client::rpc::RelayId;
 
-use crate::sql::{
+use ring_service_core::sql::{
     bytes as value, integer as lamports_value, read_address, read_bytes, read_integer, statement,
 };
 
@@ -577,7 +577,7 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
 }
 
 #[cfg(test)]
-use crate::{
+use ring_service_core::{
     database::{Store, STORE_CONNECTIONS},
     migration::Migrator,
 };

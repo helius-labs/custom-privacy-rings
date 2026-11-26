@@ -13,10 +13,8 @@ use zolana_operator_custody::{CustodyError, OperatorSigner};
 use zolana_ring_policy::Member;
 
 use super::*;
-use crate::{
-    cosign::{CoSignFlows, CoSignRefusal, FrameSource, Sender},
-    database::Store,
-};
+use crate::cosign::{CoSignFlows, CoSignRefusal, FrameSource, Sender};
+use ring_service_core::{database::Store, ServiceError};
 
 const RING: Address = Address::new_from_array([9; 32]);
 const MINT: Address = Address::new_from_array([7; 32]);
@@ -208,7 +206,9 @@ async fn a_failed_signature_keeps_the_reservation_for_the_repeat() {
         .await;
     assert!(matches!(
         failed,
-        Err(RingRpcError::Custody(CustodyError::Signature))
+        Err(RingRpcError::Service(ServiceError::Custody(
+            CustodyError::Signature
+        )))
     ));
     assert_eq!(signer.calls(), 1);
     assert!(settled.lock().expect("settled").is_empty());

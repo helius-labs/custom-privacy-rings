@@ -10,12 +10,11 @@ use spr_keypair::KeypairError;
 use zeroize::Zeroizing;
 use zolana_ring_client::{rpc::ReaderGrantAction, ReaderKey};
 
+use ring_service_core::{database::Store, keys::GRANT_ROW_KEY_INFO, sql};
+
 use crate::{
-    database::Store,
     error::RingRpcError,
     grants::{GrantQuery, GrantSource},
-    keys::GRANT_ROW_KEY_INFO,
-    sql,
 };
 
 const NONCE_LEN: usize = 12;

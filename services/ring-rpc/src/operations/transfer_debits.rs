@@ -22,13 +22,14 @@ use zolana_ring_policy::{
 };
 use zolana_ring_transaction::RingAssets;
 
+use ring_service_core::upstream::TransactionSource;
+
 use crate::{
     cosign::{AssetFlow, CoSignError, FrameSource, OwnerFlow},
     cosign_limits::{FrameRead, TransferRead},
     cosigner::{FrameParties, Parties},
     error::RingRpcError,
     hub::Shared,
-    upstream::TransactionSource,
     utxos::{AuditStore, StoredUtxo},
 };
 

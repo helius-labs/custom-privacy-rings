@@ -18,9 +18,9 @@ use zolana_ring_policy::Member;
 
 use crate::{
     spent_index::{note_body, note_from_body, NoteSeal},
-    sql,
     utxos::{history_through, IndexedNote, LateProgress, OwnerPage, OwnerRange, PageDelta},
 };
+use ring_service_core::sql;
 
 const INDEX_TAG_INFO: &[u8] = b"zolana/ring-rpc-owner-index";
 

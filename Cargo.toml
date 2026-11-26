@@ -18,6 +18,8 @@ members = [
     "sdk-libs/transaction",
     "services/ring-indexer",
     "services/ring-rpc",
+    "services/ring-service-core",
+    "services/ring-writer",
     "xtask",
 ]
 exclude = ["zolana"]
@@ -45,6 +47,8 @@ zolana-ring-client = { path = "sdk-libs/client", version = "0.1.0" }
 zolana-ring-transaction = { path = "sdk-libs/transaction", version = "0.1.0" }
 custom-ring-cli = { path = "cli", version = "0.1.0" }
 zolana-ring-rpc = { path = "services/ring-rpc", version = "0.1.0" }
+ring-service-core = { path = "services/ring-service-core", version = "0.1.0" }
+ring-writer = { path = "services/ring-writer", version = "0.1.0" }
 
 # Solana platform-tools Cargo 1.84 cannot build edition2024 crates pulled by
 # newer time-core releases.

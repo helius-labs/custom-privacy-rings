@@ -8,7 +8,7 @@
 //!
 //! Read after `sdk-libs/client/src/rpc/enrollment.rs` and
 //! `programs/storage/src/instructions/apply_enrollments.rs`.
-//! Read before `services/ring-rpc/src/operations/enrollment_applier.rs`.
+//! Read before `services/ring-writer/src/operations/enrollment_applier.rs`.
 
 use async_trait::async_trait;
 use custom_ring_interface::{

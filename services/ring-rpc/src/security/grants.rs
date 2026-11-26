@@ -10,10 +10,11 @@ use zolana_ring_client::{
 };
 use zolana_ring_policy::{ListId, Member};
 
+use ring_service_core::upstream::{RecordsTip, TransactionSource, VerifiedOpenings};
+
 use crate::{
     error::{GrantRefusal, RingRpcError},
     grant_rows::GrantRows,
-    upstream::{RecordsTip, TransactionSource, VerifiedOpenings},
     utxos::AuditStore,
 };
 

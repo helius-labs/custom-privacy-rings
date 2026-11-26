@@ -77,10 +77,11 @@ use zolana_ring_indexer::rpc::{
     RingMemberOpening, RingMemberRecordView, RingRecordPathView, StorageRootView,
 };
 use zolana_ring_rpc::{
-    rpc_module, ApproveClass, AuditRead, AuditService, Clock, CoSignerApproval, GrantRowsSecret,
-    Hub, MergeAuditRequest, OriginPolicy, Origins, Page, ReadCheck, ReaderGrantStore, RecordsTip,
-    RingConfiguration, RingFrame, RingHistoryPage, RingRpcError, RootSecret, ServiceIdentity,
-    Store, TransactionPage, TransactionSource, Unauthorized, AUTH_SKEW,
+    rpc_module, ApproveClass, AuditRead, AuditService, CarriedFault, Clock, CoSignerApproval,
+    GrantRowsSecret, Hub, MergeAuditRequest, OriginPolicy, Origins, Page, ReadCheck,
+    ReaderGrantStore, RecordsTip, RingConfiguration, RingFrame, RingHistoryPage, RingRpcError,
+    RootSecret, ScopeUnreadable, ServiceError, ServiceIdentity, Store, TransactionPage,
+    TransactionSource, Unauthorized, WriterError, AUTH_SKEW,
 };
 use zolana_ring_transaction::RingAssets;
 
@@ -583,7 +584,7 @@ impl TransactionSource for StaticSource {
         &self,
         _ring: Address,
         signer: Address,
-    ) -> Result<Option<CoSignScope>, RingRpcError> {
+    ) -> Result<Option<CoSignScope>, ScopeUnreadable> {
         Ok(self.co_signers.get(&signer).copied())
     }
 
@@ -606,7 +607,7 @@ impl TransactionSource for StaticSource {
         &self,
         _ring: Address,
         owner: Address,
-    ) -> Result<WalletEnrollment, RingRpcError> {
+    ) -> Result<WalletEnrollment, ServiceError> {
         Ok(self.tracking.0.enrollment(&owner))
     }
 
@@ -1080,14 +1081,14 @@ impl Fixture {
                 RING,
                 RingConfiguration {
                     auditor_pubkey: self.auditor.pubkey(),
-                    roles: custom_ring_interface::RingRoles {
-                        policy: authority().pubkey(),
+                    mode: RingMode::Confidential,
+                    policy: custom_ring_interface::RingPolicy {
+                        roles: custom_ring_interface::RingRoles {
+                            policy: authority().pubkey(),
+                            ..bytemuck::Zeroable::zeroed()
+                        },
                         ..bytemuck::Zeroable::zeroed()
                     },
-                    mode: RingMode::Confidential,
-                    delegate: None,
-                    ring_list_tag: [0; 32],
-                    policy: bytemuck::Zeroable::zeroed(),
                 },
             )]),
             chain: HashMap::new(),
@@ -1476,5 +1477,5 @@ fn released(created: &CreateAuditorKeyResponse, request: &CreateAuditorKeyReques
 }
 
 fn refused(result: Result<(), RingRpcError>, expected: Unauthorized) -> bool {
-    matches!(result, Err(RingRpcError::Unauthorized(reason)) if reason == expected)
+    matches!(result, Err(RingRpcError::Service(ServiceError::Unauthorized(reason))) if reason == expected)
 }

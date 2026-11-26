@@ -1,6 +1,8 @@
 use zolana_ring_client::rpc::{HealthResponse, ReaderGrantMode};
 
-use crate::{grants::Grants, hub::Hub, upstream::TransactionSource};
+use ring_service_core::upstream::TransactionSource;
+
+use crate::{grants::Grants, hub::Hub};
 
 pub(crate) fn health<S: TransactionSource>(hub: &Hub<S>) -> HealthResponse {
     let relay = hub.relay();
@@ -32,14 +34,21 @@ mod tests {
     use solana_signer::Signer;
 
     use super::*;
-    use crate::{
-        config::{GrantRowsSecret, ReaderGrantStore, RootSecret},
+    use ring_service_core::{
         database::Store,
+        keys::{GrantRowsSecret, RootSecret},
+        upstream::{ChainSource, Upstreams},
+    };
+
+    use ring_writer::{
         enrollment_applier::{EnrollmentApplier, EnrollmentApplierParts},
+        record_update::ReaderGrantStore,
+        storage_chain::LiveStorageChain,
+    };
+
+    use crate::{
         hub::{HubBuilder, ServiceIdentity},
         relay_services::RelayServicesInit,
-        storage_chain::LiveStorageChain,
-        upstream::{ChainSource, Upstreams},
     };
 
     const UNREACHABLE: &str = "http://127.0.0.1:1";

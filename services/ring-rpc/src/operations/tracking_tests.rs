@@ -6,9 +6,9 @@ use super::{
     fixture::{Enrollment, TrackingLedger},
     *,
 };
+use ring_service_core::{clock::Clock, database::Store};
+
 use crate::{
-    database::Store,
-    hub::Clock,
     projection_lease::LeaseClaim,
     projection_reads::EnrollmentKey,
     spent_index::{HistoryScope, LoadSpends, NoteSeal, ProjectionWriter},

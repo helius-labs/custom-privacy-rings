@@ -116,7 +116,7 @@ struct Window {
 impl Window {
     async fn open(url: &str) -> Self {
         Self::over(
-            Store::open(url, crate::database::STORE_CONNECTIONS)
+            Store::open(url, ring_service_core::database::STORE_CONNECTIONS)
                 .await
                 .expect("store"),
             Vec::new(),

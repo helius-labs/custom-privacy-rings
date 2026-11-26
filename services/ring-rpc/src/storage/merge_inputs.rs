@@ -2,7 +2,8 @@ use sea_orm::{ConnectionTrait, DbErr};
 use solana_address::Address;
 use zolana_ring_client::rpc::RelayId;
 
-use crate::{relays::RelayPhase, sql};
+use crate::relays::RelayPhase;
+use ring_service_core::sql;
 
 /// One row per nullifier, a second merge of the same note fails its insert.
 pub(crate) struct MergeInputs<'a, C> {

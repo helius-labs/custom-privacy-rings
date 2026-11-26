@@ -39,12 +39,11 @@ use zolana_ring_client::rpc::{
     SET_MERGE_SETTINGS, SET_READER_GRANT, SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
 };
 
-use crate::{
-    client_identity::{
-        ApiKeyDigest, ClientIdentity, ClientIdentityPolicy, PeerAddress, UnknownApiKey,
-    },
-    error::RingRpcError,
+use ring_service_core::client_identity::{
+    ApiKeyDigest, ClientIdentity, ClientIdentityPolicy, PeerAddress, UnknownApiKey,
 };
+
+use crate::error::{RingRpcError, ServiceError};
 
 /// Past it the bucket nearest to full is dropped.
 const MAX_BUCKETS: usize = 65_536;
@@ -422,9 +421,10 @@ impl Admission {
                 refused.extensions_mut().insert(limited);
                 refused
             }
-            Self::Unavailable => {
-                MethodResponse::error(id, ErrorObjectOwned::from(RingRpcError::StateUnavailable))
-            }
+            Self::Unavailable => MethodResponse::error(
+                id,
+                ErrorObjectOwned::from(RingRpcError::Service(ServiceError::StateUnavailable)),
+            ),
         }
     }
 }

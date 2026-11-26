@@ -215,7 +215,9 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
             .map(drop)
     };
     let expect_refusal = |result: Result<(), RingRpcError>, expected: Unauthorized| match result {
-        Err(RingRpcError::Unauthorized(reason)) if reason == expected => Ok(()),
+        Err(RingRpcError::Service(ServiceError::Unauthorized(reason))) if reason == expected => {
+            Ok(())
+        }
         other => Err(anyhow!("expected {expected:?}, got {other:?}")),
     };
     let stranger = Keypair::new();

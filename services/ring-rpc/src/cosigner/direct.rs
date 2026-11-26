@@ -1,12 +1,16 @@
 use solana_message::VersionedMessage;
 use zolana_ring_client::rpc::{CoSignTransactionRequest, CoSignTransactionResponse};
 
+use ring_service_core::{
+    landing::{ChainSubmit, InnerCall, Simulation},
+    ServiceError,
+};
+
 use super::scope::{ApprovedCall, SignerScope};
+
 use crate::{
     cosign::{CoSignDecision, CoSignError, CoSignPolicy, Sender},
     error::RingRpcError,
-    landing::{ChainSubmit, InnerCall, Simulation},
-    relay::RelayError,
 };
 
 #[must_use]
@@ -41,7 +45,9 @@ impl DirectCoSign<'_> {
         // No rule verifies the ring proof, an unproven frame would hold a window reservation.
         let calls = match self.chain.simulate(scoped.message()).await? {
             Simulation::Passed { calls } => calls,
-            Simulation::Refused { reason } => return Err(RelayError::SendRefused { reason }.into()),
+            Simulation::Refused { reason } => {
+                return Err(ServiceError::SendRefused { reason }.into())
+            }
         };
         if let Some(approved) = scoped.approved_transfer() {
             approved.ran_once_in(&calls)?;
@@ -96,10 +102,9 @@ mod tests {
     use zolana_ring_client::CustomRing;
 
     use super::*;
-    use crate::{
-        cosign::{CoSignRequest, CoSignSettlement},
-        landing::{ChainOutcome, FinalizedTip, LatestBlockhash},
-    };
+    use ring_service_core::landing::{ChainOutcome, FinalizedTip, LatestBlockhash};
+
+    use crate::cosign::{CoSignRequest, CoSignSettlement};
 
     const SIGNER: Address = Address::new_from_array([0x44; 32]);
     const PAYER: Address = Address::new_from_array([0x55; 32]);
@@ -113,43 +118,43 @@ mod tests {
 
     #[async_trait]
     impl ChainSubmit for Reached {
-        async fn slot(&self) -> Result<u64, RingRpcError> {
+        async fn slot(&self) -> Result<u64, ServiceError> {
             unreachable!("a direct co-sign reads no slot")
         }
 
-        async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+        async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
             unreachable!("a direct co-sign compiles no message")
         }
 
-        async fn block_height(&self) -> Result<u64, RingRpcError> {
+        async fn block_height(&self) -> Result<u64, ServiceError> {
             unreachable!("a direct co-sign tracks no landing")
         }
 
-        async fn account_data(&self, _address: Address) -> Result<Option<Vec<u8>>, RingRpcError> {
+        async fn account_data(&self, _address: Address) -> Result<Option<Vec<u8>>, ServiceError> {
             unreachable!("a direct co-sign reads no account")
         }
 
-        async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, RingRpcError> {
+        async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
             unreachable!("a direct co-sign pays no rent")
         }
 
-        async fn send(&self, _transaction: &VersionedTransaction) -> Result<(), RingRpcError> {
+        async fn send(&self, _transaction: &VersionedTransaction) -> Result<(), ServiceError> {
             unreachable!("the wallet sends")
         }
 
         async fn outcome(
             &self,
             _signature: Signature,
-        ) -> Result<Option<ChainOutcome>, RingRpcError> {
+        ) -> Result<Option<ChainOutcome>, ServiceError> {
             unreachable!("a direct co-sign tracks no signature")
         }
 
-        async fn simulate(&self, _message: &VersionedMessage) -> Result<Simulation, RingRpcError> {
+        async fn simulate(&self, _message: &VersionedMessage) -> Result<Simulation, ServiceError> {
             self.chain_reads.fetch_add(1, Ordering::Relaxed);
             Ok(Simulation::Passed { calls: Vec::new() })
         }
 
-        async fn blockhash_expiry(&self, _blockhash: Hash) -> Result<Option<u64>, RingRpcError> {
+        async fn blockhash_expiry(&self, _blockhash: Hash) -> Result<Option<u64>, ServiceError> {
             self.chain_reads.fetch_add(1, Ordering::Relaxed);
             Ok(Some(500))
         }

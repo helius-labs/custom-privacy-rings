@@ -22,14 +22,13 @@ use zolana_ring_client::{history::HistoryPosition, KnownUtxo, UtxoOwner};
 
 use crate::{
     frame_repairs::RepairAttempt,
-    hub::Clock,
     owner_notes::{IndexTags, OwnerNoteWrites},
     projection_lease::ProjectionLease,
     spend_machine::{SpendRow, SpendState},
-    sql,
     tracking::{HeldEnrollment, TrackingCursor},
     utxos::{CreatedIn, LateOwner, PageDelta, StoredUtxo, MAX_LATE_OWNERS},
 };
+use ring_service_core::{clock::Clock, sql};
 
 const NOTE_SEAL_INFO: &[u8] = b"zolana/ring-rpc-note-seal";
 const NONCE_LEN: usize = 12;

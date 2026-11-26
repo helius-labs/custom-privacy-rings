@@ -40,13 +40,12 @@ use zolana_ring_indexer::tracking::{
 use zolana_ring_member_registry::{OpeningCheck, TrackingOpening, TrackingRecord};
 use zolana_ring_policy::{Member, MemberError};
 
-use crate::{
+use ring_service_core::{
     bounded_map::{BoundedMap, Cached},
-    error::RingRpcError,
-    spent_index::ProjectionWriter,
     upstream::{Finality, TrackingRoot, TransactionSource},
-    utxos::AuditStore,
 };
+
+use crate::{error::RingRpcError, spent_index::ProjectionWriter, utxos::AuditStore};
 
 const TRACKING_PAGE_ROWS: u64 = 100;
 /// The next refresh resumes from the cursor the cap leaves.
@@ -323,7 +322,7 @@ impl HeldEnrollments {
 impl HeldEnrollments {
     /// Entries the cache holds by member and list key.
     pub(crate) fn len(&self) -> [usize; 2] {
-        [self.by_member.len(), self.list_keys.len()]
+        [self.by_member.iter().count(), self.list_keys.iter().count()]
     }
 }
 

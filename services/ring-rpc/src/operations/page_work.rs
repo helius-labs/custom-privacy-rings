@@ -23,9 +23,10 @@ use super::{
     AuditStore, CreatedIn, IndexedNote, LateOwner, LateProgress, OwnerChange, OwnerPage,
     OwnerRange, PageDelta, StoredUtxo,
 };
+use ring_service_core::bounded_map::Cached;
+
 use crate::{
-    bounded_map::Cached,
-    error::RingRpcError,
+    error::{RingRpcError, ServiceError},
     projection_reads::EnrollmentKey,
     spend_machine::{InputRead, Observation, SpendRow, Transition},
     spent_index::Checkpoint,
@@ -178,7 +179,7 @@ impl<'a> PageWork<'a> {
             let missed = replay.missed;
             loaded.fetch(self.store, missed).await?;
         }
-        Err(RingRpcError::StateUnavailable)
+        Err(RingRpcError::Service(ServiceError::StateUnavailable))
     }
 }
 

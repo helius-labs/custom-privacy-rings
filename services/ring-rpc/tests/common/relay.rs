@@ -32,8 +32,8 @@ use zolana_ring_client::rpc::{
     RelayRail, RelayRequestAttestation,
 };
 use zolana_ring_rpc::{
-    ChainOutcome, ChainSubmit, DelegateSeal, LatestBlockhash, ProvenRelay, RelayError,
-    RelayParties, RelayPayload, RelayProofRequest, RelayProver, RingRpcError,
+    ChainOutcome, ChainSubmit, DelegateSeal, LatestBlockhash, ProvenRelay, RelayParties,
+    RelayPayload, RelayProofRequest, RelayProver, RingRpcError, ServiceError,
 };
 use zolana_ring_transaction::AnonymousPlan;
 
@@ -164,7 +164,7 @@ impl ChainSubmit for RecordingChain {
     async fn simulate(
         &self,
         _message: &solana_message::VersionedMessage,
-    ) -> Result<zolana_ring_rpc::Simulation, RingRpcError> {
+    ) -> Result<zolana_ring_rpc::Simulation, ServiceError> {
         Ok(
             match self.simulation_refusal.lock().expect("refusal").clone() {
                 Some(reason) => zolana_ring_rpc::Simulation::Refused { reason },
@@ -175,11 +175,11 @@ impl ChainSubmit for RecordingChain {
         )
     }
 
-    async fn slot(&self) -> Result<u64, RingRpcError> {
+    async fn slot(&self) -> Result<u64, ServiceError> {
         Ok(self.slot.load(Ordering::Relaxed))
     }
 
-    async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, RingRpcError> {
+    async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, ServiceError> {
         Ok(self
             .accounts
             .lock()
@@ -188,12 +188,12 @@ impl ChainSubmit for RecordingChain {
             .then(Vec::new))
     }
 
-    async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, RingRpcError> {
+    async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
         Ok(RENT_LAMPORTS)
     }
 
     /// Its first eight bytes name its last valid height, the window the start height's blockhash spans.
-    async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+    async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
         let height = self.height.load(Ordering::Relaxed);
         let last_valid = height + LAST_VALID_BLOCK_HEIGHT - START_HEIGHT;
         let mut blockhash = [0; 32];
@@ -201,35 +201,33 @@ impl ChainSubmit for RecordingChain {
         Ok((Hash::new_from_array(blockhash), last_valid).into())
     }
 
-    async fn block_height(&self) -> Result<u64, RingRpcError> {
+    async fn block_height(&self) -> Result<u64, ServiceError> {
         Ok(self.height.load(Ordering::Relaxed))
     }
 
-    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), RingRpcError> {
+    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), ServiceError> {
         if self.refuse_next.swap(false, Ordering::Relaxed) {
-            return Err(RelayError::SendRefused {
+            return Err(ServiceError::SendRefused {
                 reason: "preflight refused".to_owned(),
-            }
-            .into());
+            });
         }
         let blockhash = transaction.message.recent_blockhash().to_bytes();
         let last_valid = u64::from_le_bytes(blockhash[..8].try_into().expect("eight bytes"));
         if self.height.load(Ordering::Relaxed) > last_valid {
-            return Err(RelayError::SendRefused {
+            return Err(ServiceError::SendRefused {
                 reason: "Blockhash not found".to_owned(),
-            }
-            .into());
+            });
         }
         self.sent.lock().expect("sent").push(transaction.clone());
         match self.reply_lost.swap(false, Ordering::Relaxed) {
-            true => Err(RingRpcError::Upstream(ClientError::Rpc(
+            true => Err(ServiceError::Upstream(ClientError::Rpc(
                 "the send reply was lost".to_owned(),
             ))),
             false => Ok(()),
         }
     }
 
-    async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, RingRpcError> {
+    async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, ServiceError> {
         if let Some(outcome) = self.outcome.lock().expect("outcome").clone() {
             return Ok(outcome);
         }
@@ -240,14 +238,14 @@ impl ChainSubmit for RecordingChain {
             .then_some(ChainOutcome::Confirmed { slot: SLOT + 1 }))
     }
 
-    async fn blockhash_expiry(&self, _blockhash: Hash) -> Result<Option<u64>, RingRpcError> {
+    async fn blockhash_expiry(&self, _blockhash: Hash) -> Result<Option<u64>, ServiceError> {
         if self.stale_blockhash.load(Ordering::Relaxed) {
             return Ok(None);
         }
         Ok(Some(self.latest_blockhash().await?.last_valid_block_height))
     }
 
-    async fn finalized_tip(&self) -> Result<zolana_ring_rpc::FinalizedTip, RingRpcError> {
+    async fn finalized_tip(&self) -> Result<zolana_ring_rpc::FinalizedTip, ServiceError> {
         Ok(zolana_ring_rpc::FinalizedTip {
             slot: self.slot.load(Ordering::Relaxed),
             block_height: self.height.load(Ordering::Relaxed),

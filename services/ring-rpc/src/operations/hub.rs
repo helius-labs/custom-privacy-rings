@@ -14,38 +14,46 @@ use tokio::sync::{watch, Mutex as AsyncMutex, Semaphore, SemaphorePermit};
 use zolana_operator_custody::SigningIdentity;
 use zolana_ring_client::{
     auditor_view_tag,
-    rpc::{unix_now, KeyMode, ServiceTarget},
+    rpc::{KeyMode, ServiceTarget},
     PrivateStorageWrite, ProvenPrivateWrite, ReaderKey, RingClient, RingError, RingIndexerBackend,
 };
 use zolana_ring_transaction::RingAssets;
 
+use ring_service_core::{
+    authorize::Unauthorized,
+    clock::Clock,
+    database::Store,
+    error::CarriedFault,
+    keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
+    keys::{AuditorKeyDerivation, GrantRowsSecret, KeySource, RootSecret},
+    limits::{Lane, RequestRate, MAX_CONCURRENT_AUTHENTICATIONS, MAX_CONCURRENT_READS},
+    origins::Origins,
+    redact::redacted,
+    replay::{LocalNonces, ReplayGuard},
+    upstream::TransactionSource,
+};
+
+use ring_writer::{
+    enrollment_applier::{EnrollmentApplier, EnrollmentRefusal},
+    record_update::{ReaderGrantStore, RecordUpdateRefusal},
+    record_writer::{PrivateWrites, RecordWriter, SaltedOwner, WriterParts, RECORD_FLUSH_INTERVAL},
+    storage_chain::StorageChain,
+};
+
 use crate::{
     audit::{AuditService, AuditServiceInit, ASSET_REFRESH_INTERVAL},
-    authorize::Unauthorized,
-    config::{GrantRowsSecret, ReaderGrantStore, RootSecret},
     cosign::{CoSignPolicy, CoSignerApproval, RefusingCoSigner},
     cosign_limits::{LimitedCoSignerInit, RecordLimits},
     cosigner::{ListRule, StoredLists},
-    database::Store,
-    enrollment_applier::{EnrollmentApplier, EnrollmentRefusal},
-    error::{redacted, RingRpcError},
+    error::{RingRpcError, ServiceError},
     grant_rows::{GrantRowKey, GrantRows},
     grants::{GrantQuery, GrantSource, Grants, ReadScope, TreeGrants},
-    keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
-    keys::{AuditorKeyDerivation, KeySource},
-    limits::{RequestRate, MAX_CONCURRENT_AUTHENTICATIONS, MAX_CONCURRENT_READS},
     managed_merge::{ManagedMerge, ManagedMergeInit},
     merge_settings::MergeSettingsBook,
-    origins::Origins,
-    record_update::RecordUpdateRefusal,
-    record_writer::{PrivateWrites, RecordWriter, SaltedOwner, WriterParts, RECORD_FLUSH_INTERVAL},
     relay::{Relay, RelayError, RelayParts, ServedRings, RELAY_TRACK_INTERVAL},
     relay_reservations::RelayBudget,
     relay_services::{MergeParts, RelayServices},
-    replay::{LocalNonces, ReplayGuard},
     spent_index::NoteSeal,
-    storage_chain::StorageChain,
-    upstream::TransactionSource,
     utxos::{AuditStore, Backing, MAX_CACHED_ENTRIES, UTXO_BACKFILL_INTERVAL},
     wallet_snapshots::{SharedWalletSnapshots, WalletSnapshotCleanup, WalletSnapshotLimits},
 };
@@ -87,31 +95,6 @@ impl NotReady {
             Self::Cluster => "unavailable cluster",
         }
     }
-}
-
-/// Unix seconds for the auth skew rule and the nonce eviction window.
-#[derive(Debug, Clone, Copy)]
-pub enum Clock {
-    System,
-    Fixed(u64),
-}
-
-impl Clock {
-    pub(crate) fn now(self) -> Result<u64, RingRpcError> {
-        match self {
-            Self::System => unix_now().map_err(|_| RingRpcError::StateUnavailable),
-            Self::Fixed(now) => Ok(now),
-        }
-    }
-}
-
-/// Each lane has its own rate window, and all but `Public` a concurrency cap.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Lane {
-    Public,
-    Authentication,
-    /// Held for a whole transfer or merge page.
-    Read,
 }
 
 #[must_use = "hold the lane permit for the request"]
@@ -307,7 +290,7 @@ impl<S: TransactionSource + 'static> ServedRings for HubRings<S> {
             .source
             .ring_config(ring)
             .await?
-            .and_then(|config| config.delegate))
+            .and_then(|config| config.delegate()))
     }
 }
 
@@ -324,7 +307,7 @@ impl<S: TransactionSource> Shared<S> {
                 if config.auditor_pubkey != auditor.pubkey() {
                     return Err(Unauthorized::AuditorKeyMismatch.into());
                 }
-                Some(config.roles.policy)
+                Some(config.roles().policy)
             }
             None => self.source.upgrade_authority(ring).await?,
         };
@@ -433,7 +416,11 @@ impl<S: TransactionSource> Hub<S> {
         rate.accept(Instant::now())?;
         let permit = slots
             .as_ref()
-            .map(|slots| slots.try_acquire().map_err(|_| RingRpcError::Busy))
+            .map(|slots| {
+                slots
+                    .try_acquire()
+                    .map_err(|_| RingRpcError::Service(ServiceError::Busy))
+            })
             .transpose()?;
         Ok(LanePermit { _permit: permit })
     }
@@ -664,15 +651,17 @@ where
         &self,
         ring: Address,
         written_key: [u8; 32],
-    ) -> Result<Option<SaltedOwner>, RingRpcError> {
-        self.shared
+    ) -> Result<Option<SaltedOwner>, Box<dyn CarriedFault>> {
+        Ok(self
+            .shared
             .service(Some(ring))?
             .salted_owner(&written_key)
-            .await
+            .await?)
     }
 
-    async fn ring_salt(&self, ring: Address) -> Result<[u8; 32], RingRpcError> {
-        Ok(*self.shared.service(Some(ring))?.ring_salt()?)
+    async fn ring_salt(&self, ring: Address) -> Result<[u8; 32], Box<dyn CarriedFault>> {
+        let service = self.shared.service(Some(ring))?;
+        Ok(*service.ring_salt()?)
     }
 
     async fn prove(&self, write: PrivateStorageWrite<'_>) -> Result<ProvenPrivateWrite, RingError> {
@@ -692,7 +681,7 @@ impl<S: TransactionSource + 'static> Hub<S> {
                 shared: self.shared.clone(),
                 client,
             }))
-            .map_err(|_| RingRpcError::StateUnavailable)
+            .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))
     }
 
     /// Every background worker except the managed merge, its caller picks the interval.
