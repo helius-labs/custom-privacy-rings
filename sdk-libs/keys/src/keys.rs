@@ -26,12 +26,11 @@ pub struct RingDeliveryRequest {
     pub first_nullifier: [u8; 32],
 }
 
-/// A view tag stream of a wallet viewing key, `zolana/docs/spec.md` View Tags.
+/// The spec's tags a wallet derives by index, `zolana/docs/spec.md` View Tags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ViewTagStream {
     /// On the first slot of a frame sealed to the wallet's own key.
     Sender,
-    /// Minted for a payment request.
     Request,
 }
 

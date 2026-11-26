@@ -109,7 +109,7 @@ impl RingOutputRail {
     }
 
     /// The body kind each anonymous slot publishes, any other is refused.
-    /// A view tag is the wallet's choice from its own history, no relay derives one.
+    /// The tag is not checked, the sealing wallet chose it and a relay's plan does not carry it.
     fn anonymous_body<'a>(
         slot: AnonymousSlot,
         published: &'a TransactOutput,

@@ -19,7 +19,7 @@ struct Payment {
     reply: Option<ReplyMetadata>,
 }
 
-/// The payments of one anonymous transfer in declared order, each under the tag its wallet selected.
+/// The payments of one anonymous transfer in declared order.
 #[must_use]
 #[derive(Clone, Debug)]
 pub struct AnonymousPlan {
@@ -55,7 +55,7 @@ impl AnonymousPlan {
         recipients.into_iter().fold(Self::new(), Self::with_payment)
     }
 
-    /// Under the recipient's bootstrap tag until [`Self::with_tag`] names another.
+    /// Under the recipient's bootstrap tag until a later call replaces it.
     pub fn with_payment(mut self, recipient: X25519Pubkey) -> Self {
         self.payments.push(Payment {
             recipient,
@@ -73,7 +73,7 @@ impl AnonymousPlan {
         self
     }
 
-    /// No tag finds the latest payment, the note its recipient spends in the same frame does.
+    /// No tag finds the latest payment, a note its recipient spends in the same frame does.
     pub fn with_random_tag(mut self) -> Self {
         if let Some(payment) = self.payments.last_mut() {
             payment.tag = random_slot_tag();
@@ -331,7 +331,7 @@ pub fn published_outputs(outputs: &[SppProofOutputUtxo]) -> &[SppProofOutputUtxo
     &outputs[..outputs.len() - omitted]
 }
 
-/// A dummy's tag and an untagged change's, uniform as a live tag's published bytes are.
+/// Uniform over the published bytes, as a sender tag and a request tag are.
 fn random_slot_tag() -> ViewTag {
     let mut tag = [0u8; 32];
     OsRng.fill_bytes(&mut tag);

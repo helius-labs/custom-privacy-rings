@@ -1,6 +1,6 @@
 //! A member's viewing history, notes and scan positions between runs, and the scans that read them.
 //!
-//! Every ring mode keeps one ledger per identity, one tag read finds the notes of each.
+//! Every ring mode keeps one ledger per identity and syncs it by the same tag read.
 
 use std::{
     fs, io,
@@ -38,7 +38,6 @@ pub struct StoreLocation<'a> {
     pub viewing_pubkey: X25519Pubkey,
 }
 
-/// One transfer's tags under the stored counters.
 #[must_use]
 pub struct SelectedTags {
     store: AnonymousWalletStore,
@@ -148,7 +147,7 @@ impl SelectedTags {
         &self.tags
     }
 
-    /// Moves the stored counters past each selected tag `published` holds, the confirmed frame's slot tags.
+    /// The stored counter moves only when `published`, the confirmed frame's slot tags, holds the sender tag.
     pub fn confirm(&self, published: &[ViewTag]) -> Result<()> {
         self.store.update(|wallet| {
             let advanced = wallet
@@ -169,7 +168,7 @@ impl WalletScan<'_> {
         self.scan(ctx, None)
     }
 
-    /// Also opens every body of the ring's history under each held key, a note no listed tag names is found here alone.
+    /// Also opens every body of the ring's history under each held key, it finds a note no listed tag names.
     pub fn recover_notes(self, ctx: &Context) -> Result<RingWalletNotes> {
         self.scan(ctx, Some(ctx.ring.program_id()))
     }

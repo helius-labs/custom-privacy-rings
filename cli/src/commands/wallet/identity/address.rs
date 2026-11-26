@@ -21,7 +21,7 @@ pub fn run(ctx: &Context, args: AddressArgs) -> Result<()> {
     let member = ShieldedKeypair::from_keypair(&keypair)?;
     let held = ctx.ring_keys(&member)?;
     let address = RingAddress::enrolled(&held, ctx.ring.program_id())?;
-    // The store takes the request's index with the tag, a sync lists it from then on.
+    // The store takes the request's index before the tag is printed, a sync lists it from then on.
     let tag = match args.bootstrap && args.request_count.is_none() {
         true => None,
         false => ctx
@@ -95,6 +95,7 @@ mod tests {
         amount: Option<String>,
         mint: Option<String>,
         label: Option<String>,
+        tag: Option<String>,
     }
 
     fn parse(flags: &[&str]) -> AddressArgs {
@@ -124,8 +125,12 @@ mod tests {
                 ring_program_id: case.ring_program_id.parse().unwrap(),
                 list_salt: hex::decode(&case.list_salt).unwrap().try_into().unwrap(),
             };
+            let tag = case
+                .tag
+                .as_ref()
+                .map(|tag| hex::decode(tag).unwrap().try_into().unwrap());
             assert_eq!(
-                parse(&flags).request(address, None).to_string(),
+                parse(&flags).request(address, tag).to_string(),
                 case.uri,
                 "{}",
                 case.name

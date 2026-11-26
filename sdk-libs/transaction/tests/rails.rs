@@ -527,7 +527,7 @@ fn the_spl_and_the_sol_change_each_open_under_the_sender_key() {
     for change in &published[..2] {
         assert!(matches!(change.body, SlotBody::Recipient(_)));
     }
-    // Equal tags on two slots would show which slots return to the sender.
+    // Equal tags would show the two change slots share an owner.
     assert_eq!(published[0].owner_tag, &slot_tag(sender_tag));
     assert_ne!(published[1].owner_tag, &slot_tag(sender_tag));
     let assets = RingAssets::new([USDC]).unwrap();
@@ -976,7 +976,6 @@ fn a_recipient_differing_in_its_nullifier_key_is_no_change() {
     ));
 }
 
-/// Compact padding leaves the frame, each kept slot index follows `m`.
 #[test]
 fn compact_padding_omits_a_suffix_and_keeps_every_index() {
     let sender = keypair(1);

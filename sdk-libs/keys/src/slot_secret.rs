@@ -66,7 +66,7 @@ impl SlotSecret {
 }
 
 /// The spec's bootstrap tag at the ring's width, a confidential output's tag and an anonymous payment's without a request.
-/// Stable per recipient key, so it links a slot to anyone who holds that key's address.
+/// Stable per recipient key, anyone who knows the key finds every slot under it.
 pub fn bootstrap_slot_tag(viewing_u: [u8; 32]) -> [u8; 32] {
     slot_tag(viewing_u)
 }

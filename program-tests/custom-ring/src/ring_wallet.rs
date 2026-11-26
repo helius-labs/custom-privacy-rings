@@ -60,7 +60,6 @@ impl<'a> RingWallet<'a> {
     }
 }
 
-/// The sender tag a wallet with no history selects.
 pub fn fresh_wallet_tags(sender: &ShieldedKeypair) -> Result<TransferTags> {
     Ok(ViewingHistory::new(sender.viewing_pubkey(), 0).select(sender)?)
 }
