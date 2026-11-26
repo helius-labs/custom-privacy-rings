@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use sea_orm::{ConnectionTrait, DatabaseTransaction, DbErr, QueryResult, Statement, Value};
+use sea_orm::{ConnectionTrait, DatabaseTransaction, DbErr, QueryResult, Value};
 use solana_address::Address;
 
-use super::{address_value, bytes, slot_value, Measure, MEASURE_CEILING};
-use crate::{cosign::AssetFlow, record_update::MAX_LIMIT_WINDOW_SLOTS};
+use super::{address_value, Measure, MEASURE_CEILING};
+use crate::{
+    cosign::AssetFlow,
+    record_update::MAX_LIMIT_WINDOW_SLOTS,
+    sql::{integer, placeholders, read_address, read_bytes as bytes, statement},
+};
 
 pub(super) const EPOCH_SLOTS: u64 = MAX_LIMIT_WINDOW_SLOTS.next_power_of_two();
 const NODE_BATCH: usize = 64;
@@ -293,7 +297,7 @@ impl NodeKey {
         Ok(vec![
             address_value(&self.scope.ring),
             address_value(&self.scope.asset),
-            slot_value(self.epoch)?,
+            integer(self.epoch)?,
             Value::from(if self.scope.owner.is_some() { 1_i64 } else { 0 }),
             Value::from(self.scope.owner.unwrap_or_default().to_vec()),
             Value::from(i64::from(self.node)),
@@ -316,8 +320,8 @@ impl NodeKey {
         }
         Ok(Self {
             scope: Scope {
-                ring: Address::new_from_array(bytes(row, "ring")?),
-                asset: Address::new_from_array(bytes(row, "asset")?),
+                ring: read_address(row, "ring")?,
+                asset: read_address(row, "asset")?,
                 owner,
             },
             epoch,
@@ -345,15 +349,15 @@ impl<C: ConnectionTrait> Nodes<'_, C> {
                 "SELECT ring,asset,epoch,scope_kind,owner,node,outflow,deposited,withdrawn FROM cosign_totals WHERE {}",
                 conditions.join(" OR ")
             );
-            for row in self.conn.query_all(self.statement(sql, values)).await? {
+            for row in self
+                .conn
+                .query_all(statement(self.conn, sql, values))
+                .await?
+            {
                 nodes.insert(NodeKey::read(&row)?, Amounts::read(&row)?);
             }
         }
         Ok(nodes)
-    }
-
-    fn statement(&self, sql: String, values: Vec<Value>) -> Statement {
-        Statement::from_sql_and_values(self.conn.get_database_backend(), sql, values)
     }
 }
 
@@ -365,13 +369,7 @@ impl Nodes<'_, DatabaseTransaction> {
             let mut slots = Vec::new();
             for (key, amount) in batch {
                 let start = values.len() + 1;
-                slots.push(format!(
-                    "({})",
-                    (start..start + 9)
-                        .map(|index| format!("${index}"))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ));
+                slots.push(format!("({})", placeholders(start, 9)));
                 values.extend(key.values()?);
                 values.extend(amount.values());
             }
@@ -379,7 +377,7 @@ impl Nodes<'_, DatabaseTransaction> {
                 "INSERT INTO cosign_totals(ring,asset,epoch,scope_kind,owner,node,outflow,deposited,withdrawn) VALUES {} ON CONFLICT(ring,asset,epoch,scope_kind,owner,node) DO UPDATE SET outflow=excluded.outflow,deposited=excluded.deposited,withdrawn=excluded.withdrawn",
                 slots.join(",")
             );
-            self.conn.execute(self.statement(sql, values)).await?;
+            self.conn.execute(statement(self.conn, sql, values)).await?;
         }
         Ok(())
     }

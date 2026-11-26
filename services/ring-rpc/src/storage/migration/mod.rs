@@ -17,7 +17,9 @@ impl MigratorTrait for Migrator {
 #[derive(DeriveMigrationName)]
 struct Schema;
 
-const TABLES: [&str; 26] = [
+const TABLES: [&str; 28] = [
+    "cosign_wallet_inputs",
+    "cosign_wallet_sends",
     "cosign_list_entries",
     "enrollment_rings",
     "records_update_members",

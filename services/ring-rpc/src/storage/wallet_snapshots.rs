@@ -6,7 +6,7 @@ use std::{
 
 use sea_orm::{
     ConnectionTrait, DatabaseBackend, DatabaseConnection, DatabaseTransaction, IsolationLevel,
-    Statement, TransactionTrait, Value,
+    TransactionTrait, Value,
 };
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -15,7 +15,8 @@ use zolana_ring_client::rpc::{WalletBalance, WalletEnrollment};
 use crate::{
     error::RingRpcError,
     owner_notes::{snapshot_history_through, OwnerNotesPage, OWNER_ROW_BATCH},
-    spent_index::{read_revision, read_snapshot, slot_value, NoteSeal},
+    spent_index::{read_revision, read_snapshot, NoteSeal},
+    sql,
     utxos::{
         Balances, IndexedNote, OwnerPage, OwnerRange, WalletCursor, WalletCursorScope,
         WalletStatusQuery,
@@ -326,10 +327,10 @@ impl WalletSnapshots<'_> {
         };
         let fetched =
             i64::try_from(query.limit.saturating_add(1)).map_err(|_| RingRpcError::InvalidPage)?;
-        let rows = transaction.query_all(Statement::from_sql_and_values(
-            transaction.get_database_backend(),
+        let rows = transaction.query_all(sql::statement(
+            &transaction,
             "SELECT note_tag,sealed,spent_slot FROM wallet_snapshot_notes WHERE snapshot_id=$1 AND note_tag>$2 ORDER BY note_tag LIMIT $3",
-            vec![cursor.snapshot.to_vec().into(), cursor.after.to_vec().into(), fetched.into()],
+            vec![sql::bytes(&cursor.snapshot), sql::bytes(&cursor.after), fetched.into()],
         )).await?;
         let reader = OwnerNotesPage {
             ring: query.ring,
@@ -440,10 +441,10 @@ impl WalletSnapshots<'_> {
         )
         .await?;
         let id: [u8; 32] = rand::random();
-        transaction.execute(Statement::from_sql_and_values(
-            transaction.get_database_backend(),
+        transaction.execute(sql::statement(
+            &transaction,
             "INSERT INTO wallet_snapshots(id,ring,scope_tag,expires_at,sealed) VALUES($1,$2,$3,$4,$5)",
-            vec![id.to_vec().into(), query.ring.as_ref().to_vec().into(), scope.to_vec().into(), slot_value(metadata.expires_at)?, Vec::<u8>::new().into()],
+            vec![sql::bytes(&id), sql::bytes(query.ring.as_ref()), sql::bytes(&scope), sql::integer(metadata.expires_at)?, Vec::<u8>::new().into()],
         )).await?;
         let owner_tag = self.seal.tags.owner_tag(&range.member)?;
         let mut batch = OwnerNotesPage {
@@ -462,20 +463,20 @@ impl WalletSnapshots<'_> {
                 break;
             };
             let mut values: Vec<Value> = vec![
-                id.to_vec().into(),
-                query.ring.as_ref().to_vec().into(),
-                owner_tag.to_vec().into(),
-                last.key.to_vec().into(),
+                sql::bytes(&id),
+                sql::bytes(query.ring.as_ref()),
+                sql::bytes(&owner_tag),
+                sql::bytes(&last.key),
             ];
             let after_clause = match batch.range.after {
                 Some(after) => {
-                    values.push(after.to_vec().into());
+                    values.push(sql::bytes(&after));
                     " AND note_tag>$5"
                 }
                 None => "",
             };
-            transaction.execute(Statement::from_sql_and_values(
-                transaction.get_database_backend(),
+            transaction.execute(sql::statement(
+                &transaction,
                 format!("INSERT INTO wallet_snapshot_notes(snapshot_id,note_tag,sealed,spent_slot) SELECT $1,note_tag,sealed,spent_slot FROM owner_notes WHERE ring=$2 AND owner_tag=$3 AND note_tag<=$4{after_clause}"),
                 values,
             )).await?;
@@ -489,10 +490,10 @@ impl WalletSnapshots<'_> {
         let key = self.seal.tags.snapshot_metadata(&id)?;
         let sealed = self.seal.seal(&key, &body)?;
         transaction
-            .execute(Statement::from_sql_and_values(
-                transaction.get_database_backend(),
+            .execute(sql::statement(
+                &transaction,
                 "UPDATE wallet_snapshots SET sealed=$2 WHERE id=$1",
-                vec![id.to_vec().into(), sealed.into()],
+                vec![sql::bytes(&id), sealed.into()],
             ))
             .await?;
         transaction.commit().await?;
@@ -518,12 +519,12 @@ impl WalletSnapshots<'_> {
         if let Some(metadata) = metadata {
             metadata.authorize(&release.principal, &release.wallet)?;
             transaction
-                .execute(Statement::from_sql_and_values(
-                    transaction.get_database_backend(),
+                .execute(sql::statement(
+                    &transaction,
                     "UPDATE wallet_snapshots SET expires_at=0 WHERE id=$1 AND ring=$2",
                     vec![
-                        release.cursor.snapshot.to_vec().into(),
-                        release.ring.as_ref().to_vec().into(),
+                        sql::bytes(&release.cursor.snapshot),
+                        sql::bytes(release.ring.as_ref()),
                     ],
                 ))
                 .await?;
@@ -544,13 +545,10 @@ impl WalletSnapshots<'_> {
         lookup: SnapshotLookup,
     ) -> Result<Option<SnapshotMetadata>, RingRpcError> {
         let row = db
-            .query_one(Statement::from_sql_and_values(
-                db.get_database_backend(),
+            .query_one(sql::statement(
+                db,
                 "SELECT expires_at,sealed FROM wallet_snapshots WHERE id=$1 AND ring=$2",
-                vec![
-                    lookup.id.to_vec().into(),
-                    lookup.ring.as_ref().to_vec().into(),
-                ],
+                vec![sql::bytes(&lookup.id), sql::bytes(lookup.ring.as_ref())],
             ))
             .await?;
         let Some(row) = row else { return Ok(None) };
@@ -574,10 +572,10 @@ impl WalletSnapshots<'_> {
         db: &DatabaseTransaction,
         admission: SnapshotAdmission,
     ) -> Result<(), RingRpcError> {
-        let row = db.query_one(Statement::from_sql_and_values(
-            db.get_database_backend(),
+        let row = db.query_one(sql::statement(
+            db,
             "SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ring=$1 AND scope_tag=$2 THEN 1 ELSE 0 END),0) AS scoped FROM wallet_snapshots",
-            vec![admission.ring.as_ref().to_vec().into(), admission.scope.to_vec().into()],
+            vec![sql::bytes(admission.ring.as_ref()), sql::bytes(&admission.scope)],
         )).await?.ok_or(RingRpcError::StateUnavailable)?;
         let total = row.try_get::<i64>("", "total")?;
         let scoped = row.try_get::<i64>("", "scoped")?;
@@ -605,23 +603,23 @@ struct SnapshotAdmission {
 impl WalletSnapshotCleanup<'_> {
     pub(crate) async fn run(self) -> Result<usize, RingRpcError> {
         let transaction = self.db.begin().await?;
-        let row = transaction.query_one(Statement::from_sql_and_values(
-            transaction.get_database_backend(),
+        let row = transaction.query_one(sql::statement(
+            &transaction,
             "SELECT id FROM wallet_snapshots WHERE expires_at<=$1 ORDER BY expires_at,id LIMIT 1",
-            vec![slot_value(self.now)?],
+            vec![sql::integer(self.now)?],
         )).await?;
         let Some(row) = row else {
             transaction.commit().await?;
             return Ok(0);
         };
         let id = row.try_get::<Vec<u8>>("", "id")?;
-        let deleted = transaction.execute(Statement::from_sql_and_values(
-            transaction.get_database_backend(),
+        let deleted = transaction.execute(sql::statement(
+            &transaction,
             "DELETE FROM wallet_snapshot_notes WHERE snapshot_id=$1 AND note_tag IN (SELECT note_tag FROM wallet_snapshot_notes WHERE snapshot_id=$1 ORDER BY note_tag LIMIT $2)",
-            vec![id.clone().into(), i64::try_from(OWNER_ROW_BATCH).map_err(|_| RingRpcError::StateUnavailable)?.into()],
+            vec![id.clone().into(), sql::count(OWNER_ROW_BATCH)?],
         )).await?.rows_affected();
-        transaction.execute(Statement::from_sql_and_values(
-            transaction.get_database_backend(),
+        transaction.execute(sql::statement(
+            &transaction,
             "DELETE FROM wallet_snapshots WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM wallet_snapshot_notes WHERE snapshot_id=$1)",
             vec![id.into()],
         )).await?;

@@ -1,9 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use sea_orm::{ConnectionTrait, DatabaseTransaction, DbErr, QueryResult, Statement, Value};
+use sea_orm::{ConnectionTrait, DatabaseTransaction, DbErr, QueryResult, Value};
 use solana_address::Address;
 
-use crate::cosign::{AssetFlow, CoSignSettlement, OwnerFlow, Ticket};
+use crate::{
+    cosign::{AssetFlow, CoSignSettlement, OwnerFlow, Ticket},
+    sql::{self, placeholders, read_address, read_bytes, read_integer, statement},
+};
 
 #[path = "cosign_window_index.rs"]
 mod window_index;
@@ -70,6 +73,25 @@ pub(crate) struct UsageLedger<'a, C> {
     pub conn: &'a C,
 }
 
+/// A reservation whose message the wallet sends, the sweep learns its end from the ring history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WalletSend {
+    pub ticket: Ticket,
+    pub ring: Address,
+    /// No block past it lands a message of the reservation.
+    pub last_valid_block_height: u64,
+    /// A finalized slot past `last_valid_block_height`, `None` until the sweep reads one.
+    pub expired_slot: Option<u64>,
+}
+
+/// One row per nullifier, a second live reservation of a spent input cannot commit.
+pub(crate) struct TrackSend<'a> {
+    pub ticket: &'a Ticket,
+    pub ring: &'a Address,
+    pub last_valid_block_height: u64,
+    pub nullifiers: &'a [[u8; 32]],
+}
+
 struct Reservation {
     ring: Address,
     owner: [u8; 32],
@@ -113,12 +135,11 @@ impl AssetScope<'_> {
     fn filter(self) -> AssetFilter {
         let mut values = vec![address_value(self.ring)];
         values.extend(self.assets.iter().map(address_value));
-        let named = (2..values.len() + 1)
-            .map(|index| format!("${index}"))
-            .collect::<Vec<_>>()
-            .join(",");
         AssetFilter {
-            sql: format!("ring=$1 AND asset IN ({named})"),
+            sql: format!(
+                "ring=$1 AND asset IN ({})",
+                placeholders(2, self.assets.len())
+            ),
             values,
         }
     }
@@ -140,7 +161,8 @@ impl<C: ConnectionTrait> UsageLedger<'_, C> {
     ) -> Result<Option<ReservationState>, DbErr> {
         let row = self
             .conn
-            .query_one(self.statement(
+            .query_one(statement(
+                self.conn,
                 "SELECT state FROM cosign_usage WHERE signature=$1 LIMIT 1",
                 vec![ticket_value(ticket)],
             ))
@@ -174,13 +196,106 @@ impl<C: ConnectionTrait> UsageLedger<'_, C> {
         }))
     }
 
-    pub async fn slot_allowed(&self, admission: AdmissionSlot<'_>) -> Result<bool, DbErr> {
-        slot_value(admission.slot)?;
+    /// The newest slot a reservation of the scope holds, zero before the first.
+    pub async fn watermark(&self, scope: AssetScope<'_>) -> Result<u64, DbErr> {
         Ok(self
-            .watermarks(admission.scope)
+            .watermarks(scope)
             .await?
-            .values()
-            .all(|slot| *slot <= admission.slot))
+            .into_values()
+            .max()
+            .unwrap_or_default())
+    }
+
+    /// Whether the reservation holds exactly what `flows` moves.
+    pub async fn holds(&self, ticket: &Ticket, flows: &[OwnerFlow]) -> Result<bool, DbErr> {
+        let mut held: Vec<_> = self
+            .reservations(ticket)
+            .await?
+            .iter()
+            .map(|row| (row.owner, row.asset, row.amounts))
+            .collect();
+        let mut moved: Vec<_> = flows
+            .iter()
+            .map(|flow| {
+                (
+                    *flow.owner.as_bytes(),
+                    flow.flow.asset,
+                    Amounts::from(&flow.flow).clipped(),
+                )
+            })
+            .collect();
+        held.sort_unstable_by_key(|(owner, asset, _)| (*owner, *asset));
+        moved.sort_unstable_by_key(|(owner, asset, _)| (*owner, *asset));
+        Ok(held == moved)
+    }
+
+    /// The live reservations holding one of `nullifiers`.
+    pub async fn input_holders(
+        &self,
+        ring: &Address,
+        nullifiers: &[[u8; 32]],
+    ) -> Result<Vec<WalletSend>, DbErr> {
+        let sql = format!(
+            "SELECT {SEND_COLUMNS} FROM cosign_wallet_sends WHERE ticket IN \
+             (SELECT ticket FROM cosign_wallet_inputs WHERE ring=$1 AND nullifier IN ({}))",
+            placeholders(2, nullifiers.len())
+        );
+        let mut values = vec![address_value(ring)];
+        values.extend(nullifiers.iter().map(|nullifier| sql::bytes(nullifier)));
+        self.conn
+            .query_all(statement(self.conn, sql, values))
+            .await?
+            .iter()
+            .map(WalletSend::read)
+            .collect()
+    }
+
+    /// Ticket order past `after`, one bounded page of the sweep.
+    pub async fn wallet_sends(
+        &self,
+        after: Option<&Ticket>,
+        limit: u64,
+    ) -> Result<Vec<WalletSend>, DbErr> {
+        let (filter, mut values) = match after {
+            Some(ticket) => ("WHERE ticket>$1", vec![ticket_value(ticket)]),
+            None => ("", Vec::new()),
+        };
+        values.push(sql::integer(limit)?);
+        let sql = format!(
+            "SELECT {SEND_COLUMNS} FROM cosign_wallet_sends {filter} ORDER BY ticket LIMIT ${}",
+            values.len()
+        );
+        self.conn
+            .query_all(statement(self.conn, sql, values))
+            .await?
+            .iter()
+            .map(WalletSend::read)
+            .collect()
+    }
+
+    pub async fn send_nullifiers(&self, ticket: &Ticket) -> Result<BTreeSet<[u8; 32]>, DbErr> {
+        self.conn
+            .query_all(statement(
+                self.conn,
+                "SELECT nullifier FROM cosign_wallet_inputs WHERE ticket=$1",
+                vec![ticket_value(ticket)],
+            ))
+            .await?
+            .iter()
+            .map(|row| read_bytes(row, "nullifier"))
+            .collect()
+    }
+
+    /// Keeps the first slot it reads, a later tick never moves the proof of expiry.
+    pub async fn mark_expired(&self, ticket: &Ticket, slot: u64) -> Result<(), DbErr> {
+        self.conn
+            .execute(statement(
+                self.conn,
+                "UPDATE cosign_wallet_sends SET expired_slot=$2 WHERE ticket=$1 AND expired_slot IS NULL",
+                vec![ticket_value(ticket), sql::integer(slot)?],
+            ))
+            .await?;
+        Ok(())
     }
 
     pub async fn ring_total(&self, sum: WindowSum<'_>) -> Result<u128, DbErr> {
@@ -225,12 +340,11 @@ impl<C: ConnectionTrait> UsageLedger<'_, C> {
         let mut slots = BTreeMap::new();
         for row in self
             .conn
-            .query_all(self.statement(&sql, filter.values))
+            .query_all(statement(self.conn, &sql, filter.values))
             .await?
         {
-            let slot = u64::try_from(row.try_get::<i64>("", "last_slot")?)
-                .map_err(|_| DbErr::Custom("negative usage slot".into()))?;
-            slots.insert(Address::new_from_array(bytes(&row, "asset")?), slot);
+            let slot = read_integer(&row, "last_slot")?;
+            slots.insert(read_address(&row, "asset")?, slot);
         }
         if slots.len() != scope.assets.len() {
             return Err(DbErr::Custom("missing usage admission lock".into()));
@@ -245,7 +359,7 @@ impl<C: ConnectionTrait> UsageLedger<'_, C> {
         );
         let rows = self
             .conn
-            .query_all(self.statement(&sql, vec![ticket_value(ticket)]))
+            .query_all(statement(self.conn, &sql, vec![ticket_value(ticket)]))
             .await?;
         if rows.len() > MAX_USAGE_FLOWS {
             return Err(DbErr::Custom(
@@ -254,10 +368,6 @@ impl<C: ConnectionTrait> UsageLedger<'_, C> {
         }
         rows.iter().map(Reservation::read).collect()
     }
-
-    fn statement(&self, sql: &str, values: Vec<Value>) -> Statement {
-        Statement::from_sql_and_values(self.conn.get_database_backend(), sql, values)
-    }
 }
 
 impl UsageLedger<'_, DatabaseTransaction> {
@@ -265,10 +375,63 @@ impl UsageLedger<'_, DatabaseTransaction> {
         let sql = "INSERT INTO cosign_admission(ring,asset) VALUES($1,$2) ON CONFLICT(ring,asset) DO UPDATE SET asset=excluded.asset";
         for asset in scope.assets.iter().collect::<BTreeSet<_>>() {
             self.conn
-                .execute(self.statement(sql, vec![address_value(scope.ring), address_value(asset)]))
+                .execute(statement(
+                    self.conn,
+                    sql,
+                    vec![address_value(scope.ring), address_value(asset)],
+                ))
                 .await?;
         }
         Ok(())
+    }
+
+    pub async fn track(&self, send: TrackSend<'_>) -> Result<(), DbErr> {
+        self.conn
+            .execute(statement(
+                self.conn,
+                "INSERT INTO cosign_wallet_sends(ticket,ring,last_valid_block_height) VALUES($1,$2,$3)",
+                vec![
+                    ticket_value(send.ticket),
+                    address_value(send.ring),
+                    sql::integer(send.last_valid_block_height)?,
+                ],
+            ))
+            .await?;
+        for nullifier in send.nullifiers {
+            self.conn
+                .execute(statement(
+                    self.conn,
+                    "INSERT INTO cosign_wallet_inputs(ring,nullifier,ticket) VALUES($1,$2,$3)",
+                    vec![
+                        address_value(send.ring),
+                        sql::bytes(nullifier),
+                        ticket_value(send.ticket),
+                    ],
+                ))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// False once a newer message of the transfer or another sweep took the row.
+    pub async fn untrack(&self, ticket: &Ticket) -> Result<bool, DbErr> {
+        let removed = self
+            .conn
+            .execute(statement(
+                self.conn,
+                "DELETE FROM cosign_wallet_sends WHERE ticket=$1",
+                vec![ticket_value(ticket)],
+            ))
+            .await?
+            .rows_affected();
+        self.conn
+            .execute(statement(
+                self.conn,
+                "DELETE FROM cosign_wallet_inputs WHERE ticket=$1",
+                vec![ticket_value(ticket)],
+            ))
+            .await?;
+        Ok(removed != 0)
     }
 
     pub async fn reserve(&self, reserve: Reserve<'_>) -> Result<(), DbErr> {
@@ -308,19 +471,13 @@ impl UsageLedger<'_, DatabaseTransaction> {
             let mut slots = Vec::new();
             for row in batch {
                 let start = values.len() + 1;
-                slots.push(format!(
-                    "({})",
-                    (start..start + 12)
-                        .map(|index| format!("${index}"))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ));
+                slots.push(format!("({})", placeholders(start, 12)));
                 values.extend([
                     ticket_value(reserve.ticket),
                     address_value(&row.asset),
                     address_value(&row.ring),
-                    Value::from(row.owner.to_vec()),
-                    slot_value(row.slot)?,
+                    sql::bytes(&row.owner),
+                    sql::integer(row.slot)?,
                 ]);
                 for amount in [
                     row.amounts.outflow,
@@ -335,7 +492,9 @@ impl UsageLedger<'_, DatabaseTransaction> {
                 "INSERT INTO cosign_usage(signature,asset,ring,owner,slot,outflow_hi,outflow_lo,deposited_hi,deposited_lo,withdrawn_hi,withdrawn_lo,state) VALUES {}",
                 slots.join(",")
             );
-            self.conn.execute(self.statement(&sql, values)).await?;
+            self.conn
+                .execute(statement(self.conn, &sql, values))
+                .await?;
         }
         PointChange {
             points: rows.iter().flat_map(Reservation::points).collect(),
@@ -406,7 +565,8 @@ impl UsageLedger<'_, DatabaseTransaction> {
         let sql = "UPDATE cosign_usage SET state=$2 WHERE signature=$1 AND state=$3";
         let changed = self
             .conn
-            .execute(self.statement(
+            .execute(statement(
+                self.conn,
                 sql,
                 vec![
                     ticket_value(&ticket),
@@ -428,12 +588,12 @@ impl UsageLedger<'_, DatabaseTransaction> {
             return Ok(());
         }
         let mut filter = admission.scope.filter();
-        filter.values.push(slot_value(admission.slot)?);
+        filter.values.push(sql::integer(admission.slot)?);
         let parameter = filter.values.len();
         let sql = format!("UPDATE cosign_admission SET last_slot=${parameter} WHERE {} AND last_slot<=${parameter}", filter.sql);
         let changed = self
             .conn
-            .execute(self.statement(&sql, filter.values))
+            .execute(statement(self.conn, &sql, filter.values))
             .await?;
         if changed.rows_affected() != admission.scope.assets.len() as u64 {
             return Err(DbErr::Custom("usage admission slot regressed".into()));
@@ -449,12 +609,13 @@ impl UsageLedger<'_, DatabaseTransaction> {
         let sql = format!("DELETE FROM cosign_totals WHERE (ring,asset,epoch,scope_kind,owner,node) IN (SELECT ring,asset,epoch,scope_kind,owner,node FROM cosign_totals WHERE ring=$1 AND asset=$2 AND epoch<$3 ORDER BY epoch,scope_kind,owner,node LIMIT {PRUNE_NODES})");
         for asset in scope.assets {
             self.conn
-                .execute(self.statement(
+                .execute(statement(
+                    self.conn,
                     &sql,
                     vec![
                         address_value(scope.ring),
                         address_value(asset),
-                        slot_value(minimum_epoch)?,
+                        sql::integer(minimum_epoch)?,
                     ],
                 ))
                 .await?;
@@ -491,11 +652,10 @@ impl Reservation {
             Ok(amount)
         };
         Ok(Self {
-            ring: Address::new_from_array(bytes(row, "ring")?),
-            owner: bytes(row, "owner")?,
-            asset: Address::new_from_array(bytes(row, "asset")?),
-            slot: u64::try_from(row.try_get::<i64>("", "slot")?)
-                .map_err(|_| DbErr::Custom("negative usage slot".into()))?,
+            ring: read_address(row, "ring")?,
+            owner: read_bytes(row, "owner")?,
+            asset: read_address(row, "asset")?,
+            slot: read_integer(row, "slot")?,
             state: ReservationState::read(&row.try_get::<String>("", "state")?)?,
             amounts: Amounts {
                 outflow: amount("outflow")?,
@@ -533,22 +693,27 @@ fn halves(amount: u128) -> [Value; 2] {
     [amount >> 32, amount & u128::from(u32::MAX)].map(|half| Value::from(half as i64))
 }
 
-fn bytes<const N: usize>(row: &QueryResult, column: &str) -> Result<[u8; N], DbErr> {
-    row.try_get::<Vec<u8>>("", column)?
-        .try_into()
-        .map_err(|_| DbErr::Custom(format!("usage column {column} has another length")))
+impl WalletSend {
+    fn read(row: &QueryResult) -> Result<Self, DbErr> {
+        Ok(Self {
+            ticket: Ticket::from_bytes(read_bytes(row, "ticket")?),
+            ring: read_address(row, "ring")?,
+            last_valid_block_height: read_integer(row, "last_valid_block_height")?,
+            expired_slot: row
+                .try_get::<Option<i64>>("", "expired_slot")?
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| DbErr::Custom("negative expiry slot".into()))?,
+        })
+    }
 }
 
+const SEND_COLUMNS: &str = "ticket,ring,last_valid_block_height,expired_slot";
+
 fn ticket_value(ticket: &Ticket) -> Value {
-    Value::from(ticket.as_bytes().to_vec())
+    sql::bytes(ticket.as_bytes())
 }
 
 fn address_value(address: &Address) -> Value {
-    Value::from(address.as_ref().to_vec())
-}
-
-fn slot_value(slot: u64) -> Result<Value, DbErr> {
-    i64::try_from(slot)
-        .map(Value::from)
-        .map_err(|_| DbErr::Custom("usage slot exceeds the column range".into()))
+    sql::bytes(address.as_ref())
 }

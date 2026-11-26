@@ -11,7 +11,7 @@ use solana_signature::Signature;
 use thiserror::Error;
 use zolana_ring_policy::Member;
 
-use crate::{cosigner::ApprovedCall, error::RingRpcError};
+use crate::{cosigner::ApprovedCall, error::RingRpcError, landing::FinalizedTip};
 
 /// One class of the five a ring's `CoSigner` records hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -33,6 +33,16 @@ pub struct CoSignRequest {
     pub flows: CoSignFlows,
     /// The call a program makes under the message's `ApproveTransfer`.
     pub approved_transfer: Option<ApprovedCall>,
+    pub sender: Sender,
+}
+
+/// Who sends the signed message and so who learns its end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sender {
+    /// The relay settles the reservation of its own send.
+    Relay,
+    /// The sweep settles from the ring history, no block past the height lands the message.
+    Wallet { last_valid_block_height: u64 },
 }
 
 #[derive(Clone, Copy)]
@@ -114,6 +124,10 @@ pub enum CoSignError {
     ListSubject = -32175,
     #[error("the simulation does not make the approved transfer call exactly once")]
     ApprovedCallNotOnce = -32176,
+    #[error("the message names no blockhash the cluster holds")]
+    StaleBlockhash = -32177,
+    #[error("another transfer of an input holds a reservation until it lands or expires")]
+    InputReserved = -32178,
     #[error("the co-sign request names an asset with no record")]
     UnrecordedAsset = -32296,
 }
@@ -166,6 +180,10 @@ impl Ticket {
     pub(crate) const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    pub(crate) const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
 
 impl CoSignError {
@@ -202,6 +220,9 @@ pub trait CoSignPolicy: Send + Sync {
 
     /// Keeps or frees the usage `decide` reserved for the transaction.
     async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError>;
+
+    /// Settles one bounded page of the reservations a wallet sends itself.
+    async fn sweep(&self, tip: FinalizedTip) -> Result<(), RingRpcError>;
 }
 
 pub struct RefusingCoSigner;
@@ -217,6 +238,10 @@ impl CoSignPolicy for RefusingCoSigner {
     }
 
     async fn settle(&self, _settlement: CoSignSettlement) -> Result<(), RingRpcError> {
+        Ok(())
+    }
+
+    async fn sweep(&self, _tip: FinalizedTip) -> Result<(), RingRpcError> {
         Ok(())
     }
 }
@@ -241,6 +266,8 @@ mod tests {
             (NotAllowed, -32169),
             (ListSubject, -32175),
             (ApprovedCallNotOnce, -32176),
+            (StaleBlockhash, -32177),
+            (InputReserved, -32178),
             (UnrecordedAsset, -32296),
         ] {
             assert_eq!(ErrorObjectOwned::from(error).code(), code);

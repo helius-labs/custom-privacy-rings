@@ -13,6 +13,7 @@ use crate::{
         read_enrollment, read_frame, read_note, read_spend_row, NoteSeal, ENROLLMENT_COLUMNS,
         NOTE_COLUMNS, ROW_COLUMNS,
     },
+    sql,
     tracking::HeldEnrollment,
     utxos::{CreatedIn, StoredUtxo},
 };
@@ -40,21 +41,16 @@ impl<C: ConnectionTrait> ProjectionReads<'_, C> {
         &self,
         now: u64,
     ) -> Result<Vec<(CreatedIn, RepairAttempt)>, DbErr> {
-        let now = i64::try_from(now)
-            .map_err(|_| DbErr::Custom("repair time exceeds the column range".into()))?;
-        let limit = i64::try_from(MAX_REPAIRED_FRAMES)
-            .map_err(|_| DbErr::Custom("repair limit exceeds the column range".into()))?;
-        self.db.query_all(self.statement(
+        self.db.query_all(self.ring_statement(
             "SELECT slot,tx_signature,event_index,attempts,retry_after FROM spend_unread_frames \
              WHERE ring=$1 AND retry_after<=$2 ORDER BY retry_after,slot,tx_signature,event_index \
              LIMIT $3".into(),
-            vec![now.into(), limit.into()],
+            vec![sql::integer(now)?, sql::count(MAX_REPAIRED_FRAMES)?],
         )).await?.iter().map(|row| {
             Ok((read_frame(row)?, RepairAttempt {
                 attempts: u32::try_from(row.try_get::<i64>("", "attempts")?)
                     .map_err(|_| DbErr::Custom("repair attempts out of range".into()))?,
-                retry_after: u64::try_from(row.try_get::<i64>("", "retry_after")?)
-                    .map_err(|_| DbErr::Custom("negative repair time".into()))?,
+                retry_after: sql::read_integer(row, "retry_after")?,
             }))
         }).collect()
     }
@@ -175,24 +171,21 @@ impl<C: ConnectionTrait> ProjectionReads<'_, C> {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders: Vec<String> = (0..keys.len())
-            .map(|index| format!("${}", index + 2))
-            .collect();
         self.db
-            .query_all(self.statement(
+            .query_all(self.ring_statement(
                 format!(
                     "{select} WHERE ring=$1 AND {column} IN ({})",
-                    placeholders.join(",")
+                    sql::placeholders(2, keys.len())
                 ),
-                keys.iter().map(|key| key.to_vec().into()).collect(),
+                keys.iter().map(|key| sql::bytes(key)).collect(),
             ))
             .await
     }
 
-    fn statement(&self, sql: String, values: Vec<Value>) -> Statement {
-        let mut bound = vec![Value::from(self.ring.as_ref().to_vec())];
+    fn ring_statement(&self, query: String, values: Vec<Value>) -> Statement {
+        let mut bound = vec![sql::bytes(self.ring.as_ref())];
         bound.extend(values);
-        Statement::from_sql_and_values(self.db.get_database_backend(), sql, bound)
+        sql::statement(self.db, query, bound)
     }
 }
 

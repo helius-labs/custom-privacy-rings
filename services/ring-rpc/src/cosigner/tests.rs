@@ -14,7 +14,7 @@ use zolana_ring_policy::Member;
 
 use super::*;
 use crate::{
-    cosign::{CoSignFlows, CoSignRefusal, FrameSource},
+    cosign::{CoSignFlows, CoSignRefusal, FrameSource, Sender},
     database::Store,
 };
 
@@ -27,6 +27,7 @@ fn request() -> CoSignRequest {
         message: VersionedMessage::Legacy(Message::default()),
         flows: CoSignFlows::Frame,
         approved_transfer: None,
+        sender: Sender::Relay,
     }
 }
 

@@ -1,7 +1,7 @@
 //! Stored relays, every change passes `RelayState::apply` and lands only over the revision its writer
 //! read.
 
-use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement, Value};
+use sea_orm::{ConnectionTrait, DbErr, QueryResult, Value};
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
 use solana_message::VersionedMessage;
@@ -14,6 +14,7 @@ use zolana_ring_policy::Member;
 use crate::{
     cosign::{AssetFlow, CoSignFlows, OwnerFlow, Ticket},
     relay_submit::CollectedSignature,
+    sql,
 };
 
 /// Holds no proof input.
@@ -176,12 +177,6 @@ impl RelayRevision {
             .map(Self)
             .ok_or_else(|| corrupt("revision"))
     }
-
-    fn value(self) -> Result<Value, DbErr> {
-        i64::try_from(self.0)
-            .map(Value::from)
-            .map_err(|_| corrupt("revision"))
-    }
 }
 
 impl RelayRecord {
@@ -321,8 +316,8 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
     }
 
     pub async fn get(&self, id: &RelayId) -> Result<Option<RelayRow>, DbErr> {
-        let sql = "SELECT state, revision FROM relay_relays WHERE relay_id=$1";
-        let statement = self.statement(sql, vec![key(id)]);
+        let select = "SELECT state, revision FROM relay_relays WHERE relay_id=$1";
+        let statement = sql::statement(self.db, select, vec![sql::bytes(&id.0 .0)]);
         self.db
             .query_one(statement)
             .await?
@@ -332,15 +327,19 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
 
     /// `false` when the relay is stored already, the first record stays.
     pub async fn insert(&self, id: &RelayId, record: &RelayRecord) -> Result<bool, DbErr> {
-        let sql = "INSERT INTO relay_relays(relay_id,status,state,revision) VALUES($1,$2,$3,$4) \
-                   ON CONFLICT(relay_id) DO NOTHING";
+        let insert =
+            "INSERT INTO relay_relays(relay_id,status,state,revision) VALUES($1,$2,$3,$4) \
+                      ON CONFLICT(relay_id) DO NOTHING";
         let values = vec![
-            key(id),
+            sql::bytes(&id.0 .0),
             record.state.status().into(),
             state(record)?,
-            RelayRevision::FIRST.value()?,
+            sql::integer(RelayRevision::FIRST.0)?,
         ];
-        let result = self.db.execute(self.statement(sql, values)).await?;
+        let result = self
+            .db
+            .execute(sql::statement(self.db, insert, values))
+            .await?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -352,16 +351,19 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
         record: &RelayRecord,
     ) -> Result<Committed, DbErr> {
         let next = expected.next()?;
-        let sql = "UPDATE relay_relays SET status=$2, state=$3, revision=$4 \
-                   WHERE relay_id=$1 AND revision=$5";
+        let update = "UPDATE relay_relays SET status=$2, state=$3, revision=$4 \
+                      WHERE relay_id=$1 AND revision=$5";
         let values = vec![
-            key(id),
+            sql::bytes(&id.0 .0),
             record.state.status().into(),
             state(record)?,
-            next.value()?,
-            expected.value()?,
+            sql::integer(next.0)?,
+            sql::integer(expected.0)?,
         ];
-        let result = self.db.execute(self.statement(sql, values)).await?;
+        let result = self
+            .db
+            .execute(sql::statement(self.db, update, values))
+            .await?;
         Ok(match result.rows_affected() {
             1 => Committed::Written(next),
             _ => Committed::Stale,
@@ -373,39 +375,28 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
         status: PendingStatus,
         after: Option<&RelayId>,
     ) -> Result<Vec<RelayId>, DbErr> {
-        let (sql, values) = match after {
+        let (select, values) = match after {
             None => (
                 "SELECT relay_id FROM relay_relays WHERE status=$1 \
                  ORDER BY relay_id ASC LIMIT $2",
-                vec![
-                    Value::from(status.as_str()),
-                    Value::from(PENDING_PAGE_LEN as u64),
-                ],
+                vec![Value::from(status.as_str()), sql::count(PENDING_PAGE_LEN)?],
             ),
             Some(after) => (
                 "SELECT relay_id FROM relay_relays WHERE status=$1 AND relay_id>$2 \
                  ORDER BY relay_id ASC LIMIT $3",
                 vec![
                     Value::from(status.as_str()),
-                    key(after),
-                    Value::from(PENDING_PAGE_LEN as u64),
+                    sql::bytes(&after.0 .0),
+                    sql::count(PENDING_PAGE_LEN)?,
                 ],
             ),
         };
         self.db
-            .query_all(self.statement(sql, values))
+            .query_all(sql::statement(self.db, select, values))
             .await?
             .iter()
-            .map(|row| {
-                let id: Vec<u8> = row.try_get("", "relay_id")?;
-                let id: [u8; 32] = id.try_into().map_err(|_| corrupt("relay_id"))?;
-                Ok(RelayId(id.into()))
-            })
+            .map(|row| sql::read_bytes::<32>(row, "relay_id").map(|id| RelayId(id.into())))
             .collect()
-    }
-
-    fn statement(&self, sql: &str, values: Vec<Value>) -> Statement {
-        Statement::from_sql_and_values(self.db.get_database_backend(), sql, values)
     }
 }
 
@@ -490,10 +481,6 @@ struct StoredSignature {
     signature: SerializableSignature,
 }
 
-fn key(id: &RelayId) -> Value {
-    id.0 .0.to_vec().into()
-}
-
 fn state(record: &RelayRecord) -> Result<Value, DbErr> {
     let stored = StoredRelay {
         message: record.message.serialize().into(),
@@ -566,11 +553,10 @@ fn stored_co_sign(pending: &PendingCoSign) -> StoredCoSign {
 }
 
 fn relay_row(row: &QueryResult) -> Result<RelayRow, DbErr> {
-    let revision: i64 = row.try_get("", "revision")?;
     let state: String = row.try_get("", "state")?;
     let stored: StoredRelay = serde_json::from_str(&state).map_err(|_| corrupt("state"))?;
     Ok(RelayRow {
-        revision: RelayRevision(u64::try_from(revision).map_err(|_| corrupt("revision"))?),
+        revision: RelayRevision(sql::read_integer(row, "revision")?),
         record: RelayRecord {
             message: wincode::deserialize(&stored.message.0).map_err(|_| corrupt("message"))?,
             last_valid_block_height: stored.last_valid_block_height,

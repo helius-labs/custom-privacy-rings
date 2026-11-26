@@ -52,6 +52,23 @@ pub trait ChainSubmit: Send + Sync {
 
     /// Signatures stay unchecked, every program and proof check runs.
     async fn simulate(&self, message: &VersionedMessage) -> Result<Simulation, RingRpcError>;
+
+    /// A height no block past lands a message under `blockhash`, `None` for a hash the cluster
+    /// does not hold.
+    async fn blockhash_expiry(&self, _blockhash: Hash) -> Result<Option<u64>, RingRpcError> {
+        Err(RingRpcError::StateUnavailable)
+    }
+
+    /// One finalized bank, its slot and its height read together.
+    async fn finalized_tip(&self) -> Result<FinalizedTip, RingRpcError> {
+        Err(RingRpcError::StateUnavailable)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FinalizedTip {
+    pub slot: u64,
+    pub block_height: u64,
 }
 
 #[must_use]
@@ -269,6 +286,37 @@ impl ChainSubmit for SolanaChain {
         let calls = InnerCall::decode(message, simulated.inner_instructions.unwrap_or_default())
             .ok_or_else(|| ClientError::Rpc("simulate_transaction: inner instructions".into()))?;
         Ok(Simulation::Passed { calls })
+    }
+
+    async fn blockhash_expiry(&self, blockhash: Hash) -> Result<Option<u64>, RingRpcError> {
+        let client = self.rpc.client();
+        let commitment = CommitmentConfig::confirmed();
+        // The tip is read second, a hash valid in the first bank is no newer than it.
+        let held = client
+            .is_blockhash_valid(&blockhash, commitment)
+            .await
+            .map_err(|error| ClientError::Rpc(format!("is_blockhash_valid: {error}")))?;
+        if !held {
+            return Ok(None);
+        }
+        let (_, last_valid_block_height) = client
+            .get_latest_blockhash_with_commitment(commitment)
+            .await
+            .map_err(|error| ClientError::Rpc(format!("get_latest_blockhash: {error}")))?;
+        Ok(Some(last_valid_block_height))
+    }
+
+    async fn finalized_tip(&self) -> Result<FinalizedTip, RingRpcError> {
+        let epoch = self
+            .rpc
+            .client()
+            .get_epoch_info_with_commitment(CommitmentConfig::finalized())
+            .await
+            .map_err(|error| ClientError::Rpc(format!("get_epoch_info: {error}")))?;
+        Ok(FinalizedTip {
+            slot: epoch.absolute_slot,
+            block_height: epoch.block_height,
+        })
     }
 }
 

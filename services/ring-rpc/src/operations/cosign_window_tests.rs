@@ -91,7 +91,19 @@ impl AssetLimitSource for Clocked {
             spends_note: true,
             approval_bits: None,
             co_signers: Vec::new(),
+            nullifiers: Vec::new(),
         }))
+    }
+
+    async fn spend_read(
+        &self,
+        _ring: Address,
+        _nullifiers: &[[u8; 32]],
+    ) -> Result<SpendRead, RingRpcError> {
+        Ok(SpendRead {
+            spent: false,
+            history_through: 0,
+        })
     }
 }
 
@@ -190,7 +202,13 @@ impl Window {
 }
 
 pub(super) async fn clear_usage(store: &Store) {
-    for table in ["cosign_totals", "cosign_usage", "cosign_admission"] {
+    for table in [
+        "cosign_totals",
+        "cosign_usage",
+        "cosign_admission",
+        "cosign_wallet_sends",
+        "cosign_wallet_inputs",
+    ] {
         store
             .connection()
             .execute_unprepared(&format!("DELETE FROM {table}"))
@@ -216,6 +234,7 @@ fn request(nonce: u8, flows: Vec<OwnerFlow>) -> CoSignRequest {
         message: message(nonce),
         flows: CoSignFlows::Published(flows),
         approved_transfer: None,
+        sender: Sender::Relay,
     }
 }
 
@@ -256,19 +275,20 @@ async fn a_zero_window_counts_the_checked_transaction_alone() {
     window.refuses(3, vec![flow(7, SOL, CAP + 1)]).await;
 }
 
+/// A node behind the last decision answers an older slot, the reservation counts at the newer.
 #[tokio::test]
-async fn an_admission_slot_below_the_watermark_fails_closed() {
+async fn a_slot_behind_the_watermark_reserves_at_the_watermark() {
     let window = Window::open("sqlite::memory:").await;
     window.slot.store(START_SLOT + 5, Ordering::Relaxed);
-    window.signed(1, vec![flow(7, SOL, CAP)]).await;
+    window.signed(1, vec![flow(7, SOL, CAP - 1)]).await;
     window.slot.store(START_SLOT, Ordering::Relaxed);
-    assert!(matches!(
-        window
-            .co_signer
-            .decide(&request(2, vec![flow(7, SOL, 1)]))
-            .await,
-        Err(RingRpcError::CoSign(CoSignError::LimitsUnavailable))
-    ));
+    window.refuses(2, vec![flow(7, SOL, 2)]).await;
+    window.signed(3, vec![flow(7, SOL, 1)]).await;
+    let watermark = i64::try_from(START_SLOT + 5).expect("slot");
+    assert_eq!(
+        window.rows().await,
+        [(7, watermark, 1), (7, watermark, u128::from(CAP - 1))]
+    );
 }
 
 /// Halves sum exactly up to `u64::MAX`, one unit past it refuses.
@@ -373,6 +393,7 @@ async fn a_frame_read_past_a_repeated_message_never_moves_its_rows() {
         message: message(1),
         flows: CoSignFlows::Frame,
         approved_transfer: None,
+        sender: Sender::Relay,
     };
     let first = window.co_signer.decide(&framed()).await.expect("first");
     assert!(matches!(first, CoSignDecision::Signed(_)));
@@ -894,10 +915,9 @@ async fn seeded_window_histories_match_direct_sums_through_refunds() {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_admissions_across_slot_ticks_never_fail_closed() {
-    let file = StoreFile::new("slot-ticks");
-    let window = Arc::new(Window::open(&file.url()).await);
+/// Each task reads the slot another task moved, forward or back, and none fails or refuses.
+async fn assert_admissions_across_moving_slots_all_sign(url: &str) {
+    let window = Arc::new(Window::open(url).await);
     window.limit(AssetLimits {
         sender_cap: 10_000,
         sender_window_slots: WINDOW,
@@ -907,20 +927,41 @@ async fn concurrent_admissions_across_slot_ticks_never_fail_closed() {
     for nonce in 1..=24u8 {
         let window = window.clone();
         tasks.spawn(async move {
-            if nonce % 4 == 0 {
-                window.slot.fetch_add(1, Ordering::SeqCst);
-            }
+            window
+                .slot
+                .store(START_SLOT + u64::from(nonce % 5), Ordering::SeqCst);
             window
                 .co_signer
-                .decide(&request(nonce, vec![flow(nonce, SOL, 10)]))
+                .decide(&request(nonce, vec![flow(7, SOL, 10)]))
                 .await
         });
     }
     while let Some(joined) = tasks.join_next().await {
-        let decision = joined.expect("task").expect("admitted across slot tick");
+        let decision = joined.expect("task").expect("decision");
         assert!(
             matches!(decision, CoSignDecision::Signed(_)),
             "{decision:?}"
         );
     }
+    let rows = window.rows().await;
+    assert_eq!(rows.len(), 24);
+    assert_eq!(
+        rows.iter().map(|(_, _, outflow)| outflow).sum::<u128>(),
+        240
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_admissions_across_slot_ticks_never_fail_closed() {
+    let file = StoreFile::new("slot-ticks");
+    assert_admissions_across_moving_slots_all_sign(&file.url()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs RING_RPC_TEST_POSTGRES_URL"]
+async fn concurrent_admissions_across_slot_ticks_never_fail_closed_on_postgres() {
+    let url = std::env::var("RING_RPC_TEST_POSTGRES_URL").expect("postgres url");
+    let store = Store::open(&url, 1).await.expect("store");
+    clear_usage(&store).await;
+    assert_admissions_across_moving_slots_all_sign(&url).await;
 }

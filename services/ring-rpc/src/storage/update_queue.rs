@@ -1,7 +1,7 @@
 use custom_ring_interface::{RecordWriteData, APPLY_BATCH};
 use sea_orm::{
-    ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, QueryResult, Statement,
-    TransactionTrait, Value,
+    ConnectionTrait, DatabaseBackend, DatabaseConnection, DbErr, QueryResult, TransactionTrait,
+    Value,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -14,6 +14,7 @@ use crate::{
         authority_batch, ApprovalGrant, AuthorityHead, CheckedUpdate, PendingApproval,
         QueuedUpdate, RefusalReason, UpdateSigner, WalletBatch, MAX_BATCH_ATTEMPTS,
     },
+    sql::{bytes, count, integer, placeholders, read_address, read_bytes, read_integer, statement},
 };
 
 /// Held off chain for list approval, never in a batch until an approval joins it.
@@ -264,7 +265,7 @@ impl<'a> UpdateQueue<'a> {
             },
             APPLIED => RecordUpdateStatus::Applied {
                 signature: signature(&row)?.into(),
-                revision: unsigned(&row, "revision")?
+                revision: read_integer(&row, "revision")?
                     .checked_add(1)
                     .ok_or_else(|| corrupt("revision"))?,
             },
@@ -286,7 +287,7 @@ impl<'a> UpdateQueue<'a> {
         )
         .await?
         .iter()
-        .map(|row| address(row, "registry"))
+        .map(|row| read_address(row, "registry"))
         .collect()
     }
 
@@ -301,7 +302,7 @@ impl<'a> UpdateQueue<'a> {
             id: row.try_get("", "id")?,
             attempt: Attempt {
                 signature: signature(&row)?,
-                last_valid_block_height: unsigned(&row, "last_valid_block_height")?,
+                last_valid_block_height: read_integer(&row, "last_valid_block_height")?,
             },
         }))
     }
@@ -384,7 +385,7 @@ impl<'a> UpdateQueue<'a> {
         }
         let ids = rows
             .iter()
-            .map(|row| column_bytes(row, "id"))
+            .map(|row| read_bytes::<32>(row, "id"))
             .collect::<Result<Vec<_>, _>>()?;
         let sql = format!(
             "SELECT id, joined, ring, registry, writes FROM records_updates WHERE status=$1 AND joined IN ({}) \
@@ -392,7 +393,7 @@ impl<'a> UpdateQueue<'a> {
             placeholders(2, ids.len())
         );
         let values = std::iter::once(QUEUED.into())
-            .chain(ids.iter().map(bytes))
+            .chain(ids.iter().map(|id| bytes(id)))
             .collect();
         let joined = self.query_all(&sql, values).await?;
         rows.iter()
@@ -402,11 +403,11 @@ impl<'a> UpdateQueue<'a> {
                 let mut writes = Vec::new();
                 let mut members = Vec::new();
                 for joined in &joined {
-                    if column_bytes(joined, "joined")? == id {
+                    if read_bytes::<32>(joined, "joined")? == id {
                         if ApprovalScope::from_row(joined)? != scope {
                             return Err(corrupt("joined approval scope"));
                         }
-                        members.push(column_bytes(joined, "id")?);
+                        members.push(read_bytes::<32>(joined, "id")?);
                         writes.extend(stored_writes(joined)?);
                     }
                 }
@@ -419,8 +420,8 @@ impl<'a> UpdateQueue<'a> {
                     writes,
                     unregistered: stored_owners(row)?,
                     signer: update_signer(row)?,
-                    queued_slot: unsigned(row, "queued_slot")?,
-                    valid_until_slot: unsigned(row, "valid_until_slot")?,
+                    queued_slot: read_integer(row, "queued_slot")?,
+                    valid_until_slot: read_integer(row, "valid_until_slot")?,
                 })
             })
             .collect()
@@ -489,8 +490,6 @@ impl<'a> UpdateQueue<'a> {
                 }
             }
         };
-        let limit = i64::try_from(page.limit)
-            .map_err(|_| DbErr::Custom("page limit exceeds the store integer range".to_owned()))?;
         let sql = format!(
             "SELECT {PENDING_APPROVAL_COLUMNS} FROM records_updates \
              WHERE ring=$1 AND registry=$2 AND status=$3 AND seq>$4 ORDER BY seq LIMIT $5"
@@ -500,7 +499,7 @@ impl<'a> UpdateQueue<'a> {
             registry,
             PENDING_APPROVAL.into(),
             after.into(),
-            limit.into(),
+            count(page.limit)?,
         ];
         self.query_all(&sql, values)
             .await?
@@ -556,7 +555,7 @@ impl<'a> UpdateQueue<'a> {
                 let values = vec![
                     REFUSED.into(),
                     RefusalReason::Expired.to_string().into(),
-                    bytes(&column_bytes(&head, "id")?),
+                    bytes(&read_bytes::<32>(&head, "id")?),
                     bytes(scope.ring.as_array()),
                     bytes(scope.registry.as_array()),
                     PENDING_APPROVAL.into(),
@@ -599,7 +598,7 @@ impl<'a> UpdateQueue<'a> {
                    status) VALUES($1,$2,$3,$4,$5) RETURNING id";
         let values = vec![
             bytes(batch.registry.as_array()),
-            batch.attempt.signature.as_ref().to_vec().into(),
+            bytes(batch.attempt.signature.as_ref()),
             integer(batch.revision)?,
             integer(batch.attempt.last_valid_block_height)?,
             SUBMITTED.into(),
@@ -630,7 +629,7 @@ impl<'a> UpdateQueue<'a> {
                 .await?;
             let mut matches = claimed.len() == update.joined.len() + 1;
             for row in claimed {
-                let member = column_bytes(&row, "id")?;
+                let member = read_bytes::<32>(&row, "id")?;
                 let joined = row.try_get::<Option<Vec<u8>>>("", "joined")?;
                 matches &= if member == update.id {
                     joined.is_none()
@@ -706,8 +705,8 @@ impl<'a> UpdateQueue<'a> {
 impl ApprovalScope {
     fn from_row(row: &QueryResult) -> Result<Self, DbErr> {
         Ok(Self {
-            ring: address(row, "ring")?,
-            registry: address(row, "registry")?,
+            ring: read_address(row, "ring")?,
+            registry: read_address(row, "registry")?,
         })
     }
 }
@@ -722,7 +721,7 @@ async fn finish_updates<C: ConnectionTrait>(
     let finished = connection
         .query_all(statement(
             connection,
-            &format!("{sql} RETURNING seq"),
+            format!("{sql} RETURNING seq"),
             values,
         ))
         .await?;
@@ -743,27 +742,16 @@ async fn finish_updates<C: ConnectionTrait>(
     Ok(seqs.len())
 }
 
-/// `$first` onward, NULL for none so an empty list matches no row.
-fn placeholders(first: usize, count: usize) -> String {
-    match count {
-        0 => "NULL".to_owned(),
-        _ => (first..first + count)
-            .map(|index| format!("${index}"))
-            .collect::<Vec<_>>()
-            .join(","),
-    }
-}
-
 fn pending_approval(row: &QueryResult) -> Result<PendingApproval, DbErr> {
-    let lists =
-        ListSet::from_record_bits(unsigned(row, "awaited")?).ok_or_else(|| corrupt("awaited"))?;
+    let lists = ListSet::from_record_bits(read_integer(row, "awaited")?)
+        .ok_or_else(|| corrupt("awaited"))?;
     Ok(PendingApproval {
-        id: column_bytes(row, "id")?,
-        wallet: address(row, "signer")?,
-        member: column_bytes(row, "member")?,
+        id: read_bytes::<32>(row, "id")?,
+        wallet: read_address(row, "signer")?,
+        member: read_bytes::<32>(row, "member")?,
         lists,
         writes: stored_writes(row)?.len(),
-        valid_until_slot: unsigned(row, "valid_until_slot")?,
+        valid_until_slot: read_integer(row, "valid_until_slot")?,
     })
 }
 
@@ -775,38 +763,12 @@ pub(crate) fn role(signer: UpdateSigner) -> &'static str {
 }
 
 fn update_signer(row: &QueryResult) -> Result<UpdateSigner, DbErr> {
-    let signer = address(row, "signer")?;
+    let signer = read_address(row, "signer")?;
     match row.try_get::<String>("", "role")?.as_str() {
         WALLET_ROLE => Ok(UpdateSigner::Wallet(signer)),
         POLICY_ROLE => Ok(UpdateSigner::PolicyAuthority(signer)),
         _ => Err(corrupt("role")),
     }
-}
-
-fn statement<C: ConnectionTrait>(connection: &C, sql: &str, values: Vec<Value>) -> Statement {
-    Statement::from_sql_and_values(connection.get_database_backend(), sql, values)
-}
-
-fn bytes(value: &[u8; 32]) -> Value {
-    value.to_vec().into()
-}
-
-fn count(value: usize) -> Result<Value, DbErr> {
-    i64::try_from(value)
-        .map(Value::from)
-        .map_err(|_| DbErr::Custom("count exceeds the store integer range".to_owned()))
-}
-
-fn integer(value: u64) -> Result<Value, DbErr> {
-    i64::try_from(value)
-        .map(Value::from)
-        .map_err(|_| DbErr::Custom("value exceeds the store integer range".to_owned()))
-}
-
-fn column_bytes(row: &QueryResult, column: &str) -> Result<[u8; 32], DbErr> {
-    row.try_get::<Vec<u8>>("", column)?
-        .try_into()
-        .map_err(|_| corrupt(column))
 }
 
 fn stored_owners(row: &QueryResult) -> Result<Vec<Address>, DbErr> {
@@ -828,14 +790,6 @@ fn stored_writes(row: &QueryResult) -> Result<Vec<RecordWriteData>, DbErr> {
     bytemuck::try_cast_slice::<u8, RecordWriteData>(&row.try_get::<Vec<u8>>("", "writes")?)
         .map(<[RecordWriteData]>::to_vec)
         .map_err(|_| corrupt("writes"))
-}
-
-fn address(row: &QueryResult, column: &str) -> Result<Address, DbErr> {
-    column_bytes(row, column).map(Address::new_from_array)
-}
-
-fn unsigned(row: &QueryResult, column: &str) -> Result<u64, DbErr> {
-    u64::try_from(row.try_get::<i64>("", column)?).map_err(|_| corrupt(column))
 }
 
 fn signature(row: &QueryResult) -> Result<Signature, DbErr> {
@@ -1142,7 +1096,7 @@ mod tests {
                     let claimed_batch: i64 = transaction.query_one(statement(&transaction,
                         "INSERT INTO records_batches(registry,signature,revision,last_valid_block_height,status) \
                          VALUES($1,$2,0,20,$3) RETURNING id",
-                        vec![bytes(registry.as_array()), Signature::default().as_ref().to_vec().into(), SUBMITTED.into()],
+                        vec![bytes(registry.as_array()), bytes(Signature::default().as_ref()), SUBMITTED.into()],
                     )).await.expect("winning batch").expect("batch row").try_get("", "id").expect("batch id");
                     let claimed = transaction.execute(statement(&transaction,
                         "UPDATE records_updates SET status=$1,batch=$2 WHERE registry=$3 AND status=$4",
@@ -1226,7 +1180,7 @@ mod tests {
                 .expect("group rows");
             assert_eq!(rows.len(), 2);
             for row in rows {
-                let id = column_bytes(&row, "id").expect("update id");
+                let id = read_bytes::<32>(&row, "id").expect("update id");
                 let joined = row
                     .try_get::<Option<Vec<u8>>>("", "joined")
                     .expect("joined head");

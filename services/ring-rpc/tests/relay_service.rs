@@ -40,9 +40,9 @@ use zolana_ring_client::rpc::{
 };
 use zolana_ring_client::{AuditError, RingIndexerError, RingOrigin};
 use zolana_ring_rpc::{
-    rpc_module, Hub, MergeAuditRequest, Migrator, RecordsTip, Relay, RelayBudget, RelayError,
-    RelayParts, RingConfiguration, RingFrame, RingHistoryPage, RingRpcError, ServedRings,
-    ServiceIdentity, Store, TransactionPage, TransactionSource, ABANDONED_AFTER_SLOTS,
+    rpc_module, ChainOutcome, Hub, MergeAuditRequest, Migrator, RecordsTip, Relay, RelayBudget,
+    RelayError, RelayParts, RingConfiguration, RingFrame, RingHistoryPage, RingRpcError,
+    ServedRings, ServiceIdentity, Store, TransactionPage, TransactionSource, ABANDONED_AFTER_SLOTS,
     STORE_CONNECTIONS,
 };
 use zolana_ring_transaction::RingAssets;
@@ -717,6 +717,102 @@ async fn a_funded_relay_holds_its_reservation_until_it_settles() {
     assert_eq!(fixture.committed().await, FUNDED_LAMPORTS as i64);
     let next = fixture.prepare(&funded_transfer(&fixture, quote, 17)).await;
     assert!(next.is_ok(), "the share returned, got {next:?}");
+}
+
+/// The fee payer pays a fee for every message, a relay with nothing else to fund still spends.
+#[tokio::test]
+async fn a_relay_with_no_setup_and_no_tree_fee_sends_nothing_at_a_zero_budget() {
+    for budget in [
+        RelayBudget::default(),
+        RelayBudget {
+            total_lamports: u64::MAX >> 1,
+            signer_lamports: 0,
+        },
+        RelayBudget {
+            total_lamports: 0,
+            signer_lamports: u64::MAX >> 1,
+        },
+    ] {
+        let fixture = Fixture::with_budgets(budget).await;
+        *fixture.prover.tree_fees.lock().expect("tree fees") = Some(0);
+        let quote = fixture.quote(RelayOperation::Confidential).await;
+        let request = signed_request(quote, &proof_inputs(RING, RelayRail::Confidential));
+        for _ in 0..2 {
+            let refused = fixture.prepare(&request).await;
+            assert!(
+                refused_with(&refused, RelayError::BudgetUnset),
+                "{refused:?}"
+            );
+        }
+        assert!(fixture.sent().is_empty());
+        assert_eq!(fixture.row_count().await, 0);
+        assert_eq!(fixture.committed().await, 0);
+    }
+}
+
+/// One lamport short of the fee refuses, the fee alone is what a relay with nothing else holds.
+#[tokio::test]
+async fn a_relay_holds_its_base_and_priority_fee_and_keeps_them_once_landed() {
+    const PRIORITY_FEE: u64 = 7_000;
+    let fee = 5_000 + PRIORITY_FEE;
+    for (budget, fits) in [(fee - 1, false), (fee, true)] {
+        let fixture = Fixture::with_budget(budget).await;
+        *fixture.prover.tree_fees.lock().expect("tree fees") = Some(0);
+        *fixture.prover.priority_fee.lock().expect("priority fee") = Some(PRIORITY_FEE);
+        let quote = fixture.quote(RelayOperation::Confidential).await;
+        let request = signed_request(quote, &proof_inputs(RING, RelayRail::Confidential));
+        fixture.pending(true);
+        let prepared = fixture.prepare(&request).await;
+        if !fits {
+            assert!(refused_with(&prepared, RelayError::Budget), "{prepared:?}");
+            assert!(fixture.sent().is_empty());
+            assert_eq!(fixture.committed().await, 0);
+            continue;
+        }
+        let step = prepared.expect("relayed");
+        assert_eq!(fixture.outstanding().await, fee as i64);
+        fixture.pending(false);
+        let status = fixture.status(step).await;
+        assert!(
+            matches!(status, RelayStatus::Confirmed { .. }),
+            "{status:?}"
+        );
+        assert_eq!(fixture.outstanding().await, 0);
+        assert_eq!(fixture.committed().await, fee as i64);
+    }
+}
+
+/// An expired message cost nothing, a reverted one cost its fee and never its rent or tree fees.
+#[tokio::test]
+async fn a_failed_relay_returns_what_the_chain_did_not_take() {
+    for (reverted, kept) in [(false, 0), (true, 5_000)] {
+        let fixture = Fixture::with_budget(FUNDED_LAMPORTS).await;
+        let quote = fixture.quote(RelayOperation::Confidential).await;
+        fixture.pending(true);
+        let step = fixture
+            .prepare(&funded_transfer(&fixture, quote, 15))
+            .await
+            .expect("relayed");
+        assert_eq!(fixture.outstanding().await, FUNDED_LAMPORTS as i64);
+        assert_eq!(fixture.committed().await, FUNDED_LAMPORTS as i64);
+
+        match reverted {
+            true => {
+                *fixture.chain.outcome.lock().expect("outcome") =
+                    Some(Some(ChainOutcome::Failed {
+                        reason: "custom program error".to_owned(),
+                    }));
+            }
+            false => fixture
+                .chain
+                .height
+                .store(LAST_VALID_BLOCK_HEIGHT + 1, Ordering::Relaxed),
+        }
+        let status = fixture.status(step).await;
+        assert!(matches!(status, RelayStatus::Failed { .. }), "{status:?}");
+        assert_eq!(fixture.row_count().await, 0);
+        assert_eq!(fixture.committed().await, kept);
+    }
 }
 
 /// A retried request names the same relay and is charged once.

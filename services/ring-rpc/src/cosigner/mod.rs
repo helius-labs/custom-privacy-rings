@@ -19,8 +19,9 @@
 //! ```
 //!
 //! A rule reads what it needs from the `Operation` and owns its sources. A rule that reserves
-//! state keys it by `Operation::ticket` and frees it in `settle`. Put a rule that reserves last,
-//! a refusal after it releases the reservation.
+//! state keys it by `Operation::ticket` and frees it in `settle`. The relay settles its own send,
+//! the rule settles a `Sender::Wallet` reservation in `sweep`. Put a rule that reserves last, a
+//! refusal after it releases the reservation.
 
 mod direct;
 mod lists;
@@ -43,6 +44,7 @@ pub use self::{
 use crate::{
     cosign::{CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement, Ticket},
     error::RingRpcError,
+    landing::FinalizedTip,
 };
 
 /// Signs what its rule admits.
@@ -78,6 +80,7 @@ impl<R: CoSignRule> CoSignPolicy for CoSigner<R> {
             message: &request.message,
             approved_transfer: request.approved_transfer.as_ref(),
             flows: &request.flows,
+            sender: request.sender,
             ticket: Ticket::of(&self.signer.address(), &request.message),
         };
         Ok(match self.rule.admit(&operation).await? {
@@ -91,6 +94,10 @@ impl<R: CoSignRule> CoSignPolicy for CoSigner<R> {
 
     async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
         self.rule.settle(settlement).await
+    }
+
+    async fn sweep(&self, tip: FinalizedTip) -> Result<(), RingRpcError> {
+        self.rule.sweep(tip).await
     }
 }
 

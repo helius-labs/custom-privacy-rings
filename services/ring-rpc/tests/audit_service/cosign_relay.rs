@@ -1419,12 +1419,55 @@ async fn an_approved_call_holds_the_window_only_when_its_program_makes_it() {
     assert!(relay.reservations().await.is_empty());
 
     call.runs_on(&relay);
+    relay.chain.stale_blockhash.store(true, Ordering::Relaxed);
+    assert_eq!(
+        refusal(call.co_sign(&relay, Some(call.transfer.clone())).await),
+        CoSignError::StaleBlockhash.code()
+    );
+    assert!(relay.reservations().await.is_empty());
+    relay.chain.stale_blockhash.store(false, Ordering::Relaxed);
+
     call.co_sign(&relay, Some(call.transfer.clone()))
         .await
         .expect("co-signed");
     assert!(relay.chain.sent().is_empty());
     let cap = i64::try_from(SENDER_CAP).expect("cap");
     assert_eq!(relay.reservations().await, [(cap, "held".to_owned())]);
+}
+
+/// The wallet never sends, the sweep frees the cap once no block can land the message.
+#[tokio::test]
+async fn a_direct_reservation_the_wallet_never_lands_is_released_after_its_blockhash() {
+    let proving = CappedRelay::new(|| RelayRail::Confidential).await;
+    let call = ProgramCall::of(&proving.sends_cap().await, proving.co_signer);
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    call.runs_on(&relay);
+    call.co_sign(&relay, Some(call.transfer.clone()))
+        .await
+        .expect("co-signed");
+    let sweeper = relay.hub.relay().expect("relay");
+    let cap = i64::try_from(SENDER_CAP).expect("cap");
+
+    // 1. At the last valid height the reservation stays whatever the history covers.
+    relay.chain.slot.store(0, Ordering::Relaxed);
+    relay
+        .chain
+        .height
+        .store(LAST_VALID_BLOCK_HEIGHT, Ordering::Relaxed);
+    for _ in 0..2 {
+        sweeper.sweep_wallet_sends().await.expect("sweep");
+    }
+    assert_eq!(relay.reservations().await, [(cap, "held".to_owned())]);
+
+    // 2. One block later a first pass reads the expiry slot and the next releases.
+    relay
+        .chain
+        .height
+        .store(LAST_VALID_BLOCK_HEIGHT + 1, Ordering::Relaxed);
+    sweeper.sweep_wallet_sends().await.expect("sweep");
+    assert_eq!(relay.reservations().await, [(cap, "held".to_owned())]);
+    sweeper.sweep_wallet_sends().await.expect("sweep");
+    assert_eq!(relay.reservations().await, [(cap, "released".to_owned())]);
 }
 
 #[tokio::test]

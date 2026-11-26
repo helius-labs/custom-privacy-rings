@@ -6,11 +6,10 @@
 //! The row lock orders that write against a concurrent claim, so a writer whose token moved
 //! commits nothing. Read before `storage/spent_index.rs`.
 
-use sea_orm::{
-    ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, Statement, TransactionTrait,
-    Value,
-};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, TransactionTrait};
 use solana_address::Address;
+
+use crate::sql;
 
 /// Seconds a lease outlives its last claim or commit, a few backfill intervals.
 pub(crate) const PROJECTION_LEASE_TTL: u64 = 90;
@@ -48,12 +47,11 @@ impl LeaseClaim<'_> {
             now,
         } = self;
         let transaction = db.begin().await?;
-        let backend = transaction.get_database_backend();
         // 1. The same instance renews in place. A restart of its replica takes the lease at once and
         //    any other replica only after expiry, both bump the token every older commit names.
         transaction
-            .execute(Statement::from_sql_and_values(
-                backend,
+            .execute(sql::statement(
+                &transaction,
                 "INSERT INTO projection_leases(ring,holder,instance,token,expires_at) \
                  VALUES($1,$2,$3,1,$4) ON CONFLICT(ring) DO UPDATE SET \
                  token=CASE WHEN projection_leases.holder=excluded.holder \
@@ -63,20 +61,20 @@ impl LeaseClaim<'_> {
                  expires_at=excluded.expires_at \
                  WHERE projection_leases.holder=excluded.holder OR projection_leases.expires_at<=$5",
                 vec![
-                    ring.as_ref().to_vec().into(),
-                    holder.replica.to_vec().into(),
-                    holder.instance.to_vec().into(),
-                    seconds(now.saturating_add(PROJECTION_LEASE_TTL))?,
-                    seconds(now)?,
+                    sql::bytes(ring.as_ref()),
+                    sql::bytes(&holder.replica),
+                    sql::bytes(&holder.instance),
+                    sql::integer(now.saturating_add(PROJECTION_LEASE_TTL))?,
+                    sql::integer(now)?,
                 ],
             ))
             .await?;
         // 2. The row read back names the holder, a refused update leaves the other holder in it.
         let row = transaction
-            .query_one(Statement::from_sql_and_values(
-                backend,
+            .query_one(sql::statement(
+                &transaction,
                 "SELECT holder,instance,token FROM projection_leases WHERE ring=$1",
-                vec![ring.as_ref().to_vec().into()],
+                vec![sql::bytes(ring.as_ref())],
             ))
             .await?
             .ok_or_else(|| DbErr::Custom("projection lease row is missing".into()))?;
@@ -99,16 +97,16 @@ impl ProjectionLease {
         now: u64,
     ) -> Result<(), DbErr> {
         let renewed = transaction
-            .execute(Statement::from_sql_and_values(
-                transaction.get_database_backend(),
+            .execute(sql::statement(
+                transaction,
                 "UPDATE projection_leases SET expires_at=$1 WHERE ring=$2 AND holder=$3 \
                  AND token=$4 AND expires_at>$5",
                 vec![
-                    seconds(now.saturating_add(PROJECTION_LEASE_TTL))?,
-                    self.ring.as_ref().to_vec().into(),
-                    self.holder.replica.to_vec().into(),
+                    sql::integer(now.saturating_add(PROJECTION_LEASE_TTL))?,
+                    sql::bytes(self.ring.as_ref()),
+                    sql::bytes(&self.holder.replica),
                     self.token.into(),
-                    seconds(now)?,
+                    sql::integer(now)?,
                 ],
             ))
             .await?
@@ -120,10 +118,4 @@ impl ProjectionLease {
         }
         Ok(())
     }
-}
-
-fn seconds(unix: u64) -> Result<Value, DbErr> {
-    i64::try_from(unix)
-        .map(Value::from)
-        .map_err(|_| DbErr::Custom("lease time exceeds the column range".into()))
 }

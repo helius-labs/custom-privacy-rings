@@ -52,6 +52,10 @@ pub struct RecordingProver {
     pub co_signers: Option<Vec<Address>>,
     /// The next proven transfer's data, a frame past one transaction.
     pub frame: Mutex<Option<Vec<u8>>>,
+    /// Absent charges `TREE_FEES`.
+    pub tree_fees: Mutex<Option<u64>>,
+    /// Written into every proven message's header.
+    pub priority_fee: Mutex<Option<u64>>,
 }
 
 #[async_trait]
@@ -91,10 +95,17 @@ impl RelayProver for RecordingProver {
                 accounts,
                 data,
             },
-            budget: ComputeBudgetConfig::new(400_000),
+            budget: match *self.priority_fee.lock().expect("priority fee") {
+                Some(lamports) => ComputeBudgetConfig::new(400_000).with_priority_fee(lamports),
+                None => ComputeBudgetConfig::new(400_000),
+            },
             co_signers,
             signers,
-            tree_fees: TREE_FEES,
+            tree_fees: self
+                .tree_fees
+                .lock()
+                .expect("tree fees")
+                .unwrap_or(TREE_FEES),
         })
     }
 
@@ -121,6 +132,8 @@ pub struct RecordingChain {
     pub accounts: Mutex<Vec<Address>>,
     pub simulation_refusal: Mutex<Option<String>>,
     pub simulated_calls: Mutex<Vec<zolana_ring_rpc::InnerCall>>,
+    /// The cluster holds no blockhash a co-signed message names.
+    pub stale_blockhash: AtomicBool,
 }
 
 impl Default for RecordingChain {
@@ -135,6 +148,7 @@ impl Default for RecordingChain {
             accounts: Mutex::default(),
             simulation_refusal: Mutex::default(),
             simulated_calls: Mutex::default(),
+            stale_blockhash: AtomicBool::new(false),
         }
     }
 }
@@ -224,6 +238,20 @@ impl ChainSubmit for RecordingChain {
             .iter()
             .any(|transaction| transaction.signatures[0] == signature)
             .then_some(ChainOutcome::Confirmed { slot: SLOT + 1 }))
+    }
+
+    async fn blockhash_expiry(&self, _blockhash: Hash) -> Result<Option<u64>, RingRpcError> {
+        if self.stale_blockhash.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        Ok(Some(self.latest_blockhash().await?.last_valid_block_height))
+    }
+
+    async fn finalized_tip(&self) -> Result<zolana_ring_rpc::FinalizedTip, RingRpcError> {
+        Ok(zolana_ring_rpc::FinalizedTip {
+            slot: self.slot.load(Ordering::Relaxed),
+            block_height: self.height.load(Ordering::Relaxed),
+        })
     }
 }
 

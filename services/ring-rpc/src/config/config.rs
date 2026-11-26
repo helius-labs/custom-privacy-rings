@@ -109,10 +109,10 @@ pub struct ServeArgs {
     /// The service URL Photon connects to.
     #[arg(long, env = "RING_RPC_PUBLIC_URL", requires = "photon_registry_url")]
     pub public_url: Option<UpstreamUrl>,
-    /// Lamports reserved and spent over the store's life on enrollments and token accounts, zero refuses every charge.
+    /// Lamports reserved and spent over the store's life on the fee, tree fees and setup rent of every relayed message, zero sends none.
     #[arg(long, env = "RING_RPC_RELAY_BUDGET_LAMPORTS", default_value_t = 0)]
     pub relay_budget_lamports: u64,
-    /// Lamports one signer holds outstanding at once, the fees of its attempts that never landed stay counted, zero refuses every charge.
+    /// Lamports one signer holds outstanding at once, the fees of its attempts that never landed stay counted, zero sends none.
     #[arg(
         long,
         env = "RING_RPC_RELAY_SIGNER_BUDGET_LAMPORTS",

@@ -34,6 +34,7 @@ use zolana_ring_transaction::RingAssets;
 
 use crate::{
     bounded_map::{BoundedMap, Cached},
+    cosign_limits::SpendRead,
     database::Store,
     error::RingRpcError,
     frame_repairs::RepairBook,
@@ -704,6 +705,18 @@ impl AuditStore {
             }
         }
         Ok(found)
+    }
+
+    /// The coverage is read first, a spend the rows miss lies past it.
+    pub(crate) async fn spend_read(
+        &self,
+        nullifiers: &[[u8; 32]],
+    ) -> Result<SpendRead, RingRpcError> {
+        let history_through = self.read_book().history_through();
+        Ok(SpendRead {
+            spent: !self.spend_rows(nullifiers).await?.is_empty(),
+            history_through,
+        })
     }
 
     pub(crate) async fn spend_rows(

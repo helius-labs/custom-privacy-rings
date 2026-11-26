@@ -3,7 +3,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use hkdf::hmac::{Hmac, Mac};
-use sea_orm::{ConnectionTrait, Statement, Value};
+use sea_orm::{ConnectionTrait, Value};
 use sha2::Sha256;
 use solana_address::Address;
 use spr_keypair::KeypairError;
@@ -15,6 +15,7 @@ use crate::{
     error::RingRpcError,
     grants::{GrantQuery, GrantSource},
     keys::GRANT_ROW_KEY_INFO,
+    sql,
 };
 
 const NONCE_LEN: usize = 12;
@@ -155,10 +156,10 @@ impl GrantRows {
         let lookup = self.key.lookup(&row.pair.reader)?;
         let sealed = self.key.seal(&lookup, &row.body())?;
         let db = self.store.connection();
-        db.execute(Statement::from_sql_and_values(
-            db.get_database_backend(),
+        db.execute(sql::statement(
+            db,
             "INSERT INTO grants (reader, sealed) VALUES ($1, $2)",
-            [bytes(&lookup), Value::from(sealed)],
+            vec![sql::bytes(&lookup), Value::from(sealed)],
         ))
         .await?;
         let rows = self.rows(row.pair.reader).await?;
@@ -170,10 +171,10 @@ impl GrantRows {
         let lookup = self.key.lookup(&reader)?;
         let db = self.store.connection();
         let rows = db
-            .query_all(Statement::from_sql_and_values(
-                db.get_database_backend(),
+            .query_all(sql::statement(
+                db,
                 "SELECT sealed FROM grants WHERE reader = $1 ORDER BY id",
-                [bytes(&lookup)],
+                vec![sql::bytes(&lookup)],
             ))
             .await?;
         rows.iter()
@@ -206,8 +207,4 @@ fn newest(rows: &[GrantRow], pair: GrantPair) -> Option<GrantRow> {
         .filter(|row| row.pair == pair)
         .max_by_key(|row| row.timestamp)
         .copied()
-}
-
-fn bytes(value: &[u8; 32]) -> Value {
-    value.to_vec().into()
 }

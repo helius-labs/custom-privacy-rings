@@ -172,7 +172,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     info!("service pubkey {}", hub.service_pubkey());
     match hub.relay() {
         None => {
-            warn!("relay off, token account creation needs a fee payer and a relay budget")
+            warn!("relay off, it needs a fee payer and a relay budget")
         }
         Some(relay) => {
             info!("relay fee payer {}", relay.fee_payer());
@@ -182,7 +182,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     relay_budget.total_lamports, relay_budget.signer_lamports
                 ),
                 false => warn!(
-                    "token account creates off, set --relay-budget-lamports and --relay-signer-budget-lamports and fund the fee payer to turn them on"
+                    "relay sends off, set --relay-budget-lamports and --relay-signer-budget-lamports and fund the fee payer to turn them on"
                 ),
             }
         }

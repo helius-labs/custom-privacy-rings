@@ -5,7 +5,7 @@ use solana_message::{compiled_instruction::CompiledInstruction, VersionedMessage
 use solana_sdk_ids::system_program;
 use zolana_ring_client::rpc::ApprovedTransfer;
 
-use crate::cosign::{CoSignError, CoSignFlows, CoSignRequest};
+use crate::cosign::{CoSignError, CoSignFlows, CoSignRequest, Sender};
 
 const ADVANCE_NONCE_ACCOUNT: [u8; 4] = 4u32.to_le_bytes();
 
@@ -160,12 +160,13 @@ impl ScopedMessage {
         self.approved_transfer.as_ref()
     }
 
-    pub fn into_request(self) -> CoSignRequest {
+    pub fn into_request(self, sender: Sender) -> CoSignRequest {
         CoSignRequest {
             ring: self.ring,
             message: self.message,
             flows: CoSignFlows::Frame,
             approved_transfer: self.approved_transfer,
+            sender,
         }
     }
 }

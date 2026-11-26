@@ -1,8 +1,12 @@
 //! One durable row per relay attempt, its budget charge and its lease.
 
-use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement, TransactionTrait, Value};
+use sea_orm::{ConnectionTrait, DbErr, QueryResult, TransactionTrait, Value};
 use solana_address::Address;
 use zolana_ring_client::rpc::RelayId;
+
+use crate::sql::{
+    bytes as value, integer as lamports_value, read_address, read_bytes, read_integer, statement,
+};
 
 const TOTAL_SCOPE: [u8; 32] = [0; 32];
 
@@ -13,7 +17,7 @@ const PHASE_OPEN: &str = "open";
 const PHASE_BOUND: &str = "bound";
 const PHASE_CLOSING: &str = "closing";
 
-/// Zero funds nothing.
+/// Holds the fee, the tree fees and the setup rent of every relayed message, zero sends nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RelayBudget {
     /// Reserved and spent over the store's life, only the operator raises it.
@@ -51,7 +55,7 @@ pub(crate) struct Reservation {
     pub key: [u8; 32],
     pub relay_id: RelayId,
     pub signer: Address,
-    /// Zero until funded, an unfunded row answers for no budget.
+    /// Zero until funded, an unfunded row binds no message.
     pub lamports: u64,
     pub landing_rent: u64,
     pub generation: u64,
@@ -151,16 +155,6 @@ pub(crate) struct RelayReservations<'a, C> {
     db: &'a C,
 }
 
-fn value(bytes: &[u8]) -> Value {
-    bytes.to_vec().into()
-}
-
-fn lamports_value(lamports: u64) -> Result<Value, DbErr> {
-    i64::try_from(lamports)
-        .map(Into::into)
-        .map_err(|_| DbErr::Custom("lamports out of range".into()))
-}
-
 /// Random, a reinserted key never reissues a stalled holder's generation, top bits stay clear for
 /// raises.
 fn first_generation() -> u64 {
@@ -172,14 +166,6 @@ fn lease_until(slot: u64) -> Result<Value, DbErr> {
 }
 
 fn read_reservation(row: &QueryResult) -> Result<Reservation, DbErr> {
-    let bytes32 = |column: &str| -> Result<[u8; 32], DbErr> {
-        <[u8; 32]>::try_from(row.try_get::<Vec<u8>>("", column)?)
-            .map_err(|_| DbErr::Custom(format!("{column} has another length")))
-    };
-    let number = |column: &str| -> Result<u64, DbErr> {
-        u64::try_from(row.try_get::<i64>("", column)?)
-            .map_err(|_| DbErr::Custom(format!("{column} out of range")))
-    };
     let phase = match row.try_get::<String>("", "phase")?.as_str() {
         PHASE_OPEN => AttemptPhase::Open,
         PHASE_BOUND => AttemptPhase::Bound,
@@ -187,12 +173,12 @@ fn read_reservation(row: &QueryResult) -> Result<Reservation, DbErr> {
         _ => return Err(DbErr::Custom("phase is corrupt".into())),
     };
     Ok(Reservation {
-        key: bytes32("key")?,
-        relay_id: RelayId(spr_indexer_api::Hash(bytes32("relay_id")?)),
-        signer: Address::new_from_array(bytes32("signer")?),
-        lamports: number("lamports")?,
-        landing_rent: number("landing_rent")?,
-        generation: number("generation")?,
+        key: read_bytes(row, "key")?,
+        relay_id: RelayId(spr_indexer_api::Hash(read_bytes(row, "relay_id")?)),
+        signer: read_address(row, "signer")?,
+        lamports: read_integer(row, "lamports")?,
+        landing_rent: read_integer(row, "landing_rent")?,
+        generation: read_integer(row, "generation")?,
         phase,
     })
 }
@@ -202,10 +188,6 @@ const COLUMNS: &str = "key,relay_id,signer,lamports,landing_rent,generation,phas
 impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
     pub fn new(db: &'a C) -> Self {
         Self { db }
-    }
-
-    fn statement(&self, sql: impl Into<String>, values: Vec<Value>) -> Statement {
-        Statement::from_sql_and_values(self.db.get_database_backend(), sql.into(), values)
     }
 
     /// The durable admission of a signed request, taken before any proof or payment.
@@ -220,7 +202,8 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
         // processes.
         let inserted = self
             .db
-            .execute(self.statement(
+            .execute(statement(
+                self.db,
                 "INSERT INTO relay_reservations(key,relay_id,signer,lamports,fee_allowance,\
                  landing_rent,spent,phase,generation,lease_until_slot,touched_slot) \
                  VALUES($1,$2,$3,0,0,0,0,$4,$7,$5,$6) ON CONFLICT(key) DO NOTHING",
@@ -241,7 +224,8 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
         let claimed = inserted != 0
             || self
                 .db
-                .execute(self.statement(
+                .execute(statement(
+                    self.db,
                     "UPDATE relay_reservations SET generation=generation+1, relay_id=$2, \
                      lease_until_slot=$3, touched_slot=$4 \
                      WHERE key=$1 AND phase=$5 AND lease_until_slot < $4",
@@ -278,7 +262,8 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
     pub async fn by_relay(&self, relay_id: &RelayId) -> Result<Option<Reservation>, DbErr> {
         let row = self
             .db
-            .query_one(self.statement(
+            .query_one(statement(
+                self.db,
                 format!("SELECT {COLUMNS} FROM relay_reservations WHERE relay_id=$1"),
                 vec![value(&relay_id.0 .0)],
             ))
@@ -286,7 +271,8 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
         row.as_ref().map(read_reservation).transpose()
     }
 
-    /// Runs in the transaction that stores the relay, a holder that lost the lease stores no message.
+    /// Runs in the transaction that stores the relay, an unfunded row or a holder that lost the
+    /// lease stores no message.
     pub async fn bind(&self, bind: Bind<'_>) -> Result<SpendCheck, DbErr> {
         let Bind {
             lease,
@@ -296,10 +282,11 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
         } = bind;
         let updated = self
             .db
-            .execute(self.statement(
+            .execute(statement(
+                self.db,
                 "UPDATE relay_reservations SET phase=$3, relay_id=$4, lease_until_slot=0, \
                  touched_slot=$5 WHERE key=$1 AND generation=$2 AND phase=$6 \
-                 AND (lamports=0 OR spent+$7 <= fee_allowance)",
+                 AND lamports<>0 AND spent+$7 <= fee_allowance",
                 vec![
                     value(&lease.key),
                     lamports_value(lease.generation)?,
@@ -315,11 +302,12 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
         self.spend_check(&lease, updated).await
     }
 
-    /// Runs in the transaction that stores the landed failure, an unfunded row answers for no fee.
+    /// Runs in the transaction that stores the landed failure.
     pub async fn charge_landed(&self, relay_id: &RelayId, fee: u64) -> Result<(), DbErr> {
         self.db
-            .execute(self.statement(
-                "UPDATE relay_reservations SET spent=spent+$2 WHERE relay_id=$1 AND lamports<>0",
+            .execute(statement(
+                self.db,
+                "UPDATE relay_reservations SET spent=spent+$2 WHERE relay_id=$1",
                 vec![value(&relay_id.0 .0), lamports_value(fee)?],
             ))
             .await?;
@@ -334,7 +322,8 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
         limit: u64,
     ) -> Result<Vec<Reservation>, DbErr> {
         self.db
-            .query_all(self.statement(
+            .query_all(statement(
+                self.db,
                 format!(
                     "SELECT {COLUMNS} FROM relay_reservations WHERE touched_slot < $1 \
                      AND lease_until_slot < $2 ORDER BY touched_slot LIMIT $3"
@@ -360,7 +349,8 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
         } = claim;
         let updated = self
             .db
-            .execute(self.statement(
+            .execute(statement(
+                self.db,
                 "UPDATE relay_reservations SET phase=$3, generation=generation+1, \
                  lease_until_slot=$4 WHERE key=$1 AND generation=$2 AND relay_id=$8 \
                  AND lease_until_slot < $5 AND (phase<>$6 OR touched_slot < $7)",
@@ -393,7 +383,8 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
     pub async fn yield_lease(&self, lease: &Lease) -> Result<(), DbErr> {
         let deleted = self
             .db
-            .execute(self.statement(
+            .execute(statement(
+                self.db,
                 "DELETE FROM relay_reservations WHERE key=$1 AND generation=$2 AND phase=$3 \
                  AND lamports=0",
                 vec![
@@ -406,7 +397,8 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
             .rows_affected();
         if deleted == 0 {
             self.db
-                .execute(self.statement(
+                .execute(statement(
+                    self.db,
                     "UPDATE relay_reservations SET lease_until_slot=0 \
                      WHERE key=$1 AND generation=$2",
                     vec![value(&lease.key), lamports_value(lease.generation)?],
@@ -419,7 +411,8 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
     pub async fn get(&self, key: &[u8; 32]) -> Result<Option<Reservation>, DbErr> {
         let row = self
             .db
-            .query_one(self.statement(
+            .query_one(statement(
+                self.db,
                 format!("SELECT {COLUMNS} FROM relay_reservations WHERE key=$1"),
                 vec![value(key)],
             ))
@@ -427,7 +420,8 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
         row.as_ref().map(read_reservation).transpose()
     }
 
-    /// Zero rows means a newer holder or a spend past the allowance, the row tells them apart.
+    /// Zero rows means a newer holder, an unfunded row or a spend past the allowance, the row
+    /// tells the holder apart.
     async fn spend_check(&self, lease: &Lease, updated: u64) -> Result<SpendCheck, DbErr> {
         if updated != 0 {
             return Ok(SpendCheck::Accepted);
@@ -449,11 +443,10 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
             landing_rent,
             budget,
         } = fund;
-        let backend = self.db.get_database_backend();
         let transaction = self.db.begin().await?;
         let updated = transaction
-            .execute(Statement::from_sql_and_values(
-                backend,
+            .execute(statement(
+                &transaction,
                 "UPDATE relay_reservations SET lamports=$3, fee_allowance=$4, landing_rent=$5 \
                  WHERE key=$1 AND generation=$2 AND lamports=0",
                 vec![
@@ -476,17 +469,17 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
             });
         }
         let signer = transaction
-            .query_one(Statement::from_sql_and_values(
-                backend,
+            .query_one(statement(
+                &transaction,
                 "SELECT signer FROM relay_reservations WHERE key=$1",
                 vec![value(&lease.key)],
             ))
             .await?
             .ok_or_else(|| DbErr::Custom("a reservation vanished".into()))?
             .try_get::<Vec<u8>>("", "signer")?;
-        let raise = |scope: &[u8], bound: u64| -> Result<Statement, DbErr> {
-            Ok(Statement::from_sql_and_values(
-                backend,
+        let raise = |scope: &[u8], bound: u64| -> Result<_, DbErr> {
+            Ok(statement(
+                &transaction,
                 "INSERT INTO relay_reserved(scope,committed) SELECT $1,$2 WHERE $2 <= $3 \
                  ON CONFLICT(scope) DO UPDATE SET committed = relay_reserved.committed + $2 \
                  WHERE relay_reserved.committed + $2 <= $3",
@@ -525,11 +518,10 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
     /// The delete reads what it removes in one statement, a concurrent charge cannot slip past it.
     pub async fn release(&self, release: Release<'_>) -> Result<(), DbErr> {
         let Release { key, relay_id, end } = release;
-        let backend = self.db.get_database_backend();
         let transaction = self.db.begin().await?;
         let row = transaction
-            .query_one(Statement::from_sql_and_values(
-                backend,
+            .query_one(statement(
+                &transaction,
                 "DELETE FROM relay_reservations WHERE key=$1 AND relay_id=$2 \
                  RETURNING lamports,spent,signer",
                 vec![value(key), value(&relay_id.0 .0)],
@@ -560,8 +552,8 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
                 .map_err(|_| DbErr::Custom("returned lamports out of range".into()))
         };
         let lower = |scope: &[u8], lamports: i64| {
-            Statement::from_sql_and_values(
-                backend,
+            statement(
+                &transaction,
                 "UPDATE relay_reserved SET committed = committed - $2 WHERE scope=$1",
                 vec![value(scope), lamports.into()],
             )
@@ -574,8 +566,8 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
             .await?;
         // Fresh keys leave no counter row behind.
         transaction
-            .execute(Statement::from_sql_and_values(
-                backend,
+            .execute(statement(
+                &transaction,
                 "DELETE FROM relay_reserved WHERE scope=$1 AND committed=0",
                 vec![value(&signer)],
             ))
@@ -845,6 +837,11 @@ mod tests {
     /// A row of the key's earlier attempt, released, then inserted again for another relay.
     async fn reused_key(store: &Store0<'_>) -> (Reservation, Reservation) {
         let first = claim(store, 1, signer(1), 1).await;
+        let fund = |lease| async move {
+            let funded = store.fund(funding(lease, 1, NO_LIMIT)).await.expect("fund");
+            assert!(matches!(funded, FundOutcome::Held(_)));
+        };
+        fund(first.lease).await;
         let bound = store
             .bind(Bind {
                 lease: first.lease,
@@ -871,6 +868,7 @@ mod tests {
         else {
             panic!("the key is free");
         };
+        fund(second.lease).await;
         let bound = store
             .bind(Bind {
                 lease: second.lease,
@@ -1118,40 +1116,34 @@ mod tests {
         ));
     }
 
+    /// A stored message is one the fee payer can send, a row that holds nothing stores none.
     #[tokio::test]
-    async fn an_unfunded_row_answers_for_no_budget() {
+    async fn an_unfunded_row_binds_no_message() {
         let database = test_store().await;
         let store = RelayReservations::new(database.connection());
         let held = claim(&store, 1, signer(1), 1).await;
         let live = relay_id(1);
+        let bind = || Bind {
+            lease: held.lease,
+            relay_id: &live,
+            fee: 0,
+            slot: 2,
+        };
         assert_eq!(
-            store
-                .bind(Bind {
-                    lease: held.lease,
-                    relay_id: &live,
-                    fee: 5,
-                    slot: 2,
-                })
-                .await
-                .expect("bind"),
+            store.bind(bind()).await.expect("bind"),
+            SpendCheck::OverAllowance
+        );
+        let row = store.get(&[1; 32]).await.expect("read").expect("row");
+        assert_eq!(row.phase, AttemptPhase::Open);
+
+        let funded = store
+            .fund(funding(held.lease, 1, BUDGET))
+            .await
+            .expect("fund");
+        assert!(matches!(funded, FundOutcome::Held(_)));
+        assert_eq!(
+            store.bind(bind()).await.expect("bind"),
             SpendCheck::Accepted
         );
-        store.charge_landed(&live, 5).await.expect("charge");
-        store
-            .release(Release {
-                key: &held.lease.key,
-                relay_id: &live,
-                end: AttemptEnd::Landed { lamports: 5 },
-            })
-            .await
-            .expect("release");
-        assert!(matches!(
-            reserve(&store, 2, signer(1), 60).await,
-            FundOutcome::Held(_)
-        ));
-        assert!(matches!(
-            reserve(&store, 3, signer(2), 40).await,
-            FundOutcome::Held(_)
-        ));
     }
 }

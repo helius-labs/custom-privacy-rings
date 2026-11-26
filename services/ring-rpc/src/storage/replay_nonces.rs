@@ -1,8 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sea_orm::{ConnectionTrait, DbErr, Statement, Value};
+use sea_orm::{ConnectionTrait, DbErr};
 
-use crate::{authorize::AUTH_SKEW, replay::ReplayCheck};
+use crate::{authorize::AUTH_SKEW, replay::ReplayCheck, sql};
 
 pub(crate) struct NonceBook<'a, C> {
     pub conn: &'a C,
@@ -16,22 +16,25 @@ impl<C: ConnectionTrait> NonceBook<'_, C> {
             let expired = check.now.saturating_sub(2 * AUTH_SKEW.as_secs());
             let prune = "DELETE FROM replay_nonces WHERE signed_at<$1";
             self.conn
-                .execute(self.statement(prune, vec![seconds_value(expired)?]))
+                .execute(sql::statement(
+                    self.conn,
+                    prune,
+                    vec![sql::integer(expired)?],
+                ))
                 .await?;
         }
         let insert = "INSERT INTO replay_nonces(ring,nonce,signed_at) VALUES($1,$2,$3) \
                       ON CONFLICT(ring,nonce) DO NOTHING";
         let values = vec![
-            Value::from(check.ring.as_ref().to_vec()),
-            Value::from(check.nonce.to_vec()),
-            seconds_value(check.timestamp)?,
+            sql::bytes(check.ring.as_ref()),
+            sql::bytes(&check.nonce),
+            sql::integer(check.timestamp)?,
         ];
-        let inserted = self.conn.execute(self.statement(insert, values)).await?;
+        let inserted = self
+            .conn
+            .execute(sql::statement(self.conn, insert, values))
+            .await?;
         Ok(inserted.rows_affected() == 1)
-    }
-
-    fn statement(&self, sql: &str, values: Vec<Value>) -> Statement {
-        Statement::from_sql_and_values(self.conn.get_database_backend(), sql, values)
     }
 }
 
@@ -57,14 +60,9 @@ fn claim_prune(last_pruned: &AtomicU64, now: u64) -> bool {
     }
 }
 
-fn seconds_value(seconds: u64) -> Result<Value, DbErr> {
-    i64::try_from(seconds)
-        .map(Value::from)
-        .map_err(|_| DbErr::Custom("nonce timestamp exceeds the column range".into()))
-}
-
 #[cfg(test)]
 mod tests {
+    use sea_orm::{Statement, Value};
     use solana_address::Address;
 
     use super::*;
@@ -99,12 +97,12 @@ mod tests {
         let within = 1_000 + skew - 1;
         store
             .connection()
-            .execute(Statement::from_sql_and_values(
-                store.connection().get_database_backend(),
+            .execute(sql::statement(
+                store.connection(),
                 "INSERT INTO replay_nonces(ring,nonce,signed_at) VALUES($1,$2,$3)",
                 vec![
-                    Value::from(RING.as_ref().to_vec()),
-                    Value::from([99u8; 32].to_vec()),
+                    sql::bytes(RING.as_ref()),
+                    sql::bytes(&[99u8; 32]),
                     Value::from(100i64),
                 ],
             ))

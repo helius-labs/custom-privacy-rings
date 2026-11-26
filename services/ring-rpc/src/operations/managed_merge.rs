@@ -546,10 +546,11 @@ pub(crate) mod tests {
     use crate::{
         database::Store,
         hub::ServiceIdentity,
-        landing::{ChainOutcome, ChainSubmit, LatestBlockhash},
+        landing::{signature_fees, ChainOutcome, ChainSubmit, LatestBlockhash},
         owner_notes::OPENED_ROWS,
         relay::RelayParts,
         relay_prover::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver},
+        relay_reservations::{RelayBudget, RelayReservations},
         tracking::{
             fixture::{Enrollment, TrackingLedger},
             HeldEnrollment,
@@ -853,6 +854,11 @@ pub(crate) mod tests {
         count: u8,
     }
 
+    const BUDGET: RelayBudget = RelayBudget {
+        total_lamports: 1_000_000,
+        signer_lamports: 1_000_000,
+    };
+
     pub(crate) struct Fixture {
         pub(crate) hub: Arc<Hub<EscrowRingSource>>,
         builder: Arc<RecordingBuilder>,
@@ -865,6 +871,10 @@ pub(crate) mod tests {
         }
 
         async fn on(store: Store) -> Self {
+            Self::budgeted(store, BUDGET).await
+        }
+
+        async fn budgeted(store: Store, budget: RelayBudget) -> Self {
             let chain = Arc::new(ScriptedChain::default());
             let parts = RelayParts {
                 store,
@@ -874,11 +884,19 @@ pub(crate) mod tests {
             };
             Self {
                 chain,
-                ..Self::serving(None, Some(parts)).await
+                ..Self::serving_within(None, Some(parts), budget).await
             }
         }
 
         pub(crate) async fn serving(delegate: Option<Address>, relay: Option<RelayParts>) -> Self {
+            Self::serving_within(delegate, relay, BUDGET).await
+        }
+
+        async fn serving_within(
+            delegate: Option<Address>,
+            relay: Option<RelayParts>,
+            budget: RelayBudget,
+        ) -> Self {
             // One ring keeps one auditor key, a restart on the same store opens its rows.
             let auditor = X25519Keypair::from_bytes(&[0x5a; 32]);
             let source = EscrowRingSource {
@@ -911,12 +929,7 @@ pub(crate) mod tests {
                     crate::cosign::ApproveClass::Transfers,
                 ]));
             if let Some(relay) = relay {
-                builder = builder.with_relay(relay).with_relay_budget(
-                    crate::relay_reservations::RelayBudget {
-                        total_lamports: 1_000_000,
-                        signer_lamports: 1_000_000,
-                    },
-                );
+                builder = builder.with_relay(relay).with_relay_budget(budget);
             }
             let hub = builder.local(RING, auditor).expect("hub");
             Self {
@@ -1347,7 +1360,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn managed_merge_tree_fees_respect_the_relay_signer_budget() {
-        let fixture = Fixture::new().await;
+        let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let fixture = Fixture::on(store.clone()).await;
         *fixture.builder.tree_fees.lock().expect("tree fees") = 1_000_001;
         let wallet = Keypair::new_from_array([11; 32]);
         fixture.escrow_notes(&wallet, 3).await;
@@ -1357,8 +1371,28 @@ pub(crate) mod tests {
         assert_eq!(*fixture.chain.sent.lock().expect("sent"), 0);
 
         *fixture.builder.tree_fees.lock().expect("tree fees") = 10_000;
-        assert_eq!(fixture.merge_due().await.len(), 1);
+        let [relay_id] = fixture.merge_due().await.try_into().expect("one merge");
         assert_eq!(*fixture.chain.sent.lock().expect("sent"), 1);
+        let held = RelayReservations::new(store.connection())
+            .by_relay(&relay_id)
+            .await
+            .expect("read")
+            .expect("row");
+        assert_eq!(held.lamports, 10_000 + signature_fees(1));
+    }
+
+    /// A merge with no tree fee still spends the fee payer's signature fee.
+    #[tokio::test]
+    async fn a_managed_merge_sends_nothing_at_a_zero_budget() {
+        let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let fixture = Fixture::budgeted(store, RelayBudget::default()).await;
+        let wallet = Keypair::new_from_array([11; 32]);
+        fixture.escrow_notes(&wallet, 3).await;
+        fixture.settle(&wallet, 1).await;
+
+        assert!(fixture.merge_due().await.is_empty());
+        assert_eq!(*fixture.chain.sent.lock().expect("sent"), 0);
+        assert!(fixture.held().await.is_empty());
     }
 }
 

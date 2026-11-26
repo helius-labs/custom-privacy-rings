@@ -779,7 +779,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
-    /// Without it the relay funds no enrollment and no token account.
+    /// Without it the relay sends nothing.
     #[must_use = "use the updated builder"]
     pub const fn with_relay_budget(mut self, budget: RelayBudget) -> Self {
         self.relay_budget = budget;

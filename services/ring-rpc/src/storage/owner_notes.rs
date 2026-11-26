@@ -10,14 +10,15 @@
 //! Read before `operations/utxos.rs`, the wallet reads page over these rows.
 
 use hkdf::Hkdf;
-use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement, Value};
+use sea_orm::{ConnectionTrait, DbErr, QueryResult, Value};
 use sha2::{Digest, Sha256};
 use solana_address::Address;
 use spr_keypair::X25519Keypair;
 use zolana_ring_policy::Member;
 
 use crate::{
-    spent_index::{note_body, note_from_body, slot_value, NoteSeal},
+    spent_index::{note_body, note_from_body, NoteSeal},
+    sql,
     utxos::{history_through, IndexedNote, LateProgress, OwnerPage, OwnerRange, PageDelta},
 };
 
@@ -116,25 +117,24 @@ pub(crate) struct OwnerNoteWrites<'a> {
 impl OwnerNoteWrites<'_> {
     pub(crate) async fn write(self, db: &impl ConnectionTrait) -> Result<(), DbErr> {
         let Self { ring, seal, delta } = self;
-        let backend = db.get_database_backend();
-        let ring_value = || Value::from(ring.as_ref().to_vec());
+        let ring_value = || sql::bytes(ring.as_ref());
         // 1. Each changed note takes its whole row, its spend slot set once a published row names it.
         for change in delta.owner_changes() {
             let note_tag = seal.tags.tag(TagDomain::Note, &change.note.commitment)?;
             let owner_tag = seal.tags.tag(TagDomain::Owner, &change.member)?;
             let spent_slot = match change.note.spent_at {
-                Some(slot) => slot_value(slot)?,
+                Some(slot) => sql::integer(slot)?,
                 None => Value::BigInt(None),
             };
-            db.execute(Statement::from_sql_and_values(
-                backend,
+            db.execute(sql::statement(
+                db,
                 "INSERT INTO owner_notes(ring,owner_tag,note_tag,sealed,spent_slot) \
                  VALUES($1,$2,$3,$4,$5) ON CONFLICT(ring,owner_tag,note_tag) DO UPDATE SET \
                  sealed=excluded.sealed,spent_slot=excluded.spent_slot",
                 vec![
                     ring_value(),
-                    owner_tag.to_vec().into(),
-                    note_tag.to_vec().into(),
+                    sql::bytes(&owner_tag),
+                    sql::bytes(&note_tag),
                     sealed_row(seal, &note_tag, &change.note)?.into(),
                     spent_slot,
                 ],
@@ -143,10 +143,10 @@ impl OwnerNoteWrites<'_> {
         }
         // 2. The history slot before the page bounds the deletion, a read holding that slot or a
         //    later one never counts the change of a note it no longer finds.
-        db.execute(Statement::from_sql_and_values(
-            backend,
+        db.execute(sql::statement(
+            db,
             "DELETE FROM owner_notes WHERE ring=$1 AND spent_slot<=$2",
-            vec![ring_value(), slot_value(delta.prune_through())?],
+            vec![ring_value(), sql::integer(delta.prune_through())?],
         ))
         .await?;
         // 3. A late owner keeps its pending row until a page derives its last note. The resume tag
@@ -154,17 +154,17 @@ impl OwnerNoteWrites<'_> {
         for (owner, progress) in delta.derived_owners() {
             let member = Member::owner_tag(owner)
                 .map_err(|_| DbErr::Custom("owner tag is invalid".into()))?;
-            let member = Value::from(member.as_bytes().to_vec());
+            let member = sql::bytes(member.as_bytes());
             let statement = match progress {
-                LateProgress::Done => Statement::from_sql_and_values(
-                    backend,
+                LateProgress::Done => sql::statement(
+                    db,
                     "DELETE FROM pending_derivations WHERE ring=$1 AND member=$2",
                     vec![ring_value(), member],
                 ),
-                LateProgress::After(tag) => Statement::from_sql_and_values(
-                    backend,
+                LateProgress::After(tag) => sql::statement(
+                    db,
                     "UPDATE pending_derivations SET after_tag=$3 WHERE ring=$1 AND member=$2",
-                    vec![ring_value(), member, tag.to_vec().into()],
+                    vec![ring_value(), member, sql::bytes(tag)],
                 ),
             };
             db.execute(statement).await?;
@@ -190,23 +190,21 @@ impl OwnerNotesPage<'_> {
             limit,
         } = self.range;
         let owner_tag = self.seal.tags.tag(TagDomain::Owner, &member)?;
-        let fetched = i64::try_from(limit.saturating_add(1))
-            .map_err(|_| DbErr::Custom("owner page limit past i64".into()))?;
         let mut values = vec![
-            self.ring.as_ref().to_vec().into(),
-            owner_tag.to_vec().into(),
-            fetched.into(),
+            sql::bytes(self.ring.as_ref()),
+            sql::bytes(&owner_tag),
+            sql::count(limit.saturating_add(1))?,
         ];
         let after_clause = match after {
             Some(tag) => {
-                values.push(tag.to_vec().into());
+                values.push(sql::bytes(&tag));
                 " AND note_tag>$4"
             }
             None => "",
         };
         let rows = db
-            .query_all(Statement::from_sql_and_values(
-                db.get_database_backend(),
+            .query_all(sql::statement(
+                db,
                 format!(
                     "SELECT note_tag,sealed,spent_slot FROM owner_notes WHERE ring=$1 AND \
                      owner_tag=$2{after_clause} ORDER BY note_tag LIMIT $3"
@@ -227,8 +225,7 @@ impl OwnerNotesPage<'_> {
     pub(crate) fn open(&self, row: &QueryResult, member: &[u8; 32]) -> Result<IndexedNote, DbErr> {
         let Self { seal, .. } = self;
         let moved = || DbErr::Custom("owner note row names another note or owner".into());
-        let note_tag =
-            <[u8; 32]>::try_from(row.try_get::<Vec<u8>>("", "note_tag")?).map_err(|_| moved())?;
+        let note_tag: [u8; 32] = sql::read_bytes(row, "note_tag")?;
         #[cfg(test)]
         OPENED_ROWS.with(|opened| opened.set(opened.get() + 1));
         let body = seal.open(&note_tag, &row.try_get::<Vec<u8>>("", "sealed")?)?;
@@ -259,13 +256,7 @@ pub(crate) async fn snapshot_history_through(
     db: &impl ConnectionTrait,
     ring: Address,
 ) -> Result<u64, DbErr> {
-    let query = |sql: &str| {
-        Statement::from_sql_and_values(
-            db.get_database_backend(),
-            sql,
-            vec![ring.as_ref().to_vec().into()],
-        )
-    };
+    let query = |select: &str| sql::statement(db, select, vec![sql::bytes(ring.as_ref())]);
     let slot = |value: Option<i64>| {
         value
             .map(u64::try_from)

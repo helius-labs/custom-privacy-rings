@@ -720,6 +720,7 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
         --prover-url {{localnet-prover-url}} --reader-grants "$reader_grants" \
         --enrollment-apply-ring "$e2e_rings" \
         --enrollment-budget-lamports 1000000000 \
+        --relay-budget-lamports 1000000000 --relay-signer-budget-lamports 1000000000 \
         > "$workdir/ring-rpc-$reader_grants.log" 2>&1 &
       printf 'waiting for ring rpc %s ' "$ring_rpc_url"
       for _ in $(seq 1 60); do

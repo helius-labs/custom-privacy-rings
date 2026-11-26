@@ -28,6 +28,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use spr_rpc_http::{announce::Announcer, forward::UpstreamUrl, MethodPathLayer};
 use thiserror::Error;
 use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
     sync::{watch, Semaphore},
 };
@@ -70,7 +71,23 @@ use crate::{
 const MAX_REQUEST_BODY_SIZE: u32 = 64 * 1024;
 const MAX_RESPONSE_BODY_SIZE: u32 = 16 * 1024 * 1024;
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
-const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const IDLE_TIMEOUTS: IdleTimeouts = IdleTimeouts {
+    first_request: Duration::from_secs(10),
+    keep_alive: Duration::from_secs(60),
+};
+/// Bounds how long a refused client holds its socket.
+const REFUSAL_TIMEOUT: Duration = Duration::from_secs(1);
+const SERVER_FULL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\nconnection: close\r\n\
+retry-after: 1\r\ncontent-length: 0\r\n\r\n";
+
+/// How long a connection with no request in flight keeps its slot.
+#[derive(Clone, Copy)]
+struct IdleTimeouts {
+    /// From the accept to the end of the first request's headers.
+    first_request: Duration,
+    /// From the end of a response to the next request.
+    keep_alive: Duration,
+}
 
 /// Only a loopback bind keeps the decrypted audit data behind a TLS proxy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,13 +131,13 @@ pub async fn run_server<S: TransactionSource + 'static>(
     hub: Arc<Hub<S>>,
     options: ServerOptions,
 ) -> Result<ServerHandle, ServerError> {
-    run_server_with_idle_timeout(hub, options, HEADER_READ_TIMEOUT).await
+    run_server_with_idle_timeouts(hub, options, IDLE_TIMEOUTS).await
 }
 
-async fn run_server_with_idle_timeout<S: TransactionSource + 'static>(
+async fn run_server_with_idle_timeouts<S: TransactionSource + 'static>(
     hub: Arc<Hub<S>>,
     options: ServerOptions,
-    idle_timeout: Duration,
+    idle_timeouts: IdleTimeouts,
 ) -> Result<ServerHandle, ServerError> {
     if options.bind_policy == BindPolicy::LoopbackOnly && !options.bind.is_loopback() {
         return Err(ServerError::PublicBind);
@@ -181,9 +198,10 @@ async fn run_server_with_idle_timeout<S: TransactionSource + 'static>(
         });
     }
     // An owned accept loop, the jsonrpsee server hides the peer address from middleware.
-    let connections = Arc::new(Semaphore::new(
-        usize::try_from(options.max_connections.max(1)).unwrap_or(usize::MAX),
-    ));
+    let slots = usize::try_from(options.max_connections.max(1)).unwrap_or(usize::MAX);
+    let connections = Arc::new(Semaphore::new(slots));
+    // As many refusals as connections answer at once, a flood past both is dropped unanswered.
+    let refusals = Arc::new(Semaphore::new(slots));
     tokio::spawn(async move {
         loop {
             let (socket, peer) = tokio::select! {
@@ -199,12 +217,17 @@ async fn run_server_with_idle_timeout<S: TransactionSource + 'static>(
                 () = stop.clone().shutdown() => break,
             };
             let Ok(permit) = connections.clone().try_acquire_owned() else {
-                drop(socket);
+                if let Ok(refusal) = refusals.clone().try_acquire_owned() {
+                    tokio::spawn(async move {
+                        let _refusal = refusal;
+                        let _ = tokio::time::timeout(REFUSAL_TIMEOUT, refuse(socket)).await;
+                    });
+                }
                 continue;
             };
             let _ = socket.set_nodelay(true);
             let service = services.clone().build(methods.clone(), stop.clone());
-            let (activity, idle) = ConnectionActivity::new(idle_timeout);
+            let (activity, idle) = ConnectionActivity::new(idle_timeouts);
             let connection =
                 tower::service_fn(move |request: HttpRequest<hyper::body::Incoming>| {
                     let guard = activity.enter();
@@ -614,10 +637,19 @@ where
     Ok(())
 }
 
+/// Answers 503 and reads the request away, a close over unread bytes would reset the answer.
+async fn refuse(mut socket: tokio::net::TcpStream) -> std::io::Result<()> {
+    socket.write_all(SERVER_FULL).await?;
+    socket.shutdown().await?;
+    let mut unread = [0; 1024];
+    while socket.read(&mut unread).await? != 0 {}
+    Ok(())
+}
+
 struct ConnectionActivity {
     in_flight: AtomicUsize,
     deadline: watch::Sender<Option<tokio::time::Instant>>,
-    idle_timeout: Duration,
+    keep_alive: Duration,
 }
 
 struct InFlightGuard {
@@ -625,14 +657,16 @@ struct InFlightGuard {
 }
 
 impl ConnectionActivity {
-    fn new(idle_timeout: Duration) -> (Arc<Self>, watch::Receiver<Option<tokio::time::Instant>>) {
-        let initial = tokio::time::Instant::now() + idle_timeout;
+    /// A socket that sends nothing ends at `first_request`, an idle one at `keep_alive` past its
+    /// last response.
+    fn new(timeouts: IdleTimeouts) -> (Arc<Self>, watch::Receiver<Option<tokio::time::Instant>>) {
+        let initial = tokio::time::Instant::now() + timeouts.first_request;
         let (deadline, receiver) = watch::channel(Some(initial));
         (
             Arc::new(Self {
                 in_flight: AtomicUsize::new(0),
                 deadline,
-                idle_timeout,
+                keep_alive: timeouts.keep_alive,
             }),
             receiver,
         )
@@ -651,7 +685,7 @@ impl ConnectionActivity {
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
         if self.activity.in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
-            let next = tokio::time::Instant::now() + self.activity.idle_timeout;
+            let next = tokio::time::Instant::now() + self.activity.keep_alive;
             let _ = self.activity.deadline.send(Some(next));
         }
     }
@@ -1540,11 +1574,57 @@ mod tests {
         handle.stopped().await;
     }
 
-    #[tokio::test]
-    async fn max_connections_caps_concurrent_tcp_connections() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpStream;
+    const GET_HEALTH: &[u8] = b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
 
+    /// One whole response, its status line first.
+    async fn response(stream: &mut tokio::net::TcpStream) -> String {
+        let mut read = Vec::new();
+        loop {
+            let text = String::from_utf8_lossy(&read).to_lowercase();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .map_or(0, |length| length.trim().parse::<usize>().expect("length"));
+                if body.len() >= length {
+                    return text;
+                }
+            }
+            let mut chunk = [0; 1024];
+            match stream.read(&mut chunk).await.expect("response bytes") {
+                0 => panic!("closed inside a response, read {text:?}"),
+                count => read.extend_from_slice(&chunk[..count]),
+            }
+        }
+    }
+
+    /// Returns once the server closed the socket.
+    async fn closed(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+        let mut read = Vec::new();
+        let ended = tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut read));
+        let _ = ended.await.expect("the server closes the socket");
+        read
+    }
+
+    /// A freed slot serves the next connection, a full server answers 503 until then.
+    async fn serves_again(addr: SocketAddr) {
+        let served = async {
+            loop {
+                let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+                stream.write_all(GET_HEALTH).await.expect("request");
+                if response(&mut stream).await.starts_with("http/1.1 200") {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), served)
+            .await
+            .expect("a slot frees");
+    }
+
+    #[tokio::test]
+    async fn a_full_server_answers_503_and_serves_again_once_a_slot_frees() {
         let listen_port = port();
         let mut opts = options(listen_port, Duration::from_secs(2));
         opts.max_connections = 1;
@@ -1553,82 +1633,94 @@ mod tests {
             .expect("server");
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
 
-        let held = TcpStream::connect(addr).await.expect("first connect");
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        let mut held = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        held.write_all(GET_HEALTH).await.expect("request");
+        assert!(response(&mut held).await.starts_with("http/1.1 200"));
 
-        let mut excess = TcpStream::connect(addr).await.expect("second connect");
-        let _ = excess
-            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-            .await;
-        let mut reply = Vec::new();
-        let read = tokio::time::timeout(Duration::from_secs(1), excess.read_to_end(&mut reply))
-            .await
-            .expect("closed promptly");
+        let mut excess = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        excess.write_all(GET_HEALTH).await.expect("request");
+        let refused = String::from_utf8(closed(&mut excess).await).expect("text");
         assert!(
-            read.is_err() || reply.is_empty(),
-            "excess connection should be dropped, got {:?}",
-            String::from_utf8_lossy(&reply)
+            refused.starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
+            "{refused:?}"
         );
+        assert!(refused.contains("connection: close\r\n"));
 
         drop(held);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-
-        let ok = reqwest::get(format!("http://127.0.0.1:{listen_port}/health"))
-            .await
-            .expect("health after slot freed");
-        assert_eq!(ok.status(), StatusCode::OK);
+        serves_again(addr).await;
         handle.stop().expect("stop");
         handle.stopped().await;
     }
 
+    /// The silent socket is the clock, its cut proves the first-request timeout passed.
     #[tokio::test]
-    async fn incomplete_headers_and_idle_keep_alive_release_connection_slots() {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpStream;
-
+    async fn a_silent_socket_is_cut_and_an_idle_keep_alive_connection_is_not() {
         let listen_port = port();
         let mut opts = options(listen_port, Duration::from_secs(2));
-        opts.max_connections = 1;
-        let handle = run_server_with_idle_timeout(
-            hub(source(), Origins::default()),
-            opts,
-            Duration::from_millis(80),
-        )
-        .await
-        .expect("server");
+        opts.max_connections = 2;
+        let timeouts = IdleTimeouts {
+            first_request: Duration::from_millis(50),
+            keep_alive: Duration::from_secs(3_600),
+        };
+        let handle =
+            run_server_with_idle_timeouts(hub(source(), Origins::default()), opts, timeouts)
+                .await
+                .expect("server");
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
 
-        let mut slowloris = TcpStream::connect(addr).await.expect("slowloris connect");
-        slowloris
-            .write_all(b"POST / HTTP/1.1\r\nHost: localhost\r\n")
-            .await
-            .expect("partial header");
-        tokio::time::sleep(Duration::from_millis(140)).await;
+        let mut keep_alive = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        keep_alive.write_all(GET_HEALTH).await.expect("request");
+        assert!(response(&mut keep_alive).await.starts_with("http/1.1 200"));
 
-        let ok = reqwest::get(format!("http://127.0.0.1:{listen_port}/health"))
-            .await
-            .expect("health after slowloris timeout");
-        assert_eq!(ok.status(), StatusCode::OK);
-        let _ = ok.bytes().await;
-        drop(slowloris);
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        for partial in [&b""[..], &b"POST / HTTP/1.1\r\nHost: localhost\r\n"[..]] {
+            let mut silent = tokio::net::TcpStream::connect(addr).await.expect("connect");
+            silent.write_all(partial).await.expect("partial request");
+            assert!(closed(&mut silent).await.is_empty());
+        }
 
-        let mut keep_alive = TcpStream::connect(addr).await.expect("keep-alive connect");
         keep_alive
-            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n")
+            .write_all(GET_HEALTH)
             .await
-            .expect("keep-alive request");
-        let mut buf = [0u8; 512];
-        let read = keep_alive.read(&mut buf).await.expect("keep-alive reply");
-        assert!(read > 0);
-        tokio::time::sleep(Duration::from_millis(140)).await;
-
-        let ok = reqwest::get(format!("http://127.0.0.1:{listen_port}/health"))
-            .await
-            .expect("health after keep-alive idle timeout");
-        assert_eq!(ok.status(), StatusCode::OK);
-        drop(keep_alive);
+            .expect("second request");
+        assert!(response(&mut keep_alive).await.starts_with("http/1.1 200"));
+        serves_again(addr).await;
         handle.stop().expect("stop");
         handle.stopped().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_idle_deadline_moves_from_the_first_request_to_the_keep_alive_timeout() {
+        let timeouts = IdleTimeouts {
+            first_request: Duration::from_secs(10),
+            keep_alive: Duration::from_secs(60),
+        };
+        let cut_within = |idle, wait: u64| async move {
+            tokio::time::timeout(Duration::from_secs(wait), wait_idle_deadline(idle))
+                .await
+                .is_ok()
+        };
+
+        // 1. No request, the socket ends at the first-request timeout and no sooner.
+        let (_activity, idle) = ConnectionActivity::new(timeouts);
+        assert!(!cut_within(idle.clone(), 9).await);
+        assert!(cut_within(idle, 1).await);
+
+        // 2. A request in flight holds the connection past both timeouts.
+        let (activity, idle) = ConnectionActivity::new(timeouts);
+        let in_flight = activity.enter();
+        assert!(!cut_within(idle.clone(), 3_600).await);
+
+        // 3. Past its response the connection idles for the keep-alive timeout.
+        drop(in_flight);
+        assert!(!cut_within(idle.clone(), 59).await);
+        assert!(cut_within(idle.clone(), 1).await);
+
+        // 4. Each response starts the keep-alive timeout again.
+        let (activity, idle) = ConnectionActivity::new(timeouts);
+        drop(activity.enter());
+        assert!(!cut_within(idle.clone(), 59).await);
+        drop(activity.enter());
+        assert!(!cut_within(idle.clone(), 59).await);
+        assert!(cut_within(idle, 1).await);
     }
 }

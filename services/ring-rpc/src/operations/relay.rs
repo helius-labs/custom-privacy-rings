@@ -1,4 +1,4 @@
-use std::{collections::HashSet, future::Future, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use custom_ring_sdk::{FitError, FitSigners, RingError, SealRow, TransactionFit};
@@ -35,7 +35,7 @@ use crate::{
     authority_transfer::AuthorityTransferError,
     cosign::{
         CoSignDecision, CoSignError, CoSignFlows, CoSignPolicy, CoSignRefusal, CoSignRequest,
-        CoSignSettlement, RefusingCoSigner, Ticket,
+        CoSignSettlement, RefusingCoSigner, Sender, Ticket,
     },
     cosigner::DirectCoSign,
     database::Store,
@@ -117,7 +117,7 @@ pub enum RelayError {
     LiveAttempt,
     #[error("the request does not carry the depositor's signature")]
     DepositorSignature,
-    #[error("the relay budget is unset, the operator funds no token account")]
+    #[error("the relay budget is unset, the operator pays for no transaction")]
     BudgetUnset,
     /// One code per row, a client reads the row from the code alone.
     #[error("the sealed auditor stream does not open under the key the records select, seal under the {row:?} row and sign again")]
@@ -316,7 +316,7 @@ impl Relay {
         }
     }
 
-    /// Without it the relay funds no token account.
+    /// Without it the relay sends nothing.
     #[must_use = "use the updated relay"]
     pub const fn with_budget(mut self, budget: RelayBudget) -> Self {
         self.budget = budget;
@@ -430,8 +430,10 @@ impl Relay {
         self.under_lease(lease, staged).await
     }
 
-    /// One caller holds the lease, a concurrent duplicate proves and pays for nothing.
+    /// One caller holds the lease, a concurrent duplicate proves and pays for nothing, and an
+    /// unset budget refuses ahead of any lease or proof.
     async fn admit(&self, admit: Admit<'_>) -> Result<Claim, RingRpcError> {
+        self.require_budget()?;
         let Admit {
             key,
             relay_id,
@@ -594,28 +596,28 @@ impl Relay {
             parties,
             lease,
         } = proven;
-        // 1. Every lamport the message can cost is held before the send, landed rent stays charged.
+        // 1. A message past one transaction with its setup refuses ahead of any charge.
         let MissingSetup {
             mut instructions,
             rent: setup_rent,
         } = self.missing_setup(&setup).await?;
-        let total_rent = setup_rent.saturating_add(proven.tree_fees);
-        let landing_rent = (total_rent > 0).then_some(total_rent);
-        self.reserve(RelaySpend {
-            proven: &proven,
-            lease,
-            setup: &instructions,
-            landing_rent,
-        })
-        .await?;
-        // 2. The message compiles under a fresh blockhash, its fit was checked with the same setup.
         let fee_payer = self.fee_payer();
+        TransactionFit::of(
+            &proven.instruction,
+            FitSigners::new(fee_payer).with_setup(&instructions),
+            proven.budget,
+        )
+        .map(drop)
+        .map_err(refused_fit)?;
         let LatestBlockhash {
             blockhash,
             last_valid_block_height,
         } = self.chain.latest_blockhash().await?;
         instructions.push(proven.instruction.clone());
         let message = compile_message(&fee_payer, &instructions, blockhash, proven.budget)?;
+        // 2. Every lamport the message can cost is held before the send, landed rent stays charged.
+        self.hold(lease, &message, setup_rent.saturating_add(proven.tree_fees))
+            .await?;
         let awaiting = CoSignStep {
             payload: &payload,
             proven,
@@ -718,26 +720,19 @@ impl Relay {
         Ok(staged)
     }
 
-    /// A message past one transaction with its setup refuses ahead of any charge.
-    async fn reserve(&self, spend: RelaySpend<'_>) -> Result<(), RingRpcError> {
-        let RelaySpend {
-            proven,
-            lease,
-            setup,
-            landing_rent,
-        } = spend;
-        let fee_payer = self.fee_payer();
-        TransactionFit::of(
-            &proven.instruction,
-            FitSigners::new(fee_payer).with_setup(setup),
-            proven.budget,
-        )
-        .map(drop)
-        .map_err(refused_fit)?;
-        let Some(landing_rent) = landing_rent else {
-            return Ok(());
+    /// The one charge of every message the fee payer signs, an unset budget holds nothing and
+    /// the store binds no message to a row without it.
+    async fn hold(
+        &self,
+        lease: Lease,
+        message: &VersionedMessage,
+        landing_rent: u64,
+    ) -> Result<(), RingRpcError> {
+        // Only a version 1 header names the whole fee.
+        let VersionedMessage::V1(_) = message else {
+            return Err(RingRpcError::StateUnavailable);
         };
-        let fee = message_fee_of(&proven.instruction, fee_payer);
+        let fee = message_fee(message);
         self.fund(Fund {
             lease,
             lamports: landing_rent.saturating_add(fee),
@@ -745,8 +740,8 @@ impl Relay {
             landing_rent,
             budget: self.budget,
         })
-        .await?;
-        Ok(())
+        .await
+        .map(drop)
     }
 
     /// Only a missing account takes a create, the row reserves its rent alone.
@@ -884,17 +879,7 @@ impl Relay {
             .await?;
         let lease = claim.lease;
         let staged = async {
-            if merge.tree_fees > 0 {
-                let fee = message_fee(&merge.message);
-                self.fund(Fund {
-                    lease,
-                    lamports: merge.tree_fees.saturating_add(fee),
-                    fee_allowance: fee,
-                    landing_rent: merge.tree_fees,
-                    budget: self.budget,
-                })
-                .await?;
-            }
+            self.hold(lease, &merge.message, merge.tree_fees).await?;
             // A merge awaits no wallet signer and demands no co-signer.
             let closing = Closing {
                 co_signature: None,
@@ -1088,8 +1073,18 @@ impl Relay {
             if let Err(error) = self.sweep_abandoned().await {
                 warn!("relay sweep failed {}", redacted(&error));
             }
+            if let Err(error) = self.sweep_wallet_sends().await {
+                warn!("co-sign sweep failed {}", redacted(&error));
+            }
             tokio::time::sleep(interval).await;
         }
+    }
+
+    /// Settles the co-signatures of transactions the wallets sent themselves.
+    pub async fn sweep_wallet_sends(&self) -> Result<(), RingRpcError> {
+        self.co_signer
+            .sweep(self.chain.finalized_tip().await?)
+            .await
     }
 
     /// One pass over the pending relays.
@@ -1186,6 +1181,7 @@ impl Relay {
             message: message.clone(),
             flows: pending.flows.clone(),
             approved_transfer: None,
+            sender: Sender::Relay,
         };
         match self.co_signer.decide(&request).await? {
             CoSignDecision::Signed(signature) => Ok(CollectedSignature {
@@ -1430,14 +1426,6 @@ struct ProvenStep {
     proven: ProvenRelay,
     parties: RelayParties,
     lease: Lease,
-}
-
-struct RelaySpend<'a> {
-    proven: &'a ProvenRelay,
-    lease: Lease,
-    setup: &'a [Instruction],
-    /// `None` holds nothing, `Some(0)` still holds its fee, `Some` counts the tree fees.
-    landing_rent: Option<u64>,
 }
 
 struct StagedAttempt<'a> {
@@ -1746,20 +1734,14 @@ impl RelayPayload {
     }
 }
 
+/// The base fee of each signature and the flat priority fee of the header.
 fn message_fee(message: &VersionedMessage) -> u64 {
+    let priority_fee = match message {
+        VersionedMessage::V1(message) => message.config.priority_fee.unwrap_or_default(),
+        VersionedMessage::Legacy(_) | VersionedMessage::V0(_) => 0,
+    };
     signature_fees(usize::from(message.header().num_required_signatures))
-}
-
-/// The fee of a message holding `instruction`, the compiler counts the fee payer and each other signer once.
-fn message_fee_of(instruction: &Instruction, fee_payer: Address) -> u64 {
-    let signers: HashSet<Address> = instruction
-        .accounts
-        .iter()
-        .filter(|account| account.is_signer)
-        .map(|account| account.pubkey)
-        .chain([fee_payer])
-        .collect();
-    signature_fees(signers.len())
+        .saturating_add(priority_fee)
 }
 
 /// The size the associated token program allocates for a mint, its required extensions included.
@@ -1914,9 +1896,9 @@ mod tests {
         assert_eq!(reservation, ReservationAfterWrite::Keep);
     }
 
-    /// The payer heads SPP's list and a co-owner can repeat, each still signs once.
+    /// A co-owner can repeat and still signs once, the header's priority fee is paid whole.
     #[test]
-    fn the_message_fee_matches_the_compiled_message() {
+    fn the_message_fee_counts_each_signer_once_and_the_priority_fee() {
         let fee_payer = Address::new_from_array([1; 32]);
         let owner = Address::new_from_array([2; 32]);
         let instruction = Instruction {
@@ -1929,19 +1911,20 @@ mod tests {
             ],
             data: vec![custom_ring_interface::tag::TRANSFER],
         };
+        let compiled = |budget| {
+            compile_message(
+                &fee_payer,
+                core::slice::from_ref(&instruction),
+                Default::default(),
+                budget,
+            )
+            .expect("compiled")
+        };
         let budget = ComputeBudgetConfig::new(200_000);
-        let compiled = compile_message(
-            &fee_payer,
-            core::slice::from_ref(&instruction),
-            Default::default(),
-            budget,
-        )
-        .expect("compiled");
-
-        assert_eq!(message_fee_of(&instruction, fee_payer), signature_fees(2));
+        assert_eq!(message_fee(&compiled(budget)), signature_fees(2));
         assert_eq!(
-            message_fee_of(&instruction, fee_payer),
-            message_fee(&compiled)
+            message_fee(&compiled(budget.with_priority_fee(7_000))),
+            signature_fees(2) + 7_000
         );
     }
 

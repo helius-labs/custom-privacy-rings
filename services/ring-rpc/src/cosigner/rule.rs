@@ -4,8 +4,9 @@ use solana_message::VersionedMessage;
 
 use super::scope::ApprovedCall;
 use crate::{
-    cosign::{CoSignFlows, CoSignRefusal, CoSignSettlement, FrameSource, Ticket},
+    cosign::{CoSignFlows, CoSignRefusal, CoSignSettlement, FrameSource, Sender, Ticket},
     error::RingRpcError,
+    landing::FinalizedTip,
 };
 
 #[derive(Clone, Copy)]
@@ -14,6 +15,7 @@ pub struct Operation<'a> {
     pub message: &'a VersionedMessage,
     pub approved_transfer: Option<&'a ApprovedCall>,
     pub flows: &'a CoSignFlows,
+    pub sender: Sender,
     /// Of `message`, the key of every reservation.
     pub ticket: Ticket,
 }
@@ -41,6 +43,11 @@ pub trait CoSignRule: Send + Sync {
 
     /// Keeps or frees what `admit` reserved under the settled ticket.
     async fn settle(&self, _settlement: CoSignSettlement) -> Result<(), RingRpcError> {
+        Ok(())
+    }
+
+    /// Settles one bounded page of what `admit` reserved for a wallet's own send.
+    async fn sweep(&self, _tip: FinalizedTip) -> Result<(), RingRpcError> {
         Ok(())
     }
 
@@ -81,5 +88,10 @@ impl<A: CoSignRule, B: CoSignRule> CoSignRule for Chain<A, B> {
     async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
         self.first.settle(settlement).await?;
         self.next.settle(settlement).await
+    }
+
+    async fn sweep(&self, tip: FinalizedTip) -> Result<(), RingRpcError> {
+        self.first.sweep(tip).await?;
+        self.next.sweep(tip).await
     }
 }

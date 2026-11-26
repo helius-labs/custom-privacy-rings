@@ -11,7 +11,7 @@ use aes_gcm::{
 use custom_ring_interface::REGISTER_KEY_CIPHERTEXT_LEN;
 use sea_orm::{
     AccessMode, ConnectionTrait, DatabaseBackend, DatabaseConnection, DatabaseTransaction, DbErr,
-    IsolationLevel, QueryResult, Statement, TransactionTrait, Value,
+    IsolationLevel, QueryResult, TransactionTrait, Value,
 };
 use sha2::Sha256;
 use solana_address::Address;
@@ -26,6 +26,7 @@ use crate::{
     owner_notes::{IndexTags, OwnerNoteWrites},
     projection_lease::ProjectionLease,
     spend_machine::{SpendRow, SpendState},
+    sql,
     tracking::{HeldEnrollment, TrackingCursor},
     utxos::{CreatedIn, LateOwner, PageDelta, StoredUtxo, MAX_LATE_OWNERS},
 };
@@ -89,11 +90,11 @@ pub(crate) async fn first_unread(
     ring: Address,
 ) -> Result<Option<CreatedIn>, DbErr> {
     connection
-        .query_one(Statement::from_sql_and_values(
-            connection.get_database_backend(),
+        .query_one(sql::statement(
+            connection,
             "SELECT slot,tx_signature,event_index FROM spend_unread_frames WHERE ring=$1 \
              ORDER BY slot,tx_signature,event_index LIMIT 1",
-            vec![Value::from(ring.as_ref().to_vec())],
+            vec![sql::bytes(ring.as_ref())],
         ))
         .await?
         .as_ref()
@@ -278,34 +279,19 @@ fn state_link(state: SpendState) -> Option<[u8; 32]> {
     }
 }
 
-pub(crate) fn slot_value(slot: u64) -> Result<Value, DbErr> {
-    i64::try_from(slot)
-        .map(Value::from)
-        .map_err(|_| DbErr::Custom("spend slot exceeds the column range".into()))
-}
-
 fn frame_values(ring: &Address, frame: &CreatedIn) -> Result<Vec<Value>, DbErr> {
     Ok(vec![
-        ring.as_ref().to_vec().into(),
-        slot_value(frame.slot)?,
-        frame.tx_signature.as_ref().to_vec().into(),
+        sql::bytes(ring.as_ref()),
+        sql::integer(frame.slot)?,
+        sql::bytes(frame.tx_signature.as_ref()),
         i32::from(frame.event_index).into(),
     ])
 }
 
-pub(crate) fn read_bytes<const N: usize>(
-    row: &QueryResult,
-    column: &str,
-) -> Result<[u8; N], DbErr> {
-    <[u8; N]>::try_from(row.try_get::<Vec<u8>>("", column)?)
-        .map_err(|_| DbErr::Custom(format!("spend column {column} has another length")))
-}
-
 pub(crate) fn read_frame(row: &QueryResult) -> Result<CreatedIn, DbErr> {
     Ok(CreatedIn {
-        slot: u64::try_from(row.try_get::<i64>("", "slot")?)
-            .map_err(|_| DbErr::Custom("negative spend slot".into()))?,
-        tx_signature: Signature::from(read_bytes::<64>(row, "tx_signature")?),
+        slot: sql::read_integer(row, "slot")?,
+        tx_signature: Signature::from(sql::read_bytes::<64>(row, "tx_signature")?),
         event_index: u16::try_from(row.try_get::<i32>("", "event_index")?)
             .map_err(|_| DbErr::Custom("spend event index out of range".into()))?,
     })
@@ -397,10 +383,9 @@ impl ProjectionWriter<'_> {
             .map_err(|_| DbErr::Custom("the clock is unreadable".into()))?;
         let transaction = self.db.begin().await?;
         self.lease.fence(&transaction, now).await?;
-        let backend = transaction.get_database_backend();
         transaction
-            .execute(Statement::from_sql_and_values(
-                backend,
+            .execute(sql::statement(
+                &transaction,
                 "INSERT INTO projection_revisions(ring,revision) VALUES($1,1) ON CONFLICT(ring) \
                  DO UPDATE SET revision=projection_revisions.revision+1",
                 vec![self.ring_value()],
@@ -411,15 +396,13 @@ impl ProjectionWriter<'_> {
     }
 
     fn ring_value(&self) -> Value {
-        Value::from(self.ring.as_ref().to_vec())
+        sql::bytes(self.ring.as_ref())
     }
 
     pub(crate) async fn commit_page(&self, delta: &PageDelta) -> Result<CommittedPage, DbErr> {
         let Self { ring, seal, .. } = self;
         let (transaction, revision) = self.begin().await?;
-        let backend = transaction.get_database_backend();
-        let run =
-            |sql: &str, values: Vec<Value>| Statement::from_sql_and_values(backend, sql, values);
+        let run = |query: &str, values: Vec<Value>| sql::statement(&transaction, query, values);
         for (commitment, note) in delta.notes() {
             let sealed = seal.seal(commitment, &note_body(note))?;
             let nullifier_tag = note
@@ -434,7 +417,7 @@ impl ProjectionWriter<'_> {
                      revision=excluded.revision",
                     vec![
                         self.ring_value(),
-                        commitment.to_vec().into(),
+                        sql::bytes(commitment),
                         sealed.into(),
                         Value::Bytes(nullifier_tag.map(|tag| Box::new(tag.to_vec()))),
                         revision.into(),
@@ -446,10 +429,10 @@ impl ProjectionWriter<'_> {
             let link = state_link(row.state)
                 .map(|note| seal.seal(&row.nullifier, &note))
                 .transpose()?;
-            let mut values = vec![self.ring_value(), row.nullifier.to_vec().into()];
+            let mut values = vec![self.ring_value(), sql::bytes(&row.nullifier)];
             values.extend([
-                slot_value(row.frame.slot)?,
-                row.frame.tx_signature.as_ref().to_vec().into(),
+                sql::integer(row.frame.slot)?,
+                sql::bytes(row.frame.tx_signature.as_ref()),
                 i32::from(row.frame.event_index).into(),
                 i32::from(row.position).into(),
                 state_name(row.state).into(),
@@ -469,7 +452,7 @@ impl ProjectionWriter<'_> {
         }
         for fault in delta.faults() {
             let mut values = frame_values(ring, &fault.frame)?;
-            values.push(fault.nullifier.to_vec().into());
+            values.push(sql::bytes(&fault.nullifier));
             transaction
                 .execute(run(
                     "INSERT INTO spend_integrity_faults(ring,slot,tx_signature,event_index, \
@@ -486,7 +469,7 @@ impl ProjectionWriter<'_> {
                      AND event_index=$3",
                     vec![
                         self.ring_value(),
-                        frame.tx_signature.as_ref().to_vec().into(),
+                        sql::bytes(frame.tx_signature.as_ref()),
                         i32::from(frame.event_index).into(),
                     ],
                 ))
@@ -521,7 +504,7 @@ impl ProjectionWriter<'_> {
                         self.ring_value(),
                         after_slot,
                         token,
-                        slot_value(checkpoint.through.slot)?,
+                        sql::integer(checkpoint.through.slot)?,
                         checkpoint.through.block_time.into(),
                     ],
                 ))
@@ -542,65 +525,52 @@ impl ProjectionWriter<'_> {
         cursor: TrackingCursor,
     ) -> Result<(), DbErr> {
         let (transaction, revision) = self.begin().await?;
-        let backend = transaction.get_database_backend();
         for enrollment in held {
             let member = enrollment.member();
             let sealed = self.seal.seal(&member, &enrollment_body(enrollment))?;
             let inserted = transaction
-                .execute(Statement::from_sql_and_values(
-                    backend,
+                .execute(sql::statement(
+                    &transaction,
                     "INSERT INTO held_enrollments(ring,member,sealed,owner_hash_tag,list_key_tag, \
                      revision) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(ring,member) DO NOTHING",
                     vec![
                         self.ring_value(),
-                        member.to_vec().into(),
+                        sql::bytes(&member),
                         sealed.into(),
-                        self.seal
-                            .tags
-                            .owner_hash_tag(&enrollment.owner_hash)?
-                            .to_vec()
-                            .into(),
-                        self.seal
-                            .tags
-                            .list_key_tag(&enrollment.list_key)?
-                            .to_vec()
-                            .into(),
+                        sql::bytes(&self.seal.tags.owner_hash_tag(&enrollment.owner_hash)?),
+                        sql::bytes(&self.seal.tags.list_key_tag(&enrollment.list_key)?),
                         revision.into(),
                     ],
                 ))
                 .await?
                 .rows_affected();
             if inserted != 0 {
-                transaction.execute(Statement::from_sql_and_values(
-                    backend,
+                transaction.execute(sql::statement(
+                    &transaction,
                     "INSERT INTO pending_derivations(ring,member) VALUES($1,$2) ON CONFLICT(ring,member) DO NOTHING",
-                    vec![self.ring_value(), member.to_vec().into()],
+                    vec![self.ring_value(), sql::bytes(&member)],
                 )).await?;
             }
         }
-        let cursor = i64::try_from(cursor.next_leaf())
-            .map_err(|_| DbErr::Custom("tracking cursor past i64".into()))?;
         transaction
-            .execute(Statement::from_sql_and_values(
-                backend,
+            .execute(sql::statement(
+                &transaction,
                 "INSERT INTO tracking_cursors(ring,next_leaf) VALUES($1,$2) \
                  ON CONFLICT(ring) DO UPDATE SET next_leaf=excluded.next_leaf",
-                vec![self.ring_value(), cursor.into()],
+                vec![self.ring_value(), sql::integer(cursor.next_leaf())?],
             ))
             .await?;
         transaction.commit().await
     }
 
     pub(crate) async fn pending_owners(&self) -> Result<Vec<LateOwner>, DbErr> {
-        let limit = i64::try_from(MAX_LATE_OWNERS)
-            .map_err(|_| DbErr::Custom("pending owner limit exceeds the column range".into()))?;
         self.db
-            .query_all(Statement::from_sql_and_values(
-                self.db.get_database_backend(),
+            .query_all(sql::statement(
+                self.db,
                 "SELECT e.member,e.sealed,p.after_tag FROM held_enrollments e JOIN \
                  pending_derivations p ON e.ring=p.ring AND e.member=p.member WHERE e.ring=$1 \
                  ORDER BY e.member LIMIT $2",
-                vec![self.ring_value(), limit.into()],
+                vec![self.ring_value(), sql::count(MAX_LATE_OWNERS)?],
             ))
             .await?
             .iter()
@@ -625,15 +595,15 @@ impl ProjectionWriter<'_> {
         let (transaction, _) = self.begin().await?;
         for (frame, attempt) in attempts {
             transaction
-                .execute(Statement::from_sql_and_values(
-                    transaction.get_database_backend(),
+                .execute(sql::statement(
+                    &transaction,
                     "UPDATE spend_unread_frames SET attempts=$1,retry_after=$2 WHERE ring=$3 \
                      AND tx_signature=$4 AND event_index=$5",
                     vec![
                         i64::from(attempt.attempts).into(),
-                        slot_value(attempt.retry_after)?,
+                        sql::integer(attempt.retry_after)?,
                         self.ring_value(),
-                        frame.tx_signature.as_ref().to_vec().into(),
+                        sql::bytes(frame.tx_signature.as_ref()),
                         i32::from(frame.event_index).into(),
                     ],
                 ))
@@ -664,13 +634,8 @@ impl LoadSpends<'_> {
         let Self {
             ring, seal, scope, ..
         } = self;
-        let query = |sql: &str| {
-            Statement::from_sql_and_values(
-                snapshot.get_database_backend(),
-                sql,
-                vec![Value::from(ring.as_ref().to_vec())],
-            )
-        };
+        let query =
+            |select: &str| sql::statement(snapshot, select, vec![sql::bytes(ring.as_ref())]);
         let mut loaded = LoadedProjection {
             revision: read_revision(snapshot, ring).await?,
             ..LoadedProjection::default()
@@ -707,8 +672,7 @@ impl LoadSpends<'_> {
                 let attempt = RepairAttempt {
                     attempts: u32::try_from(row.try_get::<i64>("", "attempts")?)
                         .map_err(|_| DbErr::Custom("repair attempts out of range".into()))?,
-                    retry_after: u64::try_from(row.try_get::<i64>("", "retry_after")?)
-                        .map_err(|_| DbErr::Custom("negative repair time".into()))?,
+                    retry_after: sql::read_integer(&row, "retry_after")?,
                 };
                 spends.unread.push(frame);
                 if attempt.attempts > 0 {
@@ -723,7 +687,7 @@ impl LoadSpends<'_> {
                 .await?
             {
                 spends.faults.push(SpendRow {
-                    nullifier: read_bytes(&row, "nullifier")?,
+                    nullifier: sql::read_bytes(&row, "nullifier")?,
                     frame: read_frame(&row)?,
                     position: 0,
                     state: SpendState::Observed,
@@ -742,8 +706,7 @@ impl LoadSpends<'_> {
             spends.checkpoint = Checkpoint {
                 position: read_position(&row)?,
                 through: Context {
-                    slot: u64::try_from(row.try_get::<i64>("", "through_slot")?)
-                        .map_err(|_| DbErr::Custom("negative checkpoint slot".into()))?,
+                    slot: sql::read_integer(&row, "through_slot")?,
                     block_time: row.try_get("", "block_time")?,
                 },
             };
@@ -778,7 +741,7 @@ pub(crate) const ENROLLMENT_COLUMNS: &str = "member,sealed";
 
 /// One enrollment row selected with `ENROLLMENT_COLUMNS`, its body bound to its member.
 pub(crate) fn read_enrollment(row: &QueryResult, seal: &NoteSeal) -> Result<HeldEnrollment, DbErr> {
-    let member: [u8; 32] = read_bytes(row, "member")?;
+    let member: [u8; 32] = sql::read_bytes(row, "member")?;
     let body = seal.open(&member, &row.try_get::<Vec<u8>>("", "sealed")?)?;
     let held = enrollment_from_body(&body)?;
     if held.member() != member {
@@ -794,14 +757,14 @@ pub(crate) fn read_note(
     row: &QueryResult,
     seal: &NoteSeal,
 ) -> Result<([u8; 32], StoredUtxo), DbErr> {
-    let commitment: [u8; 32] = read_bytes(row, "commitment")?;
+    let commitment: [u8; 32] = sql::read_bytes(row, "commitment")?;
     let body = seal.open(&commitment, &row.try_get::<Vec<u8>>("", "sealed")?)?;
     Ok((commitment, note_from_body(&body)?))
 }
 
 /// One spend row selected with `ROW_COLUMNS`, its resolved note link opened under the seal.
 pub(crate) fn read_spend_row(row: &QueryResult, seal: &NoteSeal) -> Result<SpendRow, DbErr> {
-    let nullifier: [u8; 32] = read_bytes(row, "nullifier")?;
+    let nullifier: [u8; 32] = sql::read_bytes(row, "nullifier")?;
     let link = row
         .try_get::<Option<Vec<u8>>>("", "sealed_note")?
         .map(|sealed| {
@@ -822,10 +785,10 @@ pub(crate) fn read_spend_row(row: &QueryResult, seal: &NoteSeal) -> Result<Spend
 /// Zero before the ring's first commit.
 pub(crate) async fn read_revision(db: &impl ConnectionTrait, ring: &Address) -> Result<i64, DbErr> {
     let row = db
-        .query_one(Statement::from_sql_and_values(
-            db.get_database_backend(),
+        .query_one(sql::statement(
+            db,
             "SELECT revision FROM projection_revisions WHERE ring=$1",
-            vec![ring.as_ref().to_vec().into()],
+            vec![sql::bytes(ring.as_ref())],
         ))
         .await?;
     row.map_or(Ok(0), |row| row.try_get("", "revision"))

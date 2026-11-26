@@ -158,6 +158,17 @@ impl ChainSubmit for LiveStorageChain {
     ) -> Result<Simulation, RingRpcError> {
         self.submit.simulate(message).await
     }
+
+    async fn blockhash_expiry(
+        &self,
+        blockhash: solana_hash::Hash,
+    ) -> Result<Option<u64>, RingRpcError> {
+        self.submit.blockhash_expiry(blockhash).await
+    }
+
+    async fn finalized_tip(&self) -> Result<crate::landing::FinalizedTip, RingRpcError> {
+        self.submit.finalized_tip().await
+    }
 }
 
 #[async_trait]

@@ -1,10 +1,10 @@
 use std::{collections::HashSet, future::Future, sync::Arc};
 
-use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement, Value};
+use sea_orm::{ConnectionTrait, DbErr, QueryResult, Value};
 use solana_address::Address;
 
 use super::decision::{List, ListEntry, Lists, Subject, SubjectKind};
-use crate::{database::Store, error::RingRpcError};
+use crate::{database::Store, error::RingRpcError, sql};
 
 pub trait ListStore: Send + Sync {
     /// The entries of `ring` that name one of `subjects`, with one allow entry of each closed kind.
@@ -47,20 +47,17 @@ impl ListEntry {
                     SubjectKind::name,
                     &row.try_get::<String>("", "kind")?,
                 )?,
-                id: row
-                    .try_get::<Vec<u8>>("", "subject")?
-                    .try_into()
-                    .map_err(|_| DbErr::Custom("list subject has another length".into()))?,
+                id: sql::read_bytes(row, "subject")?,
             },
         })
     }
 
     fn values(self, ring: Address) -> Vec<Value> {
         vec![
-            Value::from(ring.to_bytes().to_vec()),
+            sql::bytes(ring.as_ref()),
             Value::from(self.list.name()),
             Value::from(self.subject.kind.name()),
-            Value::from(self.subject.id.to_vec()),
+            sql::bytes(&self.subject.id),
         ]
     }
 }
@@ -86,7 +83,7 @@ impl StoredLists {
         limit: u64,
     ) -> Result<Vec<ListEntry>, RingRpcError> {
         let limit = Value::from(i64::try_from(limit).unwrap_or(i64::MAX));
-        let ring = Value::from(ring.to_bytes().to_vec());
+        let ring = sql::bytes(ring.as_ref());
         let order = "ORDER BY subject,kind,list LIMIT";
         let select = "SELECT list,kind,subject FROM cosign_list_entries WHERE ring=$1";
         let (sql, values) = match after {
@@ -95,7 +92,7 @@ impl StoredLists {
                 format!("{select} AND (subject,kind,list)>($2,$3,$4) {order} $5"),
                 vec![
                     ring,
-                    Value::from(entry.subject.id.to_vec()),
+                    sql::bytes(&entry.subject.id),
                     Value::from(entry.subject.kind.name()),
                     Value::from(entry.list.name()),
                     limit,
@@ -107,13 +104,13 @@ impl StoredLists {
 
     async fn execute(&self, sql: &str, values: Vec<Value>) -> Result<(), RingRpcError> {
         let conn = self.0.connection();
-        conn.execute(statement(conn, sql, values)).await?;
+        conn.execute(sql::statement(conn, sql, values)).await?;
         Ok(())
     }
 
     async fn read(&self, sql: &str, values: Vec<Value>) -> Result<Vec<ListEntry>, DbErr> {
         let conn = self.0.connection();
-        conn.query_all(statement(conn, sql, values))
+        conn.query_all(sql::statement(conn, sql, values))
             .await?
             .iter()
             .map(ListEntry::read)
@@ -127,10 +124,7 @@ impl ListStore for StoredLists {
         let first_allow = "list='allow' AND NOT EXISTS (SELECT 1 FROM cosign_list_entries earlier \
                            WHERE earlier.ring=entries.ring AND earlier.list='allow' \
                            AND earlier.kind=entries.kind AND earlier.subject<entries.subject)";
-        let named = (2..subjects.len() + 2)
-            .map(|position| format!("${position}"))
-            .collect::<Vec<_>>()
-            .join(",");
+        let named = sql::placeholders(2, subjects.len());
         let matching = match subjects {
             [] => first_allow.to_owned(),
             _ => format!("subject IN ({named}) OR ({first_allow})"),
@@ -138,12 +132,8 @@ impl ListStore for StoredLists {
         let select = format!(
             "SELECT list,kind,subject FROM cosign_list_entries entries WHERE ring=$1 AND ({matching})"
         );
-        let values = std::iter::once(Value::from(ring.to_bytes().to_vec()))
-            .chain(
-                subjects
-                    .iter()
-                    .map(|subject| Value::from(subject.id.to_vec())),
-            )
+        let values = std::iter::once(sql::bytes(ring.as_ref()))
+            .chain(subjects.iter().map(|subject| sql::bytes(&subject.id)))
             .collect();
         let entries: HashSet<ListEntry> = self.read(&select, values).await?.into_iter().collect();
         Ok(Lists {
@@ -155,8 +145,4 @@ impl ListStore for StoredLists {
             entries,
         })
     }
-}
-
-fn statement(conn: &impl ConnectionTrait, sql: &str, values: Vec<Value>) -> Statement {
-    Statement::from_sql_and_values(conn.get_database_backend(), sql, values)
 }

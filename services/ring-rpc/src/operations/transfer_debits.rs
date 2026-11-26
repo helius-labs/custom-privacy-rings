@@ -186,7 +186,11 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
             ring: self.ring,
         }
         .read(opened.approval_bits)?;
-        Ok(FrameRead::Transfer(TransferRead { co_signers, ..read }))
+        Ok(FrameRead::Transfer(TransferRead {
+            co_signers,
+            nullifiers: opened.audited.nullifiers,
+            ..read
+        }))
     }
 
     /// Waits for no input note the signer run already answers for.
@@ -611,6 +615,7 @@ impl FrameFlows<'_> {
             spends_note: !inputs.is_empty(),
             approval_bits: Some(approval_bits),
             co_signers: Vec::new(),
+            nullifiers: Vec::new(),
         })
     }
 

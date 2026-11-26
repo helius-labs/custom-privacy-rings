@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use bytemuck::{Pod, Zeroable};
-use sea_orm::{ConnectionTrait, DbErr, Statement, Value};
+use sea_orm::{ConnectionTrait, DbErr, Value};
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_indexer_api::{Base64String, Hash};
@@ -15,9 +15,9 @@ use crate::{
     projection_reads::ProjectionReads,
     spend_machine::{SpendRow, SpendState},
     spent_index::{
-        first_unread, read_bytes, read_frame, read_snapshot, read_spend_row, state_name,
-        ROW_COLUMNS,
+        first_unread, read_frame, read_snapshot, read_spend_row, state_name, ROW_COLUMNS,
     },
+    sql::{self, read_bytes},
     utxos::{history_through, CreatedIn},
 };
 
@@ -242,7 +242,7 @@ impl ProjectionReads<'_> {
         let query = |sql: &str, values: Vec<Value>| {
             let mut bound = vec![Value::from(self.ring.as_ref().to_vec())];
             bound.extend(values);
-            Statement::from_sql_and_values(snapshot.get_database_backend(), sql, bound)
+            sql::statement(&snapshot, sql, bound)
         };
         let mut response = GetSpendCoverageResponse::default();
         if cursor.is_first() {
