@@ -1156,9 +1156,11 @@ type RingPaymentRail = Readonly<{
   ): Promise<ProvenRingTransfer>;
 }>;
 
+/** `take` refuses a transfer another line wrote into ahead of any write, the request's transfer serves one call. */
 function ringTransfers(
   input: RingTransfersInput,
   rail: (
+    take: () => CustomRingTransfer,
     request: Parameters<RingTransfers["proveRingTransfer"]>[0],
     ring: Omit<RingTransfersInput, "client">,
     signer: AnonymousSpendSigner | undefined,
@@ -1168,9 +1170,13 @@ function ringTransfers(
   return {
     ringProgramId: ring.ringProgramId,
     proveRingTransfer: async (request, context) => {
-      request.transfer.withOutputTreeId(
-        (await resolveRingOutputTree(client, undefined, context)).treeId,
-      );
+      const { treeId } = await resolveRingOutputTree(client, undefined, context);
+      const take = (): CustomRingTransfer =>
+        CustomRingTransfer.new({
+          ...ring,
+          keys: request.keys,
+          transfer: request.transfer,
+        }).withOutputTree(treeId);
       let authorized: PreparedOwnerSignature | undefined;
       const approval: RingTransferApproval = {
         transaction: {},
@@ -1189,7 +1195,11 @@ function ringTransfers(
                 return authorized.ownerSignature;
               },
             };
-      const proven = await rail(request, ring, signer).proveApproved(client, approval, context);
+      const proven = await rail(take, request, ring, signer).proveApproved(
+        client,
+        approval,
+        context,
+      );
       return {
         instruction: await proven.instruction(),
         computeUnitLimit: provenComputeUnitLimit(proven),
@@ -1200,9 +1210,8 @@ function ringTransfers(
 
 /** Rust `OwnerRingTransfers`, an `owner` signing inside the proof is refused on default-ring inputs. */
 export function ownerRingTransfers(input: RingTransfersInput): RingTransfers {
-  return ringTransfers(input, ({ transfer, payment, keys }, ring, signer) => {
-    transfer.send(payment.recipient, payment.asset, payment.amount);
-    const rail = CustomRingTransfer.new({ ...ring, keys, transfer });
+  return ringTransfers(input, (take, { payment }, _ring, signer) => {
+    const rail = take().withOutput(payment);
     return signer === undefined ? rail : rail.withInProofOwner(signer);
   });
 }
@@ -1212,7 +1221,7 @@ export function anonymousRingTransfers(
   input: RingTransfersInput & Readonly<{ payees: readonly RingAddress[] }>,
 ): RingTransfers {
   const { payees, ...rest } = input;
-  return ringTransfers(rest, ({ transfer, payment, keys }, ring, signer) => {
+  return ringTransfers(rest, (take, { payment }, ring, signer) => {
     if (signer === undefined) throw new RingError("RING_ANONYMOUS_SIGNER_REQUIRED");
     const recipient = payment.recipient.toBytes();
     const to =
@@ -1226,7 +1235,7 @@ export function anonymousRingTransfers(
         ringProgramId: ring.ringProgramId,
         listSalt: new Uint8Array(32) as Bytes32,
       });
-    return CustomRingTransfer.new({ ...ring, keys, transfer })
+    return take()
       .withAnonymousSigner(signer)
       .withPayment({ to, asset: payment.asset, amount: payment.amount, reply: null });
   });

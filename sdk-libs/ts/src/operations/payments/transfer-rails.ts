@@ -244,6 +244,32 @@ export class CustomRingTransfer {
     return new CustomRingTransfer({ ...input, steps, step: steps.taken }, undefined, undefined);
   }
 
+  /** @internal The line writes the output tree and then holds `transfer`, a later line over it is refused. */
+  withOutputTree(outputTreeId: number): CustomRingTransfer {
+    const input = this.#input;
+    input.transfer.withOutputTreeId(outputTreeId);
+    return new CustomRingTransfer(
+      advanced(input),
+      this.#withdrawal,
+      this.#inProofOwner,
+      this.#coOwners,
+    );
+  }
+
+  /** @internal A delivered payment of the signer rail, written by the line that holds `transfer`. */
+  withOutput(
+    output: Readonly<{ recipient: ShieldedAddress; asset: Address; amount: bigint }>,
+  ): CustomRingTransfer {
+    const input = this.#input;
+    input.transfer.send(output.recipient, output.asset, output.amount);
+    return new CustomRingTransfer(
+      advanced(input),
+      this.#withdrawal,
+      this.#inProofOwner,
+      this.#coOwners,
+    );
+  }
+
   /** The frame carries a digest of its totals, the opening reads as `approvalOpening`. */
   withExactApproval(): CustomRingTransfer {
     return new CustomRingTransfer(

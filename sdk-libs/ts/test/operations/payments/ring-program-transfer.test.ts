@@ -11,6 +11,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { initializePoseidon } from "@heliuslabs/spr";
 
 import { TransactWithdrawal } from "@heliuslabs/spr/interface";
+import { treeAddress } from "@heliuslabs/spr/internal";
 import {
   NullifierKey,
   ShieldedKeypair,
@@ -28,9 +29,14 @@ import {
   type ProofOutputUtxo,
 } from "@heliuslabs/spr/transaction";
 
+import { BLOCKHASH } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import { RingAddress } from "../../../src/crypto/keys/ring-address.js";
 import { signingKeySpendSigner } from "../../../src/operations/payments/anonymous.js";
 import { CustomRingTransfer } from "../../../src/operations/payments/transfer-rails.js";
+import {
+  anonymousRingTransfers,
+  ownerRingTransfers,
+} from "../../../src/operations/payments/transfer.js";
 import { ringTransactInstruction } from "../../../src/operations/workflow/pipeline.js";
 import {
   transactionHash,
@@ -431,6 +437,114 @@ describe("builder steps", () => {
       );
     },
   );
+});
+
+describe("ring transfer adapters", () => {
+  beforeAll(initializePoseidon);
+
+  /** Another output tree than a fresh transfer names, the adapter's write then shows. */
+  const client = (fixture: Fixture) => ({
+    ...fixture.client,
+    tree: treeAddress(fixture.client.treeId + 1),
+    treeId: fixture.client.treeId + 1,
+    getLatestBlockhash: async () => BLOCKHASH,
+  });
+  const recipients = (transfer: ConfidentialTransfer) => {
+    const prepared = transfer.prepare();
+    return {
+      outputTreeId: prepared.outputTreeId,
+      paid: prepared.outputs
+        .slice(prepared.senderOutputCount)
+        .map((output) => [hex(output.ownerAddress?.toBytes() ?? new Uint8Array()), output.amount]),
+    };
+  };
+
+  it.each(["confidential", "anonymous"] as const)(
+    "refuses a transfer a builder line holds and leaves it unchanged on a %s ring",
+    async (mode) => {
+      const fixture = await ringFixture({ mode });
+      const signing = SigningKey.generate();
+      const owner = ShieldedKeypair.fromKeypair(signing);
+      const [alice, bob] = [ShieldedKeypair.generate(), ShieldedKeypair.generate()];
+      for (const paid of [alice, bob]) fixture.enroll(paid.shieldedAddress());
+      const { transfer, rail } = ownerRail(
+        fixture,
+        owner,
+        noteInput(owner, 10n, fixture.ringProgramId),
+      );
+      const held = rail.spendPublic(owner.shieldedAddress().solanaAddress()).withPayment({
+        to: new RingAddress({
+          recipient: alice.shieldedAddress(),
+          ringProgramId: fixture.ringProgramId,
+          listSalt: filled(1),
+        }),
+        asset: SOL_MINT,
+        amount: 4n,
+        reply: null,
+      });
+      const before = recipients(transfer);
+      const input = { client: client(fixture), ringProgramId: fixture.ringProgramId, assets };
+      const payee = new RingAddress({
+        recipient: bob.shieldedAddress(),
+        ringProgramId: fixture.ringProgramId,
+        listSalt: filled(1),
+      });
+      const adapter =
+        mode === "confidential"
+          ? ownerRingTransfers(input)
+          : anonymousRingTransfers({ ...input, payees: [payee] });
+      await expect(
+        adapter.proveRingTransfer({
+          transfer,
+          payment: { recipient: bob.shieldedAddress(), asset: SOL_MINT, amount: 2n },
+          keys: walletKeys(owner),
+          feePayer: fixture.authority,
+          owner: signing.publicKey(),
+          authorize: async () => undefined,
+        }),
+      ).rejects.toThrow(ringError("RING_TRANSFER_SUPERSEDED"));
+      expect(recipients(transfer)).toEqual(before);
+      const plan = await held.planForProgram(fixture.client);
+      expect(plan.outputs.map((output) => output.amount).filter((amount) => amount > 0n)).toEqual([
+        6n,
+        4n,
+      ]);
+    },
+  );
+
+  it("never pays twice when a failed proof is tried again with the same request", async () => {
+    const fixture = await ringFixture();
+    const owner = ShieldedKeypair.generate();
+    const bob = ShieldedKeypair.generate();
+    fixture.enroll(owner.shieldedAddress());
+    fixture.enroll(bob.shieldedAddress());
+    const transfer = new ConfidentialTransfer(
+      owner.shieldedAddress(),
+      [noteInput(owner, 10n, fixture.ringProgramId)],
+      fixture.authority,
+    );
+    const request = {
+      transfer,
+      payment: { recipient: bob.shieldedAddress(), asset: SOL_MINT, amount: 2n },
+      keys: walletKeys(owner),
+      feePayer: fixture.authority,
+      authorize: async () => undefined,
+    };
+    const ring = { ringProgramId: fixture.ringProgramId, assets };
+    const down = {
+      ...client(fixture),
+      proveRing: async () => {
+        throw new Error("prover down");
+      },
+    };
+    await expect(
+      ownerRingTransfers({ ...ring, client: down }).proveRingTransfer(request),
+    ).rejects.toThrow("prover down");
+    await expect(
+      ownerRingTransfers({ ...ring, client: client(fixture) }).proveRingTransfer(request),
+    ).rejects.toThrow(ringError("RING_TRANSFER_SUPERSEDED"));
+    expect(recipients(transfer).paid).toEqual([[hex(bob.shieldedAddress().toBytes()), 2n]]);
+  });
 });
 
 describe("payment address list salts", () => {
