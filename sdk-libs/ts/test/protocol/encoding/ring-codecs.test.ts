@@ -429,135 +429,13 @@ describe("ring rpc gateway", () => {
   });
 });
 
-describe("ring deposits", () => {
-  const queue = (results: readonly unknown[]) => {
-    const bodies: Record<string, unknown>[] = [];
-    let call = 0;
-    const fetch = (async (_input: URL | string, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      return new Response(
-        JSON.stringify({ jsonrpc: "2.0", id: 1, result: results[call++] }),
-        JSON_HEADERS,
-      );
-    }) as typeof globalThis.fetch;
-    return { bodies, fetch };
-  };
-  const deposit = (byte: number, slot: number) => ({
-    signature: signatureOf(byte),
-    slot,
-    depositor: addressOf(byte),
-    asset: "11111111111111111111111111111111",
-    amount: byte,
-  });
-
-  it("pages the ring history until the cursor is absent", async () => {
-    const { bodies, fetch } = queue([
-      { deposits: [deposit(1, 9)], cursor: "AQID", oldestSlot: 9 },
-      { deposits: [deposit(2, 4)], oldestSlot: 4 },
-    ]);
-    const rpc = new RingRpc("http://ring.example", {
-      fetch,
-      allowInsecureHttp: true,
-    });
-
-    const first = await rpc.ringDeposits({
-      ringProgramId: addressOf(7),
-      limit: 20,
-    });
-    expect(first.deposits).toHaveLength(1);
-    expect(first.deposits[0]).toEqual({
-      signature: signatureOf(1),
-      slot: 9n,
-      depositor: addressOf(1),
-      asset: "11111111111111111111111111111111",
-      amount: 1n,
-    });
-    expect(first.cursor).toEqual(Uint8Array.of(1, 2, 3));
-    expect(first.oldestSlot).toBe(9n);
-
-    const second = await rpc.ringDeposits({
-      ringProgramId: addressOf(7),
-      cursor: first.cursor as Uint8Array,
-    });
-    expect(second.deposits[0]?.slot).toBe(4n);
-    expect(second.cursor).toBeUndefined();
-    expect(second.oldestSlot).toBe(4n);
-
-    expect(bodies[0]?.["params"]).toEqual({
-      ringProgramId: addressOf(7),
-      limit: 20,
-    });
-    expect(bodies[1]?.["params"]).toEqual({
-      ringProgramId: addressOf(7),
-      cursor: "AQID",
-    });
-  });
-
-  it("keeps a cursor over a page whose signatures held no deposit", async () => {
-    const { fetch } = queue([{ deposits: [], cursor: "BAUG", oldestSlot: 12 }]);
-
-    const page = await new RingRpc("http://ring.example", {
-      fetch,
-      allowInsecureHttp: true,
-    }).ringDeposits({
-      ringProgramId: addressOf(7),
-    });
-
-    expect(page.deposits).toEqual([]);
-    expect(page.cursor).toEqual(Uint8Array.of(4, 5, 6));
-    expect(page.oldestSlot).toBe(12n);
-  });
-
-  it("rejects a malformed deposit signature and depositor", async () => {
-    const base = { slot: 1, asset: SOL_MINT, amount: 1 };
-    await expect(
-      rpcWith({
-        deposits: [{ ...base, depositor: addressOf(1), signature: "1".repeat(87) }],
-      }).ringDeposits({ ringProgramId: addressOf(7) }),
-    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "deposits.signature" } });
-    await expect(
-      rpcWith({
-        deposits: [{ ...base, depositor: "tooShort", signature: signatureOf(1) }],
-      }).ringDeposits({ ringProgramId: addressOf(7) }),
-    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "deposits.depositor" } });
-  });
-
-  it("leaves the oldest slot absent when the page examined nothing", async () => {
-    const { fetch } = queue([{ deposits: [] }]);
-
-    const page = await new RingRpc("http://ring.example", {
-      fetch,
-      allowInsecureHttp: true,
-    }).ringDeposits({
-      ringProgramId: addressOf(7),
-    });
-
-    expect(page.cursor).toBeUndefined();
-    expect(page.oldestSlot).toBeUndefined();
-  });
-
-  it("rejects malformed ringDeposits inputs before any network call", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const rpc = new RingRpc("http://ring.example", { fetch, allowInsecureHttp: true });
-    await expect(
-      rpc.ringDeposits({ ringProgramId: "not-base58!" as Address }),
-    ).rejects.toMatchObject({ code: "RING_RPC" });
-    for (const limit of [0, -1, 1.5, 1001, Number.NaN]) {
-      await expect(rpc.ringDeposits({ ringProgramId: addressOf(7), limit })).rejects.toMatchObject({
-        code: "RING_READ_LIMIT",
-      });
-    }
-    await expect(
-      rpc.ringDeposits({ ringProgramId: addressOf(7), cursor: new Uint8Array(0) }),
-    ).rejects.toMatchObject({ code: "RING_READ_CURSOR" });
+describe("signed ring request validation", () => {
+  it("refuses an auditor key request for a malformed ring", () => {
     expect(() =>
       RingAuditorKeyRequest.forRing("bad-ring" as Address, filled(1, 32) as Bytes32),
     ).toThrow("RING_RPC");
-    expect(fetch).not.toHaveBeenCalled();
   });
-});
 
-describe("signed ring request validation", () => {
   const READER = readerKeyBytes(
     checkedReaderKey(getAddressDecoder().decode(ed25519.getPublicKey(filled(5, 32)))),
   );
@@ -1094,21 +972,13 @@ describe("audited UTXO read", () => {
     ringDataHash: ZERO_32,
     treeId: 4,
   };
-  const deposited: KnownUtxo = {
-    ...keyed,
-    owner: { kind: "deposited", ownerHash: filled(8, 32) as Bytes32 },
-    amount: 7n,
-  };
+  const second: KnownUtxo = { ...keyed, amount: 7n };
 
   function wireUtxo(utxo: KnownUtxo): Record<string, unknown> {
     if (utxo.owner.kind === "unresolved") throw new Error("Ring RPC names every key");
-    const owner =
-      utxo.owner.kind === "keyed"
-        ? { nullifierPk: getAddressDecoder().decode(utxo.owner.nullifierPk) }
-        : { ownerHash: getAddressDecoder().decode(utxo.owner.ownerHash) };
     return {
       ownerKey: getAddressDecoder().decode(utxo.ownerKey),
-      ...owner,
+      nullifierPk: getAddressDecoder().decode(utxo.owner.nullifierPk),
       asset: getAddressDecoder().decode(utxo.asset),
       amount: Number(utxo.amount),
       blinding: getAddressDecoder().decode(utxo.blinding),
@@ -1152,17 +1022,17 @@ describe("audited UTXO read", () => {
     await initializePoseidon();
     const ringId = ringIdField(addressOf(7));
     const keyedHash = rebuiltHash(keyed, ringId);
-    const depositHash = rebuiltHash(deposited, ringId);
+    const secondHash = rebuiltHash(second, ringId);
     const defaultHash = rebuiltHash(keyed, ZERO_32);
-    const requested = [keyedHash, depositHash, defaultHash, filled(2, 32) as Bytes32];
+    const requested = [keyedHash, secondHash, defaultHash, filled(2, 32) as Bytes32];
     const { page, bodies, signer } = await readUtxos(requested, [
       view(keyedHash, wireUtxo(keyed)),
-      view(depositHash, wireUtxo(deposited)),
+      view(secondHash, wireUtxo(second)),
       view(defaultHash, wireUtxo(keyed)),
       null,
     ]);
     expect(page.slot).toBe(13n);
-    expect(page.utxos.map((entry) => entry?.utxo)).toEqual([keyed, deposited, keyed, undefined]);
+    expect(page.utxos.map((entry) => entry?.utxo)).toEqual([keyed, second, keyed, undefined]);
     expect(page.utxos[0]).toMatchObject({
       utxoHash: keyedHash,
       slot: 12n,
@@ -1194,7 +1064,7 @@ describe("audited UTXO read", () => {
     ["another amount", (utxo) => (utxo["amount"] = 10)],
     ["another tree", (utxo) => (utxo["treeId"] = 5)],
     [
-      "both a nullifier key and the owner hash it makes",
+      "an owner hash, a field the wire shape does not hold",
       (utxo) =>
         (utxo["ownerHash"] = getAddressDecoder().decode(
           ownerHash(solanaOwnerIdentity(filled(3, 32)), filled(4, 32)),
@@ -1234,10 +1104,10 @@ describe("audited UTXO read", () => {
     await initializePoseidon();
     const ringId = ringIdField(addressOf(7));
     const first = rebuiltHash(keyed, ringId);
-    const second = rebuiltHash(deposited, ringId);
-    const answers = [view(first, wireUtxo(keyed)), view(second, wireUtxo(deposited))];
+    const other = rebuiltHash(second, ringId);
+    const answers = [view(first, wireUtxo(keyed)), view(other, wireUtxo(second))];
     for (const utxos of [[answers[0]], [null, answers[0]], [answers[1], answers[0]]])
-      await expect(readUtxos([first, second], utxos)).rejects.toMatchObject({ code: "RING_RPC" });
+      await expect(readUtxos([first, other], utxos)).rejects.toMatchObject({ code: "RING_RPC" });
   });
 });
 

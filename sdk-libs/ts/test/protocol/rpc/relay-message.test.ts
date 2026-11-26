@@ -1,4 +1,5 @@
 /** Refuses a relay message that moves more than the request, against the Rust check's vectors. */
+import { TRANSACTION_SIZE_LIMIT } from "@heliuslabs/spr/interface";
 import {
   AccountRole,
   type AccountMeta,
@@ -70,10 +71,17 @@ import {
   openingHash,
   ZERO_ADDRESS,
   type ExpectedRelayMessage,
-  type DelegateRingConfig,
+  type PublicLeg,
 } from "../../../src/rpc/relay-message.js";
+import { decodeRingPolicy } from "../../../src/protocol/codec/ring-codecs.js";
+import { ringPolicyData } from "../../helpers/ring-accounts.js";
+import { knownVerdict, vectorRingPolicy } from "../../helpers/relay-vectors.js";
 import { ringFrame } from "../../helpers/ring-frame.js";
-import { ringAuthAddress, ringPolicyAddress } from "../../../src/protocol/pda/index.js";
+import {
+  ringAuthAddress,
+  ringCoSignerAddress,
+  ringPolicyAddress,
+} from "../../../src/protocol/pda/index.js";
 import {
   PendingRelaySignature,
   UnsignedRelay,
@@ -96,6 +104,7 @@ interface MessageCase {
 }
 
 interface Vector<R> {
+  readonly ringPolicy: string;
   readonly request: R;
   readonly cases: readonly MessageCase[];
 }
@@ -174,11 +183,7 @@ function delegate(
       },
     } as unknown as PrepareAuthorityTransferRequest,
     quote: { feePayer: request.feePayer, validUntilSlot: 0n },
-    config: {
-      mode: "confidential",
-      auditorPublicKey: auditorOf(request),
-      delegate: prepare.delegate,
-    },
+    config: vectorRingPolicy(pinned),
     allowed: pinnedAllowed(pinned),
     // The vector's frames append to Rust `support::TREE_ID`.
     outputTreeId: 0,
@@ -291,28 +296,32 @@ const RELAY_ID = "11111111111111111111111111111111" as indexerTypes.Hash;
 const delegates = vector<DelegateRequest>("relay_delegate_messages.json");
 const settlements = vector<DelegateRequest>("relay_delegate_settlement_messages.json");
 const DELEGATE = delegates.request.prepare.delegate;
-const owners = fixture<{ readonly cases: readonly OwnerCase[] }>("relay_transfer_messages.json");
+const owners = fixture<{ readonly ringPolicy: string; readonly cases: readonly OwnerCase[] }>(
+  "relay_transfer_messages.json",
+);
 
 describe("relay message check", () => {
   it.each(delegates.cases)("reaches the Rust verdict on delegate message $name", async (entry) => {
-    expect(verdict(await delegate(delegates.request), entry.message)).toBe(entry.verdict);
+    expect(verdict(await delegate(delegates.request), entry.message)).toBe(
+      knownVerdict(entry.verdict),
+    );
   });
 
   it.each(settlements.cases)("binds every hosted settlement field for $name", async (entry) => {
     expect(verdict(await delegate(settlements.request, settlements), entry.message)).toBe(
-      entry.verdict,
+      knownVerdict(entry.verdict),
     );
   });
 
   it.each(owners.cases)("reaches the Rust verdict on owner message $name", async (entry) => {
     const expected = await expectedPublicOwner({
       terms: decodeRelayTransferTerms(JSON.stringify(entry.terms)),
-      config: { mode: "anonymous" } as DelegateRingConfig,
+      config: vectorRingPolicy(owners),
       knownNotes: entry.knownNullifiers.map((nullifier) => ({
         nullifier: new Uint8Array(base58.encode(nullifier)) as Bytes32,
       })),
     });
-    expect(verdict(expected, entry.message, entry.terms.signer)).toBe(entry.verdict);
+    expect(verdict(expected, entry.message, entry.terms.signer)).toBe(knownVerdict(entry.verdict));
   });
 
   it("refuses a delegate message for a foreign signer", async () => {
@@ -467,7 +476,7 @@ describe("relay message check", () => {
       expect(await verdictOf({ ...honestFrame(), interfaceTransfers: [leg] })).toBe("Accounts");
       expect(
         await verdictOf({ ...honestFrame(), interfaceTransfers: [leg] }, withdrawalAccounts),
-      ).toBe("Data");
+      ).toBe("Legs");
     });
 
     it("refuses a delegate moved into forwarded accounts or a writable prefix account", async () => {
@@ -532,11 +541,7 @@ describe("relay message check", () => {
           },
         } as unknown as PrepareAuthorityTransferRequest,
         quote: { feePayer: delegates.request.feePayer, validUntilSlot: 0n },
-        config: {
-          mode: "confidential",
-          auditorPublicKey: auditorOf(delegates.request),
-          delegate: delegates.request.prepare.delegate,
-        },
+        config: vectorRingPolicy(delegates),
         allowed: {
           checkSources: () => undefined,
           countsSpends: () => false,
@@ -620,7 +625,7 @@ describe("relay message check", () => {
       return verdict(
         await expectedPublicOwner({
           terms: named,
-          config: { mode: "anonymous" } as DelegateRingConfig,
+          config: vectorRingPolicy(owners),
           knownNotes: entry.knownNullifiers.map((nullifier) => ({
             nullifier: new Uint8Array(base58.encode(nullifier)) as Bytes32,
           })),
@@ -710,7 +715,7 @@ describe("relay message check", () => {
         await verdictWith({ ...terms, slots: [valued, ...terms.slots.slice(1)] }, [dummy]),
       ).toBe("Recipients");
     });
-    it("refuses a public owner placed in an SPL deposit authority slot or a hidden withdrawal", async () => {
+    it("refuses a public owner placed in an SPL deposit authority slot or a leg its terms do not name", async () => {
       const baseIx = instruction();
       const baseFrame = RingTransactData.parse(
         Uint8Array.from(baseIx.data ?? []).subarray(1),
@@ -744,20 +749,25 @@ describe("relay message check", () => {
         ],
         computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
       });
-      const expected = await expectedPublicOwner({
-        terms,
-        config: { mode: "anonymous" } as DelegateRingConfig,
-        knownNotes: entry.knownNullifiers.map((nullifier) => ({
-          nullifier: new Uint8Array(base58.encode(nullifier)) as Bytes32,
-        })),
-      });
-      expect(
-        verdict(
-          expected,
-          Buffer.from(new Uint8Array(confused.messageBytes)).toString("base64"),
-          terms.signer,
-        ),
-      ).toBe("Accounts");
+      const naming = (legs: readonly PublicLeg[]) =>
+        expectedPublicOwner({
+          terms: { ...terms, legs },
+          config: vectorRingPolicy(owners),
+          knownNotes: entry.knownNullifiers.map((nullifier) => ({
+            nullifier: new Uint8Array(base58.encode(nullifier)) as Bytes32,
+          })),
+        });
+      const groupOf = (metas: readonly AccountMeta[]) => metas.map((meta) => meta.address);
+      const expected = await naming(terms.legs);
+      const confusedMessage = Buffer.from(new Uint8Array(confused.messageBytes)).toString("base64");
+      const deposit: PublicLeg = {
+        direction: "deposit",
+        mint: splDepositAccounts[0]?.address ?? null,
+        amount: 500n,
+        accounts: groupOf(splDepositAccounts),
+      };
+      expect(verdict(expected, confusedMessage, terms.signer)).toBe("Legs");
+      expect(verdict(await naming([deposit]), confusedMessage, terms.signer)).toBe("Accounts");
 
       for (const leg of [
         { kind: "solWithdrawal" as const, amount: 10n },
@@ -795,13 +805,32 @@ describe("relay message check", () => {
           ],
           computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
         });
+        const withdrawnMessage = Buffer.from(new Uint8Array(withdrawn.messageBytes)).toString(
+          "base64",
+        );
+        const withdrawal: PublicLeg = {
+          direction: "withdrawal",
+          mint: leg.kind === "solWithdrawal" ? null : (extra[1]?.address ?? null),
+          amount: 10n,
+          accounts: groupOf(extra),
+        };
+        expect(verdict(expected, withdrawnMessage, terms.signer)).toBe("Legs");
+        for (const changed of [
+          { amount: 11n },
+          { direction: "deposit" as const },
+          { mint: leg.kind === "solWithdrawal" ? (extra[0]?.address ?? null) : null },
+          { accounts: groupOf(extra).toReversed() },
+          { accounts: groupOf(extra).slice(1) },
+        ])
+          expect(
+            verdict(await naming([{ ...withdrawal, ...changed }]), withdrawnMessage, terms.signer),
+          ).toBe("Legs");
         expect(
-          verdict(
-            expected,
-            Buffer.from(new Uint8Array(withdrawn.messageBytes)).toString("base64"),
-            terms.signer,
-          ),
-        ).toBe("Data");
+          verdict(await naming([withdrawal, withdrawal]), withdrawnMessage, terms.signer),
+        ).toBe("Legs");
+        expect(verdict(await naming([withdrawal]), withdrawnMessage, terms.signer)).toBe(
+          "Accepted",
+        );
       }
 
       const writablePrefix = compileUnsignedTransaction({
@@ -823,6 +852,20 @@ describe("relay message check", () => {
         verdict(
           expected,
           Buffer.from(new Uint8Array(writablePrefix.messageBytes)).toString("base64"),
+          terms.signer,
+        ),
+      ).toBe("Accounts");
+
+      const ownerTwiceInRun = compileUnsignedTransaction({
+        feePayer: terms.feePayer,
+        lifetime: SIZE_PROBE_LIFETIME,
+        instructions: [{ ...baseIx, accounts: [...baseAccounts, signerMeta] }],
+        computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+      });
+      expect(
+        verdict(
+          expected,
+          Buffer.from(new Uint8Array(ownerTwiceInRun.messageBytes)).toString("base64"),
           terms.signer,
         ),
       ).toBe("Accounts");
@@ -931,7 +974,7 @@ describe("relay message check", () => {
       });
       const unopenedExpected = await expectedPublicOwner({
         terms: { ...terms, slots: terms.slots.slice(1) },
-        config: { mode: "anonymous" } as DelegateRingConfig,
+        config: vectorRingPolicy(owners),
         knownNotes: entry.knownNullifiers.map((nullifier) => ({
           nullifier: new Uint8Array(base58.encode(nullifier)) as Bytes32,
         })),
@@ -954,6 +997,11 @@ describe("relay message check", () => {
     const MINT = key(4);
     const TOKEN_PROGRAM = key(5);
     const OTHER_OWNER = key(6);
+    const POLICY = decodeRingPolicy(ringPolicyData({ bump: 255, tracking: key(40) }));
+    const coSignerPair = async (): Promise<readonly AccountMeta[]> => [
+      { address: await ringCoSignerAddress(RING, SIGNER), role: AccountRole.READONLY },
+      { address: SIGNER, role: AccountRole.READONLY_SIGNER },
+    ];
 
     const buildRingAccounts = async (
       prefixTail: readonly AccountMeta[],
@@ -963,6 +1011,7 @@ describe("relay message check", () => {
       const spp = (at: number, role: AccountRole): AccountMeta => ({ address: key(at), role });
       return [
         { address: await ringPolicyAddress(RING), role: AccountRole.READONLY },
+        { address: POLICY.tracking, role: AccountRole.READONLY },
         ...prefixTail,
         { address: PAYER, role: AccountRole.WRITABLE_SIGNER },
         spp(10, AccountRole.WRITABLE),
@@ -983,11 +1032,7 @@ describe("relay message check", () => {
       });
 
       const coFrame = ringFrame({ rail: "confidential", inputs: 1, outputs: 2 });
-      const coAccounts = await buildRingAccounts(
-        [{ address: SIGNER, role: AccountRole.READONLY_SIGNER }],
-        coFrame,
-        [],
-      );
+      const coAccounts = await buildRingAccounts(await coSignerPair(), coFrame, []);
       const coCompiled = compileUnsignedTransaction({
         feePayer: PAYER,
         lifetime: SIZE_PROBE_LIFETIME,
@@ -1001,7 +1046,7 @@ describe("relay message check", () => {
         ring: RING,
         feePayer: PAYER,
         signer: SIGNER,
-        config: { mode: "confidential" },
+        config: POLICY,
         setup: [setup],
         rule: { kind: "threshold", accepts: coFrame.approval },
       });
@@ -1039,10 +1084,10 @@ describe("relay message check", () => {
           ring: RING,
           feePayer: PAYER,
           signer: SIGNER,
-          legs: [{ amount: 5n }],
+          legs: [{ direction: "deposit", mint: null, amount: 5n, accounts: [key(30), SIGNER] }],
           setup: [setup],
         },
-        config: { mode: "confidential" },
+        config: POLICY,
       });
       expect(
         verdict(
@@ -1051,6 +1096,129 @@ describe("relay message check", () => {
           SIGNER,
         ),
       ).toBe("Accepted");
+    });
+
+    const coSignerMessage = async (
+      prefixTail: readonly AccountMeta[],
+      run: readonly AccountMeta[] = [],
+    ): Promise<Uint8Array> => {
+      const frame = ringFrame({ rail: "confidential", inputs: 1, outputs: 2 });
+      const { messageBytes } = compileUnsignedTransaction({
+        feePayer: PAYER,
+        lifetime: SIZE_PROBE_LIFETIME,
+        instructions: [
+          {
+            programAddress: RING,
+            accounts: await buildRingAccounts(prefixTail, frame, run),
+            data: ringInstructionData(frame),
+          },
+        ],
+        computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
+      });
+      return new Uint8Array(messageBytes);
+    };
+    const coSignerVerdict = async (bytes: Uint8Array): Promise<string> => {
+      const expected = await expectedCoSigner({
+        ring: RING,
+        feePayer: PAYER,
+        signer: SIGNER,
+        config: POLICY,
+        setup: [],
+        rule: { kind: "threshold", accepts: 0 },
+      });
+      return verdict(expected, Buffer.from(bytes).toString("base64"), SIGNER);
+    };
+
+    it("holds a co-signer to the signer slot of its own pair, read-only", async () => {
+      const [record, signer] = await coSignerPair();
+      if (record === undefined || signer === undefined) throw new Error("no pair");
+      const read = (byte: number): AccountMeta => ({
+        address: key(byte),
+        role: AccountRole.READONLY,
+      });
+      for (const prefixTail of [
+        [record, signer],
+        [read(50), read(51), record, signer],
+      ])
+        expect(await coSignerVerdict(await coSignerMessage(prefixTail))).toBe("Accepted");
+
+      for (const [prefixTail, run] of [
+        [[read(50), signer]],
+        [[signer, record]],
+        [[signer]],
+        [[{ ...record, role: AccountRole.WRITABLE }, signer]],
+        [[record, { ...signer, role: AccountRole.WRITABLE_SIGNER }]],
+        [[record, { ...signer, role: AccountRole.READONLY }]],
+        [[record, signer], [signer]],
+        [[record, signer, record, signer]],
+        [[read(50), read(51)], [signer]],
+      ] as const)
+        expect(await coSignerVerdict(await coSignerMessage(prefixTail, run))).toBe("Accounts");
+    });
+
+    it("accepts 64 account addresses and refuses 65", async () => {
+      const pair = await coSignerPair();
+      const fixed = getCompiledTransactionMessageDecoder().decode(await coSignerMessage(pair));
+      const full = await coSignerMessage(
+        pair,
+        Array.from({ length: 64 - fixed.staticAccounts.length }, (_, at) => ({
+          address: key(100 + at),
+          role: AccountRole.READONLY,
+        })),
+      );
+      const decoded = getCompiledTransactionMessageDecoder().decode(full);
+      if (decoded.version !== 1) throw new Error("expected v1 compiled message");
+      expect(decoded.staticAccounts).toHaveLength(64);
+      expect(await coSignerVerdict(full)).toBe("Accepted");
+      // One more read-only account, named last in the ring instruction's owner run.
+      const over = getCompiledTransactionMessageEncoder().encode({
+        ...decoded,
+        header: {
+          ...decoded.header,
+          numReadonlyNonSignerAccounts: decoded.header.numReadonlyNonSignerAccounts + 1,
+        },
+        numStaticAccounts: 65,
+        staticAccounts: [...decoded.staticAccounts, key(99)],
+        instructionHeaders: decoded.instructionHeaders.map((header) => ({
+          ...header,
+          numInstructionAccounts: header.numInstructionAccounts + 1,
+        })),
+        instructionPayloads: decoded.instructionPayloads.map((payload) => ({
+          ...payload,
+          instructionAccountIndices: [...payload.instructionAccountIndices, 64],
+        })),
+      });
+      expect(await coSignerVerdict(new Uint8Array(over))).toBe("Undecodable");
+    });
+
+    it("reads a message of 4,096 bytes and refuses one byte more", async () => {
+      const decoded = getCompiledTransactionMessageDecoder().decode(
+        await coSignerMessage(await coSignerPair()),
+      );
+      if (decoded.version !== 1) throw new Error("expected v1 compiled message");
+      const padded = (length: number): Uint8Array => {
+        const fill = length - getCompiledTransactionMessageEncoder().encode(decoded).length;
+        return new Uint8Array(
+          getCompiledTransactionMessageEncoder().encode({
+            ...decoded,
+            instructionHeaders: decoded.instructionHeaders.map((header) => ({
+              ...header,
+              numInstructionDataBytes: header.numInstructionDataBytes + fill,
+            })),
+            instructionPayloads: decoded.instructionPayloads.map((payload) => ({
+              ...payload,
+              instructionData: Uint8Array.from([
+                ...payload.instructionData,
+                ...new Uint8Array(fill),
+              ]),
+            })),
+          }),
+        );
+      };
+      expect(padded(TRANSACTION_SIZE_LIMIT)).toHaveLength(TRANSACTION_SIZE_LIMIT);
+      // The padded frame fails its own parse, past the size and canonical form checks.
+      expect(await coSignerVerdict(padded(TRANSACTION_SIZE_LIMIT))).toBe("Data");
+      expect(await coSignerVerdict(padded(TRANSACTION_SIZE_LIMIT + 1))).toBe("Undecodable");
     });
 
     it("rejects setup-only accounts escalated to writable or signer and smuggled omitted ATAs", async () => {
@@ -1065,11 +1233,7 @@ describe("relay message check", () => {
         ...secondSetup,
       });
       const coFrame = ringFrame({ rail: "confidential", inputs: 1, outputs: 2 });
-      const coAccounts = await buildRingAccounts(
-        [{ address: SIGNER, role: AccountRole.READONLY_SIGNER }],
-        coFrame,
-        [],
-      );
+      const coAccounts = await buildRingAccounts(await coSignerPair(), coFrame, []);
       const ringIx: Instruction = {
         programAddress: RING,
         accounts: coAccounts,
@@ -1079,7 +1243,7 @@ describe("relay message check", () => {
         ring: RING,
         feePayer: PAYER,
         signer: SIGNER,
-        config: { mode: "confidential" },
+        config: POLICY,
         setup: [firstSetup, secondSetup],
         rule: { kind: "threshold", accepts: coFrame.approval },
       });

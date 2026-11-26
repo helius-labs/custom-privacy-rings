@@ -51,7 +51,7 @@ describe.skipIf(process.env["RING_GATEWAY_URL"] === undefined)("ring gateway", (
     }
   });
 
-  it.each(["ringStatus", "ringDeposits", "createAuditorKey", "getDecryptedTransactions"])(
+  it.each(["ringStatus", "createAuditorKey", "getDecryptedTransactions"])(
     "dispatches %s to its handler, which validates its parameters",
     async (method) => {
       const response = await post(
@@ -64,7 +64,7 @@ describe.skipIf(process.env["RING_GATEWAY_URL"] === undefined)("ring gateway", (
     },
   );
 
-  it.each(["ringStatus", "ringDeposits", "createAuditorKey", "getDecryptedTransactions"])(
+  it.each(["ringStatus", "createAuditorKey", "getDecryptedTransactions"])(
     "refuses %s on the health route before dispatch",
     async (method) => {
       const response = await post(

@@ -6,7 +6,7 @@ use spr_client::AsyncRpc;
 use spr_indexer_api::{Hash, SerializablePubkey, SerializableSignature};
 use spr_keypair::{NullifierKey, PublicKey, SigningKey};
 use spr_program::instruction::CreateAssociatedTokenAccount;
-use spr_transaction::instructions::transact::{SettlementTransfer, SppProofOutputUtxo};
+use spr_transaction::instructions::transact::SppProofOutputUtxo;
 use zolana_ring_client::rpc::{
     PrepareRelayRequest, ProofInputBytes, RelayCoOwner, RelayIntent, RelayProofInputs, RelayQuote,
     RelayRail, TokenAccountSetup,
@@ -21,8 +21,8 @@ use super::{
 };
 use crate::{
     relay_message::{
-        ApprovalOpening, ExpectedMessage, FundedLeg, RelayFunderTerms, RelayTransferTerms,
-        SealedTerms, SlotOpening, TokenAccountCreate,
+        ApprovalOpening, ExpectedMessage, LegDirection, PublicLeg, RelayFunderTerms,
+        RelayTransferTerms, SealedTerms, SlotOpening, TokenAccountCreate,
     },
     PreparedRelay, RingError,
 };
@@ -269,6 +269,22 @@ impl RingTransfer<Delegated<'_>> {
 }
 
 impl<P: Planned> Sealed<'_, P> {
+    /// Each staged leg with its settlement group, in frame order.
+    fn public_legs(&self) -> Result<Vec<PublicLeg>, RingError> {
+        let staged = &self.pipeline.staged;
+        staged
+            .proof_inputs
+            .external_data
+            .interface_transfers
+            .iter()
+            .zip(&staged.interface_transfer_accounts)
+            .map(|(transfer, accounts)| {
+                let transfer = transfer.interface_transfer();
+                PublicLeg::of(LegDirection::of(transfer), transfer.amount(), accounts)
+            })
+            .collect()
+    }
+
     /// One per key funding a deposit leg, a leg the fee payer or a signing owner funds is refused.
     fn funder_terms(
         &self,
@@ -280,20 +296,17 @@ impl<P: Planned> Sealed<'_, P> {
         let ring = self.pipeline.ring.program_id();
         let setup = token_account_creates(setup);
         let mut terms: Vec<RelayFunderTerms> = Vec::new();
-        for (transfer, accounts) in transfers.iter().zip(&staged.interface_transfer_accounts) {
+        let staged_legs = transfers
+            .iter()
+            .zip(&staged.interface_transfer_accounts)
+            .zip(self.public_legs()?);
+        for ((transfer, accounts), leg) in staged_legs {
             let Some(funder) = deposit_funder(&transfer.interface_transfer(), accounts) else {
                 continue;
             };
             if funder == fee_payer || staged.owner_signers.contains(&funder) {
                 return Err(RingError::RelayFeePayerFundsDeposit);
             }
-            let leg = FundedLeg {
-                mint: match transfer {
-                    SettlementTransfer::Spl { mint, .. } => Some(SerializablePubkey(*mint)),
-                    SettlementTransfer::Sol { .. } => None,
-                },
-                amount: transfer.interface_transfer().amount(),
-            };
             match terms.iter_mut().find(|held| held.signer.0 == funder) {
                 Some(held) => held.legs.push(leg),
                 None => terms.push(RelayFunderTerms {
@@ -318,6 +331,7 @@ impl<P: Planned> Sealed<'_, P> {
         let inputs = &staged.proof_inputs;
         let ring = self.pipeline.ring.program_id();
         let setup = token_account_creates(setup);
+        let legs = self.public_legs()?;
         let slots = published_outputs(&inputs.output_utxos)
             .iter()
             .zip(0u32..)
@@ -339,6 +353,7 @@ impl<P: Planned> Sealed<'_, P> {
                         .filter(|input| input.is_note() && input.utxo.owner == key)
                         .map(|input| Hash(input.nullifier()))
                         .collect(),
+                    legs: legs.clone(),
                     setup: setup.clone(),
                 }
             })

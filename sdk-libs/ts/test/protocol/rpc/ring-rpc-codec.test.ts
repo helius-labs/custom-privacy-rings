@@ -190,39 +190,7 @@ describe("getListSalt", () => {
     expect(JSON.stringify(encodeGetListSaltRequest(request))).toBe(vector.wire);
   });
 
-  it("reads a salt and an owner with no row, preferring listSalt and rejecting non-canonical salts", async () => {
-    const { request } = await signed();
-    const salt = new Uint8Array(32).fill(9);
-    const ringSalt = new Uint8Array(32).fill(7);
-    const text = getBase58Decoder().decode(salt);
-    const ringText = getBase58Decoder().decode(ringSalt);
-    await expect(answering({ result: { listSalt: text } }).getListSalt(request)).resolves.toEqual(
-      salt,
-    );
-    await expect(
-      answering({ result: { ringSalt: ringText } }).getListSalt(request),
-    ).resolves.toEqual(ringSalt);
-    await expect(
-      answering({ result: { listSalt: text, ringSalt: ringText } }).getListSalt(request),
-    ).resolves.toEqual(salt);
-    await expect(answering({ result: {} }).getListSalt(request)).resolves.toBeUndefined();
-    const nonCanonical = getBase58Decoder().decode(new Uint8Array(32).fill(0xff));
-    await expect(
-      answering({ result: { listSalt: nonCanonical } }).getListSalt(request),
-    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.listSalt" } });
-    await expect(
-      answering({ result: { ringSalt: nonCanonical } }).getListSalt(request),
-    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.ringSalt" } });
-    await expect(
-      answering({ result: { listSalt: text, ringSalt: nonCanonical } }).getListSalt(request),
-    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.ringSalt" } });
-    await expect(
-      answering({ result: { listSalt: nonCanonical, ringSalt: ringText } }).getListSalt(request),
-    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.listSalt" } });
-    expect(() => RingListSaltRequest.forOwner(target, "bad-owner" as Address)).toThrow("RING_RPC");
-  });
-
-  it("keeps both owner and ring salts in getOwnerListSalts without discarding either", async () => {
+  it("returns both salts as served and rejects a non-canonical one", async () => {
     const { request } = await signed();
     const listSalt = new Uint8Array(32).fill(9);
     const ringSalt = new Uint8Array(32).fill(7);
@@ -231,30 +199,30 @@ describe("getListSalt", () => {
 
     const both = await answering({
       result: { listSalt: listText, ringSalt: ringText },
-    }).getOwnerListSalts(request);
+    }).getListSalt(request);
     expect(both).toEqual({ listSalt, ringSalt });
     expect(Object.isFrozen(both)).toBe(true);
-
-    const ownerOnly = await answering({ result: { listSalt: listText } }).getOwnerListSalts(
-      request,
-    );
-    expect(ownerOnly).toEqual({ listSalt });
-    expect("ringSalt" in ownerOnly).toBe(false);
-
-    const ringOnly = await answering({ result: { ringSalt: ringText } }).getOwnerListSalts(request);
+    // A ring salt never reads as the owner's salt.
+    const ringOnly = await answering({ result: { ringSalt: ringText } }).getListSalt(request);
     expect(ringOnly).toEqual({ ringSalt });
     expect("listSalt" in ringOnly).toBe(false);
-
-    const empty = await answering({ result: {} }).getOwnerListSalts(request);
-    expect(empty).toEqual({});
-    expect(Object.keys(empty)).toEqual([]);
+    const ownerOnly = await answering({ result: { listSalt: listText } }).getListSalt(request);
+    expect(ownerOnly).toEqual({ listSalt });
+    expect("ringSalt" in ownerOnly).toBe(false);
+    expect(await answering({ result: {} }).getListSalt(request)).toEqual({});
 
     const nonCanonical = getBase58Decoder().decode(new Uint8Array(32).fill(0xff));
-    await expect(
-      answering({ result: { listSalt: listText, ringSalt: nonCanonical } }).getOwnerListSalts(
-        request,
-      ),
-    ).rejects.toMatchObject({ code: "RING_RPC", details: { path: "result.ringSalt" } });
+    for (const [result, path] of [
+      [{ listSalt: nonCanonical }, "result.listSalt"],
+      [{ ringSalt: nonCanonical }, "result.ringSalt"],
+      [{ listSalt: listText, ringSalt: nonCanonical }, "result.ringSalt"],
+      [{ listSalt: nonCanonical, ringSalt: ringText }, "result.listSalt"],
+    ] as const)
+      await expect(answering({ result }).getListSalt(request)).rejects.toMatchObject({
+        code: "RING_RPC",
+        details: { path },
+      });
+    expect(() => RingListSaltRequest.forOwner(target, "bad-owner" as Address)).toThrow("RING_RPC");
   });
 
   it("names -32226 as a signer writing no salted list", async () => {
@@ -875,8 +843,10 @@ describe("ring rpc refusals", () => {
     ]);
   });
 
-  it("names -32176 as a simulation without exactly one approved transfer call", () => {
+  it("names -32176 to -32178 as the co-sign simulation, blockhash and reservation refusals", () => {
     expect(ringRpcRefusalName(-32176)).toBe("approvedCallNotOnce");
+    expect(ringRpcRefusalName(-32177)).toBe("staleBlockhash");
+    expect(ringRpcRefusalName(-32178)).toBe("inputReserved");
   });
 
   it("names -32227 and -32228 as delegate notes outside the requested sources", () => {

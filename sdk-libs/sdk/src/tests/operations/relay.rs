@@ -1447,7 +1447,7 @@ mod delegate_message {
                     })
                 })
                 .await;
-            assert_eq!(verdict_of(leg), Err(MessageMismatch::Data), "{mode:?}");
+            assert_eq!(verdict_of(leg), Err(MessageMismatch::Legs), "{mode:?}");
 
             let payloads = rewritten(&honest, expected.rail, |data| {
                 data.has_data = true;
@@ -1832,7 +1832,7 @@ mod delegate_message {
                         .await
                         .check(&bytes.0)
                         .map(drop),
-                    Err(MessageMismatch::Data)
+                    Err(MessageMismatch::Legs)
                 );
                 let mut amount = asked.clone();
                 amount.transfer.withdrawals[0].amount += 1;
@@ -1842,7 +1842,7 @@ mod delegate_message {
                         .await
                         .check(&bytes.0)
                         .map(drop),
-                    Err(MessageMismatch::Data)
+                    Err(MessageMismatch::Legs)
                 );
                 let mut asset = asked.clone();
                 asset.transfer.withdrawals[0].mint = EURC.asset.into();
@@ -1854,7 +1854,7 @@ mod delegate_message {
                         .await
                         .check(&bytes.0)
                         .map(drop),
-                    Err(MessageMismatch::Data)
+                    Err(MessageMismatch::Legs)
                 );
                 let mut kind = asked.clone();
                 kind.transfer.payments.append(&mut kind.transfer.exits);
@@ -1903,7 +1903,7 @@ mod delegate_message {
             cases.push(MessageCase {
                 name: name.into(),
                 message: relay_message(&FEE_PAYER, &[changed], UNITS),
-                verdict: "Data".into(),
+                verdict: "Legs".into(),
             });
         }
         let changed = rewritten(&honest, RingRail::Delegate, |data| {
@@ -1918,7 +1918,7 @@ mod delegate_message {
         cases.push(MessageCase {
             name: "withdrawalAmount".into(),
             message: relay_message(&FEE_PAYER, &[changed], UNITS),
-            verdict: "Data".into(),
+            verdict: "Legs".into(),
         });
         for (name, change) in [("exitKind", 0), ("exitRecipient", 1), ("exitAmount", 2)] {
             let mut transfer = asked.transfer.clone();
@@ -1938,11 +1938,16 @@ mod delegate_message {
             });
         }
         let fresh = MessageVector {
+            ring_policy: crate::tests::support::policy_hex(&config),
             description: "Delegate payments, exits and withdrawals bind their signed destinations and amounts.".into(),
             request: DelegateRequest { prepare: asked, fee_payer: FEE_PAYER.into(), auditor: Base64String(config.auditor_pubkey.as_bytes().to_vec()) },
             cases,
         };
         let vector = pinned_vector("relay_delegate_settlement_messages.json", fresh);
+        assert_eq!(
+            vector.ring_policy,
+            crate::tests::support::policy_hex(&config)
+        );
         let sources: Vec<_> = vector
             .request
             .prepare
@@ -1993,6 +1998,7 @@ mod delegate_message {
         let asked = request(relay.delegate);
         let stolen = thief_under_payee_tag(&relay, &asked).await;
         let fresh = MessageVector {
+            ring_policy: crate::tests::support::policy_hex(&config),
             description: "One authority transfer the ring delegate asks Ring RPC for, moving 4 \
                           of the member's SOL to a second member with the change back, and the \
                           messages Ring RPC could answer with. The honest message is the relay's \
@@ -2023,6 +2029,10 @@ mod delegate_message {
                 .collect(),
         };
         let vector = pinned_vector("relay_delegate_messages.json", fresh);
+        assert_eq!(
+            vector.ring_policy,
+            crate::tests::support::policy_hex(&config)
+        );
         let quote = RelayQuote {
             fee_payer: vector.request.fee_payer,
             valid_until_slot: 0,
@@ -2082,7 +2092,7 @@ mod public_signers {
     use super::*;
     use crate::{
         tests::support::relay_message, ApplicationData, ApprovalLimit, ApprovalOpening, CoOwner,
-        CoSignerApproval, CoSignerRule, CustomRingConfig, ExactApproval, FundedLeg, FunderApproval,
+        CoSignerApproval, CoSignerRule, CustomRingConfig, ExactApproval, FunderApproval,
         MessageMismatch, NoteData, OwnerApproval, PendingSignature, PreparedRelay,
         RelayFunderTerms, RelaySent, RelayTransferTerms, RingTransfer, SlotOpening,
     };
@@ -2601,6 +2611,7 @@ mod public_signers {
     #[serde(deny_unknown_fields, rename_all = "camelCase")]
     struct OwnerMessages {
         description: String,
+        ring_policy: String,
         cases: Vec<OwnerCase>,
     }
 
@@ -2778,13 +2789,53 @@ mod public_signers {
     async fn the_shared_owner_messages_keep_their_verdicts() {
         use solana_instruction::AccountMeta;
         use spr_interface::instruction::InterfaceTransfer;
+        use spr_program::instruction::{
+            TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
+        };
         let (sender, payee, thief, co_owner) = (keypair(1), keypair(2), keypair(4), keypair(3));
-        let client = chain(
-            RingMode::Anonymous,
-            None,
-            &[&sender, &payee, &thief, &co_owner],
+        let spl = Mint {
+            asset: Address::new_from_array([0x49; 32]),
+            asset_id: 8,
+        };
+        let (exit, token_holder, depositor) = (keypair(5), keypair(6), keypair(7));
+        let (destination, token_owner, funder) =
+            (address(&exit), address(&token_holder), address(&depositor));
+        let token_program = Address::new_from_array(spr_interface::SPL_TOKEN_PROGRAM_ID);
+        let client = Chain::ring(RingSettings {
+            has_policy: true,
+            ..RingSettings::new(RingMode::Anonymous)
+        })
+        .with_registry(
+            Registry::new(&[
+                (&sender, 1),
+                (&payee, 1),
+                (&thief, 1),
+                (&co_owner, 1),
+                (&exit, 1),
+                (&token_holder, 1),
+                (&depositor, 1),
+            ])
+            .with_mint(spl.asset, Default::default()),
+            &pipeline_rules(),
+        )
+        .with(
+            spr_interface::pda::associated_token_address_with_program(
+                &token_owner,
+                &spl.asset,
+                &token_program,
+            ),
+            crate::tests::support::account(
+                token_program,
+                &spl_token_2022_interface::pod::PodAccount {
+                    mint: spl.asset.to_bytes().into(),
+                    owner: token_owner.to_bytes().into(),
+                    state: spr_interface::SPL_TOKEN_ACCOUNT_INITIALIZED,
+                    ..Default::default()
+                },
+            ),
         )
         .client();
+        let config = ring().require_config(client.zolana()).await.unwrap();
         let paying = |to: &ShieldedKeypair| {
             transfer(&sender, vec![ring_utxo(&sender, Mint::SOL, 10, 0)])
                 .with_anonymous_signer(&sender.signing_key)
@@ -3030,10 +3081,172 @@ mod public_signers {
         .0;
         let exit_known = [exit_note.nullifier];
 
+        // A third party funds a deposit the payee's terms name.
+        let mut deposited = ConfidentialTransaction::new_with_ring(
+            vec![ring_utxo(&sender, Mint::SOL, 10, 0)],
+            FEE_PAYER,
+            ring().program_id(),
+        )
+        .unwrap();
+        deposited.deposit_sol(5, funder).unwrap();
+        let deposit_asked = sent(
+            CustomRingTransfer::new(CustomRingTransferInput {
+                ring: ring(),
+                sender: &sender,
+                nullifier_key: Some(&sender.nullifier_key),
+                transaction: deposited,
+            })
+            .with_interface_transfer_accounts(vec![TransactInterfaceTransferAccounts::Sol(
+                TransactSolTransferAccounts { recipient: funder },
+            )])
+            .with_anonymous_signer(&sender.signing_key)
+            .with_payment(data_payment(&payee))
+            .unwrap()
+            .prepare_relay(client.zolana(), quote())
+            .await
+            .unwrap()
+            .sign()
+            .unwrap(),
+        )
+        .await;
+        let deposit_terms = deposit_asked
+            .pending
+            .transfer_terms(address(&payee))
+            .unwrap()
+            .clone();
+        let deposit_frame = frame(&client, &deposit_asked.request).await;
+        let deposit_message =
+            relay_message(&FEE_PAYER, core::slice::from_ref(&deposit_frame), UNITS).0;
+        let mut unfunded = RingTransactData::parse(&deposit_frame.data[1..], RingRail::Anonymous)
+            .unwrap()
+            .into_data();
+        unfunded.interface_transfers.clear();
+        let mut deposit_dropped = deposit_frame.clone();
+        deposit_dropped.data = [vec![tag::TRANSFER], unfunded.encode().unwrap()].concat();
+        deposit_dropped
+            .accounts
+            .truncate(deposit_frame.accounts.len() - 2);
+        let deposit_dropped = relay_message(&FEE_PAYER, &[deposit_dropped], UNITS).0;
+
+        // A SOL and an SPL withdrawal the payee's terms name, then each change a relay could make.
+        let other = Address::new_from_array([0x58; 32]);
+        let mut withdrawing = ConfidentialTransaction::new_with_ring(
+            vec![
+                ring_utxo(&sender, Mint::SOL, 10, 0),
+                ring_utxo(&sender, spl, 10, 6),
+            ],
+            FEE_PAYER,
+            ring().program_id(),
+        )
+        .unwrap();
+        withdrawing.withdraw_sol(3, destination).unwrap();
+        let spl_group = withdrawing
+            .withdraw_to(spl.asset, 2, token_owner, Some(token_program))
+            .unwrap();
+        let withdrawal_asked = sent(
+            CustomRingTransfer::new(CustomRingTransferInput {
+                ring: ring(),
+                sender: &sender,
+                nullifier_key: Some(&sender.nullifier_key),
+                transaction: withdrawing,
+            })
+            .with_interface_transfer_accounts(vec![
+                TransactInterfaceTransferAccounts::Sol(TransactSolTransferAccounts {
+                    recipient: destination,
+                }),
+                spl_group,
+            ])
+            .with_token_account_setup(vec![TokenAccountSetup {
+                owner: SerializablePubkey(token_owner),
+                mint: SerializablePubkey(spl.asset),
+            }])
+            .with_anonymous_signer(&sender.signing_key)
+            .with_payment(data_payment(&payee))
+            .unwrap()
+            .prepare_relay(client.zolana(), quote())
+            .await
+            .unwrap()
+            .sign()
+            .unwrap(),
+        )
+        .await;
+        let withdrawal_terms = withdrawal_asked
+            .pending
+            .transfer_terms(address(&payee))
+            .unwrap()
+            .clone();
+        assert_eq!(withdrawal_terms.legs.len(), 2);
+        assert_eq!(withdrawal_terms.setup.len(), 1);
+        let create = spr_program::instruction::CreateAssociatedTokenAccount {
+            payer: FEE_PAYER,
+            owner: token_owner,
+            mint: spl.asset,
+            token_program,
+        }
+        .instruction();
+        let withdrawn = frame(&client, &withdrawal_asked.request).await;
+        const SOL_GROUP: usize = 2;
+        const SPL_GROUP: usize = 5;
+        let groups = withdrawn.accounts.len() - SOL_GROUP - SPL_GROUP;
+        let changed = |change: &dyn Fn(&mut RingTransactData<'_>, &mut Vec<AccountMeta>)| {
+            let mut data = RingTransactData::parse(&withdrawn.data[1..], RingRail::Anonymous)
+                .unwrap()
+                .into_data();
+            let mut ix = withdrawn.clone();
+            change(&mut data, &mut ix.accounts);
+            ix.data = [vec![tag::TRANSFER], data.encode().unwrap()].concat();
+            relay_message(&FEE_PAYER, &[create.clone(), ix], UNITS).0
+        };
+        let withdrawal_message = changed(&|_, _| {});
+        let other_destination = changed(&|_, accounts| accounts[groups + 1].pubkey = other);
+        let other_amount = changed(&|data, _| {
+            data.interface_transfers[0] = InterfaceTransfer::SolWithdrawal { amount: 4 };
+        });
+        let other_mint = changed(&|_, accounts| accounts[groups + SOL_GROUP + 1].pubkey = other);
+        let extra_leg = changed(&|data, accounts| {
+            data.interface_transfers
+                .push(InterfaceTransfer::SolWithdrawal { amount: 1 });
+            accounts.extend([
+                AccountMeta::new(spr_interface::pda::sol_interface(), false),
+                AccountMeta::new(other, false),
+            ]);
+        });
+        let missing_leg = changed(&|data, accounts| {
+            data.interface_transfers.pop();
+            data.spl_withdrawal_owners = &[];
+            accounts.truncate(groups + SOL_GROUP);
+        });
+        let reordered_legs = changed(&|data, accounts| {
+            data.interface_transfers.reverse();
+            accounts[groups..].rotate_left(SOL_GROUP);
+        });
+
+        // Terms a wallet never builds, the position rule holds with the leg named.
+        let authority_terms = RelayTransferTerms {
+            legs: vec![crate::PublicLeg {
+                direction: crate::LegDirection::Deposit,
+                mint: Some(Address::new_from_array([0x41; 32]).into()),
+                amount: 5,
+                accounts: [
+                    [0x41; 32],
+                    [0x42; 32],
+                    address(&payee).to_bytes(),
+                    [0x43; 32],
+                    [0x46; 32],
+                ]
+                .map(|key| Address::new_from_array(key).into())
+                .to_vec(),
+            }],
+            ..terms.clone()
+        };
+
         let fresh = OwnerMessages {
+            ring_policy: crate::tests::support::policy_hex(&config),
             description: "Relayed anonymous transfers a public owner signs. A signer reads \
                           every published slot opened, a co-owner names its notes against the notes its \
-                          wallet holds. Each case holds the owner's terms, what its wallet knows, \
+                          wallet holds, and every public leg of the frame equals a leg of its \
+                          terms in order. ringPolicy is the ring account in hex. Each case holds \
+                          the owner's terms, what its wallet knows, \
                           the message Ring RPC answers with, and the MessageMismatch the Rust \
                           ExpectedPublicOwner and the TypeScript check return. Frames carry \
                           zeroed proofs."
@@ -3077,43 +3290,112 @@ mod public_signers {
                     &terms,
                     &[],
                     &third_party_deposit,
-                    "Accepted",
+                    "Legs",
                 ),
                 owner_case(
                     "ownerOnlyInSplDeposit",
                     &terms,
                     &[],
                     &spl_deposit_only,
-                    "Accounts",
+                    "Legs",
                 ),
                 owner_case(
                     "ownerInRunAndSplDeposit",
                     &terms,
                     &[],
                     &run_and_spl_deposit,
-                    "Accounts",
+                    "Legs",
                 ),
                 owner_case(
                     "ownerWithSolWithdrawal",
                     &terms,
                     &[],
                     &sol_withdrawal,
-                    "Data",
+                    "Legs",
                 ),
                 owner_case(
                     "ownerWithSplWithdrawal",
                     &terms,
                     &[],
                     &spl_withdrawal,
-                    "Data",
+                    "Legs",
+                ),
+                owner_case(
+                    "ownerNamedOnlyAsDepositAuthority",
+                    &authority_terms,
+                    &[],
+                    &spl_deposit_only,
+                    "Accounts",
+                ),
+                owner_case(
+                    "ownerNamedInRunAndAsDepositAuthority",
+                    &authority_terms,
+                    &[],
+                    &run_and_spl_deposit,
+                    "Accounts",
+                ),
+                owner_case(
+                    "depositHonest",
+                    &deposit_terms,
+                    &[],
+                    &deposit_message,
+                    "Accepted",
+                ),
+                owner_case(
+                    "depositMissing",
+                    &deposit_terms,
+                    &[],
+                    &deposit_dropped,
+                    "Legs",
+                ),
+                owner_case(
+                    "withdrawalsHonest",
+                    &withdrawal_terms,
+                    &[],
+                    &withdrawal_message,
+                    "Accepted",
+                ),
+                owner_case(
+                    "withdrawalOtherDestination",
+                    &withdrawal_terms,
+                    &[],
+                    &other_destination,
+                    "Legs",
+                ),
+                owner_case(
+                    "withdrawalOtherAmount",
+                    &withdrawal_terms,
+                    &[],
+                    &other_amount,
+                    "Legs",
+                ),
+                owner_case(
+                    "withdrawalOtherMint",
+                    &withdrawal_terms,
+                    &[],
+                    &other_mint,
+                    "Legs",
+                ),
+                owner_case("extraLeg", &withdrawal_terms, &[], &extra_leg, "Legs"),
+                owner_case("missingLeg", &withdrawal_terms, &[], &missing_leg, "Legs"),
+                owner_case(
+                    "legsReordered",
+                    &withdrawal_terms,
+                    &[],
+                    &reordered_legs,
+                    "Legs",
                 ),
             ],
         };
         let vector = crate::tests::support::pinned_vector("relay_transfer_messages.json", fresh);
+        assert_eq!(
+            vector.ring_policy,
+            crate::tests::support::policy_hex(&config)
+        );
         for case in &vector.cases {
             let expected = crate::relay_message::ExpectedPublicOwner::new(
                 case.terms.clone(),
-                RingMode::Anonymous,
+                &config,
                 case.known_nullifiers.iter().map(|hash| hash.0).collect(),
             );
             let checked = crate::relay_message::ExpectedMessage::PublicOwner(expected)
@@ -3123,107 +3405,6 @@ mod public_signers {
                 case.verdict,
                 "{}",
                 case.name
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn public_owner_refuses_spl_deposit_authority_confusion_and_public_withdrawals() {
-        use solana_instruction::AccountMeta;
-        use spr_interface::instruction::InterfaceTransfer;
-        let (sender, payee) = (keypair(1), keypair(2));
-        let client = chain(RingMode::Anonymous, None, &[&sender, &payee]).client();
-        let paying = transfer(&sender, vec![ring_utxo(&sender, Mint::SOL, 10, 0)])
-            .with_anonymous_signer(&sender.signing_key)
-            .with_payment(data_payment(&payee))
-            .unwrap();
-        let asked = sent(
-            paying
-                .prepare_relay(client.zolana(), quote())
-                .await
-                .unwrap()
-                .sign()
-                .unwrap(),
-        )
-        .await;
-        let terms = asked
-            .pending
-            .transfer_terms(address(&payee))
-            .unwrap()
-            .clone();
-        let honest = frame(&client, &asked.request).await;
-        let expected = crate::relay_message::ExpectedMessage::PublicOwner(
-            crate::relay_message::ExpectedPublicOwner::new(
-                terms.clone(),
-                RingMode::Anonymous,
-                Vec::new(),
-            ),
-        );
-        let honest_message = relay_message(&FEE_PAYER, core::slice::from_ref(&honest), UNITS).0;
-        assert!(expected.check(&honest_message, address(&payee)).is_ok());
-
-        let mut parsed = RingTransactData::parse(&honest.data[1..], RingRail::Anonymous)
-            .unwrap()
-            .into_data();
-        parsed.interface_transfers = vec![InterfaceTransfer::SplDeposit {
-            amount: 5,
-            spl_interface_bump: 255,
-        }];
-        let mut deposit_ix = honest.clone();
-        deposit_ix.data = [vec![tag::TRANSFER], parsed.encode().unwrap()].concat();
-        deposit_ix
-            .accounts
-            .retain(|meta| meta.pubkey != address(&payee));
-        deposit_ix.accounts.extend([
-            AccountMeta::new_readonly(Address::new_from_array([0x41; 32]), false),
-            AccountMeta::new(Address::new_from_array([0x42; 32]), false),
-            AccountMeta::new_readonly(address(&payee), true),
-            AccountMeta::new(Address::new_from_array([0x43; 32]), false),
-            AccountMeta::new_readonly(Address::new_from_array([0x44; 32]), false),
-        ]);
-        let confused_message = relay_message(&FEE_PAYER, &[deposit_ix], UNITS).0;
-        assert_eq!(
-            expected.check(&confused_message, address(&payee)).err(),
-            Some(MessageMismatch::Accounts)
-        );
-
-        let spl_owner = [[0x66; 32]];
-        for (withdrawal, spl_owners, settlement_metas) in [
-            (
-                InterfaceTransfer::SolWithdrawal { amount: 5 },
-                &[][..],
-                vec![
-                    AccountMeta::new(Address::new_from_array([0x51; 32]), false),
-                    AccountMeta::new(Address::new_from_array([0x52; 32]), false),
-                ],
-            ),
-            (
-                InterfaceTransfer::SplWithdrawal {
-                    amount: 5,
-                    spl_interface_bump: 255,
-                },
-                &spl_owner[..],
-                vec![
-                    AccountMeta::new_readonly(Address::new_from_array([0x61; 32]), false),
-                    AccountMeta::new_readonly(Address::new_from_array([0x62; 32]), false),
-                    AccountMeta::new(Address::new_from_array([0x63; 32]), false),
-                    AccountMeta::new(Address::new_from_array([0x64; 32]), false),
-                    AccountMeta::new_readonly(Address::new_from_array([0x65; 32]), false),
-                ],
-            ),
-        ] {
-            let mut withdrawn = RingTransactData::parse(&honest.data[1..], RingRail::Anonymous)
-                .unwrap()
-                .into_data();
-            withdrawn.interface_transfers = vec![withdrawal];
-            withdrawn.spl_withdrawal_owners = spl_owners;
-            let mut ix = honest.clone();
-            ix.data = [vec![tag::TRANSFER], withdrawn.encode().unwrap()].concat();
-            ix.accounts.extend(settlement_metas);
-            let withdrawn_message = relay_message(&FEE_PAYER, &[ix], UNITS).0;
-            assert_eq!(
-                expected.check(&withdrawn_message, address(&payee)).err(),
-                Some(MessageMismatch::Data)
             );
         }
     }
@@ -3302,6 +3483,7 @@ mod public_signers {
     #[serde(deny_unknown_fields, rename_all = "camelCase")]
     struct CoSignerMessages {
         description: String,
+        ring_policy: String,
         ring: SerializablePubkey,
         fee_payer: SerializablePubkey,
         signer: SerializablePubkey,
@@ -3578,9 +3760,14 @@ mod public_signers {
             .clone();
         assert_eq!(
             terms.legs,
-            [FundedLeg {
+            [crate::PublicLeg {
+                direction: crate::LegDirection::Deposit,
                 mint: None,
-                amount: 5
+                amount: 5,
+                accounts: vec![
+                    spr_interface::pda::sol_interface().into(),
+                    address(&funder).into()
+                ],
             }]
         );
         assert!(asked.pending.transfer_terms(address(&funder)).is_none());
@@ -3602,18 +3789,18 @@ mod public_signers {
             MessageMismatch::Unrequested,
         );
         let understated = RelayFunderTerms {
-            legs: vec![FundedLeg {
-                mint: None,
+            legs: vec![crate::PublicLeg {
                 amount: 4,
+                ..terms.legs[0].clone()
             }],
             ..terms.clone()
         };
-        refused(&pending(understated), &funder, MessageMismatch::FunderLegs);
+        refused(&pending(understated), &funder, MessageMismatch::Legs);
         let extra_leg = RelayFunderTerms {
-            legs: vec![terms.legs[0], terms.legs[0]],
+            legs: vec![terms.legs[0].clone(), terms.legs[0].clone()],
             ..terms.clone()
         };
-        refused(&pending(extra_leg), &funder, MessageMismatch::FunderLegs);
+        refused(&pending(extra_leg), &funder, MessageMismatch::Legs);
         let no_legs = RelayFunderTerms {
             legs: Vec::new(),
             ..terms.clone()
@@ -3622,9 +3809,11 @@ mod public_signers {
 
         let extra_writable = |ix: &Instruction| {
             let mut tampered = ix.clone();
-            tampered.accounts.insert(
-                1,
-                solana_instruction::AccountMeta::new(Address::new_from_array([0x71; 32]), false),
+            tampered.accounts.splice(
+                1..1,
+                [0x71, 0x72].map(|seed| {
+                    solana_instruction::AccountMeta::new(Address::new_from_array([seed; 32]), false)
+                }),
             );
             relay_message(&FEE_PAYER, &[tampered], UNITS).0
         };
@@ -3644,9 +3833,14 @@ mod public_signers {
         );
 
         let mut in_prefix = built.clone();
-        in_prefix.accounts.insert(
-            1,
-            solana_instruction::AccountMeta::new_readonly(address(&funder), true),
+        in_prefix.accounts.splice(
+            1..1,
+            ring()
+                .co_signer_metas(address(&funder))
+                .map(|meta| solana_instruction::AccountMeta {
+                    is_signer: meta.pubkey == address(&funder),
+                    ..meta
+                }),
         );
         refused(
             &check_funder(relay_message(&FEE_PAYER, &[in_prefix], UNITS).0),
@@ -3674,9 +3868,16 @@ mod public_signers {
             .find(|meta| meta.is_writable && meta.pubkey != address(&funder))
             .unwrap()
             .pubkey;
-        forwarded_writable
-            .accounts
-            .insert(1, solana_instruction::AccountMeta::new(shared, false));
+        forwarded_writable.accounts.splice(
+            1..1,
+            [
+                solana_instruction::AccountMeta::new_readonly(
+                    Address::new_from_array([0x72; 32]),
+                    false,
+                ),
+                solana_instruction::AccountMeta::new(shared, false),
+            ],
+        );
         signs(
             &check_funder(relay_message(&FEE_PAYER, &[forwarded_writable], UNITS).0),
             &funder,
@@ -3942,8 +4143,16 @@ mod public_signers {
         )
         .await;
         assert!(plain.pending.approval_opening().is_none());
-        let plain_message =
-            relay_message(&FEE_PAYER, &[frame(&client, &plain.request).await], UNITS).0;
+        let plain_frame = frame(&client, &plain.request).await;
+        let plain_message = relay_message(&FEE_PAYER, core::slice::from_ref(&plain_frame), UNITS).0;
+        let mut foreign_record = plain_frame;
+        let signer_slot = foreign_record
+            .accounts
+            .iter()
+            .position(|meta| meta.pubkey == address(&co_signer))
+            .unwrap();
+        foreign_record.accounts[signer_slot - 1].pubkey = Address::new_from_array([0x74; 32]);
+        let foreign_record_message = relay_message(&FEE_PAYER, &[foreign_record], UNITS).0;
 
         // The extension stays out of what SPP hashes.
         let parsed = RingTransactData::parse(&digested.data[1..], RingRail::Anonymous).unwrap();
@@ -4157,6 +4366,7 @@ mod public_signers {
                 verdict: verdict.to_owned(),
             };
         let fresh = CoSignerMessages {
+            ring_policy: crate::tests::support::policy_hex(&config),
             description: "One relayed anonymous transfer an outside co-signer signs, read by \
                           proven bits or by an opening of the frame's approval digest. Each \
                           verdict names the MessageMismatch the Rust and TypeScript checks \
@@ -4248,9 +4458,19 @@ mod public_signers {
                 },
                 threshold_case("coSignerFundsLeg", 0, &funded_message, "Accounts"),
                 threshold_case("coSignerInOwnerRun", 0, &owning_message, "Accounts"),
+                threshold_case(
+                    "coSignerBesideForeignRecord",
+                    0,
+                    &foreign_record_message,
+                    "Accounts",
+                ),
             ],
         };
         let vector = crate::tests::support::pinned_vector("relay_co_signer_messages.json", fresh);
+        assert_eq!(
+            vector.ring_policy,
+            crate::tests::support::policy_hex(&config)
+        );
         for case in &vector.cases {
             let pending = co_signer_pending(
                 &disclosed.relay_id,

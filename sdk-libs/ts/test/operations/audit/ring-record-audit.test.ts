@@ -652,6 +652,7 @@ describe("the origin", () => {
           },
         ],
       },
+      version: 1,
     });
     const indexed: IndexedShieldedTransaction = {
       slot: 7n,

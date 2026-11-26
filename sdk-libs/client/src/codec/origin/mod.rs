@@ -484,9 +484,10 @@ mod rpc {
     use solana_commitment_config::CommitmentConfig;
     use solana_rpc_client_api::config::RpcTransactionConfig;
     use solana_signature::Signature;
+    use solana_transaction::versioned::TransactionVersion;
     use solana_transaction_status_client_types::{
-        option_serializer::OptionSerializer, EncodedConfirmedTransactionWithStatusMeta,
-        EncodedTransaction, UiMessage, UiTransactionEncoding,
+        EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, UiLoadedAddresses,
+        UiMessage, UiTransactionEncoding,
     };
     use spr_client::{AsyncSolanaRpc, Blocking, ConfirmedInstructionGroups, SolanaRpc};
 
@@ -500,9 +501,9 @@ mod rpc {
     }
 
     impl ConfirmedRingOrigins {
-        pub fn read(mut self) -> Result<BTreeMap<u16, RingOrigin>, AuditError> {
+        pub fn read(self) -> Result<BTreeMap<u16, RingOrigin>, AuditError> {
             validate_signature(self.signature, &self.transaction)?;
-            resolve_loaded_addresses(&mut self.transaction)?;
+            require_version_one(&self.transaction)?;
             let signers = signers_of(&self.transaction);
             let slot = self.transaction.slot;
             let groups = ConfirmedInstructionGroups::try_from(self.transaction)?;
@@ -533,6 +534,7 @@ mod rpc {
         event_index: u16,
         ring: Address,
     ) -> Result<RingOrigin, AuditError> {
+        require_version_one(&transaction)?;
         let signers = signers_of(&transaction);
         let slot = transaction.slot;
         let groups = ConfirmedInstructionGroups::try_from(transaction)?;
@@ -554,42 +556,31 @@ mod rpc {
         confirmed_origin(transaction, event_index, ring)
     }
 
-    fn resolve_loaded_addresses(
-        transaction: &mut EncodedConfirmedTransactionWithStatusMeta,
+    /// Version 1 names every account in its message, a table or loaded address moves an index.
+    fn require_version_one(
+        transaction: &EncodedConfirmedTransactionWithStatusMeta,
     ) -> Result<(), AuditError> {
-        let invalid =
-            || AuditError::InvalidConfirmedEvent("loaded account addresses disagree".into());
-        let EncodedTransaction::Json(encoded) = &mut transaction.transaction.transaction else {
-            return Err(invalid());
-        };
-        let UiMessage::Raw(message) = &mut encoded.message else {
-            return Err(invalid());
-        };
-        let lookups = message.address_table_lookups.as_deref().unwrap_or_default();
-        let writable = lookups
-            .iter()
-            .map(|lookup| lookup.writable_indexes.len())
-            .sum::<usize>();
-        let readonly = lookups
-            .iter()
-            .map(|lookup| lookup.readonly_indexes.len())
-            .sum::<usize>();
-        let Some(meta) = &mut transaction.transaction.meta else {
-            return Err(invalid());
-        };
-        let loaded = match &mut meta.loaded_addresses {
-            OptionSerializer::Some(loaded) => loaded,
-            OptionSerializer::None | OptionSerializer::Skip if writable == 0 && readonly == 0 => {
-                return Ok(())
-            }
-            OptionSerializer::None | OptionSerializer::Skip => return Err(invalid()),
-        };
-        if writable != loaded.writable.len() || readonly != loaded.readonly.len() {
-            return Err(invalid());
+        let refused = |reason: &str| Err(AuditError::InvalidConfirmedEvent(reason.into()));
+        if transaction.transaction.version != Some(TransactionVersion::Number(1)) {
+            return refused("the transaction is not version 1");
         }
-        message.account_keys.append(&mut loaded.writable);
-        message.account_keys.append(&mut loaded.readonly);
-        message.address_table_lookups = None;
+        let EncodedTransaction::Json(encoded) = &transaction.transaction.transaction else {
+            return refused("the transaction is not JSON encoded");
+        };
+        let lookups = match &encoded.message {
+            UiMessage::Raw(message) => message.address_table_lookups.as_deref(),
+            UiMessage::Parsed(message) => message.address_table_lookups.as_deref(),
+        };
+        if lookups.is_some_and(|lookups| !lookups.is_empty()) {
+            return refused("the transaction names an address lookup table");
+        }
+        let loaded =
+            transaction.transaction.meta.as_ref().and_then(|meta| {
+                Option::<&UiLoadedAddresses>::from(meta.loaded_addresses.as_ref())
+            });
+        if loaded.is_some_and(|loaded| !loaded.writable.is_empty() || !loaded.readonly.is_empty()) {
+            return refused("the transaction loads addresses");
+        }
         Ok(())
     }
 

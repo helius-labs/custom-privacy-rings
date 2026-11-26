@@ -23,6 +23,7 @@ import {
   type CoSignerRule,
 } from "../../../src/rpc/relay-message.js";
 import type { RingRelayClient } from "../../../src/rpc/relay.js";
+import { knownVerdict, vectorRingPolicy } from "../../helpers/relay-vectors.js";
 
 await initializePoseidon();
 
@@ -46,7 +47,13 @@ const vector = JSON.parse(
     new URL("../../../../../test-vectors/rpc/relay_co_signer_messages.json", import.meta.url),
     "utf8",
   ),
-) as Readonly<{ ring: Address; feePayer: Address; signer: Address; cases: readonly Case[] }>;
+) as Readonly<{
+  ringPolicy: string;
+  ring: Address;
+  feePayer: Address;
+  signer: Address;
+  cases: readonly Case[];
+}>;
 
 const base58 = getBase58Encoder();
 const base64 = getBase64Encoder();
@@ -79,7 +86,7 @@ async function verdict(
     ring: vector.ring,
     feePayer: vector.feePayer,
     signer: vector.signer,
-    config: { mode: "anonymous" },
+    config: vectorRingPolicy(vector),
     setup: [],
     rule,
   });
@@ -99,7 +106,7 @@ const named = (name: string): Case => {
 
 describe("co-signer message check", () => {
   it.each(vector.cases)("reaches the Rust verdict on $name", async (entry) => {
-    expect(await verdict(ruleOf(entry), entry.message)).toBe(entry.verdict);
+    expect(await verdict(ruleOf(entry), entry.message)).toBe(knownVerdict(entry.verdict));
   });
 
   it.each(vector.cases.filter((entry) => entry.opening !== null))(
@@ -184,7 +191,7 @@ describe("co-signer message check", () => {
         ring: vector.ring,
         feePayer: vector.feePayer,
         signer: vector.signer,
-        config: { mode: "anonymous" },
+        config: vectorRingPolicy(vector),
         setup: [],
         rule: ruleOf(entry),
       }).pending();

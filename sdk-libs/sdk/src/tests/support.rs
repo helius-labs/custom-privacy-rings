@@ -1007,8 +1007,14 @@ pub(crate) struct MessageCase {
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct MessageVector<R> {
     pub description: String,
+    /// The ring account's bytes in hex, the layout reads its registries.
+    pub ring_policy: String,
     pub request: R,
     pub cases: Vec<MessageCase>,
+}
+
+pub(crate) fn policy_hex(config: &crate::CustomRingConfig) -> String {
+    hex::encode(bytemuck::bytes_of(config.account()))
 }
 
 pub(crate) fn verdict(checked: Result<crate::VerifiedMessage, crate::MessageMismatch>) -> String {

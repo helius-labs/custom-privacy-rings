@@ -61,7 +61,7 @@ Consolidation requires a separate merge operation.
 
 Besides the permissionless default Ring, regulated entities can create custom Rings.
 Custom Rings are simple Solana programs for compliance and policy control. Each Ring deploys its own program. It has a program
-upgrade authority, four role keys (admin, policy, pauser and co-signer admin), and an auditor key. The default Ring does not have an auditor key.
+upgrade authority, five role keys (admin, policy, pauser, co-signer admin and enrollment writer), and an auditor key. The default Ring does not have an auditor key.
 
 The auditor key lives in a Ring RPC. The Ring's policy authority grants view access.
 Helius can host that RPC; the authority can host it itself. The forester is

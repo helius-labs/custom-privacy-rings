@@ -92,6 +92,7 @@ import {
   proveStagedTransfer,
   sealRelayedTransfer,
   sealedTransferTerms,
+  stagedLegs,
   type SealedTransfer,
   type AnonymousSpendValues,
   type CoSignerForm,
@@ -453,7 +454,7 @@ export class CustomRingTransfer {
           ringProgramId,
           feePayer: quote.feePayer,
           sealed,
-          ownerSigners: staged.ownerSigners,
+          staged,
           setup: await tokenAccountCreates(input.tokenAccountSetup, staged.withdrawal),
         });
         return new UnsignedRelay({
@@ -922,7 +923,7 @@ export class AnonymousTransfer {
           ringProgramId,
           feePayer: quote.feePayer,
           sealed,
-          ownerSigners: staged.ownerSigners,
+          staged,
           setup: await tokenAccountCreates(input.tokenAccountSetup, staged.withdrawal),
         });
         return Object.freeze({
@@ -1860,6 +1861,7 @@ function depositRelayFrame(
     const { proofInputs } = sealed;
     const plan = staged.rail.delivery;
     const legs = proofInputs.externalData.interfaceTransfers;
+    const funded = stagedLegs({ transfers: legs, deposits, withdrawal: undefined });
     return Object.freeze({
       payload: encodeRelayProofInputs({
         rail: { kind: "deposit", ...(plan.kind === "anonymous" ? { plan: plan.plan } : {}) },
@@ -1889,16 +1891,7 @@ function depositRelayFrame(
             feePayer: quote.feePayer,
             signer,
             legs: Object.freeze(
-              legs.flatMap((leg, index) => {
-                const named = deposits[index];
-                if (!leg.isDeposit || named === undefined || signerAddress(named.funder) !== signer)
-                  return [];
-                return [
-                  leg.kind === "sol"
-                    ? { amount: leg.amount }
-                    : { mint: leg.mint, amount: leg.amount },
-                ];
-              }),
+              funded.filter(({ funder }) => funder === signer).map(({ leg }) => leg),
             ),
             setup: [],
           }),

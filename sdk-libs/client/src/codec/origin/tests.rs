@@ -129,7 +129,7 @@ fn stack_height_without_a_parent_is_an_error() {
     ));
 }
 
-/// The pinned client decodes no version 0 transaction, its loaded addresses are refused.
+/// Only version 1 is read, a table or a loaded address would move every account index.
 #[test]
 fn a_lookup_table_transaction_is_refused() {
     let payer = Address::new_from_array([1u8; 32]);
@@ -187,39 +187,58 @@ fn a_lookup_table_transaction_is_refused() {
         },
         "version": 0
     });
-    let parse = |json: &serde_json::Value| {
-        let transaction: EncodedConfirmedTransactionWithStatusMeta =
-            serde_json::from_value(json.clone()).expect("rpc shape");
-        confirmed_origin(transaction, 0, RING)
-    };
-    assert!(matches!(
-        parse(&json),
-        Err(AuditError::Client(ClientError::AddressLookupTable))
-    ));
-    let origins = ConfirmedRingOrigins {
-        signature: Signature::from([6; 64]),
-        transaction: serde_json::from_value(json.clone()).unwrap(),
-        ring: RING,
-    }
-    .read()
-    .unwrap();
-    assert_eq!(origins.keys().copied().collect::<Vec<_>>(), [0]);
-    assert_eq!(origins[&0].pool_accounts, [OTHER]);
-    assert_eq!(origins[&0].signers, [payer]);
-    for loaded in [
-        serde_json::json!({"writable": [OTHER.to_string()], "readonly": []}),
-        serde_json::json!({"writable": [], "readonly": []}),
-        serde_json::Value::Null,
-    ] {
-        let mut missing = json.clone();
-        missing["meta"]["loadedAddresses"] = loaded;
-        assert!(ConfirmedRingOrigins {
+    let read = |json: &serde_json::Value| {
+        ConfirmedRingOrigins {
             signature: Signature::from([6; 64]),
-            transaction: serde_json::from_value(missing).unwrap(),
+            transaction: serde_json::from_value(json.clone()).expect("rpc shape"),
             ring: RING,
         }
         .read()
-        .is_err());
+        .map(drop)
+    };
+    let origin = |json: &serde_json::Value| {
+        confirmed_origin(
+            serde_json::from_value(json.clone()).expect("rpc shape"),
+            0,
+            RING,
+        )
+        .map(drop)
+    };
+    let mut version_one = json.clone();
+    version_one["version"] = 1.into();
+    let mut loaded_only = version_one.clone();
+    loaded_only["transaction"]["message"]["addressTableLookups"] = serde_json::json!([]);
+    let mut table_only = version_one.clone();
+    table_only["meta"]["loadedAddresses"] = serde_json::json!({"writable": [], "readonly": []});
+    let mut no_table = table_only.clone();
+    no_table["transaction"]["message"]["addressTableLookups"] = serde_json::json!([]);
+    let mut legacy = no_table.clone();
+    legacy["version"] = "legacy".into();
+    let mut unversioned = no_table.clone();
+    unversioned.as_object_mut().unwrap().remove("version");
+    let mut version_zero = no_table.clone();
+    version_zero["version"] = 0.into();
+    assert!(!matches!(
+        read(&no_table),
+        Err(AuditError::InvalidConfirmedEvent(_))
+    ));
+    for refused in [
+        &json,
+        &version_one,
+        &loaded_only,
+        &table_only,
+        &legacy,
+        &unversioned,
+        &version_zero,
+    ] {
+        assert!(matches!(
+            read(refused),
+            Err(AuditError::InvalidConfirmedEvent(_))
+        ));
+        assert!(matches!(
+            origin(refused),
+            Err(AuditError::InvalidConfirmedEvent(_))
+        ));
     }
 }
 
@@ -290,7 +309,8 @@ fn event_ordinals_separate_two_origins_in_one_transaction() {
                     ]
                 }
             ]
-        }
+        },
+        "version": 1
     });
     let origins = ConfirmedRingOrigins {
         signature,
@@ -624,7 +644,8 @@ fn withdrawing_transaction(
                     ]
                 }
             ]
-        }
+        },
+        "version": 1
     });
     serde_json::from_value(json).expect("rpc shape")
 }

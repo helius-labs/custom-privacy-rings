@@ -2,9 +2,9 @@
 
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, tag, AnonymousProofData, AppMessage, CustomRingError,
-    CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
+    CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees, KnownPrefix,
     PlainGroth16Proof, PolicyProof, Replies, RingOutput, RingPolicy, RingRail, RingTransactData,
-    RootRead, SlotBody, TransferApproval, MAX_SPP_CPI_ACCOUNTS,
+    RootRead, SlotBody, TransferApproval, TransferLayout, MAX_SPP_CPI_ACCOUNTS,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -342,7 +342,7 @@ impl TransactAccounts {
     ) -> Result<Instruction, RingError> {
         let data = parts.data()?;
         let expanded = data.transact_ix_data(config, TransactProof::zeroed())?;
-        let mut spp = match parts.rail {
+        let spp = match parts.rail {
             RingRail::Delegate | RingRail::AnonymousDelegate => {
                 RingAuthorityTransact {
                     payer: self.payer,
@@ -371,13 +371,6 @@ impl TransactAccounts {
                 }
             }
         };
-        if self.called_by_program().is_ok() {
-            // An owner off the curve signs inside its program's call alone, every other owner signs the transaction.
-            spp.iter_mut()
-                .filter(|meta| self.owner_signers.contains(&meta.pubkey))
-                .filter(|meta| !meta.pubkey.is_on_curve())
-                .for_each(|meta| meta.is_signer = false);
-        }
         if spp.len() > MAX_SPP_CPI_ACCOUNTS {
             return Err(RingError::TooManySettlementAccounts {
                 accounts: spp.len(),
@@ -407,6 +400,18 @@ impl TransactAccounts {
                 .map(|mint| AccountMeta::new_readonly(mint, false)),
         );
         accounts.extend(spp);
+        if self.called_by_program().is_ok() {
+            let mut prefix = KnownPrefix {
+                co_signer_pairs: self.co_signers.len(),
+                delegate_mint: self.delegate_mint.is_some(),
+            };
+            let layout = TransferLayout::new(&data, config, accounts.len(), &mut prefix)?;
+            // An owner off the curve signs inside its program's call alone, every other owner signs the transaction.
+            accounts[layout.owners]
+                .iter_mut()
+                .filter(|meta| !meta.pubkey.is_on_curve())
+                .for_each(|meta| meta.is_signer = false);
+        }
         let mut bytes = vec![match parts.rail.is_delegate() {
             true => tag::AUTHORITY_TRANSFER,
             false => tag::TRANSFER,

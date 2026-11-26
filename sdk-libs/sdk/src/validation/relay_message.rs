@@ -2,10 +2,11 @@
 
 use custom_ring_interface::cosign::ApprovalMask;
 use custom_ring_interface::{
-    compute_unit_limit, funder_account_position,
+    compute_unit_limit,
     stream::{confidential_slot_tag, DeliveredSlot},
-    CustomRingError, InstructionTag, OutputRecord, ParsedTransact, RecordKind, RingMode,
-    RingOutput, RingRail, RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX,
+    CustomRingError, InstructionTag, KnownPrefix, OutputRecord, ParsedTransact, RecordKind,
+    RingOutput, RingPolicy, RingRail, RingTransactData, SettlementLeg, TransferLayout,
+    RING_TRANSACT_RING_CONFIG_INDEX,
 };
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -17,13 +18,13 @@ use spr_client::{ProofInputUtxo, MAX_LOADED_ACCOUNTS_DATA_SIZE};
 use spr_hasher::primitives::right_align;
 use spr_indexer_api::{Hash, SerializablePubkey};
 use spr_interface::{
-    instruction::{instruction_data::settlement_accounts, InterfaceTransfer},
-    pda,
-    tree_slot::tree_id_field,
-    N_PUBLIC_SLOTS,
+    instruction::InterfaceTransfer, pda, tree_slot::tree_id_field, N_PUBLIC_SLOTS,
 };
 use spr_keypair::{PublicKey, ShieldedAddress, X25519Pubkey};
-use spr_program::instruction::CreateAssociatedTokenAccount;
+use spr_program::instruction::{
+    CreateAssociatedTokenAccount, TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
+    TransactSplWithdrawalAccounts,
+};
 use spr_transaction::{utxo::DUMMY_DOMAIN, Mint, TransactionError, Utxo, WalletUtxo, SOL_MINT};
 use thiserror::Error;
 use zolana_ring_client::{
@@ -80,8 +81,8 @@ pub enum MessageMismatch {
     SpendsUnrequestedNote,
     #[error("the terms leave a published output unopened")]
     UnopenedOutput,
-    #[error("the deposit legs the signer funds differ from its terms")]
-    FunderLegs,
+    #[error("the public legs differ from the signer's terms")]
+    Legs,
     #[error("the request asks for no signature")]
     Unrequested,
     #[error("the signing key is not the key the request names")]
@@ -110,6 +111,8 @@ pub struct RelayTransferTerms {
     pub slots: Vec<SlotOpening>,
     /// The signer's notes the transfer spends.
     pub nullifiers: Vec<Hash>,
+    /// Every interface transfer leg of the frame in frame order.
+    pub legs: Vec<PublicLeg>,
     /// The token accounts the fee payer creates ahead of the ring instruction.
     pub setup: Vec<TokenAccountCreate>,
 }
@@ -121,17 +124,28 @@ pub struct RelayFunderTerms {
     pub ring: SerializablePubkey,
     pub fee_payer: SerializablePubkey,
     pub signer: SerializablePubkey,
-    pub legs: Vec<FundedLeg>,
+    /// The legs the signer funds in frame order.
+    pub legs: Vec<PublicLeg>,
     /// The token accounts the fee payer creates ahead of the ring instruction.
     pub setup: Vec<TokenAccountCreate>,
 }
 
-/// `None` on SOL.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// One interface transfer leg with its settlement group in frame order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct FundedLeg {
+pub struct PublicLeg {
+    pub direction: LegDirection,
+    /// `None` on SOL.
     pub mint: Option<SerializablePubkey>,
     pub amount: u64,
+    pub accounts: Vec<SerializablePubkey>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LegDirection {
+    Deposit,
+    Withdrawal,
 }
 
 /// The preimage of one published output's `utxo_hash`.
@@ -299,6 +313,7 @@ pub(crate) struct ExpectedCoSigner {
     ring: Address,
     fee_payer: Address,
     signer: Address,
+    policy: Box<RingPolicy>,
     rail: RingRail,
     setup: Vec<Instruction>,
     rule: CoSignerRule,
@@ -309,7 +324,8 @@ pub(crate) struct ExpectedCoSigner {
 pub(crate) struct ExpectedPublicOwner {
     terms: RelayTransferTerms,
     setup: Vec<Instruction>,
-    /// From the ring account, a frame read under the wrong rail proves nothing.
+    /// From the ring account, a frame read under the wrong rail or policy proves nothing.
+    policy: Box<RingPolicy>,
     rail: RingRail,
     known_nullifiers: Vec<[u8; 32]>,
 }
@@ -319,6 +335,7 @@ pub(crate) struct ExpectedPublicOwner {
 pub(crate) struct ExpectedFunder {
     terms: RelayFunderTerms,
     setup: Vec<Instruction>,
+    policy: Box<RingPolicy>,
     rail: RingRail,
 }
 
@@ -328,13 +345,14 @@ pub(crate) struct ExpectedDelegate {
     pub fee_payer: Address,
     pub delegate: Address,
     /// From the ring account, a frame read under the wrong rail or auditor proves nothing.
+    pub policy: Box<RingPolicy>,
     pub rail: RingRail,
     pub auditor: X25519Pubkey,
     pub tx_viewing_key: TxViewingSecret,
     /// Change returns to an input's owner.
     pub sources: Vec<ExpectedOwner>,
     pub payments: Vec<ExpectedPayment>,
-    pub withdrawals: Vec<ExpectedWithdrawal>,
+    pub withdrawals: Vec<PublicLeg>,
     pub requester: DelegateRequester,
     pub output_tree_id: u16,
 }
@@ -352,12 +370,6 @@ pub(crate) struct ExpectedPayment {
     pub owner: ExpectedOwner,
     pub mint: Address,
     pub amount: u64,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ExpectedWithdrawal {
-    transfer: InterfaceTransfer,
-    accounts: Vec<Address>,
 }
 
 /// Only a check builds one.
@@ -424,25 +436,17 @@ impl ExpectedMessage {
     }
 }
 
-struct SettlementLeg<'a> {
-    transfer: InterfaceTransfer,
-    accounts: &'a [AccountMeta],
-}
-
+/// The frame's account list cut by the one layout the program reads it with.
 struct DecodedTransfer<'a> {
-    prefix: &'a [AccountMeta],
-    forwarded: &'a [AccountMeta],
-    spp_head: &'a [AccountMeta],
-    owner_signers: &'a [AccountMeta],
-    settlement_window: &'a [AccountMeta],
-    settlement: Vec<SettlementLeg<'a>>,
-    cache: &'a [AccountMeta],
+    accounts: &'a [AccountMeta],
+    layout: TransferLayout,
+    legs: Vec<SettlementLeg>,
 }
 
 impl<'a> DecodedTransfer<'a> {
-    /// Every region is cut from the frame's own counts, an account outside them refuses the frame.
     fn decode(
         ring: CustomRing,
+        policy: &RingPolicy,
         data: &RingTransactData<'_>,
         accounts: &'a [AccountMeta],
     ) -> Result<Self, MessageMismatch> {
@@ -455,73 +459,121 @@ impl<'a> DecodedTransfer<'a> {
         let (Some((slot, _)), None) = (copies.next(), copies.next()) else {
             return Err(MessageMismatch::Accounts);
         };
-        let spp = slot
+        let layout = slot
             .checked_sub(RING_TRANSACT_RING_CONFIG_INDEX)
+            .and_then(|spp| KnownPrefix::ending_at(data, policy, spp).ok())
+            .and_then(|mut prefix| {
+                TransferLayout::new(data, policy, accounts.len(), &mut prefix).ok()
+            })
             .ok_or(MessageMismatch::Accounts)?;
-        let (prefix, forwarded) = accounts
-            .split_at_checked(spp)
-            .ok_or(MessageMismatch::Accounts)?;
-        let settlement_window =
-            settlement_accounts(&data.interface_transfers, data.circuit(), forwarded)
-                .ok_or(MessageMismatch::Accounts)?;
-        let owner_signers = data
-            .owner_signers(forwarded, settlement_window.len())
-            .map_err(|_| MessageMismatch::Accounts)?;
-        let cache_len = data.circuit().cache_access().map_or(0, |access| {
-            usize::from(access.read_bitmap != 0) + 2 * usize::from(access.writes_cache())
-        });
-        let cache_start = forwarded
-            .len()
-            .checked_sub(cache_len)
-            .ok_or(MessageMismatch::Accounts)?;
-        let settlement_start = cache_start
-            .checked_sub(settlement_window.len())
-            .ok_or(MessageMismatch::Accounts)?;
-        let owner_start = settlement_start
-            .checked_sub(owner_signers.len())
-            .ok_or(MessageMismatch::Accounts)?;
-        let spp_head = forwarded
-            .get(..owner_start)
-            .ok_or(MessageMismatch::Accounts)?;
-        let cache = forwarded
-            .get(cache_start..)
-            .ok_or(MessageMismatch::Accounts)?;
-        let mut rest = settlement_window;
-        let mut settlement = Vec::with_capacity(data.interface_transfers.len());
-        for &transfer in &data.interface_transfers {
-            let (group, tail) = rest
-                .split_at_checked(transfer.settlement_account_count())
-                .ok_or(MessageMismatch::Accounts)?;
-            rest = tail;
-            settlement.push(SettlementLeg {
-                transfer,
-                accounts: group,
-            });
-        }
-        if !rest.is_empty() {
-            return Err(MessageMismatch::Accounts);
-        }
         Ok(Self {
-            prefix,
-            forwarded,
-            spp_head,
-            owner_signers,
-            settlement_window,
-            settlement,
-            cache,
+            accounts,
+            legs: layout.legs(&data.interface_transfers).collect(),
+            layout,
         })
+    }
+
+    fn key(&self, index: usize) -> Option<Address> {
+        self.accounts.get(index).map(|meta| meta.pubkey)
+    }
+
+    fn group(&self, leg: &SettlementLeg) -> &'a [AccountMeta] {
+        self.accounts.get(leg.accounts.clone()).unwrap_or_default()
     }
 }
 
-enum PrefixSigner {
-    Required,
-    Forbidden,
+impl LegDirection {
+    pub(crate) fn of(transfer: InterfaceTransfer) -> Self {
+        match transfer.is_deposit() {
+            true => Self::Deposit,
+            false => Self::Withdrawal,
+        }
+    }
+}
+
+impl PublicLeg {
+    /// The group SPP reads for the leg, an account group of the other direction is refused.
+    pub(crate) fn of(
+        direction: LegDirection,
+        amount: u64,
+        accounts: &TransactInterfaceTransferAccounts,
+    ) -> Result<Self, RingError> {
+        let (mint, group) = match (direction, accounts) {
+            (_, TransactInterfaceTransferAccounts::Sol(sol)) => {
+                (None, vec![pda::sol_interface(), sol.recipient])
+            }
+            (LegDirection::Deposit, TransactInterfaceTransferAccounts::SplDeposit(spl)) => (
+                Some(spl.mint),
+                vec![
+                    spl.mint,
+                    spl.spl_interface,
+                    spl.token_authority,
+                    spl.user_token_account,
+                    spl.token_program,
+                ],
+            ),
+            (LegDirection::Withdrawal, TransactInterfaceTransferAccounts::SplWithdrawal(spl)) => (
+                Some(spl.mint),
+                vec![
+                    pda::shielded_pool_cpi_authority(),
+                    spl.mint,
+                    spl.spl_interface,
+                    spl.user_token_account,
+                    spl.token_program,
+                ],
+            ),
+            _ => return Err(CustomRingError::InvalidSettlementAccounts.into()),
+        };
+        Ok(Self {
+            direction,
+            mint: mint.map(SerializablePubkey),
+            amount,
+            accounts: group.into_iter().map(SerializablePubkey).collect(),
+        })
+    }
+
+    /// The mint is read at the kind's own position, a SOL leg names none.
+    fn binds(&self, leg: &SettlementLeg, group: &[AccountMeta]) -> bool {
+        let mint = leg
+            .transfer
+            .mint_account_position()
+            .and_then(|position| group.get(position))
+            .map(|meta| meta.pubkey);
+        self.direction == LegDirection::of(leg.transfer)
+            && self.amount == leg.transfer.amount()
+            && self.mint.map(|mint| mint.0) == mint
+            && self
+                .accounts
+                .iter()
+                .map(|account| &account.0)
+                .eq(group.iter().map(|meta| &meta.pubkey))
+    }
+}
+
+/// Each of `legs` equals the term at its place, a leg or a term left over moves funds no terms name.
+fn check_legs<'l>(
+    terms: &[PublicLeg],
+    decoded: &DecodedTransfer<'_>,
+    mut legs: impl Iterator<Item = &'l SettlementLeg>,
+) -> Result<(), MessageMismatch> {
+    let mut terms = terms.iter();
+    let bound = legs.all(|leg| {
+        terms
+            .next()
+            .is_some_and(|term| term.binds(leg, decoded.group(leg)))
+    });
+    match bound && terms.next().is_none() {
+        true => Ok(()),
+        false => Err(MessageMismatch::Legs),
+    }
 }
 
 trait ExpectedFrame {
     const TAG: InstructionTag;
 
     fn rail(&self) -> RingRail;
+
+    fn policy(&self) -> &RingPolicy;
 
     fn envelope(&self, signer: Address) -> Result<Envelope, MessageMismatch>;
 
@@ -546,7 +598,12 @@ fn check_message<E: ExpectedFrame>(
         .filter(|(tag, _)| **tag == E::TAG as u8)
         .and_then(|(_, data)| RingTransactData::parse(data, expected.rail()).ok())
         .ok_or(MessageMismatch::Data)?;
-    let decoded = DecodedTransfer::decode(envelope.ring, parsed.data(), &instruction.accounts)?;
+    let decoded = DecodedTransfer::decode(
+        envelope.ring,
+        expected.policy(),
+        parsed.data(),
+        &instruction.accounts,
+    )?;
     expected.check_frame(&envelope, &parsed, &decoded)?;
     Ok(envelope.verified(message))
 }
@@ -613,47 +670,41 @@ fn open_records(
         .collect()
 }
 
-/// A second or writable entry of the key would carry an authority the terms never name.
-fn signs_once_readonly(slice: &[AccountMeta], signer: Address) -> bool {
-    let mut named = slice.iter().filter(|meta| meta.pubkey == signer);
-    matches!(
-        (named.next(), named.next()),
-        (Some(meta), None) if meta.is_signer && !meta.is_writable
-    )
-}
-
-fn contains_key(slice: &[AccountMeta], key: Address) -> bool {
-    slice.iter().any(|meta| meta.pubkey == key)
-}
-
-fn check_prefix_signer(
+/// The key signs at `allowed` and is named nowhere else in the frame, any other entry carries an
+/// authority its terms never name.
+fn check_signer(
     envelope: &Envelope,
     decoded: &DecodedTransfer<'_>,
+    allowed: &[usize],
+    writable: bool,
 ) -> Result<(), MessageMismatch> {
-    let prefix_rest = decoded.prefix.get(1..).unwrap_or_default();
-    let valid = envelope.reads_only(decoded, PrefixSigner::Required)
-        && signs_once_readonly(prefix_rest, envelope.signer)
-        // A signature named in SPP's list also moves the key's own funds.
-        && !contains_key(decoded.forwarded, envelope.signer);
+    let mut named = decoded
+        .accounts
+        .iter()
+        .enumerate()
+        .filter(|(_, meta)| meta.pubkey == envelope.signer);
+    let valid = !allowed.is_empty()
+        && envelope.reads_only(decoded)
+        && named
+            .clone()
+            .map(|(index, _)| index)
+            .eq(allowed.iter().copied())
+        && named.all(|(_, meta)| meta.is_signer && (writable || !meta.is_writable));
     match valid {
         true => Ok(()),
         false => Err(MessageMismatch::Accounts),
     }
 }
 
-/// The key signs in the owner run alone, a settlement or cache entry would spend its own funds.
-fn check_owner_signer(
+/// One slot alone, a second entry of the key would stand for a signature the message holds once.
+fn check_sole_signer(
     envelope: &Envelope,
     decoded: &DecodedTransfer<'_>,
+    mut slots: impl Iterator<Item = usize>,
 ) -> Result<(), MessageMismatch> {
-    let valid = envelope.reads_only(decoded, PrefixSigner::Forbidden)
-        && signs_once_readonly(decoded.owner_signers, envelope.signer)
-        && !contains_key(decoded.spp_head, envelope.signer)
-        && !contains_key(decoded.settlement_window, envelope.signer)
-        && !contains_key(decoded.cache, envelope.signer);
-    match valid {
-        true => Ok(()),
-        false => Err(MessageMismatch::Accounts),
+    match (slots.next(), slots.next()) {
+        (Some(slot), None) => check_signer(envelope, decoded, &[slot], false),
+        _ => Err(MessageMismatch::Accounts),
     }
 }
 
@@ -684,6 +735,7 @@ impl ExpectedDelegate {
             ring: CustomRing::new(request.ring.0),
             fee_payer: quote.fee_payer.0,
             delegate: request.delegate.0,
+            policy: Box::new(*config.account()),
             rail: RingRail::delegate(config.mode),
             auditor: config.auditor_pubkey,
             tx_viewing_key: request.tx_viewing_key.clone(),
@@ -714,7 +766,7 @@ impl ExpectedDelegate {
             withdrawals: transfer
                 .withdrawals
                 .iter()
-                .map(ExpectedWithdrawal::new)
+                .map(withdrawal_leg)
                 .collect::<Result<_, _>>()?,
             requester: requester.clone(),
             output_tree_id: *output_tree_id,
@@ -758,7 +810,7 @@ impl ExpectedDelegate {
         if data.has_data || data.ring_data {
             return Err(MessageMismatch::Data);
         }
-        self.check_withdrawals(decoded)?;
+        check_legs(&self.withdrawals, decoded, decoded.legs.iter())?;
         // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
         if let DelegateRequester::Ring(allowed) = &self.requester {
             allowed
@@ -807,27 +859,6 @@ impl ExpectedDelegate {
             false => Err(MessageMismatch::Recipients),
         }
     }
-
-    fn check_withdrawals(&self, decoded: &DecodedTransfer<'_>) -> Result<(), MessageMismatch> {
-        let mut unpaid = self.withdrawals.clone();
-        for leg in &decoded.settlement {
-            let paid = unpaid
-                .iter()
-                .position(|expected| {
-                    expected.transfer == leg.transfer
-                        && expected
-                            .accounts
-                            .iter()
-                            .eq(leg.accounts.iter().map(|account| &account.pubkey))
-                })
-                .ok_or(MessageMismatch::Data)?;
-            unpaid.swap_remove(paid);
-        }
-        if !unpaid.is_empty() {
-            return Err(MessageMismatch::Data);
-        }
-        Ok(())
-    }
 }
 
 impl ExpectedFrame for ExpectedDelegate {
@@ -835,6 +866,10 @@ impl ExpectedFrame for ExpectedDelegate {
 
     fn rail(&self) -> RingRail {
         self.rail
+    }
+
+    fn policy(&self) -> &RingPolicy {
+        &self.policy
     }
 
     fn envelope(&self, signer: Address) -> Result<Envelope, MessageMismatch> {
@@ -858,7 +893,7 @@ impl ExpectedFrame for ExpectedDelegate {
         decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
         self.check_moved(parsed, decoded)?;
-        check_prefix_signer(envelope, decoded)
+        check_sole_signer(envelope, decoded, decoded.layout.delegate.into_iter())
     }
 }
 
@@ -880,7 +915,7 @@ impl OwnerApproval<'_> {
             self.message,
             ExpectedMessage::PublicOwner(ExpectedPublicOwner::new(
                 self.terms,
-                self.config.mode,
+                self.config,
                 self.known_notes.iter().map(|note| note.nullifier).collect(),
             )),
         )
@@ -903,6 +938,7 @@ impl FunderApproval<'_> {
             self.message,
             ExpectedMessage::Funder(ExpectedFunder {
                 setup: setup_instructions(self.terms.fee_payer.0, &self.terms.setup),
+                policy: Box::new(*self.config.account()),
                 rail: RingRail::transfer(self.config.mode),
                 terms: self.terms,
             }),
@@ -926,10 +962,15 @@ fn setup_instructions(fee_payer: Address, setup: &[TokenAccountCreate]) -> Vec<I
 }
 
 impl ExpectedPublicOwner {
-    pub fn new(terms: RelayTransferTerms, mode: RingMode, known_nullifiers: Vec<[u8; 32]>) -> Self {
+    pub fn new(
+        terms: RelayTransferTerms,
+        config: &CustomRingConfig,
+        known_nullifiers: Vec<[u8; 32]>,
+    ) -> Self {
         Self {
             setup: setup_instructions(terms.fee_payer.0, &terms.setup),
-            rail: RingRail::transfer(mode),
+            policy: Box::new(*config.account()),
+            rail: RingRail::transfer(config.mode),
             known_nullifiers,
             terms,
         }
@@ -978,15 +1019,8 @@ impl ExpectedPublicOwner {
         if spends_another {
             return Err(MessageMismatch::SpendsUnnamedNote);
         }
-        // 4. Transfer terms name no withdrawal destination.
-        if decoded
-            .settlement
-            .iter()
-            .any(|leg| !leg.transfer.is_deposit())
-        {
-            return Err(MessageMismatch::Data);
-        }
-        Ok(())
+        // 4. The frame moves public funds through the legs the terms name and no other.
+        check_legs(&terms.legs, decoded, decoded.legs.iter())
     }
 }
 
@@ -1040,6 +1074,10 @@ impl ExpectedFrame for ExpectedPublicOwner {
         self.rail
     }
 
+    fn policy(&self) -> &RingPolicy {
+        &self.policy
+    }
+
     /// Another key stays refused.
     fn envelope(&self, signer: Address) -> Result<Envelope, MessageMismatch> {
         if self.terms.signer.0 != signer
@@ -1064,7 +1102,12 @@ impl ExpectedFrame for ExpectedPublicOwner {
         decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
         self.check_moved(parsed.data(), decoded)?;
-        check_owner_signer(envelope, decoded)
+        let run = decoded
+            .layout
+            .owners
+            .clone()
+            .filter(|&index| decoded.key(index) == Some(envelope.signer));
+        check_sole_signer(envelope, decoded, run)
     }
 }
 
@@ -1073,6 +1116,10 @@ impl ExpectedFrame for ExpectedFunder {
 
     fn rail(&self) -> RingRail {
         self.rail
+    }
+
+    fn policy(&self) -> &RingPolicy {
+        &self.policy
     }
 
     fn envelope(&self, signer: Address) -> Result<Envelope, MessageMismatch> {
@@ -1098,58 +1145,16 @@ impl ExpectedFrame for ExpectedFunder {
     ) -> Result<(), MessageMismatch> {
         // 1. The legs of the frame that take the key as funder match the terms exactly, a leg the
         // sender adds would draw funds the signer never agreed to.
-        let mut unfunded = self.terms.legs.clone();
-        for leg in &decoded.settlement {
-            let names_signer = funder_account_position(&leg.transfer)
-                .and_then(|position| leg.accounts.get(position))
-                .is_some_and(|meta| meta.pubkey == envelope.signer);
-            if !names_signer {
-                continue;
-            }
-            let expected = FundedLeg {
-                mint: leg
-                    .transfer
-                    .mint_account_position()
-                    .and_then(|position| leg.accounts.get(position))
-                    .map(|meta| SerializablePubkey(meta.pubkey)),
-                amount: leg.transfer.amount(),
-            };
-            let held = unfunded
-                .iter()
-                .position(|term| *term == expected)
-                .ok_or(MessageMismatch::FunderLegs)?;
-            unfunded.swap_remove(held);
-        }
-        if !unfunded.is_empty() {
-            return Err(MessageMismatch::FunderLegs);
-        }
-        // 2. Past the legs the key appears nowhere. A run entry would authorize its data outputs and
-        // spent notes under one signature, the sharper authority the terms never name.
-        self.check_funder_signer(envelope, decoded)
-    }
-}
-
-impl ExpectedFunder {
-    fn check_funder_signer(
-        &self,
-        envelope: &Envelope,
-        decoded: &DecodedTransfer<'_>,
-    ) -> Result<(), MessageMismatch> {
+        let funded = decoded.legs.iter().filter(|leg| {
+            leg.funder
+                .is_some_and(|funder| decoded.key(funder) == Some(envelope.signer))
+        });
+        check_legs(&self.terms.legs, decoded, funded.clone())?;
+        // 2. Past its funder slots the key appears nowhere. A run entry would authorize its data
+        // outputs and spent notes under one signature, the sharper authority the terms never name.
+        let slots: Vec<usize> = funded.filter_map(|leg| leg.funder).collect();
         let sol_funded = self.terms.legs.iter().any(|leg| leg.mint.is_none());
-        let mut settlement_named = decoded
-            .settlement_window
-            .iter()
-            .filter(|meta| meta.pubkey == envelope.signer);
-        let valid = envelope.reads_only(decoded, PrefixSigner::Forbidden)
-            && !contains_key(decoded.spp_head, envelope.signer)
-            && !contains_key(decoded.owner_signers, envelope.signer)
-            && !contains_key(decoded.cache, envelope.signer)
-            && settlement_named.clone().count() == self.terms.legs.len()
-            && settlement_named.all(|meta| meta.is_signer && (sol_funded || !meta.is_writable));
-        match valid {
-            true => Ok(()),
-            false => Err(MessageMismatch::Accounts),
-        }
+        check_signer(envelope, decoded, &slots, sol_funded)
     }
 }
 
@@ -1217,6 +1222,7 @@ impl CoSignerApproval<'_> {
                 ring: self.ring,
                 fee_payer: self.fee_payer,
                 signer: self.signer,
+                policy: Box::new(*self.config.account()),
                 rail: RingRail::transfer(self.config.mode),
                 setup: setup_instructions(self.fee_payer, &self.setup),
                 rule: self.rule,
@@ -1296,6 +1302,10 @@ impl ExpectedFrame for ExpectedCoSigner {
         self.rail
     }
 
+    fn policy(&self) -> &RingPolicy {
+        &self.policy
+    }
+
     fn envelope(&self, signer: Address) -> Result<Envelope, MessageMismatch> {
         if self.signer != signer {
             return Err(MessageMismatch::Unrequested);
@@ -1328,7 +1338,14 @@ impl ExpectedFrame for ExpectedCoSigner {
                 parsed.audit_stream().capacity,
             )?,
         }
-        check_prefix_signer(envelope, decoded)
+        // The key signs the pair of its own record, a slot beside another record approves for it.
+        let own = envelope.ring.co_signer_metas(envelope.signer);
+        let slots = decoded
+            .layout
+            .co_signer_pairs()
+            .filter(|(record, signer)| decoded.accounts.get(*record..=*signer) == Some(&own[..]))
+            .map(|(_, signer)| signer);
+        check_sole_signer(envelope, decoded, slots)
     }
 }
 
@@ -1357,46 +1374,32 @@ impl ExpectedPayment {
     }
 }
 
-impl ExpectedWithdrawal {
-    fn new(withdrawal: &AuthorityWithdrawal) -> Result<Self, RingError> {
-        let mint = withdrawal.mint.0;
-        if mint == SOL_MINT {
-            if let Some(program) = withdrawal.token_program {
-                return Err(TransactionError::UnexpectedSolTokenProgram {
-                    token_program: program.0,
-                }
-                .into());
-            }
-            return Ok(Self {
-                transfer: InterfaceTransfer::SolWithdrawal {
-                    amount: withdrawal.amount,
-                },
-                accounts: vec![pda::sol_interface(), withdrawal.recipient.0],
-            });
+fn withdrawal_leg(withdrawal: &AuthorityWithdrawal) -> Result<PublicLeg, RingError> {
+    let mint = withdrawal.mint.0;
+    let recipient = withdrawal.recipient.0;
+    let accounts = match (mint == SOL_MINT, withdrawal.token_program) {
+        (true, None) => {
+            TransactInterfaceTransferAccounts::Sol(TransactSolTransferAccounts { recipient })
         }
-        let program = withdrawal
-            .token_program
-            .ok_or(TransactionError::MissingSplTokenProgram { mint })?
-            .0;
-        let (vault, bump) = pda::spl_interface_with_bump(&mint);
-        Ok(Self {
-            transfer: InterfaceTransfer::SplWithdrawal {
-                amount: withdrawal.amount,
-                spl_interface_bump: bump,
-            },
-            accounts: vec![
-                pda::shielded_pool_cpi_authority(),
+        (true, Some(program)) => {
+            return Err(TransactionError::UnexpectedSolTokenProgram {
+                token_program: program.0,
+            }
+            .into())
+        }
+        (false, None) => return Err(TransactionError::MissingSplTokenProgram { mint }.into()),
+        (false, Some(program)) => {
+            TransactInterfaceTransferAccounts::SplWithdrawal(TransactSplWithdrawalAccounts {
                 mint,
-                vault,
-                pda::associated_token_address_with_program(
-                    &withdrawal.recipient.0,
-                    &mint,
-                    &program,
+                spl_interface: pda::spl_interface(&mint),
+                user_token_account: pda::associated_token_address_with_program(
+                    &recipient, &mint, &program.0,
                 ),
-                program,
-            ],
-        })
-    }
+                token_program: program.0,
+            })
+        }
+    };
+    PublicLeg::of(LegDirection::Withdrawal, withdrawal.amount, &accounts)
 }
 
 impl VerifiedMessage {
@@ -1513,23 +1516,24 @@ impl Envelope {
         })
     }
 
-    /// The ring account first, then accounts that never name the signer unless the rule requires
-    /// it, a message holds one write role per address across prefix and forwarded.
-    fn reads_only(&self, decoded: &DecodedTransfer<'_>, signer: PrefixSigner) -> bool {
+    /// The ring account first, then accounts the program only reads, a message holds one write
+    /// role per address across prefix and forwarded.
+    fn reads_only(&self, decoded: &DecodedTransfer<'_>) -> bool {
+        let (prefix, forwarded) = decoded
+            .accounts
+            .split_at_checked(decoded.layout.spp)
+            .unwrap_or_default();
         let forwarded_write = |meta: &AccountMeta| {
-            decoded
-                .forwarded
+            forwarded
                 .iter()
                 .any(|spp| spp.pubkey == meta.pubkey && spp.is_writable)
         };
-        let signer_allowed = matches!(signer, PrefixSigner::Required);
-        match decoded.prefix.split_first() {
+        match prefix.split_first() {
             Some((ring, rest)) => {
                 *ring == AccountMeta::new_readonly(self.ring.policy_pda(), false)
-                    && rest.iter().all(|meta| {
-                        (!meta.is_writable || forwarded_write(meta))
-                            && (signer_allowed || meta.pubkey != self.signer)
-                    })
+                    && rest
+                        .iter()
+                        .all(|meta| !meta.is_writable || forwarded_write(meta))
             }
             None => false,
         }

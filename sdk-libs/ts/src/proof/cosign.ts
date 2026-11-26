@@ -178,7 +178,7 @@ export interface FunderApprovalInput {
   readonly relayId: ConstructorParameters<typeof PendingRelaySignature>[0];
   readonly message: Uint8Array;
   readonly terms: RelayFunderTerms;
-  readonly config: Pick<RingPolicy, "mode">;
+  readonly config: RingPolicy;
 }
 
 export interface CoSignerApprovalInput {
@@ -187,7 +187,7 @@ export interface CoSignerApprovalInput {
   readonly ring: Address;
   readonly feePayer: Address;
   readonly signer: Address;
-  readonly config: Pick<RingPolicy, "mode">;
+  readonly config: RingPolicy;
   /** The public creates a relay puts ahead of the ring instruction. */
   readonly setup: readonly TokenAccountCreate[];
   readonly rule: CoSignerRule;

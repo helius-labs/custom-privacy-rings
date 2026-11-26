@@ -1202,24 +1202,6 @@ export interface RingAuditorKey {
   readonly signature: Uint8Array;
 }
 
-/** Value entering a ring, which carries no auditor message. */
-export interface RingDeposit {
-  readonly signature: Signature;
-  readonly slot: bigint;
-  /** The owner tag of the UTXO the deposit created. */
-  readonly depositor: Address;
-  readonly asset: Address;
-  readonly amount: bigint;
-}
-
-/** One page of ring deposits. The cursor is opaque, pass it back to reach older history. */
-export interface RingDepositsPage {
-  readonly deposits: readonly RingDeposit[];
-  readonly cursor?: Uint8Array;
-  /** The oldest slot this page examined, so a caller can merge the stream with an audit read by slot. */
-  readonly oldestSlot?: bigint;
-}
-
 /** Mirrors Rust `RingState`. */
 export type RingState = "served" | "foreignAuditor" | "uninitialized";
 
@@ -1648,60 +1630,6 @@ export class RingRpc {
       auditorViewTag,
       servicePublicKey: pinned,
       signature,
-    });
-  }
-
-  /**
-   * Deposits publish their asset and amount, so this read is unsigned.
-   * `limit` counts signatures examined, so an empty page can still carry a cursor over older history.
-   */
-  async ringDeposits(
-    input: Readonly<{
-      ringProgramId: Address;
-      limit?: number;
-      cursor?: Uint8Array;
-    }>,
-    context?: RequestContext,
-  ): Promise<RingDepositsPage> {
-    const ringProgramId = requestAddress(input.ringProgramId, "ringProgramId");
-    if (
-      input.limit !== undefined &&
-      (typeof input.limit !== "number" ||
-        !Number.isSafeInteger(input.limit) ||
-        input.limit < 1 ||
-        input.limit > 1000)
-    )
-      throw new RingError("RING_READ_LIMIT", { details: { limit: String(input.limit) } });
-    const cursorBytes = input.cursor === undefined ? undefined : checkedReadCursor(input.cursor);
-    const wire = record(
-      await this.#call(
-        "ringDeposits",
-        {
-          ringProgramId,
-          ...(input.limit === undefined ? {} : { limit: input.limit }),
-          ...(cursorBytes === undefined ? {} : { cursor: base64Decoder.decode(cursorBytes) }),
-        },
-        context,
-      ),
-      "result",
-    );
-    const cursor = wire["cursor"];
-    const oldestSlot = wire["oldestSlot"];
-    return Object.freeze({
-      deposits: Object.freeze(
-        list(wire["deposits"], "result.deposits").map((entry) => {
-          const deposit = record(entry, "result.deposits");
-          return Object.freeze({
-            signature: signature(deposit["signature"], "deposits.signature"),
-            slot: u64(deposit["slot"], "deposits.slot"),
-            depositor: address(deposit["depositor"], "deposits.depositor"),
-            asset: address(deposit["asset"], "deposits.asset"),
-            amount: u64(deposit["amount"], "deposits.amount"),
-          });
-        }),
-      ),
-      ...(cursor === undefined ? {} : { cursor: base64(cursor, "result.cursor") }),
-      ...(oldestSlot === undefined ? {} : { oldestSlot: u64(oldestSlot, "result.oldestSlot") }),
     });
   }
 
@@ -2227,7 +2155,8 @@ export class RingRpc {
     );
   }
 
-  async getOwnerListSalts(
+  /** Both salts as served, `privateRevocationKeys` opens each against its on-chain tag. */
+  async getListSalt(
     request: GetListSaltRequest,
     context?: RequestContext,
   ): Promise<OwnerListSalts> {
@@ -2249,15 +2178,6 @@ export class RingRpc {
       ...(listSalt === undefined ? {} : { listSalt }),
       ...(ringSalt === undefined ? {} : { ringSalt }),
     });
-  }
-
-  /** The owner's salt, or with no tracking row the ring salt the policy commits. */
-  async getListSalt(
-    request: GetListSaltRequest,
-    context?: RequestContext,
-  ): Promise<Bytes32 | undefined> {
-    const salts = await this.getOwnerListSalts(request, context);
-    return salts.listSalt ?? salts.ringSalt;
   }
 
   async prepareAuthorityTransfer(
@@ -2835,28 +2755,35 @@ function decodeDecryptedUtxo(wire: Record<string, unknown>, path: string): Audit
   });
 }
 
-/** Rust `DecryptedKnownUtxo`, `ownerHash` for a deposited UTXO, neither for an unresolved owner. */
+const KNOWN_UTXO_FIELDS: readonly string[] = [
+  "ownerKey",
+  "nullifierPk",
+  "asset",
+  "mint",
+  "amount",
+  "blinding",
+  "dataHash",
+  "ringDataHash",
+  "treeId",
+];
+
+/** Rust `DecryptedKnownUtxo`, no `nullifierPk` for an unresolved owner. */
 function decodeKnownUtxo(wire: Record<string, unknown>, path: string): KnownUtxo {
   const nullifierPk = wire["nullifierPk"];
-  const ownerHash = wire["ownerHash"];
-  if (nullifierPk !== undefined && ownerHash !== undefined) throw invalid(`${path}.ownerHash`);
+  const unknown = Object.keys(wire).find((field) => !KNOWN_UTXO_FIELDS.includes(field));
+  if (unknown !== undefined) throw invalid(`${path}.${unknown}`);
   const fields = utxoFields(wire, path, canonicalHash);
   // The commitment binds the asset field alone, a named mint must derive it.
   if (fields.mint !== undefined && !equalBytes(assetField(fields.mint), fields.asset))
     throw invalid(`${path}.mint`);
-  const unresolved = nullifierPk === undefined && ownerHash === undefined;
   return Object.freeze({
     ...fields,
-    owner: unresolved
-      ? Object.freeze({ kind: "unresolved" })
-      : ownerHash === undefined
-        ? Object.freeze({
+    owner:
+      nullifierPk === undefined
+        ? Object.freeze({ kind: "unresolved" })
+        : Object.freeze({
             kind: "keyed",
             nullifierPk: canonicalHash(nullifierPk, `${path}.nullifierPk`),
-          })
-        : Object.freeze({
-            kind: "deposited",
-            ownerHash: canonicalHash(ownerHash, `${path}.ownerHash`),
           }),
     treeId: u16(wire["treeId"], `${path}.treeId`),
   });

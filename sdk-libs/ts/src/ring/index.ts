@@ -279,9 +279,8 @@ export {
   type ApprovalLimit,
   type CoSignerRule,
   type DelegateRequester,
-  type DelegateRingConfig,
   type ExactApproval,
-  type FundedLeg,
+  type PublicLeg,
   type RelayFunderTerms,
   type RelayTransferTerms,
   type RequestedAuthorityTransfer,
@@ -575,8 +574,6 @@ export type {
   RingAuditedUtxo,
   RingAuditedUtxosPage,
   RingAuditorKey,
-  RingDeposit,
-  RingDepositsPage,
   RingKeyMode,
   RingPagedRead,
   RingReaderGrantMode,
@@ -670,7 +667,11 @@ export {
   publicListKey,
   ringListKey,
 } from "../protocol/membership/private-list.js";
-export type { OwnerListSalts, PrivateListTarget } from "../protocol/membership/private-list.js";
+export type {
+  OwnerListSalts,
+  OwnerListTags,
+  PrivateListTarget,
+} from "../protocol/membership/private-list.js";
 export { listSaltOf, listTagOf } from "../crypto/keys/list-salt.js";
 export {
   ENROLLMENT_BATCH,

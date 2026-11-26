@@ -1,6 +1,8 @@
 //! The TS terms test checks the same vector.
 
-use custom_ring_sdk::{RelayTransferTerms, SlotOpening, TokenAccountCreate};
+use custom_ring_sdk::{
+    LegDirection, PublicLeg, RelayTransferTerms, SlotOpening, TokenAccountCreate,
+};
 use serde_json::{json, Value};
 use solana_address::Address;
 use spr_indexer_api::{Hash, SerializablePubkey};
@@ -31,6 +33,20 @@ fn compute_vector() -> Value {
             ring_data_hash: Hash([10; 32]),
         }],
         nullifiers: vec![Hash([11; 32])],
+        legs: vec![
+            PublicLeg {
+                direction: LegDirection::Withdrawal,
+                mint: Some(address(13)),
+                amount: u64::MAX,
+                accounts: [15, 13, 16, 17, 18].map(address).to_vec(),
+            },
+            PublicLeg {
+                direction: LegDirection::Deposit,
+                mint: None,
+                amount: 20,
+                accounts: vec![address(21), address(22)],
+            },
+        ],
         setup: vec![TokenAccountCreate {
             owner: address(12),
             mint: address(13),
@@ -38,7 +54,7 @@ fn compute_vector() -> Value {
         }],
     };
     json!({
-        "description": "One public owner's RelayTransferTerms, each field repeating one byte value. The amount is u64 max and stays exact. wire is the exact JSON text Rust and TypeScript write and read.",
+        "description": "One public owner's RelayTransferTerms, each field repeating one byte value. Two legs, an SPL withdrawal and a SOL deposit. Each u64 max amount stays exact. wire is the exact JSON text Rust and TypeScript write and read.",
         "wire": serde_json::to_string(&terms).unwrap(),
     })
 }

@@ -41,6 +41,8 @@ export const RingRpcRefusal = Object.freeze({
   walletSnapshotCapacity: -32173,
   listSubject: -32175,
   approvedCallNotOnce: -32176,
+  staleBlockhash: -32177,
+  inputReserved: -32178,
   enrollmentNotServed: -32180,
   enrollmentRingMissing: -32181,
   invalidEnrollmentWrite: -32182,

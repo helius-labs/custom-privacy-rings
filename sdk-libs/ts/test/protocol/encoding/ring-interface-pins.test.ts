@@ -115,7 +115,7 @@ describe("ring interface pins", () => {
 
   it("reads the storage registry at the discriminator and size Rust asserts", () => {
     const source = rust("accounts/storage.rs");
-    expect(Number(/pub const DISCRIMINATOR: u8 = (\d+);/u.exec(source)?.[1])).toBe(
+    expect(Number(/storage_account!\(StorageRegistry, (\d+),/u.exec(source)?.[1])).toBe(
       STORAGE_REGISTRY_DISCRIMINATOR,
     );
     expect(Number(/assert!\(StorageRegistry::SIZE == (\d+)\)/u.exec(source)?.[1])).toBe(

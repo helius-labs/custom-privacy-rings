@@ -190,8 +190,6 @@ export interface AuditedRingTransaction {
 /** Rust `UtxoOwner`. */
 export type UtxoOwner =
   | Readonly<{ kind: "keyed"; nullifierPk: Bytes32 }>
-  /** A deposit capsule discloses the owner hash alone. */
-  | Readonly<{ kind: "deposited"; ownerHash: Bytes32 }>
   /** A ring record publishes no nonzero key, `resolveKnownUtxo` keys it under the owner's registered key. */
   | Readonly<{ kind: "unresolved" }>;
 
@@ -508,7 +506,6 @@ export function openedUtxo(utxo: AuditedUtxo, treeId: number): KnownUtxo {
 /** Rust `KnownUtxo::audited`, the opening without its tree. */
 function auditedUtxo(utxo: KnownUtxo): AuditedUtxo {
   const { owner, treeId: _treeId, ...fields } = utxo;
-  if (owner.kind === "deposited") throw auditRefusal("deposited output");
   return Object.freeze({
     ...fields,
     ...(owner.kind === "keyed" ? { nullifierPk: owner.nullifierPk } : {}),
@@ -616,8 +613,6 @@ export function knownUtxoOwnerHash(
   switch (utxo.owner.kind) {
     case "keyed":
       return ownerHash(solanaOwnerIdentity(utxo.ownerKey), utxo.owner.nullifierPk) as Bytes32;
-    case "deposited":
-      return utxo.owner.ownerHash;
     case "unresolved":
       return undefined;
   }

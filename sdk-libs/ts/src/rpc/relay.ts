@@ -19,6 +19,7 @@ import {
   encodePrepareRelayRequest,
 } from "../protocol/ring-rpc/ring-rpc-codec.js";
 import type { OwnerDebit } from "../protocol/membership/owner-debits.js";
+import type { RingPolicy } from "../protocol/codec/ring-codecs.js";
 import type {
   PrepareAuthorityTransferRequest,
   PrepareRelayRequest,
@@ -31,7 +32,6 @@ import {
   expectedPublicOwner,
   type RelayFunderTerms,
   type RelayTransferTerms,
-  type DelegateRingConfig,
   type ExpectedRelayMessage,
   type ExpectedSealed,
   expectedDelegate,
@@ -326,7 +326,7 @@ export interface OwnerApprovalInput {
   readonly relayId: Hash;
   readonly message: Uint8Array;
   readonly terms: RelayTransferTerms;
-  readonly config: DelegateRingConfig;
+  readonly config: RingPolicy;
   /** Every note the wallet holds, the nullifiers are the wallet's own derivation. */
   readonly knownNotes: readonly Pick<WalletUtxo, "nullifier">[];
 }

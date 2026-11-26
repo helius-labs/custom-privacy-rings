@@ -18,9 +18,11 @@ import {
   encodeBase58,
   equalBytes,
   meta,
+  signerAddress,
   solanaOwnerIdentity,
   treeAddress,
   ZERO_32,
+  type SettlementTransfer,
   type SignerAccount,
 } from "@heliuslabs/spr/internal";
 import { type RingProver } from "../../rpc/ports.js";
@@ -41,7 +43,9 @@ import type { RingTransactInstructionData } from "../../protocol/proof/circuit.j
 import type { ProvenAnonymousRingTransact } from "../../rpc/ports.js";
 import type { ShieldedAddress, ShieldedPublicKey } from "@heliuslabs/spr/keypair";
 import {
+  withdrawalLeg,
   ZERO_ADDRESS,
+  type PublicLeg,
   type RelayTransferTerms,
   type TokenAccountCreate,
 } from "../../rpc/relay-message.js";
@@ -58,6 +62,7 @@ import {
   approvedTransferCall,
   transferApprovals,
 } from "../../protocol/transaction/transfer-approval.js";
+import { transferLayout } from "../../protocol/transaction/transfer-layout.js";
 import type { ApprovedTransfer } from "../../protocol/ring-rpc/ring-rpc-types.js";
 import { ringIdField } from "../../crypto/derivation/ring-stream.js";
 
@@ -395,12 +400,19 @@ export function sealedTransferTerms(
     ringProgramId: Address;
     feePayer: Address;
     sealed: SealedTransfer;
-    ownerSigners: readonly Address[];
+    staged: Pick<StagedTransfer, "ownerSigners" | "deposits" | "withdrawal">;
     setup: readonly TokenAccountCreate[];
   }>,
 ): readonly RelayTransferTerms[] {
-  const { sealed, ringProgramId } = input;
+  const { sealed, staged, ringProgramId } = input;
   const { proofInputs } = sealed;
+  const legs = Object.freeze(
+    stagedLegs({
+      transfers: proofInputs.externalData.interfaceTransfers,
+      deposits: staged.deposits ?? [],
+      withdrawal: staged.withdrawal,
+    }).map(({ leg }) => leg),
+  );
   // Every signer reads every published slot, a dummy opens under the zero owner.
   const slots = Object.freeze(
     sealed.published.map(({ output }, slot) => {
@@ -432,7 +444,7 @@ export function sealedTransferTerms(
       );
     }),
   );
-  return input.ownerSigners.map((signer) => {
+  return staged.ownerSigners.map((signer) => {
     // A Solana address names a wallet or a PDA alike, a key rebuilt as Ed25519 never equals a PDA owner.
     const ownedBy = (owner: ShieldedPublicKey): boolean =>
       equalBytes(owner.confidentialViewTag(), addressBytes(signer));
@@ -446,9 +458,40 @@ export function sealedTransferTerms(
           .filter((spent) => !spent.isDummy() && ownedBy(spent.utxo.owner))
           .map((spent) => spent.nullifier()),
       ),
+      legs,
       setup: input.setup,
     });
   });
+}
+
+/** The legs of the wallet's own staged transfer in frame order, a deposit with its funder. */
+export function stagedLegs(
+  input: Readonly<{
+    transfers: readonly SettlementTransfer[];
+    deposits: readonly TransactDeposit[];
+    withdrawal: TransactWithdrawal | undefined;
+  }>,
+): readonly Readonly<{ leg: PublicLeg; funder?: Address }>[] {
+  const deposits = input.deposits[Symbol.iterator]();
+  const legs = input.transfers.map((transfer) => {
+    if (!transfer.isDeposit) {
+      if (input.withdrawal === undefined) throw new RingError("RING_SETTLEMENT_ACCOUNTS_INVALID");
+      return { leg: withdrawalLeg(input.withdrawal, transfer.amount) };
+    }
+    const { value: deposit } = deposits.next() as IteratorResult<TransactDeposit, undefined>;
+    if (deposit === undefined) throw new RingError("RING_SETTLEMENT_ACCOUNTS_INVALID");
+    return {
+      leg: Object.freeze({
+        direction: "deposit" as const,
+        mint: deposit.kind === "sol" ? null : deposit.mint,
+        amount: transfer.amount,
+        accounts: Object.freeze(depositSettlementAccounts(deposit).map((meta) => meta.address)),
+      }),
+      funder: signerAddress(deposit.funder),
+    };
+  });
+  if (deposits.next().done !== true) throw new RingError("RING_SETTLEMENT_ACCOUNTS_INVALID");
+  return legs;
 }
 
 /** A missing withdrawal token account reads as the associated account of this owner. */
@@ -872,33 +915,6 @@ export async function ringTransactInstruction(
       ? { ownerSigners: accounts.ownerSigners }
       : {}),
   };
-  const settled = {
-    ...signed,
-    ...(accounts.withdrawal === undefined ? {} : { withdrawal: accounts.withdrawal }),
-    ...(accounts.cache === undefined ? {} : { cache: accounts.cache }),
-  };
-  const deposits = accounts.deposits ?? [];
-  let sppAccounts = await ringTransactAccounts(settled);
-  if (deposits.length > 0) {
-    // SPP reads the deposit groups after the owner signers and ahead of the withdrawal and cache.
-    const head = await ringTransactAccounts(signed);
-    sppAccounts = [
-      ...head,
-      ...deposits.flatMap(depositSettlementAccounts),
-      ...sppAccounts.slice(head.length),
-    ];
-  }
-  if (accounts.coSignerForm === "approval")
-    // An owner off the curve signs inside its program's call alone, every other owner signs the transaction.
-    sppAccounts = sppAccounts.map((account) =>
-      accounts.ownerSigners.includes(account.address) && isOffCurveAddress(account.address)
-        ? { address: account.address, role: downgradeRoleToNonSigner(account.role) }
-        : account,
-    );
-  if (sppAccounts.length > MAX_SPP_CPI_ACCOUNTS)
-    throw new RingError("RING_TOO_MANY_SETTLEMENT_ACCOUNTS", {
-      details: { accounts: sppAccounts.length, limit: MAX_SPP_CPI_ACCOUNTS },
-    });
   const prefix: AccountMeta[] = [
     meta(ring, false, false),
     ...accounts.registries.map((registry) => meta(registry, false, false)),
@@ -908,6 +924,35 @@ export async function ringTransactInstruction(
   for (const coSigner of accounts.coSigners)
     prefix.push(...(await coSignerMetas(ringProgramId, coSigner)));
   if (accounts.delegate !== undefined) prefix.push(meta(accounts.delegate, true, false));
+  const deposits = (accounts.deposits ?? []).flatMap(depositSettlementAccounts);
+  const settled = await ringTransactAccounts({
+    ...signed,
+    ...(accounts.withdrawal === undefined ? {} : { withdrawal: accounts.withdrawal }),
+    ...(accounts.cache === undefined ? {} : { cache: accounts.cache }),
+  });
+  const layout = transferLayout(
+    data,
+    accounts.registries.length,
+    prefix.length + settled.length + deposits.length,
+    { coSignerPairs: accounts.coSigners.length, delegateMint: false },
+  );
+  if (layout.spp !== prefix.length) throw new RingError("RING_SETTLEMENT_ACCOUNTS_INVALID");
+  const [run, runEnd] = [layout.owners.start - layout.spp, layout.owners.end - layout.spp];
+  // SPP reads the deposit groups after the owner signers and ahead of the withdrawal and cache.
+  const sppAccounts = [...settled.slice(0, runEnd), ...deposits, ...settled.slice(runEnd)].map(
+    (account, at) =>
+      // An owner off the curve signs inside its program's call alone, every other owner signs the transaction.
+      accounts.coSignerForm === "approval" &&
+      at >= run &&
+      at < runEnd &&
+      isOffCurveAddress(account.address)
+        ? { address: account.address, role: downgradeRoleToNonSigner(account.role) }
+        : account,
+  );
+  if (sppAccounts.length > MAX_SPP_CPI_ACCOUNTS)
+    throw new RingError("RING_TOO_MANY_SETTLEMENT_ACCOUNTS", {
+      details: { accounts: sppAccounts.length, limit: MAX_SPP_CPI_ACCOUNTS },
+    });
   const encoded = RingTransactData.encode(data);
   const bytes = new Uint8Array(1 + encoded.length);
   bytes[0] = transactTag(data.rail);
