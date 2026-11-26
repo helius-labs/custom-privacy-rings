@@ -31,10 +31,10 @@ impl EnrollmentOwner<'_> {
     }
 }
 
-#[cfg(feature = "enrollment-cpi")]
+#[cfg(feature = "cpi")]
 pub use cpi::{PdaEnrollment, VaultEnrollmentPolicy};
 
-#[cfg(feature = "enrollment-cpi")]
+#[cfg(feature = "cpi")]
 mod cpi {
     use pinocchio::{
         cpi::{invoke_signed, Signer},

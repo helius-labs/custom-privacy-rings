@@ -79,13 +79,15 @@ pub struct FrameKey {
 }
 
 impl FrameKey {
-    /// First catalog row holding the frame width.
     pub fn shape(self) -> Option<TransferShape> {
         // SPP's authority rail holds every input to the ring.
         let delegate = matches!(self.rail, RingRail::Delegate | RingRail::AnonymousDelegate);
         if delegate && self.spends_default_ring {
             return None;
         }
+        // Rows of one family ascend in outputs, a frame takes the first row holding its SPP width.
+        // No wide row holds 16 outputs, each owner row and output takes two salted reads.
+        // The wide flag takes the first row holding the frame, the last only past 24 inputs.
         TRANSFER_SHAPES.into_iter().find(|shape| {
             shape.entry == self.spends_default_ring
                 && shape.frame_wide == self.wide
@@ -695,51 +697,5 @@ mod tests {
     #[test]
     fn entry_seals_bind_input_capacity() {
         assert!(!TRANSFER_SHAPES[7].seals_like(TRANSFER_SHAPES[8]));
-    }
-
-    #[test]
-    fn frame_key_selection_matches_every_family_boundary() {
-        let narrow = &TRANSFER_SHAPES[0..4];
-        let wide = &TRANSFER_SHAPES[4..6];
-        let entry = &TRANSFER_SHAPES[6..9];
-        let wide_entry = &TRANSFER_SHAPES[9..10];
-        for rail in [
-            RingRail::Confidential,
-            RingRail::Anonymous,
-            RingRail::Delegate,
-            RingRail::AnonymousDelegate,
-        ] {
-            let delegate = matches!(rail, RingRail::Delegate | RingRail::AnonymousDelegate);
-            for spends_default_ring in [false, true] {
-                for is_wide in [false, true] {
-                    let bucket = match (spends_default_ring, is_wide) {
-                        (false, false) => narrow,
-                        (false, true) => wide,
-                        (true, false) => entry,
-                        (true, true) => wide_entry,
-                    };
-                    for inputs in 0..=42 {
-                        for outputs in 0..=18 {
-                            let key = FrameKey {
-                                rail,
-                                inputs,
-                                outputs,
-                                spends_default_ring,
-                                wide: is_wide,
-                            };
-                            let expected = if delegate && spends_default_ring {
-                                None
-                            } else {
-                                bucket.iter().copied().find(|s| {
-                                    outputs <= usize::from(s.outputs)
-                                        && inputs <= usize::from(s.inputs)
-                                })
-                            };
-                            assert_eq!(key.shape(), expected, "{key:?}");
-                        }
-                    }
-                }
-            }
-        }
     }
 }

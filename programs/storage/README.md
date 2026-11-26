@@ -36,7 +36,7 @@ Storage checks owner consent, verifies the tree update, and publishes the new ro
 
 ### Enroll a vault PDA
 
-Enable the `enrollment-cpi` feature of `custom-ring-interface` in the vault program. Pass instruction data that starts with `ENROLL_PDA` to `PdaEnrollment::parse` unchanged.
+Enable the `cpi` feature of `custom-ring-interface` in the vault program. Pass instruction data that starts with `ENROLL_PDA` to `PdaEnrollment::parse` unchanged.
 
 Check that the vault program owns `enrollment.vault()` before reading its manager, ring and tracking registry. Derive the expected vault address from your program's seeds. If the vault restricts enrollment keys, check `enrollment.change()` before signing.
 

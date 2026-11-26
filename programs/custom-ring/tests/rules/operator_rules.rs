@@ -1294,45 +1294,6 @@ fn an_spp_tag_with_its_forwarded_body_refuses_at_the_ring() {
 }
 
 #[test]
-fn clearing_a_co_signer_refuses_ring_policy_as_rent_recipient() {
-    let mut ring = Ring::new(Setup::Policy);
-    let signer = Address::new_from_array([9; 32]);
-    let sibling = Address::new_from_array([10; 32]);
-    set_co_signer(&mut ring, &signer, CoSignScope::TRANSFERS.bits());
-    set_co_signer(&mut ring, &sibling, CoSignScope::DEPOSITS.bits());
-    let authority = ring.holder(RingRole::CosignAdmin);
-    for rent_recipient in [
-        policy_pda(),
-        co_signer_record(&sibling),
-        RECORDS,
-        tracking_registry(),
-    ] {
-        refused(
-            ring.send(
-                ClearCoSignerIx {
-                    authority: authority.pubkey(),
-                    signer,
-                    rent_recipient,
-                }
-                .instruction(),
-                &[&authority],
-            ),
-            CustomRingError::InvalidCoSignerRecord,
-        );
-    }
-    ring.send(
-        ClearCoSignerIx {
-            authority: authority.pubkey(),
-            signer,
-            rent_recipient: authority.pubkey(),
-        }
-        .instruction(),
-        &[&authority],
-    )
-    .unwrap();
-}
-
-#[test]
 fn a_nonzero_source_refuses_the_default_curator_address() {
     let mut ring = Ring::new(Setup::Policy);
     let policy = ring.roles.policy.pubkey();

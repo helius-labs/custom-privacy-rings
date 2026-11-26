@@ -147,7 +147,7 @@ func TestDataHashesFollowTheLayoutBits(t *testing.T) {
 			c.Refuse(t, s.Circuit(t))
 		})
 	}
-	for name, bit := range map[string]int64{"a data bit": audit.LayoutData, "a ring data bit": audit.LayoutRingData} {
+	for name, bit := range map[string]int64{"a data bit": ringaudit.LayoutData, "a ring data bit": ringaudit.LayoutRingData} {
 		t.Run(name+" the frame clears against the proof", func(t *testing.T) {
 			s := dataSection(t)
 			statement := s.Statement(t)
@@ -173,7 +173,7 @@ func TestLayoutIsTheKeys(t *testing.T) {
 		circuit.Layout = layout
 		compileSection(t, shape).Refuse(t, circuit)
 	}
-	t.Run("entry on a key with no entry capacity", func(t *testing.T) { refuse(t, plainShape, audit.LayoutEntry) })
+	t.Run("entry on a key with no entry capacity", func(t *testing.T) { refuse(t, plainShape, ringaudit.LayoutEntry) })
 	t.Run("no entry on an entry key", func(t *testing.T) { refuse(t, entryShape, 0) })
 	t.Run("a bit past the flags", func(t *testing.T) { refuse(t, plainShape, 1<<4) })
 }

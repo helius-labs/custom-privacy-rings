@@ -16,7 +16,7 @@
 // A transfer record ends on two fields its slot's class selects before any byte is cut. An exit holds its
 // nullifier key, then its data hash. A ring slot holds its data hash on a data frame and its ring data
 // hash otherwise, then its ring data hash, and seals no nullifier key. A slot publishes a prefix,
-// PublishedRecordLen in audit/layout.go, so the hashes a frame's layout names are published bytes.
+// so the hashes a frame's layout names are published bytes.
 //
 // Only an exit publishes its nullifier key. A non-exit record names its key by the
 // ZeroKey bit alone, set exactly when the key is the public Poseidon(0). A nonzero key on a ring note
@@ -56,9 +56,8 @@ import (
 
 // The record's kind byte, mirrored by RecordKind in program-libs/interface/src/proof/audit_stream.rs.
 const (
-	KindDummy = 0
-	KindRing  = 1
-	KindExit  = 2
+	KindRing = 1
+	KindExit = 2
 	// KindZeroKey adds to KindRing or KindExit.
 	KindZeroKey = 4
 )

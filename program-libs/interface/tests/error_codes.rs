@@ -67,7 +67,6 @@ pinned_codes! {
     MemberWrittenListRule = 8233,
     RingAuthOutOfSlot = 8234,
     InvalidRingProofPoint = 8238,
-    UnexpectedMemberRegistryRoot = 8240,
     UnexpectedApproval = 8241,
     InvalidSettlementAccounts = 8242,
     TooManyPublicLegs = 8243,
@@ -150,7 +149,7 @@ fn write_error_vectors() {
     }
 }
 
-fn storage_pins() -> [(StorageError, u32); 30] {
+fn storage_pins() -> [(StorageError, u32); 29] {
     use StorageError as Error;
     [
         (Error::InvalidRegistry, 9000),
@@ -159,7 +158,6 @@ fn storage_pins() -> [(StorageError, u32); 30] {
         (Error::RootExpired, 9003),
         (Error::InvalidInstructionData, 9005),
         (Error::BatchTooLarge, 9006),
-        (Error::InvalidWrite, 9007),
         (Error::ProofVerificationFailed, 9008),
         (Error::HashingFailed, 9009),
         (Error::MissingAccounts, 9010),

@@ -46,11 +46,7 @@ import (
 	transaction "github.com/helius-labs/zolana/prover/server/circuits/spp_transaction/shared"
 )
 
-const (
-	MergeRecordLen = audit.MergeRecordLen
-	// MergeEnvelopeLen mirrors MERGE_ENVELOPE_LEN.
-	MergeEnvelopeLen = audit.EnvelopeKeyLen + audit.KeyLen
-)
+const MergeRecordLen = audit.MergeRecordLen
 
 // MergeCircuit binds a ring's SPP merge output to a record its owner and its auditor open, SPP's proof ties every input to that owner, asset and sum.
 type MergeCircuit struct {

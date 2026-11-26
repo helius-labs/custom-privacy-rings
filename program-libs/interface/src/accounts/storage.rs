@@ -295,8 +295,6 @@ pub enum StorageError {
     InvalidInstructionData = 9005,
     #[error("update carries more writes than one apply proof takes")]
     BatchTooLarge = 9006,
-    #[error("write is not a record write")]
-    InvalidWrite = 9007,
     #[error("apply proof does not verify")]
     ProofVerificationFailed = 9008,
     #[error("hashing failed")]

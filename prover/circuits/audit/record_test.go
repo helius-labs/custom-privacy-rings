@@ -73,7 +73,7 @@ func TestRecordPublishesItsKeyOnAnExitAlone(t *testing.T) {
 	for i, want := range []struct {
 		kind byte
 		len  int
-	}{{audit.KindRing, audit.RingRecordLen}, {audit.KindRing | audit.KindZeroKey, audit.RingRecordLen}, {exitKind, audit.RecordLen}, {audit.KindDummy, audit.RingRecordLen}} {
+	}{{audit.KindRing, audit.RingRecordLen}, {audit.KindRing | audit.KindZeroKey, audit.RingRecordLen}, {exitKind, audit.RecordLen}, {ringaudit.KindDummy, audit.RingRecordLen}} {
 		if p.Records[i][0] != want.kind || len(stream.Record(i)) != want.len {
 			t.Fatalf("slot %d: kind %d over %d bytes, want %d over %d", i, p.Records[i][0], len(stream.Record(i)), want.kind, want.len)
 		}
@@ -173,7 +173,7 @@ func TestKindFollowsTheSlot(t *testing.T) {
 	s := ringaudit.NewSection(t, plainShape)
 	const ring, zeroKey, exit, dummy = 0, 1, 2, 3
 	for name, edit := range map[string]func(*ringaudit.Plaintexts){
-		"kind 0 on a live ring slot": func(p *ringaudit.Plaintexts) { p.Records[ring][0] = audit.KindDummy },
+		"kind 0 on a live ring slot": func(p *ringaudit.Plaintexts) { p.Records[ring][0] = ringaudit.KindDummy },
 		"kind 1 on a dummy":          func(p *ringaudit.Plaintexts) { p.Records[dummy][0] = audit.KindRing },
 		"kind 2 on a ring slot":      func(p *ringaudit.Plaintexts) { p.Records[zeroKey][0] = audit.KindExit },
 		"kind 1 on an exit":          func(p *ringaudit.Plaintexts) { p.Records[exit][0] = audit.KindRing },

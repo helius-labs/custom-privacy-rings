@@ -5,11 +5,11 @@
 //!
 //! Read after `program-libs/interface/src/instructions/transfer_approval.rs`. Read before `instructions/accounts/loader.rs`.
 
-use custom_ring_interface::{CoSigner, CustomRingError, TransferApproval};
+use custom_ring_interface::{CoSigner, CustomRingError, RingPolicy, TransferApproval};
 use pinocchio::{AccountView, Address, ProgramResult};
 use spr_account_checks::AccountIterator;
 
-use crate::instructions::loader::{load, load_policy};
+use crate::instructions::loader::load;
 
 const TOP_LEVEL_STACK_HEIGHT: u64 = 1;
 
@@ -30,7 +30,7 @@ pub fn process_approve_transfer_ix(
     let co_signer = iter.next_account("co_signer")?;
 
     // 2. The record's own signer approves under the ring of the program.
-    load_policy(program_id, ring)?;
+    load::<RingPolicy>(program_id, ring)?;
     let record = load::<CoSigner>(program_id, record)?;
     if !co_signer.is_signer() {
         return Err(CustomRingError::MissingCoSigner.into());

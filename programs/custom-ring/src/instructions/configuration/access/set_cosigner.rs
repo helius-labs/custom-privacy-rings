@@ -10,9 +10,7 @@
 //!
 //! Read after `instructions/transfer/accounts.rs`. Read before `program-libs/interface/src/instructions/cosign.rs`.
 
-use custom_ring_interface::{
-    CoSigner, RingAccount, RingRole, SetCoSignerRecordIxData, CO_SIGNER, STORAGE_PROGRAM_ID,
-};
+use custom_ring_interface::{CoSigner, RingAccount, RingRole, SetCoSignerRecordIxData, CO_SIGNER};
 use pinocchio::{AccountView, Address, ProgramResult};
 use spr_account_checks::AccountIterator;
 
@@ -93,9 +91,6 @@ pub fn process_clear_cosigner_ix(
         signer: cosign_admin,
     }
     .load_mut(ring)?;
-    if rent_recipient.owned_by(program_id) || rent_recipient.owned_by(&STORAGE_PROGRAM_ID) {
-        return Err(CoSigner::INVALID.into());
-    }
     let scope = load::<CoSigner>(program_id, record)?
         .scope()
         .ok_or(CoSigner::INVALID)?;

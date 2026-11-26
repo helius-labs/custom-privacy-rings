@@ -69,7 +69,6 @@ ring_errors! {
     MemberWrittenListRule = 8233 => "a policy rule reads a list its members write",
     RingAuthOutOfSlot = 8234 => "the ring authority PDA sits outside its SPP slot",
     InvalidRingProofPoint = 8238 => "a ring proof point does not decompress",
-    UnexpectedMemberRegistryRoot = 8240 => "the statement binds no member registry root",
     UnexpectedApproval = 8241 => "a delegate frame carries no approval bit",
     InvalidSettlementAccounts = 8242 => "settlement accounts do not match the public legs",
     TooManyPublicLegs = 8243 => "too many public legs",

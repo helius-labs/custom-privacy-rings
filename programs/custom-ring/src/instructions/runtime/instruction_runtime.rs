@@ -47,11 +47,6 @@ pub(crate) struct Pda<'a, const N: usize> {
 }
 
 impl<const N: usize> Pda<'_, N> {
-    /// The canonical bump, `T::ADDRESS` for another address.
-    pub fn bump<T: RingAccount>(&self, address: &Address) -> Result<u8, CustomRingError> {
-        self.canonical(address).ok_or(T::ADDRESS)
-    }
-
     pub fn canonical(&self, address: &Address) -> Option<u8> {
         Address::derive_program_address(self.seeds, self.program_id)
             .filter(|(derived, _)| address_eq(address, derived))
@@ -65,7 +60,7 @@ impl<const N: usize> Pda<'_, N> {
         payer: &AccountView,
         account: &mut AccountView,
     ) -> Result<u8, ProgramError> {
-        let bump = self.bump::<T>(account.address())?;
+        let bump = self.canonical(account.address()).ok_or(T::ADDRESS)?;
         if account.data_len() != 0 {
             return Err(T::EXISTS.into());
         }

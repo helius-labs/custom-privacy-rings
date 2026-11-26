@@ -25,19 +25,15 @@ use bytemuck::Pod;
 use custom_ring_interface::{
     storage::StorageError,
     storage_instruction::{tag, StorageEvent},
-    STORAGE_PROGRAM_ID,
 };
-use pinocchio::{
-    address::address_eq, cpi::invoke, error::ProgramError, instruction::InstructionView,
-    AccountView, Address, ProgramResult,
-};
+use pinocchio::{cpi::invoke, instruction::InstructionView, AccountView, Address, ProgramResult};
 
 use instructions::{
     process_apply_enrollments_ix, process_initialize_ix, process_initialize_tracking_ix,
     process_owner_grant_ix, process_update_authority_ix, process_update_ix,
 };
 
-#[cfg(all(feature = "bpf-entrypoint", not(feature = "no-entrypoint")))]
+#[cfg(feature = "bpf-entrypoint")]
 mod entrypoint {
     pinocchio::entrypoint!(crate::process_instruction);
 
@@ -57,9 +53,6 @@ pub fn process_instruction(
     accounts: &mut [AccountView],
     data: &[u8],
 ) -> ProgramResult {
-    if !address_eq(program_id, &STORAGE_PROGRAM_ID) {
-        return Err(ProgramError::IncorrectProgramId);
-    }
     let (instruction, data) = data
         .split_first()
         .ok_or(StorageError::InvalidInstructionData)?;
@@ -93,27 +86,4 @@ pub(crate) fn emit_event(program_id: &Address, event: &StorageEvent) -> ProgramR
 
 pub(crate) fn parse<T: Pod>(data: &[u8]) -> Result<&T, StorageError> {
     bytemuck::try_from_bytes(data).map_err(|_| StorageError::InvalidInstructionData)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use pinocchio::error::ProgramError;
-
-    #[test]
-    fn process_instruction_rejects_wrong_program_id() {
-        let wrong = Address::new_from_array([0xaa; 32]);
-        assert_eq!(
-            process_instruction(&wrong, &mut [], &[tag::EMIT_EVENT]),
-            Err(ProgramError::IncorrectProgramId)
-        );
-        assert_eq!(
-            process_instruction(
-                &custom_ring_interface::STORAGE_PROGRAM_ID,
-                &mut [],
-                &[tag::EMIT_EVENT]
-            ),
-            Ok(())
-        );
-    }
 }

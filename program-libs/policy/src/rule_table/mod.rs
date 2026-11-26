@@ -32,7 +32,7 @@ use crate::{field_u8, ListId, ListSet, Member};
 pub const MAX_RULES: usize = 16;
 /// Source slots, one per list the enum can name.
 pub const MAX_SOURCES: usize = 9;
-/// `"CRTB"`, the first field of the table hash, `domain::POLICY_TABLE` of the interface.
+/// `"CRTB"`, the first field of the table hash.
 pub const POLICY_TABLE_DOMAIN: u32 = 0x4352_5442;
 pub const POLICY_TABLE_FIELDS: usize =
     (4 + 2 * MAX_SOURCES + MAX_RULES).div_ceil(POLICY_TABLE_RATE) * POLICY_TABLE_RATE;
@@ -167,17 +167,14 @@ pub enum Guard {
     AboveAmountByAsset,
 }
 
-/// A disjunction over registry lists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RuleSource {
-    Lists { present: ListSet, absent: ListSet },
-}
-
 /// One obligation, packed into a single field element for the hash.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rule {
     pub subject: Subject,
-    pub source: RuleSource,
+    /// A presence on any of these lists passes.
+    pub present: ListSet,
+    /// An absence from any of these lists passes.
+    pub absent: ListSet,
     pub guard: Guard,
 }
 
@@ -235,7 +232,8 @@ impl Rule {
     pub const fn any_of(subject: Subject, present: ListSet, absent: ListSet) -> Self {
         Self {
             subject,
-            source: RuleSource::Lists { present, absent },
+            present,
+            absent,
             guard: Guard::Always,
         }
     }
@@ -258,35 +256,28 @@ impl Rule {
     }
 
     pub const fn primary_mode(&self) -> Mode {
-        match self.source {
-            RuleSource::Lists { present, .. } if present.is_empty() => Mode::Absent,
-            RuleSource::Lists { .. } => Mode::Present,
+        match self.present.is_empty() {
+            true => Mode::Absent,
+            false => Mode::Present,
         }
     }
 
     pub const fn referenced(&self) -> ListSet {
-        match self.source {
-            RuleSource::Lists { present, absent } => present.union(absent),
-        }
+        self.present.union(self.absent)
     }
 
     /// Presences first, each in `ListId::ALL` order.
     pub fn alternatives(&self) -> impl Iterator<Item = (ListId, Mode)> {
-        let (present, absent) = match self.source {
-            RuleSource::Lists { present, absent } => (present, absent),
-        };
-        present
+        self.present
             .iter()
             .map(|list_id| (list_id, Mode::Present))
-            .chain(absent.iter().map(|list_id| (list_id, Mode::Absent)))
+            .chain(self.absent.iter().map(|list_id| (list_id, Mode::Absent)))
     }
 
     pub fn encoded(&self) -> [u8; 32] {
-        let (mask, alternative) = match self.source {
-            RuleSource::Lists { present, absent } => match self.primary_mode() {
-                Mode::Present => (present, absent),
-                Mode::Absent => (absent, ListSet::EMPTY),
-            },
+        let (mask, alternative) = match self.primary_mode() {
+            Mode::Present => (self.present, self.absent),
+            Mode::Absent => (self.absent, ListSet::EMPTY),
         };
         let (guard_tag, threshold) = match self.guard {
             Guard::Always => (0, 0),
@@ -327,18 +318,12 @@ impl Rule {
         if mask.is_empty() {
             return Err(RuleTableError::EmptyLists);
         }
-        let source = match mode {
-            Mode::Present => RuleSource::Lists {
-                present: mask,
-                absent: alternative,
-            },
+        let (present, absent) = match mode {
+            Mode::Present => (mask, alternative),
             Mode::Absent if !alternative.is_empty() => {
                 return Err(RuleTableError::NonCanonicalAlternative)
             }
-            Mode::Absent => RuleSource::Lists {
-                present: ListSet::EMPTY,
-                absent: mask,
-            },
+            Mode::Absent => (ListSet::EMPTY, mask),
         };
         let threshold = u64::from_be_bytes(row.threshold);
         let guard = match row.guard_tag {
@@ -351,21 +336,19 @@ impl Rule {
         };
         let rule = Self {
             subject,
-            source,
+            present,
+            absent,
             guard,
         };
         rule.check().map(|()| rule)
     }
 
     const fn check(&self) -> Result<(), RuleTableError> {
-        match self.source {
-            RuleSource::Lists { present, absent } if present.union(absent).is_empty() => {
-                return Err(RuleTableError::EmptyLists)
-            }
-            RuleSource::Lists { present, absent } if present.intersects(absent) => {
-                return Err(RuleTableError::ListInBothSets)
-            }
-            RuleSource::Lists { .. } => {}
+        if self.present.union(self.absent).is_empty() {
+            return Err(RuleTableError::EmptyLists);
+        }
+        if self.present.intersects(self.absent) {
+            return Err(RuleTableError::ListInBothSets);
         }
         match self.guard {
             Guard::AboveAmount(_) if matches!(self.subject, Subject::Sender) => {
@@ -381,7 +364,9 @@ impl Rule {
 
     /// One polarity per row, a grant over grant lists or a denial of one deny list.
     const fn check_polarity(&self) -> Result<(), RuleTableError> {
-        let RuleSource::Lists { present, absent } = self.source;
+        let Self {
+            present, absent, ..
+        } = *self;
         if !present.is_empty() && !absent.is_empty() {
             return Err(RuleTableError::MixedPolarity);
         }
@@ -395,10 +380,9 @@ impl Rule {
     }
 
     const fn signature(&self) -> u64 {
-        let (present, absent) = match self.source {
-            RuleSource::Lists { present, absent } => (present.bits(), absent.bits()),
-        };
-        ((self.subject as u64) << 32) | ((present as u64) << 16) | absent as u64
+        ((self.subject as u64) << 32)
+            | ((self.present.bits() as u64) << 16)
+            | self.absent.bits() as u64
     }
 
     const fn disabled() -> Self {
@@ -780,10 +764,6 @@ rule_errors! {
     ReservedBytes => "reserved row bytes are not zero",
     NonCanonicalAlternative => "an alternative beside an absent primary",
     NonZeroPadding => "padding past the counts is not zero",
-    TooManyOutflowLimits => "outflow limits exceed the circuit width",
-    ZeroLimitAsset => "an outflow limit names no mint",
-    DuplicateLimitAsset => "outflow limit mints must be unique",
-    LimitWithoutBound => "an outflow limit needs a cap or a cosign threshold",
     MemberWrittenList => "a rule reads a list its members write",
     ListNotPolicyReadable => "a rule reads a list outside the policy lists",
     MultiListAbsence => "a rule reads more than one list by absence",

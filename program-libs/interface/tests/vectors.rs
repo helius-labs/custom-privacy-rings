@@ -35,7 +35,7 @@ fn domains_are_their_ascii_tags() {
         (domain::DELIVERED_SLOT_SECRET, b"CRDS"),
         (domain::BLINDING_SEED, b"CRBS"),
         (domain::AUDIT_SHARED_SECRET, b"CR_S"),
-        (domain::POLICY_TABLE, b"CRTB"),
+        (zolana_ring_policy::POLICY_TABLE_DOMAIN, b"CRTB"),
         (domain::RECORD_WRITE, b"CRQW"),
         (domain::TRACKING_LEAF, b"CRTK"),
         (domain::TRACKING_ENTRY, b"CRTQ"),
@@ -48,7 +48,7 @@ fn domains_are_their_ascii_tags() {
         (domain::MERGE_STATEMENT, b"CRMG"),
         (domain::WITHDRAWALS, b"CRPW"),
         (domain::RECORD_UPDATE, b"CRRU"),
-        (domain::WALLET_GRANT, b"CRWG"),
+        (zolana_ring_policy::WALLET_GRANT_DOMAIN, b"CRWG"),
     ];
     for (value, ascii) in table {
         assert_eq!(

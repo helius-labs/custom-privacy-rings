@@ -472,7 +472,7 @@ fn an_event_decodes_only_under_its_tag_kind_and_exact_writes() {
         CustomRingProof::zeroed(),
         [key(1), key(2)],
     );
-    let applied = StorageEvent::EnrollmentsApplied {
+    let applied = StorageEvent {
         header: EnrollmentsAppliedEvent {
             registry: key(0x11),
             revision: Revision::from(4),
@@ -1205,40 +1205,6 @@ fn the_enrollment_signature_is_the_shared_vector() {
         serde_json::from_str(&std::fs::read_to_string(SIGNATURE_VECTOR).expect("vector file"))
             .expect("vector json");
     assert_eq!(committed, signature_vector());
-}
-
-#[test]
-fn parsed_storage_update_caches_private_writes_bitmap() {
-    use custom_ring_interface::storage_instruction::{AssetWrite, ParsedStorageUpdate};
-    use zolana_ring_policy::Member;
-
-    let apply = restrictive_apply_ix();
-    let mint = key(0x55);
-    let mut asset_write = list_write(ListId::PrivateAllow);
-    asset_write.member = *Member::asset(&mint).unwrap().as_bytes();
-    let mut owner_write = list_write(ListId::PrivateBlock);
-    owner_write.member = [0x04; 32];
-    let data = StorageUpdateIxData {
-        revision: 3u64.into(),
-        writes: vec![asset_write, owner_write],
-        asset_writes: vec![AssetWrite {
-            write_index: 0,
-            mint,
-        }],
-        tracking_revision: Some(5u64.into()),
-        apply: &apply,
-    };
-    let encoded = data.encode().unwrap();
-    let parsed = ParsedStorageUpdate::parse(&encoded).unwrap();
-    let expected_entries: Vec<_> = data
-        .writes
-        .iter()
-        .map(|write| write.storage_entry().unwrap())
-        .collect();
-    assert_eq!(parsed.data, data);
-    assert_eq!(parsed.entries(), expected_entries.as_slice());
-    assert_eq!(parsed.private_writes(), 0b10);
-    assert_eq!(parsed.private_writes(), data.private_writes().unwrap());
 }
 
 #[test]

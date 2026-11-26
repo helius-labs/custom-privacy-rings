@@ -10,6 +10,7 @@ import (
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/audit"
+	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringaudit"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringprotocol"
 )
 
@@ -134,7 +135,7 @@ func walkTransferFrame(t *testing.T, line []byte, rail frameRail) {
 		} else {
 			bodies++
 		}
-		record := audit.PublishedRecordLen(exit, inputByte&hasData != 0, head[3]&ringData != 0)
+		record := ringaudit.PublishedRecordLen(exit, inputByte&hasData != 0, head[3]&ringData != 0)
 		c.take(32 + tag + record + extra)
 	}
 	if flags&replyFlag != 0 {
@@ -196,7 +197,7 @@ func walkExtensions(c *frameCursor) {
 func TestMergeFrameVectorWalksTheRecord(t *testing.T) {
 	lines := vectorLines(t, "../../test-vectors/merge/merge_frame.hex")
 	c := frameCursor{t: t, rest: lines[0]}
-	c.take(8 + 32 + 32 + frameProofLen + 33 + circuits.MergeEnvelopeLen + circuits.MergeRecordLen)
+	c.take(8 + 32 + 32 + frameProofLen + 33 + audit.EnvelopeKeyLen + audit.KeyLen + circuits.MergeRecordLen)
 	if len(c.rest) == 0 {
 		t.Fatal("the frame holds no SPP merge body")
 	}

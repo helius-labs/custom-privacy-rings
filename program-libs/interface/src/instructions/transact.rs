@@ -39,7 +39,7 @@ use spl_token_2022_interface::{
     extension::{permanent_delegate::get_permanent_delegate, PodStateWithExtensions},
     pod::PodMint,
 };
-use spr_hasher::{primitives::solana_owner_identity, HasherError};
+use spr_hasher::primitives::hash_bytes;
 use spr_interface::{
     error::ShieldedPoolError,
     instruction::{
@@ -57,7 +57,6 @@ use spr_interface::{
     N_PUBLIC_SLOTS, SPL_TOKEN_2022_PROGRAM_ID,
 };
 use wincode::{containers, len::FixIntLen, Serialize};
-use zolana_ring_policy::{Member, MemberError};
 
 use crate::{
     anonymous_exit::ANONYMOUS_PARTIES,
@@ -157,19 +156,11 @@ impl MintDelegate<'_> {
         {
             return Err(CustomRingError::UnauthorizedDelegate);
         }
-        let asset = Member::asset(self.mint).map_err(|error| match error {
-            MemberError::Hashing => CustomRingError::HashingFailed,
-            MemberError::Zero | MemberError::ZeroSalt => CustomRingError::UnauthorizedDelegate,
-        })?;
-        Ok(*asset.as_bytes())
+        Ok(hash_bytes(self.mint.as_array())?)
     }
 }
 
 impl RingRail {
-    pub fn new(tag: InstructionTag, ring: &RingPolicy) -> Result<Self, CustomRingError> {
-        RailSigner::new(tag, ring).map(RailSigner::rail)
-    }
-
     pub fn of(tag: InstructionTag, mode: RingMode) -> Result<Self, CustomRingError> {
         match tag {
             InstructionTag::Transfer => Ok(Self::transfer(mode)),
@@ -1248,13 +1239,6 @@ impl<'a> RingTransactData<'a> {
             .ok_or(CustomRingError::RingTransactLength)
     }
 
-    /// The in-proof owner's identity, `None` off that rail.
-    pub fn in_proof_sender(&self) -> Result<Option<[u8; 32]>, HasherError> {
-        self.in_proof_owner
-            .map(|owner| solana_owner_identity(owner.owner))
-            .transpose()
-    }
-
     pub const fn record_form(&self) -> RecordForm {
         RecordForm {
             data: self.has_data,
@@ -1493,20 +1477,17 @@ pub mod transact_flag {
 
 /// Byte 1, the index into `SPP_SUPPORTED_SHAPES` below these flags.
 pub mod shape_flag {
-    pub const BYTE: usize = 1;
     pub const DEFAULT_OWNER_TAG: u8 = 1 << 6;
     pub const PUBLIC_OWNERS: u8 = 1 << 7;
 }
 
 /// Byte 2, the published input count below these flags.
 pub mod input_flag {
-    pub const BYTE: usize = 2;
     /// Every record publishes `data_hash`, one length per slot for the bytes past its record.
     pub const HAS_DATA: u8 = 1 << 6;
     pub const ENTRY: u8 = 1 << 7;
 }
 
-pub const OUTPUT_COUNT_BYTE: usize = 3;
 /// Byte 3, the published slot count below these flags.
 pub mod output_flag {
     /// Every non-exit record publishes `ring_data_hash`.
@@ -1518,7 +1499,6 @@ pub mod output_flag {
     /// The proof's key opens its full owner rows.
     pub const WIDE_OWNERS: u8 = 1 << 7;
 }
-pub const APPROVAL_BYTE: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TransactFlags(u8);

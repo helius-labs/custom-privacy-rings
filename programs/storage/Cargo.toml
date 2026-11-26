@@ -10,7 +10,6 @@ crate-type = ["cdylib", "lib"]
 [features]
 default = []
 bpf-entrypoint = []
-no-entrypoint = []
 
 [dependencies]
 bytemuck = { workspace = true }

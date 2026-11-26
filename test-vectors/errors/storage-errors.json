@@ -5,7 +5,6 @@
   "RootExpired": 9003,
   "InvalidInstructionData": 9005,
   "BatchTooLarge": 9006,
-  "InvalidWrite": 9007,
   "ProofVerificationFailed": 9008,
   "HashingFailed": 9009,
   "MissingAccounts": 9010,

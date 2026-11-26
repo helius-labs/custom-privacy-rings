@@ -7,7 +7,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-custom-ring-interface = { path = "../interface", default-features = false }
+custom-ring-interface = { workspace = true }
 thiserror = { workspace = true }
 spr-hasher = { workspace = true }
 zolana-ring-policy = { workspace = true }

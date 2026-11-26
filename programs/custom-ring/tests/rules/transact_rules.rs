@@ -5,11 +5,10 @@ use custom_ring_interface::{
     cosign::ApprovalMask,
     funder_account_position, input_flag,
     key_catalog::{FrameKey, RingCircuit},
-    shape_flag, spl_withdrawal_count, tag, transact_flag, AnonymousProofData, CoSignScope,
-    CustomRingError, CustomRingProof, FramedSenderBundle, InputTrees, PlainGroth16Proof,
-    PolicyProof, RingOutput, RingPolicy, RingRail, RingRole, RingTransactData, RootRead, SlotBody,
-    EXIT_RECORD_LEN, RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX, SENDER_BUNDLE_LEN,
-    TRANSACT_PAYER_INDEX,
+    spl_withdrawal_count, tag, transact_flag, AnonymousProofData, CoSignScope, CustomRingError,
+    CustomRingProof, FramedSenderBundle, InputTrees, PlainGroth16Proof, PolicyProof, RingOutput,
+    RingPolicy, RingRail, RingRole, RingTransactData, RootRead, SlotBody, EXIT_RECORD_LEN,
+    RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX, SENDER_BUNDLE_LEN, TRANSACT_PAYER_INDEX,
 };
 use solana_address::Address;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
@@ -29,6 +28,8 @@ use crate::common::{
 };
 
 pub const SPP: Address = Address::new_from_array(SHIELDED_POOL_PROGRAM_ID);
+const SHAPE_FLAG_BYTE: usize = 1;
+const INPUT_FLAG_BYTE: usize = 2;
 
 /// A canonical field value, never zero.
 fn field(seed: u8) -> [u8; 32] {
@@ -709,7 +710,7 @@ fn a_default_ring_spend_takes_the_entry_key_up_to_eight_inputs() {
         spp.clone(),
         &[],
     ));
-    bytes[input_flag::BYTE] |= input_flag::ENTRY;
+    bytes[INPUT_FLAG_BYTE] |= input_flag::ENTRY;
     refused(
         send(&mut ring, tag::TRANSFER, Vec::new(), bytes, spp, &[]),
         CustomRingError::RingShapeUnkeyed,
@@ -1680,7 +1681,7 @@ fn a_delegate_shape_without_a_ring_authority_key_is_refused() {
         .iter()
         .position(|shape| !shape.is_ring_authority())
         .expect("an SPP shape the ring authority rail refuses");
-    bytes[shape_flag::BYTE] = u8::try_from(unkeyed).unwrap();
+    bytes[SHAPE_FLAG_BYTE] = u8::try_from(unkeyed).unwrap();
     refused(
         delegate_move(&mut ring, &delegate, &data, bytes),
         CustomRingError::RingShapeUnkeyed,

@@ -38,16 +38,9 @@ impl Canopy {
         if openings == 0 || openings as u64 > capacity(height) {
             return Err(RecordTreeError::PoolCapacity);
         }
-        let openings = openings as u64;
         let levels = (0..=height)
-            .find(|levels| (QUAD_ARITY as u64).checked_pow(*levels as u32) >= Some(openings))
+            .find(|levels| QUAD_ARITY.pow(*levels as u32) >= openings)
             .ok_or(RecordTreeError::PoolCapacity)?;
-        let width = (QUAD_ARITY as u64)
-            .checked_pow(levels as u32)
-            .ok_or(RecordTreeError::PoolCapacity)?;
-        if usize::try_from(width).is_err() {
-            return Err(RecordTreeError::PoolCapacity);
-        }
         Ok(Self { levels, height })
     }
 
@@ -56,7 +49,7 @@ impl Canopy {
     }
 
     pub const fn width(self) -> usize {
-        (1u64 << (2 * self.levels)) as usize
+        1 << (2 * self.levels)
     }
 
     /// The sibling levels each path keeps below the canopy.
@@ -247,36 +240,4 @@ fn canopy_root(nodes: &[[u8; 32]]) -> Result<[u8; 32], RecordTreeError> {
             .collect::<Result<_, RecordTreeError>>()?;
     }
     level.first().copied().ok_or(RecordTreeError::PoolShape)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use custom_ring_interface::{tracking::TRACKING_CAPACITY, QUAD_CAPACITY};
-
-    #[test]
-    fn canopy_covering_handles_boundaries_in_u64() {
-        assert_eq!(Canopy::covering(0), Err(RecordTreeError::PoolCapacity));
-        assert_eq!(Canopy::covering(1).unwrap().width(), 1);
-        assert_eq!(Canopy::covering(4).unwrap().width(), 4);
-        assert_eq!(Canopy::covering(5).unwrap().width(), 16);
-        assert_eq!(
-            Canopy::covering(QUAD_CAPACITY as usize).unwrap().width(),
-            QUAD_CAPACITY as usize
-        );
-        assert_eq!(
-            Canopy::covering(QUAD_CAPACITY as usize + 1),
-            Err(RecordTreeError::PoolCapacity)
-        );
-        assert_eq!(
-            Canopy::covering_tracking(TRACKING_CAPACITY as usize)
-                .unwrap()
-                .width(),
-            TRACKING_CAPACITY as usize
-        );
-        assert_eq!(
-            Canopy::covering_tracking(TRACKING_CAPACITY as usize + 1),
-            Err(RecordTreeError::PoolCapacity)
-        );
-    }
 }

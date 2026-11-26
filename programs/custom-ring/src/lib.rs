@@ -59,7 +59,7 @@ use pinocchio::{error::ProgramError, AccountView, Address, ProgramResult};
 
 use crate::instructions::*;
 
-#[cfg(all(feature = "bpf-entrypoint", not(feature = "no-entrypoint")))]
+#[cfg(feature = "bpf-entrypoint")]
 mod entrypoint {
     pinocchio::entrypoint!(crate::process_instruction);
 

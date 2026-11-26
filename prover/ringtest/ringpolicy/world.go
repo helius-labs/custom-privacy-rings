@@ -22,6 +22,9 @@ const (
 	AssetC = 2003
 )
 
+// ModeAbsent is the row mode of an absence rule, the Mode::Absent of program-libs/policy/src/rule_table/mod.rs.
+const ModeAbsent = 2
+
 const (
 	ringID            = 0x52494e47
 	treeID            = 3
@@ -189,5 +192,5 @@ func Require(subject, lists uint64) Rule {
 
 // Forbid refuses only a subject on every one of lists, as Rule::forbid_only_on_all does.
 func Forbid(subject, lists uint64) Rule {
-	return Rule{Subject: subject, Mode: policy.ModeAbsent, Mask: lists}
+	return Rule{Subject: subject, Mode: ModeAbsent, Mask: lists}
 }

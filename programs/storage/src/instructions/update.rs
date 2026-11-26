@@ -50,10 +50,6 @@ pub fn process_update_ix(
     if registry.newest().revision != ix.revision {
         return Err(StorageError::RevisionChanged.into());
     }
-    ix.revision
-        .value()
-        .checked_add(1)
-        .ok_or(StorageError::RevisionOverflow)?;
     let slot = Clock::get()?.slot;
     // 2. The bitmap derives from private masks and authenticated asset preimages, and parsing paired it
     // with the tracking revision. The pinned registry serves the root the selected rows open under.

@@ -25,9 +25,9 @@ pub use quantities::{
     OwnerDebit, PublicGross,
 };
 pub use rule_table::{
-    EncodedRuleTable, Guard, Mode, OutflowLimit, PolicySource, PolicyTableError, Rule, RuleSource,
-    RuleTable, RuleTableBuilder, RuleTableError, SourceMap, SourceMapError, Subject, TableParts,
-    MAX_RULES, MAX_SOURCES, POLICY_TABLE_DOMAIN, POLICY_TABLE_FIELDS,
+    EncodedRuleTable, Guard, Mode, OutflowLimit, PolicySource, PolicyTableError, Rule, RuleTable,
+    RuleTableBuilder, RuleTableError, SourceMap, SourceMapError, Subject, TableParts, MAX_RULES,
+    MAX_SOURCES, POLICY_TABLE_DOMAIN, POLICY_TABLE_FIELDS,
 };
 pub use rules::{
     OutputSubjects, PaymentSubjects, RecordLists, RuleRefusal, TransferSubject, TransferSubjects,

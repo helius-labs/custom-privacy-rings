@@ -47,7 +47,6 @@
   "MemberWrittenListRule": 8233,
   "RingAuthOutOfSlot": 8234,
   "InvalidRingProofPoint": 8238,
-  "UnexpectedMemberRegistryRoot": 8240,
   "UnexpectedApproval": 8241,
   "InvalidSettlementAccounts": 8242,
   "TooManyPublicLegs": 8243,

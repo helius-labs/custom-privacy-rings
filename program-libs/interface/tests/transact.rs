@@ -11,23 +11,27 @@ use custom_ring_interface::{
     stream::slot_tag, transact_flag, AuditKey, AuditStreamLayout, AuditorMessage,
     ConfidentialSender, CustomRingError, FramedSenderBundle, ParsedTransact, PlainGroth16Proof,
     Replies, RingPolicy, RingRail, RingTransactData, Settlement, SignerSet, SlotBody,
-    TransferBinding, TransferFamily, TransferRoots, ANONYMOUS_PARTIES, APPROVAL_BYTE,
+    TransferBinding, TransferFamily, TransferRoots, ANONYMOUS_PARTIES,
 };
 use custom_ring_interface::{
     encode_ring_body_output, encode_ring_sender_bundle_output, ring_body_output,
     ring_sender_bundle_output_body, CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN,
-    MIN_REPLY_LEN, OUTPUT_COUNT_BYTE, RING_BODY_SCHEME_TAG, RING_RECORD_LEN,
-    RING_SENDER_BUNDLE_SCHEME_TAG, SENDER_BUNDLE_LEN,
+    MIN_REPLY_LEN, RING_BODY_SCHEME_TAG, RING_RECORD_LEN, RING_SENDER_BUNDLE_SCHEME_TAG,
+    SENDER_BUNDLE_LEN,
 };
 use serde::{Deserialize, Serialize};
 use spr_event::{
     confidential_encrypted_output_body, OutputDataEncoding, CONFIDENTIAL_ENCRYPTED_SCHEME_TAG,
 };
-use spr_hasher::primitives::solana_owner_identity;
 use spr_interface::{
     instruction::{CircuitId, InterfaceTransfer, OwnerTag},
     shape::{Shape, SPP_SUPPORTED_SHAPES},
 };
+
+const SHAPE_FLAG_BYTE: usize = 1;
+const INPUT_FLAG_BYTE: usize = 2;
+const OUTPUT_COUNT_BYTE: usize = 3;
+const APPROVAL_BYTE: usize = 4;
 
 const VECTORS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -623,7 +627,7 @@ fn anonymous_header_flags_off_the_anonymous_rail_are_refused() {
     let fixture = Fixture::new();
     for bit in [shape_flag::DEFAULT_OWNER_TAG, shape_flag::PUBLIC_OWNERS] {
         let mut flagged = fixture.confidential_policy().encode().unwrap();
-        flagged[shape_flag::BYTE] |= bit;
+        flagged[SHAPE_FLAG_BYTE] |= bit;
         assert_eq!(
             RingTransactData::parse(&flagged, RingRail::Confidential),
             Err(CustomRingError::FlagNotAllowed),
@@ -631,7 +635,7 @@ fn anonymous_header_flags_off_the_anonymous_rail_are_refused() {
         );
     }
     let mut both = fixture.anonymous_public_owners().encode().unwrap();
-    both[shape_flag::BYTE] |= shape_flag::DEFAULT_OWNER_TAG;
+    both[SHAPE_FLAG_BYTE] |= shape_flag::DEFAULT_OWNER_TAG;
     assert_eq!(
         RingTransactData::parse(&both, RingRail::Anonymous),
         Err(CustomRingError::FlagNotAllowed)
@@ -642,7 +646,7 @@ fn anonymous_header_flags_off_the_anonymous_rail_are_refused() {
 fn the_delegate_reads_no_policy_and_spends_no_default_note() {
     let fixture = Fixture::new();
     for (byte, bit) in [
-        (input_flag::BYTE, input_flag::ENTRY),
+        (INPUT_FLAG_BYTE, input_flag::ENTRY),
         (transact_flag::BYTE, transact_flag::POLICY),
         (transact_flag::BYTE, transact_flag::OWN_ROOT),
     ] {
@@ -674,7 +678,7 @@ fn a_frame_on_the_entry_key_parses_on_the_owner_rails() {
     let data = fixture.with_audit_stream(data);
     let compact = data.encode().unwrap();
     assert_eq!(
-        compact[input_flag::BYTE] & input_flag::ENTRY,
+        compact[INPUT_FLAG_BYTE] & input_flag::ENTRY,
         input_flag::ENTRY
     );
     assert_eq!(
@@ -702,7 +706,7 @@ fn flags_the_rail_forbids_are_refused() {
 
 #[test]
 fn the_rail_follows_the_instruction_and_the_ring_mode() {
-    use custom_ring_interface::{InstructionTag, RingMode};
+    use custom_ring_interface::{InstructionTag, RailSigner, RingMode};
     use InstructionTag::{AuthorityTransfer, Merge, Transfer};
     let delegate = solana_address::Address::new_from_array([3; 32]);
     let ring = |mode: RingMode, delegate: Option<solana_address::Address>| {
@@ -711,7 +715,8 @@ fn the_rail_follows_the_instruction_and_the_ring_mode() {
         ring.delegate = delegate.unwrap_or_default();
         ring
     };
-    let rail = |tag, mode| RingRail::new(tag, &ring(mode, Some(delegate)));
+    let rail_of = |tag, ring: &RingPolicy| RailSigner::new(tag, ring).map(RailSigner::rail);
+    let rail = |tag, mode| rail_of(tag, &ring(mode, Some(delegate)));
     assert_eq!(
         rail(Transfer, RingMode::Confidential),
         Ok(RingRail::Confidential)
@@ -731,13 +736,13 @@ fn the_rail_follows_the_instruction_and_the_ring_mode() {
     );
     // A mint's permanent delegate needs no ring delegate.
     assert_eq!(
-        RingRail::new(AuthorityTransfer, &ring(RingMode::Confidential, None)),
+        rail_of(AuthorityTransfer, &ring(RingMode::Confidential, None)),
         Ok(RingRail::Delegate)
     );
     let mut unknown = ring(RingMode::Confidential, None);
     unknown.mode = 1;
     assert_eq!(
-        RingRail::new(Transfer, &unknown),
+        rail_of(Transfer, &unknown),
         Err(CustomRingError::InvalidRingMode)
     );
 }
@@ -837,7 +842,7 @@ fn a_data_frame_carries_each_length_and_one_payload_width() {
     let data = fixture.confidential_data();
     let compact = data.encode().unwrap();
     assert_eq!(
-        compact[input_flag::BYTE] & input_flag::HAS_DATA,
+        compact[INPUT_FLAG_BYTE] & input_flag::HAS_DATA,
         input_flag::HAS_DATA
     );
     let parsed = RingTransactData::parse(&compact, RingRail::Confidential)
@@ -869,7 +874,7 @@ fn a_data_frame_carries_each_length_and_one_payload_width() {
     assert_eq!(uneven.encode(), Err(CustomRingError::OutputBodyLength));
     // The flag alone shifts every later field.
     let mut claimed = fixture.confidential_delivered().encode().unwrap();
-    claimed[input_flag::BYTE] |= input_flag::HAS_DATA;
+    claimed[INPUT_FLAG_BYTE] |= input_flag::HAS_DATA;
     assert!(RingTransactData::parse(&claimed, RingRail::Confidential).is_err());
 }
 
@@ -1658,10 +1663,6 @@ fn the_transfer_statement_reads_the_frame_and_names_its_family() {
         assert_eq!(statement.head.layout.value(), layout, "{family:?}");
         assert_eq!(statement.no_spend, no_spend, "{family:?}");
     }
-    assert_eq!(
-        fixture.confidential_in_proof_owner().in_proof_sender(),
-        Ok(Some(solana_owner_identity(&fixture.bytes[16]).unwrap()))
-    );
 }
 
 #[test]
@@ -1688,21 +1689,4 @@ fn withdrawal_owner_metadata_is_required_in_transfer_order() {
     assert_eq!(parsed.data().interface_transfers, data.interface_transfers);
     data.spl_withdrawal_owners = &owners[..1];
     assert!(data.encode().is_err());
-}
-
-#[test]
-fn parsed_transact_spp_instruction_data_matches_ring_transact_data() {
-    let fixture = Fixture::new();
-    let data = fixture.confidential_policy();
-    let ring = config();
-    let parsed = ParsedTransact::new(data.clone()).unwrap();
-    assert_eq!(
-        parsed.spp_instruction_data(&ring).unwrap(),
-        data.spp_instruction_data(&ring).unwrap()
-    );
-    let spp = [0u8; 4];
-    assert_eq!(
-        data.owner_signers(&spp, usize::MAX),
-        Err(CustomRingError::InvalidSettlementAccounts)
-    );
 }

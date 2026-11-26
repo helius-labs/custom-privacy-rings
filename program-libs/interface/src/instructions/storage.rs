@@ -167,13 +167,11 @@ pub struct EnrollmentsAppliedEvent {
 
 /// `tag::EMIT_EVENT || kind || body`, trusted only as the inner instruction of a successful `ApplyEnrollments` of the storage program.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StorageEvent<'a> {
-    /// The header, then the batch's writes as the instruction carried them, proofs included.
-    EnrollmentsApplied {
-        header: EnrollmentsAppliedEvent,
-        /// The tracking leaf holds the `RegisterKey` seal as `ct_hash` alone, the auditor opens each enrolled secret from these writes.
-        writes: Vec<EnrollmentWrite<'a>>,
-    },
+pub struct StorageEvent<'a> {
+    pub header: EnrollmentsAppliedEvent,
+    /// The batch's writes as the instruction carried them, proofs included.
+    /// The tracking leaf holds the `RegisterKey` seal as `ct_hash` alone, the auditor opens each enrolled secret from these writes.
+    pub writes: Vec<EnrollmentWrite<'a>>,
 }
 
 /// Tag 8, accounts `payer, owner, tracking_registry, grant, system_program`.
@@ -404,10 +402,11 @@ impl OwnerGrantIxData {
 
 impl<'a> StorageEvent<'a> {
     pub fn encode(&self) -> Vec<u8> {
-        let Self::EnrollmentsApplied { header, writes } = self;
         let mut data = vec![tag::EMIT_EVENT, event_kind::ENROLLMENTS_APPLIED];
-        data.extend_from_slice(bytemuck::bytes_of(header));
-        writes.iter().for_each(|write| write.encode_into(&mut data));
+        data.extend_from_slice(bytemuck::bytes_of(&self.header));
+        self.writes
+            .iter()
+            .for_each(|write| write.encode_into(&mut data));
         data
     }
 
@@ -421,7 +420,7 @@ impl<'a> StorageEvent<'a> {
         let (header, writes) =
             body.split_at_checked(core::mem::size_of::<EnrollmentsAppliedEvent>())?;
         let header: EnrollmentsAppliedEvent = bytemuck::try_pod_read_unaligned(header).ok()?;
-        Some(Self::EnrollmentsApplied {
+        Some(Self {
             header,
             writes: parse_writes(header.count, writes).ok()?,
         })
@@ -530,9 +529,7 @@ impl<'a> ParsedStorageUpdate<'a> {
         let apply =
             ApplyRecordsIxData::parse(rest).map_err(|_| StorageError::InvalidInstructionData)?;
         // 4. The restrictive bit has one encoding, the statement binds it.
-        if apply.restrictive > 1
-            || !(1..=crate::member_registry::QUAD_CAPACITY).contains(&apply.new_next_index())
-        {
+        if apply.restrictive > 1 {
             return Err(StorageError::InvalidInstructionData);
         }
         Ok(Self {

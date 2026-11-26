@@ -13,7 +13,7 @@
 //!
 //! Read after `lib.rs`. Read before `instructions/transfer/accounts.rs`, `instructions/transfer/verify.rs`.
 
-use custom_ring_interface::{InstructionTag, RailSigner, RingTransactData};
+use custom_ring_interface::{InstructionTag, RailSigner, RingPolicy, RingTransactData};
 use pinocchio::{
     error::ProgramError,
     sysvars::{clock::Clock, Sysvar},
@@ -21,7 +21,7 @@ use pinocchio::{
 };
 
 use super::{accounts::TransactCheck, verify::RingStatements};
-use crate::instructions::loader::{load_policy, validate_spp_program};
+use crate::instructions::loader::{load, validate_spp_program};
 
 #[inline(never)]
 pub fn process_transfer_ix(
@@ -32,7 +32,7 @@ pub fn process_transfer_ix(
 ) -> ProgramResult {
     let slot = Clock::get()?.slot;
     // 1. The ring's mode and delegate fix the rail and the signer it trusts.
-    let ring = load_policy(
+    let ring = load::<RingPolicy>(
         program_id,
         accounts.first().ok_or(ProgramError::NotEnoughAccountKeys)?,
     )?;

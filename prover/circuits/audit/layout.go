@@ -36,17 +36,6 @@ import (
 	"github.com/helius-labs/zolana/prover/server/circuits/gadget"
 )
 
-// The flags of the audit statement's layout value, mirrored by AuditLayout::value in program-libs/interface/src/proof/disclosure.rs.
-const (
-	// LayoutVouched is set when the frame publishes the voucher region.
-	LayoutVouched = 1 << 0
-	LayoutEntry   = 1 << 1
-	// LayoutData is set when the frame's records publish a data hash.
-	LayoutData = 1 << 2
-	// LayoutRingData is set when the frame's records publish a ring data hash.
-	LayoutRingData = 1 << 3
-)
-
 const layoutBits = 4
 
 // LayoutFlags are the layout bits a frame chooses.
@@ -77,17 +66,6 @@ func (l LayoutFlags) assertHashes(api frontend.API, slot shared.Output) {
 	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: api.Sub(1, l.RingData), V: slot.RingDataHash})
 	// An exit publishes its nullifier key where a ring slot publishes ring data.
 	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: slot.Exit, V: slot.RingDataHash})
-}
-
-// PublishedRecordLen is the prefix of TransferRecordLen a slot publishes.
-func PublishedRecordLen(exit, data, ringData bool) int {
-	fields := 0
-	for _, published := range []bool{data, exit || ringData} {
-		if published {
-			fields++
-		}
-	}
-	return RingRecordLen + fields*fieldLen
 }
 
 // StreamRanges mirrors AuditStreamLayout in program-libs/interface/src/proof/audit_stream.rs.

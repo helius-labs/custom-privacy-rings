@@ -14,8 +14,8 @@ use core::fmt;
 use thiserror::Error;
 
 use crate::{
-    DebitInput, DebitOutput, Guard, GuardScope, ListId, ListSet, Rule, RuleSource, RuleTable,
-    SourceMap, Subject,
+    DebitInput, DebitOutput, Guard, GuardScope, ListId, ListSet, Rule, RuleTable, SourceMap,
+    Subject,
 };
 
 /// A member's record `lists` in each registry, zero for an absent member.
@@ -346,8 +346,7 @@ impl RuleCheck<'_> {
 
 /// On any list of the present set, or off any list of the absent set.
 fn holds(rule: &Rule, on: ListSet) -> bool {
-    let RuleSource::Lists { present, absent } = rule.source;
-    present.intersects(on) || !absent.difference(on).is_empty()
+    rule.present.intersects(on) || !rule.absent.difference(on).is_empty()
 }
 
 fn foreign_lists(sources: &SourceMap) -> ListSet {

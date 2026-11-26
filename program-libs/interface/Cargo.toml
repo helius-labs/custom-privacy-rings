@@ -10,7 +10,6 @@ publish = false
 default = ["verifying-keys"]
 verifying-keys = []
 cpi = ["dep:pinocchio"]
-enrollment-cpi = ["cpi"]
 
 [dependencies]
 pinocchio = { workspace = true, optional = true, features = ["cpi"] }

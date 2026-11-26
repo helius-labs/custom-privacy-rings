@@ -112,13 +112,6 @@ pub struct StreamRegion {
     pub len: usize,
 }
 
-impl StreamRegion {
-    /// Where the region starts in a keystream read from the first counter.
-    pub const fn keystream_offset(self) -> usize {
-        (self.start_counter - STREAM_FIRST_COUNTER) as usize * STREAM_BLOCK_LEN
-    }
-}
-
 /// Every length of one transfer's auditor stream, a frame of any other length is refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AuditStreamLayout {
@@ -205,11 +198,6 @@ impl AuditStreamLayout {
 
     pub const fn sealed_len(self) -> usize {
         self.envelope().len + self.keys_len()
-    }
-
-    /// The blocks a reader decrypts.
-    pub const fn capacity_blocks(self) -> usize {
-        self.key.envelope_blocks() + (self.capacity + 1) * SEALED_KEY_BLOCKS
     }
 }
 

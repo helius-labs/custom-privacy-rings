@@ -29,6 +29,10 @@ fn layout(key: AuditKey, inputs: usize, outputs: usize, capacity: usize) -> Audi
     }
 }
 
+fn capacity_blocks(layout: AuditStreamLayout) -> usize {
+    layout.key.envelope_blocks() + (layout.capacity + 1) * SEALED_KEY_LEN / STREAM_BLOCK_LEN
+}
+
 fn vouched(layout: AuditStreamLayout) -> AuditStreamLayout {
     AuditStreamLayout {
         vouched: true,
@@ -44,7 +48,7 @@ fn key_vector(key: AuditKey, outputs: usize) -> Value {
         "entry": key.entry,
         "envelope_blocks": key.envelope_blocks(),
         "first_key_counter": key.first_key_counter(),
-        "capacity_blocks": bare.capacity_blocks(),
+        "capacity_blocks": capacity_blocks(bare),
         "key_start_counters": (0..outputs)
             .map(|slot| bare.recipient_key(slot).start_counter)
             .collect::<Vec<_>>(),
@@ -127,7 +131,7 @@ fn no_counter_serves_two_regions_and_every_region_holds_its_bytes() {
         next += voucher.max_blocks as u32;
         assert_eq!(
             next as usize - envelope.start_counter as usize,
-            full.capacity_blocks()
+            capacity_blocks(full)
         );
     }
 }
@@ -177,7 +181,6 @@ fn a_vouched_frame_adds_one_key_and_moves_no_counter() {
         let frame = vouched(unvouched);
         assert_eq!(frame.keys_len(), unvouched.keys_len() + SEALED_KEY_LEN);
         assert_eq!(frame.envelope(), unvouched.envelope());
-        assert_eq!(frame.capacity_blocks(), unvouched.capacity_blocks());
         for slot in 0..4 {
             assert_eq!(frame.recipient_key(slot), unvouched.recipient_key(slot));
         }

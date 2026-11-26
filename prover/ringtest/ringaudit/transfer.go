@@ -119,7 +119,7 @@ func (tr Transfer) Wires(layout int64) audit.AuditWires {
 	ringtest.SetBytes(w.TxViewingSk[:], tr.Keys.txViewingSk[:])
 	ringtest.SetBytes(w.AuditorPk[:], tr.Keys.auditorPk[:])
 	ringtest.SetBytes(w.Salt[:], tr.Salt[:])
-	w.Vouched = layout & audit.LayoutVouched
+	w.Vouched = layout & LayoutVouched
 	ringtest.SetBytes(w.Voucher[:], tr.SignerKey())
 	return w
 }

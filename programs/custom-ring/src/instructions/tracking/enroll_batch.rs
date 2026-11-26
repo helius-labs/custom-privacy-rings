@@ -45,7 +45,12 @@ pub fn process_enroll_batch_ix(
     let storage_data = [&[storage_tag::APPLY_ENROLLMENTS][..], data].concat();
     placed.invoke_program(
         &STORAGE_PROGRAM_ID,
-        &[ring_auth, &*tracking, owner_authorization, storage_program],
+        &[
+            &*ring_auth,
+            &*tracking,
+            &*owner_authorization,
+            &*storage_program,
+        ],
         &storage_data,
     )
 }

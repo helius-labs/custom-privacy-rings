@@ -17,8 +17,6 @@ pub const SENDER_TAG: u32 = 0x4352_5354;
 pub const BLINDING_SEED: u32 = 0x4352_4253;
 /// `"CR_S"`, the root of every auditor stream.
 pub const AUDIT_SHARED_SECRET: u32 = 0x4352_5f53;
-/// `"CRTB"`, defined beside the table hash in the policy crate the interface depends on.
-pub use zolana_ring_policy::POLICY_TABLE_DOMAIN as POLICY_TABLE;
 /// `"CRQW"`
 pub const RECORD_WRITE: u32 = 0x4352_5157;
 /// `"CRAP"`
@@ -39,8 +37,6 @@ pub const MERGE_STATEMENT: u32 = 0x4352_4d47;
 pub const WITHDRAWALS: u32 = 0x4352_5057;
 /// `"CRRU"`
 pub const RECORD_UPDATE: u32 = 0x4352_5255;
-/// `"CRWG"`
-pub use zolana_ring_policy::WALLET_GRANT_DOMAIN as WALLET_GRANT;
 /// `"CRPT"`
 pub const LIST_TAG: u32 = 0x4352_5054;
 /// `"CRVC"`

@@ -178,7 +178,7 @@ func paymentGuards(api frontend.API, cmp comparator, payments []Payment, inputs 
 // A guarded rule stays out. Its obligation reads the payment totals, an input adds nothing to them, and a total of zero sits within every threshold. A guarded rule can then refuse only at a payment of the asset, and the payment section already holds that one.
 func assertInputAssetRules(api frontend.API, active []frontend.Variable, table tableView, resolved subjects) {
 	assertSubjectsAdmitted(api, active, table, resolved.inputAssets, resolved.liveInputs, func(rule ruleFields) frontend.Variable {
-		// The guard tags exclude each other, the difference reads GuardAlways.
+		// The guard tags exclude each other, the difference reads the always guard.
 		return api.Mul(rule.onAsset, api.Sub(1, api.Add(rule.scalarGuard, rule.assetGuard)))
 	})
 }

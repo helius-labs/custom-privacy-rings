@@ -53,27 +53,11 @@ pub fn load_mut<'a, T: RingAccount>(
     program_id: &Address,
     account: &'a mut AccountView,
 ) -> Result<RefMut<'a, T>, ProgramError> {
-    if !account.owned_by(program_id) || !account.is_writable() {
+    if !account.owned_by(program_id) {
         return Err(T::INVALID.into());
     }
     let data = account.try_borrow_mut().map_err(|_| T::INVALID)?;
     RefMut::filter_map(data, T::from_data_mut).map_err(|_| T::INVALID.into())
-}
-
-#[inline(always)]
-pub fn load_policy<'a>(
-    program_id: &Address,
-    account: &'a AccountView,
-) -> Result<Ref<'a, RingPolicy>, ProgramError> {
-    load(program_id, account)
-}
-
-#[inline(always)]
-pub fn load_policy_mut<'a>(
-    program_id: &Address,
-    account: &'a mut AccountView,
-) -> Result<RefMut<'a, RingPolicy>, ProgramError> {
-    load_mut(program_id, account)
 }
 
 /// The ring account whose `role` the signer holds, the processor checks the signature.
@@ -87,7 +71,7 @@ pub struct RoleHolder<'a> {
 impl RoleHolder<'_> {
     #[inline(always)]
     pub fn load<'a>(self, ring: &'a AccountView) -> Result<Ref<'a, RingPolicy>, ProgramError> {
-        let ring = load_policy(self.program_id, ring)?;
+        let ring = load::<RingPolicy>(self.program_id, ring)?;
         ring.check_role(self.role, self.signer.address())?;
         Ok(ring)
     }
@@ -97,7 +81,7 @@ impl RoleHolder<'_> {
         self,
         ring: &'a mut AccountView,
     ) -> Result<RefMut<'a, RingPolicy>, ProgramError> {
-        let ring = load_policy_mut(self.program_id, ring)?;
+        let ring = load_mut::<RingPolicy>(self.program_id, ring)?;
         ring.check_role(self.role, self.signer.address())?;
         Ok(ring)
     }

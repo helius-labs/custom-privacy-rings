@@ -18,7 +18,7 @@
 
 use custom_ring_interface::{
     key_catalog::RingCircuit, CustomRingError, CustomRingMergeIxDataRef, MergePublicInput,
-    RootRead, RING_MERGE_PAYER_INDEX, RING_MERGE_RING_CONFIG_INDEX, VIEWING_PUBKEY_TAG,
+    RingPolicy, RootRead, RING_MERGE_PAYER_INDEX, RING_MERGE_RING_CONFIG_INDEX, VIEWING_PUBKEY_TAG,
 };
 use pinocchio::{
     sysvars::{clock::Clock, Sysvar},
@@ -31,7 +31,7 @@ use zolana_ring_policy::ring_id_field;
 
 use crate::instructions::{
     instruction_runtime::RingAuth,
-    loader::{check_funding_signer, load_policy, validate_spp_program, RegistrySlots},
+    loader::{check_funding_signer, load, validate_spp_program, RegistrySlots},
     verifier::{ring_key, RingProof},
 };
 
@@ -45,7 +45,7 @@ pub fn process_merge_ix(
     let request = CustomRingMergeIxDataRef::from_bytes(data)?;
 
     let mut iter = AccountIterator::new(accounts);
-    let ring = load_policy(program_id, iter.next_account("ring")?)?;
+    let ring = load::<RingPolicy>(program_id, iter.next_account("ring")?)?;
     // 1. A merge runs no rules, a restrictive policy update cannot fail it.
     let registries = RegistrySlots {
         ring: &ring,
