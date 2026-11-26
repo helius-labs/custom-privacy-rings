@@ -17,8 +17,7 @@ export function publicListKey(ownerPkHash: Bytes32): Bytes32 {
 export function privateListKey(ownerPkHash: Bytes32, listSalt: Bytes32): Bytes32 {
   const checkedOwner = copyBytes(ownerPkHash, 32, "ownerPkHash") as Bytes32;
   const checkedSalt = copyBytes(listSalt, 32, "listSalt") as Bytes32;
-  if (isZero(checkedSalt))
-    throw new RingError("RING_ENTRY_INVALID", { details: { reason: "zeroSalt" } });
+  if (isZero(checkedSalt)) throw refused("zeroSalt");
   return lookupKey(checkedOwner, checkedSalt);
 }
 
@@ -39,13 +38,23 @@ export function committedRingListKey(
   const ringSalt = copyBytes(input.ringSalt, 32, "ringSalt") as Bytes32;
   const ringListTag = copyBytes(input.ringListTag, 32, "ringListTag") as Bytes32;
   if (isZero(ringListTag) || !equalBytes(listTagOf(ringSalt), ringListTag))
-    throw new RingError("RING_ENTRY_INVALID", { details: { reason: "ringSaltUncommitted" } });
+    throw refused("ringSaltUncommitted");
   return ringListKey(checkedOwner, ringSalt);
 }
 
+/** Salts as Ring RPC or an address supplied them, a key exists only under a salt opening its on-chain tag. */
 export type OwnerListSalts = Readonly<{
   listSalt?: Bytes32;
   ringSalt?: Bytes32;
+}>;
+
+/** The on-chain tags an owner's private list keys open against. */
+export type OwnerListTags = Readonly<{
+  ownerPkHash: Bytes32;
+  /** The tag of the owner's tracking row, absent while it holds none. */
+  listTag?: Bytes32;
+  /** `RingPolicy.ringListTag`, zero while the policy commits no ring salt. */
+  ringListTag: Bytes32;
 }>;
 
 export type PrivateListTarget = Readonly<{
@@ -53,27 +62,40 @@ export type PrivateListTarget = Readonly<{
   kind: "owner" | "ring";
 }>;
 
-/** Circuit reads the union of the owner salted key and the ring salted key. */
+/** Rust `OwnerListSalts::revocation_members`, a clear of fewer keys leaves the entry in force. */
 export function privateRevocationKeys(
-  ownerPkHash: Bytes32,
   salts: OwnerListSalts,
+  tags: OwnerListTags,
 ): readonly PrivateListTarget[] {
-  const checkedOwner = copyBytes(ownerPkHash, 32, "ownerPkHash") as Bytes32;
+  const ringListTag = copyBytes(tags.ringListTag, 32, "ringListTag") as Bytes32;
   const targets: PrivateListTarget[] = [];
-  if (salts.listSalt !== undefined) {
+  if (tags.listTag !== undefined) {
+    if (salts.listSalt === undefined) throw refused("missingListSalt");
+    const listSalt = copyBytes(salts.listSalt, 32, "listSalt") as Bytes32;
+    if (!equalBytes(listTagOf(listSalt), copyBytes(tags.listTag, 32, "listTag")))
+      throw refused("listSaltMismatch");
     targets.push(
-      Object.freeze({ member: privateListKey(checkedOwner, salts.listSalt), kind: "owner" }),
+      Object.freeze({ member: privateListKey(tags.ownerPkHash, listSalt), kind: "owner" }),
     );
   }
-  if (salts.ringSalt !== undefined) {
-    const ringSalt = copyBytes(salts.ringSalt, 32, "ringSalt") as Bytes32;
-    if (isZero(ringSalt))
-      throw new RingError("RING_ENTRY_INVALID", { details: { reason: "zeroSalt" } });
-    targets.push(Object.freeze({ member: ringListKey(checkedOwner, ringSalt), kind: "ring" }));
+  if (tags.listTag === undefined || !isZero(ringListTag)) {
+    if (salts.ringSalt === undefined) throw refused("missingRingSalt");
+    targets.push(
+      Object.freeze({
+        member: committedRingListKey({
+          ownerPkHash: tags.ownerPkHash,
+          ringSalt: salts.ringSalt,
+          ringListTag,
+        }),
+        kind: "ring",
+      }),
+    );
   }
-  if (targets.length === 0)
-    throw new RingError("RING_ENTRY_INVALID", { details: { reason: "missingListSalt" } });
   return Object.freeze(targets);
+}
+
+function refused(reason: string): RingError {
+  return new RingError("RING_ENTRY_INVALID", { details: { reason } });
 }
 
 const ZERO_SALT = new Uint8Array(32) as Bytes32;

@@ -4,8 +4,8 @@ use anyhow::{bail, ensure, Context as _, Result};
 use clap::{builder::PossibleValue, Args, ValueEnum};
 use custom_ring_interface::ListRegistry;
 use custom_ring_sdk::{
-    MemberRecords, OwnerListSalts, OwnerSaltCheck, PolicyUpdate, PrivateKeyKind, SaltedOwnerCheck,
-    SourceOwner, UpdatePolicy, WalletRecordUpdate,
+    MemberRecords, OwnerListSalts, OwnerListTags, OwnerListTagsRead, PolicyUpdate, PrivateKeyKind,
+    SaltedOwnerCheck, SourceOwner, UpdatePolicy, WalletRecordUpdate,
 };
 use solana_address::Address;
 use solana_signer::Signer;
@@ -104,6 +104,7 @@ pub(crate) struct SubjectLookup<'a> {
     pub list_id: ListId,
     pub ring: Address,
     pub read_salt: &'a dyn Fn(&Address) -> Result<OwnerListSalts>,
+    pub read_tags: &'a dyn Fn(&Address) -> Result<OwnerListTags>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,8 +127,8 @@ pub(crate) struct ShowRow {
 }
 
 struct ResolvedSalted {
-    owner: Address,
     salts: OwnerListSalts,
+    tags: OwnerListTags,
 }
 
 impl SubjectLookup<'_> {
@@ -145,21 +146,24 @@ impl SubjectLookup<'_> {
                     "a ring address with no salt has no tracking row and no private record"
                 );
                 let owner = Address::new_from_array(address.recipient.signing_pubkey.as_ed25519()?);
+                let tags = (self.read_tags)(&owner)?;
                 let ring_salt = match change {
-                    ListChange::Clear => (self.read_salt)(&owner)?.ring_salt,
-                    ListChange::Set => None,
+                    ListChange::Clear if tags.ring_list_tag != [0; 32] => {
+                        (self.read_salt)(&owner)?.ring_salt
+                    }
+                    _ => None,
                 };
                 Ok(ResolvedSalted {
-                    owner,
                     salts: OwnerListSalts {
                         list_salt: Some(address.list_salt),
                         ring_salt,
                     },
+                    tags,
                 })
             }
             SaltedOwner::Key(owner) => Ok(ResolvedSalted {
-                owner: *owner,
                 salts: (self.read_salt)(owner)?,
+                tags: (self.read_tags)(owner)?,
             }),
         }
     }
@@ -220,16 +224,16 @@ impl MemberArgs {
         self.salted_owners
             .iter()
             .map(|salted| {
-                let resolved = lookup.resolve_salted(salted, change)?;
+                let ResolvedSalted { salts, tags } = lookup.resolve_salted(salted, change)?;
                 let targets = match change {
-                    ListChange::Set => vec![resolved.salts.private_write_member(resolved.owner)?],
-                    ListChange::Clear => resolved.salts.revocation_members(resolved.owner)?,
+                    ListChange::Set => vec![salts.write_member(&tags)?],
+                    ListChange::Clear => salts.revocation_members(&tags)?,
                 };
                 Ok(targets
                     .into_iter()
                     .map(|target| Subject {
                         member: target.member,
-                        label: private_label(target.kind, resolved.owner),
+                        label: private_label(target.kind, target.owner),
                         unregistered: target.unregistered_owner(),
                     })
                     .collect())
@@ -326,12 +330,12 @@ impl ListChange {
     }
 }
 
-struct CheckedSaltReader<'a> {
+struct OwnerSaltReader<'a> {
     ctx: &'a Context,
     writer: crate::ring_rpc::RequestSigner<'a>,
 }
 
-impl<'a> CheckedSaltReader<'a> {
+impl<'a> OwnerSaltReader<'a> {
     fn new(ctx: &'a Context, authority: &'a dyn zolana_operator_custody::OperatorSigner) -> Self {
         Self {
             ctx,
@@ -339,40 +343,21 @@ impl<'a> CheckedSaltReader<'a> {
         }
     }
 
-    fn read(&self, owner: &Address) -> Result<OwnerListSalts> {
-        let salts =
-            self.ctx
-                .ring_rpc()?
-                .list_salt(self.ctx.ring_rpc_target()?, *owner, &self.writer)?;
-        let primary = salts
-            .primary_salt()
-            .with_context(|| format!("{owner} has no tracking row and no private record"))?;
+    fn salts(&self, owner: &Address) -> Result<OwnerListSalts> {
         self.ctx
+            .ring_rpc()?
+            .list_salt(self.ctx.ring_rpc_target()?, *owner, &self.writer)
+    }
+
+    fn tags(&self, owner: &Address) -> Result<OwnerListTags> {
+        let read = OwnerListTagsRead {
+            ring: self.ctx.ring,
+            owner: *owner,
+        };
+        Ok(self
+            .ctx
             .zolana
-            .block_on(
-                OwnerSaltCheck {
-                    ring: self.ctx.ring,
-                    owner,
-                    list_salt: primary,
-                }
-                .run(self.ctx.zolana.as_async()),
-            )
-            .with_context(|| format!("the salt Ring RPC returned opens no tag of {owner}"))?;
-        if salts.list_salt.is_some() {
-            if let Some(ring_salt) = &salts.ring_salt {
-                let policy = self
-                    .ctx
-                    .zolana
-                    .block_on(self.ctx.ring.require_policy(self.ctx.zolana.as_async()))?;
-                ensure!(
-                    policy.ring_list_tag != [0; 32]
-                        && custom_ring_interface::domain::list_tag(ring_salt)?
-                            == policy.ring_list_tag,
-                    "the ring salt Ring RPC returned opens no ring list tag"
-                );
-            }
-        }
-        Ok(salts)
+            .block_on(read.run(self.ctx.zolana.as_async()))?)
     }
 }
 
@@ -398,20 +383,21 @@ pub(crate) fn aggregate_show_rows(
 }
 
 impl EntryArgs {
-    /// Checked against the chain, a salted entry under any other salt is one no proof reads.
+    /// Every salted key opens its on-chain tag, an entry under any other salt is one no proof reads.
     fn checked<T>(
         &self,
         ctx: &Context,
         read: impl FnOnce(&MemberArgs, SubjectLookup<'_>) -> Result<T>,
     ) -> Result<T> {
         let authority = ctx.authority()?;
-        let reader = CheckedSaltReader::new(ctx, authority.as_ref());
+        let reader = OwnerSaltReader::new(ctx, authority.as_ref());
         let subjects = read(
             &self.members,
             SubjectLookup {
                 list_id: self.list_id.id(),
                 ring: ctx.ring.program_id(),
-                read_salt: &|owner| reader.read(owner),
+                read_salt: &|owner| reader.salts(owner),
+                read_tags: &|owner| reader.tags(owner),
             },
         )?;
         self.check_salted_addresses(ctx)?;
@@ -634,237 +620,249 @@ mod tests {
                     list_id: ListId::Block,
                     ring: Address::new_from_array([0x11; 32]),
                     read_salt: &|_| bail!("no read"),
+                    read_tags: &|_| bail!("no read"),
                 },
                 ListChange::Set,
             )
             .expect("members"))
     }
 
-    /// A private list keys an owner by its salt, the same key the circuit derives.
-    #[test]
-    fn a_private_list_writes_the_salted_key_and_refuses_a_plain_owner() {
-        let ring = Address::new_from_array([0x11; 32]);
+    const RING: Address = Address::new_from_array([0x11; 32]);
+    const RING_SALT: [u8; 32] = [0x2b; 32];
+
+    fn enrolled(seed: u8) -> RingAddress {
         let wallet = spr_keypair::ShieldedKeypair::from_keypair(
-            spr_keypair::SigningKey::from_ed25519_bytes(&[7; 32]),
+            spr_keypair::SigningKey::from_ed25519_bytes(&[seed; 32]),
         )
         .unwrap();
-        let address = RingAddress::enrolled(&wallet, ring).unwrap();
-        let args = |owners: Vec<Address>, addresses: Vec<RingAddress>| MemberArgs {
-            owners,
-            assets: Vec::new(),
-            salted_owners: addresses
-                .into_iter()
-                .map(|address| SaltedOwner::Address(Box::new(address)))
-                .collect(),
-        };
-        let no_read = |_: &Address| -> Result<OwnerListSalts> { bail!("no read") };
-        let salted = args(Vec::new(), vec![address.clone()])
-            .subjects(
-                SubjectLookup {
-                    list_id: ListId::PrivateBlock,
-                    ring,
-                    read_salt: &no_read,
-                },
-                ListChange::Set,
-            )
-            .unwrap();
-        let owner = address.recipient.signing_pubkey.as_ed25519().unwrap();
-        assert_eq!(
-            salted[0].member,
-            Member::salted(&Member::owner_tag(&owner).unwrap(), &address.list_salt).unwrap()
-        );
-        assert_ne!(salted[0].member, Member::owner_tag(&owner).unwrap());
+        RingAddress::enrolled(&wallet, RING).unwrap()
+    }
 
-        let by_key = MemberArgs {
-            owners: Vec::new(),
-            assets: Vec::new(),
-            salted_owners: vec![SaltedOwner::Key(Address::new_from_array(owner))],
+    fn owner_of(address: &RingAddress) -> Address {
+        Address::new_from_array(address.recipient.signing_pubkey.as_ed25519().unwrap())
+    }
+
+    fn list_tag(salt: &[u8; 32]) -> [u8; 32] {
+        custom_ring_interface::domain::list_tag(salt).unwrap()
+    }
+
+    /// The chain and the service as one owner's lookup reads them.
+    struct World {
+        list_tag: Option<[u8; 32]>,
+        ring_list_tag: [u8; 32],
+        list_salt: Option<[u8; 32]>,
+        ring_salt: Option<[u8; 32]>,
+    }
+
+    impl World {
+        fn subjects(
+            &self,
+            salted: &SaltedOwner,
+            list_id: ListId,
+            change: ListChange,
+        ) -> Result<Vec<Subject>> {
+            self.args(salted).subjects(
+                SubjectLookup {
+                    list_id,
+                    ring: RING,
+                    read_salt: &|_| self.salts(),
+                    read_tags: &|owner| self.tags(owner),
+                },
+                change,
+            )
+        }
+
+        fn show(&self, salted: &SaltedOwner) -> Result<Vec<ShowSubject>> {
+            self.args(salted).show_subjects(SubjectLookup {
+                list_id: ListId::PrivateBlock,
+                ring: RING,
+                read_salt: &|_| self.salts(),
+                read_tags: &|owner| self.tags(owner),
+            })
+        }
+
+        fn args(&self, salted: &SaltedOwner) -> MemberArgs {
+            MemberArgs {
+                owners: Vec::new(),
+                assets: Vec::new(),
+                salted_owners: vec![salted.clone()],
+            }
+        }
+
+        fn salts(&self) -> Result<OwnerListSalts> {
+            Ok(OwnerListSalts {
+                list_salt: self.list_salt,
+                ring_salt: self.ring_salt,
+            })
+        }
+
+        fn tags(&self, owner: &Address) -> Result<OwnerListTags> {
+            Ok(OwnerListTags {
+                owner: *owner,
+                list_tag: self.list_tag,
+                ring_list_tag: self.ring_list_tag,
+            })
+        }
+    }
+
+    fn both_forms(address: &RingAddress) -> [SaltedOwner; 2] {
+        [
+            SaltedOwner::Key(owner_of(address)),
+            SaltedOwner::Address(Box::new(address.clone())),
+        ]
+    }
+
+    #[test]
+    fn a_private_list_writes_the_salted_key_and_refuses_a_plain_owner() {
+        let address = enrolled(7);
+        let owner = owner_of(&address);
+        let owner_tag = Member::owner_tag(owner.as_array()).unwrap();
+        let row = World {
+            list_tag: Some(list_tag(&address.list_salt)),
+            ring_list_tag: list_tag(&RING_SALT),
+            list_salt: Some(address.list_salt),
+            ring_salt: Some(RING_SALT),
         };
-        let read = by_key
-            .subjects(
-                SubjectLookup {
-                    list_id: ListId::PrivateBlock,
-                    ring,
-                    read_salt: &|_| {
-                        Ok(OwnerListSalts {
-                            list_salt: Some(address.list_salt),
-                            ring_salt: None,
-                        })
-                    },
-                },
-                ListChange::Set,
-            )
-            .unwrap();
-        assert_eq!(read[0].member, salted[0].member);
-        assert_eq!(read[0].unregistered, None);
+        for salted in both_forms(&address) {
+            let added = row
+                .subjects(&salted, ListId::PrivateBlock, ListChange::Set)
+                .unwrap();
+            assert_eq!(added.len(), 1);
+            assert_eq!(
+                added[0].member,
+                Member::salted(&owner_tag, &address.list_salt).unwrap()
+            );
+            assert_eq!(added[0].unregistered, None);
+        }
         // An owner with no row keys its entry under the ring salt and names itself to the writer.
-        let ring_salt = [0x2b; 32];
-        let unregistered = by_key
-            .subjects(
-                SubjectLookup {
-                    list_id: ListId::PrivateBlock,
-                    ring,
-                    read_salt: &|_| {
-                        Ok(OwnerListSalts {
-                            list_salt: None,
-                            ring_salt: Some(ring_salt),
-                        })
-                    },
-                },
-                ListChange::Set,
-            )
+        let no_row = World {
+            list_tag: None,
+            list_salt: None,
+            ..row
+        };
+        let by_key = SaltedOwner::Key(owner);
+        let unregistered = no_row
+            .subjects(&by_key, ListId::PrivateBlock, ListChange::Set)
             .unwrap();
         assert_eq!(
             unregistered[0].member,
-            Member::ring_salted(&Member::owner_tag(&owner).unwrap(), &ring_salt).unwrap()
+            Member::ring_salted(&owner_tag, &RING_SALT).unwrap()
         );
-        assert_eq!(
-            unregistered[0].unregistered,
-            Some(Address::new_from_array(owner))
-        );
-        assert!(by_key
-            .subjects(
-                SubjectLookup {
-                    list_id: ListId::PrivateBlock,
-                    ring,
-                    read_salt: &no_read,
-                },
-                ListChange::Set,
-            )
+        assert_eq!(unregistered[0].unregistered, Some(owner));
+        // A service naming the ring salt as the owner's salt keys no entry a proof reads.
+        let mislabeled = World {
+            list_salt: Some(RING_SALT),
+            ring_salt: None,
+            ..no_row
+        };
+        assert!(mislabeled
+            .subjects(&by_key, ListId::PrivateBlock, ListChange::Set)
             .is_err());
 
-        let plain = TAG.parse().unwrap();
-        assert!(args(vec![plain], Vec::new())
-            .subjects(
-                SubjectLookup {
-                    list_id: ListId::PrivateAllow,
-                    ring,
-                    read_salt: &no_read,
-                },
-                ListChange::Set,
-            )
+        let by_address = SaltedOwner::Address(Box::new(address));
+        assert!(no_row
+            .subjects(&by_address, ListId::Block, ListChange::Set)
             .is_err());
-        assert!(args(Vec::new(), vec![address.clone()])
-            .subjects(
-                SubjectLookup {
-                    list_id: ListId::Block,
-                    ring,
-                    read_salt: &no_read,
-                },
-                ListChange::Set,
-            )
+        let plain = MemberArgs {
+            owners: vec![TAG.parse().unwrap()],
+            assets: Vec::new(),
+            salted_owners: Vec::new(),
+        };
+        let lookup = |list_id, ring| SubjectLookup {
+            list_id,
+            ring,
+            read_salt: &|_| bail!("no read"),
+            read_tags: &|_| bail!("no read"),
+        };
+        assert!(plain
+            .subjects(lookup(ListId::PrivateAllow, RING), ListChange::Set)
             .is_err());
-        assert!(args(Vec::new(), vec![address])
-            .subjects(
-                SubjectLookup {
-                    list_id: ListId::PrivateBlock,
-                    ring: Address::new_from_array([0x12; 32]),
-                    read_salt: &no_read,
-                },
-                ListChange::Set,
-            )
+        let foreign_ring = Address::new_from_array([0x12; 32]);
+        assert!(row
+            .args(&by_address)
+            .subjects(lookup(ListId::PrivateBlock, foreign_ring), ListChange::Set)
             .is_err());
     }
 
     #[test]
-    fn clearing_an_enrolled_private_list_entry_also_clears_the_ring_salted_key() {
-        let ring = Address::new_from_array([0x11; 32]);
-        let wallet = spr_keypair::ShieldedKeypair::from_keypair(
-            spr_keypair::SigningKey::from_ed25519_bytes(&[9; 32]),
-        )
-        .unwrap();
-        let address = RingAddress::enrolled(&wallet, ring).unwrap();
-        let owner_bytes = address.recipient.signing_pubkey.as_ed25519().unwrap();
-        let owner = Address::new_from_array(owner_bytes);
-        let owner_tag = Member::owner_tag(&owner_bytes).unwrap();
-        let ring_salt = [0x2b; 32];
+    fn a_private_clear_writes_every_key_the_circuit_reads_or_refuses() {
+        let address = enrolled(9);
+        let owner = owner_of(&address);
+        let owner_tag = Member::owner_tag(owner.as_array()).unwrap();
         let expected_owner = Member::salted(&owner_tag, &address.list_salt).unwrap();
-        let expected_ring = Member::ring_salted(&owner_tag, &ring_salt).unwrap();
-        let both_salts = |_: &Address| -> Result<OwnerListSalts> {
-            Ok(OwnerListSalts {
-                list_salt: Some(address.list_salt),
-                ring_salt: Some(ring_salt),
-            })
+        let expected_ring = Member::ring_salted(&owner_tag, &RING_SALT).unwrap();
+        let committed = || World {
+            list_tag: Some(list_tag(&address.list_salt)),
+            ring_list_tag: list_tag(&RING_SALT),
+            list_salt: Some(address.list_salt),
+            ring_salt: Some(RING_SALT),
         };
-        let by_key = MemberArgs {
-            owners: Vec::new(),
-            assets: Vec::new(),
-            salted_owners: vec![SaltedOwner::Key(owner)],
-        };
-        for list_id in [
-            ListId::PrivateAllow,
-            ListId::PrivateBlock,
-            ListId::PrivateFrozen,
-        ] {
-            let added = by_key
-                .subjects(
-                    SubjectLookup {
-                        list_id,
-                        ring,
-                        read_salt: &both_salts,
-                    },
-                    ListChange::Set,
-                )
+        for salted in both_forms(&address) {
+            for list_id in [
+                ListId::PrivateAllow,
+                ListId::PrivateBlock,
+                ListId::PrivateFrozen,
+            ] {
+                let cleared = committed()
+                    .subjects(&salted, list_id, ListChange::Clear)
+                    .unwrap();
+                assert_eq!(cleared.len(), 2);
+                assert_eq!(cleared[0].member, expected_owner);
+                assert_eq!(cleared[0].unregistered, None);
+                assert_eq!(cleared[1].member, expected_ring);
+                assert_eq!(cleared[1].unregistered, Some(owner));
+            }
+            // A service at an older revision, a faulty one or a hostile one yields no one-key clear.
+            for ring_salt in [None, Some([0x1d; 32]), Some(address.list_salt)] {
+                let withheld = World {
+                    ring_salt,
+                    ..committed()
+                };
+                assert!(withheld
+                    .subjects(&salted, ListId::PrivateBlock, ListChange::Clear)
+                    .is_err());
+                assert!(withheld.show(&salted).is_err());
+            }
+            let zero_tag = World {
+                ring_list_tag: [0; 32],
+                ..committed()
+            };
+            let cleared = zero_tag
+                .subjects(&salted, ListId::PrivateBlock, ListChange::Clear)
                 .unwrap();
-            assert_eq!(added.len(), 1);
-            assert_eq!(added[0].member, expected_owner);
-            assert_eq!(added[0].unregistered, None);
-
-            let cleared = by_key
-                .subjects(
-                    SubjectLookup {
-                        list_id,
-                        ring,
-                        read_salt: &both_salts,
-                    },
-                    ListChange::Clear,
-                )
-                .unwrap();
-            assert_eq!(cleared.len(), 2);
+            assert_eq!(cleared.len(), 1);
             assert_eq!(cleared[0].member, expected_owner);
             assert_eq!(cleared[0].unregistered, None);
-            assert_eq!(cleared[1].member, expected_ring);
-            assert_eq!(cleared[1].unregistered, Some(owner));
         }
+        let no_owner_salt = World {
+            list_salt: None,
+            ..committed()
+        };
+        assert!(no_owner_salt
+            .subjects(
+                &SaltedOwner::Key(owner),
+                ListId::PrivateBlock,
+                ListChange::Clear
+            )
+            .is_err());
     }
 
     #[test]
     fn show_detects_an_enrolled_owner_listed_only_under_ring_salted() {
-        let ring = Address::new_from_array([0x11; 32]);
-        let wallet = spr_keypair::ShieldedKeypair::from_keypair(
-            spr_keypair::SigningKey::from_ed25519_bytes(&[10; 32]),
-        )
-        .unwrap();
-        let address = RingAddress::enrolled(&wallet, ring).unwrap();
-        let owner_bytes = address.recipient.signing_pubkey.as_ed25519().unwrap();
-        let owner = Address::new_from_array(owner_bytes);
-        let owner_tag = Member::owner_tag(&owner_bytes).unwrap();
-        let ring_salt = [0x2b; 32];
+        let address = enrolled(10);
+        let owner = owner_of(&address);
+        let owner_tag = Member::owner_tag(owner.as_array()).unwrap();
         let expected_owner = Member::salted(&owner_tag, &address.list_salt).unwrap();
-        let expected_ring = Member::ring_salted(&owner_tag, &ring_salt).unwrap();
-        let both_salts = |_: &Address| -> Result<OwnerListSalts> {
-            Ok(OwnerListSalts {
-                list_salt: Some(address.list_salt),
-                ring_salt: Some(ring_salt),
-            })
+        let expected_ring = Member::ring_salted(&owner_tag, &RING_SALT).unwrap();
+        let world = World {
+            list_tag: Some(list_tag(&address.list_salt)),
+            ring_list_tag: list_tag(&RING_SALT),
+            list_salt: Some(address.list_salt),
+            ring_salt: Some(RING_SALT),
         };
 
-        for salted in [
-            SaltedOwner::Key(owner),
-            SaltedOwner::Address(Box::new(address.clone())),
-        ] {
-            let args = MemberArgs {
-                owners: Vec::new(),
-                assets: Vec::new(),
-                salted_owners: vec![salted],
-            };
-            let subjects = args
-                .show_subjects(SubjectLookup {
-                    list_id: ListId::PrivateBlock,
-                    ring,
-                    read_salt: &both_salts,
-                })
-                .unwrap();
+        for salted in both_forms(&address) {
+            let subjects = world.show(&salted).unwrap();
             assert_eq!(
                 subjects,
                 vec![ShowSubject {

@@ -11,6 +11,7 @@ import {
 } from "../../../src/operations/management/reader-access.js";
 import { WalletRecordUpdate } from "../../../src/operations/management/record-updates.js";
 import { listWrite } from "../../../src/operations/management/record-writes.js";
+import { listTagOf } from "../../../src/crypto/keys/list-salt.js";
 import { ListId, memberOfTag, recordBit } from "../../../src/protocol/membership/policy.js";
 import {
   committedRingListKey,
@@ -145,43 +146,61 @@ describe("owner private-list revocation", () => {
   const owner = filled(11);
   const listSalt = new Uint8Array(32).fill(0x12) as Bytes32;
   const ringSalt = new Uint8Array(32).fill(0x2b) as Bytes32;
-  const zeroSalt = new Uint8Array(32) as Bytes32;
-
-  it("derives every key the circuit reads and refuses missing or zero salts", () => {
+  const otherSalt = new Uint8Array(32).fill(0x1d) as Bytes32;
+  const zero = new Uint8Array(32) as Bytes32;
+  const chain = () => {
     const ownerPkHash = memberOfTag(addressBytes(owner, "owner"));
-    const expectedOwner = privateListKey(ownerPkHash, listSalt);
-    const expectedRing = ringListKey(ownerPkHash, ringSalt);
+    const listTag = listTagOf(listSalt);
+    const ringListTag = listTagOf(ringSalt);
+    return { ownerPkHash, listTag, ringListTag, enrolled: { ownerPkHash, listTag, ringListTag } };
+  };
+  const refusal = (reason: string) =>
+    expect.objectContaining({ code: "RING_ENTRY_INVALID", details: { reason } });
 
-    expect(privateRevocationKeys(ownerPkHash, { listSalt, ringSalt })).toEqual([
-      { member: expectedOwner, kind: "owner" },
-      { member: expectedRing, kind: "ring" },
+  it("writes both keys on a ring that commits a ring list tag or refuses", () => {
+    const { ownerPkHash, enrolled } = chain();
+    expect(privateRevocationKeys({ listSalt, ringSalt }, enrolled)).toEqual([
+      { member: privateListKey(ownerPkHash, listSalt), kind: "owner" },
+      { member: ringListKey(ownerPkHash, ringSalt), kind: "ring" },
     ]);
-    expect(privateRevocationKeys(ownerPkHash, { listSalt })).toEqual([
-      { member: expectedOwner, kind: "owner" },
-    ]);
-    expect(privateRevocationKeys(ownerPkHash, { ringSalt })).toEqual([
-      { member: expectedRing, kind: "ring" },
-    ]);
-
-    expect(() => privateRevocationKeys(ownerPkHash, {})).toThrowError(
-      expect.objectContaining({
-        code: "RING_ENTRY_INVALID",
-        details: { reason: "missingListSalt" },
-      }),
+    // A Ring RPC at an older revision, a faulty one or a hostile one yields no one-key clear.
+    expect(() => privateRevocationKeys({ listSalt }, enrolled)).toThrowError(
+      refusal("missingRingSalt"),
     );
-    for (const salts of [
-      { listSalt: zeroSalt },
-      { ringSalt: zeroSalt },
-      { listSalt, ringSalt: zeroSalt },
-      { listSalt: zeroSalt, ringSalt },
-    ]) {
-      expect(() => privateRevocationKeys(ownerPkHash, salts)).toThrowError(
-        expect.objectContaining({
-          code: "RING_ENTRY_INVALID",
-          details: { reason: "zeroSalt" },
-        }),
+    for (const wrong of [otherSalt, listSalt, zero])
+      expect(() => privateRevocationKeys({ listSalt, ringSalt: wrong }, enrolled)).toThrowError(
+        refusal("ringSaltUncommitted"),
       );
-    }
+    expect(() => privateRevocationKeys({ ringSalt }, enrolled)).toThrowError(
+      refusal("missingListSalt"),
+    );
+    for (const wrong of [otherSalt, ringSalt, zero])
+      expect(() => privateRevocationKeys({ listSalt: wrong, ringSalt }, enrolled)).toThrowError(
+        refusal("listSaltMismatch"),
+      );
+  });
+
+  it("writes the owner key alone under a zero tag and the ring key alone with no row", () => {
+    const { ownerPkHash, listTag, ringListTag } = chain();
+    const zeroTag = { ownerPkHash, listTag, ringListTag: zero };
+    for (const salts of [{ listSalt }, { listSalt, ringSalt }])
+      expect(privateRevocationKeys(salts, zeroTag)).toEqual([
+        { member: privateListKey(ownerPkHash, listSalt), kind: "owner" },
+      ]);
+    expect(privateRevocationKeys({ listSalt, ringSalt }, { ownerPkHash, ringListTag })).toEqual([
+      { member: ringListKey(ownerPkHash, ringSalt), kind: "ring" },
+    ]);
+    // A service naming the ring salt as the owner's salt keys no entry a proof reads.
+    expect(() =>
+      privateRevocationKeys({ listSalt: ringSalt }, { ownerPkHash, ringListTag }),
+    ).toThrowError(refusal("missingRingSalt"));
+    expect(() =>
+      privateRevocationKeys({ ringSalt }, { ownerPkHash, ringListTag: zero }),
+    ).toThrowError(refusal("ringSaltUncommitted"));
+  });
+
+  it("refuses a key, a salt or a tag of another length", () => {
+    const { ownerPkHash, enrolled } = chain();
     for (const length of [0, 31, 33]) {
       const bad = new Uint8Array(length) as Bytes32;
       const invalidLength = expect.objectContaining({ code: "INTERFACE_INVALID_LENGTH" });
@@ -199,11 +218,18 @@ describe("owner private-list revocation", () => {
       expect(() => committedRingListKey({ ownerPkHash, ringSalt, ringListTag: bad })).toThrowError(
         invalidLength,
       );
-      expect(() => privateRevocationKeys(bad, { listSalt })).toThrowError(invalidLength);
-      expect(() => privateRevocationKeys(ownerPkHash, { listSalt: bad })).toThrowError(
+      for (const tags of [
+        { ...enrolled, ownerPkHash: bad },
+        { ...enrolled, listTag: bad },
+        { ...enrolled, ringListTag: bad },
+      ])
+        expect(() => privateRevocationKeys({ listSalt, ringSalt }, tags)).toThrowError(
+          invalidLength,
+        );
+      expect(() => privateRevocationKeys({ listSalt: bad, ringSalt }, enrolled)).toThrowError(
         invalidLength,
       );
-      expect(() => privateRevocationKeys(ownerPkHash, { ringSalt: bad })).toThrowError(
+      expect(() => privateRevocationKeys({ listSalt, ringSalt: bad }, enrolled)).toThrowError(
         invalidLength,
       );
     }

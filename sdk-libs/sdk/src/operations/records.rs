@@ -27,7 +27,7 @@ use zolana_ring_member_registry::{
     Canopy, OpeningCheck, PoolSubject, SharedPath, SharedProof, TrackingOpening, TrackingPool,
     TrackingRecord,
 };
-use zolana_ring_policy::{ListWrite, Member, MemberError, MintPolicy, Writer};
+use zolana_ring_policy::{ListWrite, Member, MintPolicy, Writer};
 
 use crate::{submission::BoundRoot, CustomRing, RingError, REDACTED};
 
@@ -269,56 +269,41 @@ impl SaltedOwnerCheck<'_> {
     }
 }
 
-/// No proof reads an entry whose salt opens neither the owner's tag nor, with no row, the ring's tag.
+/// The on-chain tags an owner's private list keys open against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnerListTags {
+    pub owner: Address,
+    /// `None` while the owner holds no tracking row.
+    pub list_tag: Option<[u8; 32]>,
+    /// Zero while the policy commits no ring salt.
+    pub ring_list_tag: [u8; 32],
+}
+
 #[must_use]
-#[derive(Clone, Copy)]
-pub struct OwnerSaltCheck<'a> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnerListTagsRead {
     pub ring: CustomRing,
-    pub owner: &'a Address,
-    pub list_salt: &'a [u8; 32],
+    pub owner: Address,
 }
 
-impl fmt::Debug for OwnerSaltCheck<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self {
-            ring,
-            owner,
-            list_salt: _,
-        } = self;
-        f.debug_struct("OwnerSaltCheck")
-            .field("ring", ring)
-            .field("owner", owner)
-            .field("list_salt", &REDACTED)
-            .finish()
-    }
-}
-
-impl OwnerSaltCheck<'_> {
+impl OwnerListTagsRead {
+    /// The row is read and verified under the tracking root the policy pins.
     pub async fn run(
         self,
         rpc: &(impl AsyncRpc + AsyncRingIndexer + ?Sized),
-    ) -> Result<(), RingError> {
+    ) -> Result<OwnerListTags, RingError> {
         let member = *Member::owner_tag(self.owner.as_array())?.as_bytes();
         let policy = self.ring.require_policy(rpc).await?;
         let root = BoundRoot::tracking(&policy, rpc).await?;
-        let opening = (TrackingMemberRead { root, member }).read(rpc).await?;
-        self.opens(&opening, &policy.ring_list_tag)
-    }
-
-    /// An enrolled owner's salt opens its row's tag, any other owner takes the committed ring salt.
-    pub(crate) fn opens(
-        &self,
-        opening: &TrackingOpening,
-        ring_list_tag: &[u8; 32],
-    ) -> Result<(), RingError> {
-        let member = *Member::owner_tag(self.owner.as_array())?.as_bytes();
-        let tag = domain::list_tag(self.list_salt)?;
-        match opening {
-            TrackingOpening::Present { record, .. } if tag == record.list_tag => Ok(()),
-            TrackingOpening::Present { .. } => Err(RingError::ListSaltMismatch { member }),
-            TrackingOpening::Absent { .. } if tag == *ring_list_tag => Ok(()),
-            TrackingOpening::Absent { .. } => Err(RingError::ListSaltUnknown { member }),
-        }
+        let list_tag = match (TrackingMemberRead { root, member }).read(rpc).await? {
+            TrackingOpening::Present { record, .. } => Some(record.list_tag),
+            TrackingOpening::Absent { .. } => None,
+        };
+        Ok(OwnerListTags {
+            owner: self.owner,
+            list_tag,
+            ring_list_tag: policy.ring_list_tag,
+        })
     }
 }
 
@@ -408,6 +393,7 @@ impl PrivateListMember {
     }
 }
 
+/// Salts as a service or an address supplied them, a key exists only under a salt opening its on-chain tag.
 #[derive(Clone, Default, PartialEq, Eq, Zeroize, ZeroizeOnDrop)]
 pub struct OwnerListSalts {
     pub list_salt: Option<[u8; 32]>,
@@ -431,69 +417,65 @@ impl OwnerListSalts {
         }
     }
 
-    pub const fn is_empty(&self) -> bool {
-        self.list_salt.is_none() && self.ring_salt.is_none()
-    }
-
-    pub const fn primary_salt(&self) -> Option<&[u8; 32]> {
-        match (&self.list_salt, &self.ring_salt) {
-            (Some(salt), _) | (None, Some(salt)) => Some(salt),
-            (None, None) => None,
+    /// An enrolled owner is listed under its own salt, any other owner under the ring salt.
+    pub fn write_member(&self, tags: &OwnerListTags) -> Result<PrivateListMember, RingError> {
+        match tags.list_tag {
+            Some(list_tag) => self.owner_salted(tags.owner, &list_tag),
+            None => self.ring_salted(tags),
         }
     }
 
-    pub fn private_write_member(&self, owner: Address) -> Result<PrivateListMember, RingError> {
-        self.check_nonzero_salts()?;
-        let owner_tag = Member::owner_tag(owner.as_array())?;
-        match (&self.list_salt, &self.ring_salt) {
-            (Some(list_salt), _) => Ok(PrivateListMember {
-                member: Member::salted(&owner_tag, list_salt)?,
-                kind: PrivateKeyKind::OwnerSalted,
-                owner,
-            }),
-            (None, Some(ring_salt)) => Ok(PrivateListMember {
-                member: Member::ring_salted(&owner_tag, ring_salt)?,
-                kind: PrivateKeyKind::RingSalted,
-                owner,
-            }),
-            (None, None) => Err(RingError::ListSaltUnknown {
-                member: *owner_tag.as_bytes(),
-            }),
-        }
-    }
-
-    /// Circuit reads the union of the owner salted key and the ring salted key.
-    pub fn revocation_members(&self, owner: Address) -> Result<Vec<PrivateListMember>, RingError> {
-        self.check_nonzero_salts()?;
-        let owner_tag = Member::owner_tag(owner.as_array())?;
-        let mut members = Vec::with_capacity(2);
-        if let Some(list_salt) = &self.list_salt {
-            members.push(PrivateListMember {
-                member: Member::salted(&owner_tag, list_salt)?,
-                kind: PrivateKeyKind::OwnerSalted,
-                owner,
-            });
-        }
-        if let Some(ring_salt) = &self.ring_salt {
-            members.push(PrivateListMember {
-                member: Member::ring_salted(&owner_tag, ring_salt)?,
-                kind: PrivateKeyKind::RingSalted,
-                owner,
-            });
-        }
-        if members.is_empty() {
-            return Err(RingError::ListSaltUnknown {
-                member: *owner_tag.as_bytes(),
-            });
+    /// Every key `resolveOwner` in `prover/circuits/policy/subjects.go` reads, a clear of fewer leaves the entry in force.
+    pub fn revocation_members(
+        &self,
+        tags: &OwnerListTags,
+    ) -> Result<Vec<PrivateListMember>, RingError> {
+        let Some(list_tag) = tags.list_tag else {
+            return Ok(vec![self.ring_salted(tags)?]);
+        };
+        let mut members = vec![self.owner_salted(tags.owner, &list_tag)?];
+        if tags.ring_list_tag != [0; 32] {
+            members.push(self.ring_salted(tags)?);
         }
         Ok(members)
     }
 
-    fn check_nonzero_salts(&self) -> Result<(), RingError> {
-        if self.list_salt.as_ref() == Some(&[0; 32]) || self.ring_salt.as_ref() == Some(&[0; 32]) {
-            return Err(MemberError::ZeroSalt.into());
+    fn owner_salted(
+        &self,
+        owner: Address,
+        list_tag: &[u8; 32],
+    ) -> Result<PrivateListMember, RingError> {
+        let owner_tag = Member::owner_tag(owner.as_array())?;
+        let member = *owner_tag.as_bytes();
+        let list_salt = self
+            .list_salt
+            .as_ref()
+            .ok_or(RingError::ListSaltUnknown { member })?;
+        if domain::list_tag(list_salt)? != *list_tag {
+            return Err(RingError::ListSaltMismatch { member });
         }
-        Ok(())
+        Ok(PrivateListMember {
+            member: Member::salted(&owner_tag, list_salt)?,
+            kind: PrivateKeyKind::OwnerSalted,
+            owner,
+        })
+    }
+
+    fn ring_salted(&self, tags: &OwnerListTags) -> Result<PrivateListMember, RingError> {
+        let ring_salt = self
+            .ring_salt
+            .as_ref()
+            .filter(|_| tags.ring_list_tag != [0; 32])
+            .ok_or(RingError::RingSaltUnknown)?;
+        if domain::list_tag(ring_salt)? != tags.ring_list_tag {
+            return Err(RingError::RingSaltUnknown);
+        }
+        let owner_tag = Member::owner_tag(tags.owner.as_array())?;
+        Ok(PrivateListMember {
+            member: Member::ring_salted(&owner_tag, ring_salt)?,
+            kind: PrivateKeyKind::RingSalted,
+            owner: tags.owner,
+        })
     }
 }
 

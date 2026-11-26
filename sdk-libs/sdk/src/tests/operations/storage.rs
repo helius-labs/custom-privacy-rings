@@ -247,29 +247,4 @@ mod owner_request {
             ));
         }
     }
-
-    #[test]
-    fn the_writer_check_takes_the_ring_salt_only_under_the_committed_tag_and_no_row() {
-        let tag = domain::list_tag(&RING_SALT).unwrap();
-        let check = |list_salt: &[u8; 32], opening: &TrackingOpening, committed: &[u8; 32]| {
-            crate::OwnerSaltCheck {
-                ring: crate::tests::support::ring(),
-                owner: &OWNER,
-                list_salt,
-            }
-            .opens(opening, committed)
-        };
-        check(&RING_SALT, &absent(), &tag).unwrap();
-        check(&OWN_SALT, &present(), &tag).unwrap();
-        for committed in [[0; 32], domain::list_tag(&[9; 32]).unwrap()] {
-            assert!(matches!(
-                check(&RING_SALT, &absent(), &committed),
-                Err(RingError::ListSaltUnknown { .. })
-            ));
-        }
-        assert!(matches!(
-            check(&RING_SALT, &present(), &tag),
-            Err(RingError::ListSaltMismatch { .. })
-        ));
-    }
 }
