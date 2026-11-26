@@ -75,6 +75,20 @@ pub enum EnrollmentRefusal {
     InFlight = -32187,
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
+impl EnrollmentRefusal {
+    pub const ALL: [Self; 8] = [
+        Self::NotServed,
+        Self::RingMissing,
+        Self::InvalidWrite,
+        Self::RegisterKeyProof,
+        Self::Full,
+        Self::Budget,
+        Self::RingsFull,
+        Self::InFlight,
+    ];
+}
+
 /// Applies the held writes of each served ring, the payer is the ring's `EnrollmentWriter`.
 pub struct EnrollmentApplier {
     vault_programs: HashSet<Address>,

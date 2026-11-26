@@ -16,7 +16,10 @@ members = [
     "sdk-libs/operator-custody",
     "sdk-libs/secret-file",
     "sdk-libs/transaction",
+    "services/ring-audit",
+    "services/ring-cosigner",
     "services/ring-indexer",
+    "services/ring-relay",
     "services/ring-rpc",
     "services/ring-service-core",
     "services/ring-writer",
@@ -47,6 +50,9 @@ zolana-ring-client = { path = "sdk-libs/client", version = "0.1.0" }
 zolana-ring-transaction = { path = "sdk-libs/transaction", version = "0.1.0" }
 custom-ring-cli = { path = "cli", version = "0.1.0" }
 zolana-ring-rpc = { path = "services/ring-rpc", version = "0.1.0" }
+ring-audit = { path = "services/ring-audit", version = "0.1.0" }
+ring-cosigner = { path = "services/ring-cosigner", version = "0.1.0" }
+ring-relay = { path = "services/ring-relay", version = "0.1.0" }
 ring-service-core = { path = "services/ring-service-core", version = "0.1.0" }
 ring-writer = { path = "services/ring-writer", version = "0.1.0" }
 

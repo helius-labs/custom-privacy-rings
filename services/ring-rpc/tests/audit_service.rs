@@ -79,9 +79,9 @@ use zolana_ring_indexer::rpc::{
 use zolana_ring_rpc::{
     rpc_module, ApproveClass, AuditRead, AuditService, CarriedFault, Clock, CoSignerApproval,
     GrantRowsSecret, Hub, MergeAuditRequest, OriginPolicy, Origins, Page, ReadCheck,
-    ReaderGrantStore, RecordsTip, RingConfiguration, RingFrame, RingHistoryPage, RingRpcError,
-    RootSecret, ScopeUnreadable, ServiceError, ServiceIdentity, Store, TransactionPage,
-    TransactionSource, Unauthorized, WriterError, AUTH_SKEW,
+    ReaderGrantStore, RecordsTip, RingAuditError, RingConfiguration, RingFrame, RingHistoryPage,
+    RingRpcError, RootSecret, ScopeUnreadable, ServiceError, ServiceIdentity, Store,
+    TransactionPage, TransactionSource, Unauthorized, WriterError, AUTH_SKEW,
 };
 use zolana_ring_transaction::RingAssets;
 
@@ -1258,7 +1258,7 @@ async fn read_at(
 async fn read_at_result(
     service: &AuditService<StaticSource>,
     cursor: Option<u8>,
-) -> Result<GetDecryptedTransactionsResponse, RingRpcError> {
+) -> Result<GetDecryptedTransactionsResponse, RingAuditError> {
     let page = Page::new(cursor.map(audit_cursor), None).expect("page");
     let request = match cursor {
         Some(byte) => GetDecryptedTransactionsRequest::read(target(RING))
@@ -1433,7 +1433,7 @@ fn request_builder_rejects_noncanonical_pages() {
     ));
     assert!(matches!(
         Page::new(Some(Vec::new().into()), None),
-        Err(RingRpcError::InvalidPage)
+        Err(RingAuditError::InvalidPage)
     ));
 }
 
@@ -1453,7 +1453,7 @@ fn signed_by(authority: &Keypair) -> CreateAuditorKeyRequest {
 async fn authorize(
     hub: &Hub<StaticSource>,
     request: &CreateAuditorKeyRequest,
-) -> Result<(), RingRpcError> {
+) -> Result<(), RingAuditError> {
     hub.service(Some(RING))
         .expect("service")
         .auditor_key_statement(&request.auth)
@@ -1476,6 +1476,6 @@ fn released(created: &CreateAuditorKeyResponse, request: &CreateAuditorKeyReques
         .verify(created.service_pubkey.0.as_ref(), &statement.message())
 }
 
-fn refused(result: Result<(), RingRpcError>, expected: Unauthorized) -> bool {
-    matches!(result, Err(RingRpcError::Service(ServiceError::Unauthorized(reason))) if reason == expected)
+fn refused(result: Result<(), RingAuditError>, expected: Unauthorized) -> bool {
+    matches!(result, Err(RingAuditError::Service(ServiceError::Unauthorized(reason))) if reason == expected)
 }

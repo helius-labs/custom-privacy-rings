@@ -21,7 +21,7 @@ use zolana_ring_client::{
 use zolana_ring_policy::{AssetLimits, MintPolicy};
 use zolana_ring_rpc::{
     ChainOutcome, CoSignError, DelegateSeal, ProvenRelay, RelayError, RelayParties, RelayParts,
-    RelayPayload, RelayProofRequest, RelayProver,
+    RelayPayload, RelayProofRequest, RelayProver, RingRelayError,
 };
 
 use super::transfer::{Frame as TransferFrame, Publish, Rail};
@@ -128,7 +128,7 @@ impl FramedProver {
 
 #[async_trait::async_trait]
 impl RelayProver for FramedProver {
-    async fn prove(&self, request: RelayProofRequest<'_>) -> Result<ProvenRelay, RingRpcError> {
+    async fn prove(&self, request: RelayProofRequest<'_>) -> Result<ProvenRelay, RingRelayError> {
         let (ring, fee_payer) = (request.ring, request.parties.fee_payer);
         let framed = match &request.payload {
             RelayPayload::Transfer(inputs) => Some(self.frame(inputs)),
@@ -146,7 +146,7 @@ impl RelayProver for FramedProver {
         &self,
         seal: DelegateSeal<'_>,
         parties: RelayParties,
-    ) -> Result<RelayProofInputs, RingRpcError> {
+    ) -> Result<RelayProofInputs, RingRelayError> {
         self.inner.seal_delegate(seal, parties).await
     }
 }
@@ -1509,7 +1509,7 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
         .expect("signed edit");
     assert!(matches!(
         relay.hub.edit_co_sign_list(&foreign_edit).await,
-        Err(RingRpcError::RingNotServed)
+        Err(RingRpcError::Audit(RingAuditError::RingNotServed))
     ));
 
     let fixture = Fixture::new();

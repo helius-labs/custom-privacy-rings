@@ -32,7 +32,7 @@ async fn only_granted_readers_with_the_configured_auditor_key_can_read() {
                     wallet: None,
                 })
                 .await,
-            Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Err(RingAuditError::Service(ServiceError::Unauthorized(
                 Unauthorized::NotGranted
             )))
         ));
@@ -64,7 +64,7 @@ async fn only_granted_readers_with_the_configured_auditor_key_can_read() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
             Unauthorized::AuditorKeyMismatch
         )))
     ));
@@ -312,7 +312,7 @@ async fn a_ring_registered_with_another_auditor_stays_closed() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
             Unauthorized::AuditorKeyMismatch
         )))
     ));
@@ -361,7 +361,10 @@ async fn derived_keys_are_ring_and_cluster_specific() {
             .auditor_pubkey(),
         key_a
     );
-    assert!(matches!(hub.service(None), Err(RingRpcError::RingRequired)));
+    assert!(matches!(
+        hub.service(None),
+        Err(RingAuditError::RingRequired)
+    ));
 
     let module = rpc_module(Arc::new(hub)).expect("module");
     let health: HealthResponse = module.call(HEALTH, [(); 0]).await.expect("health");
@@ -421,7 +424,7 @@ async fn a_read_signed_for_another_method_cluster_or_service_is_refused() {
                     wallet: None,
                 })
                 .await,
-            Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Err(RingAuditError::Service(ServiceError::Unauthorized(
                 Unauthorized::BadSignature
             )))
         ));

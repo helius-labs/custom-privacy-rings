@@ -1,96 +1,29 @@
-use jsonrpsee::types::{error::ErrorCode, ErrorObjectOwned};
-use log::error;
-use spr_transaction::TransactionError;
-use thiserror::Error;
-use zolana_ring_client::rpc::{
-    AUDITED_UTXOS_LIMIT, WALLET_SNAPSHOT_CAPACITY, WALLET_SNAPSHOT_EXPIRED,
-};
-use zolana_ring_policy::MemberError;
+use jsonrpsee::types::ErrorObjectOwned;
+pub use thiserror::Error;
 
+pub use ring_audit::error::{GrantRefusal, RingAuditError};
+pub use ring_cosigner::RingCosignerError;
+pub use ring_relay::RingRelayError;
 pub use ring_service_core::ServiceError;
-use ring_service_core::{
-    error::CarriedFault, redact::redacted, service_faults, upstream::ScopeUnreadable,
-};
+use ring_service_core::{error::CarriedFault, service_faults};
 use ring_writer::{
     enrollment_applier::EnrollmentRefusal, record_update::RecordUpdateRefusal, WriterError,
 };
 
-use crate::{
-    authority_transfer::AuthorityTransferError, cosign::CoSignError, relay::RelayError,
-    tracking::TrackingRefusal,
-};
-
+/// One variant per area, a fault keeps the variant of the area that defines it.
 #[derive(Debug, Error)]
 pub enum RingRpcError {
     #[error(transparent)]
     Service(#[from] ServiceError),
     #[error(transparent)]
     Writer(WriterError),
-    #[error("ring_program_id is required when keys are derived per ring")]
-    RingRequired,
-    #[error("ring is not served by the local auditor key")]
-    RingNotServed,
-    #[error("audit page is invalid")]
-    InvalidPage,
-    #[error("a UTXO read names 1 to {AUDITED_UTXOS_LIMIT} UTXO hashes")]
-    InvalidUtxoRequest,
-    #[error("the cursor is no position of the read")]
-    InvalidCursor,
-    #[error("wallet snapshot expired, restart without a cursor")]
-    WalletSnapshotExpired,
-    #[error("wallet snapshot capacity is exhausted")]
-    WalletSnapshotCapacity,
-    #[error("asset registry is unusable because {0}")]
-    Assets(#[from] TransactionError),
-    #[error("relay prover is busy")]
-    RelayProverBusy,
     #[error(transparent)]
-    Grant(#[from] GrantRefusal),
-    #[error("grant identity failed because {0}")]
-    Member(#[from] MemberError),
-    #[error("stored grant row does not open under the grant rows key")]
-    InvalidGrantRow,
-    #[error("database reader grants need a service store")]
-    GrantStoreMissing,
-    #[error("database reader grants need a grant rows key")]
-    GrantRowsKeyMissing,
-    #[error("co-signing needs a service store")]
-    CoSignerStoreMissing,
+    Audit(RingAuditError),
     #[error(transparent)]
-    Relay(#[from] RelayError),
+    Cosigner(RingCosignerError),
     #[error(transparent)]
-    AuthorityTransfer(#[from] AuthorityTransferError),
-    #[error(transparent)]
-    CoSign(#[from] CoSignError),
-    #[error("merge settings need a service store")]
-    MergeSettingsUnavailable,
-    #[error("stored merge settings are signed at the same time or later")]
-    StaleMergeSettings,
-    #[error(transparent)]
-    Tracking(#[from] TrackingRefusal),
-    #[error("merge build failed because {0}")]
-    MergeBuild(Box<zolana_ring_client::RingError>),
+    Relay(RingRelayError),
 }
-
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-#[repr(i32)]
-pub enum GrantRefusal {
-    #[error("ring has no initialized records registry")]
-    RecordsUnavailable = -32130,
-    #[error("service keeps reader grants in the storage tree")]
-    GrantsInTree = -32131,
-    #[error("read method and wallet scope disagree")]
-    WalletScope = -32270,
-}
-
-impl GrantRefusal {
-    pub const fn code(self) -> i32 {
-        self as i32
-    }
-}
-
-const MERGE_SETTINGS_UNAVAILABLE: i32 = -32170;
-const STALE_MERGE_SETTINGS: i32 = -32171;
 
 service_faults!(RingRpcError);
 
@@ -100,6 +33,37 @@ impl From<WriterError> for RingRpcError {
         match error {
             WriterError::Service(fault) => Self::Service(fault),
             area => Self::Writer(area),
+        }
+    }
+}
+
+impl From<RingAuditError> for RingRpcError {
+    fn from(error: RingAuditError) -> Self {
+        match error {
+            RingAuditError::Service(fault) => Self::Service(fault),
+            area => Self::Audit(area),
+        }
+    }
+}
+
+impl From<RingCosignerError> for RingRpcError {
+    fn from(error: RingCosignerError) -> Self {
+        match error {
+            RingCosignerError::Service(fault) => Self::Service(fault),
+            RingCosignerError::Audit(fault) => Self::Audit(fault),
+            area => Self::Cosigner(area),
+        }
+    }
+}
+
+impl From<RingRelayError> for RingRpcError {
+    fn from(error: RingRelayError) -> Self {
+        match error {
+            RingRelayError::Service(fault) => Self::Service(fault),
+            RingRelayError::Writer(fault) => Self::Writer(fault),
+            RingRelayError::Audit(fault) => Self::Audit(fault),
+            RingRelayError::Cosigner(fault) => Self::Cosigner(fault),
+            area => Self::Relay(area),
         }
     }
 }
@@ -116,93 +80,17 @@ impl From<EnrollmentRefusal> for RingRpcError {
     }
 }
 
-impl From<ScopeUnreadable> for RingRpcError {
-    fn from(unreadable: ScopeUnreadable) -> Self {
-        Self::CoSign(unreadable.into())
-    }
-}
-
 /// A client sees its own request errors, and only a generic message for a server fault.
 impl From<&RingRpcError> for ErrorObjectOwned {
     fn from(failure: &RingRpcError) -> Self {
         use RingRpcError::*;
-        let (code, message) = match failure {
-            Service(fault) => return fault.into(),
-            Writer(fault) => return fault.into(),
-            Relay(relay) => return relay.into(),
-            RingRequired | RingNotServed | InvalidPage | InvalidUtxoRequest | InvalidCursor => {
-                let message = failure.to_string();
-                return ErrorObjectOwned::owned(
-                    ErrorCode::InvalidRequest.code(),
-                    message,
-                    None::<()>,
-                );
-            }
-            WalletSnapshotExpired => {
-                return ErrorObjectOwned::owned(
-                    WALLET_SNAPSHOT_EXPIRED,
-                    failure.to_string(),
-                    None::<()>,
-                );
-            }
-            WalletSnapshotCapacity => {
-                return ErrorObjectOwned::owned(
-                    WALLET_SNAPSHOT_CAPACITY,
-                    failure.to_string(),
-                    None::<()>,
-                );
-            }
-            MergeSettingsUnavailable => {
-                let message = failure.to_string();
-                return ErrorObjectOwned::owned(MERGE_SETTINGS_UNAVAILABLE, message, None::<()>);
-            }
-            StaleMergeSettings => {
-                let message = failure.to_string();
-                return ErrorObjectOwned::owned(STALE_MERGE_SETTINGS, message, None::<()>);
-            }
-            Grant(refusal) => {
-                return ErrorObjectOwned::owned(refusal.code(), refusal.to_string(), None::<()>);
-            }
-            RelayProverBusy => {
-                let message = failure.to_string();
-                return ErrorObjectOwned::owned(
-                    ErrorCode::ServerIsBusy.code(),
-                    message,
-                    None::<()>,
-                );
-            }
-            Assets(inner) => {
-                error!("asset registry is unusable {inner}");
-                (ErrorCode::InternalError, "upstream request failed")
-            }
-            Member(inner) => {
-                error!("grant identity failed {inner}");
-                (ErrorCode::InternalError, "audit service is unavailable")
-            }
-            InvalidGrantRow | GrantStoreMissing | GrantRowsKeyMissing | CoSignerStoreMissing => {
-                error!("{failure}");
-                (ErrorCode::InternalError, "audit service is unavailable")
-            }
-            CoSign(inner) => return (*inner).into(),
-            AuthorityTransfer(refusal) => return (*refusal).into(),
-            Tracking(TrackingRefusal::Incomplete) => {
-                let message = failure.to_string();
-                return ErrorObjectOwned::owned(
-                    ErrorCode::ServerIsBusy.code(),
-                    message,
-                    None::<()>,
-                );
-            }
-            Tracking(inner) => {
-                error!("tracking discovery refused {inner}");
-                (ErrorCode::InternalError, "tracking discovery failed")
-            }
-            MergeBuild(_) => {
-                error!("managed merge failed {}", redacted(failure));
-                (ErrorCode::InternalError, "managed merge failed")
-            }
-        };
-        ErrorObjectOwned::owned(code.code(), message, None::<()>)
+        match failure {
+            Service(fault) => fault.into(),
+            Writer(fault) => fault.into(),
+            Audit(fault) => fault.into(),
+            Cosigner(fault) => fault.into(),
+            Relay(fault) => fault.into(),
+        }
     }
 }
 
@@ -226,21 +114,27 @@ impl From<RingRpcError> for Box<dyn CarriedFault> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
+    use crate::client_rate::RateLimit;
 
     #[test]
-    fn grant_refusal_codes_are_stable() {
-        use GrantRefusal::*;
-        for refusal in [RecordsUnavailable, GrantsInTree, WalletScope] {
-            let code = match refusal {
-                RecordsUnavailable => -32130,
-                GrantsInTree => -32131,
-                WalletScope => -32270,
-            };
-            assert_eq!(
-                ErrorObjectOwned::from(RingRpcError::Grant(refusal)).code(),
-                code
-            );
-        }
+    fn every_rpc_error_code_is_unique_across_the_crates() {
+        let codes = [
+            ServiceError::codes(),
+            WriterError::codes(),
+            RingAuditError::codes(),
+            RingCosignerError::codes(),
+            RingRelayError::codes(),
+            RateLimit::codes(),
+        ]
+        .concat();
+        let mut seen = HashSet::new();
+        let repeated: Vec<i32> = codes
+            .into_iter()
+            .filter(|code| !seen.insert(*code))
+            .collect();
+        assert!(repeated.is_empty(), "{repeated:?}");
     }
 }

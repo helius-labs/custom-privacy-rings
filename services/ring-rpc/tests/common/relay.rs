@@ -33,7 +33,7 @@ use zolana_ring_client::rpc::{
 };
 use zolana_ring_rpc::{
     ChainOutcome, ChainSubmit, DelegateSeal, LatestBlockhash, ProvenRelay, RelayParties,
-    RelayPayload, RelayProofRequest, RelayProver, RingRpcError, ServiceError,
+    RelayPayload, RelayProofRequest, RelayProver, RingRelayError, ServiceError,
 };
 use zolana_ring_transaction::AnonymousPlan;
 
@@ -60,7 +60,7 @@ pub struct RecordingProver {
 
 #[async_trait]
 impl RelayProver for RecordingProver {
-    async fn prove(&self, request: RelayProofRequest<'_>) -> Result<ProvenRelay, RingRpcError> {
+    async fn prove(&self, request: RelayProofRequest<'_>) -> Result<ProvenRelay, RingRelayError> {
         self.requests
             .lock()
             .expect("requests")
@@ -113,7 +113,7 @@ impl RelayProver for RecordingProver {
         &self,
         _seal: DelegateSeal<'_>,
         _parties: RelayParties,
-    ) -> Result<RelayProofInputs, RingRpcError> {
+    ) -> Result<RelayProofInputs, RingRelayError> {
         unreachable!("the wallet seals its own transfer")
     }
 }

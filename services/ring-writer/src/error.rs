@@ -30,6 +30,19 @@ impl From<Box<dyn CarriedFault>> for WriterError {
     }
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
+impl WriterError {
+    pub fn codes() -> Vec<i32> {
+        let updates = RecordUpdateRefusal::ALL
+            .into_iter()
+            .map(RecordUpdateRefusal::code);
+        let enrollments = EnrollmentRefusal::ALL
+            .into_iter()
+            .map(|refusal| refusal as i32);
+        updates.chain(enrollments).collect()
+    }
+}
+
 /// A client sees its own request errors, and only a generic message for a server fault.
 impl From<&WriterError> for ErrorObjectOwned {
     fn from(failure: &WriterError) -> Self {
@@ -62,29 +75,7 @@ mod tests {
     #[test]
     fn record_update_refusal_codes_are_stable() {
         use RecordUpdateRefusal::*;
-        for refusal in [
-            Disabled,
-            EntryCount,
-            InvalidEntry,
-            Signature,
-            Expired,
-            UnknownRing,
-            RegistryNotServed,
-            Unauthorized,
-            UnknownUpdate,
-            WrongCluster,
-            ReaderGrantsInDatabase,
-            InvalidAwaitedLists,
-            NotPolicyAuthority,
-            ListApprovalBatch,
-            UnknownListApproval,
-            ListApprovalWindow,
-            RecordsNotCreated,
-            InvalidLimits,
-            LimitsWithoutRecord,
-            RingSaltNotCommitted,
-            UnregisteredOwnerUnmatched,
-        ] {
+        for refusal in RecordUpdateRefusal::ALL {
             let code = match refusal {
                 Disabled => -32140,
                 EntryCount => -32141,
@@ -115,16 +106,7 @@ mod tests {
     #[test]
     fn enrollment_refusal_codes_are_stable() {
         use EnrollmentRefusal::*;
-        for refusal in [
-            NotServed,
-            RingMissing,
-            InvalidWrite,
-            RegisterKeyProof,
-            Full,
-            Budget,
-            RingsFull,
-            InFlight,
-        ] {
+        for refusal in EnrollmentRefusal::ALL {
             let code = match refusal {
                 NotServed => -32180,
                 RingMissing => -32181,

@@ -2,33 +2,35 @@
 //! Read `record_update` after for the pending state, `record_writer` for how an approval lands, and
 //! `enrollment_applier` for the rings a registration serves.
 
-use std::future::Future;
-
 use solana_address::Address;
 use zolana_ring_client::rpc::{
     CreateRecords, CreateRecordsRegistryRequest, CreateRecordsRegistryResponse,
     GetPendingListApprovalsRequest, GetPendingListApprovalsResponse, ListPendingApprovals,
-    PolicyAuthorityAction, PolicyAuthorityAttestation, PolicyAuthorityAuth, ReadTarget,
-    RecordUpdateStatus, RefuseListApproval, RefuseListApprovalRequest, RegisterEnrollment,
-    RegisterEnrollmentRingRequest, RegisterEnrollmentRingResponse,
+    PolicyAuthorityAuth, RecordUpdateStatus, RefuseListApproval, RefuseListApprovalRequest,
+    RegisterEnrollment, RegisterEnrollmentRingRequest, RegisterEnrollmentRingResponse,
 };
 
-use ring_service_core::{
-    authorize::{Authorized, PendingNonce, WalletCheck},
-    upstream::TransactionSource,
-};
+use ring_service_core::upstream::TransactionSource;
+
+use ring_audit::policy_action::PolicyAction;
 
 use crate::{error::RingRpcError, hub::Hub};
 
-#[must_use]
-pub(crate) struct PolicyAction<'a, S, A> {
-    pub hub: &'a Hub<S>,
-    pub ring: Address,
-    pub auth: &'a PolicyAuthorityAuth,
-    pub action: A,
-}
-
 impl<S: TransactionSource> Hub<S> {
+    fn policy_action<'a, A>(
+        &'a self,
+        ring: Address,
+        auth: &'a PolicyAuthorityAuth,
+        action: A,
+    ) -> PolicyAction<'a, S, A> {
+        PolicyAction {
+            shared: self.shared(),
+            ring,
+            auth,
+            action,
+        }
+    }
+
     pub async fn pending_list_approvals(
         &self,
         request: &GetPendingListApprovalsRequest,
@@ -39,14 +41,11 @@ impl<S: TransactionSource> Hub<S> {
             registry: request.registry.0,
             cursor: request.cursor.clone(),
         };
-        PolicyAction {
-            hub: self,
-            ring,
-            auth: &request.auth,
-            action,
-        }
-        .authorize(|authority| writer.require_policy_authority(ring, authority))
-        .await?;
+        self.policy_action(ring, &request.auth, action)
+            .authorize::<_, _, RingRpcError, _, _>(|authority| {
+                writer.require_policy_authority(ring, authority)
+            })
+            .await?;
         Ok(writer.pending_list_approvals(request).await?)
     }
 
@@ -60,14 +59,11 @@ impl<S: TransactionSource> Hub<S> {
             registry: request.registry.0,
             update_id: request.update_id.clone(),
         };
-        PolicyAction {
-            hub: self,
-            ring,
-            auth: &request.auth,
-            action,
-        }
-        .authorize(|authority| writer.require_policy_authority(ring, authority))
-        .await?;
+        self.policy_action(ring, &request.auth, action)
+            .authorize::<_, _, RingRpcError, _, _>(|authority| {
+                writer.require_policy_authority(ring, authority)
+            })
+            .await?;
         Ok(writer.refuse_list_approval(request).await?)
     }
 
@@ -78,14 +74,11 @@ impl<S: TransactionSource> Hub<S> {
     ) -> Result<CreateRecordsRegistryResponse, RingRpcError> {
         let ring = request.ring.0;
         let writer = self.record_writer()?;
-        PolicyAction {
-            hub: self,
-            ring,
-            auth: &request.auth,
-            action: CreateRecords,
-        }
-        .authorize(|authority| self.shared().require_ring_authority(ring, authority))
-        .await?;
+        self.policy_action(ring, &request.auth, CreateRecords)
+            .authorize::<_, _, RingRpcError, _, _>(|authority| {
+                self.shared().require_ring_authority(ring, authority)
+            })
+            .await?;
         Ok(CreateRecordsRegistryResponse {
             registry: writer.create_records(ring).await?.into(),
             storage_authority: writer.authority().into(),
@@ -102,68 +95,13 @@ impl<S: TransactionSource> Hub<S> {
         let action = RegisterEnrollment {
             writer: applier.payer(),
         };
-        PolicyAction {
-            hub: self,
-            ring,
-            auth: &request.auth,
-            action,
-        }
-        .authorize(|authority| applier.authorize_registration(ring, authority))
-        .await?;
+        self.policy_action(ring, &request.auth, action)
+            .authorize::<_, _, RingRpcError, _, _>(|authority| {
+                applier.authorize_registration(ring, authority)
+            })
+            .await?;
         applier.complete_registration(ring).await?;
         Ok(RegisterEnrollmentRingResponse {})
-    }
-}
-
-impl<S: TransactionSource, A: PolicyAuthorityAction> PolicyAction<'_, S, A> {
-    pub(crate) async fn authorize<T, E, F, Fut>(self, authorize: F) -> Result<T, RingRpcError>
-    where
-        F: FnOnce(Address) -> Fut,
-        Fut: Future<Output = Result<T, E>>,
-        RingRpcError: From<E>,
-    {
-        let Self {
-            hub,
-            ring,
-            auth,
-            action,
-        } = self;
-        let shared = hub.shared();
-        shared.validate_ring(ring)?;
-        let authority = auth.authority.0;
-        let now = shared.clock.now()?;
-        let nonce = WalletCheck {
-            wallet: authority,
-            timestamp: auth.timestamp,
-            nonce: &auth.nonce,
-            signature: &auth.signature,
-            attestation: &PolicyAuthorityAttestation {
-                target: ReadTarget {
-                    cluster: shared.genesis_hash,
-                    service: shared.service,
-                    ring,
-                },
-                authority,
-                action,
-            },
-            now,
-        }
-        .decide()?;
-        let Authorized {
-            value,
-            nonce: authorized,
-        } = PendingNonce {
-            ring,
-            nonce,
-            timestamp: auth.timestamp,
-        }
-        .authorize(authorize(authority))
-        .await?;
-        shared
-            .replay
-            .accept(authorized, shared.clock.now()?)
-            .await?;
-        Ok(value)
     }
 }
 
@@ -185,14 +123,11 @@ mod tests {
     use ring_writer::enrollment_applier::{EnrollmentApplier, EnrollmentApplierParts};
     use solana_keypair::Keypair;
     use solana_signer::Signer;
-    use zolana_ring_client::CustomRing;
+    use zolana_ring_client::{rpc::ReadTarget, CustomRing};
 
     use super::*;
-    use crate::{
-        error::ServiceError,
-        hub::ServiceIdentity,
-        role_pins::tests::{account, RingAccounts},
-    };
+    use crate::{error::ServiceError, hub::ServiceIdentity};
+    use ring_relay::role_pins::fixture::{account, RingAccounts};
 
     const REGISTERED: Address = Address::new_from_array([13; 32]);
     const REGISTRY: Address = Address::new_from_array([2; 32]);

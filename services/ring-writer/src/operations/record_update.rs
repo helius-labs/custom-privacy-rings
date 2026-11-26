@@ -228,6 +228,31 @@ pub(crate) struct CheckedInputs {
 }
 
 impl RecordUpdateRefusal {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub const ALL: [Self; 21] = [
+        Self::Disabled,
+        Self::EntryCount,
+        Self::InvalidEntry,
+        Self::Signature,
+        Self::Expired,
+        Self::UnknownRing,
+        Self::RegistryNotServed,
+        Self::Unauthorized,
+        Self::UnknownUpdate,
+        Self::WrongCluster,
+        Self::ReaderGrantsInDatabase,
+        Self::InvalidAwaitedLists,
+        Self::NotPolicyAuthority,
+        Self::ListApprovalBatch,
+        Self::UnknownListApproval,
+        Self::ListApprovalWindow,
+        Self::RecordsNotCreated,
+        Self::InvalidLimits,
+        Self::LimitsWithoutRecord,
+        Self::RingSaltNotCommitted,
+        Self::UnregisteredOwnerUnmatched,
+    ];
+
     pub const fn code(self) -> i32 {
         self as i32
     }

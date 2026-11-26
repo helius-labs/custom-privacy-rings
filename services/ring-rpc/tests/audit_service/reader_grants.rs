@@ -9,7 +9,7 @@ async fn wallet_read(
     service: &AuditService<StaticSource>,
     reader: &Keypair,
     wallet: Address,
-) -> Result<GetWalletActivityResponse, RingRpcError> {
+) -> Result<GetWalletActivityResponse, RingAuditError> {
     let request = WalletActivity::read(target(RING), wallet)
         .sign(reader)
         .expect("request");
@@ -26,7 +26,7 @@ async fn wallet_read(
 async fn ring_read(
     service: &AuditService<StaticSource>,
     reader: &Keypair,
-) -> Result<GetDecryptedTransactionsResponse, RingRpcError> {
+) -> Result<GetDecryptedTransactionsResponse, RingAuditError> {
     service
         .read(AuditRead {
             read: PagedRead::DecryptedTransactions,
@@ -68,20 +68,20 @@ fn set_grant(
     )
 }
 
-fn granted(result: Result<GetDecryptedTransactionsResponse, RingRpcError>) -> Vec<Signature> {
+fn granted(result: Result<GetDecryptedTransactionsResponse, RingAuditError>) -> Vec<Signature> {
     let page = result.expect("granted read").value;
     assert!(page.skipped.is_empty());
     page.items.iter().map(|item| item.tx_signature.0).collect()
 }
 
-fn activity(result: Result<GetWalletActivityResponse, RingRpcError>) -> Vec<WalletActivity> {
+fn activity(result: Result<GetWalletActivityResponse, RingAuditError>) -> Vec<WalletActivity> {
     result.expect("granted read").value.items
 }
 
-fn not_granted<T>(result: Result<T, RingRpcError>) -> bool {
+fn not_granted<T>(result: Result<T, RingAuditError>) -> bool {
     matches!(
         result,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
             Unauthorized::NotGranted
         )))
     )

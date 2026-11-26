@@ -1,0 +1,54 @@
+[package]
+name = "ring-cosigner"
+version = "0.1.0"
+description = "Co-sign policy, limits and lists of the ring RPC."
+edition.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[features]
+test-fixtures = ["ring-audit/test-fixtures", "ring-service-core/test-fixtures", "zolana-operator-custody/test-fixtures"]
+
+[dependencies]
+async-trait = { workspace = true }
+clap = { workspace = true }
+custom-ring-interface = { workspace = true }
+jsonrpsee = { workspace = true }
+log = { workspace = true }
+ring-audit = { workspace = true }
+ring-service-core = { workspace = true }
+ring-writer = { workspace = true }
+sea-orm = { workspace = true }
+sha2 = { workspace = true }
+solana-address = { workspace = true, features = ["curve25519"] }
+solana-message = { workspace = true }
+solana-sdk-ids = { workspace = true }
+solana-signature = { workspace = true, features = ["verify"] }
+spr-hasher = { workspace = true }
+spr-interface = { workspace = true }
+spr-transaction = { workspace = true }
+thiserror = { workspace = true }
+wincode = { workspace = true }
+zolana-operator-custody = { workspace = true }
+zolana-ring-client = { workspace = true, features = ["operations", "solana-rpc"] }
+zolana-ring-policy = { workspace = true }
+zolana-ring-transaction = { workspace = true }
+
+[dev-dependencies]
+bytemuck = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
+ring-audit = { workspace = true, features = ["test-fixtures"] }
+ring-service-core = { workspace = true, features = ["test-fixtures"] }
+serde_json = { workspace = true }
+solana-hash = { workspace = true }
+solana-instruction = { workspace = true }
+solana-keypair = { workspace = true }
+solana-signer = { workspace = true }
+solana-transaction = { workspace = true }
+spr-client = { workspace = true, features = ["solana-rpc"] }
+spr-indexer-api = { workspace = true }
+spr-keypair = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+zolana-operator-custody = { workspace = true, features = ["test-fixtures"] }

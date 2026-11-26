@@ -39,6 +39,13 @@ pub enum ServiceError {
 
 const SEND_REFUSED: i32 = -32113;
 
+#[cfg(any(test, feature = "test-fixtures"))]
+impl ServiceError {
+    pub fn codes() -> Vec<i32> {
+        vec![SEND_REFUSED]
+    }
+}
+
 /// A fault of an upper area, a lower area carries it to the RPC edge unread.
 pub trait CarriedFault: std::error::Error + Send + Sync + 'static {
     fn rpc_error(&self) -> ErrorObjectOwned;

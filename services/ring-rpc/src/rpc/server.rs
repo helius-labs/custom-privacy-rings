@@ -64,13 +64,13 @@ use ring_service_core::{
 };
 
 use crate::{
-    audit::{AuditRead, Page},
     client_rate::{ClientLayer, ClientLimits, ClientRate, ClientRateLimiter},
     error::RingRpcError,
     health::health,
     hub::{Hub, ReadinessStatus},
-    relay::Relay,
 };
+use ring_audit::audit::{AuditRead, Page};
+use ring_relay::relay::Relay;
 
 const MAX_REQUEST_BODY_SIZE: u32 = 64 * 1024;
 const MAX_RESPONSE_BODY_SIZE: u32 = 16 * 1024 * 1024;
@@ -339,7 +339,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: GetAuditedUtxosRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
-            service.audited_utxos(&request).await
+            Ok(service.audited_utxos(&request).await?)
         },
     )?;
     method(
@@ -348,7 +348,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: GetWalletStatusRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
-            service.wallet_status(&request).await
+            Ok(service.wallet_status(&request).await?)
         },
     )?;
     method(
@@ -357,7 +357,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: GetWalletStatusRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
-            service.release_wallet_snapshot(&request).await
+            Ok(service.release_wallet_snapshot(&request).await?)
         },
     )?;
     method(
@@ -390,7 +390,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: GetSpendCoverageRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring.0))?;
-            service.spend_coverage(&request).await
+            Ok(service.spend_coverage(&request).await?)
         },
     )?;
     method(
@@ -487,7 +487,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: SetReaderGrantRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring.0))?;
-            service.set_reader_grant(&request).await
+            Ok(service.set_reader_grant(&request).await?)
         },
     )?;
     method(
@@ -524,7 +524,7 @@ fn register_relay_methods<S: TransactionSource + 'static>(
             let relay = quote_relay.clone();
             async move {
                 let _slot = hub.admit(Lane::Public)?;
-                relay.quote(&request).await
+                Ok(relay.quote(&request).await?)
             }
         },
     )?;
@@ -536,7 +536,7 @@ fn register_relay_methods<S: TransactionSource + 'static>(
             let relay = prepare_relay.clone();
             async move {
                 let _slot = hub.admit(Lane::Authentication)?;
-                relay.prepare(&request).await
+                Ok(relay.prepare(&request).await?)
             }
         },
     )?;
@@ -548,7 +548,7 @@ fn register_relay_methods<S: TransactionSource + 'static>(
             let relay = submit_relay.clone();
             async move {
                 let _slot = hub.admit(Lane::Authentication)?;
-                relay.submit(&request).await
+                Ok(relay.submit(&request).await?)
             }
         },
     )?;
@@ -560,7 +560,7 @@ fn register_relay_methods<S: TransactionSource + 'static>(
             let relay = co_sign_relay.clone();
             async move {
                 let _slot = hub.admit(Lane::Authentication)?;
-                relay.co_sign_transaction(&request).await
+                Ok(relay.co_sign_transaction(&request).await?)
             }
         },
     )?;
@@ -571,7 +571,7 @@ fn register_relay_methods<S: TransactionSource + 'static>(
             let relay = relay.clone();
             async move {
                 let _slot = hub.admit(Lane::Public)?;
-                relay.status(&request).await
+                Ok(relay.status(&request).await?)
             }
         },
     )?;
@@ -808,12 +808,11 @@ mod tests {
 
     use crate::{
         client_rate::{BucketRate, ClientRates, RateLimit, NETWORK_CLIENTS},
-        error::RingRpcError,
+        error::{RingRpcError, ServiceError},
         hub::ServiceIdentity,
     };
 
     use super::*;
-    use crate::error::ServiceError;
 
     const SERVED_RING: Address = Address::new_from_array([8; 32]);
     const TEST_GENESIS: [u8; 32] = [3; 32];

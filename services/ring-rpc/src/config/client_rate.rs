@@ -277,6 +277,20 @@ impl RateLimit {
     pub const fn code(self) -> i32 {
         self as i32
     }
+
+    #[cfg(test)]
+    pub(crate) fn codes() -> Vec<i32> {
+        [
+            Self::PublicReads,
+            Self::SignedReads,
+            Self::SignedWrites,
+            Self::SigningKey,
+        ]
+        .into_iter()
+        .map(Self::code)
+        .chain([UNKNOWN_API_KEY])
+        .collect()
+    }
 }
 
 impl RateLimited {

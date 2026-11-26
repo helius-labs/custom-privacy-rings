@@ -4,7 +4,7 @@
 mod attempts;
 #[path = "common/relay.rs"]
 mod relay_fixture;
-#[path = "common/store.rs"]
+#[path = "../../ring-relay/tests/common/store.rs"]
 mod store_fixture;
 #[path = "relay_service/transitions.rs"]
 mod transitions;
@@ -43,7 +43,7 @@ use zolana_ring_client::{
 };
 use zolana_ring_rpc::{
     rpc_module, ChainOutcome, Hub, MergeAuditRequest, Migrator, RecordsTip, Relay, RelayBudget,
-    RelayError, RelayParts, RingConfiguration, RingFrame, RingHistoryPage, RingRpcError,
+    RelayError, RelayParts, RingConfiguration, RingFrame, RingHistoryPage, RingRelayError,
     ServedRings, ServiceError, ServiceIdentity, Store, TransactionPage, TransactionSource,
     ABANDONED_AFTER_SLOTS, STORE_CONNECTIONS,
 };
@@ -187,14 +187,14 @@ struct OneRing(Address);
 
 #[async_trait]
 impl ServedRings for OneRing {
-    async fn check(&self, ring: Address) -> Result<(), RingRpcError> {
+    async fn check(&self, ring: Address) -> Result<(), RingRelayError> {
         match ring == self.0 {
             true => Ok(()),
             false => Err(RelayError::RingNotServed.into()),
         }
     }
 
-    async fn delegate(&self, _ring: Address) -> Result<Option<Address>, RingRpcError> {
+    async fn delegate(&self, _ring: Address) -> Result<Option<Address>, RingRelayError> {
         Ok(Some(ring_delegate().pubkey()))
     }
 }

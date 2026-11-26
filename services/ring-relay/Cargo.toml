@@ -1,0 +1,62 @@
+[package]
+name = "ring-relay"
+version = "0.1.0"
+description = "Relay, authority transfer and managed merge of the ring RPC."
+edition.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[features]
+test-fixtures = ["ring-audit/test-fixtures", "ring-cosigner/test-fixtures", "ring-service-core/test-fixtures", "zolana-operator-custody/test-fixtures"]
+
+[dependencies]
+async-trait = { workspace = true }
+custom-ring-interface = { workspace = true }
+jsonrpsee = { workspace = true }
+log = { workspace = true }
+rand = { workspace = true }
+ring-audit = { workspace = true }
+ring-cosigner = { workspace = true }
+ring-service-core = { workspace = true }
+ring-writer = { workspace = true }
+sea-orm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+solana-account = { workspace = true }
+solana-address = { workspace = true, features = ["curve25519"] }
+solana-instruction = { workspace = true }
+solana-message = { workspace = true }
+solana-signature = { workspace = true, features = ["verify"] }
+solana-transaction = { workspace = true }
+spl-token-2022-interface = { workspace = true }
+spr-client = { workspace = true, features = ["solana-rpc"] }
+spr-hasher = { workspace = true }
+spr-indexer-api = { workspace = true }
+spr-instruction = { workspace = true }
+spr-interface = { workspace = true }
+spr-keypair = { workspace = true }
+spr-transaction = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+wincode = { workspace = true }
+zeroize = { workspace = true }
+zolana-operator-custody = { workspace = true }
+zolana-ring-client = { workspace = true, features = ["operations", "solana-rpc"] }
+zolana-ring-indexer = { workspace = true }
+zolana-ring-member-registry = { workspace = true }
+zolana-ring-policy = { workspace = true }
+zolana-ring-transaction = { workspace = true }
+
+[dev-dependencies]
+bytemuck = { workspace = true }
+ring-audit = { workspace = true, features = ["test-fixtures"] }
+ring-cosigner = { workspace = true, features = ["test-fixtures"] }
+ring-service-core = { workspace = true, features = ["test-fixtures"] }
+sea-orm-migration = { workspace = true, features = ["sqlx-sqlite"] }
+solana-hash = { workspace = true }
+solana-keypair = { workspace = true }
+solana-signer = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+zolana-operator-custody = { workspace = true, features = ["test-fixtures"] }

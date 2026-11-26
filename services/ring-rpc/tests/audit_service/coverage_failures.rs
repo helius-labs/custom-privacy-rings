@@ -122,7 +122,7 @@ async fn spend_coverage_refuses_upgrade_authority_and_foreign_auditor() {
     let service = fixture.hub(uninitialized).service(None).expect("service");
     assert!(matches!(
         service.spend_coverage(&coverage_request(&deployer())).await,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
             Unauthorized::NoConfig
         )))
     ));
@@ -138,7 +138,7 @@ async fn spend_coverage_refuses_upgrade_authority_and_foreign_auditor() {
         service
             .spend_coverage(&coverage_request(&authority()))
             .await,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
             Unauthorized::AuditorKeyMismatch
         )))
     ));

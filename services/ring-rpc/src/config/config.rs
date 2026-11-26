@@ -19,10 +19,9 @@ use zolana_operator_custody::{
     SigningIdentity, WrappedSecret,
 };
 
-use crate::{
-    client_rate::ClientLimitArgs, cosign::ApproveClass, server::BindPolicy,
-    wallet_snapshots::WalletSnapshotLimits,
-};
+use crate::{client_rate::ClientLimitArgs, server::BindPolicy};
+use ring_audit::wallet_snapshots::WalletSnapshotLimits;
+use ring_cosigner::cosign::ApproveClass;
 use ring_service_core::{
     keys::KeySource,
     keys::{GrantRowsSecret, RootSecret},

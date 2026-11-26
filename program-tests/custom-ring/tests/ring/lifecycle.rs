@@ -214,8 +214,8 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
             .block_on(service.auditor_key_statement(&request.auth))
             .map(drop)
     };
-    let expect_refusal = |result: Result<(), RingRpcError>, expected: Unauthorized| match result {
-        Err(RingRpcError::Service(ServiceError::Unauthorized(reason))) if reason == expected => {
+    let expect_refusal = |result: Result<(), RingAuditError>, expected: Unauthorized| match result {
+        Err(RingAuditError::Service(ServiceError::Unauthorized(reason))) if reason == expected => {
             Ok(())
         }
         other => Err(anyhow!("expected {expected:?}, got {other:?}")),

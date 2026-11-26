@@ -1596,7 +1596,7 @@ async fn create_records_registry_serves_its_rings_and_repeats_one_registry() {
     .expect("signed");
     assert!(matches!(
         records.hub.create_records_registry(&foreign_local).await,
-        Err(RingRpcError::RingNotServed)
+        Err(RingRpcError::Audit(RingAuditError::RingNotServed))
     ));
     assert!(records.chain.sent.lock().unwrap().is_empty());
 

@@ -6,7 +6,7 @@ use tokio::sync::Notify;
 use zolana_ring_client::rpc::RelayId;
 use zolana_ring_rpc::{
     ChainOutcome, ChainSubmit, CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement,
-    FinalizedTip, LatestBlockhash, Ticket,
+    FinalizedTip, LatestBlockhash, RingCosignerError, Ticket,
 };
 
 use super::*;
@@ -140,19 +140,19 @@ impl CoSignPolicy for RecordingCoSigner {
         Some(self.keypair.pubkey())
     }
 
-    async fn decide(&self, request: &CoSignRequest) -> Result<CoSignDecision, RingRpcError> {
+    async fn decide(&self, request: &CoSignRequest) -> Result<CoSignDecision, RingCosignerError> {
         self.gate.pass().await;
         Ok(CoSignDecision::Signed(
             self.keypair.sign_message(&request.message.serialize()),
         ))
     }
 
-    async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
+    async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingCosignerError> {
         self.settled.lock().expect("settled").push(settlement);
         Ok(())
     }
 
-    async fn sweep(&self, _tip: FinalizedTip) -> Result<(), RingRpcError> {
+    async fn sweep(&self, _tip: FinalizedTip) -> Result<(), RingCosignerError> {
         Ok(())
     }
 }

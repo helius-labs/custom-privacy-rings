@@ -2,7 +2,8 @@ use zolana_ring_client::rpc::{HealthResponse, ReaderGrantMode};
 
 use ring_service_core::upstream::TransactionSource;
 
-use crate::{grants::Grants, hub::Hub};
+use crate::hub::Hub;
+pub use ring_audit::grants::Grants;
 
 pub(crate) fn health<S: TransactionSource>(hub: &Hub<S>) -> HealthResponse {
     let relay = hub.relay();
@@ -46,10 +47,8 @@ mod tests {
         storage_chain::LiveStorageChain,
     };
 
-    use crate::{
-        hub::{HubBuilder, ServiceIdentity},
-        relay_services::RelayServicesInit,
-    };
+    use crate::hub::{HubBuilder, ServiceIdentity};
+    use ring_relay::relay_services::RelayServicesInit;
 
     const UNREACHABLE: &str = "http://127.0.0.1:1";
     const UPSTREAMS: Upstreams<'static> = Upstreams {
