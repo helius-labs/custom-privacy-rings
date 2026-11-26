@@ -1109,5 +1109,5 @@
       }
     }
   ],
-  "description": "The account windows of a ring Transfer or AuthorityTransfer, Rust TransferLayout in program-libs/interface/src/instructions/transfer_layout.rs. data is the instruction data from its tag, ring_policy the RingPolicy account, accounts the list in order. A window is [start, end) over accounts, a slot one index, null when the list has none. co_signers holds [record, signer] pairs, the program form names the instructions sysvar as signer. owners is SPP's owner signer run. Each leg names its settlement group and the index of its deposit funder. Produced by program-libs/interface/tests/transfer_layout.rs."
+  "description": "The account windows of a ring Transfer or AuthorityTransfer, Rust TransferLayout in program-libs/interface/src/instructions/transfer_layout.rs. data is the instruction data from its tag, ring_policy the RingPolicy account, accounts the list in order. A window is [start, end) over accounts, a slot one index, null when the list has none. co_signers holds [record, signer] pairs, the program form names the instructions sysvar as signer. owners is SPP's owner signer run. Each leg names its settlement group and the index of its deposit funder. Produced by sdk-libs/client/tests/transfer_layout.rs."
 }

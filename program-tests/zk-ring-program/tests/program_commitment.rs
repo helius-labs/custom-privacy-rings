@@ -7,10 +7,6 @@ use std::{
 
 use async_trait::async_trait;
 use custom_ring_interface::{NewRing, RingMode, RingRoles, RING_POLICY_PDA_SEED};
-use custom_ring_sdk::{
-    AnonymousPayment, ApplicationData, CustomRing, CustomRingTransfer, CustomRingTransferInput,
-    NoteData, ProgramCommitment, ProgramPlan, PublicOwnerTransfer, RingClient, RingError,
-};
 use solana_account::Account;
 use solana_address::Address;
 use spr_client::{
@@ -46,7 +42,11 @@ use zk_ring_program::{
     client::owner,
     verifier::{create, update},
 };
-use zolana_ring_client::AsyncRingIndexer;
+use zolana_ring_client::{
+    AnonymousPayment, ApplicationData, AsyncRingIndexer, CustomRing, CustomRingTransfer,
+    CustomRingTransferInput, NoteData, ProgramCommitment, ProgramPlan, PublicOwnerTransfer,
+    RingClient, RingError,
+};
 use zolana_ring_keys::RingAddress;
 
 const TREE_ID: u16 = 3;

@@ -1,12 +1,10 @@
 use std::{future::Future, num::NonZeroU32, time::Duration};
-use zolana_ring_client::OwnerGrantHost;
 
 use async_trait::async_trait;
 use custom_ring_interface::{
     storage::StorageRegistry, tracking::TrackingRegistry, CoSignScope, OwnerGrant, ReaderKeyBytes,
     RingAccount, RingMode, RingPolicy, RingRoles,
 };
-use custom_ring_sdk::{CustomRing, DelegateMintAccount, RingError};
 use solana_account::Account;
 use solana_address::Address;
 use solana_commitment_config::CommitmentConfig;
@@ -27,18 +25,20 @@ use spr_interface::{
 };
 use spr_keypair::X25519Pubkey;
 use spr_transaction::{AssetRegistry, Mint, ShieldedTransaction, SOL_MINT};
-use zolana_ring_client::{
-    history::HistoryPosition, program_data, AsyncRingIndexer, AuditError, MemberOpeningRead,
-    MergeAudit, MergeAuditPage, ResolveError, RingIndexerError, RingOrigin, StorageTip,
-    TrackingLeafCheck, TransactionOrigin,
-};
 use zolana_ring_indexer::rpc::{
     GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
     GetStorageMemberRecordsRequest, GetStorageMemberRecordsResponse,
 };
 use zolana_ring_transaction::RingAssets;
 
-use zolana_ring_client::rpc::{RingChainStatus, WalletEnrollment};
+use zolana_ring_client::{
+    history::HistoryPosition,
+    program_data,
+    rpc::{RingChainStatus, WalletEnrollment},
+    AsyncRingIndexer, AuditError, CustomRing, DelegateMintAccount, MemberOpeningRead, MergeAudit,
+    MergeAuditPage, OwnerGrantHost, ResolveError, RingError, RingIndexerError, RingOrigin,
+    StorageTip, TrackingLeafCheck, TransactionOrigin,
+};
 use zolana_ring_indexer::tracking::{
     GetTrackingOpeningsRequest, GetTrackingRecordsRequest, GetTrackingRecordsResponse,
 };
@@ -452,7 +452,7 @@ impl ChainSource {
 
 impl TransactionSource for ChainSource {
     async fn tree_id(&self, tree: Address) -> Result<u16, RingError> {
-        custom_ring_sdk::tree_id(&self.rpc, tree).await
+        zolana_ring_client::tree_id(&self.rpc, tree).await
     }
 
     async fn merge_audit_page<'a>(

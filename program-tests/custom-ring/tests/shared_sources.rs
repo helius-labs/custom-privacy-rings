@@ -5,7 +5,6 @@
 
 use anyhow::Result;
 use custom_ring_interface::CustomRingError;
-use custom_ring_sdk::{DepositAsset, ListRegistry, SourceOwner};
 use custom_ring_test_validator::{
     policy::{
         owner_member, policy_registry, CuratedRings, PolicyTransfer, RegistryWrite, RingNotes,
@@ -18,7 +17,7 @@ use solana_signer::Signer;
 use spr_keypair::X25519Keypair;
 use spr_program_test::Rejection;
 use spr_transaction::Utxo;
-use zolana_ring_client::PolicySources;
+use zolana_ring_client::{DepositAsset, ListRegistry, PolicySources, SourceOwner};
 use zolana_ring_policy::{ListId, Rule, RuleTable, Subject};
 
 #[test]
@@ -121,11 +120,11 @@ fn a_curator_sourced_blocklist_governs_the_subscriber_ring() -> Result<()> {
     send(
         rpc,
         &env.payer,
-        &[custom_ring_sdk::UpdatePolicy {
+        &[zolana_ring_client::UpdatePolicy {
             ring: subscriber,
             authority,
             current: &*policy_registry(subscriber, env)?,
-            update: custom_ring_sdk::PolicyUpdate::Source {
+            update: zolana_ring_client::PolicyUpdate::Source {
                 list_id: ListId::Block,
                 source: SourceOwner::Own,
             },
@@ -173,11 +172,11 @@ fn a_private_list_on_another_rings_records_is_refused() -> Result<()> {
     let foreign = policy_registry(curator, env)?.records;
     let rejection = ExpectRejection {
         payer: &env.payer,
-        instructions: &[custom_ring_sdk::UpdatePolicy {
+        instructions: &[zolana_ring_client::UpdatePolicy {
             ring: subscriber,
             authority: env.payer.pubkey(),
             current: &current,
-            update: custom_ring_sdk::PolicyUpdate::Source {
+            update: zolana_ring_client::PolicyUpdate::Source {
                 list_id: ListId::PrivateBlock,
                 source: SourceOwner::Curator(foreign),
             },

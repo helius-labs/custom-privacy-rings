@@ -2,10 +2,10 @@
 
 use std::{cmp::Ordering, collections::BTreeMap, fmt, str::FromStr};
 
-use custom_ring_sdk::CustomRing;
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
 use thiserror::Error;
+use zolana_ring_client::CustomRing;
 use zolana_ring_policy::{
     Guard, ListId, ListSet, Member, MemberError, MintPolicy, Mode, OutflowLimit, Rule, RuleTable,
     RuleTableError, Subject, Writer, MAX_RULES,

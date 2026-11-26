@@ -1,7 +1,6 @@
 //! Funding checks run before paid instructions.
 
 use anyhow::{anyhow, ensure, Result};
-use custom_ring_sdk::{DepositAsset, DepositSplAccounts};
 use solana_account::Account;
 use solana_address::Address;
 use spl_token_2022_interface::{
@@ -16,6 +15,7 @@ use spr_interface::{
     pda, SPL_TOKEN_2022_PROGRAM_ID, SPL_TOKEN_ACCOUNT_INITIALIZED, SPL_TOKEN_PROGRAM_ID,
 };
 use spr_transaction::{AssetRegistry, SOL_MINT};
+use zolana_ring_client::{DepositAsset, DepositSplAccounts};
 use zolana_ring_transaction::RingAssets;
 
 pub struct ResolvedAsset {

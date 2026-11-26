@@ -4,11 +4,9 @@
 //! parties and transacts under them.
 
 use std::collections::BTreeSet;
-use zolana_ring_client::PolicySources;
 
 use anyhow::{anyhow, Result};
 use custom_ring_cli::ModeName;
-use custom_ring_sdk::{CustomRing, DepositAsset, RingError};
 use custom_ring_test_validator::{
     cli::{merged, ListWrite, RingProject, RingToml},
     policy::{
@@ -22,7 +20,8 @@ use spr_client::{IndexerRpcConfig, Rpc, UtxoScan};
 use spr_keypair::{ShieldedKeypair, X25519Keypair};
 use spr_transaction::Utxo;
 use zolana_ring_client::{
-    owner_record_key, AuditedTransaction, OutputOpening, RingConfidentialScan, RingScan,
+    owner_record_key, AuditedTransaction, CustomRing, DepositAsset, OutputOpening, PolicySources,
+    RingConfidentialScan, RingError, RingScan,
 };
 use zolana_ring_policy::ListId;
 

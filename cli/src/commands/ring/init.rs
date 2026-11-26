@@ -2,15 +2,14 @@
 
 use anyhow::{bail, ensure, Context as _, Result};
 use custom_ring_interface::RingRoles;
-use custom_ring_sdk::{
-    CustomRingConfig, InitialPolicy, Initialize, ListRegistry, PolicyTable, PolicyUpdate,
-    RingError, RingKind, SourceOwner, UpdatePolicy,
-};
 use solana_address::Address;
 use spr_keypair::X25519Pubkey;
 use zolana_operator_custody::OperatorSigner;
-use zolana_ring_client::rpc::{read_auditor_pubkey, write_auditor_pubkey};
-use zolana_ring_client::PolicySources;
+use zolana_ring_client::{
+    rpc::{read_auditor_pubkey, write_auditor_pubkey},
+    CustomRingConfig, InitialPolicy, Initialize, ListRegistry, PolicySources, PolicyTable,
+    PolicyUpdate, RingError, RingKind, SourceOwner, UpdatePolicy,
+};
 use zolana_ring_policy::{ListId, RuleTable};
 
 use crate::{

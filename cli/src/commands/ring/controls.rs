@@ -2,11 +2,11 @@
 
 use anyhow::{anyhow, bail, ensure, Context as _, Result};
 use custom_ring_interface::RingRole;
-use custom_ring_sdk::{
-    ClearCoSigner, CoSignScope, CustomRingCoSigner, RingRegistration, SetCoSigner, SetDelegate,
-};
 use solana_address::Address;
 use spr_keypair::X25519Keypair;
+use zolana_ring_client::{
+    ClearCoSigner, CoSignScope, CustomRingCoSigner, RingRegistration, SetCoSigner, SetDelegate,
+};
 use zolana_ring_policy::ListId;
 
 use crate::{

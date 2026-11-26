@@ -17,10 +17,6 @@ use std::{
 use anyhow::{anyhow, ensure, Context, Result};
 use custom_ring_cli::{localnet::GENESIS_PROGRAMS, Zolana, ZolanaServices};
 use custom_ring_interface::RingRoles;
-use custom_ring_sdk::{
-    compute_unit_limit, CustomRing, InitialPolicy, Initialize, InitializeStorage, InstructionTag,
-    MemberRecords, PolicyTable, RingError, RingKind,
-};
 use solana_address::Address;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
@@ -53,7 +49,10 @@ use spr_test_utils::{
 };
 use spr_transaction::{AssetRegistry, Mint, ShieldedTransaction};
 use spr_user_registry_interface::user_registry_program_id;
-use zolana_ring_client::{MemberOpeningRead, RingConfidentialScan};
+use zolana_ring_client::{
+    compute_unit_limit, CustomRing, InitialPolicy, Initialize, InitializeStorage, InstructionTag,
+    MemberOpeningRead, MemberRecords, PolicyTable, RingConfidentialScan, RingError, RingKind,
+};
 use zolana_ring_policy::{ListId, Member, RuleTable};
 use zolana_ring_transaction::RingAssets;
 
@@ -161,7 +160,7 @@ impl TestEnv {
 
     /// The raw id a tree hashes its UTXOs under.
     pub fn tree_id(&self, tree: Address) -> Result<u16> {
-        Ok(self.run(custom_ring_sdk::tree_id(self.client.as_async(), tree))?)
+        Ok(self.run(zolana_ring_client::tree_id(self.client.as_async(), tree))?)
     }
 
     /// Runs an SDK operation on the blocking client.

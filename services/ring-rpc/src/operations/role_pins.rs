@@ -79,12 +79,12 @@ mod tests {
         storage_instruction::InitializeIxData,
         ApplyRecordsIxData, RingPolicy, RING_POLICY, STORAGE_PROGRAM_ID,
     };
-    use custom_ring_sdk::{CustomRing, EnrollBatch, ProvenEnrollBatch};
     use solana_account::Account;
     use solana_message::VersionedMessage;
     use solana_signature::Signature;
     use solana_transaction::versioned::VersionedTransaction;
     use zolana_ring_client::TrackingLeaf;
+    use zolana_ring_client::{CustomRing, EnrollBatch, ProvenEnrollBatch};
     use zolana_ring_indexer::rpc::{
         GetStorageApplyProofInputsRequest, GetStorageApplyProofInputsResponse,
         GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,

@@ -7,7 +7,7 @@
 //! shared bound of `keyed_tasks`, so a ring whose proof stalls holds one slot and never the batch of
 //! another ring.
 //!
-//! Read after `sdk-libs/client/src/rpc/enrollment.rs` and `sdk-libs/sdk/src/operations/storage.rs`.
+//! Read after `sdk-libs/client/src/rpc/enrollment.rs` and `sdk-libs/client/src/records/storage.rs`.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -20,7 +20,6 @@ use custom_ring_interface::{
     tracking::{TrackingEntry, TrackingRegistry, TRACKING_ROOT_HISTORY},
     InstructionTag, RegisterKeyCheck,
 };
-use custom_ring_sdk::{CustomRing, EnrollBatch, ProvenEnrollBatch};
 use log::warn;
 use solana_address::Address;
 use solana_transaction::versioned::VersionedTransaction;
@@ -28,8 +27,11 @@ use spr_client::{compile_message, ComputeBudgetConfig};
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 use zolana_operator_custody::{signed_transaction, OperatorSigner, SigningIdentity};
-use zolana_ring_client::compute_unit_limit;
-use zolana_ring_client::rpc::{SubmitEnrollmentRequest, SubmitEnrollmentResponse};
+use zolana_ring_client::{
+    compute_unit_limit,
+    rpc::{SubmitEnrollmentRequest, SubmitEnrollmentResponse},
+    CustomRing, EnrollBatch, ProvenEnrollBatch,
+};
 
 use crate::{
     authorize::Unauthorized,

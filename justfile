@@ -36,7 +36,7 @@ export PROVER_INDEXER_URL := localnet-ring-indexer-url
 export PROVER_BIN := justfile_directory() / "target/prover-server"
 # Mirrored by GENESIS_PROGRAMS in cli/src/commands/ring/localnet.rs.
 ring-genesis-programs := "--sbf-program rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL target/deploy/storage_program.so"
-sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-keys zolana-ring-transaction zolana-ring-rpc custom-ring-sdk custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
+sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-keys zolana-ring-transaction zolana-ring-rpc custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
 
 default:
     @just --list

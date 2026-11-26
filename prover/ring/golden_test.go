@@ -17,7 +17,7 @@ import (
 const goldenDigests = "testdata/witness.sha256"
 
 // rustGoldens holds the Rust SDK's requests, each named by its circuit type and in its own key order.
-const rustGoldens = "../../sdk-libs/sdk/tests/fixtures"
+const rustGoldens = "../../sdk-libs/client/tests/fixtures"
 
 // UPDATE_RING_GOLDENS=1 rewrites the digests, never the fixtures.
 func TestGoldenRequestsAssignTheRecordedWitness(t *testing.T) {

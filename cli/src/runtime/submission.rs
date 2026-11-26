@@ -1,5 +1,4 @@
 use anyhow::Result;
-use custom_ring_sdk::{LocalSigners, SubmissionSigners};
 use solana_hash::Hash;
 use solana_message::VersionedMessage;
 use solana_signer::SignerError;
@@ -8,6 +7,7 @@ use thiserror::Error;
 use zolana_operator_custody::{
     presigned_transaction, signed_transaction, CollectedSignature, OperatorSigner,
 };
+use zolana_ring_client::{LocalSigners, SubmissionSigners};
 
 use super::{
     line, Address, Context, Instruction, RingError, RingOperation, RingRpcClient, RingSubmission,

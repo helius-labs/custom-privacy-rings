@@ -7,7 +7,7 @@ autotests = false
 
 [features]
 proofs = [
-    "custom-ring-sdk/proofs",
+    "zolana-ring-client/proofs",
     "dep:borsh",
     "dep:xark",
     "dep:zk-ring-program",
@@ -21,7 +21,6 @@ bincode = { workspace = true }
 borsh = { workspace = true, optional = true }
 custom-ring-cli = { workspace = true }
 custom-ring-interface = { workspace = true }
-custom-ring-sdk = { workspace = true, features = ["solana-rpc"] }
 hex = { workspace = true }
 reqwest = { workspace = true }
 sea-orm = { workspace = true }
@@ -50,7 +49,7 @@ spr-program-test = { workspace = true, features = ["localnet"] }
 zolana-operator-custody.workspace = true
 xark = { version = "0.3.1", optional = true }
 zk-ring-program = { path = "../zk-ring-program", features = ["circuits"], optional = true }
-zolana-ring-client = { workspace = true, features = ["rpc", "solana-rpc"] }
+zolana-ring-client = { workspace = true, features = ["operations", "solana-rpc"] }
 zolana-ring-indexer = { workspace = true }
 zolana-ring-keys = { workspace = true }
 zolana-ring-policy = { workspace = true }

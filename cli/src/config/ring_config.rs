@@ -8,12 +8,12 @@ use std::{
 
 use anyhow::{anyhow, ensure, Context as _, Result};
 use custom_ring_interface::{RingMode, RingRole};
-use custom_ring_sdk::CoSignScope;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use solana_address::{error::ParseAddressError, Address};
 use spr_client::{prover::tee::TeePolicy, AsyncProverClient};
 use spr_transaction::SOL_MINT;
 use toml_edit::{DocumentMut, Item};
+use zolana_ring_client::CoSignScope;
 
 pub use crate::operator_manifest::OperatorManifest;
 use crate::{

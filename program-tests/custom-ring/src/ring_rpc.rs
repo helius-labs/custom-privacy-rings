@@ -9,7 +9,6 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use custom_ring_cli::{wait_for, Probe};
-use custom_ring_sdk::{RingError, RingRelay};
 use sea_orm::{ConnectionTrait, Statement, Value};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
@@ -21,13 +20,16 @@ use spr_client::ClientError;
 use spr_keypair::X25519Keypair;
 use spr_test_utils::localnet::isolated_temp_path;
 use zolana_operator_custody::SigningIdentity;
-use zolana_ring_client::rpc::{
-    CoSignTransactionRequest, CoSignTransactionResponse, GetRelayQuoteRequest,
-    GetRelayStatusRequest, PrepareAuthorityTransferRequest, PrepareRelayRequest, ReadTarget,
-    RelayId, RelayOperation, RelayQuote, RelayStatus, RelayStep, ServiceTarget,
-    SetMergeSettingsRequest, SetMergeSettingsResponse, SubmitRelayRequest, CO_SIGN_TRANSACTION,
-    GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY,
-    SET_MERGE_SETTINGS, SUBMIT_RELAY,
+use zolana_ring_client::{
+    rpc::{
+        CoSignTransactionRequest, CoSignTransactionResponse, GetRelayQuoteRequest,
+        GetRelayStatusRequest, PrepareAuthorityTransferRequest, PrepareRelayRequest, ReadTarget,
+        RelayId, RelayOperation, RelayQuote, RelayStatus, RelayStep, ServiceTarget,
+        SetMergeSettingsRequest, SetMergeSettingsResponse, SubmitRelayRequest, CO_SIGN_TRANSACTION,
+        GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY,
+        SET_MERGE_SETTINGS, SUBMIT_RELAY,
+    },
+    RingError, RingRelay,
 };
 use zolana_ring_rpc::{
     run_server, BindPolicy, ChainSource, ClientLimits, CoSignerApproval, EnrollmentApplierParts,

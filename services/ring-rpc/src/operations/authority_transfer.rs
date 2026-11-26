@@ -1,20 +1,20 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
-use custom_ring_sdk::{
-    sole_mint, AllowedNullifiers, DelegateFunding, DelegatePayment, DelegateSourceError,
-    DelegateWithdrawal, ResolvedSource, SourceEnrollment,
-};
 use jsonrpsee::types::ErrorObjectOwned;
 use spr_indexer_api::Hash;
 use spr_keypair::{NullifierKey, PublicKey, ShieldedAddress};
 use spr_transaction::{Mint, WalletUtxo};
 use thiserror::Error;
-use zolana_ring_client::rpc::{
-    Attestation, AuthorityTransferAttestation, DelegateNotesAttestation,
-    DelegateSnapshotReleaseAttestation, GetDelegateNotesRequest, GetDelegateNotesResponse,
-    GetListSaltRequest, GetListSaltResponse, ListSaltAttestation, PrepareAuthorityTransferRequest,
-    RelayStep,
+use zolana_ring_client::{
+    rpc::{
+        Attestation, AuthorityTransferAttestation, DelegateNotesAttestation,
+        DelegateSnapshotReleaseAttestation, GetDelegateNotesRequest, GetDelegateNotesResponse,
+        GetListSaltRequest, GetListSaltResponse, ListSaltAttestation,
+        PrepareAuthorityTransferRequest, RelayStep,
+    },
+    sole_mint, AllowedNullifiers, DelegateFunding, DelegatePayment, DelegateSourceError,
+    DelegateWithdrawal, ResolvedSource, SourceEnrollment,
 };
 
 use crate::{
@@ -498,7 +498,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use custom_ring_sdk::{DelegatePayment, DelegateWithdrawal};
     use solana_address::Address;
     use solana_instruction::{AccountMeta, Instruction};
     use solana_keypair::Keypair;
@@ -511,6 +510,7 @@ mod tests {
         unix_now, AuthorityPayment, AuthorityTransfer, AuthorityTransferAttestation,
         AuthorityTransferRequest, ReadTarget, RelayProofInputs, RelayRail, SignedRequest,
     };
+    use zolana_ring_client::{DelegatePayment, DelegateWithdrawal};
 
     use super::*;
     use crate::{

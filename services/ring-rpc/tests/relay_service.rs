@@ -31,14 +31,16 @@ use spr_keypair::{NullifierKey, X25519Keypair, X25519Pubkey};
 use spr_transaction::{
     instructions::transact::SettlementTransfer, utxo::SppProofInputUtxo, WalletUtxo,
 };
-use zolana_ring_client::rpc::{
-    GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, ProofInputBytes, RelayIntent,
-    RelayMergeInputs, RelayOperation, RelayProofInputs, RelayQuote, RelayRail,
-    RelayRequestAttestation, RelayStatus, RelayStep, RingChainStatus, ServiceTarget,
-    SubmitRelayRequest, TokenAccountSetup, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY,
-    SUBMIT_RELAY,
+use zolana_ring_client::{
+    rpc::{
+        GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, ProofInputBytes,
+        RelayIntent, RelayMergeInputs, RelayOperation, RelayProofInputs, RelayQuote, RelayRail,
+        RelayRequestAttestation, RelayStatus, RelayStep, RingChainStatus, ServiceTarget,
+        SubmitRelayRequest, TokenAccountSetup, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY,
+        SUBMIT_RELAY,
+    },
+    AuditError, RingIndexerError, RingOrigin,
 };
-use zolana_ring_client::{AuditError, RingIndexerError, RingOrigin};
 use zolana_ring_rpc::{
     rpc_module, ChainOutcome, Hub, MergeAuditRequest, Migrator, RecordsTip, Relay, RelayBudget,
     RelayError, RelayParts, RingConfiguration, RingFrame, RingHistoryPage, RingRpcError,
@@ -172,7 +174,7 @@ impl TransactionSource for RingSource {
         Ok(SERVICE.cluster)
     }
 
-    async fn tree_id(&self, _tree: Address) -> Result<u16, custom_ring_sdk::RingError> {
+    async fn tree_id(&self, _tree: Address) -> Result<u16, zolana_ring_client::RingError> {
         Ok(1)
     }
 

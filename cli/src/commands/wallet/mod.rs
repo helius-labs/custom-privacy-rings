@@ -10,14 +10,13 @@ use std::{
 
 use anyhow::{ensure, Context as _, Result};
 use custom_ring_interface::RingMode;
-use custom_ring_sdk::CustomRingConfig;
 use solana_address::Address;
 use spr_client::{BlockingIndexer, BlockingRpc, IndexerRpcConfig, Rpc};
 use spr_keypair::X25519Pubkey;
 use spr_transaction::SpendableDecryptionResult;
 use zolana_ring_client::{
-    AnonymousError, AnonymousWallet, RingSenderAudit, RingWalletNotes, RingWalletSync,
-    RingWalletSynced, ViewingHistory,
+    AnonymousError, AnonymousWallet, CustomRingConfig, RingSenderAudit, RingWalletNotes,
+    RingWalletSync, RingWalletSynced, ViewingHistory,
 };
 use zolana_ring_keys::RotatingRingKeys;
 use zolana_ring_transaction::RingAssets;

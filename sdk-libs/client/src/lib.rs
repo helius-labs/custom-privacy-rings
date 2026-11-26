@@ -1,35 +1,71 @@
 //! The custom ring auditor client, free of test utilities so the end-to-end test runs its path.
+//!
+//! Feature `operations` adds the instruction builders, proofs and submission, a blocking caller
+//! wraps an operation in `zolana.block_on(op.prove(zolana.as_async()))`.
 
-#[path = "operations/anonymous.rs"]
+#[cfg(feature = "operations")]
+#[path = "state/ring_accounts.rs"]
+mod account;
+#[cfg(feature = "operations")]
+#[path = "transfer/address_ceiling.rs"]
+mod address_ceiling;
+#[cfg(feature = "operations")]
+#[path = "admin/roles.rs"]
+mod admin;
+#[path = "audit/anonymous.rs"]
 pub mod anonymous;
 #[path = "state/anonymous_wallet.rs"]
 mod anonymous_wallet;
+#[cfg(feature = "operations")]
+#[path = "transport/ring_client.rs"]
+mod client;
+#[cfg(feature = "operations")]
+#[path = "transfer/co_signer.rs"]
+mod co_signer;
 #[path = "codec/compute_units.rs"]
 pub mod compute_units;
-#[path = "operations/confidential.rs"]
+#[path = "audit/confidential.rs"]
 mod confidential;
 #[path = "crypto/decrypt/mod.rs"]
 mod decrypt;
-#[path = "operations/delivered_utxos.rs"]
+#[cfg(feature = "operations")]
+#[path = "transfer/delegate_source.rs"]
+mod delegate_source;
+#[path = "audit/delivered_utxos.rs"]
 pub mod delivered;
+#[cfg(feature = "operations")]
+#[path = "transfer/deposit.rs"]
+mod deposit;
 #[path = "crypto/disclosure/mod.rs"]
 mod disclosure;
 #[path = "crypto/encryption/mod.rs"]
 mod encryption;
+#[cfg(feature = "operations")]
+#[path = "enrollment/owner.rs"]
+pub mod enrollment;
 mod error;
 #[path = "state/exposed_notes.rs"]
 mod exposed_notes;
 #[path = "codec/frame.rs"]
 pub mod frame;
-#[path = "rpc/history.rs"]
+#[cfg(feature = "operations")]
+#[path = "transport/heap.rs"]
+mod heap;
+#[path = "transport/history.rs"]
 pub mod history;
-#[path = "rpc/indexer.rs"]
+#[path = "transport/ring_indexer.rs"]
 mod indexer;
 #[path = "codec/key_catalog.rs"]
 pub mod key_catalog;
 #[path = "state/known_utxo_index.rs"]
 mod known;
-#[path = "operations/merge_audit.rs"]
+#[cfg(feature = "operations")]
+#[path = "transfer/limits.rs"]
+mod limits;
+#[cfg(feature = "operations")]
+#[path = "merge/builder.rs"]
+mod merge;
+#[path = "merge/audit.rs"]
 mod merge_audit;
 #[path = "codec/merge_data.rs"]
 pub mod merge_data;
@@ -39,39 +75,88 @@ mod merge_ledger;
 mod origin;
 #[path = "codec/owner_signature.rs"]
 pub mod owner_signature;
+#[cfg(feature = "operations")]
+#[path = "transfer/pipeline/mod.rs"]
+mod pipeline;
 #[path = "codec/program_data.rs"]
 mod program_data;
+#[cfg(feature = "operations")]
+#[path = "transport/projection.rs"]
+mod projection;
+#[cfg(feature = "operations")]
+#[path = "proof/prover.rs"]
+mod prover;
+#[cfg(feature = "operations")]
+#[path = "enrollment/publish_viewing_rotation.rs"]
+mod publish_viewing_rotation;
 #[path = "security/reader.rs"]
 mod reader;
-#[path = "operations/records.rs"]
+#[path = "records/openings.rs"]
 pub mod records;
-#[path = "operations/recover.rs"]
+#[path = "audit/recover.rs"]
 mod recover;
-#[path = "operations/resolver.rs"]
+#[cfg(feature = "operations")]
+#[path = "records/registry.rs"]
+mod registry_records;
+#[cfg(feature = "operations")]
+#[path = "transport/ring_relay.rs"]
+mod relay;
+#[cfg(feature = "operations")]
+#[path = "transfer/relay_message.rs"]
+mod relay_message;
+#[cfg(feature = "operations")]
+#[path = "proof/request.rs"]
+mod request;
+#[path = "records/resolver.rs"]
 pub mod resolver;
+#[cfg(feature = "operations")]
+mod ring_error;
 #[path = "codec/ring_keys.rs"]
 mod ring_keys;
 #[cfg(feature = "rpc")]
 #[path = "rpc/mod.rs"]
 pub mod rpc;
-#[path = "operations/scan.rs"]
+#[path = "audit/scan.rs"]
 mod scan;
+#[cfg(feature = "operations")]
+#[path = "transfer/utxo_selection.rs"]
+mod select;
+#[cfg(feature = "operations")]
+#[path = "transport/signature_history.rs"]
+mod signature_history;
+#[cfg(feature = "operations")]
+#[path = "records/storage.rs"]
+mod storage;
 #[path = "codec/storage_accounts.rs"]
 pub mod storage_accounts;
 #[path = "codec/storage_data.rs"]
 pub mod storage_data;
-#[path = "rpc/tags.rs"]
+#[cfg(feature = "operations")]
+#[path = "transport/submission.rs"]
+mod submission;
+#[path = "transport/tags.rs"]
 pub mod tags;
+#[cfg(all(test, feature = "operations"))]
+mod tests;
 #[path = "codec/transfer_accounts.rs"]
 pub mod transfer_accounts;
+#[cfg(feature = "operations")]
+#[path = "state/pool_trees.rs"]
+mod trees;
 mod types;
+#[cfg(feature = "operations")]
+#[path = "enrollment/vault.rs"]
+mod vault_enrollment;
 #[path = "state/viewing_history.rs"]
 pub mod viewing_history;
-#[path = "operations/viewing_rotation.rs"]
+#[path = "enrollment/viewing_rotation.rs"]
 mod viewing_rotation;
 #[path = "codec/vouch.rs"]
 pub mod vouch;
-#[path = "operations/wallet_sync.rs"]
+#[cfg(feature = "operations")]
+#[path = "transfer/wallet_payment.rs"]
+mod wallet_payment;
+#[path = "audit/wallet_sync.rs"]
 mod wallet_sync;
 
 pub(crate) const REDACTED: &str = "<redacted>";
@@ -152,6 +237,90 @@ pub use program_data::{program_data, ProgramData, PROGRAM_DATA_METADATA_LEN};
 pub use viewing_rotation::{ViewingRotation, ViewingRotationError};
 pub use wallet_sync::{RingWalletNotes, RingWalletScanned, RingWalletSync, RingWalletSynced};
 pub use zolana_ring_indexer::rpc::RingRpcError;
+
+#[cfg(feature = "operations")]
+pub use custom_ring_interface::{
+    tag, CoSignScope, CustomRingProof, InstructionTag, RingKind, RingMode,
+};
+#[cfg(feature = "operations")]
+pub use spr_program::instruction::{DepositAsset, DepositSplAccounts};
+
+#[cfg(feature = "operations")]
+pub use crate::prover::secret_json_body;
+#[cfg(feature = "operations")]
+pub use crate::{
+    account::{
+        CustomRing, CustomRingCoSigner, CustomRingConfig, PinnedPolicy, RingRegistration,
+        RingStatus,
+    },
+    address_ceiling::{
+        AddressCeiling, AddressCeilingError, CeilingDecision, Fit, FitError, FitSigners,
+        MergeGroup, SetupEffect, SpentInput, TransactionFit,
+    },
+    admin::{
+        ClearCoSigner, InitialPolicy, Initialize, PolicyTable, PolicyUpdate, SetCoSigner,
+        SetDelegate, SourceOwner, UpdateAuthority, UpdatePolicy,
+    },
+    client::{RingClient, RingIndexerBackend},
+    delegate_source::{
+        AllowedNullifiers, DelegateSourceError, ResolvedSource, SourceEnrollment,
+        TrackingEnrollment,
+    },
+    deposit::{
+        fetch_asset_id_async, DepositOutput, DepositRecipient, PreparedRingDeposit, RingDeposit,
+        RingDepositBatch, RingDepositBatchReceipt, RingDepositReceipt,
+    },
+    enrollment::{
+        Enroll, EnrolledLeaf, EnrollmentRead, EnrollmentService, OwnedChange, OwnerEnrollment,
+    },
+    merge::{
+        CustomRingMerge, CustomRingMergeInstruction, FittedMerge, MergeProofInput, MergeRelay,
+        PreparedCustomRingMerge, ProvenCustomRingMerge, RingMergeOperation, MAX_RING_MERGE_INPUTS,
+        MERGE_DEFAULT_INPUT_COUNT,
+    },
+    pipeline::{
+        entry_shape_keyed, shape_keyed, sole_mint, transfer_key, Anonymous, AnonymousMove,
+        AnonymousPayment, AnonymousTransfer, ApplicationData, CachedNote, CoOwner,
+        CustomRingTransfer, CustomRingTransferInput, DelegateCandidates, DelegateFunding,
+        DelegateMint, DelegateMintAccount, DelegateMove, DelegateOutput, DelegatePayment,
+        DelegateSource, DelegateTransfer, DelegateTransferInput, DelegateWithdrawal, Delegated,
+        EntrySpend, NoteData, Owner, OwnerExposure, ProgramCommitment, ProgramPlan,
+        ProvenRingTransfer, PublicOwnerTransfer, PublicOwners, Rail, RailKind, ReadCache, Relayed,
+        RelayedTransferInput, RingPayment, RingSender, RingTransfer, SealRow, TransferKey,
+        UnsignedRelay, VouchSigner,
+    },
+    publish_viewing_rotation::RotateViewingKey,
+    registry_records::{
+        AuthorityRecordUpdate, MemberRecords, OwnerListSalts, OwnerListTags, OwnerListTagsRead,
+        PrivateKeyKind, PrivateListMember, RecordUpdateTarget, SaltedOwnerCheck,
+        WalletRecordUpdate,
+    },
+    relay::{
+        DelegateRequester, PendingSignature, PreparedAuthorityTransfer, PreparedRelay, RelaySent,
+        RequestedAuthorityTransfer, RingRelay,
+    },
+    relay_message::{
+        ApprovalLimit, ApprovalOpening, CoSignerApproval, CoSignerRule, ExactApproval,
+        FunderApproval, LegDirection, MessageMismatch, OutputTotalsOpening, OwnerApproval,
+        PublicLeg, PublicTotalsOpening, RelayFunderTerms, RelayTransferTerms, SlotOpening,
+        TokenAccountCreate, VerifiedMessage,
+    },
+    ring_error::RingError,
+    select::{select_merge_where, select_spend_where},
+    signature_history::SignatureHistory,
+    storage::{
+        EnrollBatch, InitializeStorage, PrivateStorageWrite, ProvenEnrollBatch, ProvenPrivateWrite,
+        SaltedOwnerWrite, StorageApplyProof, UpdateStorage,
+    },
+    submission::{
+        live_registry, LocalSigners, RingOperation, RingSubmission, SettledSubmission,
+        SubmissionSigners, SubmissionStatus,
+    },
+    trees::{tree_id, written_tree_fees},
+    wallet_payment::{AnonymousRingTransfers, OwnerRingTransfers, RingProving},
+};
+#[cfg(feature = "operations")]
+pub use vault_enrollment::{EnrollVault, VaultEnrollmentMessage};
 
 /// The answer to a one-item request, a holder that answers more or less is refused.
 pub fn exactly_one<T>(answers: Vec<T>) -> Result<T, spr_transaction::TransactionError> {

@@ -1,5 +1,4 @@
 use anyhow::{anyhow, bail, ensure, Context as _, Result};
-use custom_ring_sdk::{CustomRing, InitializeStorage, OwnerListSalts};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use solana_address::Address;
@@ -24,6 +23,7 @@ use zolana_ring_client::{
         GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS, HEALTH, RING_STATUS,
         SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE,
     },
+    CustomRing, InitializeStorage, OwnerListSalts,
 };
 
 use crate::{config::redact_url, line, probe, wait_for, Context, Probe};

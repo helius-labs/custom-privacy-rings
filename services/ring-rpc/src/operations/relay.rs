@@ -1,7 +1,6 @@
 use std::{future::Future, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
-use custom_ring_sdk::{FitError, FitSigners, RingError, SealRow, TransactionFit};
 use jsonrpsee::types::ErrorObjectOwned;
 use log::warn;
 use sea_orm::{
@@ -23,11 +22,15 @@ use thiserror::Error;
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
 use zolana_operator_custody::SigningIdentity;
-use zolana_ring_client::rpc::{
-    CoSignTransactionRequest, CoSignTransactionResponse, GetRelayQuoteRequest,
-    GetRelayStatusRequest, PrepareRelayRequest, ReadTarget, RelayId, RelayIntent, RelayMergeInputs,
-    RelayProofInputs, RelayProofInputsError, RelayQuote, RelayRail, RelayRequestAttestation,
-    RelayStatus, RelayStep, ServiceTarget, SubmitRelayRequest, TokenAccountSetupError,
+use zolana_ring_client::{
+    rpc::{
+        CoSignTransactionRequest, CoSignTransactionResponse, GetRelayQuoteRequest,
+        GetRelayStatusRequest, PrepareRelayRequest, ReadTarget, RelayId, RelayIntent,
+        RelayMergeInputs, RelayProofInputs, RelayProofInputsError, RelayQuote, RelayRail,
+        RelayRequestAttestation, RelayStatus, RelayStep, ServiceTarget, SubmitRelayRequest,
+        TokenAccountSetupError,
+    },
+    FitError, FitSigners, RingError, SealRow, TransactionFit,
 };
 use zolana_ring_transaction::ClassifiedInput;
 

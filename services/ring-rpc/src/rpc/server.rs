@@ -924,7 +924,7 @@ mod tests {
             Ok(TEST_GENESIS)
         }
 
-        async fn tree_id(&self, _tree: Address) -> Result<u16, custom_ring_sdk::RingError> {
+        async fn tree_id(&self, _tree: Address) -> Result<u16, zolana_ring_client::RingError> {
             Ok(1)
         }
 

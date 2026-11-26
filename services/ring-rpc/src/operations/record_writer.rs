@@ -4,7 +4,7 @@
 //! moves the root, and Storage raises the source's tracking floor to the root's revision with it.
 //! Without a wired private write source such a batch fails its flush and stays queued.
 //!
-//! Read after `operations/record_update.rs` and `custom_ring_sdk::PrivateStorageWrite`.
+//! Read after `operations/record_update.rs` and `zolana_ring_client::PrivateStorageWrite`.
 //! Read before `storage/update_queue.rs`.
 
 use std::{
@@ -19,10 +19,6 @@ use custom_ring_interface::{
     storage_instruction::{RecordWriteClassification, StorageUpdateIxData},
     ApplyRecordsIxData, CustomRingError, RecordWrite, RecordWriteData, RingPolicy, APPLY_BATCH,
 };
-use custom_ring_sdk::{
-    CustomRing, InitializeStorage, PrivateStorageWrite, ProvenPrivateWrite, RingError,
-    SaltedOwnerWrite, UpdateStorage,
-};
 use log::warn;
 use sea_orm::DbErr;
 use solana_address::Address;
@@ -30,7 +26,6 @@ use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_indexer_api::Hash;
 use zeroize::Zeroizing;
 use zolana_operator_custody::{signed_transaction, SigningIdentity};
-use zolana_ring_client::PROOF_UNITS;
 use zolana_ring_client::{
     rpc::{
         GetPendingListApprovalsRequest, GetPendingListApprovalsResponse,
@@ -38,7 +33,8 @@ use zolana_ring_client::{
         RecordUpdateStatus, RefuseListApprovalRequest, SubmitRecordUpdateRequest,
         SubmitRecordUpdateResponse, PENDING_LIST_APPROVALS_PAGE_LIMIT,
     },
-    StorageTip,
+    CustomRing, InitializeStorage, PrivateStorageWrite, ProvenPrivateWrite, RingError,
+    SaltedOwnerWrite, StorageTip, UpdateStorage, PROOF_UNITS,
 };
 use zolana_ring_indexer::rpc::{GetStorageApplyProofInputsRequest, StorageWriteView};
 use zolana_ring_member_registry::ApplyProofInputs;

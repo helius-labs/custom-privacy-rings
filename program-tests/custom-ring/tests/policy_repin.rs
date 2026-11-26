@@ -5,7 +5,6 @@
 use anyhow::{anyhow, Result};
 use custom_ring_cli::ModeName;
 use custom_ring_interface::CustomRingError;
-use custom_ring_sdk::{CustomRing, DepositAsset, ListRegistry};
 use custom_ring_test_validator::{
     cli::{ListWrite, RingProject, RingToml},
     policy::{
@@ -18,7 +17,7 @@ use solana_signer::Signer;
 use spr_keypair::ShieldedKeypair;
 use spr_program_test::Rejection;
 use spr_transaction::Utxo;
-use zolana_ring_client::PolicySources;
+use zolana_ring_client::{CustomRing, DepositAsset, ListRegistry, PolicySources};
 use zolana_ring_policy::ListId;
 
 const FORBID_BLOCK_TOML: &str = r#"[policy]
@@ -167,11 +166,11 @@ fn the_policy_authority_re_pins_the_table_of_a_live_ring() -> Result<()> {
     let stranger = env.funded_keypair()?;
     let rejection = ExpectRejection {
         payer: &stranger,
-        instructions: &[custom_ring_sdk::UpdatePolicy {
+        instructions: &[zolana_ring_client::UpdatePolicy {
             ring,
             authority: stranger.pubkey(),
             current: &*policy_registry(ring, env)?,
-            update: custom_ring_sdk::PolicyUpdate::Rules(custom_ring_sdk::PolicyTable {
+            update: zolana_ring_client::PolicyUpdate::Rules(zolana_ring_client::PolicyTable {
                 rules: &BLOCK_ONLY,
                 shared_sources: &[],
             }),

@@ -70,21 +70,12 @@ use std::{
     net::{TcpStream, ToSocketAddrs},
     time::Duration,
 };
-use zolana_ring_client::FrameEncode;
-use zolana_ring_client::ListWriteData;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use custom_ring_cli::{wait_for, Landing, ModeName, Probe};
 use custom_ring_interface::{
     AnonymousProofData, CustomRingError, RingMode, RingPolicy, RingRail, RingRole,
     RingTransactData, RING_POLICY, RING_POLICY_PDA_SEED,
-};
-use custom_ring_sdk::{
-    compute_unit_limit, AnonymousTransfer, CoSignScope, CustomRing, CustomRingMerge,
-    CustomRingTransfer, CustomRingTransferInput, DelegateOutput, DelegateTransfer,
-    DelegateTransferInput, DepositRecipient, InstructionTag, MergeProofInput, ProvenRingTransfer,
-    RingClient, RingDeposit, RingDepositReceipt, RingError, RingMergeOperation, RingOperation,
-    RingRegistration,
 };
 use custom_ring_test_validator::{
     cli::{merged, RingProject, RingToml},
@@ -145,8 +136,13 @@ use spr_transaction::{
 use spr_tree::TreeAccount;
 use spr_user_registry_interface::user_registry_program_id;
 use zolana_ring_client::{
-    auditor_view_tag, rpc::CreateAuditorKeyRequest, AuditedTransaction, AuditedUtxo, KnownUtxo,
-    OutputOpening, RecoveryStep, RingRecovery, RingScan, SourceMember, ViewingHistory,
+    auditor_view_tag, compute_unit_limit, rpc::CreateAuditorKeyRequest, AnonymousTransfer,
+    AuditedTransaction, AuditedUtxo, CoSignScope, CustomRing, CustomRingMerge, CustomRingTransfer,
+    CustomRingTransferInput, DelegateOutput, DelegateTransfer, DelegateTransferInput,
+    DepositRecipient, FrameEncode, InstructionTag, KnownUtxo, ListWriteData, MergeProofInput,
+    OutputOpening, ProvenRingTransfer, RecoveryStep, RingClient, RingDeposit, RingDepositReceipt,
+    RingError, RingMergeOperation, RingOperation, RingRecovery, RingRegistration, RingScan,
+    SourceMember, ViewingHistory,
 };
 use zolana_ring_keys::ring_body_output;
 use zolana_ring_keys::ring_sender_bundle_output_body;
@@ -216,7 +212,7 @@ const USDC_FINAL_CHANGE: u64 = USDC_EXIT_CHANGE - USDC_WITHDRAW_AMOUNT - USDC_FI
 
 fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
     let count = amounts.len().to_string();
-    let merged_count = amounts.len().min(custom_ring_sdk::MAX_RING_MERGE_INPUTS);
+    let merged_count = amounts.len().min(zolana_ring_client::MAX_RING_MERGE_INPUTS);
     let total: u64 = amounts[..merged_count].iter().sum();
     let env = setup()?;
     let tree = env.register_default_tree()?;
@@ -356,7 +352,7 @@ impl DelegateAppointment<'_> {
     fn send(self, env: &TestEnv) -> Result<()> {
         let admin = RingRoleKeys::of(&env.payer).admin;
         env.client.rpc().create_and_send_transaction(
-            &[custom_ring_sdk::SetDelegate {
+            &[zolana_ring_client::SetDelegate {
                 ring: self.ring,
                 authority: admin.pubkey(),
                 delegate: self.delegate.pubkey(),
@@ -873,12 +869,12 @@ impl<'a> AnonymousPayment<'a> {
             transaction,
         })
         .with_anonymous_signer(&self.sender.signing_key)
-        .with_payment(custom_ring_sdk::AnonymousPayment {
+        .with_payment(zolana_ring_client::AnonymousPayment {
             to: self.to,
             asset: Mint::SOL,
             amount: self.amount,
             reply: None,
-            data: custom_ring_sdk::NoteData::default(),
+            data: zolana_ring_client::NoteData::default(),
         })?
         .with_shape(shape)?)
     }

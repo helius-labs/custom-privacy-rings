@@ -755,7 +755,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             compiled.shared_sources,
-            vec![(ListId::Block, custom_ring_sdk::CustomRing::new(CURATOR))]
+            vec![(ListId::Block, zolana_ring_client::CustomRing::new(CURATOR))]
         );
         assert!(policy.sources.get(Target::Devnet).is_empty());
     }

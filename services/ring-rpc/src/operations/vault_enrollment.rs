@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use custom_ring_sdk::VaultEnrollmentMessage;
 use solana_address::Address;
 use solana_hash::Hash;
 use solana_signature::Signature;
 use spr_indexer_api::SerializableSignature;
-use zolana_ring_client::rpc::{
-    SignedVaultEnrollment, VaultEnrollmentBlock, VaultEnrollmentRequest,
+use zolana_ring_client::{
+    rpc::{SignedVaultEnrollment, VaultEnrollmentBlock, VaultEnrollmentRequest},
+    VaultEnrollmentMessage,
 };
 
 use super::{

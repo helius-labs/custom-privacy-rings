@@ -6,7 +6,6 @@ use custom_ring_interface::{
     settlement_mints, tag, InstructionTag, PublicLeg, PublicSlotError, PublicSlots, RingPolicy,
     RingRail, RingTransactData, TransferApproval, TransferLayout,
 };
-use custom_ring_sdk::CustomRing;
 use solana_address::Address;
 use solana_message::VersionedMessage;
 use solana_sdk_ids::sysvar;
@@ -15,7 +14,8 @@ use spr_interface::SOL_ASSET_FIELD;
 use spr_interface::{instruction::InterfaceTransfer, pda, PROGRAM_ID_PUBKEY};
 use spr_transaction::{instructions::transact::SettlementTransfer, SOL_MINT};
 use zolana_ring_client::{
-    located_layout, AuditedTransaction, CoSignerPairs, FramedRow, OutputOpening, TransactionAudit,
+    located_layout, AuditedTransaction, CoSignerPairs, CustomRing, FramedRow, OutputOpening,
+    TransactionAudit,
 };
 use zolana_ring_policy::{
     owner_debits, DebitInput, DebitOutput, DebitTransfer, Member, PublicGross,

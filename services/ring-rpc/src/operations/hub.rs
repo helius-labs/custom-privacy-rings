@@ -5,9 +5,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use custom_ring_sdk::{
-    PrivateStorageWrite, ProvenPrivateWrite, RingClient, RingError, RingIndexerBackend,
-};
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{AsyncRpc, ClientError};
@@ -18,7 +15,7 @@ use zolana_operator_custody::SigningIdentity;
 use zolana_ring_client::{
     auditor_view_tag,
     rpc::{unix_now, KeyMode, ServiceTarget},
-    ReaderKey,
+    PrivateStorageWrite, ProvenPrivateWrite, ReaderKey, RingClient, RingError, RingIndexerBackend,
 };
 use zolana_ring_transaction::RingAssets;
 

@@ -6,7 +6,6 @@ use std::{
     thread::sleep,
     time::{Duration, Instant},
 };
-use zolana_ring_client::ListWriteData;
 
 use custom_ring_cli::{wait_for, Probe, Zolana};
 use custom_ring_interface::{
@@ -15,12 +14,6 @@ use custom_ring_interface::{
     storage_instruction::{EnrollIxData, StorageUpdateIxData, ENROLLMENT_BATCH},
     tracking::TrackingRegistry,
     RecordWriteData, RingPolicy, WriteRecordsIxData,
-};
-use custom_ring_sdk::{
-    CustomRing, CustomRingTransfer, CustomRingTransferInput, DepositAsset, DepositRecipient,
-    Enroll, EnrollBatch, EnrollmentRead, InitializeStorage, PrivateStorageWrite,
-    ProvenRingTransfer, RingDeposit, RingDepositReceipt, RingError, SaltedOwnerWrite,
-    StorageApplyProof, UpdateStorage,
 };
 use solana_address::Address;
 use solana_keypair::Keypair;
@@ -33,7 +26,10 @@ use spr_transaction::{instructions::transact::ConfidentialTransaction, Utxo};
 use zolana_ring_client::{
     records::{owner_record_key, storage_apply_proof_inputs},
     rpc::SubmitEnrollmentRequest,
-    RegisteredKeys, RingIndexer, TrackingLeaf,
+    CustomRing, CustomRingTransfer, CustomRingTransferInput, DepositAsset, DepositRecipient,
+    Enroll, EnrollBatch, EnrollmentRead, InitializeStorage, ListWriteData, PrivateStorageWrite,
+    ProvenRingTransfer, RegisteredKeys, RingDeposit, RingDepositReceipt, RingError, RingIndexer,
+    SaltedOwnerWrite, StorageApplyProof, TrackingLeaf, UpdateStorage,
 };
 use zolana_ring_indexer::rpc::{GetStorageApplyProofInputsRequest, StorageWriteView};
 use zolana_ring_keys::ListSaltHolder;
@@ -193,9 +189,10 @@ pub struct PolicyTransfer<'a> {
 
 impl PolicyTransfer<'_> {
     pub fn prove(self, client: &Zolana) -> Result<ProvenRingTransfer, RingError> {
-        let tree_id = self
-            .env
-            .run(custom_ring_sdk::tree_id(client.as_async(), self.env.tree))?;
+        let tree_id = self.env.run(zolana_ring_client::tree_id(
+            client.as_async(),
+            self.env.tree,
+        ))?;
         let hash = self.note.hash(
             &self.sender.nullifier_key.pubkey()?,
             &[0; 32],

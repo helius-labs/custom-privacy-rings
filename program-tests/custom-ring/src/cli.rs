@@ -7,7 +7,6 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use custom_ring_cli::{config::OperatorManifest, ListName, ModeName, SENDER_KEYPAIR_FILE};
-use custom_ring_sdk::CustomRing;
 use solana_address::Address;
 use solana_keypair::Keypair;
 use solana_loader_v3_interface::instruction as loader;
@@ -16,6 +15,7 @@ use solana_signer::Signer;
 use spr_keypair::{ShieldedKeypair, X25519Keypair};
 use spr_test_utils::localnet::isolated_temp_path;
 use zolana_operator_custody::{KeyArn, SecretContext, SecretPurpose};
+use zolana_ring_client::CustomRing;
 use zolana_ring_policy::ListId;
 
 use crate::{

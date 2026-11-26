@@ -3,9 +3,9 @@
 use std::{fs, io, path::Path};
 
 use anyhow::{anyhow, Context as _, Result};
-use custom_ring_sdk::secret_json_body;
 use solana_keypair::Keypair;
 use zeroize::Zeroizing;
+use zolana_ring_client::secret_json_body;
 use zolana_secret_file::{create_new, read_private, Access, Visibility};
 
 const MAX_KEYPAIR_FILE_BYTES: u64 = 4096;

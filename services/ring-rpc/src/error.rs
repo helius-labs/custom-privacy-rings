@@ -64,7 +64,7 @@ pub enum RingRpcError {
     #[error("indexer records lag the storage registry")]
     StaleRecords,
     #[error("storage update failed because {0}")]
-    StorageUpdate(Box<custom_ring_sdk::RingError>),
+    StorageUpdate(Box<zolana_ring_client::RingError>),
     #[error(transparent)]
     Grant(#[from] GrantRefusal),
     #[error("grant identity failed because {0}")]
@@ -92,7 +92,7 @@ pub enum RingRpcError {
     #[error(transparent)]
     Enrollment(#[from] EnrollmentRefusal),
     #[error("merge build failed because {0}")]
-    MergeBuild(Box<custom_ring_sdk::RingError>),
+    MergeBuild(Box<zolana_ring_client::RingError>),
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]

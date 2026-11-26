@@ -9,7 +9,6 @@ pub(crate) fn signature_fees(signatures: usize) -> u64 {
 use std::{str::FromStr, time::Duration};
 
 use async_trait::async_trait;
-use custom_ring_sdk::SignatureHistory;
 use solana_address::Address;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
@@ -28,6 +27,7 @@ use solana_transaction_status_client_types::{
     UiParsedInstruction,
 };
 use spr_client::{AsyncRpc, AsyncSolanaRpc, ClientError, RpcSendTransactionConfig};
+use zolana_ring_client::SignatureHistory;
 
 use crate::{error::RingRpcError, relay::RelayError, upstream::timed_rpc};
 

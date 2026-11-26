@@ -1,22 +1,23 @@
 //! The relay co-signs within its asset's window caps, sends once a second approver signed, and refuses an outflow beyond them, a proof naming a co-signer the run left out, or a ring whose auditor key it does not hold, and keeps a reservation while a stored relay holds it.
 
 use custom_ring_interface::TransferApproval;
-use custom_ring_sdk::CustomRing;
 use jsonrpsee::RpcModule;
 use sea_orm::{ConnectionTrait, Statement};
 use solana_instruction::{AccountMeta, Instruction};
 use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_keypair::{ShieldedKeypair, SigningKey};
 use zolana_operator_custody::{CustodyError, OperatorSigner};
-use zolana_ring_client::rpc::{
-    ApprovedTransfer, CoSignList, CoSignListEdit, CoSignListEntry, CoSignSubjectKind,
-    CoSignTransactionRequest, CoSignTransactionResponse, EditCoSignList, EditCoSignListRequest,
-    GetCoSignListsRequest, GetCoSignListsResponse, GetRelayQuoteRequest, GetRelayStatusRequest,
-    PrepareRelayRequest, ReadCoSignLists, RelayId, RelayProofInputs, RelayQuote, RelayRail,
-    RelayStatus, RelayStep, SubmitRelayRequest, CO_SIGN_TRANSACTION, EDIT_CO_SIGN_LIST,
-    GET_CO_SIGN_LISTS, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
+use zolana_ring_client::{
+    rpc::{
+        ApprovedTransfer, CoSignList, CoSignListEdit, CoSignListEntry, CoSignSubjectKind,
+        CoSignTransactionRequest, CoSignTransactionResponse, EditCoSignList, EditCoSignListRequest,
+        GetCoSignListsRequest, GetCoSignListsResponse, GetRelayQuoteRequest, GetRelayStatusRequest,
+        PrepareRelayRequest, ReadCoSignLists, RelayId, RelayProofInputs, RelayQuote, RelayRail,
+        RelayStatus, RelayStep, SubmitRelayRequest, CO_SIGN_TRANSACTION, EDIT_CO_SIGN_LIST,
+        GET_CO_SIGN_LISTS, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
+    },
+    ApprovalEncode, CustomRing,
 };
-use zolana_ring_client::ApprovalEncode;
 use zolana_ring_policy::{AssetLimits, MintPolicy};
 use zolana_ring_rpc::{
     ChainOutcome, CoSignError, DelegateSeal, ProvenRelay, RelayError, RelayParties, RelayParts,

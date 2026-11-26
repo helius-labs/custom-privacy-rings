@@ -10,15 +10,15 @@ pub use grammar::{
     PolicyError, PolicySpec, RuleSpec, SourceSpec, Sources, SubjectName,
 };
 pub use render::render;
-use zolana_ring_client::PolicySources;
 
 use std::collections::BTreeMap;
 
 use anyhow::{ensure, Context as _, Result};
 use custom_ring_interface::RingPolicy;
-use custom_ring_sdk::{CustomRing, PinnedPolicy, PolicyTable, PolicyUpdate, UpdatePolicy};
 use solana_address::Address;
-use zolana_ring_client::ListRegistry;
+use zolana_ring_client::{
+    CustomRing, ListRegistry, PinnedPolicy, PolicySources, PolicyTable, PolicyUpdate, UpdatePolicy,
+};
 use zolana_ring_policy::{MintPolicy, RuleTable};
 
 use crate::{

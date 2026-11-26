@@ -6,14 +6,16 @@ use std::{
 };
 
 use async_trait::async_trait;
-use custom_ring_sdk::{select_merge_where, MERGE_DEFAULT_INPUT_COUNT};
 use solana_address::Address;
 use solana_message::VersionedMessage;
 use spr_keypair::NullifierKey;
 use spr_transaction::{Mint, WalletUtxo};
-use zolana_ring_client::rpc::{
-    MergeSettings, MergeSettingsAttestation, RelayId, SetMergeSettingsRequest,
-    SetMergeSettingsResponse,
+use zolana_ring_client::{
+    rpc::{
+        MergeSettings, MergeSettingsAttestation, RelayId, SetMergeSettingsRequest,
+        SetMergeSettingsResponse,
+    },
+    select_merge_where, MERGE_DEFAULT_INPUT_COUNT,
 };
 use zolana_ring_transaction::RingAssets;
 
@@ -706,7 +708,7 @@ pub(crate) mod tests {
             Ok(GENESIS)
         }
 
-        async fn tree_id(&self, _tree: Address) -> Result<u16, custom_ring_sdk::RingError> {
+        async fn tree_id(&self, _tree: Address) -> Result<u16, zolana_ring_client::RingError> {
             Ok(1)
         }
 

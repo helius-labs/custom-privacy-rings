@@ -98,7 +98,7 @@ fn an_outflow_limit_ring_bounds_each_transfer() -> Result<()> {
         payer: &env.payer,
         holder: &cosign_admin,
     }
-    .send(&[custom_ring_sdk::SetCoSigner {
+    .send(&[zolana_ring_client::SetCoSigner {
         ring,
         payer: env.payer.pubkey(),
         authority: cosign_admin.pubkey(),

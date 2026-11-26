@@ -19,5 +19,5 @@ fn cli_merges_twenty_four_custom_ring_utxos() -> Result<()> {
 #[test]
 #[ignore = "zolana pins no ring merge keys"]
 fn cli_caps_anonymous_merge_at_supported_width() -> Result<()> {
-    cli_merge_fragments(&[3_000_000; custom_ring_sdk::MAX_RING_MERGE_INPUTS])
+    cli_merge_fragments(&[3_000_000; zolana_ring_client::MAX_RING_MERGE_INPUTS])
 }

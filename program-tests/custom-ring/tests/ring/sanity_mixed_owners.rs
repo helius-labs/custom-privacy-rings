@@ -1,5 +1,5 @@
 use super::*;
-use custom_ring_sdk::CoOwner;
+use zolana_ring_client::CoOwner;
 use zolana_ring_policy::MintPolicy;
 
 #[test]

@@ -1,7 +1,7 @@
 //! `key rotate`, a new viewing key handed to ring rpc for the member's tracking leaf, and the key holder every
 //! wallet command loads.
 //!
-//! Read before `wallet`. Read after `custom_ring_sdk::RotateViewingKey`.
+//! Read before `wallet`. Read after `zolana_ring_client::RotateViewingKey`.
 //!
 //! Each rotated key is an owner-only `<n>.key` file, never overwritten, the newest current and every
 //! earlier one retained. The anonymous wallet store stays keyed by the identity key.
@@ -12,11 +12,10 @@ use std::{
 };
 
 use anyhow::{ensure, Context as _, Result};
-use custom_ring_sdk::RotateViewingKey;
 use solana_signer::Signer;
 use spr_keypair::{ShieldedKeypair, ViewingKey};
 use spr_transaction::ShieldedKeys;
-use zolana_ring_client::ViewingRotation;
+use zolana_ring_client::{RotateViewingKey, ViewingRotation};
 use zolana_ring_keys::RotatingRingKeys;
 use zolana_secret_file::{create_key32, read_key32, Access};
 

@@ -93,7 +93,7 @@ impl Context {
 
     pub fn ring_client(
         &self,
-    ) -> &custom_ring_sdk::RingClient<Blocking<SolanaRpc>, Blocking<SprIndexer>> {
+    ) -> &zolana_ring_client::RingClient<Blocking<SolanaRpc>, Blocking<SprIndexer>> {
         self.zolana.ring_client()
     }
 
@@ -201,14 +201,14 @@ impl Context {
         RingRpcClient::new(&self.config.urls().ring_rpc)
     }
 
-    pub fn record_update_target(&self) -> Result<custom_ring_sdk::RecordUpdateTarget> {
+    pub fn record_update_target(&self) -> Result<zolana_ring_client::RecordUpdateTarget> {
         let policy = self
             .block(
                 self.ring
                     .read::<custom_ring_interface::RingPolicy>(self.chain()),
             )?
             .context("the ring has no policy account, run `zolana-ring init` first")?;
-        Ok(custom_ring_sdk::RecordUpdateTarget {
+        Ok(zolana_ring_client::RecordUpdateTarget {
             genesis_hash: self.rpc().genesis_hash()?,
             ring: self.ring,
             registry: policy.records,

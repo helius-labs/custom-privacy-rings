@@ -33,9 +33,9 @@ use spr_indexer_api::Hash;
 use spr_interface::N_PUBLIC_SLOTS;
 use spr_keypair::NullifierKey;
 use zeroize::Zeroizing;
-use zolana_ring_client::MAX_CPI_DATA_LEN;
-use zolana_ring_client::RING_KEYS;
-use zolana_ring_client::{RingIndexer, RingIndexerError};
+use zolana_ring_client::{
+    RingIndexer, RingIndexerError, SppExpansion, MAX_CPI_DATA_LEN, RING_KEYS,
+};
 use zolana_ring_indexer::{
     rpc::{
         GetStorageRecordPoolRequest, GetStorageRecordPoolResponse, RingIndexedMemberRecordView,
@@ -327,7 +327,7 @@ struct ReplayedBody {
 
 impl ProveRequest for ReplayedBody {
     fn body(&self) -> Result<Zeroizing<String>, ClientError> {
-        custom_ring_sdk::secret_json_body(&self.body)
+        zolana_ring_client::secret_json_body(&self.body)
     }
 
     fn proving_key(&self) -> Result<ExpectedProvingKey, ClientError> {

@@ -1,18 +1,11 @@
 //! `transact`, `transfer` and `deposit`, audited deposits and the ring transfers that spend them.
 
 use std::str::FromStr;
-use zolana_ring_client::PolicySources;
 
 use anyhow::{bail, ensure, Context as _, Result};
 use custom_ring_interface::{
     cosign::{ApprovalMask, CoSignOperation, CoSignRequirement},
     RingPolicy, RingRail,
-};
-use custom_ring_sdk::{
-    entry_shape_keyed, select_spend_where, shape_keyed, AnonymousMove, AnonymousPayment,
-    CoSignScope, CustomRingConfig, CustomRingTransfer, CustomRingTransferInput, DepositAsset,
-    DepositRecipient, EntrySpend, ListRegistry, LocalSigners, PublicOwnerTransfer, RingDeposit,
-    RingDepositReceipt, RingMode, RingOperation, RingPayment, RingSubmission,
 };
 use solana_address::Address;
 use solana_keypair::Keypair;
@@ -26,7 +19,13 @@ use spr_transaction::{
     },
     Data, ShieldedKeys, SpendableDecryptionResult, WalletUtxo, SOL_MINT,
 };
-use zolana_ring_client::{mint_balances, owner_record_key, rpc::DecryptedOutputKind, ReaderKey};
+use zolana_ring_client::{
+    entry_shape_keyed, mint_balances, owner_record_key, rpc::DecryptedOutputKind,
+    select_spend_where, shape_keyed, AnonymousMove, AnonymousPayment, CoSignScope,
+    CustomRingConfig, CustomRingTransfer, CustomRingTransferInput, DepositAsset, DepositRecipient,
+    EntrySpend, ListRegistry, LocalSigners, PolicySources, PublicOwnerTransfer, ReaderKey,
+    RingDeposit, RingDepositReceipt, RingMode, RingOperation, RingPayment, RingSubmission,
+};
 use zolana_ring_keys::{
     ring_address::RING_PAYMENT_SCHEME, ListSaltHolder, RingAddress, RingPaymentRequest,
     RotatingRingKeys,
@@ -831,7 +830,7 @@ impl Outflow {
         let member = Member::asset(&self.mint)?;
         let read = crate::records::read_one(
             &ctx.zolana,
-            custom_ring_sdk::MemberRecords {
+            zolana_ring_client::MemberRecords {
                 ring: ctx.ring,
                 members: &[member],
             },
@@ -1383,7 +1382,7 @@ fn held_total(utxos: &[WalletUtxo]) -> Result<u64> {
 fn granted(ctx: &Context, reader: &ReaderKey) -> Result<bool> {
     let read = records::read_one(
         &ctx.zolana,
-        custom_ring_sdk::MemberRecords {
+        zolana_ring_client::MemberRecords {
             ring: ctx.ring,
             members: &[reader.record_key()?],
         },
@@ -1591,7 +1590,7 @@ mod tests {
             cosigner: None,
         };
         assert_eq!(deposits(DepositAsset::Sol).drawn_lamports(), 7);
-        let spl = DepositAsset::Spl(custom_ring_sdk::DepositSplAccounts {
+        let spl = DepositAsset::Spl(zolana_ring_client::DepositSplAccounts {
             mint: RING,
             user_token: RING,
             token_program: RING,
@@ -1993,7 +1992,7 @@ mod tests {
     fn an_anonymous_held_spend_stays_within_a_keyed_width() {
         let within = |spendable: Spendable, outputs: usize, spends_default_ring: bool| {
             let widest = spendable.widest_anonymous(outputs).unwrap();
-            let key = custom_ring_sdk::transfer_key(TransferSpend {
+            let key = zolana_ring_client::transfer_key(TransferSpend {
                 rail: RingRail::Anonymous,
                 inputs: widest,
                 outputs,

@@ -30,4 +30,5 @@ CI omits prover logs from failure reports because proof errors can contain priva
 Dispatch the final pushed branch after the Zolana pin passes its release source check and the pinned proving keys are public.
 The `prover` and `ring-indexer` workflows have separate manual dispatches.
 The prover workflow requires the pinned keys for its installed circuit and anonymous tag checks.
+Its path filter names `sdk-libs/client/**`, the crate whose `tests/fixtures` hold the Rust request goldens the Go prover tests read.
 The sanity mode does not run those workflows.

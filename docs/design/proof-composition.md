@@ -193,7 +193,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 - SPP takes one signature as authorization for every data-bearing output of that signer. No statement element counts them.
 - A relayed signer's SDK requires one opening per published slot, each rebuilding its slot's commitment, before it signs. That check is the reader's and binds nobody else.
-- The test is `a_data_recipient_reads_every_slot_and_signs` in `sdk-libs/sdk/src/tests/operations/relay.rs`.
+- The test is `a_data_recipient_reads_every_slot_and_signs` in `sdk-libs/client/src/tests/transfer/pipeline/relay.rs`.
 
 ### Roots come from the ring's registries
 

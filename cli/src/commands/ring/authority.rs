@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 use custom_ring_interface::RingRole;
-use custom_ring_sdk::UpdateAuthority;
 use solana_loader_v3_interface::instruction as loader;
 use zolana_operator_custody::{OperatorSigner, SignerRef, SigningIdentity};
+use zolana_ring_client::UpdateAuthority;
 
 use crate::{
     config::parse_json,

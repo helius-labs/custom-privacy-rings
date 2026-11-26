@@ -60,7 +60,7 @@ Pass the vault's seeds and bump in the Pinocchio `Signer`. The helper requires t
 Set `Enroll::owner` to the vault PDA.
 
 ```rust
-use custom_ring_sdk::EnrollVault;
+use zolana_ring_client::EnrollVault;
 
 let signature = EnrollVault {
     enrollment,

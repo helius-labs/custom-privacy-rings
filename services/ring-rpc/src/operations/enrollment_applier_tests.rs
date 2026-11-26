@@ -11,7 +11,6 @@ use custom_ring_interface::{
     tracking::viewing_hash,
     ApplyRecordsIxData, CustomRingProof, RingPolicy, RingRoles, RING_POLICY, STORAGE_PROGRAM_ID,
 };
-use custom_ring_sdk::{OwnedChange, OwnerEnrollment};
 use solana_account::Account;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
@@ -21,7 +20,7 @@ use solana_signer::Signer;
 use solana_transaction::versioned::VersionedTransaction;
 use spr_keypair::X25519Keypair;
 use zolana_operator_custody::CustodyError;
-use zolana_ring_client::{SealedNullifierKey, TrackingLeaf};
+use zolana_ring_client::{OwnedChange, OwnerEnrollment, SealedNullifierKey, TrackingLeaf};
 use zolana_ring_indexer::rpc::{
     GetStorageApplyProofInputsRequest, GetStorageApplyProofInputsResponse,
     GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
@@ -668,10 +667,10 @@ mod enrollment_registration_tests;
 
 #[tokio::test]
 async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
-    use custom_ring_sdk::VaultEnrollmentMessage;
     use zolana_ring_client::rpc::{
         SignedVaultEnrollment, VaultEnrollmentBlock, VaultEnrollmentRequest,
     };
+    use zolana_ring_client::VaultEnrollmentMessage;
 
     let chain = StubChain::new();
     let fee = signature_fees(2);

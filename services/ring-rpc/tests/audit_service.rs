@@ -36,7 +36,6 @@ use std::{
     },
     time::Duration,
 };
-use zolana_ring_client::rpc::WalletEnrollment;
 use zolana_ring_indexer::tracking::{GetTrackingRecordsRequest, GetTrackingRecordsResponse};
 use zolana_ring_member_registry::{MemberRecord, MemberRegistryTree, RecordOpening, RecordTree};
 use zolana_ring_policy::{ListId, Member, MintPolicy};
@@ -65,13 +64,13 @@ use zolana_ring_client::{
         GetDecryptedTransactionsResponse, GetWalletActivityResponse, HealthResponse, KeyMode,
         PagedRead, ReadAttestation, ReadAuth, ReadBuildError, ReadSignature, ReadSigner,
         ReadTarget, ReaderGrantAction, ReaderGrantAttestation, ReaderGrantRequest, RingChainStatus,
-        SkippedReason, WalletActivity, WalletStatusRequest, WalletView, WebAuthnAssertion,
-        AUDITED_UTXOS_LIMIT, CREATE_AUDITOR_KEY, GET_AUDITED_MERGES, GET_AUDITED_UTXOS,
-        GET_DECRYPTED_TRANSACTIONS, HEALTH, SET_READER_GRANT,
+        SkippedReason, WalletActivity, WalletEnrollment, WalletStatusRequest, WalletView,
+        WebAuthnAssertion, AUDITED_UTXOS_LIMIT, CREATE_AUDITOR_KEY, GET_AUDITED_MERGES,
+        GET_AUDITED_UTXOS, GET_DECRYPTED_TRANSACTIONS, HEALTH, SET_READER_GRANT,
     },
-    AuditError, MergeAuditPage, ReaderKey, RingOrigin, RingWithdrawal,
+    AuditError, MergeAuditPage, P256ReaderKey, ReaderKey, RingIndexerError, RingOrigin,
+    RingWithdrawal, StorageTip,
 };
-use zolana_ring_client::{P256ReaderKey, RingIndexerError, StorageTip};
 use zolana_ring_indexer::rpc::{
     GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
     GetStorageMemberRecordsRequest, GetStorageMemberRecordsResponse, RingIndexedMemberRecordView,
@@ -843,7 +842,7 @@ impl TransactionSource for StaticSource {
         Ok(GENESIS)
     }
 
-    async fn tree_id(&self, _tree: Address) -> Result<u16, custom_ring_sdk::RingError> {
+    async fn tree_id(&self, _tree: Address) -> Result<u16, zolana_ring_client::RingError> {
         Ok(TREE_ID)
     }
 

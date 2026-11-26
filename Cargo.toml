@@ -14,7 +14,6 @@ members = [
     "sdk-libs/indexer",
     "sdk-libs/keys",
     "sdk-libs/operator-custody",
-    "sdk-libs/sdk",
     "sdk-libs/secret-file",
     "sdk-libs/transaction",
     "services/ring-indexer",
@@ -44,7 +43,6 @@ zolana-ring-indexer = { path = "sdk-libs/indexer", version = "0.1.0" }
 zolana-ring-keys = { path = "sdk-libs/keys", version = "0.1.0" }
 zolana-ring-client = { path = "sdk-libs/client", version = "0.1.0" }
 zolana-ring-transaction = { path = "sdk-libs/transaction", version = "0.1.0" }
-custom-ring-sdk = { path = "sdk-libs/sdk", version = "0.1.0" }
 custom-ring-cli = { path = "cli", version = "0.1.0" }
 zolana-ring-rpc = { path = "services/ring-rpc", version = "0.1.0" }
 

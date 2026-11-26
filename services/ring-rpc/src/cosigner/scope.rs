@@ -1,9 +1,8 @@
 use custom_ring_interface::{tag, TransferApproval};
-use custom_ring_sdk::CustomRing;
 use solana_address::Address;
 use solana_message::{compiled_instruction::CompiledInstruction, VersionedMessage};
 use solana_sdk_ids::system_program;
-use zolana_ring_client::rpc::ApprovedTransfer;
+use zolana_ring_client::{rpc::ApprovedTransfer, CustomRing};
 
 use crate::cosign::{CoSignError, CoSignFlows, CoSignRequest, Sender};
 

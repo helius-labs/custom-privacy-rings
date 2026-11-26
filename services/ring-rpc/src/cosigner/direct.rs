@@ -85,7 +85,6 @@ mod tests {
 
     use async_trait::async_trait;
     use custom_ring_interface::{tag, TransferApproval};
-    use custom_ring_sdk::CustomRing;
     use solana_address::Address;
     use solana_hash::Hash;
     use solana_instruction::{AccountMeta, Instruction};
@@ -94,6 +93,7 @@ mod tests {
     use solana_transaction::versioned::VersionedTransaction;
     use spr_client::{compile_message, ComputeBudgetConfig};
     use zolana_ring_client::rpc::ApprovedTransfer;
+    use zolana_ring_client::CustomRing;
 
     use super::*;
     use crate::{

@@ -1,15 +1,14 @@
 use async_trait::async_trait;
 use custom_ring_interface::InstructionTag;
-use custom_ring_sdk::{
-    written_tree_fees, CustomRing, CustomRingMerge, MergeProofInput, ProvenCustomRingMerge,
-    RingClient, RingError, RingIndexerBackend,
-};
 use solana_address::Address;
 use spr_client::{compile_message, AsyncRpc, ComputeBudgetConfig};
 use spr_interface::pda;
 use spr_keypair::{PublicKey, ShieldedAddress, ViewingKey};
 use spr_transaction::{LocalShieldedKeys, TransactionError};
-use zolana_ring_client::compute_unit_limit;
+use zolana_ring_client::{
+    compute_unit_limit, written_tree_fees, CustomRing, CustomRingMerge, MergeProofInput,
+    ProvenCustomRingMerge, RingClient, RingError, RingIndexerBackend,
+};
 
 use crate::{
     error::RingRpcError,

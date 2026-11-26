@@ -244,12 +244,12 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
         ..RingRoleKeys::of(&env.payer).roles(&env.payer)
     };
     rpc.create_and_send_transaction(
-        &[custom_ring_sdk::Initialize {
+        &[zolana_ring_client::Initialize {
             ring,
             payer: env.payer.pubkey(),
             authority: env.payer.pubkey(),
             auditor_pubkey: service.auditor_pubkey(),
-            kind: custom_ring_sdk::RingKind::AuditOnly,
+            kind: zolana_ring_client::RingKind::AuditOnly,
             roles,
             policy: None,
         }

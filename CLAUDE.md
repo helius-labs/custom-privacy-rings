@@ -10,7 +10,7 @@ The zolana notes above apply here, with their paths read under `zolana/`.
   into it, so a zolana change and its ring change build together locally. Land
   the zolana side first, then move the pin with `just zolana-bump <commit>`.
 - The layout mirrors zolana: `programs/custom-ring`, `program-libs/{interface,
-  policy,member-registry}`, `sdk-libs/{client,indexer,keys,sdk,secret-file,
+  policy,member-registry}`, `sdk-libs/{client,indexer,keys,secret-file,
   transaction,ts}`,
   `program-tests/custom-ring`, `services/{ring-indexer,ring-rpc}`, `cli`, `xtask`.
 - Large package implementations group by technical layer: protocol or codec,

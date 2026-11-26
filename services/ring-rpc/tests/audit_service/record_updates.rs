@@ -1,5 +1,4 @@
 use std::{collections::VecDeque, sync::atomic::AtomicU64};
-use zolana_ring_client::StorageUpdateCodec;
 
 use bytemuck::Zeroable;
 use custom_ring_interface::{
@@ -8,18 +7,20 @@ use custom_ring_interface::{
     ApplyRecordsIxData, RingPolicy, SourceSlot, GRACE_SLOTS, QUAD_HEIGHT, RING_POLICY,
     ROOT_HISTORY, STORAGE_PROGRAM_ID,
 };
-use custom_ring_sdk::{CustomRing, PrivateStorageWrite, ProvenPrivateWrite};
 use jsonrpsee::MethodsError;
 use solana_account::Account;
 use solana_transaction::versioned::VersionedTransaction;
-use zolana_ring_client::owner_record_key;
-use zolana_ring_client::rpc::{
-    GetPendingListApprovalsRequest, GetPendingListApprovalsResponse, GetRecordUpdateStatusRequest,
-    ListApprovalScope, ReadTarget, ReaderAccess, RecordUpdate, RecordUpdateEntry,
-    RecordUpdateStatus, RefuseListApprovalRequest, SubmitRecordUpdateRequest,
-    SubmitRecordUpdateResponse, WalletGrant, GET_PENDING_LIST_APPROVALS,
-    PENDING_LIST_APPROVALS_PAGE_LIMIT, RECORD_UPDATE_SLOTS, REFUSE_LIST_APPROVAL,
-    SUBMIT_RECORD_UPDATE,
+use zolana_ring_client::{
+    owner_record_key,
+    rpc::{
+        GetPendingListApprovalsRequest, GetPendingListApprovalsResponse,
+        GetRecordUpdateStatusRequest, ListApprovalScope, ReadTarget, ReaderAccess, RecordUpdate,
+        RecordUpdateEntry, RecordUpdateStatus, RefuseListApprovalRequest,
+        SubmitRecordUpdateRequest, SubmitRecordUpdateResponse, WalletGrant,
+        GET_PENDING_LIST_APPROVALS, PENDING_LIST_APPROVALS_PAGE_LIMIT, RECORD_UPDATE_SLOTS,
+        REFUSE_LIST_APPROVAL, SUBMIT_RECORD_UPDATE,
+    },
+    CustomRing, PrivateStorageWrite, ProvenPrivateWrite, StorageUpdateCodec,
 };
 use zolana_ring_indexer::rpc::{
     GetStorageApplyProofInputsRequest, GetStorageApplyProofInputsResponse,
@@ -234,8 +235,8 @@ impl StorageChain for StubChain {
 
     async fn prove_enrollments(
         &self,
-        _batch: custom_ring_sdk::EnrollBatch<'_>,
-    ) -> Result<custom_ring_sdk::ProvenEnrollBatch, RingRpcError> {
+        _batch: zolana_ring_client::EnrollBatch<'_>,
+    ) -> Result<zolana_ring_client::ProvenEnrollBatch, RingRpcError> {
         unreachable!("the record writer applies no enrollment")
     }
 
@@ -1309,7 +1310,7 @@ impl PrivateWrites for HeldOwner {
     async fn prove(
         &self,
         write: PrivateStorageWrite<'_>,
-    ) -> Result<ProvenPrivateWrite, custom_ring_sdk::RingError> {
+    ) -> Result<ProvenPrivateWrite, zolana_ring_client::RingError> {
         self.proved.lock().unwrap().extend(
             write
                 .owners
