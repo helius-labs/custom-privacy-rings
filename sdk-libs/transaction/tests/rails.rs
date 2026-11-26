@@ -20,10 +20,10 @@ use zolana_ring_keys::RecipientPayload;
 use zolana_ring_keys::RecordKey;
 use zolana_ring_keys::SlotSecret;
 use zolana_ring_transaction::{
-    open_recipient_body, open_reply, record_key, seal_reply, AnonymousOutput, AnonymousPlan,
-    AnonymousSlot, BodyForm, OpenedBody, OpenedNote, OpenedRecipientBody, OutputBlindings,
-    PayloadRead, PublishedSlot, RecipientBody, ReplyMetadata, RingAssets, RingDelivery,
-    RingOutputRail, RingRailError as E, ShapedSeal,
+    open_recipient_body, open_reply, record_key, seal_no_reply, seal_reply, AnonymousOutput,
+    AnonymousPlan, AnonymousSlot, BodyForm, OpenedBody, OpenedNote, OpenedRecipientBody,
+    OutputBlindings, PayloadRead, PublishedSlot, RecipientBody, ReplyMetadata, RingAssets,
+    RingDelivery, RingOutputRail, RingRailError as E, ShapedSeal,
 };
 
 const RING: Address = Address::new_from_array([42; 32]);
@@ -1063,7 +1063,8 @@ fn a_reply_frame_gives_every_body_one_length() {
     let sender = keypair(1);
     let receiver = keypair(2);
     let recipient = address(&receiver);
-    let other = address(&keypair(3));
+    let unanswered = keypair(3);
+    let other = address(&unanswered);
     let (mut tx, tx_key) = ring_transfer(&sender, false);
     tx.transfer_sol(&recipient, 3).unwrap();
     tx.transfer_sol(&other, 2).unwrap();
@@ -1082,9 +1083,16 @@ fn a_reply_frame_gives_every_body_one_length() {
     .encrypt(tx)
     .unwrap();
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
-    // The change at slot 0 carries random reply bytes too.
     for slot in &published {
         assert_eq!(slot.reply.len(), MIN_REPLY_LEN);
+    }
+    // Random bytes on a slot its owner opens would decode as a reply by chance.
+    for (slot, owner) in [(0u32, &sender), (2, &unanswered)] {
+        let secret = delivered_secret(&owner.viewing_key, &proof, &rail, slot);
+        let reply = &published[slot as usize].reply;
+        let empty = seal_no_reply(MIN_REPLY_LEN, &secret).unwrap();
+        assert_eq!(*reply, empty.as_slice());
+        assert!(open_reply(reply, &secret).unwrap().is_none());
     }
     let data = proof.external_data.outputs[1].data.as_ref().unwrap();
     let (_, reply) = ring_body_output(data).unwrap();

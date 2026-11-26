@@ -210,12 +210,21 @@ pub fn seal_reply(
     reply_len: usize,
     slot_secret: &SlotSecret,
 ) -> Result<Vec<u8>, RingRailError> {
-    let mut ciphertext = reply.encode(reply_len)?.to_vec();
-    symmetric_apply_audit(slot_secret.as_bytes(), REPLY_LABEL, &mut ciphertext)?;
-    Ok(ciphertext)
+    sealed_reply(reply.encode(reply_len)?.to_vec(), slot_secret)
 }
 
-/// `None` on a reply that never decodes, a hidden dummy reads as random bytes.
+/// The reply bytes of a slot that names no sender. Its zero `viewing_u` never decodes, where
+/// random bytes would decode as a reply by chance.
+pub fn seal_no_reply(reply_len: usize, slot_secret: &SlotSecret) -> Result<Vec<u8>, RingRailError> {
+    sealed_reply(vec![0; reply_len], slot_secret)
+}
+
+fn sealed_reply(mut bytes: Vec<u8>, slot_secret: &SlotSecret) -> Result<Vec<u8>, RingRailError> {
+    symmetric_apply_audit(slot_secret.as_bytes(), REPLY_LABEL, &mut bytes)?;
+    Ok(bytes)
+}
+
+/// `None` on a slot that names no sender.
 pub fn open_reply(
     ciphertext: &[u8],
     slot_secret: &SlotSecret,

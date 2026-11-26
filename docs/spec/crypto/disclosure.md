@@ -152,7 +152,7 @@ A frame opts in with `REPLY_METADATA`, on an anonymous frame only. The reply fol
 viewing_u || owner_key || nullifier_pk || wincode(Data), zero padded to reply_len
 ```
 
-`reply_len` is one length per frame, at least 97. Every non-exit slot carries one, and a slot with no reply or a dummy carries random bytes of that length. SPP's external data hash binds the bytes, and no proof reads their meaning. A reply is an unauthenticated claim about the sender. A reader never turns it into a verified sender identity.
+`reply_len` is one length per frame, at least 97. Every non-exit slot carries one. A slot with no reply seals the empty reply, zero bytes of that length under its slot secret, and its owner's decoder refuses the zero `viewing_u`. A dummy carries random bytes of that length. SPP's external data hash binds the bytes, and no proof reads their meaning. A reply is an unauthenticated claim about the sender. A reader never turns it into a verified sender identity.
 
 ## Opening a transfer
 

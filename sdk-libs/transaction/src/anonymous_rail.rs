@@ -10,7 +10,10 @@ use spr_transaction::{
 };
 use zolana_ring_keys::bootstrap_slot_tag;
 
-use crate::{recipient_delivery::seal_reply, OutputBlindings, ReplyMetadata, RingRailError};
+use crate::{
+    recipient_delivery::{seal_no_reply, seal_reply},
+    OutputBlindings, ReplyMetadata, RingRailError,
+};
 
 #[derive(Clone, Debug)]
 struct Payment {
@@ -109,7 +112,7 @@ impl AnonymousPlan {
         self.payments.iter().map(|payment| payment.recipient)
     }
 
-    /// One length per frame, a slot without a reply carries random bytes of it.
+    /// One length per frame, a slot without a reply carries an empty reply of it.
     pub fn reply_len(&self) -> Result<Option<usize>, RingRailError> {
         self.payments
             .iter()
@@ -305,17 +308,27 @@ impl AnonymousSeal<'_> {
         let body = self
             .rail
             .seal_body(output, &self.first_nullifier, slot_index, self.form)?;
-        let replies = self.plan.slot_replies(self.slots);
-        let reply = match (self.slots[slot_index], replies[slot_index], reply_len) {
-            (AnonymousSlot::Payment { recipient, .. }, Some(reply), Some(reply_len)) => {
+        let Some(reply_len) = reply_len else {
+            return Ok(SealedBody {
+                body,
+                reply: Vec::new(),
+            });
+        };
+        // The owner of a slot opens its reply bytes, so a slot with no reply seals the empty one.
+        // No owner opens a dummy.
+        let reply = match output.owner_address {
+            None => random_bytes(reply_len),
+            Some(owner) => {
                 let index =
                     u32::try_from(slot_index).map_err(|_| TransactionError::TooManyOutputs)?;
-                let secret = self
-                    .rail
-                    .slot_secret(&recipient, &self.first_nullifier, index)?;
-                seal_reply(reply, reply_len, &secret)?
+                let secret =
+                    self.rail
+                        .slot_secret(&owner.viewing_pubkey, &self.first_nullifier, index)?;
+                match self.plan.slot_replies(self.slots)[slot_index] {
+                    Some(reply) => seal_reply(reply, reply_len, &secret)?,
+                    None => seal_no_reply(reply_len, &secret)?,
+                }
             }
-            _ => random_bytes(reply_len.unwrap_or(0)),
         };
         Ok(SealedBody { body, reply })
     }

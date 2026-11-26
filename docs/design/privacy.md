@@ -19,7 +19,7 @@ The confidential mode and the anonymous mode differ at the sender and the recipi
 - The SDKs publish each tag once in a frame, and a slot that would repeat one takes random bytes. The tags of one transfer therefore do not show that two of its slots share an owner.
 - A public co-owner signs in the open. Its link to the transfer is public, and the hidden owner's stays hidden.
 - Under `HAS_DATA` the program requires one payload width for every non-exit slot of the frame, dummies included. Data can increase that width, and observers see whether a frame carries payloads.
-- A reply has one length per frame, and a slot with no reply carries random bytes of that length. Observers see whether a frame carries reply bytes.
+- A reply has one length per frame, and a slot with no reply carries an empty reply of that length, sealed like a real one. Observers see whether a frame carries reply bytes.
 - They see each exit owner and each public leg.
 - They do not see the hidden sender, the amounts, the assets or the spent notes. They do not see a recipient whose payment takes a request tag.
 - The hiding holds only while all of these hold:

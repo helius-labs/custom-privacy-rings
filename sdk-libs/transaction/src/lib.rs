@@ -47,8 +47,9 @@ pub use merge_seed::MergeSeed;
 pub use published::PublishedSlot;
 pub use recipient_delivery::{
     carried_key, is_contributory, open_recipient_body, open_reply, published_nullifier_pk,
-    recipient_payload, record_key, seal_reply, AnonymousOutput, OpenedBody, OpenedNote,
-    OpenedRecipientBody, OutputBlindings, PayloadRead, RecipientBody, ReplyClaim, ReplyMetadata,
+    recipient_payload, record_key, seal_no_reply, seal_reply, AnonymousOutput, OpenedBody,
+    OpenedNote, OpenedRecipientBody, OutputBlindings, PayloadRead, RecipientBody, ReplyClaim,
+    ReplyMetadata,
 };
 
 #[derive(Clone, Debug)]
