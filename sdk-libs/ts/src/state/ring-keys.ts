@@ -20,12 +20,7 @@ import {
 import { extended } from "../operations/workflow/extended.js";
 import { RingKeyError } from "../crypto/error.js";
 import { listSaltOf } from "../crypto/keys/list-salt.js";
-import {
-  anonymousSlotTag,
-  bundleTag,
-  slotTag,
-  deliveredSlotSecret,
-} from "../crypto/derivation/ring-stream.js";
+import { deliveredSlotSecret, slotTag } from "../crypto/derivation/ring-stream.js";
 
 /** The public context of one delivered ring output slot. */
 export interface RingDeliveryRequest {
@@ -36,31 +31,14 @@ export interface RingDeliveryRequest {
   readonly firstNullifier: Bytes32;
 }
 
-/** One own-key view tag of an anonymous ring under a wallet viewing key, Rust `ViewTagStream`. */
-export type ViewTagStream = Readonly<{ kind: "sender"; txCount: bigint }>;
+/** Rust `ViewTagStream`. */
+export type ViewTagStream = "sender" | "request";
 
 export interface ViewTagRequest {
   readonly viewingPublicKey: X25519PublicKey;
   readonly stream: ViewTagStream;
-}
-
-/** The derivation a published tag follows, `recipient` being an anonymous payment's slot tag. */
-export type RingTagKind = "confidential" | "recipient" | "senderBundle";
-
-/** `outputIndex` is `m` on a sender bundle. */
-export interface RingTagProbe {
-  readonly kind: RingTagKind;
-  readonly outputIndex: number;
-  readonly tag: Bytes32;
-}
-
-/** The published tags of one transaction under one viewing key. */
-export interface RingTagFrame {
-  readonly viewingPublicKey: X25519PublicKey;
-  readonly txViewingPublicKey: X25519PublicKey;
-  readonly salt: Bytes16;
-  readonly firstNullifier: Bytes32;
-  readonly probes: readonly RingTagProbe[];
+  /** `start` through `end - 1`. */
+  readonly indices: Readonly<{ start: bigint; end: bigint }>;
 }
 
 /** The ring derivations of a wallet's viewing keys, no viewing secret leaves the holder. */
@@ -72,16 +50,11 @@ export interface RingKeys extends ShieldedKeys {
     requests: readonly RingDeliveryRequest[],
     context?: RequestContext,
   ): Promise<readonly Bytes32[]>;
-  /** Per frame one answer per probe, the slot secret when its tag matches, one agreement per run of one key and transaction. */
-  ringTagMatches(
-    frames: readonly RingTagFrame[],
-    context?: RequestContext,
-  ): Promise<readonly (readonly (Bytes32 | undefined)[])[]>;
-  /** One tag per request. */
+  /** Per request one tag per index, at the width a ring slot publishes. */
   viewTags(
     requests: readonly ViewTagRequest[],
     context?: RequestContext,
-  ): Promise<readonly ViewTag[]>;
+  ): Promise<readonly (readonly ViewTag[])[]>;
 }
 
 /** Every ring derivation, a partial holder is no ring holder. */
@@ -90,7 +63,6 @@ export function isRingKeys(keys: ShieldedKeys): keys is RingKeys {
   return (
     typeof candidate.listSalt === "function" &&
     typeof candidate.ringDeliverySecrets === "function" &&
-    typeof candidate.ringTagMatches === "function" &&
     typeof candidate.viewTags === "function"
   );
 }
@@ -102,7 +74,6 @@ export function ringWalletKeys<K extends ShieldedKeys>(keys: K, ring: RingKeys):
   return extended(keys, {
     listSalt: ring.listSalt.bind(ring),
     ringDeliverySecrets: ring.ringDeliverySecrets.bind(ring),
-    ringTagMatches: ring.ringTagMatches.bind(ring),
     viewTags: ring.viewTags.bind(ring),
   });
 }
@@ -210,18 +181,18 @@ export class LocalRingKeys implements RingKeys {
     return listSaltOf(this.#listRoot, ringProgramId);
   }
 
-  async ringTagMatches(
-    frames: readonly RingTagFrame[],
-  ): Promise<readonly (readonly (Bytes32 | undefined)[])[]> {
+  async viewTags(requests: readonly ViewTagRequest[]): Promise<readonly (readonly ViewTag[])[]> {
     this.#checkUsable();
-    return this.#tags.ringTagMatches(frames);
-  }
-
-  async viewTags(requests: readonly ViewTagRequest[]): Promise<readonly ViewTag[]> {
-    this.#checkUsable();
-    return requests.map((request) => {
-      const key = this.#tags.held(request.viewingPublicKey);
-      return key.senderViewTag(request.stream.txCount);
+    return requests.map(({ viewingPublicKey, stream, indices }) => {
+      const key = this.#tags.held(viewingPublicKey);
+      const tags: ViewTag[] = [];
+      for (let index = indices.start; index < indices.end; index += 1n)
+        tags.push(
+          slotTag(
+            stream === "sender" ? key.senderViewTag(index) : key.recipientRequestViewTag(index),
+          ),
+        );
+      return tags;
     });
   }
 
@@ -247,7 +218,7 @@ export class LocalRingKeys implements RingKeys {
   }
 }
 
-/** The viewing keys alone, the holder a scan worker runs without any spending key. */
+/** The viewing keys alone, no spending key. */
 export class ViewingKeyHolder {
   /** Current first, retired after, each beside its public key. */
   readonly #viewing: readonly Readonly<{ key: ViewingKey; publicKey: X25519PublicKey }>[];
@@ -286,25 +257,6 @@ export class ViewingKeyHolder {
     return secrets;
   }
 
-  async ringTagMatches(
-    frames: readonly RingTagFrame[],
-  ): Promise<readonly (readonly (Bytes32 | undefined)[])[]> {
-    const agreements = new AgreementBatch(this);
-    try {
-      return frames.map((frame) =>
-        frame.probes.map((probe) => {
-          const secret = agreements.slotSecret(frame, probe.outputIndex);
-          if (equalBytes(publishedTag(probe.kind, frame.viewingPublicKey, secret), probe.tag))
-            return secret;
-          secret.fill(0);
-          return undefined;
-        }),
-      );
-    } finally {
-      agreements.destroy();
-    }
-  }
-
   held(publicKey: X25519PublicKey): ViewingKey {
     if (!(publicKey instanceof X25519PublicKey)) {
       throw new TransactionError("TRANSACTION_DESERIALIZE", { field: "viewingPublicKey" });
@@ -319,10 +271,7 @@ export class ViewingKeyHolder {
   }
 }
 
-type SlotContext = Pick<
-  RingTagFrame,
-  "viewingPublicKey" | "txViewingPublicKey" | "salt" | "firstNullifier"
->;
+type SlotContext = Omit<RingDeliveryRequest, "outputIndex">;
 
 /** One request's agreements, each `(transaction, key)` pair computed once and wiped together. */
 class AgreementBatch {
@@ -359,21 +308,6 @@ class AgreementBatch {
     const agreement = this.#holder.held(viewingPublicKey).ecdh(txViewingPublicKey);
     this.#agreements.set(key, agreement);
     return agreement;
-  }
-}
-
-function publishedTag(
-  kind: RingTagKind,
-  viewingPublicKey: X25519PublicKey,
-  secret: Bytes32,
-): Bytes32 {
-  switch (kind) {
-    case "confidential":
-      return slotTag(viewingPublicKey.u());
-    case "recipient":
-      return anonymousSlotTag(secret);
-    case "senderBundle":
-      return bundleTag(secret);
   }
 }
 

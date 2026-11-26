@@ -2,58 +2,104 @@
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { address as checkedRing, type Address } from "@solana/kit";
 import type { RequestContext } from "@heliuslabs/spr";
-import { U64_MAX } from "@heliuslabs/spr/internal";
+import { addressBytes, equalBytes, U64_MAX } from "@heliuslabs/spr/internal";
 import { X25519PublicKey, type ViewTag } from "@heliuslabs/spr/keypair";
 
-import { isSmallOrder } from "../crypto/keys/x25519.js";
+import { bootstrapSlotTag, slotTag } from "../crypto/derivation/ring-stream.js";
 import { RingError } from "../protocol/error.js";
 import { exactlyOne } from "./batch.js";
-import type { RingKeys, ViewTagStream } from "./ring-keys.js";
+import type { RingKeys, ViewTagRequest, ViewTagStream } from "./ring-keys.js";
 
-/** How far below its watermark a sync still reads an unobserved index. */
-export const PENDING_RETENTION = 256n;
+/** How far past its counter a stream is read, zolana's `DEFAULT_TAG_WINDOW`. */
+export const TAG_WINDOW = 64n;
 
-/** One tag stream's next index to use and the index its sync resumes from, never above `next`. */
+/** `scanned` never passes `next`. */
 export class StreamCounter {
+  /** The index the next request or send takes. */
   readonly next: bigint;
+  /** Past the highest index a sync found. */
   readonly scanned: bigint;
-  /** Ascending, unobserved, below `scanned` by at most `PENDING_RETENTION`. */
-  readonly pending: readonly bigint[];
 
-  private constructor(next: bigint, scanned: bigint, pending: readonly bigint[]) {
+  private constructor(next: bigint, scanned: bigint) {
     this.next = next;
     this.scanned = scanned;
-    this.pending = Object.freeze([...pending]);
     Object.freeze(this);
   }
 
-  static readonly EMPTY: StreamCounter = new StreamCounter(0n, 0n, []);
+  static readonly EMPTY: StreamCounter = new StreamCounter(0n, 0n);
 
-  /** The index a new tag takes and the counter past it. */
-  takeNext(): Readonly<{ index: bigint; counter: StreamCounter }> {
-    if (this.next >= U64_MAX) throw new RingError("RING_COUNTER_OVERFLOW");
-    return Object.freeze({
-      index: this.next,
-      counter: new StreamCounter(this.next + 1n, this.scanned, this.pending),
-    });
+  /** Refuses a watermark past `next`. */
+  static restore(stored: Readonly<{ next: bigint; scanned: bigint }>): StreamCounter {
+    if (stored.scanned > stored.next) throw invalid("a scan watermark passes its next index");
+    return new StreamCounter(stored.next, stored.scanned);
   }
 
-  /** @internal `next` never falls below a taken tag. */
-  _scannedUnder(next: bigint): StreamCounter {
-    return new StreamCounter(max(this.next, next), this.scanned, this.pending);
+  /** @internal Every index taken and `TAG_WINDOW` past them, `zolana/docs/spec.md` First Time Sync Wallet. */
+  _listed(): ViewTagRequest["indices"] {
+    return Object.freeze({ start: 0n, end: min(this.next + TAG_WINDOW, U64_MAX) });
   }
 
-  /** Refuses a watermark past `next` and a pending index outside its retention window. */
-  static restore(stored: Readonly<{ next: bigint; scanned: bigint; pending: readonly bigint[] }>) {
-    const { next, scanned, pending } = stored;
-    if (scanned > next) throw invalid("a scan watermark passes its next index");
-    const floor = retentionFloor(scanned);
-    const ascendingOrder = pending.every(
-      (index, at) => at === 0 || (pending[at - 1] ?? 0n) < index,
-    );
-    if (!ascendingOrder || pending.some((index) => index < floor || index >= scanned))
-      throw invalid("a pending index repeats or lies outside its retention window");
-    return new StreamCounter(next, scanned, pending);
+  /** @internal The indices an earlier sync read through its key's tag position. */
+  _readBefore(): ViewTagRequest["indices"] {
+    const end = this.scanned === 0n ? 0n : min(this.scanned + TAG_WINDOW, U64_MAX);
+    return Object.freeze({ start: 0n, end });
+  }
+
+  /** @internal Past the index a request takes, `next` before the call. */
+  _minted(): StreamCounter {
+    if (this.next === U64_MAX) throw new RingError("RING_COUNTER_OVERFLOW");
+    return new StreamCounter(this.next + 1n, this.scanned);
+  }
+
+  /** @internal */
+  _taken(index: bigint): StreamCounter {
+    return this._atLeast(past(index));
+  }
+
+  /** @internal */
+  _found(index: bigint): StreamCounter {
+    const scanned = max(this.scanned, past(index));
+    return new StreamCounter(max(this.next, scanned), scanned);
+  }
+
+  /** @internal `next` never falls. */
+  _atLeast(next: bigint): StreamCounter {
+    return new StreamCounter(max(this.next, next), this.scanned);
+  }
+}
+
+/** A payment's recipient as its sender tags it. */
+export interface TagRecipient {
+  readonly viewingPublicKey: X25519PublicKey;
+  /** Its payment request's tag, the bootstrap tag without one. */
+  readonly request?: ViewTag;
+}
+
+/** The tags one transfer publishes, `zolana/docs/spec.md` View Tag Selection. */
+export class TransferTags {
+  /** The key the sender tag derives from. */
+  readonly viewingPublicKey: X25519PublicKey;
+  /** Published once in a frame, on the first slot the wallet's own key opens. */
+  readonly sender: ViewTag;
+  /** One per payment in declared order. */
+  readonly payments: readonly ViewTag[];
+  /** @internal */
+  readonly _senderIndex: bigint;
+
+  /** @internal */
+  constructor(
+    fields: Readonly<{
+      viewingPublicKey: X25519PublicKey;
+      sender: ViewTag;
+      senderIndex: bigint;
+      payments: readonly ViewTag[];
+    }>,
+  ) {
+    this.viewingPublicKey = fields.viewingPublicKey;
+    this.sender = fields.sender;
+    this.payments = Object.freeze([...fields.payments]);
+    this._senderIndex = fields.senderIndex;
+    Object.freeze(this);
   }
 }
 
@@ -61,18 +107,17 @@ export class ViewingKeyEntry {
   readonly viewingPublicKey: X25519PublicKey;
   readonly createdAt: bigint;
   readonly tx: StreamCounter;
-  /** Confirmed reply claims, keyed by the viewing key a sender's replies name. */
-  readonly #knownSenders: ReadonlyMap<string, X25519PublicKey>;
+  readonly request: StreamCounter;
   /** `null` reads the ring from its start. */
   readonly #ringPositions: ReadonlyMap<Address, bigint | null>;
-  /** The confidential sync's slot and owner tag reads are complete through it, `null` reads from the start. */
+  /** The tag read is complete through it, `null` reads from the start. */
   readonly tagPosition: bigint | null;
 
   private constructor(fields: EntryFields) {
     this.viewingPublicKey = fields.viewingPublicKey;
     this.createdAt = fields.createdAt;
     this.tx = fields.tx;
-    this.#knownSenders = new Map(fields.knownSenders);
+    this.request = fields.request;
     this.#ringPositions = new Map(fields.ringPositions);
     this.tagPosition = fields.tagPosition;
     Object.freeze(this);
@@ -83,7 +128,7 @@ export class ViewingKeyEntry {
       viewingPublicKey,
       createdAt: checkedI64(createdAt, "createdAt"),
       tx: StreamCounter.EMPTY,
-      knownSenders: new Map(),
+      request: StreamCounter.EMPTY,
       ringPositions: new Map(),
       tagPosition: null,
     });
@@ -93,8 +138,8 @@ export class ViewingKeyEntry {
     return this.tx.next;
   }
 
-  knownSenders(): readonly X25519PublicKey[] {
-    return [...this.#knownSenders.values()];
+  get requestCount(): bigint {
+    return this.request.next;
   }
 
   ringPositions(): readonly RingPosition[] {
@@ -106,36 +151,17 @@ export class ViewingKeyEntry {
     return this.#ringPositions.get(ring);
   }
 
-  withTxCounter(counter: StreamCounter): ViewingKeyEntry {
-    return new ViewingKeyEntry({ ...this.#fields(), tx: counter });
-  }
-
-  /** A known sender keeps the entry as it is. */
-  withKnownSender(sender: X25519PublicKey): ViewingKeyEntry {
-    const key = keyOf(sender);
-    if (this.#knownSenders.has(key)) return this;
-    return new ViewingKeyEntry({
-      ...this.#fields(),
-      knownSenders: new Map([...this.#knownSenders, [key, sender]]),
-    });
-  }
-
-  /** Refuses a counterparty list naming a key twice or a small-order key, and a ring named twice. */
+  /** Refuses a ring named twice. */
   static restore(
     fields: Readonly<{
       viewingPublicKey: X25519PublicKey;
       createdAt: bigint;
       tx: StreamCounter;
-      knownSenders: readonly X25519PublicKey[];
+      request: StreamCounter;
       ringPositions: readonly RingPosition[];
       tagPosition: bigint | null;
     }>,
   ): ViewingKeyEntry {
-    if (fields.knownSenders.some(isSmallOrder))
-      throw invalid("knownSenders holds a small-order key");
-    const knownSenders = new Map(fields.knownSenders.map((key) => [keyOf(key), key]));
-    if (knownSenders.size !== fields.knownSenders.length)
-      throw invalid("knownSenders repeats a key");
     const ringPositions = new Map(fields.ringPositions.map((row) => [row.ring, row.afterSlot]));
     if (ringPositions.size !== fields.ringPositions.length)
       throw invalid("ringPositions repeats a ring");
@@ -143,10 +169,38 @@ export class ViewingKeyEntry {
       viewingPublicKey: fields.viewingPublicKey,
       createdAt: checkedI64(fields.createdAt, "createdAt"),
       tx: fields.tx,
-      knownSenders,
+      request: fields.request,
       ringPositions,
       tagPosition: fields.tagPosition,
     });
+  }
+
+  /** @internal Every stream a sync reads under the key, the bootstrap tag aside. */
+  _streams(): readonly (readonly [ViewTagStream, StreamCounter])[] {
+    return [
+      ["sender", this.tx],
+      ["request", this.request],
+    ];
+  }
+
+  /** @internal A tag found at `index` moves its stream's counter past it. */
+  _found(stream: ViewTagStream, index: bigint): ViewingKeyEntry {
+    return this.#counted(stream, (counter) => counter._found(index));
+  }
+
+  /** @internal A confirmed frame carried the sender tag at `index`. */
+  _senderTaken(index: bigint): ViewingKeyEntry {
+    return this.#counted("sender", (counter) => counter._taken(index));
+  }
+
+  /** @internal */
+  _requestMinted(): ViewingKeyEntry {
+    return this.#counted("request", (counter) => counter._minted());
+  }
+
+  /** @internal */
+  _requestsAtLeast(count: bigint): ViewingKeyEntry {
+    return this.#counted("request", (counter) => counter._atLeast(count));
   }
 
   /** @internal */
@@ -164,10 +218,10 @@ export class ViewingKeyEntry {
 
   /** @internal A lower `next` would issue a tag again. */
   _progressMatches(stored: ViewingKeyEntry): boolean {
-    const counters =
-      this.tx.next >= stored.tx.next &&
-      this.tx.scanned === stored.tx.scanned &&
-      this.tx.pending.join() === stored.tx.pending.join();
+    const counters = COUNTERS.every(
+      (stream) =>
+        this[stream].next >= stored[stream].next && this[stream].scanned === stored[stream].scanned,
+    );
     const keptEvery = stored
       .ringPositions()
       .every(({ ring, afterSlot }) => this.ringPosition(ring) === afterSlot);
@@ -181,9 +235,18 @@ export class ViewingKeyEntry {
   _withScanProgress(read: ViewingKeyEntry): ViewingKeyEntry {
     return new ViewingKeyEntry({
       ...this.#fields(),
-      tx: read.tx._scannedUnder(this.tx.next),
+      tx: read.tx._atLeast(this.tx.next),
+      request: read.request._atLeast(this.request.next),
       ringPositions: new Map([...this.#ringPositions, ...read.#ringPositions]),
     });
+  }
+
+  #counted(
+    stream: ViewTagStream,
+    moved: (counter: StreamCounter) => StreamCounter,
+  ): ViewingKeyEntry {
+    const counter = stream === "sender" ? "tx" : "request";
+    return new ViewingKeyEntry({ ...this.#fields(), [counter]: moved(this[counter]) });
   }
 
   #fields(): EntryFields {
@@ -191,7 +254,7 @@ export class ViewingKeyEntry {
       viewingPublicKey: this.viewingPublicKey,
       createdAt: this.createdAt,
       tx: this.tx,
-      knownSenders: this.#knownSenders,
+      request: this.request,
       ringPositions: this.#ringPositions,
       tagPosition: this.tagPosition,
     };
@@ -276,12 +339,6 @@ export class ViewingHistory {
     );
   }
 
-  /** The wallet's own decision to trust a claimed sender under its current key. */
-  withConfirmedSender(sender: X25519PublicKey): ViewingHistory {
-    if (isSmallOrder(sender)) throw new RingError("RING_RECIPIENT_KEY_NOT_CONTRIBUTORY");
-    return this.withEntry(this.entries.length - 1, this.current().withKnownSender(sender));
-  }
-
   /** @internal Held keys at one position of one ring share a read, `fromStart` reads every ring from its start. */
   _ringReads(held: readonly X25519PublicKey[], fromStart: boolean): readonly RingRead[] {
     const reads = new Map<string, RingRead>();
@@ -313,7 +370,7 @@ export class ViewingHistory {
     return this.withEntry(index, entry._withRingPosition(ring, checkpoint));
   }
 
-  /** @internal Each named key's confidential tag reads are complete through `afterSlot`. */
+  /** @internal Each named key's tag reads are complete through `afterSlot`. */
   _withTagPosition(keys: readonly X25519PublicKey[], afterSlot: bigint): ViewingHistory {
     return new ViewingHistory(
       this.entries.map((entry) =>
@@ -335,13 +392,14 @@ export class ViewingHistory {
         (entry) =>
           stored.entry(entry.viewingPublicKey) !== undefined ||
           (entry.tx.scanned === 0n &&
+            entry.request.scanned === 0n &&
             entry.ringPositions().every(({ afterSlot }) => afterSlot === null) &&
             entry.tagPosition === null),
       )
     );
   }
 
-  /** @internal A counter, key, sender or ring added during the scan stays. */
+  /** @internal A counter, key or ring added during the scan stays. */
   _withScanProgress(scanned: ViewingHistory): ViewingHistory {
     return new ViewingHistory(
       this.entries.map((entry) => {
@@ -351,24 +409,97 @@ export class ViewingHistory {
     );
   }
 
-  /** The next sender tag of the current key, the tag of a deposit to the wallet's own note. */
-  async senderTag(keys: RingKeys, context?: RequestContext): Promise<AdvancedTag<ViewTag>> {
-    return this.#ownTag(keys, context);
+  /** @internal */
+  _withFound(
+    viewingPublicKey: X25519PublicKey,
+    stream: ViewTagStream,
+    index: bigint,
+  ): ViewingHistory {
+    const at = this.entries.findIndex((entry) => entry.viewingPublicKey.equals(viewingPublicKey));
+    const entry = this.entries[at];
+    return entry === undefined ? this : this.withEntry(at, entry._found(stream, index));
+  }
+
+  /**
+   * The tags of one transfer under the current key, `withPublished` takes the sender index. A
+   * payment to the wallet's own key takes the sender tag, any other its request tag or its
+   * recipient's bootstrap tag.
+   */
+  async select(
+    keys: RingKeys,
+    recipients: readonly TagRecipient[],
+    context?: RequestContext,
+  ): Promise<TransferTags> {
+    const { viewingPublicKey, tx } = this.current();
+    const senderIndex = tx.next;
+    const sender = await derivedTag(
+      keys,
+      { viewingPublicKey, stream: "sender", index: senderIndex },
+      context,
+    );
+    return new TransferTags({
+      viewingPublicKey,
+      sender,
+      senderIndex,
+      payments: recipients.map((recipient) => {
+        if (recipient.viewingPublicKey.equals(viewingPublicKey)) return sender;
+        return recipient.request === undefined
+          ? bootstrapSlotTag(recipient.viewingPublicKey.u())
+          : slotTag(recipient.request);
+      }),
+    });
+  }
+
+  /** The history once the transfer of `tags` confirmed, past the sender index when `published` carries its tag. */
+  withPublished(tags: TransferTags, published: readonly ViewTag[]): ViewingHistory {
+    const at = this.entries.findIndex((entry) =>
+      entry.viewingPublicKey.equals(tags.viewingPublicKey),
+    );
+    const entry = this.entries[at];
+    if (entry === undefined || !published.some((tag) => equalBytes(tag, tags.sender))) return this;
+    return this.withEntry(at, entry._senderTaken(tags._senderIndex));
+  }
+
+  /** The tag of the current key's next payment request. */
+  async requestTag(keys: RingKeys, context?: RequestContext): Promise<AdvancedTag<ViewTag>> {
+    const { history, tag } = this._takeRequest();
+    return Object.freeze({ tag: await tag(keys, context), history });
+  }
+
+  /** @internal `history` holds the request index before `tag` asks the holder, concurrent callers never share one. */
+  _takeRequest(): Readonly<{
+    history: ViewingHistory;
+    tag: (keys: RingKeys, context?: RequestContext) => Promise<ViewTag>;
+  }> {
+    const current = this.current();
+    const index = current.request.next;
+    return {
+      history: this.#withCurrent(current._requestMinted()),
+      tag: (keys, context) =>
+        derivedTag(
+          keys,
+          { viewingPublicKey: current.viewingPublicKey, stream: "request", index },
+          context,
+        ),
+    };
+  }
+
+  /** At least `count` requests were minted under the current key, a wallet restored from its seed alone states it. */
+  withRequestCount(count: bigint): ViewingHistory {
+    return this.#withCurrent(this.current()._requestsAtLeast(u64(count, "request count")));
   }
 
   /** Its positions and counters decide what a sync skips, store it as key material. */
   toJson(): string {
     const counter = (value: StreamCounter): string =>
-      `{"next":${value.next},"scanned":${value.scanned},"pending":[${value.pending.join(",")}]}`;
+      `{"next":${value.next},"scanned":${value.scanned}}`;
     const entries = this.entries.map((entry) => {
-      const senders = entry.knownSenders().map(keyOf).sort();
       const positions = [...entry.ringPositions()]
-        .sort((left, right) => (left.ring < right.ring ? -1 : 1))
+        .sort((left, right) => byAddressBytes(left.ring, right.ring))
         .map(({ ring, afterSlot }) => `{"ring":"${ring}","afterSlot":${afterSlot ?? "null"}}`);
       return (
         `{"viewingPubkey":"${keyOf(entry.viewingPublicKey)}","createdAt":${entry.createdAt},` +
-        `"tx":${counter(entry.tx)},` +
-        `"knownSenders":[${senders.map((sender) => `"${sender}"`).join(",")}],` +
+        `"tx":${counter(entry.tx)},"request":${counter(entry.request)},` +
         `"ringPositions":[${positions.join(",")}],` +
         `"tagPosition":${entry.tagPosition ?? "null"}}`
       );
@@ -399,19 +530,8 @@ export class ViewingHistory {
     return new ViewingHistory(entries);
   }
 
-  async #ownTag(keys: RingKeys, context?: RequestContext): Promise<AdvancedTag<ViewTag>> {
-    const current = this.current();
-    const { index, counter } = current.tx.takeNext();
-    const tag = exactlyOne(
-      await keys.viewTags(
-        [{ viewingPublicKey: current.viewingPublicKey, stream: senderStream(index) }],
-        context,
-      ),
-    );
-    return Object.freeze({
-      tag,
-      history: this.withEntry(this.entries.length - 1, current.withTxCounter(counter)),
-    });
+  #withCurrent(entry: ViewingKeyEntry): ViewingHistory {
+    return this.withEntry(this.entries.length - 1, entry);
   }
 
   /** Every ring the wallet reads is unread under an added key. */
@@ -427,13 +547,23 @@ interface EntryFields {
   readonly viewingPublicKey: X25519PublicKey;
   readonly createdAt: bigint;
   readonly tx: StreamCounter;
-  readonly knownSenders: ReadonlyMap<string, X25519PublicKey>;
+  readonly request: StreamCounter;
   readonly ringPositions: ReadonlyMap<Address, bigint | null>;
   readonly tagPosition: bigint | null;
 }
 
-export function senderStream(txCount: bigint): ViewTagStream {
-  return { kind: "sender", txCount };
+const COUNTERS = ["tx", "request"] as const;
+
+async function derivedTag(
+  keys: RingKeys,
+  tag: Readonly<{ viewingPublicKey: X25519PublicKey; stream: ViewTagStream; index: bigint }>,
+  context: RequestContext | undefined,
+): Promise<ViewTag> {
+  const { viewingPublicKey, stream, index } = tag;
+  const indices = { start: index, end: past(index) };
+  return exactlyOne(
+    exactlyOne(await keys.viewTags([{ viewingPublicKey, stream, indices }], context)),
+  );
 }
 
 const I64_MIN = -(1n << 63n);
@@ -445,7 +575,7 @@ function storedEntry(value: unknown): ViewingKeyEntry {
     "viewingPubkey",
     "createdAt",
     "tx",
-    "knownSenders",
+    "request",
     "ringPositions",
     "tagPosition",
   ]);
@@ -453,9 +583,7 @@ function storedEntry(value: unknown): ViewingKeyEntry {
     viewingPublicKey: pubkey(stored["viewingPubkey"], "viewingPubkey"),
     createdAt: integer(stored["createdAt"], "createdAt"),
     tx: storedCounter(stored["tx"], "tx"),
-    knownSenders: list(stored["knownSenders"], "knownSenders").map((key) =>
-      pubkey(key, "knownSenders"),
-    ),
+    request: storedCounter(stored["request"], "request"),
     ringPositions: list(stored["ringPositions"], "ringPositions").map(storedPosition),
     tagPosition: stored["tagPosition"] === null ? null : u64(stored["tagPosition"], "tagPosition"),
   });
@@ -482,11 +610,10 @@ function storedRing(value: unknown): Address {
 
 function storedCounter(value: unknown, name: string): StreamCounter {
   const stored = record(value, name);
-  known(stored, name, ["next", "scanned", "pending"]);
+  known(stored, name, ["next", "scanned"]);
   return StreamCounter.restore({
     next: u64(stored["next"], name),
     scanned: u64(stored["scanned"], name),
-    pending: list(stored["pending"], name).map((index) => u64(index, name)),
   });
 }
 
@@ -561,12 +688,24 @@ function invalid(reason: string): RingError {
   return new RingError("RING_VIEWING_HISTORY_INVALID", { details: { reason } });
 }
 
-function retentionFloor(scanned: bigint): bigint {
-  return scanned > PENDING_RETENTION ? scanned - PENDING_RETENTION : 0n;
+/** `index + 1`, held at `u64::MAX` as Rust `saturating_add`. */
+function past(index: bigint): bigint {
+  return min(index + 1n, U64_MAX);
 }
 
 function max(left: bigint, right: bigint): bigint {
   return left > right ? left : right;
+}
+
+function min(left: bigint, right: bigint): bigint {
+  return left < right ? left : right;
+}
+
+/** Rust orders a `BTreeMap<Address, _>` by the address bytes, base58 text orders another way. */
+function byAddressBytes(left: Address, right: Address): number {
+  const [leftBytes, rightBytes] = [addressBytes(left), addressBytes(right)];
+  const at = leftBytes.findIndex((byte, index) => byte !== rightBytes[index]);
+  return at < 0 ? 0 : (leftBytes[at] ?? 0) - (rightBytes[at] ?? 0);
 }
 
 function ascending(left: bigint, right: bigint): number {

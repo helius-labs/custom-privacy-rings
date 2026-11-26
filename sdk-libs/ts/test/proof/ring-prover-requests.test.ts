@@ -94,7 +94,13 @@ import {
 import { signingKeySpendSigner } from "../../src/operations/payments/anonymous.js";
 import { CustomRingTransfer } from "../../src/operations/payments/transfer-rails.js";
 import { RingAddress } from "../../src/crypto/keys/ring-address.js";
-import { noteInput, ringFixture, walletKeys, type Fixture } from "../helpers/ring-pipeline.js";
+import {
+  freshWalletTags,
+  noteInput,
+  ringFixture,
+  walletKeys,
+  type Fixture,
+} from "../helpers/ring-pipeline.js";
 import { vectorLayout } from "../helpers/vector-records.js";
 
 await initializePoseidon();
@@ -693,6 +699,7 @@ async function anonymousRequest(
     assets,
   })
     .withAnonymousSigner(signingKeySpendSigner(signing))
+    .withTags(await freshWalletTags(sender, [bob]))
     .withPayment({
       to: new RingAddress({
         recipient: bob.shieldedAddress(),

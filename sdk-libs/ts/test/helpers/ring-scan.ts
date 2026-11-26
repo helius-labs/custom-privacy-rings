@@ -244,7 +244,7 @@ export class ScanWallet {
     payments: readonly Pay[],
     options: Readonly<{ compact?: boolean; slot?: bigint }> = {},
   ): SealedTransfer {
-    // An output to the sender is a bundle cell, not a payment.
+    // An output to the sender reads as change, the plan holds no payment for it.
     const plan = payments
       .filter((pay) => !pay.to.viewingPublicKey.equals(this.address.viewingPublicKey))
       .reduce(

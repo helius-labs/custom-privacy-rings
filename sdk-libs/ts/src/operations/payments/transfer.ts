@@ -69,6 +69,7 @@ import {
 } from "./transfer-rails.js";
 import type { RelayQuote, TokenAccountSetup } from "../../protocol/ring-rpc/ring-rpc-types.js";
 import { isZeroKeyNote } from "../../state/exposed-notes.js";
+import type { TagRecipient, TransferTags } from "../../state/viewing-history.js";
 import {
   ringIntentMismatch,
   ringProofInputs,
@@ -107,6 +108,8 @@ export interface AnonymousSpendOwner {
   readonly exitTokenOwner?: Address;
   /** `AnonymousTransfer.withOwnerExposure`, `refused` when unset. */
   readonly ownerExposure?: OwnerExposure;
+  /** The wallet's selection for the payments, an entry is refused without it. */
+  readonly tags?: TransferTags;
 }
 
 export interface AnonymousRingSpend extends RingRelaySpend, AnonymousSpendOwner {}
@@ -152,6 +155,8 @@ export interface RingPublicSpend {
   readonly wallet: Address;
   /** `null` sends no reply, named on every anonymous payment. */
   readonly reply?: ReplyMetadata | null;
+  /** The wallet's selection for the payments on an anonymous ring. */
+  readonly tags?: TransferTags;
 }
 
 export type RingPublicOwnerRail = Readonly<{
@@ -811,9 +816,11 @@ function proveDirect(
 ): Promise<ProvenRingTransfer> {
   const { staged, rail, approval } = input;
   if (rail.spendPublic !== undefined) {
+    const { wallet, tags } = rail.spendPublic;
+    const named = staged.rail.spendPublic(wallet);
     const paying = staged.anonymousPayments.reduce(
-      (named, payment) => named.withPayment(payment),
-      staged.rail.spendPublic(rail.spendPublic.wallet),
+      (tagged, payment) => tagged.withPayment(payment),
+      tags === undefined ? named : named.withTags(tags),
     );
     return paying.proveApproved(input.client, approval, context);
   }
@@ -825,9 +832,10 @@ function proveDirect(
 }
 
 function anonymousTransfer(staged: StagedSpend, owner: AnonymousSpendOwner): AnonymousTransfer {
+  const signed = staged.rail.withAnonymousSigner(owner.signer);
   const paying = staged.anonymousPayments.reduce(
-    (signed, payment) => signed.withPayment(payment),
-    staged.rail.withAnonymousSigner(owner.signer),
+    (tagged, payment) => tagged.withPayment(payment),
+    owner.tags === undefined ? signed : signed.withTags(owner.tags),
   );
   const exposed =
     owner.ownerExposure === undefined ? paying : paying.withOwnerExposure(owner.ownerExposure);
@@ -1103,6 +1111,13 @@ function checkRequestTerms(
   if (recipient.mint !== undefined && recipient.mint !== asset) throw ringIntentMismatch("asset");
 }
 
+/** What the wallet's tag selection reads of a payment, Rust `RingPayment::tag_recipient`. */
+export function tagRecipient(to: RingAddress | RingPaymentRequest): TagRecipient {
+  if (to instanceof RingAddress) return { viewingPublicKey: to.recipient.viewingPublicKey };
+  const { viewingPublicKey } = to.address.recipient;
+  return to.tag === undefined ? { viewingPublicKey } : { viewingPublicKey, request: to.tag };
+}
+
 export function assetLabel(asset: Address): string {
   return asset === SOL_MINT ? "SOL" : asset;
 }
@@ -1182,11 +1197,14 @@ export function ownerRingTransfers(input: RingTransfersInput): RingTransfers {
   });
 }
 
-/** Rust `AnonymousRingTransfers`, a payee missing from `payees` must be under the zero key. */
+/**
+ * Rust `AnonymousRingTransfers`, a payee missing from `payees` must be under the zero key.
+ * `tags` is the wallet's selection for the one payment, core spends no ring note to find its change by.
+ */
 export function anonymousRingTransfers(
-  input: RingTransfersInput & Readonly<{ payees: readonly RingAddress[] }>,
+  input: RingTransfersInput & Readonly<{ payees: readonly RingAddress[]; tags: TransferTags }>,
 ): RingTransfers {
-  const { payees, ...rest } = input;
+  const { payees, tags, ...rest } = input;
   return ringTransfers(rest, (take, { payment }, ring, signer) => {
     if (signer === undefined) throw new RingError("RING_ANONYMOUS_SIGNER_REQUIRED");
     const recipient = payment.recipient.toBytes();
@@ -1203,6 +1221,7 @@ export function anonymousRingTransfers(
       });
     return take()
       .withAnonymousSigner(signer)
+      .withTags(tags)
       .withPayment({ to, asset: payment.asset, amount: payment.amount, reply: null });
   });
 }

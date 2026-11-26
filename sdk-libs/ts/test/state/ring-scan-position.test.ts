@@ -13,12 +13,12 @@ import {
   Wallet,
 } from "@heliuslabs/spr/transaction";
 
-import { recipientTag, txKeySlotSecret, slotTag } from "../../src/crypto/derivation/ring-stream.js";
+import { bootstrapSlotTag, txKeySlotSecret } from "../../src/crypto/derivation/ring-stream.js";
 
 import { AnonymousSync } from "../../src/state/anonymous-sync.js";
 import { AnonymousWallet } from "../../src/state/anonymous-wallet.js";
 import { LocalRingKeys } from "../../src/state/ring-keys.js";
-import { StreamCounter, ViewingHistory } from "../../src/state/viewing-history.js";
+import { ViewingHistory } from "../../src/state/viewing-history.js";
 import { ClientError } from "@heliuslabs/spr/client";
 import {
   ASSETS,
@@ -66,7 +66,7 @@ function unknownMintPayment(indexer: ScanIndexer, reader: ScanWallet, mint: Addr
     salt,
     outputSlots: [
       {
-        viewTag: slotTag(recipientTag(secret())),
+        viewTag: bootstrapSlotTag(owner.viewingPublicKey.u()),
         outputContext: { hash: utxoHash, tree: TREE, treeId: TREE_ID, leafIndex: 0n },
         payload: encodeRingBodyOutput(
           sealedNote(secret(), { owner, blinding, amount: 7n, mint }),
@@ -216,20 +216,20 @@ describe("ring scan position", () => {
 });
 
 describe("atomic progress", () => {
-  it("keeps a counter taken during a scan, the next deposit tag never repeats", async () => {
+  it("keeps a request counter taken during a scan, the next request tag never repeats", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
     await alice.pay(indexer, [{ to: bob.address, amount: 7n }], { slot: 9n });
     const wallet = anonymousWallet(bob, bob.fresh());
     const scan = await bob.sync(indexer, wallet.history());
-    const during = await wallet.history().senderTag(bob.keys);
+    const during = await wallet.history().requestTag(bob.keys);
     wallet.updateHistory(during.history);
     await wallet.absorb(scan);
-    expect(wallet.history().current().txCount).toBe(1n);
+    expect(wallet.history().current().requestCount).toBe(1n);
     expect(position(wallet.history())).toBe(9n);
     expect(wallet.notes().map((note) => note.utxo.amount)).toEqual([7n]);
-    const after = await wallet.history().senderTag(bob.keys);
+    const after = await wallet.history().requestTag(bob.keys);
     expect(hex(after.tag)).not.toBe(hex(during.tag));
   });
 
@@ -248,7 +248,7 @@ describe("atomic progress", () => {
     expect(wallet.history().entry(bob.viewingKey)?.ringPosition(RING)).toBe(9n);
   });
 
-  it("keeps a sender confirmed and a ring added during a scan", async () => {
+  it("keeps a sender index a confirmed frame took and a ring added during a scan", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
@@ -256,10 +256,11 @@ describe("atomic progress", () => {
     const wallet = anonymousWallet(bob, bob.fresh());
     const scan = await bob.sync(indexer, wallet.history());
     const ring = randomAddress();
-    wallet.updateHistory(wallet.history().withConfirmedSender(alice.viewingKey).withRing(ring));
+    const tags = await wallet.history().select(bob.keys, []);
+    wallet.updateHistory(wallet.history().withPublished(tags, [tags.sender]).withRing(ring));
     await wallet.absorb(scan);
     const entry = wallet.history().current();
-    expect(entry.knownSenders().some((key) => key.equals(alice.viewingKey))).toBe(true);
+    expect(entry.txCount).toBe(1n);
     expect(entry.ringPosition(ring)).toBeNull();
     expect(entry.ringPosition(RING)).toBe(9n);
   });
@@ -285,26 +286,31 @@ describe("atomic progress", () => {
     const bob = new ScanWallet(2);
     const base = bob.fresh();
     const wallet = anonymousWallet(bob, base);
-    wallet.updateHistory((await base.senderTag(bob.keys)).history);
+    const minted = (await base.requestTag(bob.keys)).history;
+    wallet.updateHistory(minted);
     expect(() => wallet.updateHistory(base)).toThrow("RING_SCAN_PROGRESS_MOVED");
-    expect(wallet.history().current().txCount).toBe(1n);
+    const tags = await minted.select(bob.keys, []);
+    wallet.updateHistory(minted.withPublished(tags, [tags.sender]));
+    expect(() => wallet.updateHistory(minted)).toThrow("RING_SCAN_PROGRESS_MOVED");
+    const { txCount, requestCount } = wallet.history().current();
+    expect([txCount, requestCount]).toEqual([1n, 1n]);
   });
 
   it("gives concurrent callers distinct tags and burns the index of a failed holder", async () => {
     const bob = new ScanWallet(2);
     const wallet = anonymousWallet(bob, bob.fresh());
     const tags = await Promise.all([
-      wallet.takeSenderTag(bob.keys),
-      wallet.takeSenderTag(bob.keys),
+      wallet.takeRequestTag(bob.keys),
+      wallet.takeRequestTag(bob.keys),
     ]);
     expect(new Set(tags.map(hex)).size).toBe(2);
-    expect(wallet.history().current().txCount).toBe(2n);
+    expect(wallet.history().current().requestCount).toBe(2n);
     const failing = {
       ...bob.keys,
       viewTags: () => Promise.reject(new Error("holder offline")),
     } as unknown as typeof bob.keys;
-    await expect(wallet.takeSenderTag(failing)).rejects.toThrow("holder offline");
-    expect(wallet.history().current().txCount).toBe(3n);
+    await expect(wallet.takeRequestTag(failing)).rejects.toThrow("holder offline");
+    expect(wallet.history().current().requestCount).toBe(3n);
   });
 
   it("stores notes, spends, claims and the position in one document", async () => {
@@ -363,19 +369,18 @@ describe("atomic progress", () => {
   it("takes a counter or an added key through updateHistory and refuses a moved watermark", async () => {
     const bob = new ScanWallet(2);
     const wallet = anonymousWallet(bob, bob.fresh());
-    const { history: counted } = await wallet.history().senderTag(bob.keys);
+    const { history: counted } = await wallet.history().requestTag(bob.keys);
     wallet.updateHistory(counted);
-    expect(wallet.history().current().txCount).toBe(1n);
+    expect(wallet.history().current().requestCount).toBe(1n);
     const added = ViewingKey.generate().publicKey();
     wallet.updateHistory(wallet.history().withRotatedKey(added, 5n));
     expect(wallet.history().entry(added)?.ringPosition(RING)).toBeNull();
-    const entry = wallet.history().current();
-    const watermark = wallet
-      .history()
-      .withEntry(
-        wallet.history().entries.length - 1,
-        entry.withTxCounter(StreamCounter.restore({ next: 4n, scanned: 4n, pending: [] })),
-      );
+    const stored = '"request":{"next":1,"scanned":0}';
+    expect(wallet.history().toJson()).toContain(stored);
+    // Only a sync that read the rows moves a watermark, with its notes.
+    const watermark = ViewingHistory.fromJson(
+      wallet.history().toJson().replace(stored, '"request":{"next":4,"scanned":4}'),
+    );
     expect(() => wallet.updateHistory(watermark)).toThrow("RING_SCAN_PROGRESS_MOVED");
   });
 
@@ -558,7 +563,7 @@ describe("viewing keys", () => {
     expect(indexer.ringReads).toHaveLength(1);
   });
 
-  it("runs one agreement per transaction and key across every slot and the bundle", async () => {
+  it("runs one agreement per transaction and key across every slot", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);

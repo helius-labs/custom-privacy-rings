@@ -15,6 +15,7 @@ import type { ProofDataSourceContext, ProofService } from "@heliuslabs/spr/clien
 import { LocalKeys } from "@heliuslabs/spr/client";
 import {
   checkIntentApproval,
+  equalBytes,
   isZero,
   resolveDepositSettlement,
   resolveShieldedRecipient,
@@ -45,6 +46,7 @@ import {
   type TransactionIntent,
 } from "@heliuslabs/spr/transaction";
 
+import { bootstrapSlotTag } from "../../crypto/derivation/ring-stream.js";
 import { RingAddress, type RingPaymentRequest } from "../../crypto/keys/ring-address.js";
 import { RingError, wrapRingError } from "../../protocol/error.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
@@ -61,6 +63,7 @@ import {
   type RingServiceTarget,
 } from "../../rpc/ring-rpc.js";
 import type { RingKeys } from "../../state/ring-keys.js";
+import type { TransferTags } from "../../state/viewing-history.js";
 import { ringComputeUnitLimit } from "../management/admin.js";
 import {
   boundState,
@@ -116,6 +119,8 @@ export interface RingDepositParams {
   readonly splTokenProgram?: Address | null;
   /** Signs when a record covers deposits, the record must be its own. */
   readonly cosigner?: SignerAccount;
+  /** The depositor wallet's selection for the note, an anonymous deposit proves with no other tags. */
+  readonly tags?: TransferTags;
 }
 
 /** Rust `RingDeposit::prepare_relay`. */
@@ -364,9 +369,18 @@ export class PreparedRingDeposit {
       transfer.send(paid.address, asset, params.amount);
       rail = CustomRingTransfer.new(input);
     } else {
-      rail = CustomRingTransfer.new(input)
-        .spendPublic(sender.solanaAddress())
-        .withPayment({ to: paid.to, asset, amount: params.amount, reply: null });
+      // A deposit publishes its funder, a bootstrap tag beside it would name the recipient.
+      const [tag] = params.tags?.payments ?? [];
+      const bootstrap = bootstrapSlotTag(paid.to.recipient.viewingPublicKey.u());
+      if (tag !== undefined && equalBytes(tag, bootstrap))
+        throw new RingError("RING_DEPOSIT_BOOTSTRAP_TAG");
+      const named = CustomRingTransfer.new(input).spendPublic(sender.solanaAddress());
+      rail = (params.tags === undefined ? named : named.withTags(params.tags)).withPayment({
+        to: paid.to,
+        asset,
+        amount: params.amount,
+        reply: null,
+      });
     }
     return new PreparedRingDeposit({
       ringProgramId,

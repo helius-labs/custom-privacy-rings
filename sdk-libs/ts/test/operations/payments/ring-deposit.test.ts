@@ -16,7 +16,9 @@ import {
   type IndexedShieldedTransaction,
 } from "@heliuslabs/spr/transaction";
 
-import { RingAddress } from "../../../src/crypto/keys/ring-address.js";
+import { slotTag } from "../../../src/crypto/derivation/ring-stream.js";
+import { RingAddress, RingPaymentRequest } from "../../../src/crypto/keys/ring-address.js";
+import { tagRecipient } from "../../../src/operations/payments/transfer.js";
 import {
   PreparedRingDeposit,
   type RingDepositClient,
@@ -34,6 +36,7 @@ import {
   PROOF_SERVICE,
   TREE,
   TREE_ID,
+  freshWalletTags,
   randomAddress,
   ringFixture,
   walletKeys,
@@ -142,7 +145,7 @@ describe("ring deposit", () => {
     expect(fixture.ringRequests).toEqual([]);
   });
 
-  it("pays an anonymous recipient a plan slot it finds through its normal sync", async () => {
+  it("pays an anonymous recipient a plan slot under its request tag, never its bootstrap tag", async () => {
     const fixture = await ringFixture({ mode: "anonymous" });
     const recipient = ShieldedKeypair.generate();
     fixture.enroll(recipient.shieldedAddress());
@@ -151,15 +154,51 @@ describe("ring deposit", () => {
       ringProgramId: fixture.ringProgramId,
       listSalt: SALT,
     });
+    const request = new RingPaymentRequest({
+      address: to,
+      tag: new Uint8Array(32).fill(0x5a) as Bytes32,
+    });
+    const depositor = ShieldedKeypair.generate();
+    const select = (paid: RingAddress | RingPaymentRequest) =>
+      ViewingHistory.create(depositor.viewingPublicKey(), 0n).select(walletKeys(depositor), [
+        tagRecipient(paid),
+      ]);
     const client = depositClient(fixture);
-    const prepared = await PreparedRingDeposit.prepare({
+    const deposit = {
       client,
       ringProgramId: fixture.ringProgramId,
       feePayer: fixture.authority,
-      recipient: { kind: "anonymousPayment", to },
       amount: 40n,
+    };
+    // A deposit publishes its funder, a bootstrap tag beside it would name the recipient.
+    await expect(
+      PreparedRingDeposit.prepare({
+        ...deposit,
+        recipient: { kind: "anonymousPayment", to },
+        tags: await select(to),
+      }),
+    ).rejects.toMatchObject({ causeCode: "RING_DEPOSIT_BOOTSTRAP_TAG" });
+    // The fresh sender spends no ring note, no sync finds a slot under random bytes.
+    await expect(
+      (
+        await PreparedRingDeposit.prepare({
+          ...deposit,
+          recipient: { kind: "anonymousPayment", to: request },
+        })
+      ).prove(client),
+    ).rejects.toMatchObject({ causeCode: "RING_SENDER_TAG_REQUIRED" });
+    expect(fixture.sppCalls).toEqual([]);
+    const tags = await select(request);
+    const prepared = await PreparedRingDeposit.prepare({
+      ...deposit,
+      recipient: { kind: "anonymousPayment", to: request },
+      tags,
     });
     await prepared.prove(client);
+    const published = indexedFrame(fixture).outputSlots.map((slot) => slot.viewTag);
+    // The fresh sender holds another key than the tags derive from, its change takes random bytes.
+    expect(published[1]).toEqual(slotTag(request.tag as Bytes32));
+    expect(published).not.toContainEqual(tags.sender);
 
     const indexer = new ScanIndexer();
     indexer.publish(indexedFrame(fixture));
@@ -225,6 +264,7 @@ describe("ring deposit", () => {
       depositor: funder,
       depositorSigner,
       recipient: { kind: "anonymous", keys: walletKeys(owner), listSalt: SALT } as const,
+      tags: await freshWalletTags(owner, [owner]),
       amount: 9n,
       ringRpc: {
         cluster: new Uint8Array(32).fill(1) as Bytes32,
@@ -242,6 +282,12 @@ describe("ring deposit", () => {
     const decoded = await decodeRelayProofInputs(payload, new AssetRegistry());
     expect(decoded.rail.kind).toBe("deposit");
     expect(decoded.inputs.every((spent) => spent.isDummy())).toBe(true);
+    // A deposit to the wallet's own key takes its sender tag, the wallet's sender stream finds it.
+    expect(
+      decoded.externalData.outputs.map((output) =>
+        output.ownerTag.kind === "inline" ? output.ownerTag.value : undefined,
+      ),
+    ).toContainEqual(params.tags.sender);
     const text = relayRequestAttestation({
       target: { ...params.ringRpc, ringProgramId: fixture.ringProgramId },
       signer: funder,

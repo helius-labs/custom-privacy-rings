@@ -24,10 +24,6 @@
     "./keypair": {
       "types": "./dist/keypair/index.d.ts",
       "import": "./dist/keypair/index.js"
-    },
-    "./scan-worker": {
-      "types": "./dist/state/anonymous-scan-worker.d.ts",
-      "import": "./dist/state/anonymous-scan-worker.js"
     }
   },
   "publishConfig": {

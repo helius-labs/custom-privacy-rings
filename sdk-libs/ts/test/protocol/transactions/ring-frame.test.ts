@@ -35,7 +35,7 @@ import {
   ANONYMOUS_PARTIES,
   ApprovalMask,
   landedRingRail,
-  maxApplicationMessages,
+  MAX_APPLICATION_MESSAGES,
   RingTransactData,
   ringRailOf,
   ringTransactOutput,
@@ -383,9 +383,9 @@ describe("the ring frame", () => {
   });
 
   it("refuses an application message count past SPP's list on each rail, writing and reading", () => {
+    const limit = MAX_APPLICATION_MESSAGES;
+    expect(limit).toBe(254);
     for (const rail of ["confidential", "anonymous"] as const) {
-      const limit = maxApplicationMessages(rail);
-      expect(limit).toBe(rail === "anonymous" ? 253 : 254);
       const message = { viewTag: field(84), data: new Uint8Array() };
       const base = ringFrame({ rail, inputs: 1, outputs: 2 });
       expect(
@@ -481,7 +481,19 @@ describe("the ring frame", () => {
   it.each(roundTrips)("reads the $name rail back from the landed instruction", ({ frame }) => {
     const instruction = ringInstructionData(frame);
     const sppAnonymous = frame.rail === "anonymous" && !frame.publicOwners;
-    expect(landedRingRail(instruction, sppAnonymous)).toBe(frame.rail);
+    // An authority frame without replies parses under both ring modes, the ring account names its rail.
+    const landed = frame.rail === "anonymousDelegate" ? "delegate" : frame.rail;
+    expect(landedRingRail(instruction, sppAnonymous)).toBe(landed);
+  });
+
+  it("reads an authority frame with replies as the anonymous delegate rail alone", () => {
+    const frame = ringFrame({ rail: "anonymousDelegate", inputs: 2, outputs: 2 });
+    const replies = { length: 97, region: new Uint8Array(2 * 97).fill(9) };
+    const instruction = ringInstructionData({ ...frame, replies });
+    expect(landedRingRail(instruction, false)).toBe("anonymousDelegate");
+    expect(reason(() => RingTransactData.parse(instruction.subarray(1), "delegate"))).toBe(
+      "FlagNotAllowed",
+    );
   });
 });
 

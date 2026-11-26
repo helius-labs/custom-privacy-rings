@@ -6,6 +6,7 @@ import {
 } from "../../../src/ring-advanced.js";
 import { encodeGetListSaltRequest } from "../../../src/protocol/ring-rpc/ring-rpc-codec.js";
 import { ringRpcRefusalName } from "../../../src/protocol/ring-rpc/ring-rpc-refusal.js";
+import { slotTag } from "../../../src/crypto/derivation/ring-stream.js";
 import type { RelayIntent } from "../../../src/protocol/ring-rpc/ring-rpc-types.js";
 import { readFileSync } from "node:fs";
 
@@ -266,7 +267,14 @@ describe("prepareAuthorityTransfer", () => {
         },
         { recipient: filled(12, 32) as Address, mint: filled(0, 32) as Address, amount: 40n },
       ],
-      payments: [{ recipient: address(9), mint: filled(3, 32) as Address, amount: 250n }],
+      payments: [
+        {
+          recipient: address(9),
+          mint: filled(3, 32) as Address,
+          amount: 250n,
+          tag: slotTag(new Uint8Array(32).fill(13) as Bytes32),
+        },
+      ],
     };
     const message = authorityTransferAttestation({
       target,

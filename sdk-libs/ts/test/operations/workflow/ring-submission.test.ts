@@ -10,7 +10,6 @@ import { describe, expect, it, vi } from "vitest";
 import { ClientError } from "@heliuslabs/spr/client";
 import { compileUnsignedTransaction } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
-import { X25519Keypair } from "@heliuslabs/spr/keypair";
 import type { RingSubmissionStatus, RingSubmissionTransport } from "../../../src/rpc/ports.js";
 import { RingProgramError } from "../../../src/protocol/error.js";
 import {
@@ -20,7 +19,6 @@ import {
   type RingSubmissionAttempt,
 } from "../../../src/operations/workflow/submission.js";
 import { ringPolicyPda } from "../../../src/protocol/pda/index.js";
-import { ViewingHistory } from "../../../src/state/viewing-history.js";
 import { BLOCKHASH, kitReads } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import type { RpcAccount } from "@heliuslabs/spr/client";
 import {
@@ -93,23 +91,19 @@ const PROOF_REJECTED: RingSubmissionStatus = {
   customCode: RingProgramError.proofVerificationFailed,
 };
 
-/** The viewing history an anonymous attempt of `version` advanced to. */
-function viewingHistory(version: number): ViewingHistory {
-  return ViewingHistory.create(
-    X25519Keypair.fromBytes(new Uint8Array(32).fill(version + 1)).publicKey(),
-    BigInt(version),
-  );
+function slotTags(version: number): readonly Bytes32[] {
+  return [new Uint8Array(32).fill(version + 1) as Bytes32];
 }
 
 async function fixture(
   roots?: RingSubmissionAttempt["roots"],
-  histories?: (version: number) => ViewingHistory,
+  tags?: (version: number) => readonly Bytes32[],
 ) {
   const payer = await generateKeyPairSigner();
   let version = 0;
   const build = vi.fn(async (): Promise<RingSubmissionAttempt> => ({
     ...(roots === undefined ? {} : { roots }),
-    ...(histories === undefined ? {} : { viewingHistory: histories(version) }),
+    ...(tags === undefined ? {} : { slotTags: tags(version) }),
     transaction: compileUnsignedTransaction({
       feePayer: payer.address,
       lifetime: BLOCKHASH,
@@ -218,9 +212,9 @@ describe("ring submission ownership", () => {
     expect(f.release).toHaveBeenCalledTimes(1);
   });
 
-  it("exposes the viewing history of the current attempt, a rebuild replaces it", async () => {
-    const f = await fixture(undefined, viewingHistory);
-    expect(f.submission.viewingHistory?.toJson()).toBe(viewingHistory(0).toJson());
+  it("reports the slot tags of the confirmed attempt alone, none before or without a confirmation", async () => {
+    const f = await fixture(undefined, slotTags);
+    expect(f.submission.confirmedSlotTags()).toEqual([]);
     let sent = 0;
     const result = await f.submission.send({
       sign: f.sign,
@@ -228,7 +222,17 @@ describe("ring submission ownership", () => {
       status: async () => (++sent === 1 ? STALE_ROOT : { kind: "confirmed", slot: 7n }),
     });
     expect(result).toMatchObject({ kind: "confirmed", attempts: 2, slot: 7n });
-    expect(f.submission.viewingHistory?.toJson()).toBe(viewingHistory(1).toJson());
+    expect(f.submission.confirmedSlotTags()).toEqual(slotTags(1));
+    for (const status of [{ kind: "unknown" }, { kind: "failed", instructionIndex: 0 }] as const) {
+      const unsettled = await fixture(undefined, slotTags);
+      const { kind } = await unsettled.submission.send({
+        sign: unsettled.sign,
+        send: unsettled.send,
+        status: async () => status,
+      });
+      expect(kind).toBe(status.kind);
+      expect(unsettled.submission.confirmedSlotTags()).toEqual([]);
+    }
   });
 
   it("classifies stale proofs by the rows of Rust `REPROOF`", () => {

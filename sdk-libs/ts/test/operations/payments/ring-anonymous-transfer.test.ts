@@ -110,6 +110,7 @@ import {
   prepareRingEntryRelay,
   prepareRingTransferRelay,
   prepareRingWithdrawalRelay,
+  tagRecipient,
 } from "../../../src/operations/payments/transfer.js";
 import { createRingTransferSubmission } from "../../../src/index.js";
 import type { PreparedRingRelay } from "../../../src/operations/payments/transfer-rails.js";
@@ -122,9 +123,8 @@ import {
   RingTransactData,
 } from "../../../src/protocol/transaction/transact.js";
 import {
-  bundleTag,
+  bootstrapSlotTag,
   deliveredSlotSecret,
-  recipientTag,
   slotTag,
 } from "../../../src/crypto/derivation/ring-stream.js";
 
@@ -141,6 +141,7 @@ import {
   checkFrameCounted,
   checkRingBlindings,
   expanded,
+  freshWalletTags,
   itemAt,
   noteInput,
   randomAddress,
@@ -162,10 +163,10 @@ import {
 import {
   MIN_REPLY_LEN,
   openReply,
-  openSenderBundle,
-  SENDER_BUNDLE_LEN,
   type ReplyMetadata,
 } from "../../../src/protocol/codec/anonymous-delivery.js";
+import { ViewingHistory, type TransferTags } from "../../../src/state/viewing-history.js";
+import { AnonymousPlan } from "../../../src/protocol/transaction/anonymous-plan.js";
 
 await initializePoseidon();
 
@@ -214,6 +215,8 @@ function rail(
     withdrawal?: TransactWithdrawal;
     /** False leaves the sender without a record address. */
     enrolled?: boolean;
+    /** The wallet's selection, a spend of no ring note is refused without it. */
+    tags?: TransferTags;
   }>,
 ): AnonymousTransfer {
   const { fixture, sender } = input;
@@ -225,9 +228,10 @@ function rail(
     assets,
     ...(fixture.coSigner === undefined ? {} : { coSigners: [fixture.coSigner] }),
   });
-  return (
+  const signed = (
     input.withdrawal === undefined ? owner : owner.withWithdrawalAccounts(input.withdrawal)
   ).withAnonymousSigner(input.signer ?? signingKeySpendSigner(sender.signing));
+  return input.tags === undefined ? signed : signed.withTags(input.tags);
 }
 
 async function addressOf(fixture: Fixture, owner: ShieldedKeypair): Promise<RingAddress> {
@@ -237,6 +241,14 @@ async function addressOf(fixture: Fixture, owner: ShieldedKeypair): Promise<Ring
     ringProgramId: fixture.ringProgramId,
     listSalt: new Uint8Array(32).fill(1) as Bytes32,
   });
+}
+
+/** The tags a wallet with no history selects for `payments`. */
+function selectedTags(sender: Sender, ...payments: readonly RingAddress[]): Promise<TransferTags> {
+  return ViewingHistory.create(sender.keypair.viewingPublicKey(), 0n).select(
+    walletKeys(sender.keypair),
+    payments.map(tagRecipient),
+  );
 }
 
 /** The anonymous transfer request, its circuit the key the program verifies under. */
@@ -307,26 +319,16 @@ function openedBody(
   return { ...opened.record, data: payload ?? new Uint8Array() };
 }
 
-/** The amounts of the sender's change, each record sealed to its own key under a zero tag. */
+/** The amounts of the sender's change, each record sealed to its own key. */
 function changeAmounts(
+  fixture: Fixture,
   sender: ShieldedKeypair,
   data: RingTransactData,
   call: Fixture["sppCalls"][number],
 ): readonly bigint[] {
-  return data.outputs.flatMap((output, slot) =>
-    output.body.kind === "recipient" && output.ownerTag.every((byte) => byte === 0)
-      ? [openedBody(sender, data, call, slot).amount]
-      : [],
+  return bodyKinds(fixture, sender, data).flatMap((kind, slot) =>
+    kind === "change" ? [openedBody(sender, data, call, slot).amount] : [],
   );
-}
-
-function openedBundle(
-  sender: ShieldedKeypair,
-  data: RingTransactData,
-  call: Fixture["sppCalls"][number],
-) {
-  if (data.sender === undefined) throw new Error("no sender bundle");
-  return openSenderBundle(slotSecretOf(sender, data, call, data.outputs.length), data.sender.body);
 }
 
 /** `V_k` of each slot as the sender reads it back from the auditor stream its own key sealed. */
@@ -372,12 +374,16 @@ function tagOf(output: RingTransactData["outputs"][number] | undefined): Bytes32
   return output.ownerTag;
 }
 
-/** A zero-tag record is the sender's change, every other non-exit slot a recipient or a dummy. */
-function bodyKinds(data: RingTransactData): readonly string[] {
-  return data.outputs.map((output) =>
-    output.body.kind === "recipient" && output.ownerTag.every((byte) => byte === 0)
-      ? "change"
-      : output.body.kind,
+/** A record sealed to the sender's own key is its change, every other non-exit slot a recipient or a dummy. */
+function bodyKinds(
+  fixture: Fixture,
+  sender: ShieldedKeypair,
+  data: RingTransactData,
+): readonly string[] {
+  const own = hex(sender.shieldedAddress().viewingPublicKey.u());
+  const sealedTo = sentRecipientKeys(fixture, sender, data).map(hex);
+  return data.outputs.map((output, slot) =>
+    output.body.kind === "recipient" && sealedTo[slot] === own ? "change" : output.body.kind,
   );
 }
 
@@ -444,7 +450,7 @@ describe("anonymous ring payment", () => {
     expect(proven.data.extensions.approvalTotals).toBeUndefined();
   });
 
-  it("publishes a zero tag on change, the slot secret tags on the payment and the bundle, the recipient opens its body and the auditor every hash", async () => {
+  it("publishes random bytes on change and the recipient's bootstrap tag on the payment without a selection, the recipient opens its body and the auditor every hash", async () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const bob = ShieldedKeypair.generate();
@@ -464,16 +470,19 @@ describe("anonymous ring payment", () => {
     const { instruction, data, call } = await expanded(fixture, proven, "anonymous");
 
     expect(call.circuit.kind).toBe("ringAnonymous");
-    expect(bodyKinds(data)).toEqual(["change", "recipient"]);
+    expect(bodyKinds(fixture, sender.keypair, data)).toEqual(["change", "recipient"]);
     expect(data.entry).toBe(false);
     const [change, payment] = data.outputs;
     if (change === undefined || payment?.body.kind !== "recipient")
       throw new Error("no anonymous slots");
-    expect(change.ownerTag).toEqual(ZERO_KEY);
-    expect(payment.ownerTag).toEqual(slotTag(recipientTag(slotSecretOf(bob, data, call, 1))));
-    expect(data.sender?.tag).toEqual(
-      bundleTag(slotSecretOf(sender.keypair, data, call, data.outputs.length)),
+    // The note the wallet spends finds the change, its tag names no key.
+    expect(change.ownerTag).toEqual(slotTag(change.ownerTag));
+    expect(hex(change.ownerTag)).not.toBe(
+      hex(bootstrapSlotTag(sender.keypair.viewingPublicKey().u())),
     );
+    expect(hex(change.ownerTag)).not.toBe(hex(ZERO_KEY));
+    expect(payment.ownerTag).toEqual(bootstrapSlotTag(bob.viewingPublicKey().u()));
+    expect(proven.slotTags()).toEqual([change.ownerTag, payment.ownerTag]);
     expect(payment.record).toHaveLength(RING_RECORD_LEN);
     expect(payment.body.payload).toHaveLength(0);
     await checkAccounts(instruction, {
@@ -504,32 +513,64 @@ describe("anonymous ring payment", () => {
       ringProgramId: fixture.ringProgramId,
     });
     expect(note.hash(bob.nullifierPublicKey(), TREE_ID)).toEqual(payment.hash);
-    // The bundle carries the output seed alone, the sender reads each key from the stream.
-    expect(data.sender?.body).toHaveLength(SENDER_BUNDLE_LEN);
-    expect(openedBundle(sender.keypair, data, call).outputSeed).toHaveLength(32);
-    expect(changeAmounts(sender.keypair, data, call)).toEqual([9_600n]);
+    expect(changeAmounts(fixture, sender.keypair, data, call)).toEqual([9_600n]);
     expect(sentRecipientKeys(fixture, sender.keypair, data)).toEqual([
       sender.keypair.shieldedAddress().viewingPublicKey.u(),
       bob.shieldedAddress().viewingPublicKey.u(),
     ]);
-    expect(proven).not.toHaveProperty("viewingHistory");
   });
 
-  it("derives one tag per transfer key and never repeats it for a repeated recipient", async () => {
+  it("publishes the wallet's selection, the sender tag on change and each request's tag on its payment, and one recipient's bootstrap tag once in a frame", async () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
-    const to = await addressOf(fixture, ShieldedKeypair.generate());
-    const frame = async () => {
-      const proven = await rail({ fixture, sender, transfer: spend(fixture, sender) })
+    const bob = ShieldedKeypair.generate();
+    const to = await addressOf(fixture, bob);
+    const frame = async (tags?: TransferTags) => {
+      const proven = await rail({
+        fixture,
+        sender,
+        transfer: spend(fixture, sender),
+        ...(tags === undefined ? {} : { tags }),
+      })
         .withPayment({ to, asset: SOL_MINT, amount: 400n, reply: null })
         .withPayment({ to, asset: SOL_MINT, amount: 300n, reply: null })
         .prove(fixture.client);
-      return (await expanded(fixture, proven, "anonymous")).data.outputs.slice(1, 3).map(tagOf);
+      const { data } = await expanded(fixture, proven, "anonymous");
+      return data.outputs.slice(0, 3).map(tagOf).map(hex);
     };
-    const [first, second] = await frame();
-    if (first === undefined || second === undefined) throw new Error("no slots");
-    expect(hex(first)).not.toBe(hex(second));
-    expect((await frame()).map(hex)).not.toContain(hex(first));
+    const bootstrap = hex(bootstrapSlotTag(bob.viewingPublicKey().u()));
+    // Equal tags would show two slots share an owner, one match returns the whole transaction.
+    const [, first, second] = await frame();
+    expect([first, second === bootstrap]).toEqual([bootstrap, false]);
+    const requests = [0x51, 0x52].map((byte) => new Uint8Array(32).fill(byte) as Bytes32);
+    const tags = await ViewingHistory.create(sender.keypair.viewingPublicKey(), 0n).select(
+      walletKeys(sender.keypair),
+      requests.map((request) => ({ viewingPublicKey: bob.viewingPublicKey(), request })),
+    );
+    expect(await frame(tags)).toEqual([tags.sender, ...requests.map(slotTag)].map(hex));
+  });
+
+  it("refuses a selection that counts another number of payments and a spend of no ring note without one", async () => {
+    const fixture = await anonymousRing();
+    const sender = anonymousSender();
+    const bob = ShieldedKeypair.generate();
+    const to = await addressOf(fixture, bob);
+    await expect(
+      rail({
+        fixture,
+        sender,
+        transfer: spend(fixture, sender),
+        tags: await freshWalletTags(sender.keypair, [bob, bob]),
+      })
+        .withPayment({ to, asset: SOL_MINT, amount: 400n, reply: null })
+        .prove(fixture.client),
+    ).rejects.toThrow(ringError("RING_PAYMENT_TAG_COUNT", { payments: 1, tags: 2 }));
+    await expect(
+      rail({ fixture, sender, transfer: spend(fixture, sender, { ring: "default" }) })
+        .withPayment({ to, asset: SOL_MINT, amount: 400n, reply: null })
+        .prove(fixture.client),
+    ).rejects.toThrow(ringError("RING_SENDER_TAG_REQUIRED"));
+    noProofs(fixture);
   });
 
   it("leads with a zero SOL change when nothing returns to the sender", async () => {
@@ -550,18 +591,18 @@ describe("anonymous ring payment", () => {
       })
       .prove(fixture.client);
     const { data, call } = await expanded(fixture, proven, "anonymous");
-    expect(bodyKinds(data)[0]).toBe("change");
+    expect(bodyKinds(fixture, sender.keypair, data)[0]).toBe("change");
     const zero = itemAt(call.proofInputs.outputs, 0);
     expect([
       zero.amount,
       zero.asset,
       hex(zero.ownerAddress?.toBytes() ?? new Uint8Array()),
     ]).toEqual([0n, SOL_MINT, hex(sender.keypair.shieldedAddress().toBytes())]);
-    expect(changeAmounts(sender.keypair, data, call)).toEqual([0n]);
+    expect(changeAmounts(fixture, sender.keypair, data, call)).toEqual([0n]);
     checkDisclosure(fixture, call, data);
   });
 
-  it("lists every slot in the sender bundle, an exit and a dummy under the zero key", async () => {
+  it("seals each slot to its reader's key, an exit to the auditor's, and tags a dummy with random bytes", async () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const bob = ShieldedKeypair.generate();
@@ -577,7 +618,12 @@ describe("anonymous ring payment", () => {
     transfer.sendDefaultRing(outside.shieldedAddress(), SOL_MINT, 300n);
     const { data, call } = await expanded(fixture, await paying.prove(fixture.client), "anonymous");
 
-    expect(bodyKinds(data)).toEqual(["change", "recipient", "exit", "recipient"]);
+    expect(bodyKinds(fixture, sender.keypair, data)).toEqual([
+      "change",
+      "recipient",
+      "exit",
+      "recipient",
+    ]);
     expect(sentRecipientKeys(fixture, sender.keypair, data).slice(0, 3)).toEqual([
       sender.keypair.shieldedAddress().viewingPublicKey.u(),
       bob.shieldedAddress().viewingPublicKey.u(),
@@ -637,7 +683,6 @@ describe("anonymous ring payment", () => {
       ringDeliverySecrets: (requests) =>
         track("ringDeliverySecrets", local.ringDeliverySecrets(requests)),
       listSalt: (ring) => track("listSalt", local.listSalt(ring)),
-      ringTagMatches: (frames) => track("ringTagMatches", local.ringTagMatches(frames)),
       viewTags: (requests) => track("viewTags", local.viewTags(requests)),
       prove: (inputs, context) => track("prove", local.prove(inputs, context)),
       proveMerge: (inputs, context) => track("proveMerge", local.proveMerge(inputs, context)),
@@ -660,6 +705,36 @@ describe("anonymous ring payment", () => {
     checkDisclosure(fixture, call, data);
     expect(call.authority).toBe(remote);
     expect([...called].sort()).toEqual(["address", "transactionKeys"]);
+  });
+});
+
+describe("anonymous plan tags", () => {
+  it("publishes each tag once in a frame and random bytes on a slot that would repeat one", () => {
+    const [sender, request] = [0x51, 0x52].map((byte) =>
+      slotTag(new Uint8Array(32).fill(byte) as Bytes32),
+    ) as [Bytes32, Bytes32];
+    const recipient = ShieldedKeypair.generate().viewingPublicKey();
+    const paid = (tag: Bytes32) =>
+      ({ kind: "payment", payment: { recipient, reply: null, tag } }) as const;
+    const change = { kind: "change" } as const;
+    const tags = AnonymousPlan.create()
+      .withSenderTag(sender)
+      .tags([
+        change,
+        change,
+        paid(sender),
+        paid(request),
+        paid(request),
+        { kind: "dummy" },
+        { kind: "exit" },
+      ]);
+    expect([tags[0], tags[3], tags[6]]).toEqual([sender, request, undefined]);
+    const published = tags.slice(0, 6).map((tag) => tag ?? ZERO_KEY);
+    expect(new Set(published.map(hex)).size).toBe(6);
+    expect(published).toEqual(published.map(slotTag));
+    // Without a sender tag no change slot names the wallet.
+    const [first, second] = AnonymousPlan.create().tags([change, change]);
+    expect(hex(first ?? ZERO_KEY)).not.toBe(hex(second ?? ZERO_KEY));
   });
 });
 
@@ -702,7 +777,6 @@ describe("anonymous delivery slots", () => {
     );
 
     expect([data.nOut, data.outputs.length]).toEqual([4, 3]);
-    expect(data.sender?.body).toHaveLength(SENDER_BUNDLE_LEN);
     checkRingBlindings(call, data);
     const request = checkTransferProof(fixture, data);
     expect([request.outputCount, request.outputs.length]).toEqual([3, 4]);
@@ -719,7 +793,7 @@ describe("anonymous delivery slots", () => {
       await anonymous.prove(fixture.client),
       "anonymous",
     );
-    expect(bodyKinds(data)).toEqual(["change", "recipient"]);
+    expect(bodyKinds(fixture, sender.keypair, data)).toEqual(["change", "recipient"]);
     expect(itemAt(call.proofInputs.outputs, 0).ownerAddress?.toBytes()).toEqual(
       sender.keypair.shieldedAddress().toBytes(),
     );
@@ -740,8 +814,8 @@ describe("anonymous delivery slots", () => {
       await anonymous.prove(fixture.client),
       "anonymous",
     );
-    expect(bodyKinds(data)).toEqual(Array(4).fill("recipient"));
-    expect(changeAmounts(sender.keypair, data, call)).toEqual([]);
+    expect(bodyKinds(fixture, sender.keypair, data)).toEqual(Array(4).fill("recipient"));
+    expect(changeAmounts(fixture, sender.keypair, data, call)).toEqual([]);
     checkTransferProof(fixture, data);
   });
 
@@ -761,15 +835,20 @@ describe("anonymous delivery slots", () => {
   it("gives every body one reply length on any named reply, a dummy's bytes random", async () => {
     const sayer = ShieldedKeypair.generate();
     const build = async () => {
-      const { fixture, recipients, anonymous } = await paying([400n, 300n], {
+      const { fixture, sender, recipients, anonymous } = await paying([400n, 300n], {
         replies: [claim(sayer), null],
       });
       const shaped = anonymous.withShape({ inputs: 1, outputs: 4 });
       const expand = await expanded(fixture, await shaped.prove(fixture.client), "anonymous");
-      return { ...expand, recipients };
+      return { ...expand, fixture, sender, recipients };
     };
-    const { data, call, recipients } = await build();
-    expect(bodyKinds(data)).toEqual(["change", "recipient", "recipient", "recipient"]);
+    const { data, call, fixture, sender, recipients } = await build();
+    expect(bodyKinds(fixture, sender.keypair, data)).toEqual([
+      "change",
+      "recipient",
+      "recipient",
+      "recipient",
+    ]);
     const replies = replySlots(data);
     expect(data.replies?.length).toBeGreaterThanOrEqual(MIN_REPLY_LEN);
     // One reply per non-exit slot, the change's among them.
@@ -787,7 +866,7 @@ describe("anonymous delivery slots", () => {
   });
 
   it("carries random reply bytes on a change slot, no reply opens from them", async () => {
-    const { fixture, anonymous } = await paying([400n], {
+    const { fixture, sender, anonymous } = await paying([400n], {
       replies: [claim(ShieldedKeypair.generate())],
     });
     const { data, call } = await expanded(
@@ -795,7 +874,7 @@ describe("anonymous delivery slots", () => {
       await anonymous.prove(fixture.client),
       "anonymous",
     );
-    expect(bodyKinds(data)).toEqual(["change", "recipient"]);
+    expect(bodyKinds(fixture, sender.keypair, data)).toEqual(["change", "recipient"]);
     expect(replySlots(data)).toHaveLength(2);
     expect(call.proofInputs.externalData.outputs[0]?.data).toBeDefined();
   });
@@ -873,7 +952,7 @@ describe("anonymous ring exits and entries", () => {
     const proven = await rail({ fixture, sender, transfer }).prove(fixture.client);
     const { data, call } = await expanded(fixture, proven, "anonymous");
 
-    expect(bodyKinds(data)).toEqual(["change", "exit"]);
+    expect(bodyKinds(fixture, sender.keypair, data)).toEqual(["change", "exit"]);
     checkTransferProof(fixture, data);
     checkDisclosure(fixture, call, data);
     const exit = data.outputs[1];
@@ -895,10 +974,12 @@ describe("anonymous ring exits and entries", () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const to = await addressOf(fixture, ShieldedKeypair.generate());
+    const tags = await selectedTags(sender, to);
     const proven = await rail({
       fixture,
       sender,
       transfer: spend(fixture, sender, { ring: "default" }),
+      tags,
     })
       .withPayment({
         to,
@@ -910,6 +991,11 @@ describe("anonymous ring exits and entries", () => {
     const { data, call } = await expanded(fixture, proven, "anonymous");
 
     expect(data.entry).toBe(true);
+    // No ring note is spent, the next sync finds the change under the sender tag alone.
+    expect(data.outputs.slice(0, 2).map(tagOf)).toEqual([
+      tags.sender,
+      bootstrapSlotTag(to.recipient.viewingPublicKey.u()),
+    ]);
     // Input byte bit 7 names the entry key.
     expect((RingTransactData.encode(data)[2] ?? 0) & 0x80).toBe(0x80);
     checkTransferProof(fixture, data);
@@ -924,6 +1010,7 @@ describe("anonymous ring exits and entries", () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const to = await addressOf(fixture, ShieldedKeypair.generate());
+    const tags = await selectedTags(sender, to);
     await checkFrameCounted(fixture, {
       payer: fixture.authority,
       prove: (approval) =>
@@ -931,6 +1018,7 @@ describe("anonymous ring exits and entries", () => {
           fixture,
           sender,
           transfer: spend(fixture, sender, { ring: "default" }),
+          tags,
         })
           .withPayment({
             to,
@@ -962,7 +1050,7 @@ describe("anonymous ring exits and entries", () => {
       fixture.authority,
     );
     const to = await addressOf(fixture, ShieldedKeypair.generate());
-    const proven = await rail({ fixture, sender, transfer })
+    const proven = await rail({ fixture, sender, transfer, tags: await selectedTags(sender, to) })
       .withPayment({ to, asset: SOL_MINT, amount: 400n, reply: null })
       .prove(fixture.client);
     const { data, call } = await expanded(fixture, proven, "anonymous");
@@ -1115,7 +1203,7 @@ describe("anonymous ring exits and entries", () => {
       });
       transfer.withShape({ inputs: 2, outputs: 2 });
       const to = await addressOf(fixture, ShieldedKeypair.generate());
-      const proven = await rail({ fixture, sender, transfer })
+      const proven = await rail({ fixture, sender, transfer, tags: await selectedTags(sender, to) })
         .withCoOwner({
           owner: coOwner.shieldedAddress().solanaAddress(),
           nullifierKey: coOwner.nullifierKey(),
@@ -1164,9 +1252,9 @@ describe("anonymous ring exits and entries", () => {
       feePayer: fixture.authority,
     });
     transfer.withShape({ inputs: 2, outputs: 2 });
-    await expect(rail({ fixture, sender, transfer }).prove(fixture.client)).rejects.toThrow(
-      ringError("RING_MISSING_CO_OWNER_KEY", { index: 1 }),
-    );
+    await expect(
+      rail({ fixture, sender, transfer, tags: await selectedTags(sender) }).prove(fixture.client),
+    ).rejects.toThrow(ringError("RING_MISSING_CO_OWNER_KEY", { index: 1 }));
     noProofs(fixture);
   });
 
@@ -1341,19 +1429,33 @@ describe("anonymous ring exits and entries", () => {
     noProofs(fixture);
   });
 
-  it("seals every change output to the sender's own key under a zero tag", async () => {
+  it("seals every change output to the sender's own key and publishes the sender tag on the first alone", async () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const transfer = spend(fixture, sender);
     transfer.send(sender.keypair.shieldedAddress(), SOL_MINT, 100n);
     transfer.send(sender.keypair.shieldedAddress(), SOL_MINT, 200n);
-    const proven = await rail({ fixture, sender, transfer }).prove(fixture.client);
+    const tags = await selectedTags(sender);
+    const proven = await rail({ fixture, sender, transfer, tags }).prove(fixture.client);
     const { data, call } = await expanded(fixture, proven, "anonymous");
-    expect(bodyKinds(data).slice(0, 3)).toEqual(["change", "change", "change"]);
-    expect(changeAmounts(sender.keypair, data, call).toSorted()).toEqual([100n, 200n, 9_700n]);
+    expect(bodyKinds(fixture, sender.keypair, data).slice(0, 3)).toEqual([
+      "change",
+      "change",
+      "change",
+    ]);
+    expect(changeAmounts(fixture, sender.keypair, data, call).toSorted()).toEqual([
+      100n,
+      200n,
+      9_700n,
+    ]);
     expect(sentRecipientKeys(fixture, sender.keypair, data).slice(0, 3)).toEqual(
       Array(3).fill(sender.keypair.shieldedAddress().viewingPublicKey.u()),
     );
+    // Equal tags on two slots would link the slots the sender keeps.
+    const published = data.outputs.slice(0, 3).map(tagOf).map(hex);
+    expect(published[0]).toBe(hex(tags.sender));
+    expect(published.slice(1)).not.toContain(hex(tags.sender));
+    expect(new Set(published).size).toBe(3);
   });
 
   it("refuses change outputs past the transaction's output count before any proof", async () => {
@@ -1622,6 +1724,12 @@ describe("anonymous ring relay", () => {
       nullifiers: new Set(),
     });
     const requests: RingApprovalRequest[] = [];
+    const recipient = ShieldedKeypair.generate();
+    const pays = input.entry !== true && input.withdraw !== true;
+    const tags = await freshWalletTags(sender.keypair, pays ? [recipient] : []);
+    // A spend that may take no ring note proves under the wallet's selection alone.
+    const tagged =
+      input.entry === true || input.ring === "default" || input.defaultNotes !== undefined;
     const params = {
       client: recordReads(fixture),
       ringProgramId: fixture.ringProgramId,
@@ -1637,6 +1745,7 @@ describe("anonymous ring relay", () => {
         nullifierKey: sender.keypair.nullifierKey(),
         signer: signingKeySpendSigner(sender.signing),
         reply: null,
+        ...(tagged ? { tags } : {}),
         ...(input.ownerExposure === undefined ? {} : { ownerExposure: input.ownerExposure }),
       },
     };
@@ -1647,14 +1756,14 @@ describe("anonymous ring relay", () => {
           ? prepareRingWithdrawalRelay({ ...params, recipient: randomAddress() })
           : prepareRingTransferRelay({
               ...params,
-              recipient: await addressOf(fixture, ShieldedKeypair.generate()),
+              recipient: await addressOf(fixture, recipient),
               ...(input.ring === "default"
                 ? { inputs: "default" as const }
                 : input.defaultNotes === undefined
                   ? {}
                   : { inputs: "ring-or-default" as const }),
             });
-    return { fixture, requests, relay, params, sender };
+    return { fixture, requests, relay, params, sender, tags };
   }
 
   /** The client the relay stages with, every record read counted. */
@@ -1792,7 +1901,7 @@ describe("anonymous ring relay", () => {
     });
 
     it("proves the 15 change in the ring, owned by the sender, from another payer", async () => {
-      const { fixture, params, relay, sender } = await anonymousSpend({
+      const { fixture, params, relay, sender, tags } = await anonymousSpend({
         notes: 0,
         amount: 25n,
         defaultNotes: [40n, 40n],
@@ -1804,7 +1913,7 @@ describe("anonymous ring relay", () => {
       await createRingEntrySubmission({
         ...plain,
         feePayer: payer.address,
-        anonymous: { signer: anonymous.signer, reply: anonymous.reply },
+        anonymous: { signer: anonymous.signer, reply: anonymous.reply, tags },
       });
       const outputs = fixture.sppCalls.at(-1)?.proofInputs.outputs ?? [];
       expect(entered(outputs, sender)).toEqual(
@@ -1932,22 +2041,79 @@ describe("anonymous ring relay", () => {
     expect(fixture.sppCalls.map((call) => call.circuit.kind)).toEqual(["ringAnonymous"]);
   });
 
-  it("takes fresh tags on a second relay, a reply teaches no state", async () => {
+  it("moves the sender counter once a confirmed frame carries the selected sender tag, never before", async () => {
+    const { fixture, params, sender, relay } = await anonymousSpend({ notes: 2, amount: 5n });
+    await relay;
+    const { anonymous, ...plain } = params;
+    const payer = await generateKeyPairSigner();
+    const bob = ShieldedKeypair.generate();
+    const history = ViewingHistory.create(sender.keypair.viewingPublicKey(), 0n);
+    const tags = await history.select(walletKeys(sender.keypair), [
+      { viewingPublicKey: bob.viewingPublicKey() },
+    ]);
+    const submission = await createRingTransferSubmission({
+      ...plain,
+      feePayer: payer.address,
+      recipient: await addressOf(fixture, bob),
+      anonymous: { signer: anonymous.signer, reply: null, tags },
+    });
+    submission.prove();
+    expect(history.withPublished(tags, submission.confirmedSlotTags()).current().txCount).toBe(0n);
+    await submission.send({
+      sign: (transaction) => signTransactionWithSigners([payer], transaction),
+      send: async () => undefined,
+      status: async () => ({ kind: "confirmed", slot: 3n }),
+    });
+    const published = submission.confirmedSlotTags();
+    expect(published.slice(0, 2).map(hex)).toEqual(
+      [tags.sender, bootstrapSlotTag(bob.viewingPublicKey().u())].map(hex),
+    );
+    expect(history.withPublished(tags, published).current().txCount).toBe(1n);
+    // A frame without the sender tag leaves the counter.
+    expect(history.withPublished(tags, published.slice(1)).current().txCount).toBe(0n);
+  });
+
+  it("relays fresh random bytes on change and the recipient's bootstrap tag without a selection, a reply teaches no state", async () => {
     const { fixture, params, sender, relay } = await anonymousSpend({
       notes: 3,
       amount: 5n,
     });
     await relay;
     const to = await addressOf(fixture, ShieldedKeypair.generate());
-    const first = await prepareRingTransferRelay({
-      ...params,
-      recipient: to,
-      anonymous: { ...params.anonymous, reply: claim(sender.keypair) },
+    const first = await publishedTags(
+      await prepareRingTransferRelay({
+        ...params,
+        recipient: to,
+        anonymous: { ...params.anonymous, reply: claim(sender.keypair) },
+      }),
+    );
+    const second = await publishedTags(
+      await prepareRingTransferRelay({ ...params, recipient: to }),
+    );
+    const bootstrap = hex(bootstrapSlotTag(to.recipient.viewingPublicKey.u()));
+    expect([first[1], second[1]]).toEqual([bootstrap, bootstrap]);
+    expect(first[0]).not.toBe(second[0]);
+  });
+
+  it("relays the wallet's selection, the sender tag on change and the request's tag on its payment", async () => {
+    const { fixture, params, sender, relay } = await anonymousSpend({ notes: 3, amount: 5n });
+    await relay;
+    const request = new RingPaymentRequest({
+      address: await addressOf(fixture, ShieldedKeypair.generate()),
+      tag: new Uint8Array(32).fill(0x5a) as Bytes32,
     });
-    const second = await prepareRingTransferRelay({ ...params, recipient: to });
-    expect((await publishedTags(first))[0]).toBe(hex(ZERO_KEY));
-    expect((await publishedTags(second))[0]).toBe(hex(ZERO_KEY));
-    expect((await publishedTags(first))[1]).not.toBe((await publishedTags(second))[1]);
+    const tags = await ViewingHistory.create(sender.keypair.viewingPublicKey(), 0n).select(
+      walletKeys(sender.keypair),
+      [tagRecipient(request)],
+    );
+    const published = await publishedTags(
+      await prepareRingTransferRelay({
+        ...params,
+        recipient: request,
+        anonymous: { ...params.anonymous, tags },
+      }),
+    );
+    expect(published.slice(0, 2)).toEqual([tags.sender, slotTag(request.tag as Bytes32)].map(hex));
   });
 
   it("pays a request and refuses one the payment contradicts before approval", async () => {
@@ -2646,7 +2812,7 @@ describe("anonymous entry key bound", () => {
       fixture.authority,
     );
     const to = await addressOf(fixture, ShieldedKeypair.generate());
-    return rail({ fixture, sender, transfer })
+    return rail({ fixture, sender, transfer, tags: await selectedTags(sender, to) })
       .withPayment({
         to,
         asset: SOL_MINT,
@@ -2727,7 +2893,11 @@ describe("ring payment adapters", () => {
     const ring =
       options.ring === "confidential"
         ? ownerRingTransfers(input)
-        : anonymousRingTransfers({ ...input, payees: options.payee === "unknown" ? [] : [to] });
+        : anonymousRingTransfers({
+            ...input,
+            payees: options.payee === "unknown" ? [] : [to],
+            tags: await selectedTags(sender, to),
+          });
     const owner = sender.keypair.shieldedAddress().solanaAddress();
     const proved = buildRingPaymentTransaction({
       client,

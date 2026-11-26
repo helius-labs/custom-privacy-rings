@@ -60,6 +60,7 @@ export type ConfirmedRingTransaction =
       inputTreeIds: readonly (number | undefined)[];
       /** The layout the ring program verified the audit proof under, read from its confirmed instruction. */
       layout: AuditStreamLayout;
+      /** An authority frame without replies reads `delegate` under both ring modes, the ring account names its mode. */
       rail: RingRail;
       /** The statement's bit, the sealed `R` is zero. */
       noSpend: boolean;

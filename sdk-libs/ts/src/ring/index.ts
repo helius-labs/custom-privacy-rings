@@ -160,19 +160,13 @@ export {
   signingKeySpendSigner,
 } from "../operations/payments/anonymous.js";
 export {
-  PENDING_RETENTION,
   StreamCounter,
+  TAG_WINDOW,
+  TransferTags,
   ViewingHistory,
   ViewingKeyEntry,
 } from "../state/viewing-history.js";
-export type { AdvancedTag, RingPosition } from "../state/viewing-history.js";
-export { plainTagFrame, scanWorkerMatcher } from "../state/anonymous-scan.js";
-export type {
-  PlainTagFrame,
-  ScanWorkerReply,
-  ScanWorkerRequest,
-  ScanWorkerResponse,
-} from "../state/anonymous-scan.js";
+export type { AdvancedTag, RingPosition, TagRecipient } from "../state/viewing-history.js";
 export { AnonymousWallet } from "../state/anonymous-wallet.js";
 export type { AnonymousNoteState, PendingClaim } from "../state/anonymous-wallet.js";
 export {
@@ -198,9 +192,6 @@ export { LocalRingKeys, isRingKeys, ringWalletKeys } from "../state/ring-keys.js
 export type {
   RingDeliveryRequest,
   RingKeys,
-  RingTagFrame,
-  RingTagKind,
-  RingTagProbe,
   ViewTagRequest,
   ViewTagStream,
 } from "../state/ring-keys.js";
@@ -359,6 +350,7 @@ export {
   prepareRingExitRelay,
   prepareRingTransferRelay,
   prepareRingWithdrawalRelay,
+  tagRecipient,
 } from "../operations/payments/transfer.js";
 export type {
   AnonymousRingSpend,

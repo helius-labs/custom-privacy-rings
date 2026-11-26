@@ -13,6 +13,7 @@ export const RING_KEY_ERROR_RUST_VARIANT = Object.freeze({
   KEYPAIR_INVALID_RING_PAYMENT_AMOUNT: "InvalidRingPaymentAmount",
   KEYPAIR_INVALID_RING_PAYMENT_MINT: "InvalidRingPaymentMint",
   KEYPAIR_INVALID_RING_PAYMENT_LABEL: "InvalidRingPaymentLabel",
+  KEYPAIR_INVALID_RING_PAYMENT_TAG: "InvalidRingPaymentTag",
   KEYPAIR_UNKNOWN_VIEWING_KEY: "UnknownViewingKey",
   KEYPAIR_DISCLOSURE_SHAPE: "AuditError::DisclosureLayout",
   KEYPAIR_DISCLOSURE_PADDING: null,

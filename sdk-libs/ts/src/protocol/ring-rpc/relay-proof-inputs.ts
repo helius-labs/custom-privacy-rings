@@ -351,7 +351,6 @@ function writePlan(writer: Writer, plan: AnonymousPlan): void {
   writer.u8(plan.payments.length, "plan.payments.length");
   for (const payment of plan.payments)
     writer.bytes(payment.recipient.toBytes(), X25519_PUBLIC_KEY_LENGTH, "plan.payment.recipient");
-  for (const preimage of plan.dummyPreimages()) writer.bytes(preimage, 32, "plan.dummyPreimage");
 }
 
 /** A spend of the sender or a held co-owner, a dummy or compact padding, the service derives hash and nullifier. */
@@ -559,18 +558,13 @@ class WireReader extends Reader {
   }
 }
 
+/** A reply and every tag already sit sealed in the external data, the wire carries neither. */
 function readPlan(reader: WireReader): AnonymousPlan {
-  const payments = reader.list("plan.payments", () => ({
-    recipient: X25519PublicKey.fromBytes(
-      reader.bytes(X25519_PUBLIC_KEY_LENGTH, "plan.payment.recipient"),
+  return AnonymousPlan.fromRecipients(
+    reader.list("plan.payments", () =>
+      X25519PublicKey.fromBytes(reader.bytes(X25519_PUBLIC_KEY_LENGTH, "plan.payment.recipient")),
     ),
-    // A reply already sits sealed in the external data, the wire carries no plaintext.
-    reply: null,
-  }));
-  const dummyPreimages = AnonymousPlan.create()
-    .dummyPreimages()
-    .map(() => reader.hash("plan.dummyPreimage"));
-  return AnonymousPlan.fromDummyPreimages(payments, dummyPreimages);
+  );
 }
 
 function readRail(reader: WireReader): RelayRail {

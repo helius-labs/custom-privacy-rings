@@ -25,7 +25,7 @@ import {
   type RingAuditReader,
 } from "../audit/audit.js";
 import { RingError } from "../../protocol/error.js";
-import { RowOrigins } from "../audit/row-origins.js";
+import { RingModeOrigin, RowOrigins } from "../audit/row-origins.js";
 import { readRingPages, scanLimits } from "../../rpc/history.js";
 import type { SkippedRingTransaction } from "../../rpc/ring-rpc.js";
 import {
@@ -114,7 +114,10 @@ export async function recoverRingMemberNotes(
     throw new RingError("RING_NULLIFIER_KEY_MISMATCH");
   const member = input.source.ownerHash();
   let state = input.progress === undefined ? EMPTY_STATE : resumedState(input.progress, member);
-  const origin = input.origin ?? new RpcTransactionOrigin(input.client.solanaRpc);
+  const origin = new RingModeOrigin(
+    input.origin ?? new RpcTransactionOrigin(input.client.solanaRpc),
+    input.client,
+  );
   const rows = new RowOrigins(origin, input.ringProgramId, context);
   // 1. One page at a time, the cursor names the last row read and the next call starts after it.
   const reach = await readRingPages(

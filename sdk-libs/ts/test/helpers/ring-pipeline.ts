@@ -122,6 +122,7 @@ import { settlementAccounts } from "../../src/protocol/transaction/spp.js";
 import { checkTransactionFits } from "../../src/operations/workflow/compile.js";
 import { openRecipientBody, ringOutputBlinding } from "../../src/crypto/derivation/blinding.js";
 import { LocalRingKeys, ringWalletKeys, type RingKeys } from "../../src/state/ring-keys.js";
+import { ViewingHistory, type TransferTags } from "../../src/state/viewing-history.js";
 import { x25519FromU } from "../../src/crypto/keys/x25519.js";
 
 export const TREE_ID = DEFAULT_TREE_ID;
@@ -520,6 +521,17 @@ export function walletKeys(keypair: ShieldedKeypair): LocalKeys & RingKeys {
   return ringWalletKeys(
     LocalKeys.fromKeypair(keypair, PROOF_SERVICE),
     LocalRingKeys.fromKeypair(keypair),
+  );
+}
+
+/** The tags a wallet with no history selects, one payment to each of `payees` in order, Rust `fresh_wallet_tags`. */
+export function freshWalletTags(
+  sender: ShieldedKeypair,
+  payees: readonly ShieldedKeypair[] = [],
+): Promise<TransferTags> {
+  return ViewingHistory.create(sender.viewingPublicKey(), 0n).select(
+    walletKeys(sender),
+    payees.map((payee) => ({ viewingPublicKey: payee.viewingPublicKey() })),
   );
 }
 

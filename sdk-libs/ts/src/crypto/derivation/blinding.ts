@@ -54,11 +54,6 @@ export class OutputBlindings {
     return transactOutputBlinding(this.#firstNullifier, this.#outputSeed, position);
   }
 
-  /** A copy of the seed the sender bundle publishes, every change blinding derives from it. */
-  outputSeed(): Bytes32 {
-    return this.#outputSeed.slice() as Bytes32;
-  }
-
   destroy(): void {
     this.#outputSeed.fill(0);
   }

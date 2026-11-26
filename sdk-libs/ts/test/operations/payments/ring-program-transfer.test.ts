@@ -54,6 +54,7 @@ import {
 } from "../../../src/protocol/transaction/transfer-approval.js";
 import {
   filled,
+  freshWalletTags,
   hex,
   noteInput,
   pdaKeys,
@@ -492,7 +493,11 @@ describe("ring transfer adapters", () => {
       const adapter =
         mode === "confidential"
           ? ownerRingTransfers(input)
-          : anonymousRingTransfers({ ...input, payees: [payee] });
+          : anonymousRingTransfers({
+              ...input,
+              payees: [payee],
+              tags: await freshWalletTags(owner, [bob]),
+            });
       await expect(
         adapter.proveRingTransfer({
           transfer,

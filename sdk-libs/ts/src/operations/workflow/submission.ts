@@ -22,7 +22,6 @@ import {
   compileUnsignedTransaction,
 } from "@heliuslabs/spr/internal";
 import type { BlockhashProvider, ChainReader, KitRpcAccess } from "@heliuslabs/spr/client";
-import type { ViewingHistory } from "../../state/viewing-history.js";
 import { savePersistedWallet, type WalletPersistence } from "@heliuslabs/spr/wallet";
 import type { Bytes32, RequestContext, Transaction } from "@heliuslabs/spr/interface";
 import {
@@ -58,10 +57,10 @@ export interface RingSubmissionAttempt extends RingBoundState {
   readonly lastValidBlockHeight: bigint;
   readonly intentHash: Bytes32;
   readonly ringInstructionIndex: number;
-  /** The anonymous depositor's viewing history past the attempt's tag, every attempt the same. */
-  readonly viewingHistory?: ViewingHistory;
   /** Absent off a transfer. */
   readonly chargedOutflows?: readonly OwnerDebit[];
+  /** Each non-exit slot's tag, absent off a ring frame. */
+  readonly slotTags?: readonly Bytes32[];
 }
 
 export type RingSubmissionResult =
@@ -144,6 +143,7 @@ export async function provenRingAttempt(
     intentHash: input.intentHash,
     ringInstructionIndex: frame.setupInstructions?.length ?? 0,
     chargedOutflows: proven.chargedOutflows,
+    slotTags: proven.slotTags(),
     ...boundState(proven),
   });
 }
@@ -171,6 +171,7 @@ export class RingTransactionSubmission {
   #attempts = 0;
   #proved = false;
   #terminal = false;
+  #confirmed = false;
   #busy = false;
 
   constructor(
@@ -195,9 +196,9 @@ export class RingTransactionSubmission {
     this.#utxoHashes = (input.utxoHashes ?? []).map((hash) => new Uint8Array(hash) as Bytes32);
   }
 
-  /** An anonymous depositor stores it before the first `send`. */
-  get viewingHistory(): ViewingHistory | undefined {
-    return this.#attempt.viewingHistory;
+  /** The confirmed frame's non-exit slot tags in slot order, empty until the transfer confirms. */
+  confirmedSlotTags(): readonly Bytes32[] {
+    return this.#confirmed ? (this.#attempt.slotTags ?? []) : [];
   }
 
   /** @internal The reservation `build` records outlives every attempt. */
@@ -297,6 +298,7 @@ export class RingTransactionSubmission {
         if (status.kind === "unknown") return this.#unknown(signature);
         if (status.kind === "confirmed") {
           this.#terminal = true;
+          this.#confirmed = true;
           return { kind: "confirmed", signature, slot: status.slot, attempts: this.#attempts };
         }
         // 3. The retry decision reads the bound registries, a failed read throws with the signature held to read again.

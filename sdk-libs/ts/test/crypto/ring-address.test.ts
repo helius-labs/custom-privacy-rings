@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { address } from "@solana/kit";
+import { address, getBase58Decoder } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
 import { RingAddress, RingPaymentRequest } from "../../src/crypto/keys/ring-address.js";
@@ -23,6 +23,7 @@ type ValidCase = Readonly<{
   amount: string | null;
   mint: string | null;
   label: string | null;
+  tag: string | null;
 }>;
 
 type RejectedCase = Readonly<{ name: string; uri: string; error: string }>;
@@ -68,6 +69,7 @@ describe("shared ring address vectors (test-vectors/wallet/ring_address.json)", 
       expect(request.amount).toBe(vector.amount === null ? undefined : BigInt(vector.amount));
       expect(request.mint).toBe(vector.mint ?? undefined);
       expect(request.label).toBe(vector.label ?? undefined);
+      expect(request.tag).toEqual(vector.tag === null ? undefined : bytes(vector.tag));
       expect(RingAddress.fromBase58(request.address.toBase58()).toBytes()).toEqual(
         request.address.toBytes(),
       );
@@ -130,11 +132,39 @@ describe("shared ring address vectors (test-vectors/wallet/ring_address.json)", 
       amount: (1n << 64n) - 1n,
       mint: address("5i1Ty3d3n2c3hYwdeaxkhtgMMSJUCiKYdpZK9TmPc5un"),
       label: "a=b&c?d/\u00e9 !*'()",
+      tag: new Uint8Array(32).fill(0x45) as Bytes32,
     });
     const parsed = RingPaymentRequest.parse(request.toString());
     expect(parsed.toString()).toBe(request.toString());
     expect(parsed.amount).toBe(request.amount);
     expect(parsed.mint).toBe(request.mint);
     expect(parsed.label).toBe(request.label);
+    expect(parsed.tag).toEqual(request.tag);
+  });
+
+  it("prints the tag last in base58 and refuses one that is not 32 bytes", () => {
+    const base = RingPaymentRequest.parse(bareUri());
+    const tag = new Uint8Array(32).fill(0x45) as Bytes32;
+    const text = getBase58Decoder().decode(tag);
+    const tagged = new RingPaymentRequest({ address: base.address, label: "rent", tag });
+    expect(tagged.toString()).toBe(`${bareUri()}?label=rent&tag=${text}`);
+    const short = getBase58Decoder().decode(tag.subarray(1));
+    const long = getBase58Decoder().decode(Uint8Array.of(...tag, 1));
+    for (const [query, variant] of [
+      [`tag=${short}`, "InvalidRingPaymentTag"],
+      [`tag=${long}`, "InvalidRingPaymentTag"],
+      ["tag=", "InvalidRingPaymentTag"],
+      [`tag=${"45".repeat(32)}0`, "InvalidRingPaymentTag"],
+      [`tag=${text}&tag=${text}`, "DuplicateRingPaymentKey"],
+    ] as const)
+      expect(
+        rustVariant(() => RingPaymentRequest.parse(`${bareUri()}?${query}`)),
+        query,
+      ).toBe(variant);
+    expect(
+      rustVariant(
+        () => new RingPaymentRequest({ address: base.address, tag: tag.subarray(1) as Bytes32 }),
+      ),
+    ).toBe("InvalidRingPaymentTag");
   });
 });

@@ -7,7 +7,12 @@ import { ShieldedKeypair, SigningKey } from "@heliuslabs/spr/keypair";
 
 import { PreparedRingDeposit } from "../../../src/operations/payments/deposit.js";
 import { BLOCKHASH } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
-import { PROOF_SERVICE, ringFixture, walletKeys } from "../../helpers/ring-pipeline.js";
+import {
+  PROOF_SERVICE,
+  freshWalletTags,
+  ringFixture,
+  walletKeys,
+} from "../../helpers/ring-pipeline.js";
 
 const seen = vi.hoisted(() => ({ payloads: [] as Uint8Array[] }));
 
@@ -54,6 +59,7 @@ it("wipes a deposit frame's encoded payload when the frame fails after encoding"
         keys: walletKeys(owner),
         listSalt: new Uint8Array(32).fill(1) as Bytes32,
       },
+      tags: await freshWalletTags(owner, [owner]),
       amount: 9n,
       ringRpc: {
         cluster: new Uint8Array(32).fill(1) as Bytes32,

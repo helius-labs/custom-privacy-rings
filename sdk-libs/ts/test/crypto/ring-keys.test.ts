@@ -76,7 +76,6 @@ describe("LocalRingKeys.destroy", () => {
         () => keys.listSalt(RING),
         () => keys.viewTags([]),
         () => keys.ringDeliverySecrets([]),
-        () => keys.ringTagMatches([]),
         () => keys.decrypt([]),
         () => keys.derive([]),
         () => keys.transactionKeys([]),

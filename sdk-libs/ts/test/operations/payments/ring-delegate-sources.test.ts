@@ -36,13 +36,17 @@ import { withConfirmedReads } from "../../helpers/clients.js";
 import { RecordKind } from "../../../src/protocol/codec/audit-stream.js";
 import { ringComputeUnitLimit } from "../../../src/operations/management/admin.js";
 import { buildRingDelegateRecoveredTransaction } from "../../../src/operations/management/delegate.js";
-import { DelegateTransfer } from "../../../src/operations/payments/transfer-rails.js";
+import {
+  DelegateTransfer,
+  type DelegateOutput,
+} from "../../../src/operations/payments/transfer-rails.js";
 import { ringProofInput } from "../../../src/operations/workflow/selection.js";
 import { SIZE_PROBE_LIFETIME } from "../../../src/operations/workflow/compile.js";
 import { buildRuleTable } from "../../../src/protocol/membership/policy.js";
 import type { RingMode } from "../../../src/protocol/codec/ring-codecs.js";
 import type { PrepareAuthorityTransferRequest } from "../../../src/protocol/ring-rpc/ring-rpc-types.js";
 import { RingInstructionTag } from "../../../src/protocol/transaction/instruction-tag.js";
+import { bootstrapSlotTag, slotTag } from "../../../src/crypto/derivation/ring-stream.js";
 import {
   ringRailOf,
   RingTransactData,
@@ -56,6 +60,7 @@ import {
 } from "../../../src/rpc/relay-message.js";
 import { BLOCKHASH, kitReads } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import {
+  hex,
   noteInput,
   PROOF_SERVICE,
   randomAddress,
@@ -103,6 +108,12 @@ async function moveRing(mode: RingMode, owners: readonly ShieldedKeypair[]) {
   return { fixture, delegate };
 }
 
+/** A payment as a delegate move tags it, under its recipient's bootstrap tag without a request. */
+function payment(payee: ShieldedKeypair, amount: bigint, tag?: Bytes32) {
+  const recipient = payee.shieldedAddress();
+  return { recipient, asset: SOL_MINT, amount, tag: tag ?? recipient.viewingPublicKey.u() };
+}
+
 /** Change returns to the owner of the last note spent. */
 function movingFrom(
   fixture: Fixture,
@@ -129,7 +140,7 @@ function movingFrom(
         source: change.shieldedAddress(),
         sourceProofs: walletKeys(change),
         inputs: notes,
-        outputs: [{ recipient: payee.shieldedAddress(), asset: SOL_MINT, amount }],
+        outputs: [payment(payee, amount)],
         assets,
       }).withTxViewingKey(TX_VIEWING_KEY),
     );
@@ -340,7 +351,7 @@ describe("delegate sources", () => {
         source: member.shieldedAddress(),
         sourceProofs: walletKeys(member),
         inputs: [stolen],
-        outputs: [{ recipient: payee.shieldedAddress(), asset: SOL_MINT, amount: 4n }],
+        outputs: [payment(payee, 4n)],
         assets,
       })
         .withCoSource({
@@ -376,6 +387,172 @@ describe("delegate sources", () => {
         expect.objectContaining({ details: { mismatch: "SpendsUnrequestedNote" } }),
       );
     });
+
+    it("settles a payment to its own source, the output lands among the source's change", async () => {
+      const source = ShieldedKeypair.generate();
+      const { fixture, delegate } = await moveRing(mode, [source]);
+      const { transfer, notes } = movingFrom(fixture, delegate, [source], source, 4n);
+      const proven = await transfer.prove(fixture.client);
+      const expected = await expectedDelegate({
+        request: requestFor(fixture, delegate, [source], source, 4n),
+        quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+        config: await policyOf(fixture),
+        outputTreeId: fixture.client.treeId,
+        allowed: allowedOf([{ owner: source, notes }]),
+      });
+      const message = messageOf(fixture, await proven.instruction());
+      expect(checkRelayMessage(expected, message, delegate as never).signer).toBe(delegate);
+      const bootstrap = hex(bootstrapSlotTag(source.viewingPublicKey().u()));
+      const published = proven.slotTags().slice(0, 2).map(hex);
+      // An anonymous frame publishes the payment's tag on one change slot, equal tags would link two.
+      if (mode === "anonymous")
+        expect(published.filter((tag) => tag === bootstrap)).toHaveLength(1);
+      else expect(published).toEqual([bootstrap, bootstrap]);
+    });
+  });
+
+  it("holds an anonymous payment to the tag its request names, the bootstrap tag without one", async () => {
+    const [source, payee] = [ShieldedKeypair.generate(), ShieldedKeypair.generate()];
+    const { fixture, delegate } = await moveRing("anonymous", [source, payee]);
+    const requested = new Uint8Array(32).fill(0x5a) as Bytes32;
+    const note = noteInput(source, 10n, fixture.ringProgramId);
+    const moved = async (tag?: Bytes32) => {
+      const transfer = DelegateTransfer.new({
+        ringProgramId: fixture.ringProgramId,
+        delegate: delegate as never,
+        payer: fixture.authority,
+        source: source.shieldedAddress(),
+        sourceProofs: walletKeys(source),
+        inputs: [note],
+        outputs: [payment(payee, 4n, tag)],
+        assets,
+      }).withTxViewingKey(TX_VIEWING_KEY);
+      const proven = await transfer.prove(fixture.client);
+      return { tags: proven.slotTags(), message: messageOf(fixture, await proven.instruction()) };
+    };
+    const asked = async (tag?: Bytes32) => {
+      const request = requestFor(fixture, delegate, [source], payee, 4n);
+      const payments = request.transfer.payments.map((paid) =>
+        tag === undefined ? paid : { ...paid, tag },
+      );
+      return expectedDelegate({
+        request: { ...request, transfer: { ...request.transfer, payments } },
+        quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+        config: await policyOf(fixture),
+        outputTreeId: fixture.client.treeId,
+        allowed: allowedOf([{ owner: source, notes: [note] }]),
+      });
+    };
+    const [tagged, bootstrap] = [await moved(requested), await moved()];
+    expect(tagged.tags).toContainEqual(slotTag(requested));
+    expect(bootstrap.tags).toContainEqual(bootstrapSlotTag(payee.viewingPublicKey().u()));
+    const verdict = (expected: Awaited<ReturnType<typeof asked>>, message: Uint8Array) => {
+      try {
+        return checkRelayMessage(expected, message, delegate as never).signer;
+      } catch (error) {
+        return (error as { details?: { mismatch?: string } }).details?.mismatch;
+      }
+    };
+    expect(verdict(await asked(requested), tagged.message)).toBe(delegate);
+    expect(verdict(await asked(), bootstrap.message)).toBe(delegate);
+    // A payment under another tag is lost to its recipient's sync.
+    expect(verdict(await asked(), tagged.message)).toBe("Recipients");
+    expect(verdict(await asked(requested), bootstrap.message)).toBe("Recipients");
+  });
+
+  it("counts an anonymous payment as tagged once any slot publishes its tag, a payment to a source needs one too", async () => {
+    const [sender, other, payee] = [
+      ShieldedKeypair.generate(),
+      ShieldedKeypair.generate(),
+      ShieldedKeypair.generate(),
+    ];
+    const { fixture, delegate } = await moveRing("anonymous", [sender, other, payee]);
+    const notes = [other, sender].map((source) => noteInput(source, 10n, fixture.ringProgramId));
+    const moved = async (outputs: readonly DelegateOutput[]) => {
+      const proven = await DelegateTransfer.new({
+        ringProgramId: fixture.ringProgramId,
+        delegate: delegate as never,
+        payer: fixture.authority,
+        source: sender.shieldedAddress(),
+        sourceProofs: walletKeys(sender),
+        inputs: notes,
+        outputs,
+        assets,
+      })
+        .withCoSource({
+          owner: other.shieldedAddress().solanaAddress(),
+          nullifierKey: other.nullifierKey(),
+        })
+        .withTxViewingKey(TX_VIEWING_KEY)
+        .prove(fixture.client);
+      return { tags: proven.slotTags(), message: messageOf(fixture, await proven.instruction()) };
+    };
+    const verdict = async (
+      message: Uint8Array,
+      payments: readonly Readonly<{ recipient: ShieldedKeypair; amount: bigint }>[],
+    ) => {
+      const expected = await expectedDelegate({
+        request: requestOf(
+          fixture,
+          delegate,
+          [other, sender],
+          payments.map((paid) => ({ ...paid, mint: SOL_MINT })),
+        ),
+        quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+        config: await policyOf(fixture),
+        outputTreeId: fixture.client.treeId,
+        allowed: allowedOf([
+          { owner: other, notes: notes.slice(0, 1) },
+          { owner: sender, notes: notes.slice(1) },
+        ]),
+      });
+      try {
+        return checkRelayMessage(expected, message, delegate as never).signer;
+      } catch (error) {
+        return (error as { details?: { mismatch?: string } }).details?.mismatch;
+      }
+    };
+    // The frame publishes one address's bootstrap tag once, the match returns both payments.
+    const twice = await moved([payment(payee, 4n), payment(payee, 3n)]);
+    const bootstrap = hex(bootstrapSlotTag(payee.viewingPublicKey().u()));
+    expect(twice.tags.map(hex).filter((tag) => tag === bootstrap)).toHaveLength(1);
+    expect(
+      await verdict(twice.message, [
+        { recipient: payee, amount: 4n },
+        { recipient: payee, amount: 3n },
+      ]),
+    ).toBe(delegate);
+    // A record of a source under no published tag is change, it settles no payment to that source.
+    for (const source of [other, sender]) {
+      const paid = [{ recipient: source, amount: 4n }];
+      const untagged = await moved([
+        { recipient: source.shieldedAddress(), asset: SOL_MINT, amount: 4n },
+      ]);
+      expect(await verdict(untagged.message, paid)).toBe("Recipients");
+      expect(await verdict((await moved([payment(source, 4n)])).message, paid)).toBe(delegate);
+    }
+  });
+
+  it("refuses a tag the confidential rail does not publish, compared at the slot width", async () => {
+    const [source, payee] = [ShieldedKeypair.generate(), ShieldedKeypair.generate()];
+    const { fixture, delegate } = await moveRing("confidential", [source, payee]);
+    const move = (tag: Bytes32) =>
+      DelegateTransfer.new({
+        ringProgramId: fixture.ringProgramId,
+        delegate: delegate as never,
+        payer: fixture.authority,
+        source: source.shieldedAddress(),
+        sourceProofs: walletKeys(source),
+        inputs: [noteInput(source, 10n, fixture.ringProgramId)],
+        outputs: [payment(payee, 4n, tag)],
+        assets,
+      }).prove(fixture.client);
+    await expect(move(new Uint8Array(32).fill(0x5a) as Bytes32)).rejects.toMatchObject({
+      code: "RING_REQUESTED_TAG_UNPUBLISHED",
+    });
+    expect(fixture.sppCalls).toEqual([]);
+    const bootstrap = bootstrapSlotTag(payee.viewingPublicKey().u());
+    expect((await move(bootstrap)).slotTags()).toContainEqual(bootstrap);
   });
 
   describe("recovered move", () => {
@@ -702,6 +879,22 @@ describe("delegate sources", () => {
       };
       await expect(build("confidential")).resolves.toBeDefined();
       await expect(build("anonymous")).resolves.toBeDefined();
+    });
+
+    it("refuses an exit that names a tag before any proof", async () => {
+      const [member, payee] = [ShieldedKeypair.generate(), ShieldedKeypair.generate()];
+      const { fixture, delegate } = await moveRing("anonymous", [member, payee]);
+      await expect(
+        buildRingDelegateRecoveredTransaction({
+          client: clientOf(fixture),
+          ringProgramId: fixture.ringProgramId,
+          delegate: delegate as never,
+          feePayer: fixture.authority,
+          outputs: [{ ...payment(payee, 4n), exit: true }],
+          sources: [sourceOf(fixture, member, 0)],
+        }),
+      ).rejects.toMatchObject({ causeCode: "RING_REQUESTED_TAG_UNPUBLISHED" });
+      expect(fixture.sppCalls).toEqual([]);
     });
 
     it("refuses a source named twice and no source", async () => {

@@ -17,20 +17,15 @@ import {
 import {
   OUTPUT_RECORD_ENC_INFO,
   REPLY_ENC_INFO,
-  SENDER_BUNDLE_ENC_INFO,
   symmetricAuditApply,
 } from "../../../src/crypto/audit/audit.js";
 import { x25519FromU } from "../../../src/crypto/keys/x25519.js";
 import {
   MIN_REPLY_LEN,
   openReply,
-  openSenderBundle,
   replyLength,
   sealReply,
-  sealSenderBundle,
-  SENDER_BUNDLE_LEN,
   type ReplyMetadata,
-  type SenderBundle,
 } from "../../../src/protocol/codec/anonymous-delivery.js";
 import {
   DUMMY_RECORD,
@@ -124,8 +119,6 @@ function reply(data = new Data()): ReplyMetadata {
     data,
   };
 }
-
-const BUNDLE: SenderBundle = { outputSeed: filled(0x77) };
 
 beforeAll(initializePoseidon);
 
@@ -431,34 +424,19 @@ describe("the shared reply vector", () => {
   });
 });
 
-describe("sender bundle", () => {
-  it("seals the output seed alone, one length at every output count", () => {
-    const sealed = sealSenderBundle(SECRET, BUNDLE);
-    expect(sealed).toHaveLength(SENDER_BUNDLE_LEN);
-    expect(SENDER_BUNDLE_LEN).toBe(32);
-    expect(openSenderBundle(SECRET, sealed)).toEqual(BUNDLE);
-  });
-
-  it("refuses a bundle of any other length", () => {
-    const sealed = sealSenderBundle(SECRET, BUNDLE);
-    expect(() => openSenderBundle(SECRET, sealed.subarray(1))).toThrow();
-    expect(() => openSenderBundle(SECRET, Uint8Array.of(...sealed, 0))).toThrow();
-  });
-});
-
 describe("delivery streams", () => {
   it("names one CTR label per region and each seal runs under its own", () => {
     expect(
       new Set(
-        [OUTPUT_RECORD_ENC_INFO, REPLY_ENC_INFO, SENDER_BUNDLE_ENC_INFO].map((label) =>
+        [OUTPUT_RECORD_ENC_INFO, REPLY_ENC_INFO].map((label) =>
           Buffer.from(label).toString("latin1"),
         ),
       ).size,
-    ).toBe(3);
-    const streams = [OUTPUT_RECORD_ENC_INFO, REPLY_ENC_INFO, SENDER_BUNDLE_ENC_INFO].map((label) =>
+    ).toBe(2);
+    const streams = [OUTPUT_RECORD_ENC_INFO, REPLY_ENC_INFO].map((label) =>
       Buffer.from(keystream(label, RING_RECORD_LEN)).toString("hex"),
     );
-    expect(new Set(streams).size).toBe(3);
+    expect(new Set(streams).size).toBe(2);
     expect(
       Buffer.from(sealOutputSlot(SECRET, { record: DUMMY_RECORD, form: CLEAR })).toString("hex"),
     ).toBe(streams[0]);

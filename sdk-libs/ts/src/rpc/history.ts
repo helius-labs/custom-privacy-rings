@@ -20,6 +20,9 @@ export interface ScanLimits {
   readonly maxPages: number;
 }
 
+/** The indexer's cap on the tags or nullifiers one request names. */
+export const TAGS_PER_REQUEST = Number(PAGE_LIMIT);
+
 const DEFAULT_PAGE_SIZE = 1000;
 const DEFAULT_MAX_PAGES = 32;
 

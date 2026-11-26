@@ -6,10 +6,10 @@ import { X25519PublicKey, type ViewTag } from "@heliuslabs/spr/keypair";
 import type { Wallet, WalletUtxo } from "@heliuslabs/spr/transaction";
 
 import { RingError } from "../protocol/error.js";
-import { exactlyOne, unseen } from "./batch.js";
+import { unseen } from "./batch.js";
 import { mintBalances, noteState, type MintBalance, type NoteState } from "./exposed-notes.js";
 import { consumeScan, type AnonymousScan, type SenderClaim } from "./anonymous-sync.js";
-import type { RingKeys } from "./ring-keys.js";
+import type { RingKeys, ViewTagStream } from "./ring-keys.js";
 import { RingWallet, type NoteCommit, type NoteDelta } from "./ring-wallet.js";
 import {
   recoveryAllows,
@@ -19,7 +19,7 @@ import {
   type RecoveryCoverage,
   type RecoveryWallet,
 } from "./recovery-session.js";
-import { parseExact, senderStream, ViewingHistory, type RingRead } from "./viewing-history.js";
+import { parseExact, ViewingHistory } from "./viewing-history.js";
 
 /** A reply read from a note, what a sender wrote about itself and nothing the proof binds. */
 export interface PendingClaim {
@@ -33,10 +33,17 @@ export interface PendingClaim {
 export interface SyncCommit extends NoteDelta {
   /** The held keys the sync read and the slot their tag reads are complete through. */
   readonly tagPosition?: Readonly<{ keys: readonly X25519PublicKey[]; afterSlot: bigint }>;
-  readonly ringPositions: readonly (RingRead & Readonly<{ afterSlot: bigint }>)[];
+  /** Each listed stream tag a read row published. */
+  readonly foundTags: readonly FoundTag[];
   readonly senderClaims: readonly SenderClaim[];
   /** Stored retries whose spend row the sync read again. */
   readonly retried: readonly Bytes32[];
+}
+
+export interface FoundTag {
+  readonly viewingPublicKey: X25519PublicKey;
+  readonly stream: ViewTagStream;
+  readonly index: bigint;
 }
 
 export type AnonymousNoteState = NoteState | "pendingSpendCheck";
@@ -176,11 +183,10 @@ export class AnonymousWallet {
     return this.#claims;
   }
 
-  /** The wallet's own decision to trust a claimed sender, nothing else confirms one. */
+  /** Clears the replies naming `claimed`. */
   confirmClaim(claimed: X25519PublicKey): void {
     if (!this.#claims.some((claim) => claim.claimedViewingKey.equals(claimed)))
       throw new RingError("RING_UNKNOWN_SENDER_CLAIM");
-    this.#history = this.#history.withConfirmedSender(claimed);
     this.#claims = this.#claims.filter((claim) => !claim.claimedViewingKey.equals(claimed));
     this.#revision += 1n;
   }
@@ -224,7 +230,7 @@ export class AnonymousWallet {
     if (
       this.#recovery !== null &&
       (commit.tagPosition !== undefined ||
-        commit.ringPositions.length > 0 ||
+        commit.foundTags.length > 0 ||
         (this.#recovery.targetSlot !== null &&
           this._recoveryMinimumSlot(base) > this.#recovery.targetSlot))
     )
@@ -235,9 +241,8 @@ export class AnonymousWallet {
     const { tagPosition } = commit;
     if (tagPosition !== undefined)
       this.#history = this.#history._withTagPosition(tagPosition.keys, tagPosition.afterSlot);
-    for (const { ring, keys, afterSlot } of commit.ringPositions)
-      for (const key of keys)
-        this.#history = this.#history._withRingCheckpoint(ring, key, afterSlot);
+    for (const { viewingPublicKey, stream, index } of commit.foundTags)
+      this.#history = this.#history._withFound(viewingPublicKey, stream, index);
     // A retry leaves only once the indexer returned its spend row, a lagging indexer keeps it stored.
     const retries = new Map(this.#mergeRetries);
     for (const nullifier of commit.retried) retries.delete(bytesKey(nullifier));
@@ -274,26 +279,12 @@ export class AnonymousWallet {
     this.#revision += 1n;
   }
 
-  /** The current key's next sender tag, concurrent callers never share one. */
-  takeSenderTag(keys: RingKeys, context?: RequestContext): Promise<ViewTag> {
-    return this.#takeTag(keys, context);
-  }
-
-  /** A holder failure burns the index. */
-  async #takeTag(keys: RingKeys, context: RequestContext | undefined): Promise<ViewTag> {
-    const current = this.#history.current();
-    const { index, counter } = current.tx.takeNext();
-    this.#history = this.#history.withEntry(
-      this.#history.entries.length - 1,
-      current.withTxCounter(counter),
-    );
+  /** Concurrent callers never share an index, a holder failure burns it. */
+  takeRequestTag(keys: RingKeys, context?: RequestContext): Promise<ViewTag> {
+    const { history, tag } = this.#history._takeRequest();
+    this.#history = history;
     this.#revision += 1n;
-    return exactlyOne(
-      await keys.viewTags(
-        [{ viewingPublicKey: current.viewingPublicKey, stream: senderStream(index) }],
-        context,
-      ),
-    );
+    return tag(keys, context);
   }
 
   /** Its notes open the wallet's funds, store it as key material under one atomic replace. */

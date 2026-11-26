@@ -121,9 +121,7 @@ payer and any co-signer must differ from the hidden owner. On every Ring they mu
 owner of a merge. `CustomRingClient` proves SPP's anonymous rail, the rail of
 an anonymous spend and of a spend with `inProofOwner`.
 The `build*Transaction` functions return one unsigned transaction. A spend or
-deposit on an anonymous Ring goes through its submission. A deposit to the
-wallet's own note returns the viewing history, and the wallet stores it before
-`send`.
+deposit on an anonymous Ring goes through its submission.
 
 A rule over several `absent` lists passes when the owner is off any one of them.
 To refuse owners on a public list and on a private list, write one deny rule per
@@ -143,17 +141,46 @@ owners in `listSalts`, since Ring RPC reads every salt it screens from the
 relay. A deposit carries the recipient's.
 
 On an anonymous Ring the transfer proof binds each live recipient slot's
-ciphertext and its recipient, no proof binds a discovery tag. A bad tag costs the
-note its discovery by `fetch`, and `fullScan` still opens it. A wallet finds its notes with
-`syncRingWallet` or `AnonymousSync.fetch`, which scan every Ring its `ViewingHistory` names, and
-adds a Ring with `withRing` when a key enrolls. `AnonymousSync.fullScan` reads a
-Ring from its start and uses no tag. `AnonymousWallet` holds the notes, spends,
-reply claims and scan positions in one document. Absorb a scan, then replace
-the stored `toJson` in one atomic write, so a position is never saved without
-what it covers. Pass `[...wallet.notes(), ...wallet.pendingOpenings()]` to
-`withHeldNotes` before each scan to retain spends of pending notes.
-`@heliuslabs/zolana-custom-rings/scan-worker` is a `Worker`
-entry for the tag test. Pass it with `scanWorkerMatcher`.
+ciphertext and its recipient. Each slot that is not an exit also publishes the
+last 8 bytes of a view tag. The sender's wallet selects the tag. No proof binds
+it. `ViewingHistory.select` returns the tags of one transfer. The first change
+slot takes the sender tag at the wallet's counter. A payment takes the tag of
+its `RingPaymentRequest`. Without a request it takes its recipient's bootstrap
+tag. The bootstrap tag is the public viewing key. A frame publishes each tag
+once. A slot that would repeat a tag takes random bytes.
+`tagRecipient` converts a `RingAddress` or a `RingPaymentRequest` into the
+recipient that `select` takes. Pass the selection as `tags` on `anonymous`, on
+`spendPublic` or on a deposit. A spend of Ring notes without `tags` publishes
+each recipient's bootstrap tag and random bytes on its change. An entry or a
+deposit spends no Ring note. The SDK refuses it without `tags`. A deposit
+refuses its recipient's bootstrap tag, because a deposit publishes its funder.
+After the transfer confirms, pass
+`history.withPublished(tags, submission.confirmedSlotTags())` to
+`AnonymousWallet.updateHistory`.
+
+`AnonymousWallet.takeRequestTag` returns the tag of the wallet's next payment
+request, the `tag` of a `RingPaymentRequest`. A payment to a bare `RingAddress`
+publishes the bootstrap tag. Every reader of the address can link those
+payments.
+
+`syncRingWallet` finds the wallet's notes by tag. It lists the bootstrap tag of
+each held key. It also lists the sender and request tags up to `TAG_WINDOW`, 64,
+past each stored counter. It reads the exact matches of the listed tags from the
+indexer. A found tag moves its counter. The same sync lists the next window.
+A wallet restored from its seed alone starts both counters at zero.
+`TAG_WINDOW` unpaid requests in a row then hide every later request, until
+`ViewingHistory.withRequestCount` states the count. `syncRingWallet` finds no
+payment under a tag the wallet does not list.
+
+`AnonymousSync.fetch` and `AnonymousSync.fullScan` use no tag. `fetch` reads
+every Ring the `ViewingHistory` names from its stored position. `fullScan` reads
+one Ring from its start. Each tries every body under every held key. Add a
+Ring with `withRing` when a key enrolls. `AnonymousWallet` holds the notes,
+spends, reply claims, tag counters and scan positions in one document. Absorb a
+scan, then replace the stored `toJson` in one atomic write, so a position is
+never saved without what it covers. Pass
+`[...wallet.notes(), ...wallet.pendingOpenings()]` to `withHeldNotes` before
+each scan to retain spends of pending notes.
 
 Connect to a hosted Ring RPC with its service base URL and your API key:
 

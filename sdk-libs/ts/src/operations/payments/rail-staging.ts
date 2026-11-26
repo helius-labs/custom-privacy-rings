@@ -72,6 +72,7 @@ import {
 } from "../workflow/program-commitment.js";
 import type { SealRow } from "../workflow/transfer-plan.js";
 import { isSmallOrder } from "../../crypto/keys/x25519.js";
+import type { TransferTags } from "../../state/viewing-history.js";
 import { RingOutputRail, type RingDelivery } from "./output-rail.js";
 import { AnonymousPlan } from "../../protocol/transaction/anonymous-plan.js";
 import { current, type TransferLine } from "./transfer-line.js";
@@ -135,15 +136,42 @@ function inProofOwnerKey(
   return signing.ed25519();
 }
 
-function anonymousPlan(payments: readonly AnonymousPayment[]): AnonymousPlan {
-  return payments.reduce(
-    (planned, payment) =>
-      planned.withPayment({
-        recipient: payment.to.recipient.viewingPublicKey,
-        reply: payment.reply,
-      }),
-    AnonymousPlan.create(),
-  );
+/** One spend's payments with the wallet's tag selection, Rust `TaggedPayments`. */
+type TaggedPayments = Readonly<{
+  prepared: PreparedTransfer;
+  sender: ShieldedAddress;
+  payments: readonly AnonymousPayment[];
+  tags: TransferTags | undefined;
+}>;
+
+/**
+ * Without a selection each payment takes its recipient's bootstrap tag and change random bytes,
+ * the note the wallet spends finds the change.
+ */
+function taggedPlan(tagged: TaggedPayments): AnonymousPlan {
+  const { prepared, sender, payments, tags } = tagged;
+  // 1. No nullifier of the wallet finds a spend of no ring note, its slots need the selection.
+  const spendsRingNote = prepared.inputs.some((input) => input.utxo.ringProgramId !== undefined);
+  if (tags === undefined && !spendsRingNote) throw new RingError("RING_SENDER_TAG_REQUIRED");
+  if (tags !== undefined && tags.payments.length !== payments.length)
+    throw new RingError("RING_PAYMENT_TAG_COUNT", {
+      details: { payments: payments.length, tags: tags.payments.length },
+    });
+  // 2. Change takes the sender tag only under the key the tags derive from, a deposit's
+  // fresh sender holds another key and its change a random tag.
+  const plan =
+    tags !== undefined && tags.viewingPublicKey.equals(sender.viewingPublicKey)
+      ? AnonymousPlan.create().withSenderTag(tags.sender)
+      : AnonymousPlan.create();
+  // 3. The send call alone attaches a reply, no default path does.
+  return payments.reduce((planned, payment, index) => {
+    const paid = planned.withPayment({
+      recipient: payment.to.recipient.viewingPublicKey,
+      reply: payment.reply,
+    });
+    const tag = tags?.payments[index];
+    return tag === undefined ? paid : paid.withTag(tag);
+  }, plan);
 }
 
 export type ConfidentialRail = Readonly<{
@@ -155,6 +183,7 @@ export type AnonymousRail = Readonly<{
   kind: "anonymous";
   signer: AnonymousSpendSigner;
   payments: readonly AnonymousPayment[];
+  tags: TransferTags | undefined;
   exitTokenOwner: Address | undefined;
   readCache: ReadCache | undefined;
   exposure: OwnerExposure;
@@ -166,6 +195,7 @@ export type PublicOwnersRail = Readonly<{
   /** Set when the rail it came from signs inside the proof, staging refuses it. */
   inProofOwner: boolean;
   payments: readonly AnonymousPayment[];
+  tags: TransferTags | undefined;
 }>;
 
 type OwnerRail = ConfidentialRail | AnonymousRail | PublicOwnersRail;
@@ -213,6 +243,7 @@ export async function stageTransfer(
       ? await hiddenOwner({ rail, deposits: owner.deposits, client, sender, prepared }, context)
       : undefined;
   const payments = rail.kind === "confidential" ? [] : rail.payments;
+  const tags = rail.kind === "confidential" ? undefined : rail.tags;
   if (anonymous && payments.some((payment) => isSmallOrder(payment.to.recipient.viewingPublicKey)))
     throw new RingError("RING_RECIPIENT_KEY_NOT_CONTRIBUTORY");
   const spent = prepared.inputs.find((input) => input.utxo.amount > 0n)?.utxo.asset;
@@ -221,7 +252,9 @@ export async function stageTransfer(
       key: await transactionKey(keys, sender, prepared, context),
       prepared,
       delivery: () =>
-        anonymous ? { kind: "anonymous", plan: anonymousPlan(payments) } : { kind: "delivered" },
+        anonymous
+          ? { kind: "anonymous", plan: taggedPlan({ prepared, sender, payments, tags }) }
+          : { kind: "delivered" },
       payments,
       salt,
       sender,
@@ -410,7 +443,7 @@ function stagedSpend(
 type OutputSeal = Readonly<{
   key: ViewingKey;
   prepared: PreparedTransfer;
-  /** Read after `key`, the plan draws its tags then. */
+  /** Read inside the seal, a refusal destroys `key`. */
   delivery: () => RingDelivery;
   payments: readonly AnonymousPayment[];
   /** Fixed by a program commitment or its plan. */

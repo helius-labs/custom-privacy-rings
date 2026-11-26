@@ -66,7 +66,7 @@ import {
   type TransactionOrigin,
 } from "../../protocol/transaction/origin.js";
 import { isAnonymousFrame, type RingRail } from "../../protocol/transaction/transact.js";
-import { RowOrigins, rowEventIndex } from "./row-origins.js";
+import { RingModeOrigin, RowOrigins, rowEventIndex } from "./row-origins.js";
 import { openRingMerge } from "./audit-merge.js";
 import { ringBlindingSeed, ringOutputBlinding } from "../../crypto/derivation/blinding.js";
 import { dummyUtxoHash, fieldUtxoHash } from "../../protocol/membership/utxo-hash.js";
@@ -315,7 +315,7 @@ export type RingAuditReader = KitRpcAccess &
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_MAX_PAGES = 32;
 
-/** The program keeps the auditor's message last, a sender bundle before it may carry any tag. */
+/** The program keeps the auditor's message last, an application message before it may carry any tag. */
 export function auditorMessage(
   transaction: IndexedShieldedTransaction,
   auditorPublicKey: X25519PublicKey,
@@ -636,7 +636,10 @@ export async function auditRing(
   context?: RequestContext,
 ): Promise<RingAuditPage> {
   await initializePoseidon();
-  const origin = input.origin ?? new RpcTransactionOrigin(input.client.solanaRpc);
+  const origin = new RingModeOrigin(
+    input.origin ?? new RpcTransactionOrigin(input.client.solanaRpc),
+    input.client,
+  );
   const rows = new RowOrigins(origin, input.ringProgramId, context);
   const history: ConfirmedRingTransaction[] = [];
   const { nextCursor } = await readRingHistory(

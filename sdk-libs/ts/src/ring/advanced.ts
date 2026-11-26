@@ -110,20 +110,15 @@ export type { DeliveredSlot } from "../crypto/derivation/ring-stream.js";
 export {
   encodeRingBodyOutput,
   ringBodyOutput,
-  senderBundleOutputBody,
   RingScheme,
 } from "../protocol/transaction/output.js";
 export {
   MIN_REPLY_LEN,
   openReply,
-  openSenderBundle,
   replyLength,
   sealReply,
-  sealSenderBundle,
-  SENDER_BUNDLE_LEN,
   type ReplyClaim,
   type ReplyMetadata,
-  type SenderBundle,
 } from "../protocol/codec/anonymous-delivery.js";
 export {
   ownerDebits,
@@ -185,7 +180,6 @@ export type {
   RingOutput,
   RingRail,
   RingTransactConfig,
-  PublishedSenderBundle,
   SlotBody,
 } from "../protocol/transaction/transact.js";
 export {

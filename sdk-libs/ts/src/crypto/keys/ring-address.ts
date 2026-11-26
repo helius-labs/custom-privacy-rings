@@ -39,7 +39,7 @@ const SALT_OFFSET = PROGRAM_OFFSET + 32;
 
 export const RING_ADDRESS_PAYLOAD_LENGTH = BODY_LENGTH + CHECKSUM_LENGTH;
 
-/** Shared off chain, a transfer to it derives every tag from its slot secret. */
+/** Shared off chain, a payment to it publishes its recipient's bootstrap tag. */
 export class RingAddress {
   readonly recipient: ShieldedAddress;
   readonly ringProgramId: Address;
@@ -127,20 +127,24 @@ export type RingPaymentRequestFields = Readonly<{
   amount?: bigint | undefined;
   mint?: Address | undefined;
   label?: string | undefined;
+  tag?: Bytes32 | undefined;
 }>;
 
-/** `zolana:<address>?amount=&mint=&label=`, the query part is unauthenticated. */
+/** `zolana:<address>?amount=&mint=&label=&tag=`, the query part is unauthenticated. */
 export class RingPaymentRequest {
   readonly address: RingAddress;
   readonly amount: bigint | undefined;
   readonly mint: Address | undefined;
   readonly label: string | undefined;
+  /** The recipient's request view tag, whoever reads it finds the payment. */
+  readonly tag: Bytes32 | undefined;
 
   constructor(fields: RingPaymentRequestFields) {
     this.address = fields.address;
     this.amount = fields.amount === undefined ? undefined : checkedCounter(fields.amount, "amount");
     this.mint = fields.mint;
     this.label = fields.label;
+    this.tag = fields.tag === undefined ? undefined : checkedTag(fields.tag);
     Object.freeze(this);
   }
 
@@ -149,6 +153,7 @@ export class RingPaymentRequest {
     if (this.amount !== undefined) query.push(`amount=${this.amount}`);
     if (this.mint !== undefined) query.push(`mint=${this.mint}`);
     if (this.label !== undefined) query.push(`label=${encodeLabel(this.label)}`);
+    if (this.tag !== undefined) query.push(`tag=${base58Decoder.decode(this.tag)}`);
     const encoded = `${RING_PAYMENT_SCHEME}${this.address.toBase58()}`;
     return query.length === 0 ? encoded : `${encoded}?${query.join("&")}`;
   }
@@ -166,6 +171,7 @@ export class RingPaymentRequest {
     let amount: bigint | undefined;
     let mint: Address | undefined;
     let label: string | undefined;
+    let tag: Bytes32 | undefined;
     for (const part of query) {
       const equals = part.indexOf("=");
       const key = equals === -1 ? part : part.slice(0, equals);
@@ -180,11 +186,14 @@ export class RingPaymentRequest {
         case "label":
           label = replaceOnce(label, decodeLabel(value));
           break;
+        case "tag":
+          tag = replaceOnce(tag, parseTag(value));
+          break;
         default:
           throw new RingKeyError("KEYPAIR_UNKNOWN_RING_PAYMENT_KEY", { name: key });
       }
     }
-    return new RingPaymentRequest({ address, amount, mint, label });
+    return new RingPaymentRequest({ address, amount, mint, label, tag });
   }
 }
 
@@ -206,6 +215,22 @@ function parseMint(value: string): Address {
   } catch (error) {
     throw new RingKeyError("KEYPAIR_INVALID_RING_PAYMENT_MINT", undefined, error);
   }
+}
+
+function parseTag(value: string): Bytes32 {
+  let bytes: Uint8Array;
+  try {
+    bytes = new Uint8Array(base58Encoder.encode(value));
+  } catch (error) {
+    throw new RingKeyError("KEYPAIR_INVALID_RING_PAYMENT_TAG", undefined, error);
+  }
+  return checkedTag(bytes);
+}
+
+function checkedTag(tag: Uint8Array): Bytes32 {
+  if (!(tag instanceof Uint8Array) || tag.length !== 32)
+    throw new RingKeyError("KEYPAIR_INVALID_RING_PAYMENT_TAG");
+  return Uint8Array.from(tag) as Bytes32;
 }
 
 /** RFC 3986 unreserved characters stay literal, everything else is percent-encoded. */

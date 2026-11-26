@@ -241,6 +241,44 @@ function ringBody(
   );
 }
 
+/** The slot tags `owner` lists for `stream` at `start..end`, derived by the core key. */
+function streamTags(
+  owner: ShieldedKeypair,
+  stream: "sender" | "request",
+  start: number,
+  end: number,
+): Bytes32[] {
+  const viewing = owner.viewingKey();
+  try {
+    return Array.from({ length: end - start }, (_, offset) => {
+      const index = BigInt(start + offset);
+      return slotTag(
+        stream === "sender" ? viewing.senderViewTag(index) : viewing.recipientRequestViewTag(index),
+      );
+    });
+  } finally {
+    viewing.destroy();
+  }
+}
+
+/** A payment to `recipient` its frame publishes under `viewTag`, one commitment and one signature per `fill`. */
+function taggedBody(
+  recipient: ShieldedKeypair,
+  viewTag: Bytes32,
+  fill: number,
+  slot = 1n,
+): IndexedShieldedTransaction {
+  const tx = ringBody(recipient, note(recipient, SOL_MINT, fill).hash, SOL_MINT, fill);
+  const [published] = tx.outputSlots;
+  if (published === undefined) throw new Error("no slot");
+  return {
+    ...tx,
+    slot,
+    txSignature: signature(BigInt(fill)),
+    outputSlots: [{ ...published, viewTag }],
+  };
+}
+
 describe("ring bodies", () => {
   it("opens a note under the ring key with its mint from the body", async () => {
     const recipient = ShieldedKeypair.generate();
@@ -276,7 +314,7 @@ describe("ring bodies", () => {
     const recipient = ShieldedKeypair.generate();
     const keys = LocalRingKeys.fromKeypair(recipient);
     const failure = new Error("holder offline");
-    vi.spyOn(keys, "ringTagMatches").mockRejectedValue(failure);
+    vi.spyOn(keys, "ringDeliverySecrets").mockRejectedValue(failure);
     await expect(opened(keys, [ringBody(recipient, note(recipient).hash)])).rejects.toBe(failure);
   });
 });
@@ -326,17 +364,24 @@ function mergeOf(owner: ShieldedKeypair, nullifier: Bytes32, mint: Address) {
 }
 
 describe("syncRingWallet", () => {
-  it("credits an anonymous payment in one sync and drops it once a later sync reads its spend", async () => {
-    const indexer = new ScanIndexer();
+  it("credits an anonymous payment under its bootstrap tag in one sync and drops it once a later sync reads its spend", async () => {
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
-    const paid = await alice.pay(indexer, [
+    const paid = alice.seal(new ScanIndexer(), [
       { to: bob.address, amount: 30n, reply: alice.replyTo() },
     ]);
+    const client = syncClient([paid]);
     const ring = AnonymousWallet.create(new Wallet({ identity: bob.address }), bob.fresh());
-    const input = { wallet: ring, keys: bob.keys, client: indexer.client() };
+    const input = { wallet: ring, keys: bob.keys, client };
 
     await syncRingWallet(input);
+
+    // No ring history is read, the indexer serves the rows of the listed tags alone.
+    expect(
+      client.getShieldedTransactionsByTags.mock.calls.every(
+        ([request]) => request.ringProgramId === undefined,
+      ),
+    ).toBe(true);
 
     expect(ring.wallet.ringBalances(true)).toEqual([
       {
@@ -350,7 +395,7 @@ describe("syncRingWallet", () => {
     expect(ring.wallet._state().nullifiers).toEqual(new Set());
     const [received] = ring.notes();
     if (received === undefined) throw new Error("no note");
-    indexer.publish({
+    client.spent.push({
       ...paid,
       slot: paid.slot + 1n,
       txSignature: signature(99n),
@@ -371,7 +416,7 @@ describe("syncRingWallet", () => {
     expect(wallet.utxos().map((entry) => entry.utxo.amount)).toEqual([AMOUNT]);
   });
 
-  it("counts ring notes and reads no completed history on a second sync", async () => {
+  it("counts ring notes, then reads the bootstrap tag above its position and the stream tags no sync found from the first block", async () => {
     const recipient = ShieldedKeypair.generate();
     const keys = LocalRingKeys.fromKeypair(recipient);
     const ring = ringWallet(recipient);
@@ -390,11 +435,16 @@ describe("syncRingWallet", () => {
 
     expect(report.storedUtxos).toBe(1);
     expect(wallet.utxos().map((entry) => entry.utxo.amount)).toEqual([AMOUNT]);
-    // The core tags, then the slot tag a delivery publishes.
+    // The core tags, then the bootstrap tag and the window of each stream past its counter.
     const viewing = keys.viewingPublicKeys()[0]!;
+    const listed = [
+      slotTag(viewing.u()),
+      ...streamTags(recipient, "sender", 0, 64),
+      ...streamTags(recipient, "request", 0, 64),
+    ];
     expect(
       client.getShieldedTransactionsByTags.mock.calls.map(([request]) => request.tags),
-    ).toEqual([expect.anything(), [slotTag(viewing.u())]]);
+    ).toEqual([expect.anything(), listed]);
     expect(client.getEncryptedUtxosByTags.mock.calls.map(([request]) => request.tags)).toEqual([
       expect.anything(),
       [viewing.u()],
@@ -420,12 +470,16 @@ describe("syncRingWallet", () => {
 
     expect(second.storedUtxos).toBe(0);
     expect(wallet.utxos()).toHaveLength(1);
-    const reads = [
-      ...client.getShieldedTransactionsByTags.mock.calls.slice(tagged),
-      ...client.getEncryptedUtxosByTags.mock.calls.slice(deposits),
-    ];
-    expect(reads).toHaveLength(4);
-    for (const [request] of reads) expect(request.filters).toEqual({ slot: { gt: 20n } });
+    const above = { slot: { gt: 20n } };
+    const [core, ...streams] = client.getShieldedTransactionsByTags.mock.calls.slice(tagged);
+    expect(core?.[0].filters).toEqual(above);
+    expect(streams.map(([request]) => [request.filters, request.tags])).toEqual([
+      [undefined, listed.slice(1)],
+      [above, [listed[0]]],
+    ]);
+    expect(
+      client.getEncryptedUtxosByTags.mock.calls.slice(deposits).map(([request]) => request.filters),
+    ).toEqual([above, above]);
   });
 
   it("opens a later payment and a spend once above the cursors", async () => {
@@ -546,7 +600,7 @@ describe("syncRingWallet", () => {
     const { wallet } = ring;
     const client = syncClient([ringBody(recipient)]);
     const failure = new Error("holder offline");
-    vi.spyOn(keys, "ringTagMatches").mockRejectedValue(failure);
+    vi.spyOn(keys, "ringDeliverySecrets").mockRejectedValue(failure);
     const before = wallet._state();
 
     await expect(syncRingWallet({ wallet: ring, keys, client })).rejects.toBe(failure);
@@ -559,7 +613,7 @@ describe("syncRingWallet", () => {
   it("refuses a holder that answers no secret for a delivered slot", async () => {
     const recipient = ShieldedKeypair.generate();
     const keys = LocalRingKeys.fromKeypair(recipient);
-    vi.spyOn(keys, "ringTagMatches").mockResolvedValue([]);
+    vi.spyOn(keys, "ringDeliverySecrets").mockResolvedValue([]);
     await expect(opened(keys, [ringBody(recipient)])).rejects.toMatchObject({
       code: "WALLET_KEYS_BATCH_MISMATCH",
     });
@@ -588,7 +642,7 @@ describe("syncRingWallet", () => {
   it("asks the holder nothing for a published key or first nullifier no agreement accepts", async () => {
     const recipient = ShieldedKeypair.generate();
     const keys = LocalRingKeys.fromKeypair(recipient);
-    const asked = vi.spyOn(keys, "ringTagMatches");
+    const asked = vi.spyOn(keys, "ringDeliverySecrets");
     const good = ringBody(recipient);
     const smallOrder = X25519PublicKey.fromBytes(
       new Uint8Array([4, ...new Uint8Array(32)]) as Bytes33,
@@ -725,5 +779,115 @@ describe("syncRingWallet", () => {
       [merge.commitment, false],
     ]);
     expect(JSON.parse(ring.toJson())).toMatchObject({ mergeRetries: [] });
+  });
+});
+
+describe("tag streams", () => {
+  const fresh = () => {
+    const recipient = ShieldedKeypair.generate();
+    return { recipient, keys: LocalRingKeys.fromKeypair(recipient), ring: ringWallet(recipient) };
+  };
+  /** The tags of each ring read after the core read at `from`, with the slot the read starts after. */
+  const ringReads = (client: ReturnType<typeof syncClient>, from = 0) =>
+    client.getShieldedTransactionsByTags.mock.calls
+      .slice(from + 1)
+      .map(([request]) => ({ after: request.filters?.slot?.gt, tags: request.tags }));
+
+  it("finds a payment under a request tag and the wallet's own slot under its sender tag, each moves its counter past it", async () => {
+    const { recipient, keys, ring } = fresh();
+    const stranger = ShieldedKeypair.generate();
+    const [third, fifth] = streamTags(recipient, "request", 3, 6).filter((_, at) => at !== 1);
+    const [sender] = streamTags(recipient, "sender", 0, 1);
+    if (third === undefined || fifth === undefined || sender === undefined) throw new Error("tags");
+    const client = syncClient([
+      taggedBody(recipient, third, 2),
+      taggedBody(recipient, sender, 4),
+      // A tag proves no ownership, a body another key opens moves the counter and credits nothing.
+      taggedBody(stranger, fifth, 6),
+    ]);
+
+    const report = await syncRingWallet({ wallet: ring, keys, client });
+
+    expect(report.storedUtxos).toBe(2);
+    expect(ring.wallet.utxos().map((entry) => entry.utxo.amount)).toEqual([AMOUNT, AMOUNT]);
+    const { tx, request, tagPosition } = ring.history().current();
+    expect([tx.next, tx.scanned]).toEqual([1n, 1n]);
+    expect([request.next, request.scanned]).toEqual([6n, 6n]);
+    expect(tagPosition).toBe(20n);
+    expect(ring.toJson()).toContain('"tx":{"next":1,"scanned":1},"request":{"next":6,"scanned":6}');
+  });
+
+  it("lists the window past each counter and the next window in the same sync once a tag is found", async () => {
+    const { recipient, keys, ring } = fresh();
+    const [near] = streamTags(recipient, "request", 60, 61);
+    const [far] = streamTags(recipient, "request", 100, 101);
+    if (near === undefined || far === undefined) throw new Error("tags");
+    const client = syncClient([taggedBody(recipient, near, 2), taggedBody(recipient, far, 4)]);
+
+    const report = await syncRingWallet({ wallet: ring, keys, client });
+
+    expect(report.storedUtxos).toBe(2);
+    expect(ring.history().current().request.scanned).toBe(101n);
+    // The bootstrap tag and both windows, then 64..125 past index 60, then 125..165 past index 100.
+    const reads = ringReads(client);
+    expect(reads.map(({ after, tags }) => [after, tags.length])).toEqual([
+      [undefined, 129],
+      [undefined, 61],
+      [undefined, 40],
+    ]);
+    expect(reads[1]?.tags).toEqual(streamTags(recipient, "request", 64, 125));
+    expect(reads[2]?.tags).toEqual(streamTags(recipient, "request", 125, 165));
+  });
+
+  it("stops a seed-only restore at the first 64 unpaid requests in a row, a stated request count reaches the next", async () => {
+    const { recipient, keys, ring: restored } = fresh();
+    const [hidden] = streamTags(recipient, "request", 64, 65);
+    if (hidden === undefined) throw new Error("tag");
+    const client = syncClient([taggedBody(recipient, hidden, 2)]);
+
+    // A restore from the seed alone lists 64 request tags, it reads no tag of request 64.
+    expect((await syncRingWallet({ wallet: restored, keys, client })).storedUtxos).toBe(0);
+    expect(restored.history().current().request.scanned).toBe(0n);
+
+    const counted = ringWallet(recipient);
+    counted.updateHistory(counted.history().withRequestCount(1n));
+    expect((await syncRingWallet({ wallet: counted, keys, client })).storedUtxos).toBe(1);
+    expect(counted.history().current().request.scanned).toBe(65n);
+  });
+
+  it("reads an index within the window of a found one from the tag position and every other index from the first indexed block", async () => {
+    const { recipient, keys, ring } = fresh();
+    const [paid] = streamTags(recipient, "request", 3, 4);
+    const [later] = streamTags(recipient, "request", 150, 151);
+    if (paid === undefined || later === undefined) throw new Error("tags");
+    const client = syncClient([taggedBody(recipient, paid, 2)]);
+    await syncRingWallet({ wallet: ring, keys, client });
+    expect(ring.history().current().request.scanned).toBe(4n);
+
+    // The wallet minted requests no sync listed, a row past the stored position pays a request in the new window.
+    ring.updateHistory(ring.history().withRequestCount(100n));
+    client.rows.push(taggedBody(recipient, later, 4, 25n));
+    client.tip.slot = 30n;
+    const before = client.getShieldedTransactionsByTags.mock.calls.length;
+
+    const report = await syncRingWallet({ wallet: ring, keys, client });
+
+    expect(report.storedUtxos).toBe(1);
+    const bootstrap = slotTag(keys.viewingPublicKeys()[0]!.u());
+    expect(ringReads(client, before)).toEqual([
+      {
+        after: undefined,
+        tags: [
+          ...streamTags(recipient, "sender", 0, 64),
+          ...streamTags(recipient, "request", 68, 164),
+        ],
+      },
+      { after: 20n, tags: [bootstrap, ...streamTags(recipient, "request", 0, 68)] },
+      // A later round lists only tags no sync read.
+      { after: undefined, tags: streamTags(recipient, "request", 164, 215) },
+    ]);
+    const { request, tagPosition } = ring.history().current();
+    expect([request.next, request.scanned]).toEqual([151n, 151n]);
+    expect(tagPosition).toBe(30n);
   });
 });

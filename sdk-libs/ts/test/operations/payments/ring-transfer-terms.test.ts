@@ -281,10 +281,11 @@ describe("relay transfer terms", () => {
       assets,
     );
     expect(sealedTerms.slots.map((opening) => opening.owner)).toContain(payeeAddress);
-    for (const opening of sealedTerms.slots)
-      expect(openingHash(opening, sealedTerms.ring)).toEqual(
-        decoded.externalData.outputs[opening.slot]?.utxoHash,
-      );
+    for (const opening of sealedTerms.slots) {
+      const published = decoded.externalData.outputs[opening.slot];
+      expect(openingHash(opening, sealedTerms.ring)).toEqual(published?.utxoHash);
+      expect(published?.ownerTag).toEqual({ kind: "inline", value: opening.tag });
+    }
   });
 
   it("gives the sealing wallet the terms and no signature", async () => {
@@ -332,6 +333,11 @@ describe("relay transfer terms", () => {
     expect(await verdict({ slot: 99 })).toBe("UnopenedOutput");
     const omitted = await pending({ ...terms, slots: [opening] });
     expect(refusal(() => omitted.verify(payeeAddress))).toBe("UnopenedOutput");
+    // No proof holds the tag, a slot under another is lost to its recipient's sync.
+    expect(await verdict({ tag: new Uint8Array(32).fill(9) as Bytes32 })).toBe("Recipients");
+    const { tag: _tag, ...untagged } = opening;
+    const tagless = await pending({ ...terms, slots: [change, untagged] });
+    expect(refusal(() => tagless.verify(payeeAddress))).toBe("Recipients");
   });
 
   it("refuses a thief's slot under the terms of the payee with Recipients", async () => {

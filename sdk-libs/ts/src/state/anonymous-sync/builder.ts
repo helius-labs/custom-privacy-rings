@@ -20,7 +20,7 @@ import {
 } from "./scan-result.js";
 import { Scan } from "./scan-session.js";
 
-/** Scans each ring of the history. */
+/** The every-site read of each ring of the history, each body tried under every held key with no use of its tag. */
 export class AnonymousSync {
   readonly #fields: SyncFields;
 
@@ -38,8 +38,6 @@ export class AnonymousSync {
       held: [],
       recipients: [],
       limits: scanLimits({}),
-      senderFastPath: false,
-      tagMatcher: keys,
     });
   }
 
@@ -70,16 +68,6 @@ export class AnonymousSync {
 
   withScanLimits(input: Readonly<{ pageSize?: number; maxPages?: number }>): AnonymousSync {
     return new AnonymousSync({ ...this.#fields, limits: scanLimits(input) });
-  }
-
-  /** Moves the tag test off the main thread, the matcher's worker is the key's holder. */
-  withTagMatcher(tagMatcher: Pick<RingKeys, "ringTagMatches">): AnonymousSync {
-    return new AnonymousSync({ ...this.#fields, tagMatcher });
-  }
-
-  /** A bundle under the wallet's own transaction key skips its tag test, every other candidate keeps it. */
-  withSenderFastPath(): AnonymousSync {
-    return new AnonymousSync({ ...this.#fields, senderFastPath: true });
   }
 
   /** An entry whose key the holder lacks stays as stored, a held key without an entry is refused until the history adds it. */
@@ -148,7 +136,7 @@ export class AnonymousSync {
     return result;
   }
 
-  /** Tries every slot and bundle of `ring` from its start with no use of a tag, spends resolve from the same pages. */
+  /** Tries every slot of `ring` from its start, spends resolve from the same pages. */
   async fullScan(
     client: AnonymousSyncClient,
     history: ViewingHistory,
