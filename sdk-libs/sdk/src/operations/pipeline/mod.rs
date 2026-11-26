@@ -76,7 +76,7 @@ pub use self::{
     program_commitment::{ProgramCommitment, ProgramPlan},
     public_owners::{PublicOwnerTransfer, PublicOwners},
     relay::UnsignedRelay,
-    relayed::{Relayed, RelayedTransfer, RelayedTransferInput},
+    relayed::{Relayed, RelayedTransferInput},
 };
 
 pub(crate) use self::{

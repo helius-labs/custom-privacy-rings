@@ -14,11 +14,10 @@ use async_trait::async_trait;
 use custom_ring_interface::{
     domain,
     key_catalog::RingCircuit,
-    storage_instruction::{tag, EnrollIxData, EnrollmentChange, EnrollmentWrite, OwnerGrantIxData},
-    CustomRingProof, ReaderKeyBytes, RegisterKeyStatement, SYSTEM_PROGRAM_ID,
+    storage_instruction::{EnrollIxData, EnrollmentChange, EnrollmentWrite},
+    CustomRingProof, RegisterKeyStatement,
 };
 use solana_address::Address;
-use solana_instruction::{AccountMeta, Instruction};
 use solana_signer::Signer;
 use spr_api::SprApi;
 use spr_client::{AsyncRpc, ClientError};
@@ -34,7 +33,6 @@ use crate::client::{RingClient, RingIndexerBackend};
 use crate::{
     prover::{to_instruction_proof, RingRequest},
     request::KeyRegister,
-    storage::storage_ix,
     CustomRing, RingError,
 };
 
@@ -51,18 +49,6 @@ pub struct Enroll<'a> {
     pub viewing_pubkey: X25519Pubkey,
     /// `ListSaltHolder::list_salt` of the ring.
     pub list_salt: [u8; 32],
-}
-
-/// The program signs through CPI for a PDA.
-#[must_use]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WriteOwnerGrant {
-    pub payer: Address,
-    pub owner: Address,
-    pub tracking_registry: Address,
-    pub grant: Address,
-    pub reader: ReaderKeyBytes,
-    pub active: bool,
 }
 
 /// One owner's write for one tracking registry, signed only when it goes to the writer.
@@ -271,24 +257,5 @@ impl EnrollmentService for SprApi {
             .await
             .map_err(|error| ClientError::Rpc(error.to_string()))?;
         Ok(())
-    }
-}
-
-impl WriteOwnerGrant {
-    pub fn instruction(self) -> Instruction {
-        let data = OwnerGrantIxData {
-            reader: self.reader,
-            active: u8::from(self.active),
-        };
-        storage_ix(
-            vec![
-                AccountMeta::new(self.payer, true),
-                AccountMeta::new_readonly(self.owner, true),
-                AccountMeta::new_readonly(self.tracking_registry, false),
-                AccountMeta::new(self.grant, false),
-                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
-            ],
-            [&[tag::OWNER_GRANT][..], bytemuck::bytes_of(&data)].concat(),
-        )
     }
 }

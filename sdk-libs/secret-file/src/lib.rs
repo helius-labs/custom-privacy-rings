@@ -1,4 +1,4 @@
-//! Key files are never overwritten, and a read takes only a regular file, owner-only unless [`Access::Shared`].
+//! [`create_new`] never overwrites a file, and a read takes only a regular file, owner-only unless [`Access::Shared`].
 
 use std::{
     fs::{self, DirBuilder, File, Metadata, OpenOptions},
@@ -79,6 +79,26 @@ pub fn create_new(
     bytes: &[u8],
     visibility: Visibility,
 ) -> Result<(), SecretFileError> {
+    publish(path, bytes, visibility, |tmp_path| {
+        fs::hard_link(tmp_path, path).map(|()| {
+            let _ = fs::remove_file(tmp_path);
+        })
+    })
+}
+
+/// A reader sees the old bytes or the new, never a part of either.
+pub fn replace(path: &Path, bytes: &[u8], visibility: Visibility) -> Result<(), SecretFileError> {
+    publish(path, bytes, visibility, |tmp_path| {
+        fs::rename(tmp_path, path)
+    })
+}
+
+fn publish(
+    path: &Path,
+    bytes: &[u8],
+    visibility: Visibility,
+    link: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<(), SecretFileError> {
     #[cfg(not(unix))]
     if visibility == Visibility::Secret {
         return Err(SecretFileError::AccessCheckUnavailable {
@@ -99,17 +119,17 @@ pub fn create_new(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        create_dir_all_private(parent).map_err(failed)?;
+        match visibility {
+            Visibility::Secret => create_dir_all_private(parent),
+            Visibility::Public => fs::create_dir_all(parent),
+        }
+        .map_err(failed)?;
     }
     let (tmp_path, mut file) = create_temp_file(path, name).map_err(failed)?;
-    let published = persist(&mut file, bytes, visibility)
-        .and_then(|()| {
-            drop(file);
-            fs::hard_link(&tmp_path, path)
-        })
-        .map(|()| {
-            let _ = fs::remove_file(&tmp_path);
-        });
+    let published = persist(&mut file, bytes, visibility).and_then(|()| {
+        drop(file);
+        link(&tmp_path)
+    });
     if let Err(source) = published {
         let _ = fs::remove_file(&tmp_path);
         return Err(failed(source));

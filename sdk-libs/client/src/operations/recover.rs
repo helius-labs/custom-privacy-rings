@@ -25,7 +25,7 @@ use crate::{
     merge_audit::RingMergeBody,
     origin::{ConfirmedEventKind, RingOrigin, TransactionOrigin},
     scan::{RingHistory, SkippedRow, RING_HISTORY_MAX_PAGES, RING_HISTORY_PAGE_SIZE},
-    types::{AuditedUtxo, KnownUtxo, OutputOpening, OutputPayloadErrorKind, UtxoOwner},
+    types::{AuditedUtxo, KnownUtxo, OutputOpening, UtxoOwner},
     AuditError, MergeLedger,
 };
 
@@ -465,11 +465,7 @@ impl<'a> MemberRecovery<'a> {
             nullifiers: audited.nullifiers.clone(),
         });
         // An unopened record could hide a source UTXO, a payload error keeps its record.
-        if let Some(error) = audited
-            .payload_errors
-            .iter()
-            .find(|error| error.kind != OutputPayloadErrorKind::Payload)
-        {
+        if let Some(error) = audited.unopened() {
             return Err(AuditError::UnopenedOutput {
                 slot: error.slot_index,
                 kind: error.kind,

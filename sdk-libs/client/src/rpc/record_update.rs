@@ -60,7 +60,6 @@ pub struct RecordUpdate {
     pub entries: Vec<RecordUpdateEntry>,
     pub valid_until_slot: u64,
     /// Record bits of the authority lists the update waits for, nonzero puts it pending list approval.
-    #[serde(default, skip_serializing_if = "is_zero")]
     pub awaited_lists: u64,
 }
 
@@ -259,21 +258,18 @@ impl SubmitRecordUpdateRequest {
 
 impl RecordUpdateStatement {
     /// Mirrored by `recordUpdateStatementHash` in `sdk-libs/ts/src/protocol/ring-rpc/record-update.ts`.
-    ///   `Poseidon(CRRU, hash_bytes(genesis_hash), hash_bytes(ring), hash_bytes(registry), entries_hash, valid_until_slot[, awaited_lists])`
+    ///   `Poseidon(CRRU, hash_bytes(genesis_hash), hash_bytes(ring), hash_bytes(registry), entries_hash, valid_until_slot, awaited_lists)`
     pub fn hash(&self) -> Result<[u8; 32], CustomRingError> {
-        let awaited = right_align(&self.awaited_lists.to_be_bytes());
-        let elements: [&[u8]; 7] = [
+        Ok(Poseidon::hashv(&[
             &domain::field(domain::RECORD_UPDATE),
             &hash_bytes(&self.genesis_hash)?,
             &ring_id_field(self.ring.as_array())?,
             &registry_field(self.registry.as_array())?,
             &self.entries_hash,
             &right_align(&self.valid_until_slot.to_be_bytes()),
-            &awaited,
-        ];
-        // The width binds the wait to the signature, a pending update never verifies as a plain one.
-        let width = if self.awaited_lists == 0 { 6 } else { 7 };
-        Ok(Poseidon::hashv(&elements[..width])?)
+            // The signature binds the wait, a pending update never verifies as a plain one.
+            &right_align(&self.awaited_lists.to_be_bytes()),
+        ])?)
     }
 
     pub fn id(&self) -> Result<RecordUpdateId, CustomRingError> {
@@ -307,8 +303,4 @@ fn list_write(write: &RingListWriteView) -> RecordWriteData {
         },
         mint_policy: mint_policy_write(write.mint_policy),
     }
-}
-
-fn is_zero(value: &u64) -> bool {
-    *value == 0
 }

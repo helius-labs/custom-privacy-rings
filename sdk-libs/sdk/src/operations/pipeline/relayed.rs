@@ -33,8 +33,6 @@ pub struct RelayedTransferInput<'a> {
     pub fee_payer: Address,
 }
 
-pub type RelayedTransfer<'a> = RingTransfer<Relayed<'a>>;
-
 impl sealed::Sealed for Relayed<'_> {}
 
 impl Rail for Relayed<'_> {

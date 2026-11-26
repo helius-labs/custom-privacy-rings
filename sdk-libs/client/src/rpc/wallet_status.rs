@@ -9,8 +9,8 @@ use crate::REDACTED;
 
 pub const WALLET_SNAPSHOT_EXPIRED: i32 = -32172;
 pub const WALLET_SNAPSHOT_CAPACITY: i32 = -32173;
-pub const WALLET_SNAPSHOT_CURSOR_LEN: usize = 129;
-pub const WALLET_SNAPSHOT_CURSOR_VERSION: u8 = 2;
+/// Ring, wallet, snapshot and position, 32 bytes each.
+pub const WALLET_SNAPSHOT_CURSOR_LEN: usize = 128;
 
 pub const GET_WALLET_STATUS: &str = "getWalletStatus";
 pub const RELEASE_WALLET_SNAPSHOT: &str = "releaseWalletSnapshot";

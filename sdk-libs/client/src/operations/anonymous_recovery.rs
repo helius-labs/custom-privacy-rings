@@ -7,7 +7,6 @@ use super::*;
 use crate::history::RecoveryWindow;
 use crate::tags::TAGS_PER_REQUEST;
 
-const SESSION_VERSION: u8 = 1;
 const DIAGNOSTIC_SAMPLES: usize = 64;
 const PAGE_LIMIT: u32 = spr_indexer_api::PAGE_LIMIT as u32;
 
@@ -28,7 +27,6 @@ pub(crate) enum RecoveryUpdate {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct RecoverySession {
-    version: u8,
     scope: RecoveryScope,
     pub(crate) target_slot: Option<u64>,
     working_history: Value,
@@ -113,8 +111,7 @@ impl RecoverySession {
         {
             return Err(AnonymousError::RecoveryScopeChanged);
         }
-        if self.version != SESSION_VERSION
-            || self.diagnostics.unopened.len() > DIAGNOSTIC_SAMPLES
+        if self.diagnostics.unopened.len() > DIAGNOSTIC_SAMPLES
             || self.diagnostics.unopened_count < self.diagnostics.unopened.len() as u64
             || !self.checked.is_subset(&self.known)
             || self
@@ -258,7 +255,6 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
                 }
             }
             RecoverySession {
-                version: SESSION_VERSION,
                 scope,
                 target_slot: None,
                 working_history: wallet.history().to_json_value(),

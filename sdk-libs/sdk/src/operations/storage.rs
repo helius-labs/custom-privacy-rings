@@ -82,14 +82,6 @@ pub struct UpdateStorage<'a> {
     pub tracking_registry: Address,
     pub data: StorageUpdateIxData<'a>,
 }
-#[must_use]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UpdateStorageAuthority {
-    pub authority: Address,
-    pub new_authority: Address,
-    pub registry: Address,
-}
-
 /// Proves a public batch with the public apply key of its write count, padded with empty writes.
 #[must_use]
 #[derive(Clone, Copy, Debug)]
@@ -191,19 +183,6 @@ impl UpdateStorage<'_> {
             accounts,
             [vec![tag::UPDATE], self.data.encode()?].concat(),
         ))
-    }
-}
-
-impl UpdateStorageAuthority {
-    pub fn instruction(self) -> Instruction {
-        storage_ix(
-            vec![
-                AccountMeta::new_readonly(self.authority, true),
-                AccountMeta::new_readonly(self.new_authority, true),
-                AccountMeta::new(self.registry, false),
-            ],
-            vec![tag::UPDATE_AUTHORITY],
-        )
     }
 }
 

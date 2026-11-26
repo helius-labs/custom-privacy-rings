@@ -48,7 +48,6 @@ pub enum Command {
     /// Record devnet in ring.toml and probe the deployed services.
     Devnet,
     /// Record localnet in ring.toml and start the validator, Photon, the prover and the ring rpc.
-    #[command(alias = "dev")]
     Localnet(LocalnetArgs),
     /// Deploy the released program under the authority, or upgrade it in place.
     #[command(args_conflicts_with_subcommands = true)]

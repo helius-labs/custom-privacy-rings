@@ -39,7 +39,7 @@ use spr_transaction::{
 };
 use zolana_ring_keys::dummy_recipient_key;
 
-pub use anonymous_rail::published as published_outputs;
+pub use anonymous_rail::published_outputs;
 use anonymous_rail::{is_change, lead_change, AnonymousSeal};
 pub use anonymous_rail::{random_tag_preimage, AnonymousPlan, AnonymousSlot};
 pub use assets::RingAssets;

@@ -6,7 +6,7 @@ use spr_keypair::{ShieldedAddress, ShieldedKeypair, SigningKey, X25519Keypair};
 use spr_transaction::{
     instructions::transact::ConfidentialTransaction, Data, Mint, Utxo, WalletUtxo,
 };
-use zolana_ring_client::open_ring_confidential;
+use zolana_ring_client::RingConfidentialScan;
 use zolana_ring_transaction::{RingAssets, RingDelivery, RingOutputRail};
 
 const RING: Address = Address::new_from_array([42; 32]);
@@ -108,7 +108,9 @@ fn transfer(
 }
 
 fn held(owner: &ShieldedKeypair, transactions: &[ShieldedTransaction]) -> Vec<(u64, bool)> {
-    let notes = open_ring_confidential(owner, &RingAssets::new([]).unwrap(), transactions).unwrap();
+    let notes = RingConfidentialScan::new(owner, &RingAssets::new([]).unwrap())
+        .open(transactions)
+        .unwrap();
     notes
         .owned
         .utxos
@@ -141,12 +143,9 @@ fn a_delivered_transfer_opens_for_its_recipient_under_the_mint_its_body_names() 
 fn a_note_reads_spent_once_a_scanned_transaction_spends_it() {
     let (sender, recipient) = (keypair(1), keypair(2));
     let received = transfer(&sender, &recipient, RingDelivery::Delivered);
-    let notes = open_ring_confidential(
-        &recipient,
-        &RingAssets::new([]).unwrap(),
-        std::slice::from_ref(&received),
-    )
-    .unwrap();
+    let notes = RingConfidentialScan::new(&recipient, &RingAssets::new([]).unwrap())
+        .open(std::slice::from_ref(&received))
+        .unwrap();
     let spent_by = ShieldedTransaction {
         tx_signature: Signature::from([10; 64]),
         nullifiers: vec![notes.owned.utxos[0].nullifier],

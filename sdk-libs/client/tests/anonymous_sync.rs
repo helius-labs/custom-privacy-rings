@@ -41,9 +41,9 @@ use spr_transaction::{
     TransactionError, TransactionKeyRequest, Utxo, WalletUtxo,
 };
 use zolana_ring_client::{
-    auditor_view_tag, note_state, open_ring_confidential, verify_ring_owned, AnonymousError,
-    AnonymousScan, AnonymousStream, AnonymousSync, AnonymousWallet, AuditError, AuditStreamSeal,
-    NoteState, RingConfidentialScan, RingNoteCodec, SenderAuditFrame, SenderAuditFrames, SentCheck,
+    auditor_view_tag, note_state, verify_ring_owned, AnonymousError, AnonymousScan,
+    AnonymousStream, AnonymousSync, AnonymousWallet, AuditError, AuditStreamSeal, NoteState,
+    RingConfidentialScan, RingNoteCodec, SenderAuditFrame, SenderAuditFrames, SentCheck,
     ViewingHistory,
 };
 use zolana_ring_keys::{
@@ -2429,7 +2429,9 @@ async fn a_full_scan_finds_a_confidential_note_under_a_wrong_tag() {
         hash = slot.output_context.hash;
     });
 
-    let tagged = open_ring_confidential(&bob.keys, &assets(), core::slice::from_ref(&tx)).unwrap();
+    let tagged = RingConfidentialScan::new(&bob.keys, &assets())
+        .open(core::slice::from_ref(&tx))
+        .unwrap();
     assert!(tagged.owned.utxos.is_empty());
 
     let recovered = RingConfidentialScan::new(&bob.keys, &assets())
@@ -2485,10 +2487,10 @@ async fn bounded_recovery_resumes_after_restart_at_its_fixed_target() {
     let target = initial.target_slot().unwrap();
     assert_eq!(initial.status(), zolana_ring_client::RecoveryStatus::Paused);
     wallet.absorb(initial).unwrap();
-    assert!(matches!(
-        wallet.require_complete(),
-        Err(AnonymousError::SyncIncomplete)
-    ));
+    assert_eq!(
+        wallet.recovery_status(),
+        zolana_ring_client::RecoveryStatus::Paused
+    );
     alice.pay(&indexer, &[pay(&bob.address(), 7)]);
     for _ in 0..32 {
         wallet = AnonymousWallet::from_json(&wallet.to_json()).unwrap();
@@ -2506,7 +2508,10 @@ async fn bounded_recovery_resumes_after_restart_at_its_fixed_target() {
             break;
         }
     }
-    wallet.require_complete().unwrap();
+    assert_eq!(
+        wallet.recovery_status(),
+        zolana_ring_client::RecoveryStatus::Complete
+    );
     assert_eq!(wallet.notes().len(), 4);
     assert_eq!(after_slot(wallet.history()), Some(target));
 }
@@ -2712,7 +2717,10 @@ async fn recovery_diagnostics_keep_a_bounded_sample_across_restarts() {
             break;
         }
     }
-    wallet.require_complete().unwrap();
+    assert_eq!(
+        wallet.recovery_status(),
+        zolana_ring_client::RecoveryStatus::Complete
+    );
     assert!(count >= 80);
 }
 
@@ -2756,7 +2764,10 @@ async fn a_reply_cannot_change_an_active_recovery_scope() {
         .await
         .unwrap();
     wallet.absorb(completed).unwrap();
-    wallet.require_complete().unwrap();
+    assert_eq!(
+        wallet.recovery_status(),
+        zolana_ring_client::RecoveryStatus::Complete
+    );
     wallet.confirm_claim(sender).unwrap();
     assert!(wallet.pending_claims().is_empty());
 }

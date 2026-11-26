@@ -48,6 +48,10 @@ custom-ring-sdk = { path = "sdk-libs/sdk", version = "0.1.0" }
 custom-ring-cli = { path = "cli", version = "0.1.0" }
 zolana-ring-rpc = { path = "services/ring-rpc", version = "0.1.0" }
 
+# Solana platform-tools Cargo 1.84 cannot build edition2024 crates pulled by
+# newer time-core releases.
+time = ">=0.3, <0.3.46"
+
 # zolana crates through the submodule.
 spr-event = { path = "zolana/program-libs/event", version = "0.10.0" }
 spr-event-parser = { path = "zolana/sdk-libs/event", version = "0.10.0" }

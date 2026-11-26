@@ -83,9 +83,13 @@ fn opened_envelope(
 fn raw_envelope(plaintext: &[u8], auditor: &X25519Keypair) -> SealedAuditStream {
     let ephemeral = X25519Keypair::new();
     let mut envelope = plaintext.to_vec();
-    sealing_salted_stream(&ephemeral, &auditor.pubkey(), &SALT, AUDIT_STREAM_LABEL)
-        .unwrap()
-        .apply_at(STREAM_FIRST_COUNTER, &mut envelope);
+    salted_stream(
+        &sealing_secret(&ephemeral, &auditor.pubkey()).unwrap(),
+        &SALT,
+        AUDIT_STREAM_LABEL,
+    )
+    .unwrap()
+    .apply_at(STREAM_FIRST_COUNTER, &mut envelope);
     SealedAuditStream {
         eph_u: ephemeral.pubkey().u(),
         envelope,

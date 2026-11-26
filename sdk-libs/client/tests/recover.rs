@@ -736,6 +736,27 @@ async fn missing_or_invalid_mandatory_disclosure_never_returns_a_partial_balance
 }
 
 #[tokio::test]
+async fn a_record_that_rebuilds_another_commitment_is_no_refusal() {
+    let fixture = Fixture::new();
+    let exposed = UtxoFields {
+        owner_key: [0x66; 32],
+        nullifier_pk: spr_interface::ZERO_NULLIFIER_PUBKEY,
+        ..UtxoFields::default()
+    };
+    let (held, mut tx) = fixture.encrypt_beside(fixture.output(4), 2, Beside::OtherMember(exposed));
+    tx.output_slots[1].output_context.hash[31] ^= 1;
+    let history = History {
+        transactions: vec![tx],
+        ..Default::default()
+    };
+    let recovered = fixture
+        .run(fixture.recovery(), &history)
+        .await
+        .expect("the slot keeps its proven record");
+    assert_eq!(recovered.utxos, [held]);
+}
+
+#[tokio::test]
 async fn follows_chained_merges_across_trees_and_keeps_only_the_live_successor() {
     let fixture = Fixture::new();
     let (first, first_tx) = fixture.encrypt(fixture.output(4), 2);

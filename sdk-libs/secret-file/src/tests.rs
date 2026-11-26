@@ -102,6 +102,10 @@ fn files_get_their_exact_mode() {
     assert_eq!(mode(&nested), 0o700);
     assert_eq!(mode(&secret), 0o600);
     assert_eq!(mode(&public), 0o644);
+    let shared = dir.join("public-dir");
+    create_new(&shared.join("root.pub"), b"public", Visibility::Public).expect("public");
+    assert_ne!(mode(&shared) & 0o700, 0);
+    assert_eq!(mode(&shared), mode(&dir));
     let dangling_target = dir.join("missing-target");
     let dangling_link = dir.join("dangling.key");
     std::os::unix::fs::symlink(&dangling_target, &dangling_link).expect("symlink");
@@ -230,5 +234,17 @@ fn a_fifo_is_refused_without_waiting_for_a_writer() {
         read.recv_timeout(Duration::from_secs(5)),
         Ok(Err(SecretFileError::NotRegular { .. }))
     ));
+    fs::remove_dir_all(dir).expect("cleanup");
+}
+
+#[test]
+fn replace_swaps_the_bytes_and_leaves_no_part_file() {
+    let dir = temp_dir("replace");
+    let path = dir.join("receipt");
+    create_new(&path, b"old", Visibility::Secret).expect("first");
+    assert!(create_new(&path, b"new", Visibility::Secret).is_err());
+    replace(&path, b"new", Visibility::Secret).expect("replace");
+    assert_eq!(fs::read(&path).expect("read"), b"new");
+    assert_eq!(fs::read_dir(&dir).expect("dir").count(), 1);
     fs::remove_dir_all(dir).expect("cleanup");
 }

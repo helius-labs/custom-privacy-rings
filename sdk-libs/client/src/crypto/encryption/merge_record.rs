@@ -9,11 +9,11 @@ use custom_ring_interface::{
     stream::{DeliveredSlot, SlotSecret},
     MergeEnvelope, MergeRecord, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, STREAM_FIRST_COUNTER,
 };
-use spr_keypair::{ViewingKey, X25519Keypair, X25519Pubkey};
+use spr_keypair::{X25519Keypair, X25519Pubkey};
 use zeroize::{Zeroize, Zeroizing};
-use zolana_ring_keys::symmetric_apply_audit;
+use zolana_ring_keys::{symmetric_apply_audit, RingStream};
 
-use super::{opening_ring_stream, sealing_ring_stream, Result};
+use super::{opening_secret, sealing_secret, Result};
 use crate::AuditError;
 
 pub struct MergeRecordSeal {
@@ -49,8 +49,11 @@ impl MergeRecordSeal {
             recipient_u: self.recipient.u(),
         }
         .encode();
-        sealing_ring_stream(&ephemeral, auditor_pk, MERGE_RECORD_LABEL)?
-            .apply_at(STREAM_FIRST_COUNTER, &mut envelope);
+        RingStream::new(
+            &*sealing_secret(&ephemeral, auditor_pk)?,
+            MERGE_RECORD_LABEL,
+        )?
+        .apply_at(STREAM_FIRST_COUNTER, &mut envelope);
         let secret = record_secret(&ephemeral, &self.recipient, &self.first_nullifier)?;
         let mut record = self.record.encode();
         symmetric_apply_audit(secret.as_bytes(), MERGE_OUTPUT_LABEL, &mut record)?;
@@ -69,8 +72,11 @@ pub fn open_merge_record(
     sealed: &SealedMergeCiphertexts<'_>,
 ) -> Result<MergeRecord> {
     let mut envelope = Zeroizing::new(*sealed.envelope);
-    opening_ring_stream(auditor, sealed.eph_pk, MERGE_RECORD_LABEL)?
-        .apply_at(STREAM_FIRST_COUNTER, &mut *envelope);
+    RingStream::new(
+        &*opening_secret(auditor, sealed.eph_pk)?,
+        MERGE_RECORD_LABEL,
+    )?
+    .apply_at(STREAM_FIRST_COUNTER, &mut *envelope);
     let mut opened = MergeEnvelope::decode(&*envelope).map_err(|_| AuditError::DisclosureField)?;
     let ephemeral = X25519Keypair::from_bytes(&opened.eph_sk);
     opened.eph_sk.zeroize();
@@ -80,23 +86,6 @@ pub fn open_merge_record(
     }
     let recipient = X25519Pubkey::from_u(opened.recipient_u)?;
     let secret = record_secret(&ephemeral, &recipient, sealed.first_nullifier)?;
-    open_record(&secret, sealed.record)
-}
-
-/// The merged owner's read under its viewing key, the auditor reads the same secret.
-pub fn open_owned_merge_record(
-    viewing_key: &ViewingKey,
-    sealed: &SealedMergeCiphertexts<'_>,
-) -> Result<MergeRecord> {
-    let secret = DeliveredSlot {
-        agreement: &viewing_key.ecdh(sealed.eph_pk)?,
-        tx_viewing_pk: sealed.eph_pk.as_bytes(),
-        recipient_viewing_pk: viewing_key.pubkey().as_bytes(),
-        salt: &[0; 16],
-        output_index: 0,
-        first_nullifier: sealed.first_nullifier,
-    }
-    .secret()?;
     open_record(&secret, sealed.record)
 }
 

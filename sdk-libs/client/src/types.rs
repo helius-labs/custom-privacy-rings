@@ -137,11 +137,18 @@ pub enum OutputPayloadErrorKind {
     Disclosure,
     /// The slot's derived dummy or keyed record hashes to another commitment.
     Commitment,
-    /// Wire tag for an unverified payload while the proven record stands.
-    Payload,
 }
 
 impl AuditedTransaction {
+    /// The first payload error whose slot holds no proven record.
+    pub fn unopened(&self) -> Option<&OutputPayloadError> {
+        self.payload_errors.iter().find(|error| {
+            self.outputs
+                .iter()
+                .all(|output| output.slot_index != error.slot_index)
+        })
+    }
+
     pub fn utxos(&self) -> impl Iterator<Item = CreatedUtxo> + '_ {
         self.outputs.iter().filter_map(AuditedOutput::created)
     }

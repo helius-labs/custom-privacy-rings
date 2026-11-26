@@ -350,15 +350,6 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
     }
 }
 
-/// Spent state covers `transactions` alone.
-pub fn open_ring_confidential<K: ShieldedKeys + RingKeys + ?Sized>(
-    keys: &K,
-    assets: &RingAssets,
-    transactions: &[ShieldedTransaction],
-) -> Result<RingConfidentialNotes, AnonymousError> {
-    RingConfidentialScan::new(keys, assets).open(transactions)
-}
-
 /// One transaction can emit several relevant events, only its signature and event index name one.
 fn union_events(
     known: &[ShieldedTransaction],

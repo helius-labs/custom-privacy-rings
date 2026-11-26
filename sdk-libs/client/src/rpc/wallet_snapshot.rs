@@ -12,7 +12,7 @@ use super::{
     GetWalletStatusRequest, GetWalletStatusResponse, ReadBuildError, ReadSigner, ReadTarget,
     RequestBuildError, WalletSnapshotReleaseAttestation, WalletSnapshotReleaseRequest,
     WalletStatusRequest, GET_DELEGATE_NOTES, GET_WALLET_STATUS, RELEASE_DELEGATE_SNAPSHOT,
-    RELEASE_WALLET_SNAPSHOT, WALLET_SNAPSHOT_CURSOR_LEN, WALLET_SNAPSHOT_CURSOR_VERSION,
+    RELEASE_WALLET_SNAPSHOT, WALLET_SNAPSHOT_CURSOR_LEN,
 };
 
 pub struct WalletSnapshotScope<'a> {
@@ -257,11 +257,10 @@ impl SnapshotState {
 }
 
 pub(crate) fn validate_snapshot_cursor(cursor: &Base64String) -> Result<(), ReadBuildError> {
-    if cursor.0.len() != WALLET_SNAPSHOT_CURSOR_LEN || cursor.0[0] != WALLET_SNAPSHOT_CURSOR_VERSION
-    {
-        return Err(ReadBuildError::Cursor);
+    match cursor.0.len() == WALLET_SNAPSHOT_CURSOR_LEN {
+        true => Ok(()),
+        false => Err(ReadBuildError::Cursor),
     }
-    Ok(())
 }
 
 impl RpcMethod for ReadWallet {
@@ -354,8 +353,8 @@ mod tests {
     }
 
     fn cursor(position: u8) -> Base64String {
-        let mut value = vec![2; 129];
-        value[97..].fill(position);
+        let mut value = vec![2; WALLET_SNAPSHOT_CURSOR_LEN];
+        value[WALLET_SNAPSHOT_CURSOR_LEN - 32..].fill(position);
         value.into()
     }
 
@@ -401,10 +400,10 @@ mod tests {
     }
 
     #[test]
-    fn release_refuses_legacy_and_empty_cursors() {
-        let mut legacy = cursor(1);
-        legacy.0[0] = 1;
-        for cursor in [legacy, vec![].into()] {
+    fn release_refuses_a_cursor_of_another_length() {
+        let mut long = cursor(1);
+        long.0.push(1);
+        for cursor in [long, vec![].into()] {
             assert!(
                 WalletSnapshotReleaseRequest::new(WalletSnapshotReleaseAttestation {
                     target: target(),

@@ -11,7 +11,6 @@ use std::{
 
 use anyhow::{ensure, Context as _, Result};
 use custom_ring_interface::STORAGE_PROGRAM_ID;
-use serde::Deserialize;
 use solana_address::Address;
 use spr_client::SolanaRpc;
 use zolana_cli_common::{
@@ -24,7 +23,7 @@ use zolana_operator_custody::{KmsEndpoint, RpcCustody};
 use crate::{
     config::{parse_json, OperatorManifest, RingConfig, Target, Urls},
     context, file, line, probe,
-    release::{RingKey, RingRelease, RING_KEYS},
+    release::{RingRelease, RING_KEYS},
     tool::{Tool, SOLANA_TEST_VALIDATOR, ZOLANA},
     ui::{self, icon},
     workspace::{Workspace, WRONG_TARGET},
@@ -61,11 +60,6 @@ const RING_RPC: Tool = Tool::new(
 const ENROLLMENT_BUDGET_LAMPORTS: &str = "1000000000";
 const READY_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL: Duration = Duration::from_secs(2);
-
-#[derive(Deserialize)]
-struct ProverHealth {
-    circuits: Vec<String>,
-}
 
 /// The target is recorded first, a failed bring-up still leaves ring.toml on localnet.
 pub fn run(config_path: &Path, config: &RingConfig, args: LocalnetArgs) -> Result<()> {
@@ -120,7 +114,6 @@ fn bring_up(config: &RingConfig, root: &Path, replace: bool) -> Result<()> {
         };
         ZOLANA.named("zolana dev start").run(&mut start.command())?;
     }
-    check_prover_serves_custom_ring(&urls.prover)?;
     if !replace && answers(local(ring_rpc)) {
         line("ring rpc", format_args!("{} answers", urls.ring_rpc));
         return Ok(());
@@ -158,8 +151,7 @@ fn bring_up_workspace(
     let ports = ports(urls)?;
     let [rpc, indexer, prover, ring_rpc] = ports;
     if !replace {
-        answering(ports.into_iter().zip(services))?;
-        return check_prover_serves_custom_ring(&urls.prover);
+        return answering(ports.into_iter().zip(services));
     }
     let addr = local(ring_rpc);
     ensure!(!answers(addr), "{addr} stays busy, stop the listener on it");
@@ -207,7 +199,6 @@ fn bring_up_workspace(
             .named("workspace zolana dev prover start")
             .run(&mut command)?;
     }
-    check_prover_serves_custom_ring(&urls.prover)?;
     ui::heading(icon::RING, "workspace services ready");
     let next = "zolana-ring pipeline in a second terminal with the same environment";
     line("next", next);
@@ -283,7 +274,7 @@ impl RingIndexer<'_> {
 
 fn answering<'a>(services: impl IntoIterator<Item = (u16, &'a String)>) -> Result<()> {
     for (port, url) in services {
-        let next = "run `zolana-ring dev` first";
+        let next = "run `zolana-ring localnet` first";
         ensure!(
             answers(local(port)),
             "local workspace service is unavailable at {url}, {next}"
@@ -497,24 +488,6 @@ fn prover_keys_dir() -> Result<PathBuf> {
     }
     let home = env::var_os("HOME").context("HOME is not set")?;
     Ok(PathBuf::from(home).join(".config/zolana/proving-keys"))
-}
-
-/// The prover of an older `zolana` release answers health without the ring circuit.
-fn check_prover_serves_custom_ring(prover_url: &str) -> Result<()> {
-    let url = probe::service_url(prover_url, "/health");
-    let health: ProverHealth = probe::http(POLL, READY_TIMEOUT)
-        .get(&url)
-        .send()
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(reqwest::blocking::Response::json)
-        .with_context(|| format!("cannot read the prover health at {url}"))?;
-    let serves = |key: &RingKey| health.circuits.iter().any(|name| name == key.name);
-    let newer = "install the zolana cli of a newer localnet release";
-    ensure!(
-        RING_KEYS.iter().all(serves),
-        "the prover at {url} serves no custom-ring circuit, {newer}"
-    );
-    Ok(())
 }
 
 #[cfg(test)]

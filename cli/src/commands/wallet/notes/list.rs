@@ -103,13 +103,6 @@ pub fn run(ctx: &Context, command: ListCommand) -> Result<()> {
 pub(crate) struct SubjectLookup<'a> {
     pub list_id: ListId,
     pub ring: Address,
-    pub change: ListChange,
-    pub read_salt: &'a dyn Fn(&Address) -> Result<OwnerListSalts>,
-}
-
-pub(crate) struct ShowLookup<'a> {
-    pub list_id: ListId,
-    pub ring: Address,
     pub read_salt: &'a dyn Fn(&Address) -> Result<OwnerListSalts>,
 }
 
@@ -138,7 +131,7 @@ struct ResolvedSalted {
 }
 
 impl SubjectLookup<'_> {
-    fn resolve_salted(&self, salted: &SaltedOwner) -> Result<ResolvedSalted> {
+    fn resolve_salted(&self, salted: &SaltedOwner, change: ListChange) -> Result<ResolvedSalted> {
         match salted {
             SaltedOwner::Address(address) => {
                 ensure!(
@@ -152,7 +145,7 @@ impl SubjectLookup<'_> {
                     "a ring address with no salt has no tracking row and no private record"
                 );
                 let owner = Address::new_from_array(address.recipient.signing_pubkey.as_ed25519()?);
-                let ring_salt = match self.change {
+                let ring_salt = match change {
                     ListChange::Clear => (self.read_salt)(&owner)?.ring_salt,
                     ListChange::Set => None,
                 };
@@ -180,54 +173,43 @@ fn private_label(kind: PrivateKeyKind, owner: Address) -> String {
 }
 
 impl MemberArgs {
-    /// A private list reads only an owner's salted key, a public one never does.
-    pub(crate) fn subjects(&self, lookup: SubjectLookup<'_>) -> Result<Vec<Subject>> {
+    pub(crate) fn subjects(
+        &self,
+        lookup: SubjectLookup<'_>,
+        change: ListChange,
+    ) -> Result<Vec<Subject>> {
+        Ok(self
+            .grouped(&lookup, change)?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    /// A private owner reads under every key a clear writes.
+    pub(crate) fn show_subjects(&self, lookup: SubjectLookup<'_>) -> Result<Vec<ShowSubject>> {
+        self.grouped(&lookup, ListChange::Clear)?
+            .into_iter()
+            .map(|keys| {
+                let label = keys.first().context("a member with no key")?.label.clone();
+                let members = keys.iter().map(|subject| subject.member).collect();
+                Ok(ShowSubject { label, members })
+            })
+            .collect()
+    }
+
+    /// One group per named member, a private list reads only an owner's salted keys and a public
+    /// one never does.
+    fn grouped(&self, lookup: &SubjectLookup<'_>, change: ListChange) -> Result<Vec<Vec<Subject>>> {
         if !ListSet::PRIVATE_LISTS.contains(lookup.list_id) {
             ensure!(
                 self.salted_owners.is_empty(),
                 "the {} list is public, name its owners with --owner",
                 lookup.list_id.name()
             );
-            return self.public_subjects();
-        }
-        ensure!(
-            self.owners.is_empty() && self.assets.is_empty(),
-            "the {} list keys owners by their salt, name them with --salted-owner",
-            lookup.list_id.name()
-        );
-        let mut subjects = Vec::with_capacity(self.salted_owners.len());
-        for salted in &self.salted_owners {
-            let resolved = lookup.resolve_salted(salted)?;
-            let targets = match lookup.change {
-                ListChange::Set => vec![resolved.salts.private_write_member(resolved.owner)?],
-                ListChange::Clear => resolved.salts.revocation_members(resolved.owner)?,
-            };
-            for target in targets {
-                subjects.push(Subject {
-                    member: target.member,
-                    label: private_label(target.kind, resolved.owner),
-                    unregistered: target.unregistered_owner(),
-                });
-            }
-        }
-        Ok(subjects)
-    }
-
-    pub(crate) fn show_subjects(&self, lookup: ShowLookup<'_>) -> Result<Vec<ShowSubject>> {
-        let full = SubjectLookup {
-            list_id: lookup.list_id,
-            ring: lookup.ring,
-            change: ListChange::Clear,
-            read_salt: lookup.read_salt,
-        };
-        if !ListSet::PRIVATE_LISTS.contains(lookup.list_id) {
             return Ok(self
-                .subjects(full)?
+                .public_subjects()?
                 .into_iter()
-                .map(|subject| ShowSubject {
-                    label: subject.label,
-                    members: vec![subject.member],
-                })
+                .map(|subject| vec![subject])
                 .collect());
         }
         ensure!(
@@ -235,18 +217,24 @@ impl MemberArgs {
             "the {} list keys owners by their salt, name them with --salted-owner",
             lookup.list_id.name()
         );
-        let mut subjects = Vec::with_capacity(self.salted_owners.len());
-        for salted in &self.salted_owners {
-            let resolved = full.resolve_salted(salted)?;
-            let targets = resolved.salts.revocation_members(resolved.owner)?;
-            let Some(primary) = targets.first() else {
-                bail!("{} has no private list key", resolved.owner);
-            };
-            let label = private_label(primary.kind, resolved.owner);
-            let members = targets.into_iter().map(|target| target.member).collect();
-            subjects.push(ShowSubject { label, members });
-        }
-        Ok(subjects)
+        self.salted_owners
+            .iter()
+            .map(|salted| {
+                let resolved = lookup.resolve_salted(salted, change)?;
+                let targets = match change {
+                    ListChange::Set => vec![resolved.salts.private_write_member(resolved.owner)?],
+                    ListChange::Clear => resolved.salts.revocation_members(resolved.owner)?,
+                };
+                Ok(targets
+                    .into_iter()
+                    .map(|target| Subject {
+                        member: target.member,
+                        label: private_label(target.kind, resolved.owner),
+                        unregistered: target.unregistered_owner(),
+                    })
+                    .collect())
+            })
+            .collect()
     }
 
     fn public_subjects(&self) -> Result<Vec<Subject>> {
@@ -411,27 +399,21 @@ pub(crate) fn aggregate_show_rows(
 
 impl EntryArgs {
     /// Checked against the chain, a salted entry under any other salt is one no proof reads.
-    fn checked_subjects(&self, ctx: &Context, change: ListChange) -> Result<Vec<Subject>> {
+    fn checked<T>(
+        &self,
+        ctx: &Context,
+        read: impl FnOnce(&MemberArgs, SubjectLookup<'_>) -> Result<T>,
+    ) -> Result<T> {
         let authority = ctx.authority()?;
         let reader = CheckedSaltReader::new(ctx, authority.as_ref());
-        let subjects = self.members.subjects(SubjectLookup {
-            list_id: self.list_id.id(),
-            ring: ctx.ring.program_id(),
-            change,
-            read_salt: &|owner| reader.read(owner),
-        })?;
-        self.check_salted_addresses(ctx)?;
-        Ok(subjects)
-    }
-
-    fn checked_show_subjects(&self, ctx: &Context) -> Result<Vec<ShowSubject>> {
-        let authority = ctx.authority()?;
-        let reader = CheckedSaltReader::new(ctx, authority.as_ref());
-        let subjects = self.members.show_subjects(ShowLookup {
-            list_id: self.list_id.id(),
-            ring: ctx.ring.program_id(),
-            read_salt: &|owner| reader.read(owner),
-        })?;
+        let subjects = read(
+            &self.members,
+            SubjectLookup {
+                list_id: self.list_id.id(),
+                ring: ctx.ring.program_id(),
+                read_salt: &|owner| reader.read(owner),
+            },
+        )?;
         self.check_salted_addresses(ctx)?;
         Ok(subjects)
     }
@@ -461,7 +443,7 @@ impl EntryArgs {
 
     fn write(self, ctx: &Context, change: ListChange) -> Result<()> {
         let list_id = self.list_id.id();
-        let subjects = self.checked_subjects(ctx, change)?;
+        let subjects = self.checked(ctx, |members, lookup| members.subjects(lookup, change))?;
         let outcomes = ListUpdate {
             list_id,
             subjects: &subjects,
@@ -480,7 +462,7 @@ impl EntryArgs {
 
     fn show(self, ctx: &Context) -> Result<()> {
         let list_id = self.list_id.id();
-        let subjects = self.checked_show_subjects(ctx)?;
+        let subjects = self.checked(ctx, MemberArgs::show_subjects)?;
         let members: Vec<Member> = subjects
             .iter()
             .flat_map(|subject| subject.members.iter().copied())
@@ -647,12 +629,14 @@ mod tests {
             _ => panic!("a member command"),
         };
         Ok(members
-            .subjects(SubjectLookup {
-                list_id: ListId::Block,
-                ring: Address::new_from_array([0x11; 32]),
-                change: ListChange::Set,
-                read_salt: &|_| bail!("no read"),
-            })
+            .subjects(
+                SubjectLookup {
+                    list_id: ListId::Block,
+                    ring: Address::new_from_array([0x11; 32]),
+                    read_salt: &|_| bail!("no read"),
+                },
+                ListChange::Set,
+            )
             .expect("members"))
     }
 
@@ -675,12 +659,14 @@ mod tests {
         };
         let no_read = |_: &Address| -> Result<OwnerListSalts> { bail!("no read") };
         let salted = args(Vec::new(), vec![address.clone()])
-            .subjects(SubjectLookup {
-                list_id: ListId::PrivateBlock,
-                ring,
-                change: ListChange::Set,
-                read_salt: &no_read,
-            })
+            .subjects(
+                SubjectLookup {
+                    list_id: ListId::PrivateBlock,
+                    ring,
+                    read_salt: &no_read,
+                },
+                ListChange::Set,
+            )
             .unwrap();
         let owner = address.recipient.signing_pubkey.as_ed25519().unwrap();
         assert_eq!(
@@ -695,34 +681,38 @@ mod tests {
             salted_owners: vec![SaltedOwner::Key(Address::new_from_array(owner))],
         };
         let read = by_key
-            .subjects(SubjectLookup {
-                list_id: ListId::PrivateBlock,
-                ring,
-                change: ListChange::Set,
-                read_salt: &|_| {
-                    Ok(OwnerListSalts {
-                        list_salt: Some(address.list_salt),
-                        ring_salt: None,
-                    })
+            .subjects(
+                SubjectLookup {
+                    list_id: ListId::PrivateBlock,
+                    ring,
+                    read_salt: &|_| {
+                        Ok(OwnerListSalts {
+                            list_salt: Some(address.list_salt),
+                            ring_salt: None,
+                        })
+                    },
                 },
-            })
+                ListChange::Set,
+            )
             .unwrap();
         assert_eq!(read[0].member, salted[0].member);
         assert_eq!(read[0].unregistered, None);
         // An owner with no row keys its entry under the ring salt and names itself to the writer.
         let ring_salt = [0x2b; 32];
         let unregistered = by_key
-            .subjects(SubjectLookup {
-                list_id: ListId::PrivateBlock,
-                ring,
-                change: ListChange::Set,
-                read_salt: &|_| {
-                    Ok(OwnerListSalts {
-                        list_salt: None,
-                        ring_salt: Some(ring_salt),
-                    })
+            .subjects(
+                SubjectLookup {
+                    list_id: ListId::PrivateBlock,
+                    ring,
+                    read_salt: &|_| {
+                        Ok(OwnerListSalts {
+                            list_salt: None,
+                            ring_salt: Some(ring_salt),
+                        })
+                    },
                 },
-            })
+                ListChange::Set,
+            )
             .unwrap();
         assert_eq!(
             unregistered[0].member,
@@ -733,38 +723,46 @@ mod tests {
             Some(Address::new_from_array(owner))
         );
         assert!(by_key
-            .subjects(SubjectLookup {
-                list_id: ListId::PrivateBlock,
-                ring,
-                change: ListChange::Set,
-                read_salt: &no_read,
-            })
+            .subjects(
+                SubjectLookup {
+                    list_id: ListId::PrivateBlock,
+                    ring,
+                    read_salt: &no_read,
+                },
+                ListChange::Set,
+            )
             .is_err());
 
         let plain = TAG.parse().unwrap();
         assert!(args(vec![plain], Vec::new())
-            .subjects(SubjectLookup {
-                list_id: ListId::PrivateAllow,
-                ring,
-                change: ListChange::Set,
-                read_salt: &no_read,
-            })
+            .subjects(
+                SubjectLookup {
+                    list_id: ListId::PrivateAllow,
+                    ring,
+                    read_salt: &no_read,
+                },
+                ListChange::Set,
+            )
             .is_err());
         assert!(args(Vec::new(), vec![address.clone()])
-            .subjects(SubjectLookup {
-                list_id: ListId::Block,
-                ring,
-                change: ListChange::Set,
-                read_salt: &no_read,
-            })
+            .subjects(
+                SubjectLookup {
+                    list_id: ListId::Block,
+                    ring,
+                    read_salt: &no_read,
+                },
+                ListChange::Set,
+            )
             .is_err());
         assert!(args(Vec::new(), vec![address])
-            .subjects(SubjectLookup {
-                list_id: ListId::PrivateBlock,
-                ring: Address::new_from_array([0x12; 32]),
-                change: ListChange::Set,
-                read_salt: &no_read,
-            })
+            .subjects(
+                SubjectLookup {
+                    list_id: ListId::PrivateBlock,
+                    ring: Address::new_from_array([0x12; 32]),
+                    read_salt: &no_read,
+                },
+                ListChange::Set,
+            )
             .is_err());
     }
 
@@ -799,24 +797,28 @@ mod tests {
             ListId::PrivateFrozen,
         ] {
             let added = by_key
-                .subjects(SubjectLookup {
-                    list_id,
-                    ring,
-                    change: ListChange::Set,
-                    read_salt: &both_salts,
-                })
+                .subjects(
+                    SubjectLookup {
+                        list_id,
+                        ring,
+                        read_salt: &both_salts,
+                    },
+                    ListChange::Set,
+                )
                 .unwrap();
             assert_eq!(added.len(), 1);
             assert_eq!(added[0].member, expected_owner);
             assert_eq!(added[0].unregistered, None);
 
             let cleared = by_key
-                .subjects(SubjectLookup {
-                    list_id,
-                    ring,
-                    change: ListChange::Clear,
-                    read_salt: &both_salts,
-                })
+                .subjects(
+                    SubjectLookup {
+                        list_id,
+                        ring,
+                        read_salt: &both_salts,
+                    },
+                    ListChange::Clear,
+                )
                 .unwrap();
             assert_eq!(cleared.len(), 2);
             assert_eq!(cleared[0].member, expected_owner);
@@ -857,7 +859,7 @@ mod tests {
                 salted_owners: vec![salted],
             };
             let subjects = args
-                .show_subjects(ShowLookup {
+                .show_subjects(SubjectLookup {
                     list_id: ListId::PrivateBlock,
                     ring,
                     read_salt: &both_salts,

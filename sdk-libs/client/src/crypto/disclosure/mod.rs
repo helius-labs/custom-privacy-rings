@@ -14,7 +14,7 @@ use zeroize::{Zeroize, Zeroizing};
 use zolana_ring_keys::RingStream;
 
 use crate::{
-    encryption::{opening_salted_stream, sealing_salted_stream},
+    encryption::{opening_secret, salted_stream, sealing_secret},
     AuditError,
 };
 
@@ -57,7 +57,11 @@ impl AuditStreamSeal<'_> {
             return Err(AuditError::DisclosureLayout);
         }
         let key = X25519Keypair::from_bytes(&tx_viewing_key.secret_bytes());
-        let stream = sealing_salted_stream(&key, auditor_pk, salt, AUDIT_STREAM_LABEL)?;
+        let stream = salted_stream(
+            &*sealing_secret(&key, auditor_pk)?,
+            salt,
+            AUDIT_STREAM_LABEL,
+        )?;
         let mut plaintext = custom_ring_interface::AuditEnvelope {
             tx_viewing_secret: *tx_viewing_key.secret_bytes(),
             real_inputs,
@@ -115,12 +119,8 @@ impl AuditEnvelope<'_> {
         auditor: &X25519Keypair,
         layout: AuditStreamLayout,
     ) -> Result<OpenedAudit, AuditError> {
-        let stream = opening_salted_stream(
-            auditor,
-            &X25519Pubkey::from_u(self.eph_u)?,
-            self.salt,
-            AUDIT_STREAM_LABEL,
-        )?;
+        let secret = opening_secret(auditor, &X25519Pubkey::from_u(self.eph_u)?)?;
+        let stream = salted_stream(&secret, self.salt, AUDIT_STREAM_LABEL)?;
         self.decode(stream, layout)
     }
 
@@ -132,7 +132,11 @@ impl AuditEnvelope<'_> {
         layout: AuditStreamLayout,
     ) -> Result<OpenedAudit, AuditError> {
         let key = X25519Keypair::from_bytes(&tx_viewing_key.secret_bytes());
-        let stream = sealing_salted_stream(&key, auditor_pk, self.salt, AUDIT_STREAM_LABEL)?;
+        let stream = salted_stream(
+            &*sealing_secret(&key, auditor_pk)?,
+            self.salt,
+            AUDIT_STREAM_LABEL,
+        )?;
         self.decode(stream, layout)
     }
 

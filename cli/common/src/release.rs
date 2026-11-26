@@ -9,7 +9,9 @@ use anyhow::{bail, ensure, Context, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::{config_dir, AtomicFileMode, AtomicWrite};
+use zolana_secret_file::{replace, Visibility};
+
+use crate::config_dir;
 
 const DEFAULT_RELEASE_BASE_URL: &str = "https://github.com/helius-labs/zolana/releases/download";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
@@ -82,7 +84,9 @@ pub fn ensure_at(tag: &str, asset: &Asset, path: &Path) -> Result<()> {
     println!("Downloading {url}");
     let bytes = download(&url, asset.size)?;
     verify(&bytes, asset)?;
-    write_atomic(path, &bytes)
+    // A wrong cached file is replaced whole, concurrent downloads never write one file.
+    replace(path, &bytes, Visibility::Public)
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 pub fn verify(bytes: &[u8], asset: &Asset) -> Result<()> {
@@ -180,24 +184,6 @@ fn pinned(asset: &Asset) -> Result<()> {
     Ok(())
 }
 
-/// The part file is unique per process, so concurrent downloads never write one file.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    AtomicWrite {
-        path,
-        bytes,
-        mode: AtomicFileMode::DefaultUmask,
-    }
-    .write()
-    .with_context(|| format!("failed to write {}", path.display()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,7 +254,7 @@ mod tests {
     fn a_verified_file_is_used_without_a_download() {
         let dir = env::temp_dir().join(format!("zolana-release-cache-{}", std::process::id()));
         let path = dir.join("test");
-        write_atomic(&path, b"hello").expect("write");
+        replace(&path, b"hello", Visibility::Public).expect("write");
         ensure_at("v0", &asset(HELLO), &path).expect("cached file");
         let leftovers = fs::read_dir(&dir).expect("dir").count();
         assert_eq!(leftovers, 1, "no part file remains");

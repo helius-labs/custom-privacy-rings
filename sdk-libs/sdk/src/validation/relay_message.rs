@@ -440,11 +440,13 @@ struct DecodedTransfer<'a> {
 }
 
 impl<'a> DecodedTransfer<'a> {
+    /// Every region is cut from the frame's own counts, an account outside them refuses the frame.
     fn decode(
         ring: CustomRing,
         data: &RingTransactData<'_>,
         accounts: &'a [AccountMeta],
     ) -> Result<Self, MessageMismatch> {
+        // SPP's forwarded list starts at the one ring auth PDA the program admits.
         let ring_auth = ring.ring_auth_pda();
         let mut copies = accounts
             .iter()
@@ -611,6 +613,7 @@ fn open_records(
         .collect()
 }
 
+/// A second or writable entry of the key would carry an authority the terms never name.
 fn signs_once_readonly(slice: &[AccountMeta], signer: Address) -> bool {
     let mut named = slice.iter().filter(|meta| meta.pubkey == signer);
     matches!(
@@ -630,6 +633,7 @@ fn check_prefix_signer(
     let prefix_rest = decoded.prefix.get(1..).unwrap_or_default();
     let valid = envelope.reads_only(decoded, PrefixSigner::Required)
         && signs_once_readonly(prefix_rest, envelope.signer)
+        // A signature named in SPP's list also moves the key's own funds.
         && !contains_key(decoded.forwarded, envelope.signer);
     match valid {
         true => Ok(()),
@@ -637,6 +641,7 @@ fn check_prefix_signer(
     }
 }
 
+/// The key signs in the owner run alone, a settlement or cache entry would spend its own funds.
 fn check_owner_signer(
     envelope: &Envelope,
     decoded: &DecodedTransfer<'_>,
@@ -1486,6 +1491,7 @@ impl Envelope {
                 })
             })
             .collect::<Result<Vec<_>, MessageMismatch>>()?;
+        // Outside the ring frame only the fee payer signs and only a named create's ATA is written.
         for (index, &pubkey) in message.account_keys.iter().enumerate() {
             let in_ring = compiled
                 .accounts
@@ -1507,7 +1513,8 @@ impl Envelope {
         })
     }
 
-    /// Compiled v1 messages share one write bit per address across prefix and forwarded.
+    /// The ring account first, then accounts that never name the signer unless the rule requires
+    /// it, a message holds one write role per address across prefix and forwarded.
     fn reads_only(&self, decoded: &DecodedTransfer<'_>, signer: PrefixSigner) -> bool {
         let forwarded_write = |meta: &AccountMeta| {
             decoded
@@ -1618,21 +1625,24 @@ mod tests {
     fn approval_opening_debug_redacts_blinder() {
         let blinder = Hash([0xab; 32]);
         let opening = ApprovalOpening {
-            blinder,
+            blinder: blinder.clone(),
             outputs: Vec::new(),
             public: Vec::new(),
         };
         let rendered = format!("{opening:?}");
         assert!(rendered.contains(REDACTED), "{rendered}");
-        assert!(!rendered.contains("171"), "{rendered}");
+        assert!(!rendered.contains(&format!("{blinder:?}")), "{rendered}");
+        let seen = Hash([0xcd; 32]);
         let exact = ExactApproval {
             opening,
             limits: Vec::new(),
-            seen_blinders: vec![Hash([0xcd; 32])],
+            seen_blinders: vec![seen.clone()],
         };
         let rendered = format!("{exact:?}");
         assert!(rendered.contains(REDACTED), "{rendered}");
-        assert!(!rendered.contains("205"), "{rendered}");
+        for secret in [blinder, seen] {
+            assert!(!rendered.contains(&format!("{secret:?}")), "{rendered}");
+        }
     }
 
     #[test]

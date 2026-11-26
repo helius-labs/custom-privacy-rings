@@ -134,7 +134,7 @@ impl AnonymousPlan {
         outputs: &[SppProofOutputUtxo],
         sender: &ShieldedAddress,
     ) -> Result<Vec<AnonymousSlot>, RingRailError> {
-        let published = published(outputs);
+        let published = published_outputs(outputs);
         let change = leading_change(published, sender);
         let mut recipients = self.recipients.iter();
         let mut slots = Vec::with_capacity(published.len());
@@ -329,7 +329,7 @@ impl AnonymousSeal<'_> {
 }
 
 /// The outputs the frame publishes, compact padding is an omitted suffix.
-pub fn published(outputs: &[SppProofOutputUtxo]) -> &[SppProofOutputUtxo] {
+pub fn published_outputs(outputs: &[SppProofOutputUtxo]) -> &[SppProofOutputUtxo] {
     let omitted = outputs
         .iter()
         .rev()
@@ -382,9 +382,10 @@ mod tests {
 
     #[test]
     fn anonymous_plan_debug_redacts_dummy_preimages() {
-        let plan = AnonymousPlan::from_parts(Vec::new(), [[0xa5; 32]; MAX_OUTPUTS]);
+        let preimage = [0xa5; 32];
+        let plan = AnonymousPlan::from_parts(Vec::new(), [preimage; MAX_OUTPUTS]);
         let rendered = format!("{plan:?}");
         assert!(rendered.contains(REDACTED), "{rendered}");
-        assert!(!rendered.contains("165"), "{rendered}");
+        assert!(!rendered.contains(&format!("{preimage:?}")), "{rendered}");
     }
 }

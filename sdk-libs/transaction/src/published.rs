@@ -13,8 +13,8 @@ use spr_transaction::{
 };
 
 use crate::{
-    anonymous_rail::published as published_outputs, record_of, AnonymousSlot, BodyForm, ExitSlot,
-    RingDelivery, RingOutputRail, RingRailError, Slot,
+    anonymous_rail::published_outputs, record_of, AnonymousSlot, BodyForm, ExitSlot, RingDelivery,
+    RingOutputRail, RingRailError, Slot,
 };
 
 #[derive(Clone, Copy, Debug)]

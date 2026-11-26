@@ -2,25 +2,18 @@
 
 use std::fmt;
 
-use async_trait::async_trait;
 use custom_ring_interface::domain;
 use solana_address::Address;
 use solana_signer::Signer;
-use spr_api::SprApi;
-use spr_client::{AsyncRpc, ClientError};
+use spr_client::AsyncRpc;
 use spr_indexer_api::Hash;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use zolana_ring_client::{
     records::{path_of, MemberOpeningRead, RecordPoolCheck, RecordPoolRead},
     resolver::tracking_record,
-    rpc::{
-        method::{GetRecordUpdateStatus, SubmitRecordUpdate},
-        GetListSaltResponse, GetRecordUpdateStatusRequest, ReaderAccess, RecordUpdate,
-        RecordUpdateEntry, RecordUpdateId, RecordUpdateStatus, SubmitRecordUpdateRequest,
-        WalletGrant, AWAITABLE_LISTS,
-    },
-    AsyncRingIndexer, ReaderKey, RecipientResolver, ResolvedRecipient,
+    rpc::{GetListSaltResponse, RecordUpdate, RecordUpdateEntry, SubmitRecordUpdateRequest},
+    AsyncRingIndexer, RecipientResolver, ResolvedRecipient,
 };
 use zolana_ring_indexer::{
     rpc::{
@@ -34,7 +27,7 @@ use zolana_ring_member_registry::{
     Canopy, OpeningCheck, PoolSubject, SharedPath, SharedProof, TrackingOpening, TrackingPool,
     TrackingRecord,
 };
-use zolana_ring_policy::{ListChange, ListSet, ListWrite, Member, MemberError, MintPolicy, Writer};
+use zolana_ring_policy::{ListWrite, Member, MemberError, MintPolicy, Writer};
 
 use crate::{submission::BoundRoot, CustomRing, RingError, REDACTED};
 
@@ -504,15 +497,6 @@ impl OwnerListSalts {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OwnerPrivateClear {
-    pub owner: Address,
-    pub salts: OwnerListSalts,
-    pub lists: ListSet,
-}
-
-impl ZeroizeOnDrop for OwnerPrivateClear {}
-
 /// The writer refuses the update after `valid_until_slot`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordUpdateTarget {
@@ -537,7 +521,6 @@ pub struct WalletRecordUpdate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthorityRecordUpdate {
     draft: UpdateDraft,
-    unregistered_owners: Vec<Address>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -545,21 +528,6 @@ struct UpdateDraft {
     target: RecordUpdateTarget,
     signer: Address,
     entries: Vec<RecordUpdateEntry>,
-    awaited_lists: ListSet,
-}
-
-#[async_trait]
-pub trait RecordUpdateService: Send + Sync {
-    /// Refuses before sending a request whose signature does not verify.
-    async fn submit_record_update(
-        &self,
-        request: SubmitRecordUpdateRequest,
-    ) -> Result<RecordUpdateId, RingError>;
-
-    async fn get_record_update_status(
-        &self,
-        update_id: RecordUpdateId,
-    ) -> Result<RecordUpdateStatus, RingError>;
 }
 
 impl WalletRecordUpdate {
@@ -580,33 +548,6 @@ impl WalletRecordUpdate {
         Ok(self)
     }
 
-    /// Sets or clears the `Reader` list of the record [`Member::wallet_grant`] keys.
-    pub fn with_wallet_grant(
-        mut self,
-        reader: ReaderKey,
-        access: ReaderAccess,
-    ) -> Result<Self, RingError> {
-        let reader = reader.member()?;
-        Member::wallet_grant(&self.member, &reader)?;
-        self.draft
-            .entries
-            .push(RecordUpdateEntry::WalletGrant(WalletGrant {
-                wallet: Hash(*self.member.as_bytes()),
-                reader: Hash(*reader.as_bytes()),
-                access,
-            }));
-        Ok(self)
-    }
-
-    /// Puts the update pending list approval, the writer sends none of its writes until a policy authority update sets every list of `lists` on the member.
-    pub fn awaiting_list_approval(mut self, lists: ListSet) -> Result<Self, RingError> {
-        if lists.is_empty() || !lists.is_subset(AWAITABLE_LISTS) {
-            return Err(RingError::InvalidAwaitedLists);
-        }
-        self.draft.awaited_lists = lists;
-        Ok(self)
-    }
-
     pub fn sign<S: Signer + ?Sized>(
         self,
         wallet: &S,
@@ -619,7 +560,6 @@ impl AuthorityRecordUpdate {
     pub const fn new(target: RecordUpdateTarget, authority: Address) -> Self {
         Self {
             draft: UpdateDraft::new(target, authority),
-            unregistered_owners: Vec::new(),
         }
     }
 
@@ -629,30 +569,6 @@ impl AuthorityRecordUpdate {
         self.draft
             .entries
             .push(RecordUpdateEntry::Write(list_write(member, write)));
-        Ok(self)
-    }
-
-    pub fn with_owner_private_clear(mut self, clear: OwnerPrivateClear) -> Result<Self, RingError> {
-        let write = ListChange {
-            set: ListSet::EMPTY,
-            clear: clear.lists,
-        }
-        .check()
-        .map_err(|_| RingError::EmptyListWrite)?;
-        check_writer(write, Writer::Authority)?;
-        if !clear.lists.is_subset(ListSet::PRIVATE_LISTS) {
-            return Err(RingError::PrivateWritesMismatch);
-        }
-        for target in clear.salts.revocation_members(clear.owner)? {
-            self.draft
-                .entries
-                .push(RecordUpdateEntry::Write(list_write(target.member, write)));
-            if let Some(owner) = target.unregistered_owner() {
-                if !self.unregistered_owners.contains(&owner) {
-                    self.unregistered_owners.push(owner);
-                }
-            }
-        }
         Ok(self)
     }
 
@@ -674,11 +590,7 @@ impl AuthorityRecordUpdate {
         self,
         authority: &S,
     ) -> Result<SubmitRecordUpdateRequest, RingError> {
-        let signed = self.draft.sign(authority)?;
-        Ok(match self.unregistered_owners.is_empty() {
-            true => signed,
-            false => signed.with_unregistered_owners(&self.unregistered_owners),
-        })
+        self.draft.sign(authority)
     }
 }
 
@@ -688,7 +600,6 @@ impl UpdateDraft {
             target,
             signer,
             entries: Vec::new(),
-            awaited_lists: ListSet::EMPTY,
         }
     }
 
@@ -706,37 +617,9 @@ impl UpdateDraft {
             ring: self.target.ring.program_id().into(),
             entries: self.entries,
             valid_until_slot: self.target.valid_until_slot,
-            awaited_lists: self.awaited_lists.record_bits(),
+            awaited_lists: 0,
         }
         .sign(self.target.registry, signer)?)
-    }
-}
-
-#[async_trait]
-impl RecordUpdateService for SprApi {
-    async fn submit_record_update(
-        &self,
-        request: SubmitRecordUpdateRequest,
-    ) -> Result<RecordUpdateId, RingError> {
-        let id = request.verify()?;
-        let response = self
-            .call::<SubmitRecordUpdate>(request)
-            .await
-            .map_err(|error| ClientError::Rpc(error.to_string()))?;
-        if response.update_id != id {
-            return Err(RingError::RecordUpdateIdMismatch);
-        }
-        Ok(id)
-    }
-
-    async fn get_record_update_status(
-        &self,
-        update_id: RecordUpdateId,
-    ) -> Result<RecordUpdateStatus, RingError> {
-        Ok(self
-            .call::<GetRecordUpdateStatus>(GetRecordUpdateStatusRequest { update_id })
-            .await
-            .map_err(|error| ClientError::Rpc(error.to_string()))?)
     }
 }
 

@@ -91,7 +91,6 @@ pub use crate::{
     },
     enrollment::{
         Enroll, EnrolledLeaf, EnrollmentRead, EnrollmentService, OwnedChange, OwnerEnrollment,
-        WriteOwnerGrant,
     },
     error::RingError,
     merge::{
@@ -107,13 +106,12 @@ pub use crate::{
         DelegateSource, DelegateTransfer, DelegateTransferInput, DelegateWithdrawal, Delegated,
         EntrySpend, NoteData, Owner, OwnerExposure, ProgramCommitment, ProgramPlan,
         ProvenRingTransfer, PublicOwnerTransfer, PublicOwners, Rail, RailKind, ReadCache, Relayed,
-        RelayedTransfer, RelayedTransferInput, RingPayment, RingSender, RingTransfer, SealRow,
-        TransferKey, UnsignedRelay, VouchSigner,
+        RelayedTransferInput, RingPayment, RingSender, RingTransfer, SealRow, TransferKey,
+        UnsignedRelay, VouchSigner,
     },
     records::{
-        AuthorityRecordUpdate, MemberRecords, OwnerListSalts, OwnerPrivateClear, OwnerSaltCheck,
-        PrivateKeyKind, PrivateListMember, RecordUpdateService, RecordUpdateTarget,
-        SaltedOwnerCheck, WalletRecordUpdate,
+        AuthorityRecordUpdate, MemberRecords, OwnerListSalts, OwnerSaltCheck, PrivateKeyKind,
+        PrivateListMember, RecordUpdateTarget, SaltedOwnerCheck, WalletRecordUpdate,
     },
     relay::{
         DelegateRequester, PendingSignature, PreparedAuthorityTransfer, PreparedRelay, RelaySent,
@@ -128,7 +126,7 @@ pub use crate::{
     signature_history::SignatureHistory,
     storage::{
         EnrollBatch, InitializeStorage, PrivateStorageWrite, ProvenEnrollBatch, ProvenPrivateWrite,
-        SaltedOwnerWrite, StorageApplyProof, UpdateStorage, UpdateStorageAuthority,
+        SaltedOwnerWrite, StorageApplyProof, UpdateStorage,
     },
     submission::{
         live_registry, LocalSigners, RingOperation, RingSubmission, SettledSubmission,

@@ -321,16 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn dev_uses_the_localnet_command() {
-        assert!(matches!(
-            Cli::try_parse_from(["zolana-ring", "dev", "--no-start"])
-                .unwrap()
-                .command,
-            Command::Localnet(LocalnetArgs { no_start: true })
-        ));
-    }
-
-    #[test]
     fn deploy_takes_its_binary_on_the_command_or_on_close_buffer_never_both() {
         let parse = |args: &[&str]| {
             let argv = ["zolana-ring", "deploy"].iter().chain(args).copied();

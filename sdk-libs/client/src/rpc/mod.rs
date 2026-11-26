@@ -133,7 +133,6 @@ pub struct HealthResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_payer_pubkey: Option<SerializablePubkey>,
     /// Signs and pays every `EnrollBatch`, null without the enrollment writer.
-    #[serde(default)]
     pub enrollment_writer_pubkey: Option<SerializablePubkey>,
     pub relay: bool,
     pub record_writer: bool,
@@ -227,9 +226,7 @@ pub struct GetDecryptedTransactionsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ring_program_id: Option<SerializablePubkey>,
     /// Opaque indexer cursor.
-    #[serde(default)]
     pub cursor: Option<Base64String>,
-    #[serde(default)]
     pub limit: Option<Limit>,
     /// Narrows the read to one wallet's rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]

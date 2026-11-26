@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 use super::*;
 use crate::{
     AuditedEntryInput, OutputPayloadError,
-    OutputPayloadErrorKind::{self, Commitment, Disclosure, Payload},
+    OutputPayloadErrorKind::{self, Commitment, Disclosure},
 };
 
 fn temp_dir(label: &str) -> PathBuf {
@@ -526,13 +526,13 @@ fn a_wallet_activity_page_keeps_its_wire_json() {
 fn payload_errors_keep_the_encoding_of_the_shared_vector() {
     // A new kind fails to compile here, `kinds` and the vector must then name it.
     let named = |kind: OutputPayloadErrorKind| match kind {
-        Disclosure | Commitment | Payload => kind,
+        Disclosure | Commitment => kind,
     };
-    let kinds = [Disclosure, Commitment, Payload].map(named);
+    let kinds = [Disclosure, Commitment].map(named);
     let slots = [(2, Commitment), (5, Disclosure)]
         .map(|(slot_index, kind)| DecryptedPayloadError { slot_index, kind });
     let written = serde_json::json!({
-        "description": "Payload errors of a DecryptedTransaction as the ring rpc serializes them. kinds names every OutputPayloadErrorKind, payload keeps the record in outputs. commitment_and_disclosure holds the errors of one transfer whose slot 2 record opens to another commitment and whose slot 5 record holds a value outside the field. Written by the sdk-libs/client rpc tests and decoded by the TypeScript RingRpc tests.",
+        "description": "Payload errors of a DecryptedTransaction as the ring rpc serializes them. kinds names every OutputPayloadErrorKind, a commitment error of a keyed record keeps the record in outputs. commitment_and_disclosure holds the errors of one transfer whose slot 2 record opens to another commitment and whose slot 5 record holds a value outside the field. Written by the sdk-libs/client rpc tests and decoded by the TypeScript RingRpc tests.",
         "kinds": kinds,
         "commitment_and_disclosure": slots,
     });

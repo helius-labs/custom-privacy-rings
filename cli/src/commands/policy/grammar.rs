@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use solana_address::Address;
 use thiserror::Error;
 use zolana_ring_policy::{
-    Guard, ListId, ListSet, Member, MemberError, MintPolicy, Mode, OutflowLimit, Rule, RuleSource,
-    RuleTable, RuleTableError, Subject, Writer, MAX_RULES,
+    Guard, ListId, ListSet, Member, MemberError, MintPolicy, Mode, OutflowLimit, Rule, RuleTable,
+    RuleTableError, Subject, Writer, MAX_RULES,
 };
 
 use crate::{
@@ -551,7 +551,9 @@ impl PolicyRows {
                 return Err(refused("outflow limits must name distinct assets"));
             }
             if limit.cap == 0 && limit.cosign_above == 0 {
-                return Err(refused(RuleTableError::LimitWithoutBound.message()));
+                return Err(refused(
+                    "an outflow limit needs a cap or a cosign threshold",
+                ));
             }
             let policy = policies.entry(*limit.asset()).or_default();
             policy.cap = limit.cap;
@@ -570,23 +572,15 @@ impl PolicyRows {
     }
 }
 
-/// A refusal names the first row that triggers it, a limit refusal names the limits.
+/// A refusal names the first row that triggers it.
 pub(crate) fn compile_rows(rows: &PolicyRows) -> Result<RuleTable, PolicyError> {
-    rows.build(rows.rules.len()).map_err(|error| {
-        let message = error.message();
-        match error {
-            RuleTableError::TooManyOutflowLimits
-            | RuleTableError::ZeroLimitAsset
-            | RuleTableError::DuplicateLimitAsset
-            | RuleTableError::LimitWithoutBound => PolicyError::LimitsRefused { message },
-            _ => PolicyError::Refused {
-                rule: (0..rows.rules.len())
-                    .find(|rule| rows.build(rule + 1) == Err(error))
-                    .unwrap_or(rows.rules.len().saturating_sub(1)),
-                message,
-            },
-        }
-    })
+    rows.build(rows.rules.len())
+        .map_err(|error| PolicyError::Refused {
+            rule: (0..rows.rules.len())
+                .find(|rule| rows.build(rule + 1) == Err(error))
+                .unwrap_or(rows.rules.len().saturating_sub(1)),
+            message: error.message(),
+        })
 }
 
 /// One sentence per outflow limit, the wording every listing shares.
@@ -608,16 +602,14 @@ pub fn describe(rule: &Rule) -> String {
         Subject::Sender => "the sender",
         Subject::Asset => "each asset",
     };
-    let condition = match rule.source {
-        RuleSource::Lists { .. } => rule
-            .alternatives()
-            .map(|(list_id, mode)| match mode {
-                Mode::Present => format!("must be on the {} list", list_id.name()),
-                Mode::Absent => format!("must not be on the {} list", list_id.name()),
-            })
-            .collect::<Vec<_>>()
-            .join(" or "),
-    };
+    let condition = rule
+        .alternatives()
+        .map(|(list_id, mode)| match mode {
+            Mode::Present => format!("must be on the {} list", list_id.name()),
+            Mode::Absent => format!("must not be on the {} list", list_id.name()),
+        })
+        .collect::<Vec<_>>()
+        .join(" or ");
     match rule.guard {
         Guard::Always => format!("{subject} {condition}"),
         Guard::AboveAmount(amount) => {

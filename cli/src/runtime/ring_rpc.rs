@@ -438,13 +438,15 @@ mod tests {
 
     const SERVICE: Address = Address::new_from_array([7u8; 32]);
 
-    fn gateway(status: u16) -> (String, thread::JoinHandle<(String, serde_json::Value)>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
-        let url = format!(
-            "http://{}/v1/zolana/ring/?api-key=secret&tenant=a%20b",
-            listener.local_addr().expect("address")
-        );
-        let handle = thread::spawn(move || {
+    const RESULT_TRUE: &str = r#"{"jsonrpc":"2.0","id":1,"result":true}"#;
+
+    /// Answers one request with `head` and a JSON `body`, returns its request line and body.
+    fn answer_once(
+        listener: TcpListener,
+        head: String,
+        body: String,
+    ) -> thread::JoinHandle<(String, serde_json::Value)> {
+        thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("request");
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
@@ -466,14 +468,22 @@ mod tests {
                     }
                 }
             }
-            let mut body = vec![0; content_length.expect("content length")];
-            reader.read_exact(&mut body).expect("request body");
-            let body = serde_json::from_slice(&body).expect("JSON request");
-            let response = r#"{"jsonrpc":"2.0","id":1,"result":true}"#;
-            write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).expect("response");
-            (request_line, body)
-        });
-        (url, handle)
+            let mut request = vec![0; content_length.expect("content length")];
+            reader.read_exact(&mut request).expect("request body");
+            let request = serde_json::from_slice(&request).expect("JSON request");
+            write!(stream, "HTTP/1.1 {head}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).expect("response");
+            (request_line, request)
+        })
+    }
+
+    fn gateway(status: u16) -> (String, thread::JoinHandle<(String, serde_json::Value)>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let url = format!(
+            "http://{}/v1/zolana/ring/?api-key=secret&tenant=a%20b",
+            listener.local_addr().expect("address")
+        );
+        let server = answer_once(listener, format!("{status} Test"), RESULT_TRUE.to_owned());
+        (url, server)
     }
 
     #[test]
@@ -697,32 +707,11 @@ mod tests {
             sink.set_nonblocking(true).expect("nonblocking");
             let sink_url = format!("http://{}/sink", sink.local_addr().expect("sink addr"));
             let origin = format!("http://{}", redirector.local_addr().expect("origin addr"));
-            let server = thread::spawn(move || {
-                let (mut stream, _) = redirector.accept().expect("request");
-                let mut reader = BufReader::new(&stream);
-                let mut content_length = 0usize;
-                loop {
-                    let mut line = String::new();
-                    reader.read_line(&mut line).expect("header");
-                    if line == "\r\n" {
-                        break;
-                    }
-                    if let Some((name, value)) = line.split_once(':') {
-                        if name.eq_ignore_ascii_case("content-length") {
-                            content_length = value.trim().parse().expect("length");
-                        }
-                    }
-                }
-                let mut body = vec![0; content_length];
-                reader.read_exact(&mut body).expect("body");
-                let payload = r#"{"jsonrpc":"2.0","id":1,"result":true}"#;
-                write!(
-                    stream,
-                    "HTTP/1.1 {status} Redirect\r\nLocation: {sink_url}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                )
-                .expect("redirect response");
-            });
+            let server = answer_once(
+                redirector,
+                format!("{status} Redirect\r\nLocation: {sink_url}"),
+                RESULT_TRUE.to_owned(),
+            );
             let result = RingRpcClient::new(&origin)
                 .expect("client")
                 .call::<bool>(RING_STATUS, json!({}));
@@ -750,31 +739,7 @@ mod tests {
             }
         })
         .to_string();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("request");
-            let mut reader = BufReader::new(&stream);
-            let mut content_length = 0usize;
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).expect("header");
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some((name, value)) = line.split_once(':') {
-                    if name.eq_ignore_ascii_case("content-length") {
-                        content_length = value.trim().parse().expect("length");
-                    }
-                }
-            }
-            let mut req = vec![0; content_length];
-            reader.read_exact(&mut req).expect("body");
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .expect("response");
-        });
+        let server = answer_once(listener, "200 OK".to_owned(), body);
         let writer = solana_keypair::Keypair::new();
         let target = ReadTarget {
             cluster: [1; 32],

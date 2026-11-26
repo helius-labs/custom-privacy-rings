@@ -72,14 +72,12 @@ pub use crate::viewing_history::{
     AdvancedTag, StreamCounter, ViewingHistory, ViewingKeyEntry, PENDING_RETENTION,
 };
 pub use crate::{
-    confidential::{
-        open_ring_confidential, RingConfidentialNotes, RingConfidentialScan, RingFullScan,
-    },
+    confidential::{RingConfidentialNotes, RingConfidentialScan, RingFullScan},
     decrypt::{FramedRow, SealedRecipientKeys, TransactionAudit},
     disclosure::{AuditEnvelope, AuditStreamSeal, OpenedAudit, SealedAuditStream},
     encryption::{
-        auditor_view_tag, open_merge_record, open_owned_merge_record, MergeRecordSeal,
-        NullifierKeyEnvelope, SealedMergeCiphertexts, SealedMergeOpening, SealedNullifierKey,
+        auditor_view_tag, open_merge_record, MergeRecordSeal, NullifierKeyEnvelope,
+        SealedMergeCiphertexts, SealedMergeOpening, SealedNullifierKey,
     },
     error::{AnonymousError, AuditError, AuditFailureKind, RowDisposition},
     exposed_notes::{

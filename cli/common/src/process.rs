@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{bail, ensure, Context, Result};
 
-use crate::{AtomicFileMode, AtomicWrite};
+use zolana_secret_file::{replace, Visibility};
 
 pub const PROCESS_SCOPE_ENV: &str = "ZOLANA_PROCESS_SCOPE_DIR";
 pub const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(3);
@@ -169,12 +169,11 @@ fn record_owned_process(scope: &Path, name: &str, pid: u32) -> Result<()> {
     let pid = pid.to_string();
     let identity =
         process_identity(&pid).context("spawned service exited before ownership was recorded")?;
-    AtomicWrite {
-        path: &path,
-        bytes: format!("{pid}\n{identity}\n").as_bytes(),
-        mode: AtomicFileMode::OwnerOnly,
-    }
-    .write()
+    replace(
+        &path,
+        format!("{pid}\n{identity}\n").as_bytes(),
+        Visibility::Secret,
+    )
     .context("record task-owned service")
 }
 

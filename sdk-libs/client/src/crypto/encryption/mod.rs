@@ -18,18 +18,12 @@ type Result<T> = core::result::Result<T, AuditError>;
 
 mod merge_record;
 pub use merge_record::{
-    open_merge_record, open_owned_merge_record, MergeRecordSeal, SealedMergeCiphertexts,
-    SealedMergeOpening,
+    open_merge_record, MergeRecordSeal, SealedMergeCiphertexts, SealedMergeOpening,
 };
 
 /// The auditor key's u-coordinate, the tag the auditor scans for.
 pub fn auditor_view_tag(pk: &X25519Pubkey) -> [u8; 32] {
     pk.u()
-}
-
-#[derive(Clone, Copy)]
-pub(crate) enum StreamSchedule {
-    Ring(&'static [u8; 9]),
 }
 
 /// Binds the X25519 output to both keys that produced it, in the order `envelope.go` hashes.
@@ -52,95 +46,28 @@ pub(crate) fn shared_secret(
     ])?))
 }
 
-/// Seals `data` from an ephemeral key to the auditor.
-pub(crate) fn seal_stream(
-    ephemeral: &X25519Keypair,
-    auditor: &X25519Pubkey,
-    schedule: StreamSchedule,
-    data: &mut [u8],
-) -> Result<()> {
-    apply_stream(&*sealing_secret(ephemeral, auditor)?, schedule, data)
-}
-
-pub(crate) fn open_stream(
-    auditor: &X25519Keypair,
-    ephemeral: &X25519Pubkey,
-    schedule: StreamSchedule,
-    data: &mut [u8],
-) -> Result<()> {
-    apply_stream(&*opening_secret(auditor, ephemeral)?, schedule, data)
-}
-
-pub(crate) fn sealing_ring_stream(
-    ephemeral: &X25519Keypair,
-    auditor: &X25519Pubkey,
-    label: &[u8; 9],
-) -> Result<RingStream> {
-    Ok(RingStream::new(
-        &*sealing_secret(ephemeral, auditor)?,
-        label,
-    )?)
-}
-
-/// Reads each region of a sealed stream at its own counter.
-pub(crate) fn opening_ring_stream(
-    auditor: &X25519Keypair,
-    ephemeral: &X25519Pubkey,
-    label: &[u8; 9],
-) -> Result<RingStream> {
-    Ok(RingStream::new(
-        &*opening_secret(auditor, ephemeral)?,
-        label,
-    )?)
-}
-
 /// A resend repeats the transfer's key, the salt keeps its keystream apart.
-pub(crate) fn sealing_salted_stream(
-    key: &X25519Keypair,
-    auditor: &X25519Pubkey,
+pub(crate) fn salted_stream(
+    secret: &[u8; 32],
     salt: &[u8; 16],
     label: &[u8; 9],
 ) -> Result<RingStream> {
-    let secret = salted(&*sealing_secret(key, auditor)?, salt)?;
-    Ok(RingStream::new(&secret, label)?)
+    let salted = Zeroizing::new(Poseidon::hashv(&[secret, &right_align(salt)])?);
+    Ok(RingStream::new(&salted, label)?)
 }
 
-pub(crate) fn opening_salted_stream(
-    auditor: &X25519Keypair,
-    key: &X25519Pubkey,
-    salt: &[u8; 16],
-    label: &[u8; 9],
-) -> Result<RingStream> {
-    let secret = salted(&*opening_secret(auditor, key)?, salt)?;
-    Ok(RingStream::new(&secret, label)?)
-}
-
-fn salted(secret: &[u8; 32], salt: &[u8; 16]) -> Result<Zeroizing<[u8; 32]>> {
-    Ok(Zeroizing::new(Poseidon::hashv(&[
-        secret,
-        &right_align(salt),
-    ])?))
-}
-
-fn sealing_secret(
+pub(crate) fn sealing_secret(
     ephemeral: &X25519Keypair,
     auditor: &X25519Pubkey,
 ) -> Result<Zeroizing<[u8; 32]>> {
     shared_secret(&*ephemeral.ecdh(auditor)?, &ephemeral.pubkey(), auditor)
 }
 
-fn opening_secret(
+pub(crate) fn opening_secret(
     auditor: &X25519Keypair,
     ephemeral: &X25519Pubkey,
 ) -> Result<Zeroizing<[u8; 32]>> {
     shared_secret(&*auditor.ecdh(ephemeral)?, ephemeral, &auditor.pubkey())
-}
-
-fn apply_stream(secret: &[u8; 32], schedule: StreamSchedule, data: &mut [u8]) -> Result<()> {
-    match schedule {
-        StreamSchedule::Ring(label) => symmetric_apply_audit(secret, label, data)?,
-    }
-    Ok(())
 }
 
 /// A nullifier key and list salt sealed to the ring auditor, plaintext bytes 0 and 32 are the pads the circuit pins.
@@ -175,10 +102,9 @@ impl NullifierKeyEnvelope {
         let (secret, salt) = ciphertext.split_at_mut(32);
         secret.copy_from_slice(&*Zeroizing::new(right_align(&nullifier_key.secret())));
         salt.copy_from_slice(list_salt);
-        seal_stream(
-            &ephemeral,
-            auditor_pk,
-            StreamSchedule::Ring(REGISTER_KEY_LABEL),
+        symmetric_apply_audit(
+            &*sealing_secret(&ephemeral, auditor_pk)?,
+            REGISTER_KEY_LABEL,
             &mut *ciphertext,
         )?;
         Ok(Self {
@@ -214,10 +140,9 @@ impl SealedNullifierKey {
         auditor: &X25519Keypair,
     ) -> Result<Zeroizing<[u8; REGISTER_KEY_CIPHERTEXT_LEN]>> {
         let mut plaintext = Zeroizing::new(self.ciphertext);
-        open_stream(
-            auditor,
-            &self.eph_pk,
-            StreamSchedule::Ring(REGISTER_KEY_LABEL),
+        symmetric_apply_audit(
+            &*opening_secret(auditor, &self.eph_pk)?,
+            REGISTER_KEY_LABEL,
             &mut *plaintext,
         )?;
         if plaintext[0] != 0 || plaintext[32] != 0 {
