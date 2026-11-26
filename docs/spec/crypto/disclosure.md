@@ -24,21 +24,21 @@ Each published slot carries an owner tag. A non-exit slot's tag is an unproved h
 | Payment to a payment request, anonymous frame | low 8 bytes of the request's `recipient_request_view_tag` |
 | Payment with no request, anonymous frame | low 8 bytes of the recipient's `recipient_bootstrap_view_tag`, its `viewing_u` |
 | Payment to the paying wallet's current viewing key, anonymous frame | low 8 bytes of the wallet's `sender_view_tag(tx_count)` |
-| Change, anonymous frame | low 8 bytes of the paying wallet's `sender_view_tag(tx_count)` |
+| First change slot, anonymous frame | low 8 bytes of the paying wallet's `sender_view_tag(tx_count)` |
 | Dummy, anonymous frame | 8 random bytes |
 | Exit | SPP's 32-byte owner tag, which SPP's proof holds to the exit's owner |
 
 `sender_view_tag`, `recipient_request_view_tag` and `recipient_bootstrap_view_tag` are zolana's [View Tags](../../../zolana/docs/spec.md#view-tags), and the ring adds no derivation. `tx_count` is the paying wallet's sender index under its current viewing key. No slot takes zolana's `recipient_shared_view_tag`, and no record names its sender, so no payment pairs a sender with its recipient.
 
-The builder of an anonymous frame publishes each tag once. A slot whose tag an earlier slot of the frame publishes takes 8 random bytes in its place. Such slots are a second change slot, a second payment under the same tag and a note the wallet pays itself beside its change. The indexer returns every slot of a transaction for one matching tag, so one slot leads the reader to all of them. Equal tags would show an observer that two slots share an owner. Across transactions a tag repeats, see [limits of the tag read](../../design/audit-and-recovery.md#limits-of-the-tag-read).
+The SDKs publish each tag of an anonymous frame once. A slot whose tag an earlier slot of the frame publishes takes 8 random bytes in its place. Such slots are a second change slot, a second payment under the same tag and a note the wallet pays itself beside its change. The indexer returns every slot of a transaction for one matching tag, so one slot leads the reader to all of them. Equal tags would show an observer that two slots share an owner. Across transactions a tag repeats, see [limits of the tag read](../../design/audit-and-recovery.md#limits-of-the-tag-read).
 
-The paying wallet chooses every non-exit tag, and a delegate's request chooses the tag of each payment it moves. A transfer built without its wallet's tags takes the bootstrap tag for each payment and random bytes for each change slot. The SDKs build such a transfer only when it spends a ring note. A slot that returns change to a key whose tags the builder does not hold publishes random bytes. A deposit's fresh sender and the sources of a delegate move are such keys. A delegate's payment to the source whose change leads the frame sits among that change, and one change slot publishes its tag.
+The paying wallet chooses every non-exit tag, and a delegate's request chooses the tag of each payment it moves. A transfer built without its wallet's sender tag publishes each payment's request tag, or with no request its recipient's bootstrap tag. Each of its change slots publishes random bytes. The SDKs build such a transfer only when it spends a ring note. A slot that returns change to a key whose tags the builder does not hold publishes random bytes. A deposit's fresh sender and the sources of a delegate move are such keys. A delegate's payment to the source whose change leads the frame sits among that change, and one change slot publishes its tag.
 
 A tag only selects a candidate, and the rebuilt commitment proves ownership. A frame therefore spends 8 bytes on each tag under the 4,096-byte transaction ceiling. SPP and the indexer hold a non-exit tag as 24 zero bytes and its 8 tag bytes. A reader asks for that form, and a query for a full 32-byte zolana tag matches no ring slot. Two unrelated tags can agree in 8 bytes. Such a match costs the reader the trial opens of that transaction, each ring body under each held key.
 
 A payment request is the text `zolana:<address>?amount=&mint=&label=&tag=`, with `<address>` the recipient's ring address in base58. `tag` is 32 bytes in base58, and the paying wallet publishes its low 8 bytes. The SDK mints it as 24 zero bytes and the low 8 bytes of the recipient's request tag. The query part is unauthenticated.
 
-A wrong tag hides a note from its recipient's sync. A full scan tries every body without a tag and finds a note sealed to a key the reader holds. [Wallet scanning](../../design/audit-and-recovery.md#wallet-scanning) states how a reader finds its notes.
+A wrong tag hides a note from its recipient's sync, unless another read of that sync returns its transaction. A full scan tries every body without a tag and finds a note sealed to a key the reader holds. [Wallet scanning](../../design/audit-and-recovery.md#wallet-scanning) states how a reader finds its notes.
 
 ## Auditor message
 

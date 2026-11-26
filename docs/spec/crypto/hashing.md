@@ -63,7 +63,7 @@ The sender seals slot `i` to its recipient key `u = V_i`. The recipient rebuilds
 
 A dummy slot seals its all-zero record to `V_i`. A relay that holds `tx_viewing_sk` rederives every dummy key, and no wire carries them. No proof checks the derivation, the auditor reads `V_i` from its stream.
 
-No slot tag takes an output of a slot secret. [Discovery](disclosure.md#discovery) fixes the tag each slot publishes.
+No slot tag derives from a slot secret. [Discovery](disclosure.md#discovery) fixes the tag each slot publishes.
 
 An exit's scheme 3 body keeps zolana's [AES Key derivation](../../../zolana/docs/spec.md#aes-key-derivation), with its output position as the HKDF slot. An anonymous frame's payment and sender tags keep zolana's [View Tags](../../../zolana/docs/spec.md#view-tags). The auditor message takes the auditor's `u` as its tag.
 
