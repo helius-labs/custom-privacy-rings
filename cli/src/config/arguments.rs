@@ -395,9 +395,12 @@ pub struct TransferArgs {
     /// The fewest output slots, dummies fill what the payments and the change leave.
     #[arg(long)]
     pub outputs: Option<usize>,
-    /// Attach the sender's address to each anonymous payment, an unauthenticated claim the recipient must confirm.
-    #[arg(long)]
+    /// Require the sender's address on each anonymous payment, the transfer fails when it is too large to carry the address.
+    #[arg(long, conflicts_with = "no_reply")]
     pub reply: bool,
+    /// Leave the sender's address out of each anonymous payment, by default a transfer with room for it names the sender to each recipient as an unauthenticated claim.
+    #[arg(long)]
+    pub no_reply: bool,
     /// An anonymous ring pays each shielded recipient a default-ring note, the value leaves the ring.
     #[arg(long)]
     pub default_ring: bool,

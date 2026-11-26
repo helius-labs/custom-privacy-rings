@@ -61,6 +61,7 @@ The confidential mode and the anonymous mode differ at the sender and the recipi
 - The auditor opens every output record and merge record. With an owner's sealed secret it links that owner's spends, see [nullifier secrets](audit-and-recovery.md#nullifier-secrets).
 - The auditor reads each owner's list salt from the enrollment ciphertext. A curator learns the salt of each owner it writes for, and the ring salt when it writes for an unenrolled owner.
 - A zero-key note's sender computes its nullifier and sees when the note is spent.
+- By default the recipient of a CLI `transfer` on an anonymous ring learns the sender's viewing key, owner key and nullifier key from the reply. Enrollment publishes that viewing key with its owner, so the recipient learns which member paid, as an unauthenticated claim. `transfer --no-reply` leaves the reply out, and the CLI leaves it out of a transfer that does not fit with it.
 - A reader sees what its grant covers, blindings included, and keeps it after a revocation.
 - Ring RPC as relayer receives every secret the proofs need. It links the owner's spends and opens the outputs, so a relayed transfer is anonymous only toward a trusted Ring RPC.
 - Ring RPC as co-signer sees each owner's charged outflow of each asset. It reads them from the frame with the auditor key.
