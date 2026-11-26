@@ -13,22 +13,19 @@ use crate::{tag, CustomRingError, ParsedTransact, RingMode, RingRail, RingTransa
 #[cfg(any(feature = "cpi", test))]
 use {
     crate::{
-        cosign::{CoSignOperation, MAX_CO_SIGNERS},
-        funder_account_position, CoSignScope, CoSigner, InputTrees, RingAccount, RingPolicy,
-        RootRead, MAX_TRANSFER_ACCOUNTS, RING_TRANSACT_ACCOUNT_PREFIX_LEN, TRANSACT_PAYER_INDEX,
+        cosign::CoSignRequirement, CoSigner, RingAccount, RingPolicy, TransferLayout,
+        TransferPrefix, MAX_TRANSFER_ACCOUNTS,
     },
     arrayvec::ArrayVec,
     solana_address::Address,
     solana_program_error::ProgramError,
-    spr_interface::instruction::instruction_data::settlement_accounts,
 };
 
-#[cfg(any(feature = "cpi", test))]
-const INSTRUCTIONS_SYSVAR_ID: Address =
-    Address::from_str_const("Sysvar1nstructions1111111111111111111111111");
-
 /// What a calling program binds its own proof to ahead of the call.
-pub struct TransferFrame<'a>(ParsedTransact<'a>);
+pub struct TransferFrame<'a> {
+    source: &'a [u8],
+    parsed: ParsedTransact<'a>,
+}
 
 impl<'a> TransferFrame<'a> {
     /// `data` from the `TRANSFER` tag.
@@ -36,15 +33,23 @@ impl<'a> TransferFrame<'a> {
         let frame = data
             .strip_prefix(&[tag::TRANSFER])
             .ok_or(CustomRingError::InvalidInstructionData)?;
-        RingTransactData::parse(frame, RingRail::transfer(mode)).map(Self)
+        Ok(Self {
+            source: data,
+            parsed: RingTransactData::parse(frame, RingRail::transfer(mode))?,
+        })
+    }
+
+    /// The bytes `parse` read, the call forwards them.
+    pub const fn data(&self) -> &'a [u8] {
+        self.source
     }
 
     pub fn private_tx_hash(&self) -> &'a [u8; 32] {
-        self.0.data().private_tx_hash
+        self.parsed.data().private_tx_hash
     }
 
     pub fn interface_transfers(&self) -> &[InterfaceTransfer] {
-        &self.0.data().interface_transfers
+        &self.parsed.data().interface_transfers
     }
 }
 
@@ -57,166 +62,109 @@ trait TransferCpiAccount {
 }
 
 #[cfg(any(feature = "cpi", test))]
+type SignerFlags = ArrayVec<bool, MAX_TRANSFER_ACCOUNTS>;
+
+#[cfg(any(feature = "cpi", test))]
 #[must_use]
-struct TransferSignerCheck<'a> {
+struct TransferSignerCheck<'a, A> {
     ring_program: &'a Address,
     owner: &'a Address,
-    data: &'a [u8],
+    accounts: &'a [A],
+    flags: SignerFlags,
 }
 
 #[cfg(any(feature = "cpi", test))]
-impl TransferSignerCheck<'_> {
-    #[inline(never)]
-    fn signers<A: TransferCpiAccount>(
-        self,
-        accounts: &[A],
-    ) -> Result<ArrayVec<bool, MAX_TRANSFER_ACCOUNTS>, ProgramError> {
-        if self.data.first() != Some(&tag::TRANSFER) {
-            return Err(CustomRingError::InvalidInstructionData.into());
-        }
-        if accounts.len() > MAX_TRANSFER_ACCOUNTS {
-            return Err(CustomRingError::TooManyAccounts.into());
-        }
-        let ring_account = accounts.first().ok_or(ProgramError::NotEnoughAccountKeys)?;
-        let (frame, registries_len, mut requirement) =
-            read_ring_account::<RingPolicy, _, _>(self.ring_program, ring_account, |ring| {
-                let mode = ring.mode()?;
-                let frame = TransferFrame::parse(self.data, mode)?;
-                let tx = frame.0.data();
-                let read = RootRead::transfer(ring, false);
-                let registries_len = usize::from(ring.own_registry(read).is_some())
-                    + usize::from(ring.curator_registry(read).is_some())
-                    + 1;
-                let public_legs =
-                    tx.interface_transfers
-                        .iter()
-                        .fold(CoSignScope::NONE, |classes, transfer| {
-                            classes
-                                | match transfer.is_deposit() {
-                                    true => CoSignScope::DEPOSITS,
-                                    false => CoSignScope::WITHDRAWALS,
-                                }
-                        });
-                let requirement = CoSignOperation {
-                    spends_note: !tx.no_spend,
-                    public_legs,
-                    approval: tx.approval,
-                }
-                .demand()
-                .requirement(ring);
-                Ok((frame, registries_len, requirement))
-            })?;
+impl<A: TransferCpiAccount> TransferPrefix for TransferSignerCheck<'_, A> {
+    type Error = ProgramError;
 
-        let mut flags = ArrayVec::<bool, MAX_TRANSFER_ACCOUNTS>::new();
-        for account in accounts {
-            flags
-                .try_push(account.is_signer())
-                .map_err(|_| CustomRingError::TooManyAccounts)?;
-        }
-
-        let tx = frame.0.data();
-        let co_signers_start = 1 + registries_len;
-        let prefix = accounts
-            .get(..co_signers_start)
-            .ok_or(ProgramError::NotEnoughAccountKeys)?;
-        // Duplicate CPI accounts share signer privilege across the inner instruction.
-        if prefix
-            .iter()
-            .any(|account| account.address() == self.owner && !account.is_signer())
-        {
-            return Err(ProgramError::InvalidAccountData);
-        }
-
-        let mut cursor = co_signers_start;
-        for _ in 0..MAX_CO_SIGNERS {
-            let Some(current) = requirement else {
-                break;
-            };
-            let [record, signer] = accounts
-                .get(cursor..cursor + 2)
+    fn co_signer_pairs(
+        &mut self,
+        first: usize,
+        requirement: Option<CoSignRequirement>,
+    ) -> Result<usize, ProgramError> {
+        CoSignRequirement::pairs(requirement, |pair, current| {
+            let signer = first + 2 * pair + 1;
+            let [record, slot] = self
+                .accounts
+                .get(signer - 1..=signer)
                 .ok_or(ProgramError::NotEnoughAccountKeys)?
             else {
                 return Err(ProgramError::NotEnoughAccountKeys);
             };
-            if record.address() == self.owner && !record.is_signer() {
-                return Err(CustomRingError::InvalidCoSignerRecord.into());
-            }
-            let cover = read_ring_account::<CoSigner, _, _>(self.ring_program, record, |stored| {
+            let cover = read_ring_account(self.ring_program, record, |stored: &CoSigner| {
                 current.cover(stored)
             })?;
-            if signer.address() == self.owner {
-                if cover.signer != *self.owner || signer.address() == &INSTRUCTIONS_SYSVAR_ID {
+            if slot.address() == self.owner {
+                if cover.signer != *self.owner {
                     return Err(CustomRingError::UnauthorizedCoSigner.into());
                 }
-                flags[cursor + 1] = true;
+                self.flags[signer] = true;
             }
-            requirement = cover.rest;
-            cursor += 2;
-        }
+            Ok(cover)
+        })
+    }
 
-        let spp = accounts
-            .get(cursor..)
-            .ok_or(ProgramError::NotEnoughAccountKeys)?;
-        let window = settlement_accounts(&tx.interface_transfers, tx.circuit(), spp)
-            .ok_or(CustomRingError::InvalidSettlementAccounts)?;
-        let owners = tx.owner_signers(spp, window.len())?;
-        let trees = match tx.input_trees {
-            InputTrees::One(_) => 1,
-            InputTrees::Two { .. } => 2,
+    fn delegate_mint(&mut self, _: usize) -> Result<bool, ProgramError> {
+        Err(CustomRingError::InvalidInstructionData.into())
+    }
+}
+
+#[cfg(any(feature = "cpi", test))]
+impl<'a, A: TransferCpiAccount> TransferSignerCheck<'a, A> {
+    /// `frame` yields the call's frame under the ring's mode.
+    #[inline(never)]
+    fn signers<'f>(
+        ring_program: &'a Address,
+        owner: &'a Address,
+        accounts: &'a [A],
+        frame: impl FnOnce(RingMode) -> Result<TransferFrame<'f>, CustomRingError>,
+    ) -> Result<SignerFlags, ProgramError> {
+        if accounts.len() > MAX_TRANSFER_ACCOUNTS {
+            return Err(CustomRingError::TooManyAccounts.into());
+        }
+        let mut check = Self {
+            ring_program,
+            owner,
+            accounts,
+            flags: accounts.iter().map(A::is_signer).collect(),
         };
-        let owners_start = RING_TRANSACT_ACCOUNT_PREFIX_LEN + trees + tx.nullifiers.len();
-        let owners_end = owners_start + owners.len();
-        let before_owners = spp
-            .get(..owners_start)
-            .ok_or(CustomRingError::InvalidSettlementAccounts)?;
-
-        for (index, account) in before_owners.iter().enumerate() {
-            if account.address() == self.owner && !account.is_signer() {
-                return Err(match index {
-                    TRANSACT_PAYER_INDEX => CustomRingError::MissingFundingSigner.into(),
-                    _ => ProgramError::InvalidAccountData,
-                });
-            }
+        let ring_account = accounts.first().ok_or(ProgramError::NotEnoughAccountKeys)?;
+        let (frame, layout) =
+            read_ring_account(ring_program, ring_account, |ring: &RingPolicy| {
+                let frame = frame(ring.mode()?)?;
+                let layout =
+                    TransferLayout::new(frame.parsed.data(), ring, accounts.len(), &mut check);
+                Ok((frame, layout))
+            })?;
+        let layout = layout?;
+        let transfers = frame.interface_transfers();
+        // Duplicate CPI accounts share signer privilege across the inner instruction, the PDA signs in
+        // the owner run and its own co-signer slots alone.
+        for index in layout.owners.clone() {
+            check.flags[index] |= accounts[index].address() == owner;
         }
-
-        for offset in owners_start..owners_end {
-            if spp[offset].address() == self.owner {
-                flags[cursor + offset] = true;
-            }
+        let unsigned = |index: &usize| accounts[*index].address() == owner && !check.flags[*index];
+        if core::iter::once(layout.payer())
+            .chain(layout.cache.clone())
+            .chain(layout.legs(transfers).filter_map(|leg| leg.funder))
+            .any(|index| unsigned(&index))
+        {
+            return Err(CustomRingError::MissingFundingSigner.into());
         }
-
-        let mut groups = window;
-        for transfer in &tx.interface_transfers {
-            let (group, rest) = groups
-                .split_at_checked(transfer.settlement_account_count())
-                .ok_or(CustomRingError::InvalidSettlementAccounts)?;
-            groups = rest;
-            let funder = funder_account_position(transfer);
-            for (position, account) in group.iter().enumerate() {
-                if account.address() == self.owner && !account.is_signer() {
-                    if funder == Some(position) {
-                        return Err(CustomRingError::MissingFundingSigner.into());
-                    }
-                    if !matches!(
-                        (transfer, position),
-                        (InterfaceTransfer::SolWithdrawal { .. }, 1)
-                    ) {
-                        return Err(ProgramError::InvalidAccountData);
-                    }
-                }
-            }
+        // SPP pays a SOL withdrawal to its recipient unsigned.
+        let recipients = || {
+            layout.legs(transfers).filter_map(|leg| {
+                matches!(leg.transfer, InterfaceTransfer::SolWithdrawal { .. })
+                    .then_some(leg.accounts.start + 1)
+            })
+        };
+        if (0..accounts.len())
+            .filter(unsigned)
+            .any(|index| !recipients().any(|recipient| recipient == index))
+        {
+            return Err(ProgramError::InvalidAccountData);
         }
-
-        let cache = spp
-            .get(owners_end + window.len()..)
-            .ok_or(CustomRingError::InvalidSettlementAccounts)?;
-        for account in cache {
-            if account.address() == self.owner && !account.is_signer() {
-                return Err(CustomRingError::MissingFundingSigner.into());
-            }
-        }
-
-        Ok(flags)
+        Ok(check.flags)
     }
 }
 
@@ -246,8 +194,8 @@ mod cpi {
         AccountView, Address, ProgramResult,
     };
 
-    use super::{TransferCpiAccount, TransferSignerCheck};
-    use crate::CustomRingError;
+    use super::{TransferCpiAccount, TransferFrame, TransferSignerCheck};
+    use crate::{CustomRingError, RingRail};
 
     impl TransferCpiAccount for AccountView {
         fn address(&self) -> &Address {
@@ -282,17 +230,40 @@ mod cpi {
 
     impl RingTransferCpi<'_> {
         /// Signs only in note owner or cosigner slots, never as payer or deposit funder.
-        #[inline(never)]
         pub fn invoke_signed(self, signer: Signer<'_, '_>) -> ProgramResult {
+            let data = self.data;
+            self.invoke_under(|mode| TransferFrame::parse(data, mode), signer)
+        }
+
+        /// `invoke_signed` over a frame the caller parsed from `data`.
+        pub fn invoke_signed_parsed(
+            self,
+            frame: TransferFrame<'_>,
+            signer: Signer<'_, '_>,
+        ) -> ProgramResult {
+            let data = self.data;
+            self.invoke_under(
+                |mode| match core::ptr::eq(frame.data(), data)
+                    && frame.parsed.data().rail == RingRail::transfer(mode)
+                {
+                    true => Ok(frame),
+                    false => Err(CustomRingError::InvalidInstructionData),
+                },
+                signer,
+            )
+        }
+
+        #[inline(never)]
+        fn invoke_under<'f>(
+            self,
+            frame: impl FnOnce(crate::RingMode) -> Result<TransferFrame<'f>, CustomRingError>,
+            signer: Signer<'_, '_>,
+        ) -> ProgramResult {
             if self.accounts.len() > MAX_STATIC_CPI_ACCOUNTS {
                 return Err(CustomRingError::TooManyAccounts.into());
             }
-            let signers = TransferSignerCheck {
-                ring_program: self.ring_program,
-                owner: self.owner,
-                data: self.data,
-            }
-            .signers(self.accounts)?;
+            let signers =
+                TransferSignerCheck::signers(self.ring_program, self.owner, self.accounts, frame)?;
             let mut metas = ArrayVec::<InstructionAccount, MAX_STATIC_CPI_ACCOUNTS>::new();
             for (account, signs) in self.accounts.iter().zip(signers) {
                 metas
@@ -327,8 +298,9 @@ mod cpi {
 mod tests {
     use super::*;
     use crate::{
-        cosign::ApprovalMask, storage::Revision, CoSignerCounts, CustomRingProof, FrameExtensions,
-        PlainGroth16Proof, RingOutput, SlotBody, CO_SIGNER, RING_POLICY, RING_RECORD_LEN,
+        cosign::ApprovalMask, storage::Revision, CoSignScope, CoSignerCounts, CustomRingProof,
+        FrameExtensions, InputTrees, PlainGroth16Proof, RingOutput, SlotBody, CO_SIGNER,
+        RING_POLICY, RING_RECORD_LEN, RING_TRANSACT_ACCOUNT_PREFIX_LEN,
     };
     use spr_interface::instruction::{
         instruction_data::transact::{CacheAccess, CacheWrite},
@@ -480,11 +452,7 @@ mod tests {
                 for seed in 1..RING_TRANSACT_ACCOUNT_PREFIX_LEN as u8 {
                     spp.push(MockAccount::plain(0x40 + seed, false));
                 }
-                let trees = match tx.input_trees {
-                    InputTrees::One(_) => 1,
-                    InputTrees::Two { .. } => 2,
-                };
-                for idx in 0..trees + tx.nullifiers.len() {
+                for idx in 0..tx.input_trees.count() + tx.nullifiers.len() {
                     spp.push(MockAccount::plain(0x50 + idx as u8, false));
                 }
                 spp.extend_from_slice(owners);
@@ -507,12 +475,9 @@ mod tests {
             raw
         };
         let check = |data: &[u8], accounts: &[MockAccount]| {
-            TransferSignerCheck {
-                ring_program: &ring_program,
-                owner: &owner_pda,
-                data,
-            }
-            .signers(accounts)
+            TransferSignerCheck::signers(&ring_program, &owner_pda, accounts, |mode| {
+                TransferFrame::parse(data, mode)
+            })
         };
 
         let base_tx = make_tx();

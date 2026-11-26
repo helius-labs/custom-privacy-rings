@@ -44,10 +44,7 @@ use spr_interface::{
     error::ShieldedPoolError,
     instruction::{
         instruction_data::{
-            transact::{
-                AnonymousRingEddsaProofData, Bsb22Commitment, CacheAccess, CacheWrite,
-                MAX_CACHE_WRITES,
-            },
+            transact::{AnonymousRingEddsaProofData, Bsb22Commitment, CacheAccess, CacheWrite},
             validate_interface_transfers,
         },
         tag::{RING_AUTHORITY_TRANSACT, RING_TRANSACT},
@@ -62,18 +59,19 @@ use crate::{
     anonymous_exit::ANONYMOUS_PARTIES,
     audit_stream::{AuditStreamLayout, RecordForm, RecordKind, MIN_REPLY_LEN, SENDER_BUNDLE_LEN},
     bytes::Bytes,
-    cosign::ApprovalMask,
+    cosign::{ApprovalMask, CoSignOperation, CoSignRequirement},
     disclosure::AuditLayout,
     error::CustomRingError,
     key_catalog::{FrameKey, RecordPools, RingCircuit, TransferShape, TransferSpend},
     output::CONFIDENTIAL_DATA_FREE_BODY_LEN,
+    spp::leg_class,
     statement::{
         AuditHead, ConfidentialSender, SignerSet, TransferFamily, TransferRoots, TransferStatement,
     },
     storage::Revision,
-    stream::{framed_slot_tag, slot_tag, unframed_slot_tag, SLOT_TAG_LEN},
-    CustomRingProof, InstructionTag, LiveRoots, PlainGroth16Proof, RingMode, RingPolicy, RootRead,
-    TAGGED_X25519_KEY_LEN,
+    stream::{framed_slot_tag, slot_tag, unframed_slot_tag},
+    CoSignScope, CustomRingProof, InstructionTag, LiveRoots, PlainGroth16Proof, RingMode,
+    RingPolicy, RootRead, TAGGED_X25519_KEY_LEN,
 };
 
 const ZERO_FIELD: [u8; 32] = [0; 32];
@@ -95,44 +93,6 @@ pub enum RingRail {
     Delegate,
     /// `AuthorityTransfer` on an anonymous ring, the anonymous frame keeps victim and recipients hidden.
     AnonymousDelegate,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RailSigner {
-    /// The confidential rail's owner signer run.
-    Owners,
-    /// The anonymous rail, the payer, the owner run, the co-signers and the funders sign.
-    Payer,
-    Delegate {
-        anonymous_ring: bool,
-    },
-}
-
-impl RailSigner {
-    pub fn new(tag: InstructionTag, ring: &RingPolicy) -> Result<Self, CustomRingError> {
-        match RingRail::of(tag, ring.mode()?)? {
-            RingRail::Anonymous => Ok(Self::Payer),
-            RingRail::Confidential => Ok(Self::Owners),
-            rail @ (RingRail::Delegate | RingRail::AnonymousDelegate) => Ok(Self::Delegate {
-                anonymous_ring: rail == RingRail::AnonymousDelegate,
-            }),
-        }
-    }
-
-    pub const fn rail(self) -> RingRail {
-        match self {
-            Self::Owners => RingRail::Confidential,
-            Self::Payer => RingRail::Anonymous,
-            Self::Delegate {
-                anonymous_ring: false,
-                ..
-            } => RingRail::Delegate,
-            Self::Delegate {
-                anonymous_ring: true,
-                ..
-            } => RingRail::AnonymousDelegate,
-        }
-    }
 }
 
 #[must_use]
@@ -400,6 +360,13 @@ pub enum InputTrees {
 }
 
 impl InputTrees {
+    pub const fn count(self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Two { .. } => 2,
+        }
+    }
+
     fn tree_index(self, input: usize) -> u8 {
         match self {
             Self::One(_) => 0,
@@ -874,7 +841,7 @@ impl<'a> RingTransactData<'a> {
                 &self.interface_transfers,
             )
             .map_err(|_| CustomRingError::InvalidInstructionData)?;
-        let mut out = Vec::with_capacity(self.frame_len(stream, interface_transfers.len())?);
+        let mut out = Vec::new();
         out.push(flags.0);
         out.extend(header.bytes()?);
         out.push(self.approval.bits());
@@ -1048,75 +1015,6 @@ impl<'a> RingTransactData<'a> {
         Ok(())
     }
 
-    fn frame_len(
-        &self,
-        stream: AuditStreamLayout,
-        interface_transfers: usize,
-    ) -> Result<usize, CustomRingError> {
-        const FIELD: usize = 32;
-        let revision = core::mem::size_of::<Revision>();
-        let policy = self
-            .policy
-            .map_or(0, |policy| policy.curator_revision.map_or(0, |_| revision));
-        let sender = self.sender.map_or(0, |sender| FIELD + sender.body.len());
-        let replies = self.replies.map_or(0, |replies| 2 + replies.region.len());
-        let anonymous = self.anonymous.map_or(0, |anonymous| {
-            FIELD * (2 + usize::from(anonymous.default_owner_tag.is_some()))
-        });
-        let in_proof_owner = self.in_proof_owner.map_or(0, |_| 3 * FIELD);
-        let inputs = self.nullifiers.len();
-        let trees = match self.input_trees {
-            InputTrees::One(context) => tree_context_len(context)?,
-            InputTrees::Two { first, second, .. } => {
-                inputs.div_ceil(8) + tree_context_len(first)? + tree_context_len(second)?
-            }
-        };
-        let extensions = match self.extensions.is_empty() {
-            true => 0,
-            false => self.extensions.frame_len(),
-        };
-        let form = self.record_form();
-        let slots = self
-            .outputs
-            .iter()
-            .map(|output| {
-                let len_prefix = match self.has_data {
-                    true => 2,
-                    false => 0,
-                };
-                let tag = if output.is_exit() {
-                    FIELD
-                } else {
-                    SLOT_TAG_LEN
-                };
-                len_prefix + FIELD + tag + output.body.record_len(form) + output.extra_len()
-            })
-            .sum::<usize>();
-        Ok(1 + 3
-            + 1
-            + core::mem::size_of::<CustomRingProof>()
-            + revision
-            + self.own_revision.map_or(0, |_| revision)
-            + policy
-            + FIELD * self.spl_withdrawal_owners.len()
-            + 4
-            + FIELD
-            + 16
-            + extensions
-            + interface_transfers
-            + self.outputs.len().div_ceil(8)
-            + slots
-            + replies
-            + sender
-            + stream.sealed_len()
-            + FIELD
-            + anonymous
-            + in_proof_owner
-            + core::mem::size_of::<PlainGroth16Proof>()
-            + FIELD * inputs
-            + trees)
-    }
-
     /// Refuses a frame whose sections disagree with what the rail reads of the ring.
     pub fn roots(
         &self,
@@ -1184,21 +1082,40 @@ impl<'a> RingTransactData<'a> {
         spp: &'s [T],
         settlements: usize,
     ) -> Result<&'s [T], CustomRingError> {
-        let trees = match self.input_trees {
-            InputTrees::One(_) => 1,
-            InputTrees::Two { .. } => 2,
-        };
-        let start = crate::RING_TRANSACT_ACCOUNT_PREFIX_LEN + trees + self.nullifiers.len();
-        // The cached selector's accounts follow the settlement groups, a run read through them would
-        // take a cache as an unsigned owner and every cached frame would refuse.
-        let cache_accounts = self.extensions.cache.map_or(0, |access| {
-            usize::from(access.read_bitmap != 0) + 2 * usize::from(access.writes_cache())
-        });
+        let start = crate::RING_TRANSACT_ACCOUNT_PREFIX_LEN
+            + self.input_trees.count()
+            + self.nullifiers.len();
         settlements
-            .checked_add(cache_accounts)
+            .checked_add(self.cache_accounts())
             .and_then(|tail| spp.len().checked_sub(tail))
             .and_then(|end| spp.get(start..end))
             .ok_or(CustomRingError::InvalidSettlementAccounts)
+    }
+
+    /// The accounts of the cached selector, they end SPP's list.
+    pub fn cache_accounts(&self) -> usize {
+        self.extensions.cache.map_or(0, |access| {
+            usize::from(access.read_bitmap != 0) + 2 * usize::from(access.writes_cache())
+        })
+    }
+
+    /// The legs and the frame's spend and approval bits set the demand, a delegate owes no co-signer.
+    pub fn co_sign_requirement(&self, ring: &RingPolicy) -> Option<CoSignRequirement> {
+        if self.rail.is_delegate() {
+            return None;
+        }
+        CoSignOperation {
+            spends_note: !self.no_spend,
+            public_legs: self
+                .interface_transfers
+                .iter()
+                .fold(CoSignScope::NONE, |classes, transfer| {
+                    classes | leg_class(transfer)
+                }),
+            approval: self.approval,
+        }
+        .demand()
+        .requirement(ring)
     }
 
     /// The SPP selector of the data's shape and rail.
@@ -1406,24 +1323,6 @@ impl<'a> FrameExtensions<'a> {
         }
         Ok(())
     }
-
-    fn frame_len(&self) -> usize {
-        const FIELD: usize = 32;
-        1 + self.data_hash.map_or(0, |_| FIELD)
-            + self.ring_data_hash.map_or(0, |_| FIELD)
-            + self.approval_totals.map_or(0, |_| FIELD)
-            + match self.messages.is_empty() {
-                true => 0,
-                false => {
-                    1 + self
-                        .messages
-                        .iter()
-                        .map(|message| FIELD + 2 + message.data.len())
-                        .sum::<usize>()
-                }
-            }
-            + self.cache.map_or(0, |_| CACHE_ACCESS_LEN)
-    }
 }
 
 /// The byte leading [`FrameExtensions`], one bit per optional field in wire order.
@@ -1435,8 +1334,6 @@ pub mod extension_flag {
     pub const APPROVAL_TOTALS: u8 = 1 << 4;
     pub const KNOWN: u8 = DATA_HASH | RING_DATA_HASH | MESSAGES | CACHE | APPROVAL_TOTALS;
 }
-
-const CACHE_ACCESS_LEN: usize = 8 + 2 * MAX_CACHE_WRITES;
 
 fn read_cache_access(bytes: &mut Bytes<'_>) -> Result<CacheAccess, CustomRingError> {
     let read_bitmap = u64::from_le_bytes(*bytes.array()?);
@@ -1739,11 +1636,6 @@ fn push_bitmap(out: &mut Vec<u8>, bits: impl ExactSizeIterator<Item = bool>) {
         bytes[index / 8] |= 1 << (index % 8);
     }
     out.extend_from_slice(&bytes);
-}
-
-fn tree_context_len(context: TreeContext) -> Result<usize, CustomRingError> {
-    let size = wincode::serialized_size(&context).map_err(invalid)?;
-    usize::try_from(size).map_err(invalid)
 }
 
 fn push_tree_context(out: &mut Vec<u8>, context: TreeContext) -> Result<(), CustomRingError> {

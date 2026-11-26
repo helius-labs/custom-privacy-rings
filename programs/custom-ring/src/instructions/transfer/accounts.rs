@@ -3,13 +3,7 @@
 //! SPP reads its list by position, and the ring program prepends its own slots. A value read from
 //! the wrong slot would verify the ring proof against accounts SPP does not settle.
 //!
-//! The account windows, in list order:
-//!
-//! 1. The ring account.
-//! 2. The registries `RootRead` names, own then curator then tracking, each compared with the ring's pin.
-//! 3. One `[record, signer]` or `[record, instructions_sysvar]` pair per co-signer the demand needs, SPP does not receive them.
-//! 4. The delegate's signer on the authority rails, then the mint when its permanent delegate signs, SPP receives neither.
-//! 5. SPP's list, forwarded whole. Prefix, input trees, nullifier PDAs, owner run, settlement groups, cache accounts.
+//! `TransferLayout` in `program-libs/interface/src/instructions/transfer_layout.rs` names the account windows.
 //!
 //! On return these facts hold:
 //!
@@ -27,24 +21,21 @@
 //! Read after `instructions/transfer/processor.rs`. Read before `instructions/transfer/verify.rs`.
 
 use custom_ring_interface::{
-    cosign::{CoSignDemand, CoSignOperation},
-    funder_account_position, AnonymousParties, CustomRingError, ParsedTransact, PublicSlots,
-    RailSigner, RingPolicy, RootRead, SignerSet, TransferRoots, ANONYMOUS_PARTIES,
-    RING_TRANSACT_RING_CONFIG_INDEX, TRANSACT_PAYER_INDEX,
+    cosign::CoSignRequirement, AnonymousParties, CustomRingError, ParsedTransact, PublicSlots,
+    RingPolicy, RingRail, RootRead, SignerSet, TransferLayout, TransferPrefix, TransferRoots,
+    ANONYMOUS_PARTIES,
 };
 use pinocchio::{error::ProgramError, AccountView, Address};
 use spr_hasher::primitives::solana_owner_identity;
-use spr_interface::instruction::instruction_data::settlement_accounts;
 
 use crate::instructions::{
     instruction_runtime::{PlacedRingAuth, RingAuth},
     loader::{
-        check_funding_signer, load_mint_delegate_asset, CoSigners, RegistrySlots, TransferCall,
+        check_funding_signer, load_mint_delegate_asset, CoSigners, RegistrySlots, RingRegistries,
+        TransferCall,
     },
     public_legs::public_slots,
 };
-
-const RING_INDEX: usize = 0;
 
 pub(super) struct TransactAccounts {
     pub roots: TransferRoots,
@@ -70,8 +61,65 @@ pub(super) struct TransactCheck<'a> {
     pub transfer: &'a ParsedTransact<'a>,
     /// From the tag, an approval digests these bytes.
     pub instruction_data: &'a [u8],
-    pub signer: RailSigner,
     pub slot: u64,
+}
+
+/// The prefix windows as the live accounts fix them.
+struct LivePrefix<'a> {
+    call: TransferCall<'a>,
+    ring: &'a RingPolicy,
+    read: RootRead,
+    registries: Option<RingRegistries<'a>>,
+    co_signers: CoSigners,
+    delegate_asset: [u8; 32],
+}
+
+impl TransferPrefix for LivePrefix<'_> {
+    type Error = ProgramError;
+
+    fn co_signer_pairs(
+        &mut self,
+        first: usize,
+        requirement: Option<CoSignRequirement>,
+    ) -> Result<usize, ProgramError> {
+        // An unbound registry refuses ahead of every window past it.
+        let mut pinned = self
+            .call
+            .accounts
+            .get(TransferLayout::RING + 1..first)
+            .unwrap_or_default()
+            .iter();
+        let slots = RegistrySlots {
+            ring: self.ring,
+            read: self.read,
+        };
+        self.registries =
+            Some(slots.load(|| pinned.next().ok_or(ProgramError::NotEnoughAccountKeys))?);
+        self.co_signers = CoSigners::verify(&self.call, first, requirement)?;
+        Ok(self.co_signers.as_slice().len())
+    }
+
+    fn delegate_mint(&mut self, signer: usize) -> Result<bool, ProgramError> {
+        let accounts = self.call.accounts;
+        let delegate_signer = accounts
+            .get(signer)
+            .filter(|signer| signer.is_signer())
+            .ok_or(CustomRingError::UnauthorizedDelegate)?;
+        if self.ring.delegate() == Some(delegate_signer.address()) {
+            return Ok(false);
+        }
+        self.delegate_asset = load_mint_delegate_asset(
+            accounts
+                .get(signer + 1)
+                .ok_or(ProgramError::NotEnoughAccountKeys)?,
+            delegate_signer.address(),
+        )
+        .map_err(|error| match self.ring.delegate() {
+            None => CustomRingError::DelegateDisabled,
+            Some(_) => error,
+        })?;
+        Ok(true)
+    }
 }
 
 impl TransactCheck<'_> {
@@ -82,76 +130,47 @@ impl TransactCheck<'_> {
         // 1. The frame names only revisions, the registries the ring pins serve each root. A delegate
         // reads no policy root, a restrictive update cannot fail its proof.
         let read = RootRead::transfer(ring, delegate_rail);
-        let registries = RegistrySlots { ring, read }.load({
-            let mut after_ring = accounts.iter().skip(RING_INDEX + 1);
-            move || after_ring.next().ok_or(ProgramError::NotEnoughAccountKeys)
-        })?;
-        // 2. The settlement groups end SPP's list ahead of the cache accounts, SPP reads the same window.
-        // The public slots, the funders, the withdrawals and the exit all read from it.
-        let window = settlement_accounts(&data.interface_transfers, data.circuit(), accounts)
-            .ok_or(CustomRingError::InvalidSettlementAccounts)?;
-        let public_slots = public_slots(&data.interface_transfers, window)?;
+        // 2. The legs and the frame's spend and approval bits set the co-sign demand, step 5 of the run
+        // proves those bits. The pairs and the delegate slot size the ring's prefix, every window
+        // below reads from the one layout SPP's list follows.
+        let mut prefix = LivePrefix {
+            call: TransferCall {
+                program_id: self.program_id,
+                ring: accounts
+                    .first()
+                    .ok_or(ProgramError::NotEnoughAccountKeys)?
+                    .address(),
+                data: self.instruction_data,
+                accounts,
+            },
+            ring,
+            read,
+            registries: None,
+            co_signers: CoSigners::default(),
+            delegate_asset: [0; 32],
+        };
+        let layout = TransferLayout::new(data, ring, accounts.len(), &mut prefix)?;
+        let LivePrefix {
+            registries: Some(registries),
+            co_signers,
+            delegate_asset,
+            ..
+        } = prefix
+        else {
+            return Err(ProgramError::NotEnoughAccountKeys);
+        };
         let bound = data.roots(ring, &registries.roots(self.slot))?;
-        // 3. The legs and the frame's spend and approval bits set the demand, step 5 of the run proves
-        // those bits. A delegate owes no co-signer.
-        let demand = match delegate_rail {
-            true => CoSignDemand::NONE,
-            false => CoSignOperation {
-                spends_note: !data.no_spend,
-                public_legs: public_slots.classes(),
-                approval: data.approval,
-            }
-            .demand(),
-        };
-        let co_signers_start = RING_INDEX + 1 + registries.len;
-        let call = TransferCall {
-            program_id: self.program_id,
-            ring: account_at(accounts, RING_INDEX)?.address(),
-            data: self.instruction_data,
-            accounts,
-        };
-        let co_signers = CoSigners::verify(
-            &call,
-            accounts
-                .get(co_signers_start..)
-                .ok_or(ProgramError::NotEnoughAccountKeys)?,
-            demand.requirement(ring),
-        )?;
-        // 4. The pairs and the delegate slot size the ring's prefix, every SPP index below counts from `spp`.
-        let delegate_slot = co_signers_start + co_signers.accounts();
-        let (delegate_asset, spp_start) = match self.signer {
-            RailSigner::Delegate { .. } => {
-                let delegate_signer = accounts
-                    .get(delegate_slot)
-                    .filter(|signer| signer.is_signer())
-                    .ok_or(CustomRingError::UnauthorizedDelegate)?;
-                // A signer other than the ring's delegate names its mint in the next slot.
-                if ring.delegate() != Some(delegate_signer.address()) {
-                    let asset = load_mint_delegate_asset(
-                        account_at(accounts, delegate_slot + 1)?,
-                        delegate_signer.address(),
-                    )
-                    .map_err(|error| match ring.delegate() {
-                        None => CustomRingError::DelegateDisabled,
-                        Some(_) => error,
-                    })?;
-                    (asset, delegate_slot + 2)
-                } else {
-                    ([0; 32], delegate_slot + 1)
-                }
-            }
-            RailSigner::Owners | RailSigner::Payer => ([0; 32], delegate_slot),
-        };
-        let spp = accounts
-            .get(spp_start..)
-            .ok_or(ProgramError::NotEnoughAccountKeys)?;
-        // 5. `ring_auth` signs the forwarded call, its one slot keeps that signature on `ring_config`.
-        let ring_auth =
-            RingAuth::derive(self.program_id)?.check_slot(spp, RING_TRANSACT_RING_CONFIG_INDEX)?;
-        check_funding_signer(spp, TRANSACT_PAYER_INDEX)?;
+        // 3. The settlement groups end SPP's list ahead of the cache accounts, SPP reads the same window.
+        // The public slots, the funders, the withdrawals and the exit all read from it.
+        let window = &accounts[layout.settlement.clone()];
+        let public_slots = public_slots(&data.interface_transfers, window)?;
+        // 4. `ring_auth` signs the forwarded call, its one slot keeps that signature on `ring_config`.
+        let ring_auth = RingAuth::derive(self.program_id)?
+            .check_slot(&accounts[layout.spp..], layout.ring_config() - layout.spp)?;
+        check_funding_signer(accounts, layout.payer())?;
         let slots = self.transfer.audit_stream().key.signer_slots();
-        // 6. A deposit leg would bring an unlisted asset in on the delegate rail.
-        if matches!(self.signer, RailSigner::Delegate { .. })
+        // 5. A deposit leg would bring an unlisted asset in on the delegate rail.
+        if delegate_rail
             && data
                 .interface_transfers
                 .iter()
@@ -159,22 +178,18 @@ impl TransactCheck<'_> {
         {
             return Err(CustomRingError::DelegatePublicLeg.into());
         }
-        let owners = data.owner_signers(spp, window.len())?;
-        // 7. A funder signs for its own deposit leg, and SPP moves only that leg's amount under the
+        // 6. A funder signs for its own deposit leg, and SPP moves only that leg's amount under the
         // signature.
-        let mut groups = window;
-        for transfer in &data.interface_transfers {
-            let (group, rest) = groups
-                .split_at_checked(transfer.settlement_account_count())
-                .ok_or(CustomRingError::InvalidSettlementAccounts)?;
-            groups = rest;
-            if let Some(funder) = funder_account_position(transfer) {
-                check_funding_signer(group, funder)?;
-            }
+        for funder in layout
+            .legs(&data.interface_transfers)
+            .filter_map(|leg| leg.funder)
+        {
+            check_funding_signer(accounts, funder)?;
         }
-        // 8. Each rail names who authorizes the spend, and the statement binds that identity.
-        let (sender, signers) = match self.signer {
-            RailSigner::Payer => {
+        let owners = &accounts[layout.owners.clone()];
+        // 7. Each rail names who authorizes the spend, and the statement binds that identity.
+        let (sender, signers) = match data.rail {
+            RingRail::Anonymous => {
                 check_owner_run(owners, &co_signers)?;
                 // The proof holds each public owner's live input to the run, an empty run spends nothing.
                 if data.public_owners && !data.no_spend && owners.is_empty() {
@@ -182,7 +197,7 @@ impl TransactCheck<'_> {
                 }
                 ([0; 32], signer_set(owners, slots)?)
             }
-            RailSigner::Owners => {
+            RingRail::Confidential => {
                 check_owner_run(owners, &co_signers)?;
                 // The in-proof owner signs inside SPP's anonymous rail proof, the frame names its key.
                 let sender = match data.in_proof_owner {
@@ -200,7 +215,7 @@ impl TransactCheck<'_> {
                 };
                 (sender, signer_set(owners, slots)?)
             }
-            RailSigner::Delegate { .. } => {
+            RingRail::Delegate | RingRail::AnonymousDelegate => {
                 // SPP's authority rail admits no owner signer, the delegate slot is the move's one
                 // authorization beside governance's rail flag in `RingConfig`.
                 if !owners.is_empty() {
@@ -210,7 +225,7 @@ impl TransactCheck<'_> {
             }
         };
 
-        // 9. The rules screen each withdrawal's owner and mint as the live accounts hold them, the frame's
+        // 8. The rules screen each withdrawal's owner and mint as the live accounts hold them, the frame's
         // owner list must match each token account. The statement binds the result as `withdrawal_hash`.
         let withdrawals = match read {
             RootRead::None => Vec::new(),
@@ -223,7 +238,7 @@ impl TransactCheck<'_> {
                 data.spl_withdrawal_owners,
             )?,
         };
-        // 10. The co-signers hold the party cells, a zero cell reads as absent.
+        // 9. The co-signers hold the party cells, a zero cell reads as absent.
         let party_identities = match data.rail.anonymous_frame() {
             true => AnonymousParties {
                 co_signers: co_signers.as_slice(),
@@ -240,16 +255,10 @@ impl TransactCheck<'_> {
             party_identities,
             public_slots,
             withdrawals,
-            spp: spp_start,
+            spp: layout.spp,
             ring_auth,
         })
     }
-}
-
-fn account_at(accounts: &[AccountView], index: usize) -> Result<&AccountView, ProgramError> {
-    accounts
-        .get(index)
-        .ok_or(ProgramError::NotEnoughAccountKeys)
 }
 
 /// Every entry signs and SPP counts its run up to the first non-signer. A signing settlement account

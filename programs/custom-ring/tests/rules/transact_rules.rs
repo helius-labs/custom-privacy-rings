@@ -6,9 +6,10 @@ use custom_ring_interface::{
     funder_account_position, input_flag,
     key_catalog::{FrameKey, RingCircuit},
     spl_withdrawal_count, tag, transact_flag, AnonymousProofData, CoSignScope, CustomRingError,
-    CustomRingProof, FramedSenderBundle, InputTrees, PlainGroth16Proof, PolicyProof, RingOutput,
-    RingPolicy, RingRail, RingRole, RingTransactData, RootRead, SlotBody, EXIT_RECORD_LEN,
-    RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX, SENDER_BUNDLE_LEN, TRANSACT_PAYER_INDEX,
+    CustomRingProof, FramedSenderBundle, InputTrees, KnownPrefix, PlainGroth16Proof, PolicyProof,
+    RingOutput, RingPolicy, RingRail, RingRole, RingTransactData, RootRead, SlotBody,
+    TransferLayout, EXIT_RECORD_LEN, RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX,
+    SENDER_BUNDLE_LEN, TRANSACT_PAYER_INDEX,
 };
 use solana_address::Address;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
@@ -877,6 +878,84 @@ fn a_demanded_co_signer_signs_with_the_configured_key() {
         spp,
         &[&co_signer],
     ));
+}
+
+/// Each signer check reads the slot `TransferLayout` names, an unsigned key there meets that check's refusal.
+#[test]
+fn the_program_reads_each_signer_where_the_layout_names_it() {
+    let fixture = Fixture::new();
+    let mut data = fixture.transfer(RingRail::Confidential, 2, 2, false);
+    fixture.settle_legs(&mut data, vec![InterfaceTransfer::SolDeposit { amount: 5 }]);
+    let (co_signer, owner, funder) = (Keypair::new(), Keypair::new(), Keypair::new());
+    let mut ring = Ring::new(Setup::AuditOnly);
+    set_co_signer(&mut ring, &co_signer.pubkey(), CoSignScope::ALL.bits());
+    let policy: RingPolicy = ring.read(&policy_pda());
+    let owners = [
+        payer_owner(&ring),
+        vec![AccountMeta::new_readonly(owner.pubkey(), true)],
+    ]
+    .concat();
+    let accounts = [
+        vec![AccountMeta::new_readonly(policy_pda(), false)],
+        ring.registries(RootRead::transfer(&policy, false)),
+        CoSignerSlot::own(co_signer.pubkey()).signed(),
+        spp_list(&ring.payer.pubkey(), &data, &owners),
+        vec![
+            AccountMeta::new(Address::new_unique(), false),
+            AccountMeta::new(funder.pubkey(), true),
+        ],
+    ]
+    .concat();
+    let ring_auth_slot = accounts
+        .iter()
+        .position(|meta| meta.pubkey == ring_auth())
+        .unwrap();
+    let mut prefix = KnownPrefix::ending_at(
+        &data,
+        &policy,
+        ring_auth_slot - RING_TRANSACT_RING_CONFIG_INDEX,
+    )
+    .unwrap();
+    let layout = TransferLayout::new(&data, &policy, accounts.len(), &mut prefix).unwrap();
+    assert_eq!(layout.ring_config(), ring_auth_slot);
+    let signers = [&co_signer, &owner, &funder];
+    let bytes = data.encode().unwrap();
+    reaches_verification(ring.send(
+        transact(tag::TRANSFER, accounts.clone(), bytes.clone()),
+        &signers,
+    ));
+    let funders = layout
+        .legs(&data.interface_transfers)
+        .filter_map(|leg| leg.funder);
+    let slots = [(layout.payer(), CustomRingError::MissingFundingSigner)]
+        .into_iter()
+        .chain(
+            layout
+                .co_signer_pairs()
+                .map(|(_, signer)| (signer, CustomRingError::MissingCoSigner)),
+        )
+        .chain(
+            layout
+                .owners
+                .clone()
+                .map(|slot| (slot, CustomRingError::MissingOwnerSigner)),
+        )
+        .chain(funders.map(|slot| (slot, CustomRingError::MissingFundingSigner)));
+    let mut checked = 0;
+    for (slot, error) in slots {
+        let mut unsigned = accounts.clone();
+        unsigned[slot] = AccountMeta::new(Address::new_unique(), false);
+        let signing: Vec<&Keypair> = signers
+            .into_iter()
+            .filter(|signer| unsigned.iter().any(|meta| meta.pubkey == signer.pubkey()))
+            .collect();
+        refused(
+            ring.send(transact(tag::TRANSFER, unsigned, bytes.clone()), &signing),
+            error,
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 5);
 }
 
 /// A plain transfer from the payer, co-signed by `co_signer` under its own record.

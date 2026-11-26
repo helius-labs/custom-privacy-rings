@@ -82,6 +82,19 @@ pub struct CoSignCover {
 }
 
 impl CoSignRequirement {
+    /// The pairs `cover` reads until no class stays uncovered, a record covering no new class refuses.
+    pub fn pairs<E>(
+        mut requirement: Option<Self>,
+        mut cover: impl FnMut(usize, Self) -> Result<CoSignCover, E>,
+    ) -> Result<usize, E> {
+        let mut pairs = 0;
+        while let Some(current) = requirement {
+            requirement = cover(pairs, current)?.rest;
+            pairs += 1;
+        }
+        Ok(pairs)
+    }
+
     pub const fn uncovered(self) -> CoSignScope {
         self.uncovered
     }

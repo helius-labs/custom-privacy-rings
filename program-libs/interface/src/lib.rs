@@ -78,6 +78,8 @@ pub mod transact;
 pub mod transfer_approval;
 #[path = "instructions/transfer_cpi.rs"]
 pub mod transfer_cpi;
+#[path = "instructions/transfer_layout.rs"]
+pub mod transfer_layout;
 #[cfg(feature = "verifying-keys")]
 #[path = "proof/verification.rs"]
 mod verification;
@@ -110,6 +112,7 @@ pub use state::*;
 pub use statement::*;
 pub use transact::*;
 pub use transfer_approval::{TransferApproval, MAX_TRANSFER_ACCOUNTS};
+pub use transfer_layout::*;
 #[cfg(feature = "verifying-keys")]
 pub use verification::{RegisterKeyCheck, RingProof};
 

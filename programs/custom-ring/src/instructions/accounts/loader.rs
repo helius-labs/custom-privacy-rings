@@ -118,7 +118,6 @@ pub struct RingRegistries<'a> {
     curator: Option<Ref<'a, StorageRegistry>>,
     tracking: Ref<'a, TrackingRegistry>,
     tracking_floor: Revision,
-    pub len: usize,
 }
 
 impl RingRegistries<'_> {
@@ -146,13 +145,11 @@ impl RegistrySlots<'_> {
         self,
         mut next: impl FnMut() -> Result<&'b AccountView, ProgramError>,
     ) -> Result<RingRegistries<'b>, ProgramError> {
-        let mut len = 0;
         let mut bound_account = |bound: &Address| {
             let account = next()?;
             if account.address() != bound {
                 return Err(ProgramError::from(CustomRingError::UnboundRegistry));
             }
-            len += 1;
             Ok(account)
         };
         let ring = self.ring;
@@ -177,7 +174,6 @@ impl RegistrySlots<'_> {
             curator,
             tracking,
             tracking_floor: tracking_floor.into(),
-            len,
         })
     }
 }
@@ -353,33 +349,32 @@ pub struct CoSigners {
 }
 
 impl CoSigners {
+    /// The pairs from index `first` of the call's accounts.
     pub fn verify(
         call: &TransferCall<'_>,
-        accounts: &[AccountView],
-        mut requirement: Option<CoSignRequirement>,
+        first: usize,
+        requirement: Option<CoSignRequirement>,
     ) -> Result<Self, ProgramError> {
         let mut co_signers = Self::default();
-        let mut pairs = accounts.as_chunks::<2>().0.iter();
-        for slot in &mut co_signers.signers {
-            let Some(current) = requirement else {
-                break;
-            };
-            let [record, signer] = pairs.next().ok_or(ProgramError::NotEnoughAccountKeys)?;
+        co_signers.len = CoSignRequirement::pairs(requirement, |pair, current| {
+            let [record, signer] = call
+                .accounts
+                .get(first + 2 * pair..)
+                .and_then(|rest| rest.first_chunk())
+                .ok_or(ProgramError::NotEnoughAccountKeys)?;
             let cover = CoSignerSlot {
                 call,
                 record,
                 signer,
             }
             .verify(current)?;
-            *slot = cover.signer;
-            co_signers.len += 1;
-            requirement = cover.rest;
-        }
+            *co_signers
+                .signers
+                .get_mut(pair)
+                .ok_or(CustomRingError::TooManyAccounts)? = cover.signer;
+            Ok::<_, ProgramError>(cover)
+        })?;
         Ok(co_signers)
-    }
-
-    pub const fn accounts(&self) -> usize {
-        2 * self.len
     }
 
     pub fn as_slice(&self) -> &[Address] {

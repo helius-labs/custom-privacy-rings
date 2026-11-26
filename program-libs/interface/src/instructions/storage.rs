@@ -14,6 +14,7 @@ use solana_address::Address;
 use zolana_ring_policy::{ListSet, Member};
 
 use crate::{
+    bytes::Bytes,
     domain,
     error::CustomRingError,
     instruction::{list_and_mint_entry, write_count},
@@ -235,36 +236,21 @@ impl EnrollIxData {
 impl<'a> EnrollmentWrite<'a> {
     /// One write and the bytes after it.
     pub fn parse(data: &'a [u8]) -> Result<(Self, &'a [u8]), StorageError> {
-        let invalid = StorageError::InvalidInstructionData;
-        let (owner, rest) = data.split_first_chunk::<32>().ok_or(invalid)?;
-        let (kind, rest) = rest.split_first().ok_or(invalid)?;
-        let (change, rest) = match *kind {
-            enrollment_kind::ENROLL => {
-                let (ix, rest) = rest.split_at_checked(EnrollIxData::SIZE).ok_or(invalid)?;
-                let (proof, rest) = rest
-                    .split_at_checked(CustomRingProof::SIZE)
-                    .ok_or(invalid)?;
-                let change = EnrollmentChange::Enroll {
-                    ix: bytemuck::try_from_bytes(ix).map_err(|_| invalid)?,
-                    proof: bytemuck::try_from_bytes(proof).map_err(|_| invalid)?,
-                };
-                (change, rest)
-            }
-            enrollment_kind::ROTATE => {
-                let (viewing_u, rest) = rest.split_first_chunk::<32>().ok_or(invalid)?;
-                let (prior_viewing_u, rest) = rest.split_first_chunk::<32>().ok_or(invalid)?;
-                let (prior_seq, rest) = rest.split_first_chunk::<8>().ok_or(invalid)?;
-                let change = EnrollmentChange::Rotate {
-                    viewing_u,
-                    prior_viewing_u,
-                    prior_seq,
-                };
-                (change, rest)
-            }
-            _ => return Err(invalid),
+        let mut bytes = Bytes::new(data, StorageError::InvalidInstructionData);
+        let owner = bytes.pod()?;
+        let change = match bytes.byte()? {
+            enrollment_kind::ENROLL => EnrollmentChange::Enroll {
+                ix: bytes.pod()?,
+                proof: bytes.pod()?,
+            },
+            enrollment_kind::ROTATE => EnrollmentChange::Rotate {
+                viewing_u: bytes.array()?,
+                prior_viewing_u: bytes.array()?,
+                prior_seq: bytes.array()?,
+            },
+            _ => return Err(StorageError::InvalidInstructionData),
         };
-        let owner = bytemuck::try_from_bytes(owner).map_err(|_| invalid)?;
-        Ok((Self { owner, change }, rest))
+        Ok((Self { owner, change }, bytes.rest()))
     }
 
     pub fn encode_into(&self, data: &mut Vec<u8>) {
@@ -358,15 +344,12 @@ impl<'a> EnrollmentWrite<'a> {
 impl<'a> ApplyEnrollmentsRequest<'a> {
     /// The header and exactly `count` writes.
     pub fn parse(data: &'a [u8]) -> Result<Self, StorageError> {
-        let (ix, writes) = data
-            .split_at_checked(ApplyEnrollmentsIxData::SIZE)
-            .ok_or(StorageError::InvalidInstructionData)?;
-        let ix: &ApplyEnrollmentsIxData =
-            bytemuck::try_from_bytes(ix).map_err(|_| StorageError::InvalidInstructionData)?;
+        let mut bytes = Bytes::new(data, StorageError::InvalidInstructionData);
+        let ix: &ApplyEnrollmentsIxData = bytes.pod()?;
         ApplyEnrollmentsIxData::check_count(ix.count)?;
         Ok(Self {
             ix,
-            writes: parse_writes(ix.count, writes)?,
+            writes: parse_writes(ix.count, bytes.rest())?,
         })
     }
 
@@ -479,26 +462,16 @@ where
 impl<'a> ParsedStorageUpdate<'a> {
     pub fn parse(data: &'a [u8]) -> Result<Self, StorageError> {
         // 1. The bounded write count fixes every record boundary before optional proof metadata.
-        let (revision, data) = data
-            .split_first_chunk::<8>()
-            .ok_or(StorageError::InvalidInstructionData)?;
-        let (count, rest) = data
-            .split_first()
-            .ok_or(StorageError::InvalidInstructionData)?;
-        let count = usize::from(storage_write_count(usize::from(*count))?);
-        let (writes, rest) = rest
-            .split_at_checked(count * core::mem::size_of::<RecordWriteData>())
-            .ok_or(StorageError::InvalidInstructionData)?;
+        let mut bytes = Bytes::new(data, StorageError::InvalidInstructionData);
+        let revision = Revision(*bytes.array()?);
+        let count = usize::from(storage_write_count(usize::from(bytes.byte()?))?);
+        let writes = bytes.take(count * core::mem::size_of::<RecordWriteData>())?;
         // 2. Asset preimages name write positions, their hashes and ordering are checked with the derived bitmap.
-        let (asset_count, rest) = rest
-            .split_first()
-            .ok_or(StorageError::InvalidInstructionData)?;
-        if usize::from(*asset_count) > count {
+        let asset_count = usize::from(bytes.byte()?);
+        if asset_count > count {
             return Err(StorageError::InvalidAssetWrite);
         }
-        let (assets, rest) = rest
-            .split_at_checked(usize::from(*asset_count) * core::mem::size_of::<AssetWrite>())
-            .ok_or(StorageError::InvalidInstructionData)?;
+        let assets = bytes.take(asset_count * core::mem::size_of::<AssetWrite>())?;
         let writes: Vec<RecordWriteData> = writes
             .as_chunks::<{ core::mem::size_of::<RecordWriteData>() }>()
             .0
@@ -517,24 +490,19 @@ impl<'a> ParsedStorageUpdate<'a> {
             asset_writes: &asset_writes,
         }
         .classify()?;
-        let (tracking_revision, rest) = match private_writes {
-            0 => (None, rest),
-            _ => {
-                let (revision, rest) = rest
-                    .split_first_chunk::<8>()
-                    .ok_or(StorageError::InvalidInstructionData)?;
-                (Some(Revision(*revision)), rest)
-            }
+        let tracking_revision = match private_writes {
+            0 => None,
+            _ => Some(Revision(*bytes.array()?)),
         };
-        let apply =
-            ApplyRecordsIxData::parse(rest).map_err(|_| StorageError::InvalidInstructionData)?;
+        let apply = ApplyRecordsIxData::parse(bytes.rest())
+            .map_err(|_| StorageError::InvalidInstructionData)?;
         // 4. The restrictive bit has one encoding, the statement binds it.
         if apply.restrictive > 1 {
             return Err(StorageError::InvalidInstructionData);
         }
         Ok(Self {
             data: StorageUpdateIxData {
-                revision: Revision(*revision),
+                revision,
                 writes,
                 asset_writes,
                 tracking_revision,

@@ -26,7 +26,6 @@
 use bytemuck::{Pod, Zeroable};
 use solana_address::Address;
 use spr_hasher::{
-    hash_chain::create_hash_chain_4_from_slice,
     primitives::{
         hash_bytes, is_canonical_bn254_scalar_be, is_canonical_x25519_public_key, pack_be,
         right_align, solana_owner_identity,
@@ -34,13 +33,15 @@ use spr_hasher::{
     Hasher, HasherError, Poseidon,
 };
 pub use spr_interface::ZERO_NULLIFIER_PUBKEY;
-use zolana_ring_policy::registry_field;
 
 use crate::{
     auditor_key::is_auditor_key,
     domain,
     member_registry::GRACE_SLOTS,
-    storage::{advance_roots, root_at, Retirement, Revision, Root, StorageError},
+    storage::{
+        advance_roots, chain_start_under, root_at, storage_account, Retirement, Revision, Root,
+        StorageError,
+    },
     storage_instruction::{EnrollIxData, InitializeTrackingIxData},
     STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN,
 };
@@ -99,11 +100,14 @@ pub struct TrackingRootUpdate {
     pub new_next_index: u64,
 }
 
-impl TrackingRegistry {
-    pub const DISCRIMINATOR: u8 = 3;
-    pub const SEED: &'static [u8] = b"tracking_registry";
-    pub const SIZE: usize = core::mem::size_of::<Self>();
+storage_account!(
+    TrackingRegistry,
+    3,
+    b"tracking_registry",
+    |registry: &Self| { (1..=TRACKING_CAPACITY).contains(&registry.next_index()) }
+);
 
+impl TrackingRegistry {
     /// The creator in the seeds keeps every other signer off its addresses.
     pub fn seeds<'a>(creator: &'a Address, ring_id: &'a [u8; 32]) -> [&'a [u8]; 3] {
         [Self::SEED, creator.as_ref(), ring_id]
@@ -129,26 +133,6 @@ impl TrackingRegistry {
         self.auditor_pubkey = ix.auditor_pubkey;
         self.next_index = 1u64.to_le_bytes();
         self.roots[0].hash = TRACKING_EMPTY_ROOT;
-    }
-
-    pub fn from_data(data: &[u8]) -> Option<&Self> {
-        bytemuck::try_from_bytes::<Self>(data)
-            .ok()
-            .filter(|registry| registry.valid())
-    }
-
-    pub fn from_data_mut(data: &mut [u8]) -> Option<&mut Self> {
-        bytemuck::try_from_bytes_mut::<Self>(data)
-            .ok()
-            .filter(|registry| registry.valid())
-    }
-
-    /// Host only, the copy overflows the 4 KB SBF stack frame.
-    #[cfg(not(target_os = "solana"))]
-    pub fn decode(owner: &Address, data: &[u8]) -> Option<Self> {
-        (*owner == STORAGE_PROGRAM_ID)
-            .then(|| Self::from_data(data).copied())
-            .flatten()
     }
 
     pub const fn next_index(&self) -> u64 {
@@ -180,11 +164,6 @@ impl TrackingRegistry {
         )?;
         self.next_index = update.new_next_index.to_le_bytes();
         Ok(())
-    }
-
-    fn valid(&self) -> bool {
-        self.discriminator == Self::DISCRIMINATOR
-            && (1..=TRACKING_CAPACITY).contains(&self.next_index())
     }
 }
 
@@ -300,17 +279,9 @@ pub fn tracking_chain_start(
     registry: &Address,
     revision: Revision,
 ) -> Result<[u8; 32], StorageError> {
-    let registry = registry_field(registry.as_array()).map_err(|_| StorageError::HashingFailed)?;
-    create_hash_chain_4_from_slice(&[
-        domain::field(domain::APPLY_ENROLLMENTS),
-        registry,
-        right_align(&revision.value().to_be_bytes()),
-    ])
-    .map_err(|_| StorageError::HashingFailed)
+    chain_start_under(domain::APPLY_ENROLLMENTS, registry, revision)
 }
 
-// Byte fields only, the `Pod` image is the account data with no padding.
-const _: () = assert!(core::mem::align_of::<TrackingRegistry>() == 1);
 const _: () = assert!(TrackingRegistry::SIZE == 6250);
 
 #[cfg(test)]

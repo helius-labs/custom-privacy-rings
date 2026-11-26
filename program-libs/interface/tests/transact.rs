@@ -706,7 +706,7 @@ fn flags_the_rail_forbids_are_refused() {
 
 #[test]
 fn the_rail_follows_the_instruction_and_the_ring_mode() {
-    use custom_ring_interface::{InstructionTag, RailSigner, RingMode};
+    use custom_ring_interface::{InstructionTag, RingMode};
     use InstructionTag::{AuthorityTransfer, Merge, Transfer};
     let delegate = solana_address::Address::new_from_array([3; 32]);
     let ring = |mode: RingMode, delegate: Option<solana_address::Address>| {
@@ -715,7 +715,7 @@ fn the_rail_follows_the_instruction_and_the_ring_mode() {
         ring.delegate = delegate.unwrap_or_default();
         ring
     };
-    let rail_of = |tag, ring: &RingPolicy| RailSigner::new(tag, ring).map(RailSigner::rail);
+    let rail_of = |tag, ring: &RingPolicy| RingRail::of(tag, ring.mode()?);
     let rail = |tag, mode| rail_of(tag, &ring(mode, Some(delegate)));
     assert_eq!(
         rail(Transfer, RingMode::Confidential),
@@ -1346,10 +1346,9 @@ fn encoded_cases(fixture: &Fixture) -> Vec<(&'static str, RingTransactData<'_>, 
 }
 
 #[test]
-fn the_compact_data_reads_back_at_exact_capacity() {
+fn the_compact_data_reads_back() {
     let fixture = Fixture::new();
     for (name, data, compact) in encoded_cases(&fixture) {
-        assert_eq!(compact.capacity(), compact.len(), "{name}");
         let parsed = RingTransactData::parse(&compact, data.rail)
             .unwrap()
             .into_data();

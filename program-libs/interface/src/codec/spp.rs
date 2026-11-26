@@ -87,11 +87,7 @@ impl PublicSlots {
         let mut slots = Self::default();
         for leg in legs {
             let PublicLeg { transfer, mint } = leg?;
-            slots.classes = slots.classes
-                | match transfer.is_deposit() {
-                    true => CoSignScope::DEPOSITS,
-                    false => CoSignScope::WITHDRAWALS,
-                };
+            slots.classes = slots.classes | leg_class(&transfer);
             slots.add(mint.unwrap_or(SOL_ASSET_ADDRESS), signed_amount(transfer))?;
         }
         if let Some(slot) = slots.slots.iter().find(|slot| slot.net == 0) {
@@ -181,6 +177,13 @@ impl PublicSlot {
             false => self.gross,
         };
         Ok(Self { net, gross, ..self })
+    }
+}
+
+pub const fn leg_class(transfer: &InterfaceTransfer) -> CoSignScope {
+    match transfer.is_deposit() {
+        true => CoSignScope::DEPOSITS,
+        false => CoSignScope::WITHDRAWALS,
     }
 }
 
