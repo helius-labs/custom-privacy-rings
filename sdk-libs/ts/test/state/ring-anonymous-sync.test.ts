@@ -466,7 +466,6 @@ function hex2(key: Readonly<{ toBytes(): Uint8Array }>): string {
 
 describe("viewing history", () => {
   const key = () => X25519Keypair.generate().publicKey();
-  const tag = (byte: number) => new Uint8Array(32).fill(byte) as Bytes32;
   const holder = (seed: number) => {
     const wallet = new ScanWallet(seed);
     const fresh = ViewingHistory.create(wallet.viewingKey, 0n);
@@ -529,34 +528,22 @@ describe("viewing history", () => {
     expect(ViewingHistory.fromJson(json).current().txCount).toBe((1n << 64n) - 2n);
   });
 
-  it("selects the sender tag at the stored counter", async () => {
+  it("takes the next sender index on each selection", async () => {
     const { wallet, fresh, viewing } = holder(1);
-    const tags = await fresh.select(wallet.keys);
-    expect(tags.viewingPublicKey.equals(wallet.viewingKey)).toBe(true);
-    expect(tags.sender).toEqual(slotTag(viewing.senderViewTag(0n)));
-    // A selection takes no index, a transfer that never lands leaves the tag for the next one.
-    expect((await fresh.select(wallet.keys)).sender).toEqual(tags.sender);
+    const first = await fresh.select(wallet.keys);
+    const second = await first.history.select(wallet.keys);
+    expect(first.tag.viewingPublicKey.equals(wallet.viewingKey)).toBe(true);
+    expect([first, second].map(({ tag }) => hex(tag.sender))).toEqual(
+      [0n, 1n].map((index) => hex(slotTag(viewing.senderViewTag(index)))),
+    );
+    expect(hex(first.tag.sender)).not.toBe(hex(second.tag.sender));
+    expect([first, second].map(({ history }) => history.current().txCount)).toEqual([1n, 2n]);
+    expect(second.history.current().requestCount).toBe(0n);
+    const ceiling = ViewingHistory.fromJson(
+      fresh.toJson().replace('"tx":{"next":0', `"tx":{"next":${(1n << 64n) - 1n}`),
+    );
+    await expect(ceiling.select(wallet.keys)).rejects.toThrow("RING_COUNTER_OVERFLOW");
     viewing.destroy();
-  });
-
-  it("takes a sender index only when a confirmed frame carried its tag", async () => {
-    const { wallet, fresh, viewing } = holder(1);
-    const tags = await fresh.select(wallet.keys);
-    for (const published of [[], [tag(7)], [bootstrapSlotTag(wallet.viewingKey.u())]])
-      expect(fresh.withPublished(tags, published).current().txCount).toBe(0n);
-    const taken = fresh.withPublished(tags, [tag(7), tags.sender]);
-    expect(taken.current().txCount).toBe(1n);
-    expect((await taken.select(wallet.keys)).sender).toEqual(slotTag(viewing.senderViewTag(1n)));
-    // A stale selection never lowers the counter, a selection under a foreign key changes nothing.
-    const later = taken.withPublished(await taken.select(wallet.keys), [
-      slotTag(viewing.senderViewTag(1n)),
-    ]);
-    expect(later.withPublished(tags, [tags.sender]).current().txCount).toBe(2n);
-    const other = holder(2);
-    const foreign = await other.fresh.select(other.wallet.keys);
-    expect(fresh.withPublished(foreign, [foreign.sender]).toJson()).toBe(fresh.toJson());
-    viewing.destroy();
-    other.viewing.destroy();
   });
 
   it("mints each request tag at the counter and refuses nothing but a counter at the u64 ceiling", async () => {

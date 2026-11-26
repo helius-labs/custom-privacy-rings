@@ -108,7 +108,7 @@ async function depositor(ring: AnonymousRing): Promise<Member> {
       listSalt: new Uint8Array(32).fill(1) as Bytes32,
     },
     // The fresh sender spends no ring note, the deposit's note takes the wallet's sender tag.
-    tags: await sender.document.history().select(sender.keys),
+    tags: await sender.document.takeTransferTags(sender.keys),
     amount: DEPOSIT,
   });
   const { instruction } = await prepared.prove(ring.client);

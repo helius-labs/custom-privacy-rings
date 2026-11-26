@@ -50,7 +50,7 @@ import { fetchRingPolicy, requireActiveRing } from "../../protocol/membership/co
 import { RingError, RingProgramError } from "../../protocol/error.js";
 import { chargedOutflowsOf, relayListSalts } from "../../proof/policy-proof.js";
 import { transferApprovalOf } from "../../proof/transfer-proof.js";
-import { isDefaultRingNote } from "../../proof/audit-proof.js";
+import { isDefaultRingNote, spentNotes } from "../../proof/audit-proof.js";
 import { anonymousPartyIdentities } from "../../protocol/membership/parties.js";
 import {
   proveStagedTransfer,
@@ -148,10 +148,11 @@ type TaggedPayments = Readonly<{
 /** Without the wallet's sender tag change takes random bytes, the note the wallet spends finds it. */
 function taggedPlan(tagged: TaggedPayments): AnonymousPlan {
   const { prepared, sender, payments, tags } = tagged;
-  // 1. The ring reader follows the spends of ring notes alone, the sender tag finds the slots of
-  // any other spend.
-  const spendsRingNote = prepared.inputs.some((input) => input.utxo.ringProgramId !== undefined);
-  if (tags === undefined && !spendsRingNote) throw new RingError("RING_SENDER_TAG_REQUIRED");
+  // 1. An entry spends default-ring notes alone, a core sync that reads their spend first leaves
+  // only the sender tag to find the change.
+  const notes = spentNotes(prepared.inputs);
+  const entry = notes.length > 0 && notes.every(isDefaultRingNote);
+  if (tags === undefined && entry) throw new RingError("RING_SENDER_TAG_REQUIRED");
   // 2. Change takes the sender tag only under the key the tags derive from, a deposit's
   // fresh sender holds another key and its change a random tag.
   const plan =

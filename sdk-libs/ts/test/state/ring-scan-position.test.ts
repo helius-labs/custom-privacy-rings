@@ -248,7 +248,7 @@ describe("atomic progress", () => {
     expect(wallet.history().entry(bob.viewingKey)?.ringPosition(RING)).toBe(9n);
   });
 
-  it("keeps a sender index a confirmed frame took and a ring added during a scan", async () => {
+  it("keeps a sender index taken and a ring added during a scan", async () => {
     const indexer = new ScanIndexer();
     const alice = new ScanWallet(1);
     const bob = new ScanWallet(2);
@@ -256,8 +256,8 @@ describe("atomic progress", () => {
     const wallet = anonymousWallet(bob, bob.fresh());
     const scan = await bob.sync(indexer, wallet.history());
     const ring = randomAddress();
-    const tags = await wallet.history().select(bob.keys);
-    wallet.updateHistory(wallet.history().withPublished(tags, [tags.sender]).withRing(ring));
+    await wallet.takeTransferTags(bob.keys);
+    wallet.updateHistory(wallet.history().withRing(ring));
     await wallet.absorb(scan);
     const entry = wallet.history().current();
     expect(entry.txCount).toBe(1n);
@@ -289,8 +289,8 @@ describe("atomic progress", () => {
     const minted = (await base.requestTag(bob.keys)).history;
     wallet.updateHistory(minted);
     expect(() => wallet.updateHistory(base)).toThrow("RING_SCAN_PROGRESS_MOVED");
-    const tags = await minted.select(bob.keys);
-    wallet.updateHistory(minted.withPublished(tags, [tags.sender]));
+    const selected = await minted.select(bob.keys);
+    wallet.updateHistory(selected.history);
     expect(() => wallet.updateHistory(minted)).toThrow("RING_SCAN_PROGRESS_MOVED");
     const { txCount, requestCount } = wallet.history().current();
     expect([txCount, requestCount]).toEqual([1n, 1n]);
@@ -299,18 +299,27 @@ describe("atomic progress", () => {
   it("gives concurrent callers distinct tags and burns the index of a failed holder", async () => {
     const bob = new ScanWallet(2);
     const wallet = anonymousWallet(bob, bob.fresh());
-    const tags = await Promise.all([
-      wallet.takeRequestTag(bob.keys),
-      wallet.takeRequestTag(bob.keys),
-    ]);
-    expect(new Set(tags.map(hex)).size).toBe(2);
-    expect(wallet.history().current().requestCount).toBe(2n);
     const failing = {
       ...bob.keys,
       viewTags: () => Promise.reject(new Error("holder offline")),
     } as unknown as typeof bob.keys;
-    await expect(wallet.takeRequestTag(failing)).rejects.toThrow("holder offline");
-    expect(wallet.history().current().requestCount).toBe(3n);
+    const streams = [
+      {
+        take: (keys: typeof bob.keys) => wallet.takeRequestTag(keys),
+        count: () => wallet.history().current().requestCount,
+      },
+      {
+        take: async (keys: typeof bob.keys) => (await wallet.takeTransferTags(keys)).sender,
+        count: () => wallet.history().current().txCount,
+      },
+    ];
+    for (const { take, count } of streams) {
+      const tags = await Promise.all([take(bob.keys), take(bob.keys)]);
+      expect(new Set(tags.map(hex)).size).toBe(2);
+      expect(count()).toBe(2n);
+      await expect(take(failing)).rejects.toThrow("holder offline");
+      expect(count()).toBe(3n);
+    }
   });
 
   it("stores notes, spends, claims and the position in one document", async () => {

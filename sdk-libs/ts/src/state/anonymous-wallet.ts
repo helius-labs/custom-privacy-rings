@@ -19,7 +19,12 @@ import {
   type RecoveryCoverage,
   type RecoveryWallet,
 } from "./recovery-session.js";
-import { parseExact, ViewingHistory } from "./viewing-history.js";
+import {
+  parseExact,
+  ViewingHistory,
+  type AdvancedTag,
+  type TransferTags,
+} from "./viewing-history.js";
 
 /** A reply read from a note, what a sender wrote about itself and nothing the proof binds. */
 export interface PendingClaim {
@@ -281,10 +286,19 @@ export class AnonymousWallet {
 
   /** Concurrent callers never share an index, a holder failure burns it. */
   takeRequestTag(keys: RingKeys, context?: RequestContext): Promise<ViewTag> {
-    const { history, tag } = this.#history._takeRequest();
-    this.#history = history;
+    return this.#taken(this.#history._takeRequest())(keys, context);
+  }
+
+  /** The sender tag of one transfer, its index taken as `takeRequestTag` takes one. */
+  takeTransferTags(keys: RingKeys, context?: RequestContext): Promise<TransferTags> {
+    return this.#taken(this.#history._takeSender())(keys, context);
+  }
+
+  /** The wallet holds the advanced history before the holder is asked. */
+  #taken<Tag>(advanced: AdvancedTag<Tag>): Tag {
+    this.#history = advanced.history;
     this.#revision += 1n;
-    return tag(keys, context);
+    return advanced.tag;
   }
 
   /** Its notes open the wallet's funds, store it as key material under one atomic replace. */

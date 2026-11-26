@@ -91,19 +91,11 @@ const PROOF_REJECTED: RingSubmissionStatus = {
   customCode: RingProgramError.proofVerificationFailed,
 };
 
-function slotTags(version: number): readonly Bytes32[] {
-  return [new Uint8Array(32).fill(version + 1) as Bytes32];
-}
-
-async function fixture(
-  roots?: RingSubmissionAttempt["roots"],
-  tags?: (version: number) => readonly Bytes32[],
-) {
+async function fixture(roots?: RingSubmissionAttempt["roots"]) {
   const payer = await generateKeyPairSigner();
   let version = 0;
   const build = vi.fn(async (): Promise<RingSubmissionAttempt> => ({
     ...(roots === undefined ? {} : { roots }),
-    ...(tags === undefined ? {} : { slotTags: tags(version) }),
     transaction: compileUnsignedTransaction({
       feePayer: payer.address,
       lifetime: BLOCKHASH,
@@ -212,9 +204,8 @@ describe("ring submission ownership", () => {
     expect(f.release).toHaveBeenCalledTimes(1);
   });
 
-  it("reports the slot tags of the confirmed attempt alone, none before or without a confirmation", async () => {
-    const f = await fixture(undefined, slotTags);
-    expect(f.submission.confirmedSlotTags()).toEqual([]);
+  it("confirms the attempt it rebuilt after a stale root", async () => {
+    const f = await fixture();
     let sent = 0;
     const result = await f.submission.send({
       sign: f.sign,
@@ -222,17 +213,7 @@ describe("ring submission ownership", () => {
       status: async () => (++sent === 1 ? STALE_ROOT : { kind: "confirmed", slot: 7n }),
     });
     expect(result).toMatchObject({ kind: "confirmed", attempts: 2, slot: 7n });
-    expect(f.submission.confirmedSlotTags()).toEqual(slotTags(1));
-    for (const status of [{ kind: "unknown" }, { kind: "failed", instructionIndex: 0 }] as const) {
-      const unsettled = await fixture(undefined, slotTags);
-      const { kind } = await unsettled.submission.send({
-        sign: unsettled.sign,
-        send: unsettled.send,
-        status: async () => status,
-      });
-      expect(kind).toBe(status.kind);
-      expect(unsettled.submission.confirmedSlotTags()).toEqual([]);
-    }
+    expect(f.build).toHaveBeenCalledTimes(2);
   });
 
   it("classifies stale proofs by the rows of Rust `REPROOF`", () => {

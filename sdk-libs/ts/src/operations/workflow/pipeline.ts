@@ -266,10 +266,7 @@ export class ProvenRingTransfer {
 
   /** @internal */
   constructor(
-    fields: Omit<
-      ProvenRingTransfer,
-      "instruction" | "slotTags" | "approveTransfer" | "approvedTransfer"
-    >,
+    fields: Omit<ProvenRingTransfer, "instruction" | "approveTransfer" | "approvedTransfer">,
   ) {
     this.ringProgramId = fields.ringProgramId;
     this.data = fields.data;
@@ -286,13 +283,6 @@ export class ProvenRingTransfer {
 
   instruction(): Promise<Instruction> {
     return ringTransactInstruction(this.ringProgramId, this.accounts, this.data);
-  }
-
-  /** Each non-exit slot's tag in slot order. */
-  slotTags(): readonly Bytes32[] {
-    return this.data.outputs.flatMap((output) =>
-      output.body.kind === "exit" ? [] : [output.ownerTag],
-    );
   }
 
   /** One top-level approval per co-signer of the call `instruction` returns, `position` the calling program's instruction. */

@@ -108,6 +108,11 @@ async function moveRing(mode: RingMode, owners: readonly ShieldedKeypair[]) {
   return { fixture, delegate };
 }
 
+/** Each non-exit slot's tag in slot order. */
+function slotTags(data: RingTransactData): readonly Bytes32[] {
+  return data.outputs.flatMap((output) => (output.body.kind === "exit" ? [] : [output.ownerTag]));
+}
+
 /** A payment as a delegate move tags it, under its recipient's bootstrap tag without a request. */
 function payment(payee: ShieldedKeypair, amount: bigint, tag?: Bytes32) {
   const recipient = payee.shieldedAddress();
@@ -403,7 +408,7 @@ describe("delegate sources", () => {
       const message = messageOf(fixture, await proven.instruction());
       expect(checkRelayMessage(expected, message, delegate as never).signer).toBe(delegate);
       const bootstrap = hex(bootstrapSlotTag(source.viewingPublicKey().u()));
-      const published = proven.slotTags().slice(0, 2).map(hex);
+      const published = slotTags(proven.data).slice(0, 2).map(hex);
       // An anonymous frame publishes the payment's tag on one change slot, equal tags would link two.
       if (mode === "anonymous")
         expect(published.filter((tag) => tag === bootstrap)).toHaveLength(1);
@@ -428,7 +433,10 @@ describe("delegate sources", () => {
         assets,
       }).withTxViewingKey(TX_VIEWING_KEY);
       const proven = await transfer.prove(fixture.client);
-      return { tags: proven.slotTags(), message: messageOf(fixture, await proven.instruction()) };
+      return {
+        tags: slotTags(proven.data),
+        message: messageOf(fixture, await proven.instruction()),
+      };
     };
     const asked = async (tag?: Bytes32) => {
       const request = requestFor(fixture, delegate, [source], payee, 4n);
@@ -485,7 +493,10 @@ describe("delegate sources", () => {
         })
         .withTxViewingKey(TX_VIEWING_KEY)
         .prove(fixture.client);
-      return { tags: proven.slotTags(), message: messageOf(fixture, await proven.instruction()) };
+      return {
+        tags: slotTags(proven.data),
+        message: messageOf(fixture, await proven.instruction()),
+      };
     };
     const verdict = async (
       message: Uint8Array,
@@ -552,7 +563,7 @@ describe("delegate sources", () => {
     });
     expect(fixture.sppCalls).toEqual([]);
     const bootstrap = bootstrapSlotTag(payee.viewingPublicKey().u());
-    expect((await move(bootstrap)).slotTags()).toContainEqual(bootstrap);
+    expect(slotTags((await move(bootstrap)).data)).toContainEqual(bootstrap);
   });
 
   describe("recovered move", () => {

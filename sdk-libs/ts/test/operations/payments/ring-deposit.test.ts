@@ -10,11 +10,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 import { ShieldedKeypair, SigningKey } from "@heliuslabs/spr/keypair";
-import {
-  AssetRegistry,
-  SOL_MINT,
-  type IndexedShieldedTransaction,
-} from "@heliuslabs/spr/transaction";
+import { AssetRegistry, SOL_MINT } from "@heliuslabs/spr/transaction";
 
 import { slotTag } from "../../../src/crypto/derivation/ring-stream.js";
 import { RingAddress, RingPaymentRequest } from "../../../src/crypto/keys/ring-address.js";
@@ -33,9 +29,8 @@ import { ViewingHistory } from "../../../src/state/viewing-history.js";
 import { BLOCKHASH } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import {
   PROOF_SERVICE,
-  TREE,
-  TREE_ID,
   freshWalletTags,
+  indexedFrame,
   randomAddress,
   ringFixture,
   walletKeys,
@@ -58,35 +53,6 @@ function depositClient(
     proofDataSource,
     proofService: PROOF_SERVICE,
     getLatestBlockhash: async () => BLOCKHASH,
-  };
-}
-
-/** The ring row Photon serves for the frame the fixture proved last. */
-function indexedFrame(fixture: Fixture): IndexedShieldedTransaction {
-  const call = fixture.sppCalls.at(-1);
-  if (call === undefined) throw new Error("no SPP proof");
-  const { proofInputs } = call;
-  const { externalData } = proofInputs;
-  return {
-    slot: 3n,
-    txSignature: getBase58Decoder().decode(new Uint8Array(64).fill(9)) as never,
-    eventIndex: 0,
-    txViewingPublicKey: externalData.txViewingPublicKey,
-    salt: externalData.salt,
-    outputSlots: externalData.outputs.map((output, index) => ({
-      viewTag: externalData.resolvedOwnerTags[index] ?? new Uint8Array(32),
-      outputContext: {
-        hash: output.utxoHash,
-        tree: TREE,
-        treeId: TREE_ID,
-        leafIndex: BigInt(index),
-      },
-      payload: output.data ?? new Uint8Array(),
-    })) as IndexedShieldedTransaction["outputSlots"],
-    messages: externalData.messages,
-    nullifiers: proofInputs.inputUtxos.map((spent) => spent.nullifier()),
-    proofless: false,
-    ringProgramId: fixture.ringProgramId,
   };
 }
 
@@ -170,34 +136,33 @@ describe("ring deposit", () => {
       address: to,
       tag: recipient.viewingPublicKey().u(),
     });
-    for (const paid of [to, bootstrap])
+    // A deposit to the wallet's own bare address takes that wallet's sender tag alone, another wallet's tags leave it untagged.
+    const own = { kind: "anonymous", keys: walletKeys(recipient), listSalt: SALT } as const;
+    for (const selected of [{}, { tags }]) {
+      const proved = fixture.sppCalls.length;
+      for (const paid of [to, bootstrap])
+        await expect(
+          PreparedRingDeposit.prepare({
+            ...deposit,
+            recipient: { kind: "anonymousPayment", to: paid },
+            ...selected,
+          }),
+        ).rejects.toMatchObject({ causeCode: "RING_DEPOSIT_BOOTSTRAP_TAG" });
       await expect(
-        PreparedRingDeposit.prepare({
-          ...deposit,
-          recipient: { kind: "anonymousPayment", to: paid },
-          tags,
-        }),
+        PreparedRingDeposit.prepare({ ...deposit, recipient: own, ...selected }),
       ).rejects.toMatchObject({ causeCode: "RING_DEPOSIT_BOOTSTRAP_TAG" });
-    // The fresh sender spends no ring note, no sync finds a slot under random bytes.
-    await expect(
-      (
-        await PreparedRingDeposit.prepare({
-          ...deposit,
-          recipient: { kind: "anonymousPayment", to: request },
-        })
-      ).prove(client),
-    ).rejects.toMatchObject({ causeCode: "RING_SENDER_TAG_REQUIRED" });
-    expect(fixture.sppCalls).toEqual([]);
-    const prepared = await PreparedRingDeposit.prepare({
-      ...deposit,
-      recipient: { kind: "anonymousPayment", to: request },
-      tags,
-    });
-    await prepared.prove(client);
-    const published = indexedFrame(fixture).outputSlots.map((slot) => slot.viewTag);
-    // The fresh sender holds another key than the tags derive from, its change takes random bytes.
-    expect(published[1]).toEqual(slotTag(request.tag as Bytes32));
-    expect(published).not.toContainEqual(tags.sender);
+      expect(fixture.sppCalls).toHaveLength(proved);
+      const prepared = await PreparedRingDeposit.prepare({
+        ...deposit,
+        recipient: { kind: "anonymousPayment", to: request },
+        ...selected,
+      });
+      await prepared.prove(client);
+      const published = indexedFrame(fixture).outputSlots.map((slot) => slot.viewTag);
+      // The fresh sender holds another key than the tags derive from, its change takes random bytes.
+      expect(published[1]).toEqual(slotTag(request.tag as Bytes32));
+      expect(published).not.toContainEqual(tags.sender);
+    }
 
     const indexer = new ScanIndexer();
     indexer.publish(indexedFrame(fixture));

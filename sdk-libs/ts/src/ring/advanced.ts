@@ -116,6 +116,7 @@ export {
   MIN_REPLY_LEN,
   openReply,
   replyLength,
+  sealNoReply,
   sealReply,
   type ReplyClaim,
   type ReplyMetadata,

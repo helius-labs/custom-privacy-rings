@@ -25,14 +25,15 @@ digest. Run it before the first Ring proof. A Helius mainnet or devnet RPC URL
 selects the pinned Nitro Enclave prover of that cluster when `proverUrl` is
 omitted.
 
-`syncRingWallet` runs `syncWallet`, then reads each held viewing key's
-confidential slot tag and every Ring its `ViewingHistory` names, and stores in an
-`AnonymousWallet` each Ring note whose commitment `decryptTransactions` rebuilds.
+`syncRingWallet` runs `syncWallet`, then reads the transactions under each held
+viewing key's listed tags. It stores in an `AnonymousWallet` each Ring note whose
+commitment `decryptTransactions` rebuilds. It makes no read by Ring, the read by
+Ring is the recovery scan of `AnonymousSync`.
 Only keys that are also `RingKeys` open Ring notes. A note or merge output of a
 mint the registry lacks waits in `pendingOpenings()`, and the first sync that sees
 the mint registered moves it to the notes. Each viewing key's
-`tagPosition` and Ring positions resume the next sync where the last one
-stopped, so store the wallet after every sync:
+`tagPosition` resumes the next sync where the last one stopped, so store the
+wallet after every sync:
 
 ```ts
 import {
@@ -146,17 +147,33 @@ last 8 bytes of a view tag. The sender's wallet selects the tag. No proof binds
 it. A payment takes the tag of its `RingPaymentRequest`. Without a request it
 takes its recipient's bootstrap tag. The bootstrap tag is the public viewing
 key. `AnonymousTransfer.withPayment` and `PublicOwnerTransfer.withPayment` take
-the request's tag as `requestTag`. `ViewingHistory.select` returns the sender
-tag at the wallet's counter. Pass it as `tags` on `anonymous`, on `spendPublic`
-or on a deposit. The wallet's first change slot then takes the sender tag. A
-payment or a deposit to the wallet's own viewing key also takes it. A frame
-publishes each tag once. A slot that would repeat a tag takes random bytes. A
-spend of Ring notes without `tags` publishes random bytes on its change. An
-entry or a deposit spends no Ring note. The SDK refuses it without `tags`. A
-deposit refuses its recipient's bootstrap tag, because a deposit publishes its
-funder. After the transfer confirms, pass
-`history.withPublished(tags, submission.confirmedSlotTags())` to
-`AnonymousWallet.updateHistory`.
+the request's tag as `requestTag`.
+
+`AnonymousWallet.takeTransferTags` returns the sender tag at the wallet's
+counter and moves the counter past it in the same step. Two transfers prepared
+at once never take one index. Store the wallet, then build the transfer. A
+selection whose transfer never lands leaves its index unused.
+`ViewingHistory.select` returns the same tag with the history past its index,
+for a history held outside an `AnonymousWallet`. Store that history before the
+transfer too. Pass the tag as `tags` on `anonymous`, on `spendPublic` or on a
+deposit. The wallet's first change slot then takes the sender tag. A payment or
+a deposit to the wallet's own viewing key also takes it. A frame publishes each
+tag once. A slot that would repeat a tag takes random bytes.
+
+A spend of Ring notes without `tags` publishes random bytes on its change.
+`syncRingWallet` reads the transaction that spends a note the wallet holds
+unspent and opens each body in it. A `syncWallet` run on the same wallet, or a
+sync without `RingKeys`, that reads the spend first marks the Ring note spent.
+No lead to that change is then left short of a recovery scan. An entry spends
+default-ring notes alone, and the SDK refuses it without `tags` with
+`RING_SENDER_TAG_REQUIRED`. A core sync that reads that spend before
+`syncRingWallet` leaves the sender tag as the one lead to the change short of a
+recovery scan.
+
+A deposit spends no note and returns no change. It refuses a payment with no tag
+or with its recipient's bootstrap tag, because a deposit publishes its funder. A
+deposit to another member's `RingPaymentRequest` under its `tag` builds without
+`tags`. A deposit to the wallet's own address with no request needs `tags`.
 
 `AnonymousWallet.takeRequestTag` returns the tag of the wallet's next payment
 request, the `tag` of a `RingPaymentRequest`. A payment to a bare `RingAddress`
@@ -164,11 +181,13 @@ publishes the bootstrap tag. Every reader of the address can link those
 payments.
 
 `syncRingWallet` finds the wallet's notes by tag. It lists the bootstrap tag of
-each held key. It also lists the sender and request tags up to `TAG_WINDOW`, 64,
-past each stored counter. It reads the exact matches of the listed tags from the
-indexer. A found tag moves its counter. The same sync lists the next window.
+each held key. It also lists the sender and request tags from index 0 to
+`TAG_WINDOW`, 64, past each stored counter. It reads the exact matches of the
+listed tags from the indexer. A found tag moves its counter. The same sync lists
+the next window. A wallet with stored counters lists past every unused index.
 A wallet restored from its seed alone starts both counters at zero.
-`TAG_WINDOW` unpaid requests in a row then hide every later request, until
+`TAG_WINDOW` unused sender indices in a row then hide every later sender tag.
+`TAG_WINDOW` unpaid requests in a row hide every later request, until
 `ViewingHistory.withRequestCount` states the count. `syncRingWallet` finds no
 payment under a tag the wallet does not list.
 

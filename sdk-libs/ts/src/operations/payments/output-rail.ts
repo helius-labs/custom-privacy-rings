@@ -24,7 +24,7 @@ import {
   publishedRecordLen,
   type RecordForm,
 } from "../../protocol/codec/ring-disclosure-layout.js";
-import { replyLength, sealReply } from "../../protocol/codec/anonymous-delivery.js";
+import { replyLength, sealNoReply, sealReply } from "../../protocol/codec/anonymous-delivery.js";
 import {
   DUMMY_RECORD,
   RecordKind,
@@ -535,15 +535,15 @@ export class RingOutputRail {
     );
   }
 
-  /** Random bytes on a non-exit slot that names none, every reply shares one length. */
+  /** A slot its owner opens seals its reply or the empty one, a dummy takes random bytes, every reply shares one length. */
   #reply(slot: PlannedSlot, slotIndex: number, lengths: FrameLengths): Uint8Array | undefined {
     const { replyLength: length } = lengths;
     if (length === undefined || slot.tag === undefined) return undefined;
+    if (slot.output.isDummy()) return randomBytes(length);
     const reply = slot.anonymous?.kind === "payment" ? slot.anonymous.payment.reply : null;
-    if (reply === null) return randomBytes(length);
     const secret = this.slotSecret(slot.recipientKey, slotIndex);
     try {
-      return sealReply(secret, reply, length);
+      return reply === null ? sealNoReply(secret, length) : sealReply(secret, reply, length);
     } finally {
       secret.fill(0);
     }

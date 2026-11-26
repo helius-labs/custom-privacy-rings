@@ -59,8 +59,6 @@ export interface RingSubmissionAttempt extends RingBoundState {
   readonly ringInstructionIndex: number;
   /** Absent off a transfer. */
   readonly chargedOutflows?: readonly OwnerDebit[];
-  /** Each non-exit slot's tag, absent off a ring frame. */
-  readonly slotTags?: readonly Bytes32[];
 }
 
 export type RingSubmissionResult =
@@ -143,7 +141,6 @@ export async function provenRingAttempt(
     intentHash: input.intentHash,
     ringInstructionIndex: frame.setupInstructions?.length ?? 0,
     chargedOutflows: proven.chargedOutflows,
-    slotTags: proven.slotTags(),
     ...boundState(proven),
   });
 }
@@ -171,7 +168,6 @@ export class RingTransactionSubmission {
   #attempts = 0;
   #proved = false;
   #terminal = false;
-  #confirmed = false;
   #busy = false;
 
   constructor(
@@ -194,11 +190,6 @@ export class RingTransactionSubmission {
     this.#wallet = input.wallet;
     this.#id = input.reservationId ?? bytesKey(crypto.getRandomValues(new Uint8Array(16)));
     this.#utxoHashes = (input.utxoHashes ?? []).map((hash) => new Uint8Array(hash) as Bytes32);
-  }
-
-  /** The confirmed frame's non-exit slot tags in slot order, empty until the transfer confirms. */
-  confirmedSlotTags(): readonly Bytes32[] {
-    return this.#confirmed ? (this.#attempt.slotTags ?? []) : [];
   }
 
   /** @internal The reservation `build` records outlives every attempt. */
@@ -298,7 +289,6 @@ export class RingTransactionSubmission {
         if (status.kind === "unknown") return this.#unknown(signature);
         if (status.kind === "confirmed") {
           this.#terminal = true;
-          this.#confirmed = true;
           return { kind: "confirmed", signature, slot: status.slot, attempts: this.#attempts };
         }
         // 3. The retry decision reads the bound registries, a failed read throws with the signature held to read again.

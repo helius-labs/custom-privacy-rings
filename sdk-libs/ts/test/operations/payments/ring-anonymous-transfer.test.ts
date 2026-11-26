@@ -33,7 +33,7 @@ import {
   associatedTokenAddress,
   splInterfaceWithBump,
 } from "@heliuslabs/spr/internal";
-import { buildRingPaymentTransaction, initializePoseidon } from "@heliuslabs/spr";
+import { buildRingPaymentTransaction, initializePoseidon, syncWallet } from "@heliuslabs/spr";
 import {
   SOL_INTERFACE,
   SPL_TOKEN_2022_PROGRAM_ID,
@@ -141,6 +141,7 @@ import {
   checkRingBlindings,
   expanded,
   freshWalletTags,
+  indexedFrame,
   itemAt,
   noteInput,
   randomAddress,
@@ -151,6 +152,7 @@ import {
   type Fixture,
   type RingFixtureOptions,
 } from "../../helpers/ring-pipeline.js";
+import { ScanIndexer } from "../../helpers/ring-scan.js";
 import { type RingKeys } from "../../../src/state/ring-keys.js";
 import { openOutputSlot, openSealedDisclosure } from "../../../src/crypto/audit/ring-disclosure.js";
 import { x25519FromU } from "../../../src/crypto/keys/x25519.js";
@@ -162,8 +164,11 @@ import {
 import {
   MIN_REPLY_LEN,
   openReply,
+  sealNoReply,
   type ReplyMetadata,
 } from "../../../src/protocol/codec/anonymous-delivery.js";
+import { AnonymousWallet } from "../../../src/state/anonymous-wallet.js";
+import { syncRingWallet } from "../../../src/state/ring-sync.js";
 import { ViewingHistory, type TransferTags } from "../../../src/state/viewing-history.js";
 import { AnonymousPlan } from "../../../src/protocol/transaction/anonymous-plan.js";
 
@@ -214,7 +219,7 @@ function rail(
     withdrawal?: TransactWithdrawal;
     /** False leaves the sender without a record address. */
     enrolled?: boolean;
-    /** The wallet's selection, a spend of no ring note is refused without it. */
+    /** The wallet's selection, an entry is refused without it. */
     tags?: TransferTags;
   }>,
 ): AnonymousTransfer {
@@ -473,7 +478,6 @@ describe("anonymous ring payment", () => {
     );
     expect(hex(change.ownerTag)).not.toBe(hex(ZERO_KEY));
     expect(payment.ownerTag).toEqual(bootstrapSlotTag(bob.viewingPublicKey().u()));
-    expect(proven.slotTags()).toEqual([change.ownerTag, payment.ownerTag]);
     expect(payment.record).toHaveLength(RING_RECORD_LEN);
     expect(payment.body.payload).toHaveLength(0);
     await checkAccounts(instruction, {
@@ -539,7 +543,7 @@ describe("anonymous ring payment", () => {
     expect(await frame(requests, tags)).toEqual([tags.sender, ...requests.map(slotTag)].map(hex));
   });
 
-  it("refuses a spend of no ring note without the wallet's tags", async () => {
+  it("refuses an entry without the wallet's tags", async () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();
     const bob = ShieldedKeypair.generate();
@@ -550,6 +554,56 @@ describe("anonymous ring payment", () => {
         .prove(fixture.client),
     ).rejects.toThrow(ringError("RING_SENDER_TAG_REQUIRED"));
     noProofs(fixture);
+  });
+
+  it("finds an entry's change through its spend row, a core sync that reads the spend first leaves the ring sync none", async () => {
+    const fixture = await anonymousRing();
+    const sender = anonymousSender();
+    const to = await addressOf(fixture, ShieldedKeypair.generate());
+    const spent = noteInput(sender.keypair, 10_000n);
+    const owner = sender.keypair.shieldedAddress();
+    await rail({
+      fixture,
+      sender,
+      transfer: new ConfidentialTransfer(owner, [spent], fixture.authority),
+      tags: await freshWalletTags(sender.keypair),
+    })
+      .withPayment({ to, asset: SOL_MINT, amount: 400n, reply: null })
+      .prove(fixture.client);
+    // The indexer answers no tag read, the spend of the held default-ring note returns the frame.
+    const indexer = new ScanIndexer();
+    indexer.publish(indexedFrame(fixture));
+    const holding = (): AnonymousWallet => {
+      const wallet = new Wallet({ identity: owner });
+      wallet._replace({
+        utxos: [
+          {
+            utxo: spent.utxo,
+            outputContext: { hash: spent.hash(), tree: TREE, treeId: TREE_ID, leafIndex: 0n },
+            nullifier: spent.nullifier(),
+            spent: false,
+          },
+        ],
+        transactions: [],
+        nullifiers: new Set(),
+      });
+      return AnonymousWallet.create(wallet, ViewingHistory.create(owner.viewingPublicKey, 0n));
+    };
+    const unspent = (ring: AnonymousWallet) =>
+      ring
+        .notes()
+        .filter((note) => !note.spent)
+        .map((note) => note.utxo.amount);
+    const read = { keys: walletKeys(sender.keypair), client: indexer.client() };
+    const first = holding();
+    await syncRingWallet({ wallet: first, ...read });
+    expect(indexer.ringReads).toEqual([]);
+    expect(unspent(first)).toEqual([9_600n]);
+    // A core sync that reads the spend first marks the note spent, `syncRingWallet` then reads no frame for it.
+    const late = holding();
+    await syncWallet({ wallet: late.wallet, ...read });
+    await syncRingWallet({ wallet: late, ...read });
+    expect(unspent(late)).toEqual([]);
   });
 
   it("leads with a zero SOL change when nothing returns to the sender", async () => {
@@ -819,7 +873,7 @@ describe("anonymous delivery slots", () => {
     checkTransferProof(fixture, data);
   });
 
-  it("gives every body one reply length on any named reply, a dummy's bytes random", async () => {
+  it("gives every body one reply length on any named reply, the empty reply on a slot that names none and random bytes on a dummy", async () => {
     const sayer = ShieldedKeypair.generate();
     const build = async () => {
       const { fixture, sender, recipients, anonymous } = await paying([400n, 300n], {
@@ -845,14 +899,22 @@ describe("anonymous delivery slots", () => {
     const opened = openReply(secret(itemAt(recipients, 0), 1), itemAt(replies, 1));
     expect(opened?.claimed.ownerKey).toEqual(sayer.shieldedAddress().signingPublicKey.ed25519());
     expect(opened?.claimed.viewingKey.u()).toEqual(sayer.shieldedAddress().viewingPublicKey.u());
-    // The slot that names none and the dummy hold random bytes, no reply opens from them.
-    expect(openReply(secret(itemAt(recipients, 1), 2), itemAt(replies, 2))).toBeUndefined();
+    // Random bytes on a slot its owner opens would decode as a reply by chance.
+    for (const [slot, owner] of [
+      [0, sender.keypair],
+      [2, itemAt(recipients, 1)],
+    ] as const) {
+      const sealed = itemAt(replies, slot);
+      expect(sealed, String(slot)).toEqual(sealNoReply(secret(owner, slot), sealed.length));
+      expect(openReply(secret(owner, slot), sealed), String(slot)).toBeUndefined();
+    }
+    // No owner opens the dummy.
     expect(itemAt(replies, 3).some((byte) => byte !== 0)).toBe(true);
     const again = await build();
     expect(replySlots(again.data)[3]).not.toEqual(replies[3]);
   });
 
-  it("carries random reply bytes on a change slot, no reply opens from them", async () => {
+  it("gives the change slot reply bytes in a frame of one replied payment", async () => {
     const { fixture, sender, anonymous } = await paying([400n], {
       replies: [claim(ShieldedKeypair.generate())],
     });
@@ -978,7 +1040,7 @@ describe("anonymous ring exits and entries", () => {
     const { data, call } = await expanded(fixture, proven, "anonymous");
 
     expect(data.entry).toBe(true);
-    // No ring note is spent, the next sync finds the change under the sender tag alone.
+    // A core sync that reads the spend first leaves only the sender tag to find the change.
     expect(data.outputs.slice(0, 2).map(tagOf)).toEqual([
       tags.sender,
       bootstrapSlotTag(to.recipient.viewingPublicKey.u()),
@@ -2037,36 +2099,6 @@ describe("anonymous ring relay", () => {
     });
     expect(result).toMatchObject({ kind: "confirmed", attempts: 1 });
     expect(fixture.sppCalls.map((call) => call.circuit.kind)).toEqual(["ringAnonymous"]);
-  });
-
-  it("moves the sender counter once a confirmed frame carries the selected sender tag, never before", async () => {
-    const { fixture, params, sender, relay } = await anonymousSpend({ notes: 2, amount: 5n });
-    await relay;
-    const { anonymous, ...plain } = params;
-    const payer = await generateKeyPairSigner();
-    const bob = ShieldedKeypair.generate();
-    const history = ViewingHistory.create(sender.keypair.viewingPublicKey(), 0n);
-    const tags = await history.select(walletKeys(sender.keypair));
-    const submission = await createRingTransferSubmission({
-      ...plain,
-      feePayer: payer.address,
-      recipient: await addressOf(fixture, bob),
-      anonymous: { signer: anonymous.signer, reply: null, tags },
-    });
-    submission.prove();
-    expect(history.withPublished(tags, submission.confirmedSlotTags()).current().txCount).toBe(0n);
-    await submission.send({
-      sign: (transaction) => signTransactionWithSigners([payer], transaction),
-      send: async () => undefined,
-      status: async () => ({ kind: "confirmed", slot: 3n }),
-    });
-    const published = submission.confirmedSlotTags();
-    expect(published.slice(0, 2).map(hex)).toEqual(
-      [tags.sender, bootstrapSlotTag(bob.viewingPublicKey().u())].map(hex),
-    );
-    expect(history.withPublished(tags, published).current().txCount).toBe(1n);
-    // A frame without the sender tag leaves the counter.
-    expect(history.withPublished(tags, published.slice(1)).current().txCount).toBe(0n);
   });
 
   it("relays fresh random bytes on change and the recipient's bootstrap tag without a selection, a reply teaches no state", async () => {

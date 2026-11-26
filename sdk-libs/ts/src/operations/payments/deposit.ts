@@ -120,7 +120,7 @@ export interface RingDepositParams {
   readonly splTokenProgram?: Address | null;
   /** Signs when a record covers deposits, the record must be its own. */
   readonly cosigner?: SignerAccount;
-  /** The depositor wallet's sender tag, an anonymous deposit proves with no other. */
+  /** The depositor wallet's sender tag, a deposit to its own address with no request is refused without it. */
   readonly tags?: TransferTags;
 }
 
@@ -372,13 +372,13 @@ export class PreparedRingDeposit {
     } else {
       const { tags } = params;
       const payment = { ...paid.payee, asset, amount: params.amount, reply: null };
+      const named = CustomRingTransfer.new(input).spendPublic(sender.solanaAddress());
+      rail = (tags === undefined ? named : named.withTags(tags)).withPayment(payment);
       // A deposit publishes its funder, a bootstrap tag beside it would name the recipient.
       const tag = paymentTag(payment, tags);
       const bootstrap = bootstrapSlotTag(payment.to.recipient.viewingPublicKey.u());
-      if (tags !== undefined && (tag === undefined || equalBytes(slotTag(tag), bootstrap)))
+      if (tag === undefined || equalBytes(slotTag(tag), bootstrap))
         throw new RingError("RING_DEPOSIT_BOOTSTRAP_TAG");
-      const named = CustomRingTransfer.new(input).spendPublic(sender.solanaAddress());
-      rail = (tags === undefined ? named : named.withTags(tags)).withPayment(payment);
     }
     return new PreparedRingDeposit({
       ringProgramId,

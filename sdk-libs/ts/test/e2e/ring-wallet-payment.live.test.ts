@@ -62,8 +62,8 @@ describe("core wallet payment into an anonymous ring", () => {
       ringProgramId: ring.ringProgramId,
       listSalt: new Uint8Array(32).fill(1) as Bytes32,
     });
-    // Core spends no ring note, the sender's next sync finds its change under the sender tag alone.
-    const tags = await senderDocument.history().select(ringKeys(sender));
+    // A core sync that reads the entry's spend first leaves only the sender tag to find its change.
+    const tags = await senderDocument.takeTransferTags(ringKeys(sender));
     const payment = await buildRingPaymentTransaction({
       client: ring.client,
       ring: anonymousRingTransfers({

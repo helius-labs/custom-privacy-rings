@@ -55,6 +55,11 @@ export function sealReply(slotSecret: Bytes32, reply: ReplyMetadata, length: num
   });
 }
 
+/** The reply bytes of a slot that names no sender, its zero `viewing_u` never decodes, random bytes can decode by chance. */
+export function sealNoReply(slotSecret: Bytes32, length: number): Uint8Array {
+  return seal(slotSecret, REPLY_ENC_INFO, () => new Uint8Array(length));
+}
+
 /** The proof binds the bytes alone, `undefined` on a reply that never decodes. */
 export function openReply(slotSecret: Bytes32, ciphertext: Uint8Array): ReplyClaim | undefined {
   if (ciphertext.length < MIN_REPLY_LEN) return undefined;

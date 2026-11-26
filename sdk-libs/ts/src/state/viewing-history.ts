@@ -2,7 +2,7 @@
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { address as checkedRing, type Address } from "@solana/kit";
 import type { RequestContext } from "@heliuslabs/spr";
-import { addressBytes, equalBytes, U64_MAX } from "@heliuslabs/spr/internal";
+import { addressBytes, U64_MAX } from "@heliuslabs/spr/internal";
 import { X25519PublicKey, type ViewTag } from "@heliuslabs/spr/keypair";
 
 import { RingError } from "../protocol/error.js";
@@ -44,15 +44,10 @@ export class StreamCounter {
     return Object.freeze({ start: 0n, end });
   }
 
-  /** @internal Past the index a request takes, `next` before the call. */
+  /** @internal Past the index a request or a send takes, `next` before the call. */
   _minted(): StreamCounter {
     if (this.next === U64_MAX) throw new RingError("RING_COUNTER_OVERFLOW");
     return new StreamCounter(this.next + 1n, this.scanned);
-  }
-
-  /** @internal */
-  _taken(index: bigint): StreamCounter {
-    return this._atLeast(past(index));
   }
 
   /** @internal */
@@ -73,20 +68,11 @@ export class TransferTags {
   readonly viewingPublicKey: X25519PublicKey;
   /** Published once in a frame, on the first slot the wallet's own key opens. */
   readonly sender: ViewTag;
-  /** @internal */
-  readonly _senderIndex: bigint;
 
   /** @internal */
-  constructor(
-    fields: Readonly<{
-      viewingPublicKey: X25519PublicKey;
-      sender: ViewTag;
-      senderIndex: bigint;
-    }>,
-  ) {
+  constructor(fields: Readonly<{ viewingPublicKey: X25519PublicKey; sender: ViewTag }>) {
     this.viewingPublicKey = fields.viewingPublicKey;
     this.sender = fields.sender;
-    this._senderIndex = fields.senderIndex;
     Object.freeze(this);
   }
 }
@@ -176,14 +162,10 @@ export class ViewingKeyEntry {
     return this.#counted(stream, (counter) => counter._found(index));
   }
 
-  /** @internal A confirmed frame carried the sender tag at `index`. */
-  _senderTaken(index: bigint): ViewingKeyEntry {
-    return this.#counted("sender", (counter) => counter._taken(index));
-  }
-
-  /** @internal */
-  _requestMinted(): ViewingKeyEntry {
-    return this.#counted("request", (counter) => counter._minted());
+  /** @internal The index `stream` takes and the entry past it. */
+  _minted(stream: ViewTagStream): Readonly<{ index: bigint; entry: ViewingKeyEntry }> {
+    const index = this[counterOf(stream)].next;
+    return { index, entry: this.#counted(stream, (counter) => counter._minted()) };
   }
 
   /** @internal */
@@ -233,7 +215,7 @@ export class ViewingKeyEntry {
     stream: ViewTagStream,
     moved: (counter: StreamCounter) => StreamCounter,
   ): ViewingKeyEntry {
-    const counter = stream === "sender" ? "tx" : "request";
+    const counter = counterOf(stream);
     return new ViewingKeyEntry({ ...this.#fields(), [counter]: moved(this[counter]) });
   }
 
@@ -259,6 +241,9 @@ export interface AdvancedTag<T> {
   readonly tag: T;
   readonly history: ViewingHistory;
 }
+
+/** @internal The holder's answer for an index `AdvancedTag.history` is already past. */
+export type PendingTag<T> = (keys: RingKeys, context?: RequestContext) => Promise<T>;
 
 /** Every retained viewing key, oldest first, the last one current. */
 export class ViewingHistory {
@@ -408,26 +393,10 @@ export class ViewingHistory {
     return entry === undefined ? this : this.withEntry(at, entry._found(stream, index));
   }
 
-  /** The sender tag of one transfer under the current key, `withPublished` takes its index. */
-  async select(keys: RingKeys, context?: RequestContext): Promise<TransferTags> {
-    const { viewingPublicKey, tx } = this.current();
-    const senderIndex = tx.next;
-    const sender = await derivedTag(
-      keys,
-      { viewingPublicKey, stream: "sender", index: senderIndex },
-      context,
-    );
-    return new TransferTags({ viewingPublicKey, sender, senderIndex });
-  }
-
-  /** The history once the transfer of `tags` confirmed, past the sender index when `published` carries its tag. */
-  withPublished(tags: TransferTags, published: readonly ViewTag[]): ViewingHistory {
-    const at = this.entries.findIndex((entry) =>
-      entry.viewingPublicKey.equals(tags.viewingPublicKey),
-    );
-    const entry = this.entries[at];
-    if (entry === undefined || !published.some((tag) => equalBytes(tag, tags.sender))) return this;
-    return this.withEntry(at, entry._senderTaken(tags._senderIndex));
+  /** The sender tag of one transfer under the current key, a transfer built before `history` is stored can repeat it. */
+  async select(keys: RingKeys, context?: RequestContext): Promise<AdvancedTag<TransferTags>> {
+    const { history, tag } = this._takeSender();
+    return Object.freeze({ tag: await tag(keys, context), history });
   }
 
   /** The tag of the current key's next payment request. */
@@ -436,22 +405,20 @@ export class ViewingHistory {
     return Object.freeze({ tag: await tag(keys, context), history });
   }
 
-  /** @internal `history` holds the request index before `tag` asks the holder, concurrent callers never share one. */
-  _takeRequest(): Readonly<{
-    history: ViewingHistory;
-    tag: (keys: RingKeys, context?: RequestContext) => Promise<ViewTag>;
-  }> {
-    const current = this.current();
-    const index = current.request.next;
+  /** @internal */
+  _takeSender(): AdvancedTag<PendingTag<TransferTags>> {
+    const { viewingPublicKey } = this.current();
+    const { history, tag } = this.#take("sender");
     return {
-      history: this.#withCurrent(current._requestMinted()),
-      tag: (keys, context) =>
-        derivedTag(
-          keys,
-          { viewingPublicKey: current.viewingPublicKey, stream: "request", index },
-          context,
-        ),
+      history,
+      tag: async (keys, context) =>
+        new TransferTags({ viewingPublicKey, sender: await tag(keys, context) }),
     };
+  }
+
+  /** @internal */
+  _takeRequest(): AdvancedTag<PendingTag<ViewTag>> {
+    return this.#take("request");
   }
 
   /** At least `count` requests were minted under the current key, a wallet restored from its seed alone states it. */
@@ -500,6 +467,17 @@ export class ViewingHistory {
     return new ViewingHistory(entries);
   }
 
+  /** `history` holds the index before `tag` asks the holder, concurrent callers never share one. */
+  #take(stream: ViewTagStream): AdvancedTag<PendingTag<ViewTag>> {
+    const current = this.current();
+    const { viewingPublicKey } = current;
+    const { index, entry } = current._minted(stream);
+    return {
+      history: this.#withCurrent(entry),
+      tag: (keys, context) => derivedTag(keys, { viewingPublicKey, stream, index }, context),
+    };
+  }
+
   #withCurrent(entry: ViewingKeyEntry): ViewingHistory {
     return this.withEntry(this.entries.length - 1, entry);
   }
@@ -523,6 +501,10 @@ interface EntryFields {
 }
 
 const COUNTERS = ["tx", "request"] as const;
+
+function counterOf(stream: ViewTagStream): (typeof COUNTERS)[number] {
+  return stream === "sender" ? "tx" : "request";
+}
 
 async function derivedTag(
   keys: RingKeys,
