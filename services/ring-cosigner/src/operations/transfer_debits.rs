@@ -1,6 +1,9 @@
 //! Each owner's outflow of the transfer a co-signer signs, read from the frame and the note index.
 
-use std::{collections::HashMap, ops::Range};
+use std::{
+    collections::{BTreeMap, HashMap},
+    ops::Range,
+};
 
 use custom_ring_interface::{
     settlement_mints, tag, InstructionTag, PublicLeg, PublicSlotError, PublicSlots, RingPolicy,
@@ -563,6 +566,32 @@ impl OwnerFlows<'_> {
         }
         Ok(flows)
     }
+
+    /// An asset with no exit and no withdrawal has no entry.
+    pub(super) fn leaving(
+        &self,
+        mint_of: impl Fn(&[u8; 32]) -> Result<Address, RingCosignerError>,
+    ) -> Result<BTreeMap<Address, u128>, RingCosignerError> {
+        let mut leaving = BTreeMap::<Address, u128>::new();
+        let mut leave = |mint: Address, amount: u128| {
+            let total = leaving.entry(mint).or_default();
+            *total = total.saturating_add(amount);
+        };
+        for public in self.public.iter().filter(|public| public.withdrawn != 0) {
+            leave(public.mint, public.withdrawn);
+        }
+        let exits = self
+            .outputs
+            .iter()
+            .filter(|output| !output.ring && output.amount != 0);
+        for exit in exits {
+            // A public leg names its mint, the registry answers for an exit the frame's notes fund.
+            let named = self.public.iter().find(|public| public.asset == exit.asset);
+            let mint = named.map_or_else(|| mint_of(&exit.asset), |public| Ok(public.mint))?;
+            leave(mint, exit.amount.into());
+        }
+        Ok(leaving)
+    }
 }
 
 /// The note of each published nullifier the index holds, the rest spend no note it opened.
@@ -589,16 +618,17 @@ struct FrameFlows<'a> {
 impl FrameFlows<'_> {
     fn read(&self, approval_bits: u8) -> Result<TransferRead, RingCosignerError> {
         let inputs = self.inputs()?;
+        let moved = OwnerFlows {
+            inputs: &inputs,
+            outputs: &self.outputs()?,
+            owner_signers: &self.owner_signers,
+            public: &self.public,
+            no_spend_owner: Member::owner_tag(self.ring.as_array()).map_err(|_| unavailable())?,
+        };
+        let leaving = moved.leaving(|asset| self.mint_of(asset))?;
         Ok(TransferRead {
-            flows: OwnerFlows {
-                inputs: &inputs,
-                outputs: &self.outputs()?,
-                owner_signers: &self.owner_signers,
-                public: &self.public,
-                no_spend_owner: Member::owner_tag(self.ring.as_array())
-                    .map_err(|_| unavailable())?,
-            }
-            .rows(|asset| self.mint_of(asset))?,
+            flows: moved.rows(|asset| self.mint_of(asset))?,
+            leaving,
             spends_note: !inputs.is_empty(),
             approval_bits: Some(approval_bits),
             co_signers: Vec::new(),

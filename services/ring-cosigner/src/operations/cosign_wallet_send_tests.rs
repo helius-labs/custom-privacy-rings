@@ -88,6 +88,7 @@ fn transfer(owner: u8, amount: u64, nullifiers: &[[u8; 32]]) -> TransferRead {
                 withdrawn: 0,
             },
         }],
+        leaving: BTreeMap::new(),
         spends_note: true,
         approval_bits: None,
         co_signers: Vec::new(),

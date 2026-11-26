@@ -88,6 +88,7 @@ impl AssetLimitSource for Clocked {
         self.frame_reads.fetch_add(1, Ordering::Relaxed);
         Ok(FrameRead::Transfer(TransferRead {
             flows: self.frame.clone(),
+            leaving: BTreeMap::new(),
             spends_note: true,
             approval_bits: None,
             co_signers: Vec::new(),

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
     sync::{Arc, Mutex, PoisonError},
 };
@@ -81,6 +81,8 @@ pub enum FrameRead {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferRead {
     pub(crate) flows: Vec<OwnerFlow>,
+    /// What leaves the ring of each asset, its exit outputs and its public withdrawal legs.
+    pub(crate) leaving: BTreeMap<Address, u128>,
     /// Clear on a frame of public legs alone.
     pub(crate) spends_note: bool,
     /// The frame's proven mask, `None` on a frame that carries none.
@@ -1083,6 +1085,7 @@ mod tests {
     fn frame(flows: Vec<OwnerFlow>) -> FrameRead {
         FrameRead::Transfer(TransferRead {
             flows,
+            leaving: BTreeMap::new(),
             spends_note: true,
             approval_bits: None,
             co_signers: Vec::new(),
@@ -1195,6 +1198,7 @@ mod tests {
         let read = || {
             FrameRead::Transfer(TransferRead {
                 flows: flows.clone(),
+                leaving: BTreeMap::new(),
                 spends_note: true,
                 approval_bits: None,
                 co_signers: Vec::new(),
@@ -1235,6 +1239,7 @@ mod tests {
                         withdrawn,
                     },
                 }],
+                leaving: BTreeMap::new(),
                 spends_note: false,
                 approval_bits: None,
                 co_signers: Vec::new(),
@@ -1283,6 +1288,7 @@ mod tests {
                         withdrawn: 101,
                     },
                 }],
+                leaving: BTreeMap::new(),
                 spends_note: false,
                 approval_bits: None,
                 co_signers,

@@ -287,6 +287,60 @@ fn a_withdrawal_reads_the_statement_gross_and_never_an_empty_one() {
         .all(|(_, outflow)| *outflow == 0));
 }
 
+/// Of the 100 spent 25 and 5 exit and 40 stay in the ring, a public leg withdraws or deposits 30.
+#[test]
+fn what_leaves_is_each_exit_and_withdrawal_leg_and_never_a_deposit_or_a_ring_output() {
+    let alice = note(ALICE, 0x10, 100);
+    let store = store_with(&[alice]);
+    let exits = audited(
+        vec![spend(&alice)],
+        vec![
+            ring_slot(0, BOB, 40),
+            slot(1, OutputOpening::Exit(utxo(BOB, 25))),
+            slot(2, OutputOpening::Exit(utxo(ALICE, 5))),
+        ],
+    );
+    let stays = audited(vec![spend(&alice)], vec![ring_slot(0, BOB, 100)]);
+    let leaving = |transaction: &AuditedTransaction, public_flows| {
+        read(&store, transaction, public_flows)
+            .expect("rows")
+            .leaving
+    };
+    let of_the_mint = |amount: u128| BTreeMap::from([(mint_of_asset(), amount)]);
+    assert_eq!(leaving(&exits, vec![public(30, 0)]), of_the_mint(60));
+    assert_eq!(leaving(&exits, vec![public(0, 30)]), of_the_mint(30));
+    assert_eq!(leaving(&stays, vec![public(0, 30)]), BTreeMap::new());
+}
+
+/// A deposit funds the exit of 15 and no note is spent, the rows ask the registry for no mint.
+#[test]
+fn a_deposit_funded_exit_and_an_exit_of_nothing_need_no_registry_mint() {
+    let no_mints = RingAssets::new([]).expect("assets");
+    let of_no_mint = AuditedUtxo {
+        asset: [9; 32],
+        ..utxo(BOB, 0)
+    };
+    let transaction = audited(
+        Vec::new(),
+        vec![
+            slot(0, OutputOpening::Exit(utxo(BOB, 15))),
+            slot(1, OutputOpening::Exit(of_no_mint)),
+        ],
+    );
+    let notes = block_on(real_input_notes(&store_with(&[]), &transaction)).expect("notes");
+    let read = FrameFlows {
+        audited: &transaction,
+        notes: &notes,
+        owner_signers: Vec::new(),
+        public: vec![public(0, 15)],
+        assets: &no_mints,
+        ring: RING,
+    }
+    .read(0)
+    .expect("read");
+    assert_eq!(read.leaving, BTreeMap::from([(mint_of_asset(), 15)]));
+}
+
 #[test]
 fn a_dummy_input_and_a_dummy_slot_answer_for_nothing() {
     let store = store_with(&[]);
