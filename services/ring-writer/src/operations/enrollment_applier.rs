@@ -38,8 +38,8 @@ use ring_service_core::{
     database::Store,
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
     landing::{signature_fees, Attempt, ChainOutcome, Landing},
-    redact::redacted,
 };
+use zolana_ring_indexer::redact::redacted;
 
 use crate::{
     enrollment_rings::EnrollmentRingBook,
@@ -52,41 +52,29 @@ pub const MAX_HELD_ENROLLMENTS: usize = 64;
 /// Failed batches a write rides in before the writer drops it.
 pub const MAX_ENROLLMENT_ATTEMPTS: u8 = 3;
 
-#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
-#[repr(i32)]
-pub enum EnrollmentRefusal {
-    #[error("enrollments are not written for the ring")]
-    NotServed = -32180,
-    #[error("the ring holds no initialized policy or tracking registry, or names another writer")]
-    RingMissing = -32181,
-    #[error("the enrollment write is malformed or its signature does not verify")]
-    InvalidWrite = -32182,
-    #[error("the RegisterKey proof does not verify for the enrolled key")]
-    RegisterKeyProof = -32183,
-    #[error(
-        "the ring holds {MAX_HELD_ENROLLMENTS} enrollments, submit again after its next batch"
-    )]
-    Full = -32184,
-    #[error("the enrollment writer's fee budget or the ring's share of it is spent, the operator raises it")]
-    Budget = -32185,
-    #[error("the enrollment writer serves its most registered rings, the operator raises the cap")]
-    RingsFull = -32186,
-    #[error("the ring has a transaction in flight, prove the enrollment again after it lands")]
-    InFlight = -32187,
-}
-
-#[cfg(any(test, feature = "test-fixtures"))]
-impl EnrollmentRefusal {
-    pub const ALL: [Self; 8] = [
-        Self::NotServed,
-        Self::RingMissing,
-        Self::InvalidWrite,
-        Self::RegisterKeyProof,
-        Self::Full,
-        Self::Budget,
-        Self::RingsFull,
-        Self::InFlight,
-    ];
+ring_service_core::listed_refusals! {
+    #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+    #[repr(i32)]
+    pub enum EnrollmentRefusal {
+        #[error("enrollments are not written for the ring")]
+        NotServed = -32180,
+        #[error("the ring holds no initialized policy or tracking registry, or names another writer")]
+        RingMissing = -32181,
+        #[error("the enrollment write is malformed or its signature does not verify")]
+        InvalidWrite = -32182,
+        #[error("the RegisterKey proof does not verify for the enrolled key")]
+        RegisterKeyProof = -32183,
+        #[error(
+            "the ring holds {MAX_HELD_ENROLLMENTS} enrollments, submit again after its next batch"
+        )]
+        Full = -32184,
+        #[error("the enrollment writer's fee budget or the ring's share of it is spent, the operator raises it")]
+        Budget = -32185,
+        #[error("the enrollment writer serves its most registered rings, the operator raises the cap")]
+        RingsFull = -32186,
+        #[error("the ring has a transaction in flight, prove the enrollment again after it lands")]
+        InFlight = -32187,
+    }
 }
 
 /// Applies the held writes of each served ring, the payer is the ring's `EnrollmentWriter`.

@@ -98,39 +98,41 @@ pub enum CoSignRefusal {
     NotAllowed,
 }
 
-#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
-#[repr(i32)]
-pub enum CoSignError {
-    #[error("co-signing is disabled")]
-    Disabled = -32160,
-    #[error("the transaction exceeds a co-signer limit")]
-    OverLimit = -32161,
-    #[error("the co-sign flows name an owner and asset twice")]
-    RepeatedAsset = -32162,
-    #[error("the asset limits or an input opening are unreadable")]
-    LimitsUnavailable = -32163,
-    #[error("the message holds anything but one ring transfer the co-signer can read")]
-    MessageScope = -32164,
-    #[error("the co-signer approves no class the operation demands")]
-    NotApproved = -32165,
-    #[error("the co-sign reservation is already released")]
-    ReleasedReservation = -32166,
-    #[error("a sender or an asset of the transaction is frozen")]
-    Frozen = -32167,
-    #[error("a party or an asset of the transaction is blocked")]
-    Blocked = -32168,
-    #[error("a party or an asset of the transaction is not on the allow list")]
-    NotAllowed = -32169,
-    #[error("the list entry names no usable subject")]
-    ListSubject = -32175,
-    #[error("the simulation does not make the approved transfer call exactly once")]
-    ApprovedCallNotOnce = -32176,
-    #[error("the message names no blockhash the cluster holds")]
-    StaleBlockhash = -32177,
-    #[error("another transfer of an input holds a reservation until it lands or expires")]
-    InputReserved = -32178,
-    #[error("the co-sign request names an asset with no record")]
-    UnrecordedAsset = -32296,
+ring_service_core::listed_refusals! {
+    #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+    #[repr(i32)]
+    pub enum CoSignError {
+        #[error("co-signing is disabled")]
+        Disabled = -32160,
+        #[error("the transaction exceeds a co-signer limit")]
+        OverLimit = -32161,
+        #[error("the co-sign flows name an owner and asset twice")]
+        RepeatedAsset = -32162,
+        #[error("the asset limits or an input opening are unreadable")]
+        LimitsUnavailable = -32163,
+        #[error("the message holds anything but one ring transfer the co-signer can read")]
+        MessageScope = -32164,
+        #[error("the co-signer approves no class the operation demands")]
+        NotApproved = -32165,
+        #[error("the co-sign reservation is already released")]
+        ReleasedReservation = -32166,
+        #[error("a sender or an asset of the transaction is frozen")]
+        Frozen = -32167,
+        #[error("a party or an asset of the transaction is blocked")]
+        Blocked = -32168,
+        #[error("a party or an asset of the transaction is not on the allow list")]
+        NotAllowed = -32169,
+        #[error("the list entry names no usable subject")]
+        ListSubject = -32175,
+        #[error("the simulation does not make the approved transfer call exactly once")]
+        ApprovedCallNotOnce = -32176,
+        #[error("the message names no blockhash the cluster holds")]
+        StaleBlockhash = -32177,
+        #[error("another transfer of an input holds a reservation until it lands or expires")]
+        InputReserved = -32178,
+        #[error("the co-sign request names an asset with no record")]
+        UnrecordedAsset = -32296,
+    }
 }
 
 /// The digest of the co-signer and its serialized message, a reservation key no signer call derives.
@@ -188,25 +190,6 @@ impl Ticket {
 }
 
 impl CoSignError {
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub const ALL: [Self; 15] = [
-        Self::Disabled,
-        Self::OverLimit,
-        Self::RepeatedAsset,
-        Self::LimitsUnavailable,
-        Self::MessageScope,
-        Self::NotApproved,
-        Self::ReleasedReservation,
-        Self::Frozen,
-        Self::Blocked,
-        Self::NotAllowed,
-        Self::ListSubject,
-        Self::ApprovedCallNotOnce,
-        Self::StaleBlockhash,
-        Self::InputReserved,
-        Self::UnrecordedAsset,
-    ];
-
     pub const fn code(self) -> i32 {
         self as i32
     }

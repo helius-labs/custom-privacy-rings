@@ -24,6 +24,7 @@ pub mod transfer;
 
 use custom_ring_interface::CoSignScope;
 use custom_ring_interface::{RecordWrite, RingMode, RING_TRANSACT_ACCOUNT_PREFIX_LEN};
+use ring_audit::tracking::fixture::{Enrollment, TrackingLedger};
 use spr_keypair::NullifierKey;
 use spr_keypair::{X25519Keypair, X25519Pubkey};
 use std::{
@@ -39,9 +40,24 @@ use std::{
 use zolana_ring_indexer::tracking::{GetTrackingRecordsRequest, GetTrackingRecordsResponse};
 use zolana_ring_member_registry::{MemberRecord, MemberRegistryTree, RecordOpening, RecordTree};
 use zolana_ring_policy::{ListId, Member, MintPolicy};
-use zolana_ring_rpc::tracking_fixture::{Enrollment, TrackingLedger};
 
 use p256::ecdsa::signature::hazmat::PrehashSigner;
+use ring_audit::audit::{AuditRead, AuditService, Page};
+use ring_audit::RingAuditError;
+use ring_cosigner::cosign::{ApproveClass, CoSignerApproval};
+use ring_service_core::authorize::{ReadCheck, Unauthorized, AUTH_SKEW};
+use ring_service_core::clock::Clock;
+use ring_service_core::database::Store;
+use ring_service_core::error::CarriedFault;
+use ring_service_core::keys::{GrantRowsSecret, RootSecret};
+use ring_service_core::origins::{OriginPolicy, Origins};
+use ring_service_core::upstream::{
+    MergeAuditRequest, RecordsTip, RingConfiguration, RingFrame, RingHistoryPage, ScopeUnreadable,
+    TransactionPage, TransactionSource,
+};
+use ring_service_core::ServiceError;
+use ring_writer::record_update::ReaderGrantStore;
+use ring_writer::WriterError;
 use sha2::Digest;
 use solana_address::Address;
 use solana_keypair::Keypair;
@@ -76,13 +92,7 @@ use zolana_ring_indexer::rpc::{
     GetStorageMemberRecordsRequest, GetStorageMemberRecordsResponse, RingIndexedMemberRecordView,
     RingMemberOpening, RingMemberRecordView, RingRecordPathView, StorageRootView,
 };
-use zolana_ring_rpc::{
-    rpc_module, ApproveClass, AuditRead, AuditService, CarriedFault, Clock, CoSignerApproval,
-    GrantRowsSecret, Hub, MergeAuditRequest, OriginPolicy, Origins, Page, ReadCheck,
-    ReaderGrantStore, RecordsTip, RingAuditError, RingConfiguration, RingFrame, RingHistoryPage,
-    RingRpcError, RootSecret, ScopeUnreadable, ServiceError, ServiceIdentity, Store,
-    TransactionPage, TransactionSource, Unauthorized, WriterError, AUTH_SKEW,
-};
+use zolana_ring_rpc::{rpc_module, Hub, RingRpcError, ServiceIdentity};
 use zolana_ring_transaction::RingAssets;
 
 use transfer::{field, x25519_u, Disclosure, Frame, Output, Publish, Rail, Transfer, UtxoFields};
@@ -591,8 +601,8 @@ impl TransactionSource for StaticSource {
     async fn tracking_root(
         &self,
         _ring: Address,
-        _finality: zolana_ring_rpc::Finality,
-    ) -> Result<Option<zolana_ring_rpc::TrackingRoot>, ClientError> {
+        _finality: ring_service_core::upstream::Finality,
+    ) -> Result<Option<ring_service_core::upstream::TrackingRoot>, ClientError> {
         Ok(self.tracking.0.root())
     }
 

@@ -43,7 +43,8 @@ use ring_service_core::client_identity::{
     ApiKeyDigest, ClientIdentity, ClientIdentityPolicy, PeerAddress, UnknownApiKey,
 };
 
-use crate::error::{RingRpcError, ServiceError};
+use crate::error::RingRpcError;
+use ring_service_core::ServiceError;
 
 /// Past it the bucket nearest to full is dropped.
 const MAX_BUCKETS: usize = 65_536;

@@ -10,8 +10,8 @@ use crate::{
     frame_repairs::{RepairAttempt, MAX_REPAIRED_FRAMES},
     spend_machine::SpendRow,
     spent_index::{
-        read_enrollment, read_frame, read_note, read_spend_row, NoteSeal, ENROLLMENT_COLUMNS,
-        NOTE_COLUMNS, ROW_COLUMNS,
+        read_enrollment, read_frame, read_note, read_repair_attempt, read_spend_row, NoteSeal,
+        ENROLLMENT_COLUMNS, NOTE_COLUMNS, ROW_COLUMNS,
     },
     tracking::HeldEnrollment,
     utxos::{CreatedIn, StoredUtxo},
@@ -47,11 +47,7 @@ impl<C: ConnectionTrait> ProjectionReads<'_, C> {
              LIMIT $3".into(),
             vec![sql::integer(now)?, sql::count(MAX_REPAIRED_FRAMES)?],
         )).await?.iter().map(|row| {
-            Ok((read_frame(row)?, RepairAttempt {
-                attempts: u32::try_from(row.try_get::<i64>("", "attempts")?)
-                    .map_err(|_| DbErr::Custom("repair attempts out of range".into()))?,
-                retry_after: sql::read_integer(row, "retry_after")?,
-            }))
+            Ok((read_frame(row)?, read_repair_attempt(row)?))
         }).collect()
     }
 

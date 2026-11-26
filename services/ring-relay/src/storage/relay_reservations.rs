@@ -533,12 +533,12 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
         let Some(row) = row else {
             return transaction.commit().await;
         };
-        let lamports: i64 = row.try_get("", "lamports")?;
+        let lamports = read_integer(&row, "lamports")?;
         // An unfunded row raised no counter.
         if lamports == 0 {
             return transaction.commit().await;
         }
-        let spent: i64 = row.try_get("", "spent")?;
+        let spent = read_integer(&row, "spent")?;
         let signer: Vec<u8> = row.try_get("", "signer")?;
         let (to_total, to_signer) = match end {
             AttemptEnd::Landed { lamports: landed } => (

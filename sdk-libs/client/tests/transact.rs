@@ -131,7 +131,7 @@ fn compute_vectors() -> ExpansionVectors {
                       those of ring-disclosure-ranges.json. The auditor message is 0x04 || tx_viewing_u \
                       || envelope || records || tails. Recipient bodies forward as ring body, \
                       u16le(body_len) || body || reply. Produced by \
-                      program-libs/interface/tests/transact.rs."
+                      sdk-libs/client/tests/transact.rs."
             .to_string(),
         auditor_pubkey: hex::encode(config.auditor_pubkey),
         cases,

@@ -14,7 +14,6 @@ use spr_interface::ZERO_NULLIFIER_PUBKEY;
 
 /// Set in the kind byte exactly when a live record's key is `ZERO_NULLIFIER_PUBKEY`.
 pub const RECORD_ZERO_KEY_BIT: u8 = 4;
-const FIELD_LEN: usize = 32;
 
 pub trait SealedLayout {
     /// A slot at or past `m` transmits no byte, the proof forces it empty.
@@ -318,8 +317,8 @@ impl core::fmt::Debug for MergeEnvelope {
 impl MergeEnvelope {
     pub fn encode(&self) -> [u8; MERGE_ENVELOPE_LEN] {
         let mut out = [0; MERGE_ENVELOPE_LEN];
-        out[..FIELD_LEN].copy_from_slice(&self.eph_sk);
-        out[FIELD_LEN..].copy_from_slice(&self.recipient_u);
+        out[..self.eph_sk.len()].copy_from_slice(&self.eph_sk);
+        out[self.eph_sk.len()..].copy_from_slice(&self.recipient_u);
         out
     }
 

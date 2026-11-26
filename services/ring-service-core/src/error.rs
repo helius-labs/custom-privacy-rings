@@ -6,7 +6,8 @@ use zolana_ring_client::{
     rpc::KeyFileError, AuditError, RingIndexerError, RingRpcError as RingRefusal,
 };
 
-use crate::{authorize::Unauthorized, redact::redacted};
+use crate::authorize::Unauthorized;
+use zolana_ring_indexer::redact::redacted;
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
@@ -59,6 +60,24 @@ pub mod fault_sources {
     pub use zolana_ring_client::{rpc::KeyFileError, AuditError, RingIndexerError};
 
     pub use crate::authorize::Unauthorized;
+}
+
+/// One variant list declares a refusal enum and its `ALL`.
+#[macro_export]
+macro_rules! listed_refusals {
+    ($(#[$attribute:meta])* $visibility:vis enum $name:ident {
+        $($(#[$variant_attribute:meta])* $variant:ident = $code:expr,)+
+    }) => {
+        $(#[$attribute])*
+        $visibility enum $name {
+            $($(#[$variant_attribute])* $variant = $code,)+
+        }
+
+        #[cfg(any(test, feature = "test-fixtures"))]
+        impl $name {
+            pub const ALL: [$name; [$($name::$variant),+].len()] = [$($name::$variant),+];
+        }
+    };
 }
 
 /// `?` lifts each core fault source into an area error through its `Service` variant.

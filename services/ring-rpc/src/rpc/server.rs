@@ -802,13 +802,14 @@ mod tests {
             MergeAuditRequest, RecordsTip, RingConfiguration, RingFrame, RingHistoryPage,
             TransactionPage,
         },
+        ServiceError,
     };
 
     use ring_writer::record_update::RecordUpdateRefusal;
 
     use crate::{
         client_rate::{BucketRate, ClientRates, RateLimit, NETWORK_CLIENTS},
-        error::{RingRpcError, ServiceError},
+        error::RingRpcError,
         hub::ServiceIdentity,
     };
 

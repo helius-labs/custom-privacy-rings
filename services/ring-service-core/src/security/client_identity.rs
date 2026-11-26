@@ -8,7 +8,7 @@ use hyper::{HeaderMap, Request};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::redact::API_KEY_PARAMETER;
+use zolana_ring_indexer::redact::API_KEY_PARAMETER;
 
 const API_KEY_HEADER: &str = "x-api-key";
 const FORWARDED_FOR_HEADER: &str = "x-forwarded-for";

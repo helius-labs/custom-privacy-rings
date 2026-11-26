@@ -1,6 +1,6 @@
 //! One signed request, one row, every message of it charged until settlement or proven expiry.
 
-use zolana_ring_rpc::ChainOutcome;
+use ring_service_core::landing::ChainOutcome;
 
 use super::*;
 

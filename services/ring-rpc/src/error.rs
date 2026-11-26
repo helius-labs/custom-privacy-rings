@@ -1,11 +1,10 @@
 use jsonrpsee::types::ErrorObjectOwned;
 use thiserror::Error;
 
-pub use ring_audit::error::{GrantRefusal, RingAuditError};
-pub use ring_cosigner::RingCosignerError;
-pub use ring_relay::RingRelayError;
-pub use ring_service_core::ServiceError;
-use ring_service_core::{error::CarriedFault, service_faults};
+use ring_audit::RingAuditError;
+use ring_cosigner::RingCosignerError;
+use ring_relay::RingRelayError;
+use ring_service_core::{error::CarriedFault, service_faults, ServiceError};
 use ring_writer::{
     enrollment_applier::EnrollmentRefusal, record_update::RecordUpdateRefusal, WriterError,
 };

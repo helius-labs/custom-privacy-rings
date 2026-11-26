@@ -32,9 +32,9 @@ use ring_service_core::{
     keys::{GrantRowsSecret, KeySource, RootSecret},
     limits::{Lane, RequestRate, MAX_CONCURRENT_AUTHENTICATIONS, MAX_CONCURRENT_READS},
     origins::Origins,
-    redact::redacted,
     upstream::TransactionSource,
 };
+use zolana_ring_indexer::redact::redacted;
 
 use ring_audit::{
     audit::AuditService,
@@ -49,7 +49,8 @@ use ring_writer::{
     storage_chain::StorageChain,
 };
 
-use crate::error::{RingAuditError, RingRpcError, ServiceError};
+use crate::error::RingRpcError;
+use ring_audit::RingAuditError;
 use ring_cosigner::{
     cosign::{CoSignPolicy, CoSignerApproval},
     cosign_limits::CoSignPolicyInit,
@@ -64,6 +65,7 @@ use ring_relay::{
     relay_reservations::RelayBudget,
     relay_services::{MergeParts, RelayServices},
 };
+use ring_service_core::ServiceError;
 
 const READINESS_CACHE_INTERVAL: Duration = Duration::from_secs(1);
 

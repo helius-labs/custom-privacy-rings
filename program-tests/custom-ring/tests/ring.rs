@@ -91,6 +91,11 @@ use custom_ring_test_validator::{
         RingRoleKeys, SendAs, TestEnv, Tier, WalletSync, USDC_ASSET_ID,
     },
 };
+use ring_audit::RingAuditError;
+use ring_service_core::authorize::Unauthorized;
+use ring_service_core::keys::RootSecret;
+use ring_service_core::upstream::{ChainSource, TransactionSource, Upstreams};
+use ring_service_core::ServiceError;
 use solana_address::Address;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
@@ -148,10 +153,7 @@ use zolana_ring_keys::ring_body_output;
 use zolana_ring_keys::ring_sender_bundle_output_body;
 use zolana_ring_keys::{RingAddress, RingPaymentRequest};
 use zolana_ring_policy::{ListId, Member, Rule, RuleTable, Subject};
-use zolana_ring_rpc::{
-    ChainSource, Hub, RingAuditError, RootSecret, ServiceError, ServiceIdentity, TransactionSource,
-    Unauthorized, Upstreams,
-};
+use zolana_ring_rpc::{Hub, ServiceIdentity};
 
 /// Lamports moved by the two transaction-shape probes. Small enough that the
 /// payer's airdrop covers both plus fees.

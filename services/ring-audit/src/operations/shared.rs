@@ -17,11 +17,11 @@ use ring_service_core::{
     database::Store,
     keys::{AuditorKeyDerivation, GrantRowsSecret, KeySource},
     origins::Origins,
-    redact::redacted,
     replay::{LocalNonces, ReplayGuard},
     upstream::TransactionSource,
 };
 use ring_writer::record_update::ReaderGrantStore;
+use zolana_ring_indexer::redact::redacted;
 
 use crate::{
     audit::{AuditService, AuditServiceInit, ASSET_REFRESH_INTERVAL},

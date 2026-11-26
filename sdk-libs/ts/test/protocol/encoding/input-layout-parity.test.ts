@@ -1,4 +1,3 @@
-// The envelope cases of Rust `program-libs/interface/tests/input_layout_parity.rs`, the same bytes and counters.
 import { describe, expect, it } from "vitest";
 import type { Address } from "@solana/kit";
 

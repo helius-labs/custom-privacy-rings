@@ -8,8 +8,9 @@ pub use ring_audit::RingAuditError;
 pub use ring_cosigner::cosign::CoSignError;
 pub use ring_cosigner::RingCosignerError;
 pub use ring_service_core::ServiceError;
-use ring_service_core::{redact::redacted, service_faults, upstream::ScopeUnreadable};
+use ring_service_core::{service_faults, upstream::ScopeUnreadable};
 use ring_writer::{record_update::RecordUpdateRefusal, WriterError};
+use zolana_ring_indexer::redact::redacted;
 
 use crate::{authority_transfer::AuthorityTransferError, relay::RelayError};
 
@@ -45,7 +46,7 @@ service_faults!(RingRelayError);
 #[cfg(any(test, feature = "test-fixtures"))]
 impl RingRelayError {
     pub fn codes() -> Vec<i32> {
-        let relay = RelayError::all().into_iter().map(|refusal| refusal.code());
+        let relay = RelayError::CODES.iter().copied();
         let transfers = AuthorityTransferError::ALL
             .into_iter()
             .map(AuthorityTransferError::code);

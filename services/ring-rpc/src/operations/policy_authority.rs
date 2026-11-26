@@ -126,8 +126,9 @@ mod tests {
     use zolana_ring_client::{rpc::ReadTarget, CustomRing};
 
     use super::*;
-    use crate::{error::ServiceError, hub::ServiceIdentity};
+    use crate::hub::ServiceIdentity;
     use ring_relay::role_pins::fixture::{account, RingAccounts};
+    use ring_service_core::ServiceError;
 
     const REGISTERED: Address = Address::new_from_array([13; 32]);
     const REGISTRY: Address = Address::new_from_array([2; 32]);

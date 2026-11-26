@@ -1,8 +1,9 @@
 use jsonrpsee::types::{error::ErrorCode, ErrorObjectOwned};
 use log::error;
-use ring_service_core::{error::CarriedFault, redact::redacted, service_faults, ServiceError};
+use ring_service_core::{error::CarriedFault, service_faults, ServiceError};
 use thiserror::Error;
 use zolana_ring_client::RingError;
+use zolana_ring_indexer::redact::redacted;
 
 use crate::{enrollment_applier::EnrollmentRefusal, record_update::RecordUpdateRefusal};
 

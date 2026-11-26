@@ -2,6 +2,13 @@
 
 use custom_ring_interface::TransferApproval;
 use jsonrpsee::RpcModule;
+use ring_cosigner::cosign::CoSignError;
+use ring_relay::relay::{RelayError, RelayParts, RelayPayload};
+use ring_relay::relay_prover::{
+    DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver,
+};
+use ring_relay::RingRelayError;
+use ring_service_core::landing::ChainOutcome;
 use sea_orm::{ConnectionTrait, Statement};
 use solana_instruction::{AccountMeta, Instruction};
 use spr_client::{compile_message, ComputeBudgetConfig};
@@ -19,10 +26,6 @@ use zolana_ring_client::{
     ApprovalEncode, CustomRing,
 };
 use zolana_ring_policy::{AssetLimits, MintPolicy};
-use zolana_ring_rpc::{
-    ChainOutcome, CoSignError, DelegateSeal, ProvenRelay, RelayError, RelayParties, RelayParts,
-    RelayPayload, RelayProofRequest, RelayProver, RingRelayError,
-};
 
 use super::transfer::{Frame as TransferFrame, Publish, Rail};
 
@@ -271,7 +274,7 @@ impl CappedRelay {
                 ApproveClass::Withdrawals,
                 ApproveClass::Deposits,
             ]))
-            .with_relay_budget(zolana_ring_rpc::RelayBudget {
+            .with_relay_budget(ring_relay::relay_reservations::RelayBudget {
                 total_lamports: 100_000_000,
                 signer_lamports: 100_000_000,
             })
@@ -1310,12 +1313,13 @@ impl ProgramCall {
 
     /// The caller makes the approved call in every later simulation.
     fn runs_on(&self, relay: &CappedRelay) {
-        *relay.chain.simulated_calls.lock().expect("calls") = vec![zolana_ring_rpc::InnerCall {
-            position: 0,
-            program: RING,
-            accounts: self.transfer.accounts.iter().map(|key| key.0).collect(),
-            data: self.transfer.data.0.clone(),
-        }];
+        *relay.chain.simulated_calls.lock().expect("calls") =
+            vec![ring_service_core::landing::InnerCall {
+                position: 0,
+                program: RING,
+                accounts: self.transfer.accounts.iter().map(|key| key.0).collect(),
+                data: self.transfer.data.0.clone(),
+            }];
     }
 
     async fn co_sign(

@@ -99,7 +99,7 @@ impl Indexer {
             if let Err(error) = self.suspend().await {
                 log::error!(
                     "cannot mark ring lookups unavailable ({})",
-                    crate::error::redacted(&format!("{error:#}"))
+                    zolana_ring_indexer::redact::redacted(&format!("{error:#}"))
                 );
             }
             let mut delay = 1;
@@ -116,13 +116,13 @@ impl Indexer {
                     Err(error) => {
                         log::error!(
                             "ring indexer failed ({})",
-                            crate::error::redacted(&format!("{error:#}"))
+                            zolana_ring_indexer::redact::redacted(&format!("{error:#}"))
                         );
                         self.readiness.clear();
                         if let Err(error) = self.suspend().await {
                             log::error!(
                                 "cannot mark ring lookups unavailable ({})",
-                                crate::error::redacted(&format!("{error:#}"))
+                                zolana_ring_indexer::redact::redacted(&format!("{error:#}"))
                             );
                         }
                         delay = (delay * 2).min(MAX_RETRY_DELAY_SECS);

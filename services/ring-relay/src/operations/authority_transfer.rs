@@ -19,9 +19,9 @@ use zolana_ring_client::{
 
 use ring_service_core::{
     authorize::{Authorized, PendingNonce, WalletCheck},
-    redact::redacted,
     upstream::TransactionSource,
 };
+use zolana_ring_indexer::redact::redacted;
 
 use ring_writer::record_update::RecordUpdateRefusal;
 
@@ -40,46 +40,34 @@ pub use ring_audit::{
     wallet_snapshots::WalletSnapshotRelease,
 };
 
-#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
-#[repr(i32)]
-pub enum AuthorityTransferError {
-    #[error("the signer is not the ring delegate")]
-    NotDelegate = -32220,
-    #[error("the ring seals its keys to another auditor")]
-    ForeignAuditor = -32221,
-    #[error("the source wallet has no enrolled nullifier key")]
-    SourceUnescrowed = -32222,
-    #[error("the source address names another nullifier key")]
-    SourceKey = -32223,
-    #[error("the service runs no relay")]
-    RelayUnavailable = -32224,
-    #[error("the transaction key is not a clamped X25519 secret")]
-    TxViewingKey = -32225,
-    #[error("the signer writes no salted list of the ring")]
-    NotListWriter = -32226,
-    #[error("a stored note of the source belongs to another owner or key")]
-    SourceNote = -32227,
-    #[error("the sealed move spends a note no requested source holds")]
-    UnrequestedInput = -32228,
-    #[error("the withdrawal mint uses another token program")]
-    WithdrawalMint = -32229,
+ring_service_core::listed_refusals! {
+    #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+    #[repr(i32)]
+    pub enum AuthorityTransferError {
+        #[error("the signer is not the ring delegate")]
+        NotDelegate = -32220,
+        #[error("the ring seals its keys to another auditor")]
+        ForeignAuditor = -32221,
+        #[error("the source wallet has no enrolled nullifier key")]
+        SourceUnescrowed = -32222,
+        #[error("the source address names another nullifier key")]
+        SourceKey = -32223,
+        #[error("the service runs no relay")]
+        RelayUnavailable = -32224,
+        #[error("the transaction key is not a clamped X25519 secret")]
+        TxViewingKey = -32225,
+        #[error("the signer writes no salted list of the ring")]
+        NotListWriter = -32226,
+        #[error("a stored note of the source belongs to another owner or key")]
+        SourceNote = -32227,
+        #[error("the sealed move spends a note no requested source holds")]
+        UnrequestedInput = -32228,
+        #[error("the withdrawal mint uses another token program")]
+        WithdrawalMint = -32229,
+    }
 }
 
 impl AuthorityTransferError {
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub const ALL: [Self; 10] = [
-        Self::NotDelegate,
-        Self::ForeignAuditor,
-        Self::SourceUnescrowed,
-        Self::SourceKey,
-        Self::RelayUnavailable,
-        Self::TxViewingKey,
-        Self::NotListWriter,
-        Self::SourceNote,
-        Self::UnrequestedInput,
-        Self::WithdrawalMint,
-    ];
-
     pub(crate) const fn code(self) -> i32 {
         self as i32
     }

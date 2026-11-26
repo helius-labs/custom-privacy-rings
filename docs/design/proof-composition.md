@@ -73,7 +73,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The program takes any signer in the delegate slot of `AuthorityTransfer`. A signer other than the ring's delegate names a mint in the next slot. The program requires a Token-2022 mint whose `PermanentDelegate` is that signer, in `MintDelegate::asset`, the parse Ring RPC and the Rust SDK also run, and writes `hash_bytes(mint)` as `delegate_asset`. The program writes zero for the ring's delegate.
 - The circuit holds the asset of every live input and every live output to a nonzero `delegate_asset`, an exit included, in `assertAsset`. A zero value holds nothing.
 - SPP conserves each asset over the notes and the public slots, and the program refuses a deposit leg on the rail, so no withdrawal of another asset balances.
-- The tests are `TestDelegateAssetHoldsEveryNote`, `a_mint_names_its_asset_only_to_its_live_permanent_delegate` in `sdk-libs/client/tests/transact.rs`, `a_mint_names_its_live_permanent_delegate_on_the_authority_rail` in `programs/custom-ring/tests/rules/transact_rules.rs` and `a_mint_delegate_moves_its_mint_alone_and_reads_no_secret` in `services/ring-relay/src/operations/authority_transfer.rs`.
+- The tests are `TestDelegateAssetHoldsEveryNote`, `a_mint_names_its_asset_only_to_its_live_permanent_delegate` in `sdk-libs/client/tests/transact.rs`, `a_mint_names_its_live_permanent_delegate_on_the_authority_rail` in `program-tests/custom-ring/tests/rules/transact_rules.rs` and `a_mint_delegate_moves_its_mint_alone_and_reads_no_secret` in `services/ring-relay/src/operations/authority_transfer.rs`.
 
 ### The signer set is the run SPP authorizes
 
@@ -106,7 +106,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - An owner reads its public lists at `ListKey(owner, 0)`, and an asset at its asset field.
 - The circuit forces a present owner's salt to open its row's `list_tag`, then reads the record at the forced salted key. Every owner also reads the record at `Poseidon(CRPR, owner, ring_salt)` under the salt that opens the policy's `ring_list_tag`, and a zero tag reads no such record. Registration refuses a zero salt, so no private record sits on the public key.
 - `RegistrySlots::load` refuses a salted source that pins another tracking registry. `LiveRoots::tracking` refuses a tracking revision below the highest floor of the salted sources.
-- The tests in `programs/custom-ring/tests/rules/storage_root_rules.rs` are `a_tracking_root_below_the_salted_floor_is_refused_at_load` and `a_private_list_mapped_to_a_curator_on_another_tracking_registry_is_refused`.
+- The tests in `program-tests/custom-ring/tests/rules/storage_root_rules.rs` are `a_tracking_root_below_the_salted_floor_is_refused_at_load` and `a_private_list_mapped_to_a_curator_on_another_tracking_registry_is_refused`.
 - The tests in `prover/circuits/policy` are `TestPooledPolicyBindsSubjectReferences`, `TestRecordPoolBindsEveryActiveQuery`, `TestPublicAndPrivateBlocksAreTwoRules` and `TestPresentRowCannotSkipTheSaltedRead`.
 
 ### Every owner, payment and input asset meets its rules
@@ -199,7 +199,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 - The program reads each root live at the frame's revision, from the account the ring binds, through `RootRead`.
 - The program refuses a records registry of another ring at `Initialize`. It refuses a salted source that pins another tracking registry at `Initialize` and `UpdatePolicy`, before it stores the policy. It refuses one again when a frame reads it.
-- The tests are `programs/custom-ring/tests/rules/storage_root_rules.rs` and `programs/custom-ring/tests/rules/operator_rules.rs`.
+- The tests are `program-tests/custom-ring/tests/rules/storage_root_rules.rs` and `program-tests/custom-ring/tests/rules/operator_rules.rs`.
 
 ### An enrollment binds its owner and its seal
 
@@ -207,7 +207,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit holds the nullifier key and the list tag to nonzero secrets, and seals both secrets under `CRING/nfk`, in `RegisterKeyCircuit`.
 - The program computes each applied entry from the write its owner signed, and marks it proven only when its `RegisterKey` proof verifies. `ApplyEnrollmentsCircuit` inserts a proven entry of an absent owner once at the next index and keeps the tree sorted. An entry of a present owner moves only its viewing key hash, so no write changes a leaf's member, nullifier key, ciphertext hash or list tag.
 - The proof does not show that the secret came from a particular derivation. A wallet that seals another secret harms itself alone.
-- The tests in `prover/circuits/registry` are `TestRegisterKeySealsTheEnrolledSecret`, `TestRegisterKeyRefusals`, `TestApplyEnrollmentsAppliesEntriesInNamedOrder`, `TestApplyEnrollmentsUpdatesPresentOwnersAndSkipsUnprovenAbsentOnes`, `TestApplyEnrollmentsRefusals` and `TestApplyEnrollmentsAtCapacity`. The tests in `programs/storage/tests/lifecycle.rs` are `a_batch_applies_only_what_each_owner_signed_over_its_registry`, `an_apply_needs_the_registry_authority_and_the_storage_program`, `an_apply_refuses_a_write_no_proof_or_signature_binds` and `signed_rotations_reach_the_apply_proof_under_the_registry_authority`. The tests in `programs/custom-ring/tests/rules/operator_rules.rs` are `only_the_enrollment_writer_reaches_storage_through_the_ring_pda` and `pda_enrollment_requires_one_owner_signature_per_invocation`.
+- The tests in `prover/circuits/registry` are `TestRegisterKeySealsTheEnrolledSecret`, `TestRegisterKeyRefusals`, `TestApplyEnrollmentsAppliesEntriesInNamedOrder`, `TestApplyEnrollmentsUpdatesPresentOwnersAndSkipsUnprovenAbsentOnes`, `TestApplyEnrollmentsRefusals` and `TestApplyEnrollmentsAtCapacity`. The tests in `program-tests/custom-ring/tests/storage_lifecycle.rs` are `a_batch_applies_only_what_each_owner_signed_over_its_registry`, `an_apply_needs_the_registry_authority_and_the_storage_program`, `an_apply_refuses_a_write_no_proof_or_signature_binds` and `signed_rotations_reach_the_apply_proof_under_the_registry_authority`. The tests in `program-tests/custom-ring/tests/rules/operator_rules.rs` are `only_the_enrollment_writer_reaches_storage_through_the_ring_pda` and `pda_enrollment_requires_one_owner_signature_per_invocation`.
 
 ### A private owner write proves its owner's row and raises the floor
 
@@ -215,7 +215,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - A batch with a private write proves under the private apply key. Its statement adds the private write bitmap and the tracking root at the revision the update names. The program reads that root from the tracking registry the source pins.
 - `ApplyRecordsCircuit` proves that `ListKey(member, salt)` equals the written member, and that the salt opens the `list_tag` of the owner's row under that root. The row must hold a nonzero nullifier key, and the write a private list bit.
 - After the proof the program raises `tracking_floor` to the revision together with the new root. A refusal writes neither.
-- The tests are `TestPrivateWriteOpensTheOwnersTrackingRow` and `TestPrivateKeyRefusesAPublicMask` in `prover/ringtest/ringregistry`, and `a_private_write_refuses_a_missing_or_substituted_tracking_registry` and `private_proof_failure_and_stale_revision_keep_the_root_and_floor` in `programs/storage/tests/lifecycle.rs`.
+- The tests are `TestPrivateWriteOpensTheOwnersTrackingRow` and `TestPrivateKeyRefusesAPublicMask` in `prover/ringtest/ringregistry`, and `a_private_write_refuses_a_missing_or_substituted_tracking_registry` and `private_proof_failure_and_stale_revision_keep_the_root_and_floor` in `program-tests/custom-ring/tests/storage_lifecycle.rs`.
 
 ### A policy update applies its writes in order
 

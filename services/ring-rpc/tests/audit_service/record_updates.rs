@@ -8,6 +8,14 @@ use custom_ring_interface::{
     ROOT_HISTORY, STORAGE_PROGRAM_ID,
 };
 use jsonrpsee::MethodsError;
+use ring_service_core::database::Store;
+use ring_service_core::landing::{ChainOutcome, ChainSubmit, LatestBlockhash};
+use ring_writer::record_update::{
+    ReaderGrantStore, RecordUpdateRefusal, RefusalReason, BATCH_WINDOW_SLOTS,
+    MAX_LIMIT_WINDOW_SLOTS, MAX_LIST_APPROVAL_WINDOW_SLOTS,
+};
+use ring_writer::record_writer::{PrivateWrites, RecordWriter, SaltedOwner};
+use ring_writer::storage_chain::StorageChain;
 use solana_account::Account;
 use solana_transaction::versioned::VersionedTransaction;
 use zolana_ring_client::{
@@ -29,11 +37,6 @@ use zolana_ring_indexer::rpc::{
 };
 use zolana_ring_member_registry::ApplyProofInputs;
 use zolana_ring_policy::{AssetLimits, ListId, Member, MintPolicy, Rule, RuleTable, Subject};
-use zolana_ring_rpc::{
-    ChainOutcome, ChainSubmit, LatestBlockhash, PrivateWrites, ReaderGrantStore,
-    RecordUpdateRefusal, RecordWriter, RefusalReason, SaltedOwner, StorageChain, Store,
-    BATCH_WINDOW_SLOTS, MAX_LIMIT_WINDOW_SLOTS, MAX_LIST_APPROVAL_WINDOW_SLOTS,
-};
 
 use super::*;
 
@@ -90,8 +93,8 @@ impl ChainSubmit for StubChain {
     async fn simulate(
         &self,
         _message: &solana_message::VersionedMessage,
-    ) -> Result<zolana_ring_rpc::Simulation, ServiceError> {
-        Ok(zolana_ring_rpc::Simulation::Passed { calls: Vec::new() })
+    ) -> Result<ring_service_core::landing::Simulation, ServiceError> {
+        Ok(ring_service_core::landing::Simulation::Passed { calls: Vec::new() })
     }
 
     async fn account_data(

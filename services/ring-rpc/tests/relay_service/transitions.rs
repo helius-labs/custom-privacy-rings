@@ -2,12 +2,13 @@
 
 use std::{sync::Mutex, time::Duration};
 
+use ring_cosigner::cosign::{
+    CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement, Ticket,
+};
+use ring_cosigner::RingCosignerError;
+use ring_service_core::landing::{ChainOutcome, ChainSubmit, FinalizedTip, LatestBlockhash};
 use tokio::sync::Notify;
 use zolana_ring_client::rpc::RelayId;
-use zolana_ring_rpc::{
-    ChainOutcome, ChainSubmit, CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement,
-    FinalizedTip, LatestBlockhash, RingCosignerError, Ticket,
-};
 
 use super::*;
 
@@ -71,7 +72,7 @@ impl ChainSubmit for WorkerChain {
     async fn simulate(
         &self,
         message: &solana_message::VersionedMessage,
-    ) -> Result<zolana_ring_rpc::Simulation, ServiceError> {
+    ) -> Result<ring_service_core::landing::Simulation, ServiceError> {
         self.chain.simulate(message).await
     }
 

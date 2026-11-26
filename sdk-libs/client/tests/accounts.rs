@@ -1125,7 +1125,7 @@ fn enrollment_vector() -> Value {
         hex::encode(data)
     };
     json!({
-        "description": "One first enrollment and one rotation of the same owner. A write is owner || kind || body, kind 0 an EnrollIxData and a RegisterKey proof, kind 1 the new viewing key, the prior key and its seq (u64 le). viewing_hash(u, seq) is Poseidon(CRVH, u in two big endian limbs of 31 and 1 bytes, seq), a first enrollment takes seq 0 and each rotation prior_seq + 1. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven), a rotation's sealed fields zero, a first enrollment's prior zero. test-vectors/rpc/enrollment_signature.json pins the text each owner signs. chain_start is the hash chain of [CRTA, registry field, revision], chain_end folds Poseidon(chain, entry_hash) over both writes. Produced by program-libs/interface/tests/accounts.rs.",
+        "description": "One first enrollment and one rotation of the same owner. A write is owner || kind || body, kind 0 an EnrollIxData and a RegisterKey proof, kind 1 the new viewing key, the prior key and its seq (u64 le). viewing_hash(u, seq) is Poseidon(CRVH, u in two big endian limbs of 31 and 1 bytes, seq), a first enrollment takes seq 0 and each rotation prior_seq + 1. entry_hash is Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven), a rotation's sealed fields zero, a first enrollment's prior zero. test-vectors/rpc/enrollment_signature.json pins the text each owner signs. chain_start is the hash chain of [CRTA, registry field, revision], chain_end folds Poseidon(chain, entry_hash) over both writes. Produced by sdk-libs/client/tests/accounts.rs.",
         "registry": hex::encode(registry),
         "owner": hex::encode(owner),
         "enroll_write": encoded(enroll),
@@ -1197,7 +1197,7 @@ fn signature_vector() -> Value {
         })
     };
     json!({
-        "description": "The text an owner signs for one enrollment write, printable ASCII lines joined by \\n with no trailing newline: zolana/ring-enrollment, registry: <base58>, entry: <base58 of TrackingEntry::hash of the write>, action: enroll or rotate. The owner is the signing key, and the entry hash binds it. The signature is raw Ed25519 over these bytes, a wallet's signMessage, and the storage program checks it through the ed25519 precompile. Produced by program-libs/interface/tests/accounts.rs.",
+        "description": "The text an owner signs for one enrollment write, printable ASCII lines joined by \\n with no trailing newline: zolana/ring-enrollment, registry: <base58>, entry: <base58 of TrackingEntry::hash of the write>, action: enroll or rotate. The owner is the signing key, and the entry hash binds it. The signature is raw Ed25519 over these bytes, a wallet's signMessage, and the storage program checks it through the ed25519 precompile. Produced by sdk-libs/client/tests/accounts.rs.",
         "owner": owner.to_string(),
         "cases": [
             case(enroll, key(0x31)),

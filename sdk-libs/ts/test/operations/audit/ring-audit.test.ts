@@ -144,7 +144,7 @@ function ringError(code: string, details?: Readonly<Record<string, unknown>>): u
 }
 
 describe("auditor envelope", () => {
-  // Pinned by prover/ringtest/ringaudit/kdf_test.go and sdk-libs/client/src/crypto/encryption/mod.rs.
+  // Pinned by sdk-libs/client/src/crypto/encryption/mod.rs.
   const auditor = X25519Keypair.fromBytes(
     hex("01323130373635343b3a39383f3e3d3c23222120272625242b2a29282f2e2d2c", 32),
   );

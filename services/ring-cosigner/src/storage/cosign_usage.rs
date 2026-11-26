@@ -487,7 +487,7 @@ impl UsageLedger<'_, DatabaseTransaction> {
                     row.amounts.deposited,
                     row.amounts.withdrawn,
                 ] {
-                    values.extend(halves(amount));
+                    values.extend(halves(amount)?);
                 }
                 values.push(Value::from(ReservationState::Held.stored()));
             }
@@ -644,10 +644,8 @@ impl WindowSum<'_> {
 impl Reservation {
     fn read(row: &QueryResult) -> Result<Self, DbErr> {
         let amount = |name| {
-            let high = u128::try_from(row.try_get::<i64>("", &format!("{name}_hi"))?)
-                .map_err(|_| DbErr::Custom("negative usage contribution".into()))?;
-            let low = u128::try_from(row.try_get::<i64>("", &format!("{name}_lo"))?)
-                .map_err(|_| DbErr::Custom("negative usage contribution".into()))?;
+            let high = u128::from(read_integer(row, &format!("{name}_hi"))?);
+            let low = u128::from(read_integer(row, &format!("{name}_lo"))?);
             let amount = (high << 32) + low;
             if low > u128::from(u32::MAX) || amount > MEASURE_CEILING {
                 return Err(DbErr::Custom("invalid usage contribution".into()));
@@ -692,8 +690,12 @@ impl Reservation {
     }
 }
 
-fn halves(amount: u128) -> [Value; 2] {
-    [amount >> 32, amount & u128::from(u32::MAX)].map(|half| Value::from(half as i64))
+fn halves(amount: u128) -> Result<[Value; 2], DbErr> {
+    let stored = |half: u128| sql::integer(u64::try_from(half).unwrap_or(u64::MAX));
+    Ok([
+        stored(amount >> 32)?,
+        stored(amount & u128::from(u32::MAX))?,
+    ])
 }
 
 impl WalletSend {
@@ -702,11 +704,7 @@ impl WalletSend {
             ticket: Ticket::from_bytes(read_bytes(row, "ticket")?),
             ring: read_address(row, "ring")?,
             last_valid_block_height: read_integer(row, "last_valid_block_height")?,
-            expired_slot: row
-                .try_get::<Option<i64>>("", "expired_slot")?
-                .map(u64::try_from)
-                .transpose()
-                .map_err(|_| DbErr::Custom("negative expiry slot".into()))?,
+            expired_slot: sql::read_optional_integer(row, "expired_slot")?,
         })
     }
 }

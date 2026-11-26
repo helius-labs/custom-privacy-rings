@@ -47,6 +47,13 @@ pub fn read_integer(row: &QueryResult, column: &str) -> Result<u64, DbErr> {
         .map_err(|_| DbErr::Custom(format!("column {column} is negative")))
 }
 
+pub fn read_optional_integer(row: &QueryResult, column: &str) -> Result<Option<u64>, DbErr> {
+    row.try_get::<Option<i64>>("", column)?
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| DbErr::Custom(format!("column {column} is negative")))
+}
+
 pub fn read_address(row: &QueryResult, column: &str) -> Result<Address, DbErr> {
     read_bytes(row, column).map(Address::new_from_array)
 }

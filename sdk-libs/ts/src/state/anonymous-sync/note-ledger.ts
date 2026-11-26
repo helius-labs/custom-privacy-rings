@@ -209,7 +209,7 @@ export class NoteLedger {
   async assignNullifiers(context: RequestContext | undefined): Promise<void> {
     const found = this.#found;
     this.#found = [];
-    const registered = found.filter((note) => !isZeroKeyNote(note));
+    const registered = found.filter((note) => !hasZeroNullifierKey(note));
     const derived =
       registered.length === 0
         ? []
@@ -272,7 +272,7 @@ export class NoteLedger {
 }
 const base58 = getBase58Encoder();
 
-function isZeroKeyNote(note: Found): boolean {
+function hasZeroNullifierKey(note: Found): boolean {
   return equalBytes(note.nullifierPublicKey, ZERO_NULLIFIER_PK);
 }
 

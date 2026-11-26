@@ -237,11 +237,7 @@ impl OwnerNotesPage<'_> {
         if seal.tags.tag(TagDomain::Note, &commitment)? != note_tag || owner.as_bytes() != member {
             return Err(moved());
         }
-        let spent_at = row
-            .try_get::<Option<i64>>("", "spent_slot")?
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| DbErr::Custom("negative spend slot".into()))?;
+        let spent_at = sql::read_optional_integer(row, "spent_slot")?;
         Ok(IndexedNote {
             key: note_tag,
             commitment,
@@ -257,31 +253,22 @@ pub(crate) async fn snapshot_history_through(
     ring: Address,
 ) -> Result<u64, DbErr> {
     let query = |select: &str| sql::statement(db, select, vec![sql::bytes(ring.as_ref())]);
-    let slot = |value: Option<i64>| {
-        value
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| DbErr::Custom("negative history slot".into()))
-    };
     let checkpoint = db
         .query_one(query(
             "SELECT through_slot FROM spend_checkpoints WHERE ring=$1",
         ))
         .await?
-        .map(|row| row.try_get::<i64>("", "through_slot"))
+        .map(|row| sql::read_integer(&row, "through_slot"))
         .transpose()?;
     let first_unread = db
         .query_one(query(
             "SELECT MIN(slot) AS slot FROM spend_unread_frames WHERE ring=$1",
         ))
         .await?
-        .map(|row| row.try_get::<Option<i64>>("", "slot"))
+        .map(|row| sql::read_optional_integer(&row, "slot"))
         .transpose()?
         .flatten();
-    Ok(history_through(
-        slot(first_unread)?,
-        slot(checkpoint)?.unwrap_or(0),
-    ))
+    Ok(history_through(first_unread, checkpoint.unwrap_or(0)))
 }
 
 #[cfg(any(test, feature = "test-fixtures"))]

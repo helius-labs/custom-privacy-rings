@@ -251,8 +251,7 @@ impl ProjectionReads<'_> {
                 "SELECT state,COUNT(*) AS rows FROM finalized_spent_nullifiers WHERE ring=$1 GROUP BY state",
                 Vec::new(),
             )).await? {
-                let count = u64::try_from(row.try_get::<i64>("", "rows")?)
-                    .map_err(|_| DbErr::Custom("negative row count".into()))?;
+                let count = sql::read_integer(&row, "rows")?;
                 match row.try_get::<String>("", "state")?.as_str() {
                     "observed" => totals.observed = count,
                     "padding" => totals.padding = count,
@@ -269,13 +268,8 @@ impl ProjectionReads<'_> {
             ))
             .await?
         {
-            response.position_slot = row
-                .try_get::<Option<i64>>("", "after_slot")?
-                .map(u64::try_from)
-                .transpose()
-                .map_err(|_| DbErr::Custom("negative checkpoint slot".into()))?;
-            let through = u64::try_from(row.try_get::<i64>("", "through_slot")?)
-                .map_err(|_| DbErr::Custom("negative checkpoint slot".into()))?;
+            response.position_slot = sql::read_optional_integer(&row, "after_slot")?;
+            let through = sql::read_integer(&row, "through_slot")?;
             response.history_through = history_through(
                 first_unread(&snapshot, self.ring)
                     .await?
@@ -284,7 +278,7 @@ impl ProjectionReads<'_> {
             );
         }
         let mut details = CoverageDetails::new(cursor);
-        let limit = Value::from(AUDIT_PAGE_LIMIT as i64 + 1);
+        let limit = sql::integer(AUDIT_PAGE_LIMIT + 1)?;
         if !matches!(cursor.unresolved_position(), DetailPosition::Done) {
             let mut values = vec![state_name(SpendState::Unclassified).into()];
             let filter = if let DetailPosition::After(key) = cursor.unresolved_position() {
@@ -306,9 +300,7 @@ impl ProjectionReads<'_> {
             let mut values = Vec::new();
             let filter = if let DetailPosition::After(frame) = cursor.unread_position() {
                 values.extend([
-                    i64::try_from(frame.slot)
-                        .map_err(|_| DbErr::Custom("frame slot exceeds the column range".into()))?
-                        .into(),
+                    sql::integer(frame.slot)?,
                     frame.tx_signature.as_ref().to_vec().into(),
                     i64::from(frame.event_index).into(),
                 ]);

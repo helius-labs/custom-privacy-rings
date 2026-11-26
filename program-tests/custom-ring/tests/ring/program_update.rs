@@ -4,6 +4,8 @@ use std::{path::Path, sync::Arc};
 
 use custom_ring_interface::TransferApproval;
 use custom_ring_test_validator::{ring_rpc::CoSigningRingRpc, shared::CoSigned};
+use ring_cosigner::cosign::{ApproveClass, CoSignError, CoSignerApproval};
+use ring_writer::record_update::MAX_LIMIT_WINDOW_SLOTS;
 use solana_message::VersionedMessage;
 use spr_program::{
     hasher::{data_hash, DataHasher},
@@ -21,7 +23,6 @@ use zolana_ring_client::{
     ApplicationData, ApprovalEncode, NoteData, ProgramCommitment,
 };
 use zolana_ring_policy::AssetLimits;
-use zolana_ring_rpc::{ApproveClass, CoSignError, CoSignerApproval, MAX_LIMIT_WINDOW_SLOTS};
 
 use super::*;
 

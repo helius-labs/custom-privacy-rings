@@ -48,7 +48,7 @@ import {
 import { solanaRpcReads } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import { ringFrame, ringInstructionData } from "../../helpers/ring-frame.js";
 
-// Mirrors sdk-libs/client/tests/origin.rs.
+// Mirrors sdk-libs/client/src/codec/origin/tests.rs.
 const RING = address("zYYvj4LTBF4Lz2FBhDaAbJ7CsVWvHjyanxQJPmN2dSU");
 const OTHER = address("ComputeBudget111111111111111111111111111111");
 const POOL = SHIELDED_POOL_PROGRAM_ID;
@@ -325,7 +325,7 @@ const SETTLEMENT_KEYS: readonly Address[] = [
 const keyIndex = (account: Address) => SETTLEMENT_KEYS.indexOf(account);
 const zeros = (length: number) => new Uint8Array(length);
 
-// Rust pins all payloads to TransactIxData::serialize in client/tests/origin.rs.
+// Rust pins all payloads to TransactIxData::serialize in sdk-libs/client/src/codec/origin/tests.rs.
 describe("cached ring settlement wire vectors", () => {
   const vectors = readFileSync(
     new URL("../../../../../test-vectors/settlement/cached_ring_settlement.hex", import.meta.url),
@@ -608,7 +608,7 @@ describe("confirmedRingWithdrawals", () => {
   });
 
   it("names the withdrawals of an anonymous ring transact", () => {
-    // sdk-libs/client/tests/origin.rs pins the same payload.
+    // sdk-libs/client/src/codec/origin/tests.rs pins the same payload.
     const hex = readFileSync(
       new URL(
         "../../../../../test-vectors/settlement/anonymous_ring_settlement.hex",

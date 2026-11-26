@@ -54,7 +54,8 @@ zolana-secret-file = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
 hyper-util = { workspace = true }
+ring-audit = { workspace = true, features = ["test-fixtures"] }
+ring-service-core = { workspace = true }
 zolana-ring-member-registry = { workspace = true }
-zolana-ring-rpc = { workspace = true, features = ["test-fixtures"] }
 spr-client = { workspace = true }
 spr-keypair = { workspace = true }

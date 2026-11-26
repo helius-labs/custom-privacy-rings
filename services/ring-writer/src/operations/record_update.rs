@@ -49,51 +49,53 @@ pub enum ReaderGrantStore {
     Database,
 }
 
-#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
-#[repr(i32)]
-pub enum RecordUpdateRefusal {
-    #[error("record writes are not served")]
-    Disabled = -32140,
-    #[error("record update carries no entry or more than {APPLY_BATCH}")]
-    EntryCount = -32141,
-    #[error("record update entry is invalid")]
-    InvalidEntry = -32142,
-    #[error("record update signature does not verify")]
-    Signature = -32143,
-    #[error("record update is past its valid until slot")]
-    Expired = -32144,
-    #[error("ring has no policy account")]
-    UnknownRing = -32145,
-    #[error("registry is not the ring records under the writer authority")]
-    RegistryNotServed = -32146,
-    #[error("signer may not write the entry")]
-    Unauthorized = -32147,
-    #[error("record update is unknown")]
-    UnknownUpdate = -32149,
-    #[error("record update names another cluster")]
-    WrongCluster = -32190,
-    #[error("service keeps reader grants in its database")]
-    ReaderGrantsInDatabase = -32230,
-    #[error("only a wallet may await allow, reader or approval from the ring's own records")]
-    InvalidAwaitedLists = -32240,
-    #[error("signer is not the ring policy authority")]
-    NotPolicyAuthority = -32241,
-    #[error("approved updates and the approval exceed one batch")]
-    ListApprovalBatch = -32242,
-    #[error("no update of the ring is pending list approval under the id")]
-    UnknownListApproval = -32244,
-    #[error("valid until slot is past the list approval window")]
-    ListApprovalWindow = -32245,
-    #[error("records registry creation did not land")]
-    RecordsNotCreated = -32260,
-    #[error("ring policy commits no tag of the service ring salt")]
-    RingSaltNotCommitted = -32279,
-    #[error("an unregistered owner keys no entry of the update under the ring salt")]
-    UnregisteredOwnerUnmatched = -32280,
-    #[error("mint limits are unpaired or exceed the window bound")]
-    InvalidLimits = -32276,
-    #[error("mint limits name an asset without a record")]
-    LimitsWithoutRecord = -32277,
+ring_service_core::listed_refusals! {
+    #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+    #[repr(i32)]
+    pub enum RecordUpdateRefusal {
+        #[error("record writes are not served")]
+        Disabled = -32140,
+        #[error("record update carries no entry or more than {APPLY_BATCH}")]
+        EntryCount = -32141,
+        #[error("record update entry is invalid")]
+        InvalidEntry = -32142,
+        #[error("record update signature does not verify")]
+        Signature = -32143,
+        #[error("record update is past its valid until slot")]
+        Expired = -32144,
+        #[error("ring has no policy account")]
+        UnknownRing = -32145,
+        #[error("registry is not the ring records under the writer authority")]
+        RegistryNotServed = -32146,
+        #[error("signer may not write the entry")]
+        Unauthorized = -32147,
+        #[error("record update is unknown")]
+        UnknownUpdate = -32149,
+        #[error("record update names another cluster")]
+        WrongCluster = -32190,
+        #[error("service keeps reader grants in its database")]
+        ReaderGrantsInDatabase = -32230,
+        #[error("only a wallet may await allow, reader or approval from the ring's own records")]
+        InvalidAwaitedLists = -32240,
+        #[error("signer is not the ring policy authority")]
+        NotPolicyAuthority = -32241,
+        #[error("approved updates and the approval exceed one batch")]
+        ListApprovalBatch = -32242,
+        #[error("no update of the ring is pending list approval under the id")]
+        UnknownListApproval = -32244,
+        #[error("valid until slot is past the list approval window")]
+        ListApprovalWindow = -32245,
+        #[error("records registry creation did not land")]
+        RecordsNotCreated = -32260,
+        #[error("ring policy commits no tag of the service ring salt")]
+        RingSaltNotCommitted = -32279,
+        #[error("an unregistered owner keys no entry of the update under the ring salt")]
+        UnregisteredOwnerUnmatched = -32280,
+        #[error("mint limits are unpaired or exceed the window bound")]
+        InvalidLimits = -32276,
+        #[error("mint limits name an asset without a record")]
+        LimitsWithoutRecord = -32277,
+    }
 }
 
 /// The status reason of a refused queued update, no RPC answer carries it.
@@ -228,31 +230,6 @@ pub(crate) struct CheckedInputs {
 }
 
 impl RecordUpdateRefusal {
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub const ALL: [Self; 21] = [
-        Self::Disabled,
-        Self::EntryCount,
-        Self::InvalidEntry,
-        Self::Signature,
-        Self::Expired,
-        Self::UnknownRing,
-        Self::RegistryNotServed,
-        Self::Unauthorized,
-        Self::UnknownUpdate,
-        Self::WrongCluster,
-        Self::ReaderGrantsInDatabase,
-        Self::InvalidAwaitedLists,
-        Self::NotPolicyAuthority,
-        Self::ListApprovalBatch,
-        Self::UnknownListApproval,
-        Self::ListApprovalWindow,
-        Self::RecordsNotCreated,
-        Self::InvalidLimits,
-        Self::LimitsWithoutRecord,
-        Self::RingSaltNotCommitted,
-        Self::UnregisteredOwnerUnmatched,
-    ];
-
     pub const fn code(self) -> i32 {
         self as i32
     }

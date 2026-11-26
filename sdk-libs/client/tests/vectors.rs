@@ -130,7 +130,7 @@ impl Scenario {
                 = X25519(tx_viewing_secret, recipient_viewing_pk). sender_pk_hash = \
                 owner_identity(sender_key) and private_tx_blinding = Poseidon(TXPB, \
                 first_nullifier, blinding_seed). Produced by \
-                program-libs/interface/tests/vectors.rs print_ring_secret_vectors.",
+                sdk-libs/client/tests/vectors.rs print_ring_secret_vectors.",
             "tx_viewing_secret": hex::encode(self.tx_viewing_secret),
             "tx_viewing_pk": hex::encode(self.tx_viewing_pk()),
             "recipient_viewing_secret": hex::encode(self.recipient_viewing_secret),

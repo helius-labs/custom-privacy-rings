@@ -37,10 +37,10 @@ use zolana_ring_transaction::ClassifiedInput;
 use ring_service_core::{
     database::Store,
     landing::{signature_fees, Attempt, ChainOutcome, ChainSubmit, Landing, LatestBlockhash},
-    redact::redacted,
     relay_submit::{presigned_transaction, CollectedSignature},
     upstream::TransactionSource,
 };
+use zolana_ring_indexer::redact::redacted;
 
 use crate::{
     authority_transfer::AuthorityTransferError,
@@ -241,37 +241,47 @@ enum Applied {
     Unchanged(RelayRow),
 }
 
-impl RelayError {
-    pub const fn code(&self) -> i32 {
-        match self {
-            Self::RingNotServed => -32100,
-            Self::QuoteFeePayer => -32101,
-            Self::QuoteExpired => -32102,
-            Self::QuoteWindow => -32103,
-            Self::ProofInputs(_) => -32104,
-            Self::RingMismatch => -32105,
-            Self::RailMismatch => -32106,
-            Self::OwnerSignature => -32107,
-            Self::Proof(_) => -32108,
-            Self::CoSignRefused => -32109,
-            Self::UnknownRelay => -32110,
-            Self::UnexpectedSigner => -32111,
-            Self::SignerSignature => -32112,
-            Self::TokenAccountSetup(_) => -32200,
-            Self::DepositorIsFeePayer => -32201,
-            Self::Budget => -32203,
-            Self::SignerBudget => -32204,
-            Self::DelegateSignature => -32206,
-            Self::Allowance => -32207,
-            Self::LiveAttempt => -32208,
-            Self::DepositorSignature => -32209,
-            Self::BudgetUnset => -32210,
-            Self::Reseal {
-                row: SealRow::Narrow,
-            } => -32211,
-            Self::Reseal { row: SealRow::Wide } => -32212,
-            Self::Oversized { .. } => -32216,
+/// One table maps each variant to its code and lists the codes.
+macro_rules! relay_codes {
+    ($($refusal:pat => $code:expr,)+) => {
+        pub const fn code(&self) -> i32 {
+            match self {
+                $($refusal => $code,)+
+            }
         }
+
+        #[cfg(any(test, feature = "test-fixtures"))]
+        pub const CODES: &[i32] = &[$($code),+];
+    };
+}
+
+impl RelayError {
+    relay_codes! {
+        Self::RingNotServed => -32100,
+        Self::QuoteFeePayer => -32101,
+        Self::QuoteExpired => -32102,
+        Self::QuoteWindow => -32103,
+        Self::ProofInputs(_) => -32104,
+        Self::RingMismatch => -32105,
+        Self::RailMismatch => -32106,
+        Self::OwnerSignature => -32107,
+        Self::Proof(_) => -32108,
+        Self::CoSignRefused => -32109,
+        Self::UnknownRelay => -32110,
+        Self::UnexpectedSigner => -32111,
+        Self::SignerSignature => -32112,
+        Self::TokenAccountSetup(_) => -32200,
+        Self::DepositorIsFeePayer => -32201,
+        Self::Budget => -32203,
+        Self::SignerBudget => -32204,
+        Self::DelegateSignature => -32206,
+        Self::Allowance => -32207,
+        Self::LiveAttempt => -32208,
+        Self::DepositorSignature => -32209,
+        Self::BudgetUnset => -32210,
+        Self::Reseal { row: SealRow::Narrow } => -32211,
+        Self::Reseal { row: SealRow::Wide } => -32212,
+        Self::Oversized { .. } => -32216,
     }
 
     /// A refused transfer is the caller's, an unreachable chain or prover is the service's.
@@ -288,43 +298,6 @@ impl RelayError {
             .into(),
             refused => Self::Proof(refused.to_string()).into(),
         }
-    }
-}
-
-#[cfg(any(test, feature = "test-fixtures"))]
-impl RelayError {
-    pub fn all() -> Vec<Self> {
-        vec![
-            Self::RingNotServed,
-            Self::QuoteFeePayer,
-            Self::QuoteExpired,
-            Self::QuoteWindow,
-            Self::ProofInputs(RelayProofInputsError::Input { index: 0 }),
-            Self::RingMismatch,
-            Self::RailMismatch,
-            Self::OwnerSignature,
-            Self::Proof(String::new()),
-            Self::CoSignRefused,
-            Self::UnknownRelay,
-            Self::UnexpectedSigner,
-            Self::SignerSignature,
-            Self::TokenAccountSetup(TokenAccountSetupError::Repeated { index: 0 }),
-            Self::DepositorIsFeePayer,
-            Self::Budget,
-            Self::SignerBudget,
-            Self::DelegateSignature,
-            Self::Allowance,
-            Self::LiveAttempt,
-            Self::DepositorSignature,
-            Self::BudgetUnset,
-            Self::Reseal {
-                row: SealRow::Narrow,
-            },
-            Self::Reseal { row: SealRow::Wide },
-            Self::Oversized {
-                reason: String::new(),
-            },
-        ]
     }
 }
 

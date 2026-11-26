@@ -130,7 +130,7 @@ build-localnet-archives dir="target/nextest-archives":
 test-hermetic: test-program-fast test-sdk-libs test-ring-indexer
 
 test-program-fast: build-programs
-    cargo nextest run -p custom-ring-program -p storage-program --tests
+    cargo nextest run -p custom-ring-test-validator --test rules --test storage_lifecycle
 
 test-sdk-libs:
     cargo nextest run {{prepend("-p ", sdk-lib-crates)}}

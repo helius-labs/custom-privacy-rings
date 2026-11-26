@@ -33,12 +33,12 @@ use ring_service_core::{
     },
     keys::RingSaltDerivation,
     limits::ReaderPermit,
-    redact::redacted,
     upstream::{
         Finality, MergeAuditRequest, RingConfiguration, RingFrame, RingHistoryPage,
         TransactionPage, TransactionSource,
     },
 };
+use zolana_ring_indexer::redact::redacted;
 
 use ring_writer::record_writer::SaltedOwner;
 

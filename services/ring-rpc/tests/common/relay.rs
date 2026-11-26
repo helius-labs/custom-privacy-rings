@@ -6,6 +6,13 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
+use ring_relay::relay::RelayPayload;
+use ring_relay::relay_prover::{
+    DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver,
+};
+use ring_relay::RingRelayError;
+use ring_service_core::landing::{ChainOutcome, ChainSubmit, LatestBlockhash};
+use ring_service_core::ServiceError;
 use solana_address::Address;
 use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
@@ -30,10 +37,6 @@ use spr_transaction::{
 use zolana_ring_client::rpc::{
     PrepareRelayRequest, ProofInputBytes, ReadTarget, RelayIntent, RelayProofInputs, RelayQuote,
     RelayRail, RelayRequestAttestation,
-};
-use zolana_ring_rpc::{
-    ChainOutcome, ChainSubmit, DelegateSeal, LatestBlockhash, ProvenRelay, RelayParties,
-    RelayPayload, RelayProofRequest, RelayProver, RingRelayError, ServiceError,
 };
 use zolana_ring_transaction::AnonymousPlan;
 
@@ -131,7 +134,7 @@ pub struct RecordingChain {
     pub slot: AtomicU64,
     pub accounts: Mutex<Vec<Address>>,
     pub simulation_refusal: Mutex<Option<String>>,
-    pub simulated_calls: Mutex<Vec<zolana_ring_rpc::InnerCall>>,
+    pub simulated_calls: Mutex<Vec<ring_service_core::landing::InnerCall>>,
     /// The cluster holds no blockhash a co-signed message names.
     pub stale_blockhash: AtomicBool,
 }
@@ -164,11 +167,11 @@ impl ChainSubmit for RecordingChain {
     async fn simulate(
         &self,
         _message: &solana_message::VersionedMessage,
-    ) -> Result<zolana_ring_rpc::Simulation, ServiceError> {
+    ) -> Result<ring_service_core::landing::Simulation, ServiceError> {
         Ok(
             match self.simulation_refusal.lock().expect("refusal").clone() {
-                Some(reason) => zolana_ring_rpc::Simulation::Refused { reason },
-                None => zolana_ring_rpc::Simulation::Passed {
+                Some(reason) => ring_service_core::landing::Simulation::Refused { reason },
+                None => ring_service_core::landing::Simulation::Passed {
                     calls: self.simulated_calls.lock().expect("calls").clone(),
                 },
             },
@@ -245,8 +248,10 @@ impl ChainSubmit for RecordingChain {
         Ok(Some(self.latest_blockhash().await?.last_valid_block_height))
     }
 
-    async fn finalized_tip(&self) -> Result<zolana_ring_rpc::FinalizedTip, ServiceError> {
-        Ok(zolana_ring_rpc::FinalizedTip {
+    async fn finalized_tip(
+        &self,
+    ) -> Result<ring_service_core::landing::FinalizedTip, ServiceError> {
+        Ok(ring_service_core::landing::FinalizedTip {
             slot: self.slot.load(Ordering::Relaxed),
             block_height: self.height.load(Ordering::Relaxed),
         })

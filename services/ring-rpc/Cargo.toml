@@ -45,6 +45,7 @@ tower-http = { workspace = true }
 tracing-subscriber = { workspace = true }
 zolana-operator-custody = { workspace = true }
 zolana-ring-client = { workspace = true, features = ["operations", "solana-rpc"] }
+zolana-ring-indexer = { workspace = true }
 zolana-ring-transaction = { workspace = true }
 
 [dev-dependencies]
@@ -69,7 +70,6 @@ spr-instruction = { workspace = true }
 spr-interface = { workspace = true }
 spr-transaction = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
-zolana-ring-indexer = { workspace = true }
 zolana-ring-keys = { workspace = true }
 zolana-ring-member-registry = { workspace = true }
 zolana-ring-policy = { workspace = true }

@@ -18,9 +18,9 @@ use ring_audit::{shared::Shared, utxos::SpendRead};
 use ring_service_core::{
     database::Store,
     landing::FinalizedTip,
-    redact::redacted,
     upstream::{RecordsTip, TransactionSource, VerifiedOpenings},
 };
+use zolana_ring_indexer::redact::redacted;
 
 use ring_writer::record_update::MAX_LIMIT_WINDOW_SLOTS;
 

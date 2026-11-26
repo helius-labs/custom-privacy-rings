@@ -97,7 +97,9 @@ impl Store {
         svm.airdrop(&payer.pubkey(), 1_000_000_000).unwrap();
         let registry = StorageRegistry::find_address(&authority.pubkey(), &REGISTRY_ID).0;
         let tracking = TrackingRegistry::find_address(&authority.pubkey(), &RING_ID).0;
-        let proofs: Value = serde_json::from_str(include_str!("proofs.json")).unwrap();
+        let proofs: Value =
+            serde_json::from_str(include_str!("../../../programs/storage/tests/proofs.json"))
+                .unwrap();
         // The apply proofs bind the registry address.
         assert_eq!(hex::encode(registry), proofs["registry"].as_str().unwrap());
         Self {

@@ -7,7 +7,9 @@ use super::{address_value, Measure, MEASURE_CEILING};
 use ring_writer::record_update::MAX_LIMIT_WINDOW_SLOTS;
 
 use crate::cosign::AssetFlow;
-use ring_service_core::sql::{integer, placeholders, read_address, read_bytes as bytes, statement};
+use ring_service_core::sql::{
+    integer, placeholders, read_address, read_bytes as bytes, read_integer, statement,
+};
 
 pub(super) const EPOCH_SLOTS: u64 = MAX_LIMIT_WINDOW_SLOTS.next_power_of_two();
 const NODE_BATCH: usize = 64;
@@ -310,8 +312,7 @@ impl NodeKey {
             1 => Some(owner),
             _ => return Err(DbErr::Custom("invalid usage scope".into())),
         };
-        let epoch = u64::try_from(row.try_get::<i64>("", "epoch")?)
-            .map_err(|_| DbErr::Custom("negative usage epoch".into()))?;
+        let epoch = read_integer(row, "epoch")?;
         let node = u32::try_from(row.try_get::<i64>("", "node")?)
             .map_err(|_| DbErr::Custom("invalid usage node".into()))?;
         if node == 0 || u64::from(node) > EPOCH_SLOTS {

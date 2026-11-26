@@ -25,7 +25,6 @@ use ring_service_core::{
     error::CarriedFault,
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
     landing::{Attempt, ChainOutcome, Landing},
-    redact::redacted,
     upstream::VerifiedOpenings,
 };
 use sea_orm::DbErr;
@@ -44,6 +43,7 @@ use zolana_ring_client::{
     CustomRing, InitializeStorage, PrivateStorageWrite, ProvenPrivateWrite, RingError,
     SaltedOwnerWrite, StorageTip, UpdateStorage, PROOF_UNITS,
 };
+use zolana_ring_indexer::redact::redacted;
 use zolana_ring_indexer::rpc::{GetStorageApplyProofInputsRequest, StorageWriteView};
 use zolana_ring_member_registry::ApplyProofInputs;
 

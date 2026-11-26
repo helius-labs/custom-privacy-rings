@@ -23,6 +23,10 @@ custom-ring-cli = { workspace = true }
 custom-ring-interface = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
+ring-cosigner = { workspace = true }
+ring-relay = { workspace = true }
+ring-service-core = { workspace = true }
+ring-writer = { workspace = true }
 sea-orm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -66,7 +70,21 @@ bytemuck = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["http1", "server"] }
 hyper-util = { workspace = true, features = ["tokio"] }
+litesvm = { workspace = true, features = ["precompiles"] }
+pinocchio = { workspace = true }
+ring-audit = { workspace = true }
 solana-account = { workspace = true }
+solana-bn254 = { workspace = true }
+solana-clock = { workspace = true }
+solana-loader-v3-interface = { workspace = true, features = ["serde"] }
+solana-sbpf = { workspace = true }
+solana-sdk-ids = { workspace = true }
+solana-transaction = { workspace = true }
+solana-transaction-error = { workspace = true }
+spl-token-2022-interface = { workspace = true }
+spr-account-checks = { workspace = true }
+wincode = { workspace = true }
+x25519-dalek = { workspace = true }
 solana-transaction-status-client-types = { workspace = true }
 spr-api = { workspace = true, features = ["reqwest"] }
 spr-indexer-api = { workspace = true }
@@ -91,3 +109,11 @@ path = "tests/policy_rules.rs"
 name = "policy_repin"
 path = "tests/policy_repin.rs"
 
+
+[[test]]
+name = "rules"
+path = "tests/rules/main.rs"
+
+[[test]]
+name = "storage_lifecycle"
+path = "tests/storage_lifecycle.rs"

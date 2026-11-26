@@ -18,9 +18,9 @@ use zolana_ring_transaction::RingAssets;
 use ring_service_core::{
     authorize::{Authorized, PendingNonce, WalletCheck},
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
-    redact::redacted,
     upstream::TransactionSource,
 };
+use zolana_ring_indexer::redact::redacted;
 
 use ring_audit::{merge_selection::MergeTarget, shared::Shared};
 

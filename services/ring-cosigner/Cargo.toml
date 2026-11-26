@@ -32,6 +32,7 @@ thiserror = { workspace = true }
 wincode = { workspace = true }
 zolana-operator-custody = { workspace = true }
 zolana-ring-client = { workspace = true, features = ["operations", "solana-rpc"] }
+zolana-ring-indexer = { workspace = true }
 zolana-ring-policy = { workspace = true }
 zolana-ring-transaction = { workspace = true }
 

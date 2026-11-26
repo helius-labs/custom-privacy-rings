@@ -128,15 +128,11 @@ fn next_secret_parameter(lowercase: &str, start: usize) -> Option<SecretParamete
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::ServiceError;
 
     #[test]
     fn redacted_masks_url_credentials_and_query_secrets_without_mangling_pubkey() {
-        let db = sea_orm::DbErr::Custom(
-            "connect postgres://admin:p@ssword123@db.internal:5432/ring?token=tok_secret&key=k_secret&pubkey=KeepMe"
-                .to_owned(),
-        );
-        let logged = redacted(&ServiceError::Store(db));
+        let db = "connect postgres://admin:p@ssword123@db.internal:5432/ring?token=tok_secret&key=k_secret&pubkey=KeepMe";
+        let logged = redacted(&db);
         assert!(!logged.contains("admin"), "{logged}");
         assert!(!logged.contains("p@ssword123"), "{logged}");
         assert!(!logged.contains("tok_secret"), "{logged}");
@@ -149,16 +145,20 @@ mod tests {
         assert!(logged.contains("key=redacted"), "{logged}");
         assert!(logged.contains("pubkey=KeepMe"), "{logged}");
 
-        let dsn =
-            sea_orm::DbErr::Custom("host=db user=app password=dbsecret dbname=ring".to_owned());
-        let logged_dsn = redacted(&ServiceError::Store(dsn));
+        let api_key = redacted(&"GET https://rpc.internal/?api-key=f00d&pubkey=KeepMe");
+        assert!(!api_key.contains("f00d"), "{api_key}");
+        assert!(
+            api_key.contains("api-key=redacted&pubkey=KeepMe"),
+            "{api_key}"
+        );
+
+        let dsn = "host=db user=app password=dbsecret dbname=ring";
+        let logged_dsn = redacted(&dsn);
         assert!(!logged_dsn.contains("dbsecret"), "{logged_dsn}");
         assert!(logged_dsn.contains("password=redacted"), "{logged_dsn}");
 
-        let punctuated = sea_orm::DbErr::Custom(
-            "host=db password=my!secret@123$:*^&token='p@ss!word' dbname=ring".to_owned(),
-        );
-        let logged_punctuated = redacted(&ServiceError::Store(punctuated));
+        let punctuated = "host=db password=my!secret@123$:*^&token='p@ss!word' dbname=ring";
+        let logged_punctuated = redacted(&punctuated);
         assert!(
             !logged_punctuated.contains("my!secret@123"),
             "{logged_punctuated}"

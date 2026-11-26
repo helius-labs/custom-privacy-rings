@@ -664,7 +664,7 @@ fn bring_up(extra_ring_programs: &[Address], programs: &[(Address, &str)]) -> Re
     // custom-ring program can register its `ring_auth` PDA as an SPP ring
     // config with a plain payer, instead of the ring Squads vault having to
     // co-sign `create_ring_config`. Same precedent as the ring suite's
-    // `BootstrapConfig` (program-tests/test-utils/src/ring/mod.rs).
+    // `BootstrapConfig` (zolana/program-tests/test-utils/src/ring/mod.rs).
     let create_config_ix = CreateProtocolConfig {
         fee_payer: payer.pubkey(),
         initialization_authority: accounts.protocol_vault,

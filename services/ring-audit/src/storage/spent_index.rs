@@ -296,15 +296,21 @@ pub(crate) fn read_frame(row: &QueryResult) -> Result<CreatedIn, DbErr> {
     })
 }
 
+pub(crate) fn read_repair_attempt(row: &QueryResult) -> Result<RepairAttempt, DbErr> {
+    Ok(RepairAttempt {
+        attempts: u32::try_from(sql::read_integer(row, "attempts")?)
+            .map_err(|_| DbErr::Custom("repair attempts out of range".into()))?,
+        retry_after: sql::read_integer(row, "retry_after")?,
+    })
+}
+
 fn position_values(position: &HistoryPosition) -> Result<[Value; 2], DbErr> {
     Ok([
-        Value::BigInt(
-            position
-                .checkpoint()
-                .map(i64::try_from)
-                .transpose()
-                .map_err(|_| DbErr::Custom("position exceeds the column range".into()))?,
-        ),
+        position
+            .checkpoint()
+            .map(sql::integer)
+            .transpose()?
+            .unwrap_or(Value::BigInt(None)),
         Value::String(position.token().map(|token| Box::new(token.to_string()))),
     ])
 }
@@ -317,11 +323,7 @@ fn read_position(row: &QueryResult) -> Result<HistoryPosition, DbErr> {
                 .parse::<PaginationToken>()
                 .map_err(|_| DbErr::Custom("checkpoint token does not parse".into()))?,
         ),
-        None => row
-            .try_get::<Option<i64>>("", "after_slot")?
-            .map(u64::try_from)
-            .transpose()
-            .map_err(|_| DbErr::Custom("negative checkpoint slot".into()))?
+        None => sql::read_optional_integer(row, "after_slot")?
             .map_or_else(HistoryPosition::default, HistoryPosition::after_slot),
     })
 }
@@ -668,11 +670,7 @@ impl LoadSpends<'_> {
                 .await?
             {
                 let frame = read_frame(&row)?;
-                let attempt = RepairAttempt {
-                    attempts: u32::try_from(row.try_get::<i64>("", "attempts")?)
-                        .map_err(|_| DbErr::Custom("repair attempts out of range".into()))?,
-                    retry_after: sql::read_integer(&row, "retry_after")?,
-                };
+                let attempt = read_repair_attempt(&row)?;
                 spends.unread.push(frame);
                 if attempt.attempts > 0 {
                     loaded.repairs.push((frame, attempt));
@@ -726,9 +724,7 @@ impl LoadSpends<'_> {
             ))
             .await?
         {
-            loaded.tracking_cursor = u64::try_from(row.try_get::<i64>("", "next_leaf")?)
-                .ok()
-                .and_then(TrackingCursor::stored)
+            loaded.tracking_cursor = TrackingCursor::stored(sql::read_integer(&row, "next_leaf")?)
                 .ok_or_else(|| DbErr::Custom("tracking cursor names the sentinel".into()))?;
         }
         Ok(loaded)

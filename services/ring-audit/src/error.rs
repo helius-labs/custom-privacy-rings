@@ -46,25 +46,20 @@ pub enum RingAuditError {
     Tracking(#[from] TrackingRefusal),
 }
 
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-#[repr(i32)]
-pub enum GrantRefusal {
-    #[error("ring has no initialized records registry")]
-    RecordsUnavailable = -32130,
-    #[error("service keeps reader grants in the storage tree")]
-    GrantsInTree = -32131,
-    #[error("read method and wallet scope disagree")]
-    WalletScope = -32270,
+ring_service_core::listed_refusals! {
+    #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+    #[repr(i32)]
+    pub enum GrantRefusal {
+        #[error("ring has no initialized records registry")]
+        RecordsUnavailable = -32130,
+        #[error("service keeps reader grants in the storage tree")]
+        GrantsInTree = -32131,
+        #[error("read method and wallet scope disagree")]
+        WalletScope = -32270,
+    }
 }
 
 impl GrantRefusal {
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub const ALL: [Self; 3] = [
-        Self::RecordsUnavailable,
-        Self::GrantsInTree,
-        Self::WalletScope,
-    ];
-
     pub(crate) const fn code(self) -> i32 {
         self as i32
     }

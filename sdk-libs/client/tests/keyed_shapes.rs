@@ -49,7 +49,7 @@ fn served(rail: RingRail, spends_default_ring: bool) -> Value {
 
 fn compute_vector() -> Value {
     json!({
-        "description": "Per ring rail, the SPP shapes a transfer key serves when every shape input is spent, each list in the cost order of SPP_SUPPORTED_SHAPES. confidential_ring is the signer and in-proof rails, anonymous_ring the anonymous rail over ring notes, anonymous_entry_ring the anonymous rail spending a default-ring note, ring_authority the RingAuthority rail. transfer_shapes lists every transfer key, mirrored by prover/circuits/transfer. Produced by program-libs/interface/tests/keyed_shapes.rs.",
+        "description": "Per ring rail, the SPP shapes a transfer key serves when every shape input is spent, each list in the cost order of SPP_SUPPORTED_SHAPES. confidential_ring is the signer and in-proof rails, anonymous_ring the anonymous rail over ring notes, anonymous_entry_ring the anonymous rail spending a default-ring note, ring_authority the RingAuthority rail. transfer_shapes lists every transfer key, mirrored by prover/circuits/transfer. Produced by sdk-libs/client/tests/keyed_shapes.rs.",
         "confidential_ring": served(RingRail::Confidential, false),
         "anonymous_ring": served(RingRail::Anonymous, false),
         "anonymous_entry_ring": served(RingRail::Anonymous, true),
