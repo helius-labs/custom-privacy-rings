@@ -57,7 +57,7 @@ const ApplyBatch = 16
 // ApplyWidths mirrors RingCircuit::apply_records in program-libs/interface/src/proof/key_catalog.rs.
 var ApplyWidths = []int{1, 2, 4, 8, ApplyBatch}
 
-// EnrollmentWidths mirrors the enrollment keys in program-libs/interface/src/proof/ring_keys.rs, the widest covers ENROLLMENT_BATCH.
+// EnrollmentWidths mirrors the enrollment keys in sdk-libs/client/src/codec/ring_keys.rs, the widest covers ENROLLMENT_BATCH.
 var EnrollmentWidths = []int{1, 2, 4, 8}
 
 // List bit positions, mirrored by GRANT_LISTS, DENY_LISTS and PRIVATE_LISTS in program-libs/policy/src/list.rs.
@@ -92,20 +92,22 @@ type RecordWriteProofInput struct {
 	LowSlot QuadPath
 }
 
-// ApplyRecordsCircuit is the public key, it keeps the records sorted by member, as proofs of a missing record need.
-type ApplyRecordsCircuit struct {
+// Batch is the statement head of both apply circuits, a tree moved by Count chained writes.
+type Batch struct {
 	NumWrites int `gnark:"-"`
 
 	PublicInputHash frontend.Variable `gnark:",public"`
 
-	OldRoot      frontend.Variable
-	NewRoot      frontend.Variable
-	OldNextIndex frontend.Variable
-	NewNextIndex frontend.Variable
-	ChainStart   frontend.Variable
-	ChainEnd     frontend.Variable
-	Count        frontend.Variable
-	Writes       []RecordWriteProofInput
+	OldRoot, NewRoot           frontend.Variable
+	OldNextIndex, NewNextIndex frontend.Variable
+	ChainStart, ChainEnd       frontend.Variable
+	Count                      frontend.Variable
+}
+
+// ApplyRecordsCircuit is the public key, it keeps the records sorted by member, as proofs of a missing record need.
+type ApplyRecordsCircuit struct {
+	Batch
+	Writes []RecordWriteProofInput
 }
 
 type PrivateApplyRecordsCircuit struct {
@@ -133,7 +135,7 @@ func NewApplyRecordsCircuit(writes int) (*ApplyRecordsCircuit, error) {
 	if err := shared.ValidateWidth("registry", writes, ApplyWidths); err != nil {
 		return nil, err
 	}
-	return &ApplyRecordsCircuit{NumWrites: writes, Writes: make([]RecordWriteProofInput, writes)}, nil
+	return &ApplyRecordsCircuit{Batch: Batch{NumWrites: writes}, Writes: make([]RecordWriteProofInput, writes)}, nil
 }
 
 func NewPrivateApplyRecordsCircuit(writes int) (*PrivateApplyRecordsCircuit, error) {
@@ -175,30 +177,42 @@ func (c *PrivateApplyRecordsCircuit) Define(api frontend.API) error {
 }
 
 func (c *ApplyRecordsCircuit) validate() error {
-	return errors.Join(
-		shared.ValidateWidth("registry", c.NumWrites, ApplyWidths),
-		shared.ValidateLength("registry", "write", len(c.Writes), c.NumWrites),
-	)
+	return c.Batch.validate("registry", ApplyWidths, len(c.Writes))
+}
+
+func (b Batch) validate(name string, widths []int, writes int) error {
+	return errors.Join(shared.ValidateWidth(name, b.NumWrites, widths), shared.ValidateLength(name, "write", writes, b.NumWrites))
+}
+
+// fold runs step over every slot in order and holds the result to the statement's tree and chain.
+func (b Batch) fold(api frontend.API, step func(i int, active frontend.Variable, s registryState) registryState) registryState {
+	// 1. Count selects a prefix of one write up to the capacity, the writes past it act on nothing.
+	count := ringgadget.SelectCount(api, b.Count, 1, b.NumWrites)
+	state := registryState{root: b.OldRoot, next: b.OldNextIndex, chain: b.ChainStart, restrictive: 0}
+	// 2. Every active write moves the running root, next index and chain in the named order.
+	for i := range b.NumWrites {
+		state = step(i, count.Active[i], state)
+	}
+	// 3. The tree after the batch and the writes it consumed are the statement's.
+	api.AssertIsEqual(state.root, b.NewRoot)
+	api.AssertIsEqual(state.next, b.NewNextIndex)
+	api.AssertIsEqual(state.chain, b.ChainEnd)
+	return state
+}
+
+func (b Batch) statement(domain frontend.Variable, tail ...frontend.Variable) []frontend.Variable {
+	return append([]frontend.Variable{domain, b.OldRoot, b.NewRoot, b.OldNextIndex, b.NewNextIndex, b.ChainStart, b.ChainEnd, b.Count}, tail...)
 }
 
 // transition applies the writes in order and returns the restrictive bit, onWrite sees each slot before it applies.
 func (c *ApplyRecordsCircuit) transition(api frontend.API, onWrite func(i int, active frontend.Variable, maskBits []frontend.Variable)) frontend.Variable {
-	// 1. Count selects a prefix of one write up to the capacity, the writes past it act on nothing.
-	count := ringgadget.SelectCount(api, c.Count, 1, c.NumWrites)
-	state := registryState{root: c.OldRoot, next: c.OldNextIndex, chain: c.ChainStart, restrictive: 0}
-	for i, w := range c.Writes {
-		maskBits := api.ToBinary(w.Entry.Mask, ListBits)
+	return c.fold(api, func(i int, active frontend.Variable, s registryState) registryState {
+		maskBits := api.ToBinary(c.Writes[i].Entry.Mask, ListBits)
 		if onWrite != nil {
-			onWrite(i, count.Active[i], maskBits)
+			onWrite(i, active, maskBits)
 		}
-		// 2. Each authenticated write moves the root and chain in instruction order.
-		state = w.apply(api, count.Active[i], state, maskBits)
-	}
-	// 3. The resulting registry and write chain bind to the statement.
-	api.AssertIsEqual(state.root, c.NewRoot)
-	api.AssertIsEqual(state.next, c.NewNextIndex)
-	api.AssertIsEqual(state.chain, c.ChainEnd)
-	return state.restrictive
+		return c.Writes[i].apply(api, active, s, maskBits)
+	}).restrictive
 }
 
 // apply moves s by w while active is set, an unset active leaves it.
@@ -330,9 +344,7 @@ func keptLists(api frontend.API, oldBits, maskBits []frontend.Variable) frontend
 
 // statement mirrors ApplyRecordsStatement::elements in program-libs/interface/src/proof/statement.rs.
 func (c *ApplyRecordsCircuit) statement(restrictive frontend.Variable) []frontend.Variable {
-	return []frontend.Variable{
-		shared.ApplyRecordsDomain, c.OldRoot, c.NewRoot, c.OldNextIndex, c.NewNextIndex, c.ChainStart, c.ChainEnd, c.Count, restrictive,
-	}
+	return c.Batch.statement(shared.ApplyRecordsDomain, restrictive)
 }
 
 // privateBits refuses an empty bitmap, the program selects a private key only for a nonzero one.

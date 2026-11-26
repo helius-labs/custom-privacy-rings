@@ -99,10 +99,11 @@ func ListKey(api frontend.API, owner, listSalt frontend.Variable) frontend.Varia
 	return gadget.PoseidonHash(api, []frontend.Variable{ListKeyDomain, owner, listSalt})
 }
 
-// VouchDigest is Poseidon(CRVC, private_tx_hash, withdrawal_hash), the field a voucher signs as 32 big endian bytes, mirrored by VouchMessage::digest in program-libs/interface/src/proof/domain.rs.
+// VouchDigest is Poseidon(CRVC, ring_id, private_tx_hash, withdrawal_hash), the field a voucher signs as 32 big endian bytes, mirrored by VouchMessage::digest in sdk-libs/client/src/codec/vouch.rs.
 // The tag keeps the bytes apart from SPP's owner authorization digest, a vouch never authorizes a spend.
-func VouchDigest(api frontend.API, privateTxHash, withdrawalHash frontend.Variable) frontend.Variable {
-	return gadget.PoseidonHash(api, []frontend.Variable{VouchDomain, privateTxHash, withdrawalHash})
+// The ring id holds a vouch to one ring, a transfer of default-ring notes alone carries no ring id in private_tx_hash.
+func VouchDigest(api frontend.API, ringID, privateTxHash, withdrawalHash frontend.Variable) frontend.Variable {
+	return gadget.PoseidonHash(api, []frontend.Variable{VouchDomain, ringID, privateTxHash, withdrawalHash})
 }
 
 // AnonymousParties is one cell per co-signer, mirrored by ANONYMOUS_PARTIES.

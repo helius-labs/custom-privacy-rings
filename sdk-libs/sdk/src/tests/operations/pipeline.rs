@@ -2043,6 +2043,7 @@ async fn the_request_carries_a_signature_over_the_vouch_digest_vouched_or_not() 
         )
         .unwrap();
         let digest = VouchMessage {
+            ring_id: &bytes(&built["ringId"]),
             private_tx_hash: &bytes(&built["privateTxHash"]),
             withdrawal_hash: &bytes(&built["withdrawalHash"]),
         }

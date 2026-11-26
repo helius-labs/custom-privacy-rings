@@ -68,7 +68,11 @@ type applyStatementFields struct {
 }
 
 func (f applyStatementFields) records() ApplyRecordsCircuit {
-	return ApplyRecordsCircuit{
+	return ApplyRecordsCircuit{Batch: f.batch()}
+}
+
+func (f applyStatementFields) batch() Batch {
+	return Batch{
 		OldRoot: f.OldRoot, NewRoot: f.NewRoot, OldNextIndex: f.OldNextIndex, NewNextIndex: f.NewNextIndex,
 		ChainStart: f.ChainStart, ChainEnd: f.ChainEnd, Count: f.Count,
 	}
@@ -101,7 +105,7 @@ type enrollmentsStatementCircuit struct {
 }
 
 func (c *enrollmentsStatementCircuit) Define(api frontend.API) error {
-	statement := (&ApplyEnrollmentsCircuit{OldRoot: c.OldRoot, NewRoot: c.NewRoot, OldNextIndex: c.OldNextIndex, NewNextIndex: c.NewNextIndex, ChainStart: c.ChainStart, ChainEnd: c.ChainEnd, Count: c.Count}).statement()
+	statement := (&ApplyEnrollmentsCircuit{Batch: c.batch()}).statement()
 	api.AssertIsEqual(c.PublicInputHash, gadget.HashChain4(api, statement))
 	return nil
 }

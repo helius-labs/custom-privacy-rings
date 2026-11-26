@@ -102,11 +102,11 @@ func (tr Transfer) VoucherIdentity(t testing.TB) *big.Int {
 	return ringtest.MustSolanaPkField(t, [32]byte(tr.SignerKey()))
 }
 
-// VoucherWires signs shared.VouchDigest of the transfer's hashes.
+// VoucherWires signs shared.VouchDigest of the transfer's ring and hashes.
 func (tr Transfer) VoucherWires(t testing.TB, privateTxHash, withdrawalHash *big.Int) policy.VoucherWires {
 	t.Helper()
 	var message [32]byte
-	ringprotocol.VouchDigest(t, privateTxHash, withdrawalHash).FillBytes(message[:])
+	ringprotocol.VouchDigest(t, tr.RingProgramID, privateTxHash, withdrawalHash).FillBytes(message[:])
 	var w policy.VoucherWires
 	ringtest.SetBytes(w.PublicKey[:], tr.SignerKey())
 	ringtest.SetBytes(w.Signature[:], ed25519.Sign(tr.signer(), message[:]))

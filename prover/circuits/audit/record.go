@@ -160,7 +160,7 @@ type MergeRecord struct {
 	Seed frontend.Variable
 }
 
-// Encode mirrors MergeRecord::encode in program-libs/interface/src/proof/audit_stream.rs.
+// Encode mirrors MergeRecord::encode in sdk-libs/keys/src/audit_records.rs.
 func (o MergeRecord) Encode(api frontend.API, rc frontend.Rangechecker) []frontend.Variable {
 	seed := ringgadget.FieldToBytesBEWith(api, rc, api.Mul(o.Live, o.Seed))
 	return slices.Concat(o.RecordOpening.Encode(api, rc), seed[:])
@@ -190,7 +190,7 @@ type evidence struct {
 	realInputs frontend.Variable
 }
 
-// evidence mirrors AuditEnvelope::encode in program-libs/interface/src/proof/audit_stream.rs past the sealed key.
+// evidence mirrors AuditEnvelope::encode in sdk-libs/keys/src/audit_records.rs past the sealed key.
 func (s SpentInputs) evidence(api frontend.API, rc frontend.Rangechecker, ranges StreamRanges) evidence {
 	if len(s.Slots) != ranges.InputClass {
 		panic("audit: the input section differs from the key's class")
@@ -223,7 +223,7 @@ func (s SpentInputs) evidence(api frontend.API, rc frontend.Rangechecker, ranges
 	return evidence{head: head, entries: entries, realInputs: realInputs}
 }
 
-// encode mirrors EntryRecord::extend in program-libs/interface/src/proof/audit_stream.rs, zero off a default-ring note.
+// encode mirrors EntryRecord::extend in sdk-libs/keys/src/audit_records.rs, zero off a default-ring note.
 func (e EntryWires) encode(api frontend.API, rc frontend.Rangechecker, slot shared.Output) []frontend.Variable {
 	live := slot.Exit
 	// Per input owner and key, mixed owners read apart with no nullifier secret disclosed.

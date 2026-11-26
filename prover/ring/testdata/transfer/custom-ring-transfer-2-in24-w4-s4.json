@@ -66,7 +66,7 @@
   ],
   "voucher": {
     "publicKey": "0xbb787e5901ac38168a8b373715f571edf755c518fac9dc73e339126ce4f52f08",
-    "signature": "0x1dba3a9d3be7466587bc6261c73c367957bc0d7a5da4ef108855a20ba56af96e2e8f40b877e67d43bd0976784003bde6ec2f85da362fb54377c1ad1eba608805"
+    "signature": "0xc549ab9a5c633360db2cc0f75ae8fedf3c7db6f932ce27c418e5d164e02dd3949cbf9a49aeaebce0c947b7020e37a6e4094f6d733d133afd27a5d002b257eb0b"
   },
   "inputCount": 2,
   "inputs": [

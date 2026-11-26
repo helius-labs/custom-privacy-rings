@@ -350,7 +350,7 @@ func TestApplyRecordsKeys(t *testing.T) {
 	if _, err := registry.NewPrivateApplyRecordsCircuit(3); err == nil {
 		t.Fatal("built a capacity no private apply key ships")
 	}
-	unchecked := &registry.ApplyRecordsCircuit{NumWrites: 3, Writes: make([]registry.RecordWriteProofInput, 3)}
+	unchecked := &registry.ApplyRecordsCircuit{Batch: registry.Batch{NumWrites: 3}, Writes: make([]registry.RecordWriteProofInput, 3)}
 	if _, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, unchecked); err == nil {
 		t.Fatal("compiled a capacity no apply key ships")
 	}

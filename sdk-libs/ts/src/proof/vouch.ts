@@ -17,13 +17,16 @@ export interface VouchSigner {
 
 /** The transfer a voucher signs for, Rust `VouchMessage`. */
 export interface VouchMessage {
+  /** A frame of default-ring notes alone names its ring nowhere else. */
+  readonly ringId: Bytes32;
   readonly privateTxHash: Bytes32;
   readonly withdrawalHash: Bytes32;
 }
 
-/** `Poseidon(CRVC, private_tx_hash, withdrawal_hash)`, the voucher signs its 32 big endian bytes. */
+/** `Poseidon(CRVC, ring_id, private_tx_hash, withdrawal_hash)`, the voucher signs its 32 big endian bytes. */
 export function vouchDigest(message: VouchMessage): Bytes32 {
   return domainHash(RingDomain.vouch, [
+    copyBytes(message.ringId),
     copyBytes(message.privateTxHash),
     copyBytes(message.withdrawalHash),
   ]);

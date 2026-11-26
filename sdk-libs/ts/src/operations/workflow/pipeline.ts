@@ -844,7 +844,7 @@ async function proveAssembled(
     recipientKeys: assembled.published.map((slot) => slot.recipientKey),
     voucher: await signVouch(
       input.voucher,
-      { privateTxHash, withdrawalHash: policyWithdrawalHash(policy.withdrawals) },
+      { ringId, privateTxHash, withdrawalHash: policyWithdrawalHash(policy.withdrawals) },
       context,
     ),
     auditor: config.auditorPublicKey,

@@ -973,7 +973,11 @@ function checkTransferStatement(typed: TransferProofRequest): void {
   expect(
     ed25519.verify(
       typed.voucher.signature,
-      vouchDigest({ privateTxHash: typed.privateTxHash, withdrawalHash: typed.withdrawalHash }),
+      vouchDigest({
+        ringId: typed.ringId,
+        privateTxHash: typed.privateTxHash,
+        withdrawalHash: typed.withdrawalHash,
+      }),
       typed.voucher.publicKey,
     ),
   ).toBe(true);

@@ -766,6 +766,7 @@ describe("policy ring", () => {
     const key = vouching.publicKey().ed25519();
     expect(request.voucher.publicKey).toEqual(key);
     const digest = vouchDigest({
+      ringId: request.ringId,
       privateTxHash: request.privateTxHash,
       withdrawalHash: request.withdrawalHash,
     });
@@ -830,6 +831,7 @@ describe("policy ring", () => {
       curatorRing: 0,
     });
     const digest = vouchDigest({
+      ringId: request.ringId,
       privateTxHash: request.privateTxHash,
       withdrawalHash: request.withdrawalHash,
     });

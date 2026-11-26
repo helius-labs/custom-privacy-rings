@@ -11,8 +11,6 @@
 package registry
 
 import (
-	"errors"
-
 	"github.com/consensys/gnark/frontend"
 	"github.com/reilabs/gnark-lean-extractor/v3/abstractor"
 
@@ -55,42 +53,24 @@ type EnrollmentWrite struct {
 
 // ApplyEnrollmentsCircuit only moves the tree, the program computes each entry and anyone may apply.
 type ApplyEnrollmentsCircuit struct {
-	NumWrites int `gnark:"-"`
-
-	PublicInputHash frontend.Variable `gnark:",public"`
-
-	OldRoot      frontend.Variable
-	NewRoot      frontend.Variable
-	OldNextIndex frontend.Variable
-	NewNextIndex frontend.Variable
-	ChainStart   frontend.Variable
-	ChainEnd     frontend.Variable
-	Count        frontend.Variable
-	Writes       []EnrollmentWrite
+	Batch
+	Writes []EnrollmentWrite
 }
 
 func NewApplyEnrollmentsCircuit(writes int) (*ApplyEnrollmentsCircuit, error) {
 	if err := shared.ValidateWidth("tracking", writes, EnrollmentWidths); err != nil {
 		return nil, err
 	}
-	return &ApplyEnrollmentsCircuit{NumWrites: writes, Writes: make([]EnrollmentWrite, writes)}, nil
+	return &ApplyEnrollmentsCircuit{Batch: Batch{NumWrites: writes}, Writes: make([]EnrollmentWrite, writes)}, nil
 }
 
 func (c *ApplyEnrollmentsCircuit) Define(api frontend.API) error {
-	if err := errors.Join(shared.ValidateWidth("tracking", c.NumWrites, EnrollmentWidths), shared.ValidateLength("tracking", "write", len(c.Writes), c.NumWrites)); err != nil {
+	if err := c.validate("tracking", EnrollmentWidths, len(c.Writes)); err != nil {
 		return err
 	}
-	// 1. Count selects a prefix of one write up to the capacity, the writes past it act on nothing.
-	count := ringgadget.SelectCount(api, c.Count, 1, c.NumWrites)
-	// 2. Every active write moves the running root, next index and chain in the named order.
-	state := registryState{root: c.OldRoot, next: c.OldNextIndex, chain: c.ChainStart}
-	for i, w := range c.Writes {
-		state = w.apply(api, count.Active[i], state)
-	}
-	// 3. The tree after the batch and the entries it consumed are the statement's.
-	api.AssertIsEqual(state.root, c.NewRoot)
-	api.AssertIsEqual(state.next, c.NewNextIndex)
-	api.AssertIsEqual(state.chain, c.ChainEnd)
+	c.fold(api, func(i int, active frontend.Variable, s registryState) registryState {
+		return c.Writes[i].apply(api, active, s)
+	})
 	api.AssertIsEqual(c.PublicInputHash, gadget.HashChain4(api, c.statement()))
 	return nil
 }
@@ -134,7 +114,5 @@ func (w EnrollmentWrite) apply(api frontend.API, active frontend.Variable, s reg
 
 // statement mirrors ApplyEnrollmentsStatement::elements in program-libs/interface/src/proof/statement.rs.
 func (c *ApplyEnrollmentsCircuit) statement() []frontend.Variable {
-	return []frontend.Variable{
-		shared.ApplyEnrollmentsDomain, c.OldRoot, c.NewRoot, c.OldNextIndex, c.NewNextIndex, c.ChainStart, c.ChainEnd, c.Count,
-	}
+	return c.Batch.statement(shared.ApplyEnrollmentsDomain)
 }

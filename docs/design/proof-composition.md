@@ -119,7 +119,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 ### A voucher's allow entry admits the transfer it signs
 
-- The circuit verifies one Ed25519 signature over `Poseidon(CRVC, private_tx_hash, withdrawal_hash)` on every proof, in `VoucherWires.Open`. The tag keeps the signed bytes apart from SPP's owner authorization digest, so a vouch authorizes no spend.
+- The circuit verifies one Ed25519 signature over `Poseidon(CRVC, ring_id, private_tx_hash, withdrawal_hash)` on every proof, in `VoucherWires.Open`. `ring_id` is the statement's ring id, so a vouch made for one ring verifies on no other, a transfer of default-ring notes alone included. The tag keeps the signed bytes apart from SPP's owner authorization digest, so a vouch authorizes no spend.
 - The program sets the vouched flag from the frame, through bit 0 of the layout element. No prover bit sets it.
 - The circuit refuses a vouched transfer unless `Screened` is set, in `resolveSubjects`, so the delegate rail and a ring with no rule table take no voucher.
 - The circuit reads the signer's records as an owner's and refuses a signer on neither `Allow` nor `PrivateAllow`, in `assertVouches`. It holds the signer to every sender rule in `assertSenderRules`. The key the stream seals is therefore a listed key the sender rules admit.

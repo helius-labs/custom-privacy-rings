@@ -1264,6 +1264,7 @@ impl Unwitnessed<'_> {
         let voucher = Vouch {
             voucher,
             message: VouchMessage {
+                ring_id: &frame.ring_id,
                 private_tx_hash: &private_tx_hash,
                 withdrawal_hash: &frame.policy.withdrawal_hash()?,
             },

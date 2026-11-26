@@ -194,7 +194,7 @@ type Stream struct {
 	NoSpend frontend.Variable
 }
 
-// SealStream mirrors AuditEnvelope::encode and AuditStreamLayout in program-libs/interface/src/proof/audit_stream.rs.
+// SealStream mirrors AuditEnvelope::encode in sdk-libs/keys/src/audit_records.rs and AuditStreamLayout in program-libs/interface/src/proof/audit_stream.rs.
 func (w AuditWires) SealStream(api frontend.API, rc frontend.Rangechecker, e Envelope, shape StreamShape, opened Opened, spent SpentInputs) Stream {
 	ranges := shape.Ranges()
 	// 1. The envelope binds tx_viewing_sk and the note count before any entry records.
