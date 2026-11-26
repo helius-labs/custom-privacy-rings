@@ -4,6 +4,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
+use zolana_ring_client::TrackingRegistryHost;
 
 use async_trait::async_trait;
 use bytemuck::{Pod, Zeroable};

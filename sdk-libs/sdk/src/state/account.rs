@@ -8,6 +8,8 @@ use solana_address::Address;
 use spr_client::AsyncRpc;
 use spr_interface::{pda, state::RingConfig, BPF_LOADER_UPGRADEABLE_ID, RING_AUTH_PDA_SEED};
 use spr_keypair::X25519Pubkey;
+use zolana_ring_client::PolicySources;
+use zolana_ring_client::TrackingRegistryHost;
 use zolana_ring_policy::{ring_id_field, RuleTable, SourceMap};
 
 use crate::RingError;

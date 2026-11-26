@@ -1,9 +1,6 @@
 //! A child of `pipeline`, every rail stages and assembles through its private items.
 
-use custom_ring_interface::{
-    ring_body_output, ring_sender_bundle_output_body, CustomRingError, RingMode, RingRail,
-    RingTransactData, SenderBundle,
-};
+use custom_ring_interface::{CustomRingError, RingMode, RingRail, RingTransactData};
 use solana_address::Address;
 use spl_token_2022_interface::pod::{PodAccount, PodCOption};
 use spr_client::ClientError;
@@ -17,7 +14,11 @@ use spr_program::instruction::{TransactSolTransferAccounts, TransactSplWithdrawa
 use spr_transaction::{
     instructions::transact::ConfidentialTransaction, AssetRegistry, Mint, WalletUtxo,
 };
+use zolana_ring_client::ApprovalEncode;
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::ring_sender_bundle_output_body;
 use zolana_ring_keys::RingAddress;
+use zolana_ring_keys::SenderBundle;
 use zolana_ring_transaction::{open_recipient_body, open_sender_bundle, RingDelivery};
 
 use super::*;
@@ -344,10 +345,10 @@ fn slot_secret(
     staged: &Staged<'_>,
     reader: &ShieldedKeypair,
     slot: usize,
-) -> custom_ring_interface::stream::SlotSecret {
+) -> zolana_ring_keys::SlotSecret {
     let external = &staged.proof_inputs.external_data;
     let tx_viewing_pk = spr_keypair::X25519Pubkey::from_bytes(external.tx_viewing_pk).unwrap();
-    custom_ring_interface::stream::DeliveredSlot {
+    zolana_ring_keys::DeliveredSlot {
         agreement: &reader.viewing_key.ecdh(&tx_viewing_pk).unwrap(),
         tx_viewing_pk: tx_viewing_pk.as_bytes(),
         recipient_viewing_pk: reader.viewing_pubkey().as_bytes(),
@@ -1984,7 +1985,7 @@ async fn a_recipient_the_rules_refuse_fails_before_proving() {
 #[tokio::test]
 async fn the_request_carries_a_signature_over_the_vouch_digest_vouched_or_not() {
     use crate::tests::support::{keypair, owner_record, Registry};
-    use custom_ring_interface::domain::VouchMessage;
+    use zolana_ring_client::VouchMessage;
     use zolana_ring_policy::RuleRefusal;
 
     use crate::pipeline::VouchSigner;
@@ -3986,7 +3987,9 @@ async fn a_public_spend_on_an_anonymous_ring_publishes_its_owners_alone() {
 #[test]
 fn a_record_names_its_kind_owner_and_raw_mint() {
     use crate::tests::support::{keypair, program};
-    use custom_ring_interface::{OutputRecord, RecordKey, RecordKind};
+    use custom_ring_interface::RecordKind;
+    use zolana_ring_keys::OutputRecord;
+    use zolana_ring_keys::RecordKey;
     use zolana_ring_transaction::RingOutputRail;
     let owner = keypair(1).shielded_address().unwrap();
     let exit = SppProofOutputUtxo::new(Mint::SOL, 3, owner).unwrap();
@@ -4245,10 +4248,8 @@ impl zolana_ring_keys::RingKeys for ProgramOwner {
     fn ring_tag_matches(
         &self,
         frames: &[zolana_ring_keys::RingTagFrame],
-    ) -> Result<
-        Vec<Vec<Option<custom_ring_interface::stream::SlotSecret>>>,
-        zolana_ring_keys::RingKeyError,
-    > {
+    ) -> Result<Vec<Vec<Option<zolana_ring_keys::SlotSecret>>>, zolana_ring_keys::RingKeyError>
+    {
         self.keys.ring_tag_matches(frames)
     }
 

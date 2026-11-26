@@ -3,6 +3,7 @@
 use super::*;
 use custom_ring_interface::{InProofOwner, RingRail, RingTransactData};
 use zolana_ring_client::rpc::{GetWalletStatusResponse, GET_WALLET_STATUS};
+use zolana_ring_client::FrameEncode;
 
 async fn wallet_read(
     service: &AuditService<StaticSource>,

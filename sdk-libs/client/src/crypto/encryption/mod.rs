@@ -1,15 +1,13 @@
 //! Mirrors `prover/circuits/shared/envelope.go`, streams keyed by `Poseidon(CR_S, dh, eph_pk, auditor_pk)`.
 
-use custom_ring_interface::{
-    domain::{self, REGISTER_KEY_LABEL},
-    REGISTER_KEY_CIPHERTEXT_LEN,
-};
+use custom_ring_interface::{domain, REGISTER_KEY_CIPHERTEXT_LEN};
 use spr_hasher::{
     primitives::{pack_be, right_align},
     Hasher, Poseidon,
 };
 use spr_keypair::{NullifierKey, X25519Keypair, X25519Pubkey};
 use zeroize::Zeroizing;
+use zolana_ring_keys::REGISTER_KEY_LABEL;
 use zolana_ring_keys::{symmetric_apply_audit, RingStream};
 
 use crate::AuditError;

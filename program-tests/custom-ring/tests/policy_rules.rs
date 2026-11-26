@@ -4,6 +4,7 @@
 //! parties and transacts under them.
 
 use std::collections::BTreeSet;
+use zolana_ring_client::PolicySources;
 
 use anyhow::{anyhow, Result};
 use custom_ring_cli::ModeName;

@@ -54,10 +54,9 @@ pub fn symmetric_apply_audit(
 
 #[cfg(test)]
 mod audit_stream_tests {
-    use custom_ring_interface::{
-        domain::{AUDIT_STREAM_LABEL, REGISTER_KEY_LABEL},
-        STREAM_FIRST_COUNTER,
-    };
+    use crate::AUDIT_STREAM_LABEL;
+    use crate::REGISTER_KEY_LABEL;
+    use custom_ring_interface::STREAM_FIRST_COUNTER;
 
     use super::{symmetric_apply_audit, RingStream};
 

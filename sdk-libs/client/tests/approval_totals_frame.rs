@@ -5,6 +5,7 @@ mod frames;
 use custom_ring_interface::{extension_flag, RingRail, RingTransactData};
 use frames::Fixture;
 use serde::Serialize;
+use zolana_ring_client::FrameEncode;
 
 const VECTOR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

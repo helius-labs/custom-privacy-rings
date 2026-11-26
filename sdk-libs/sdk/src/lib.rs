@@ -61,10 +61,11 @@ mod wallet_payment;
 pub(crate) const REDACTED: &str = "<redacted>";
 
 pub use custom_ring_interface::{
-    compute_unit_limit, tag, CoSignScope, CustomRingProof, InstructionTag, ListRegistry, RingKind,
-    RingMode,
+    tag, CoSignScope, CustomRingProof, InstructionTag, RingKind, RingMode,
 };
 pub use spr_program::instruction::{DepositAsset, DepositSplAccounts};
+pub use zolana_ring_client::compute_unit_limit;
+pub use zolana_ring_client::ListRegistry;
 
 pub use crate::prover::secret_json_body;
 pub use crate::{

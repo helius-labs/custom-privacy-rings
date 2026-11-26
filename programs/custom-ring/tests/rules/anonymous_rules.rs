@@ -3,6 +3,7 @@
 use custom_ring_interface::{tag, CustomRingError, FramedSenderBundle, RingRail, RingTransactData};
 use solana_instruction::AccountMeta;
 use solana_keypair::{Keypair, Signer};
+use zolana_ring_client::FrameEncode;
 
 use crate::{
     common::{reaches_verification, refused, Ring, Sent, Setup},

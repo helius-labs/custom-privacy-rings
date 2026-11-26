@@ -9,6 +9,8 @@ use solana_message::v1;
 use spr_client::ComputeBudgetConfig;
 use spr_interface::instruction::TreeContext;
 use spr_transaction::Mint;
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::SppExpansion;
 
 use super::*;
 use crate::tests::support::keypair;

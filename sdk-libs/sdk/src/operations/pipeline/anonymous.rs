@@ -1,7 +1,7 @@
 //! The hidden owner signs inside the AnonymousRingEddsa proof.
 
 use custom_ring_interface::{
-    anonymous_exit::{AnonymousExitDestination, TokenAccountControl, TokenAccountState},
+    anonymous_exit::{TokenAccountControl, TokenAccountState},
     key_catalog::{RecordPools, TransferSpend},
     CustomRingError, RingMode, RingRail,
 };
@@ -17,6 +17,7 @@ use spr_transaction::{
     Mint, WalletUtxo,
 };
 use zolana_ring_client::rpc::SubjectListSalt;
+use zolana_ring_client::AnonymousExitDestination;
 use zolana_ring_keys::{RingAddress, RingPaymentRequest};
 use zolana_ring_transaction::{AnonymousPlan, ClassifiedInput, ReplyMetadata, RingDelivery};
 

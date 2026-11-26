@@ -16,6 +16,7 @@ use zolana_ring_client::rpc::{
     RelayStatus, RelayStep, SubmitRelayRequest, CO_SIGN_TRANSACTION, EDIT_CO_SIGN_LIST,
     GET_CO_SIGN_LISTS, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
 };
+use zolana_ring_client::ApprovalEncode;
 use zolana_ring_policy::{AssetLimits, MintPolicy};
 use zolana_ring_rpc::{
     ChainOutcome, CoSignError, DelegateSeal, ProvenRelay, RelayError, RelayParties, RelayParts,

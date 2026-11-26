@@ -16,10 +16,8 @@ mod recipient_delivery;
 use std::cell::RefCell;
 
 use custom_ring_interface::{
-    blinding::ring_blinding_seed,
-    encode_ring_sender_bundle_output,
-    stream::{confidential_slot_tag, DeliveredSlot, SlotSecret},
-    OutputRecord, RecordForm, RecordKind, RingOutput, SlotBody, RECIPIENT_PAYLOAD_LENGTH_LEN,
+    encode_ring_sender_bundle_output, RecordForm, RecordKind, RingOutput, SlotBody,
+    RECIPIENT_PAYLOAD_LENGTH_LEN,
 };
 use rand::{rngs::OsRng, RngCore};
 use spr_event::MessageData;
@@ -37,7 +35,12 @@ use spr_transaction::{
     serialization::confidential::{Confidential, ConfidentialEncode, ConfidentialOutputPlaintext},
     SppProofOutputUtxo, TransactionError, UtxoSerialization,
 };
+use zolana_ring_keys::confidential_slot_tag;
 use zolana_ring_keys::dummy_recipient_key;
+use zolana_ring_keys::ring_blinding_seed;
+use zolana_ring_keys::DeliveredSlot;
+use zolana_ring_keys::OutputRecord;
+use zolana_ring_keys::SlotSecret;
 
 pub use anonymous_rail::published_outputs;
 use anonymous_rail::{is_change, lead_change, AnonymousSeal};

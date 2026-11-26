@@ -6,6 +6,7 @@ use custom_ring_interface::{
     SourceSlot, N_SOURCE_SLOTS,
 };
 use solana_address::Address;
+use zolana_ring_client::PolicySources;
 use zolana_ring_policy::{ListId, ListSet, Rule, RuleTable, Subject};
 
 fn key(byte: u8) -> Address {

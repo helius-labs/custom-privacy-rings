@@ -18,6 +18,7 @@ use solana_signer::Signer;
 use spr_keypair::X25519Keypair;
 use spr_program_test::Rejection;
 use spr_transaction::Utxo;
+use zolana_ring_client::PolicySources;
 use zolana_ring_policy::{ListId, Rule, RuleTable, Subject};
 
 #[test]

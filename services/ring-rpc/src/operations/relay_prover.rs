@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use custom_ring_interface::{compute_unit_limit, InstructionTag};
+use custom_ring_interface::InstructionTag;
 use custom_ring_sdk::{
     written_tree_fees, AllowedNullifiers, CustomRing, DelegateMove, DelegatePayment,
     DelegateSource, DelegateWithdrawal, RelayedTransferInput, RingClient, RingIndexerBackend,
@@ -10,6 +10,7 @@ use solana_instruction::Instruction;
 use spr_client::{AsyncRpc, ComputeBudgetConfig};
 use spr_keypair::{NullifierKey, ShieldedAddress, ViewingKey};
 use spr_transaction::{AssetRegistry, WalletUtxo};
+use zolana_ring_client::compute_unit_limit;
 use zolana_ring_client::rpc::{RelayMergeInputs, RelayProofInputs, RelayRail};
 
 use crate::{

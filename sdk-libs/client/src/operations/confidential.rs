@@ -4,7 +4,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use custom_ring_interface::stream::confidential_slot_tag;
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{AsyncRpc, IndexerRpcConfig};
@@ -12,6 +11,7 @@ use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_transaction::{
     verify_owned, DecryptionResult, OwnedUtxos, ShieldedKeys, ShieldedTransaction, WalletUtxo,
 };
+use zolana_ring_keys::confidential_slot_tag;
 use zolana_ring_keys::RingKeys;
 use zolana_ring_transaction::RingAssets;
 
@@ -402,11 +402,7 @@ impl RingMerges {
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use custom_ring_interface::{
-        encode_ring_body_output,
-        stream::{DeliveredSlot, SlotSecret},
-        OutputRecord, RecordForm, RecordKind,
-    };
+    use custom_ring_interface::{RecordForm, RecordKind};
     use spr_client::{
         rpc::{Context, GetShieldedTransactionsByNullifiersResponse, HistoryFilters, Page},
         ClientError, GetShieldedTransactionsByTagsResponse, OutputContext, OutputSlot,
@@ -421,6 +417,10 @@ mod tests {
         instructions::merge::{merge_output_blinding, merge_output_key, MergeOutputPlaintext},
         DecryptRequest, DeriveRequest, Mint, TransactionError, TransactionKeyRequest,
     };
+    use zolana_ring_keys::encode_ring_body_output;
+    use zolana_ring_keys::DeliveredSlot;
+    use zolana_ring_keys::OutputRecord;
+    use zolana_ring_keys::SlotSecret;
     use zolana_ring_keys::{RingDeliveryRequest, RingKeyError, RingTagFrame, ViewTagRequest};
     use zolana_ring_transaction::RecipientBody;
 

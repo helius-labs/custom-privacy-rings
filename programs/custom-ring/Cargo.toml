@@ -47,6 +47,8 @@ solana-transaction-error = { workspace = true }
 spl-token-2022-interface = { workspace = true }
 spr-tree = { workspace = true }
 x25519-dalek = { workspace = true }
+zolana-ring-client = { workspace = true }
+zolana-ring-keys = { workspace = true }
 
 [lints.rust.unexpected_cfgs]
 level = "allow"

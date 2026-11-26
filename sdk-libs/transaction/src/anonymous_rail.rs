@@ -1,7 +1,7 @@
 //! The anonymous rail's slots, the sender's change leading at output 0, one record body per
 //! non-exit slot and the sender bundle after them.
 
-use custom_ring_interface::{SenderBundle, MIN_REPLY_LEN};
+use custom_ring_interface::MIN_REPLY_LEN;
 use rand::{rngs::OsRng, RngCore};
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_interface::{instruction::instruction_data::transact::TransactOutput, MAX_OUTPUTS};
@@ -10,6 +10,7 @@ use spr_transaction::{
     instructions::transact::SppProofInputs, Mint, SppProofOutputUtxo, TransactionError,
 };
 use zeroize::Zeroize;
+use zolana_ring_keys::SenderBundle;
 
 use crate::{
     recipient_delivery::{seal_reply, seal_sender_bundle},

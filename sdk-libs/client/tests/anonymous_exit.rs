@@ -1,6 +1,5 @@
 use custom_ring_interface::{
-    AnonymousExitDestination, AnonymousParties, CustomRingError, SettlementAccount,
-    TokenAccountControl, TokenAccountState, SYSTEM_PROGRAM_ID,
+    AnonymousParties, CustomRingError, SettlementAccount, TokenAccountControl, TokenAccountState,
 };
 use solana_address::Address;
 use spl_token_2022_interface::pod::{PodAccount, PodCOption};
@@ -9,6 +8,9 @@ use spr_interface::{
     instruction::InterfaceTransfer, SPL_TOKEN_ACCOUNT_INITIALIZED, SPL_TOKEN_ACCOUNT_LEN,
     SPL_TOKEN_PROGRAM_ID,
 };
+use zolana_ring_client::AnonymousExitDestination;
+use zolana_ring_client::WithdrawalLeg;
+use zolana_ring_client::SYSTEM_PROGRAM_ID;
 
 const MINT: [u8; 32] = [1; 32];
 const OWNER: [u8; 32] = [2; 32];

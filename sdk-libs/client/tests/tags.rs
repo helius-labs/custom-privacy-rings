@@ -1,4 +1,5 @@
-use custom_ring_interface::{compute_unit_limit, tag, CustomRingError, InstructionTag};
+use custom_ring_interface::{tag, CustomRingError, InstructionTag};
+use zolana_ring_client::compute_unit_limit;
 
 #[test]
 fn ring_dispatch_tags_do_not_collide_with_forwarded_spp_tags() {

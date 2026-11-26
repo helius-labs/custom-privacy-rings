@@ -2,6 +2,7 @@ use super::*;
 use sea_orm::{ConnectionTrait, Statement, TransactionTrait};
 use std::{future::poll_fn, pin::pin, task::Poll};
 use zolana_ring_client::rpc::{WalletEnrollment, WalletNoteStatus};
+use zolana_ring_client::FrameEncode;
 
 #[tokio::test]
 async fn audited_utxos_answer_in_request_order_with_null_for_an_unseen_hash() {

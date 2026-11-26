@@ -1,8 +1,8 @@
 //! The voucher of one transfer, mirror `prover/circuits/policy/voucher.go`.
 
-use custom_ring_interface::domain::VouchMessage;
 use spr_hasher::primitives::solana_owner_identity;
 use spr_keypair::{PublicKey, SigningKey};
+use zolana_ring_client::VouchMessage;
 
 use crate::{request::VoucherParams, RingError};
 

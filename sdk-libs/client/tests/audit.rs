@@ -16,10 +16,7 @@ use std::{
     },
 };
 
-use custom_ring_interface::{
-    encode_ring_body_output, ring_body_output, AuditStreamLayout, MergeRecord, OutputRecord,
-    RecordKey, RecordKind, RingMode,
-};
+use custom_ring_interface::{AuditStreamLayout, RecordKind, RingMode};
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{
@@ -39,6 +36,11 @@ use zolana_ring_client::{
     OutputOpening, OutputPayloadError, OutputPayloadErrorKind, RingOrigin, RingOwnerTag, RingScan,
     TransactionAudit, TransactionOrigin, UtxoOwner,
 };
+use zolana_ring_keys::encode_ring_body_output;
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::MergeRecord;
+use zolana_ring_keys::OutputRecord;
+use zolana_ring_keys::RecordKey;
 use zolana_ring_transaction::MergeSeed;
 
 use history_page::{position, EventsPage};
@@ -253,7 +255,7 @@ fn a_data_bearing_note_rebuilds_from_its_record_with_the_payload_dropped() {
         .output_slots
         .iter()
         .map(|slot| {
-            custom_ring_interface::ring_body_output(&slot.payload)
+            zolana_ring_keys::ring_body_output(&slot.payload)
                 .unwrap()
                 .0
                 .len()

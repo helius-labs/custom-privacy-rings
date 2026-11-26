@@ -73,7 +73,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The program takes any signer in the delegate slot of `AuthorityTransfer`. A signer other than the ring's delegate names a mint in the next slot. The program requires a Token-2022 mint whose `PermanentDelegate` is that signer, in `MintDelegate::asset`, the parse Ring RPC and the Rust SDK also run, and writes `hash_bytes(mint)` as `delegate_asset`. The program writes zero for the ring's delegate.
 - The circuit holds the asset of every live input and every live output to a nonzero `delegate_asset`, an exit included, in `assertAsset`. A zero value holds nothing.
 - SPP conserves each asset over the notes and the public slots, and the program refuses a deposit leg on the rail, so no withdrawal of another asset balances.
-- The tests are `TestDelegateAssetHoldsEveryNote`, `a_mint_names_its_asset_only_to_its_live_permanent_delegate` in `program-libs/interface/tests/transact.rs`, `a_mint_names_its_live_permanent_delegate_on_the_authority_rail` in `programs/custom-ring/tests/rules/transact_rules.rs` and `a_mint_delegate_moves_its_mint_alone_and_reads_no_secret` in `services/ring-rpc/src/operations/authority_transfer.rs`.
+- The tests are `TestDelegateAssetHoldsEveryNote`, `a_mint_names_its_asset_only_to_its_live_permanent_delegate` in `sdk-libs/client/tests/transact.rs`, `a_mint_names_its_live_permanent_delegate_on_the_authority_rail` in `programs/custom-ring/tests/rules/transact_rules.rs` and `a_mint_delegate_moves_its_mint_alone_and_reads_no_secret` in `services/ring-rpc/src/operations/authority_transfer.rs`.
 
 ### The signer set is the run SPP authorizes
 
@@ -156,7 +156,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit reads `SelectCount(m, 1, N)`. A live note at or past `m` is refused, every record cell past `m` multiplies by zero, and the key digest stops at `m`.
 - The key's cost does not fall with `m`.
 - A hidden dummy is a published slot. It has a zero record and stays out of the private chain.
-- The tests are `TestCompactFrames` in `prover/circuits/audit`, and `bitmap_bits_past_the_count_are_refused` in `program-libs/interface/tests/transact.rs`.
+- The tests are `TestCompactFrames` in `prover/circuits/audit`, and `bitmap_bits_past_the_count_are_refused` in `sdk-libs/client/tests/transact.rs`.
 
 ### Every slot's record opens to its key and the auditor reads the key
 
@@ -247,7 +247,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 ## What no proof covers
 
-- The circuit constrains no payload, slot tag, sender bundle or reply, and no recipient key choice. `the_external_data_hash_binds_every_delivery_byte` in `program-libs/interface/tests/transact.rs` pins the byte binding.
+- The circuit constrains no payload, slot tag, sender bundle or reply, and no recipient key choice. `the_external_data_hash_binds_every_delivery_byte` in `sdk-libs/client/tests/transact.rs` pins the byte binding.
 - A reader rebuilds a commitment under its own keys, and that match is its only authentication. [Recipient delivery](audit-and-recovery.md#recipient-delivery) states what recovers a bad tag, a wrong key and a bad payload.
 - A reader's coverage describes finalized history, and no proof backs it. [Reading through Ring RPC](audit-and-recovery.md#reading-through-ring-rpc) states what it claims.
 - A hidden owner's privacy rests on the conditions in [privacy](privacy.md). No constraint covers them.

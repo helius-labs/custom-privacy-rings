@@ -2,11 +2,8 @@
 
 use custom_ring_interface::cosign::ApprovalMask;
 use custom_ring_interface::{
-    compute_unit_limit,
-    stream::{confidential_slot_tag, DeliveredSlot},
-    CustomRingError, InstructionTag, KnownPrefix, OutputRecord, ParsedTransact, RecordKind,
-    RingOutput, RingPolicy, RingRail, RingTransactData, SettlementLeg, TransferLayout,
-    RING_TRANSACT_RING_CONFIG_INDEX,
+    CustomRingError, InstructionTag, ParsedTransact, RecordKind, RingOutput, RingPolicy, RingRail,
+    RingTransactData, SettlementLeg, TransferLayout, RING_TRANSACT_RING_CONFIG_INDEX,
 };
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -27,10 +24,16 @@ use spr_program::instruction::{
 };
 use spr_transaction::{utxo::DUMMY_DOMAIN, Mint, TransactionError, Utxo, WalletUtxo, SOL_MINT};
 use thiserror::Error;
+use zolana_ring_client::compute_unit_limit;
+use zolana_ring_client::CoSignerPairs;
+use zolana_ring_client::KnownPrefix;
 use zolana_ring_client::{
     rpc::{AuthorityWithdrawal, RelayId, TxViewingSecret},
     AuditEnvelope, OpenedAudit,
 };
+use zolana_ring_keys::confidential_slot_tag;
+use zolana_ring_keys::DeliveredSlot;
+use zolana_ring_keys::OutputRecord;
 use zolana_ring_policy::{ApprovalTotals, Member, OutputTotals, OwnerDebit, PublicTotals};
 use zolana_ring_transaction::{open_recipient_body, record_key};
 

@@ -1,5 +1,6 @@
 //! The indexer matches tags without knowing rings, the confirmed call stack names the ring.
 
+use crate::SppExpansion;
 use core::future::Future;
 
 use solana_address::Address;

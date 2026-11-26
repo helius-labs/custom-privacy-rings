@@ -1,10 +1,6 @@
 //! Slot secrets of the ring outputs under a wallet's viewing keys.
 
-use custom_ring_interface::{
-    ring_body_output, ring_sender_bundle_output_body,
-    stream::{confidential_slot_tag, SlotSecret},
-    SENDER_BUNDLE_LEN,
-};
+use custom_ring_interface::SENDER_BUNDLE_LEN;
 use solana_address::Address;
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_keypair::{NullifierKey, ShieldedAddress, X25519Pubkey};
@@ -12,6 +8,10 @@ use spr_transaction::{
     DeriveRequest, RingCodec, RingOpening, ShieldedKeys, ShieldedTransaction, TransactionError,
     WalletUtxo,
 };
+use zolana_ring_keys::confidential_slot_tag;
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::ring_sender_bundle_output_body;
+use zolana_ring_keys::SlotSecret;
 use zolana_ring_keys::{RingDeliveryRequest, RingKeys, RingTagFrame, RingTagKind, RingTagProbe};
 use zolana_ring_transaction::{is_contributory, AnonymousOutput, OpenedBody, RingAssets};
 

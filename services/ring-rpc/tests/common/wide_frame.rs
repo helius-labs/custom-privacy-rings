@@ -7,6 +7,7 @@ use custom_ring_interface::{
     RingTransactData, SlotBody, RING_RECORD_LEN,
 };
 use spr_interface::instruction::TreeContext;
+use zolana_ring_client::FrameEncode;
 
 /// Two inputs, two recipient slots and one long application message, under `tag`.
 pub fn wide_frame(tag: u8) -> Vec<u8> {

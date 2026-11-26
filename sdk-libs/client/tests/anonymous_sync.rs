@@ -14,10 +14,8 @@ use std::{
 use async_trait::async_trait;
 use custom_ring_interface::stream::slot_tag;
 use custom_ring_interface::{
-    encode_ring_body_output, encode_ring_sender_bundle_output,
-    stream::{DeliveredSlot, SlotSecret},
-    AuditEvidence, AuditKey, AuditStreamLayout, AuditorMessage, OutputRecord, RecipientPayload,
-    RecordForm, RecordKind, SenderBundle, MIN_REPLY_LEN, RING_RECORD_LEN,
+    encode_ring_sender_bundle_output, AuditKey, AuditStreamLayout, AuditorMessage, RecordForm,
+    RecordKind, MIN_REPLY_LEN, RING_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -46,6 +44,13 @@ use zolana_ring_client::{
     RingConfidentialScan, RingNoteCodec, SenderAuditFrame, SenderAuditFrames, SentCheck,
     ViewingHistory,
 };
+use zolana_ring_keys::encode_ring_body_output;
+use zolana_ring_keys::AuditEvidence;
+use zolana_ring_keys::DeliveredSlot;
+use zolana_ring_keys::OutputRecord;
+use zolana_ring_keys::RecipientPayload;
+use zolana_ring_keys::SenderBundle;
+use zolana_ring_keys::SlotSecret;
 use zolana_ring_keys::{
     RingDeliveryRequest, RingKeyError, RingKeys, RingTagFrame, RotatingRingKeys, ViewTagRequest,
 };
@@ -1159,7 +1164,7 @@ async fn a_sender_recovers_two_spl_change_outputs_after_a_wipe() {
     let paid = alice.pay(&indexer, &[pay(&alice.address(), 25)]);
     assert!(paid.output_slots[..2]
         .iter()
-        .all(|slot| custom_ring_interface::ring_body_output(&slot.payload).is_some()));
+        .all(|slot| zolana_ring_keys::ring_body_output(&slot.payload).is_some()));
     let (keys, history) = wiped(1, &[]);
     let restored = restore(&indexer, &keys, &history).await;
     let mut amounts: Vec<(Mint, u64)> = restored

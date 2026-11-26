@@ -27,7 +27,6 @@ use crate::{
     member_registry::{MEMBER_REGISTRY_EMPTY_ROOT, QUAD_CAPACITY},
     state::ROOT_HISTORY,
     storage_instruction::{InitializeIxData, StorageUpdateIxData},
-    STORAGE_PROGRAM_ID,
 };
 
 /// Little endian, counts a registry's updates from the sentinel root at zero.
@@ -141,10 +140,6 @@ impl StorageRegistry {
     /// The creator in the seeds keeps every other signer off its addresses.
     pub fn seeds<'a>(creator: &'a Address, registry_id: &'a RegistryId) -> [&'a [u8]; 3] {
         [Self::SEED, creator.as_ref(), &registry_id.0]
-    }
-
-    pub fn find_address(creator: &Address, registry_id: &RegistryId) -> (Address, u8) {
-        Address::find_program_address(&Self::seeds(creator, registry_id), &STORAGE_PROGRAM_ID)
     }
 
     /// Holds only the sentinel root at revision zero.

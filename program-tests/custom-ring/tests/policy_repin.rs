@@ -18,6 +18,7 @@ use solana_signer::Signer;
 use spr_keypair::ShieldedKeypair;
 use spr_program_test::Rejection;
 use spr_transaction::Utxo;
+use zolana_ring_client::PolicySources;
 use zolana_ring_policy::ListId;
 
 const FORBID_BLOCK_TOML: &str = r#"[policy]

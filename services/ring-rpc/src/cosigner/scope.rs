@@ -220,6 +220,7 @@ impl ApprovedCall {
 mod tests {
     use solana_instruction::{AccountMeta, Instruction};
     use spr_client::{compile_message, ComputeBudgetConfig};
+    use zolana_ring_client::ApprovalEncode;
 
     use super::*;
 

@@ -4,6 +4,9 @@
 mod resource_frames;
 
 use resource_frames::{MaximumPayload, Payload};
+use zolana_ring_client::FittedSpend;
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::SppExpansion;
 
 mod frames;
 mod ring_policy;
@@ -18,12 +21,13 @@ use custom_ring_interface::{
     key_catalog::{FrameKey, RecordPools, TransferShape, TransferSpend},
     storage::Revision,
     AnonymousProofData, CustomRingError, InProofOwner, PolicyProof, PublicLeg, PublicSlots,
-    Replies, RingRail, RingTransactData, SlotBody, MAX_CPI_DATA_LEN, MIN_REPLY_LEN,
+    Replies, RingRail, RingTransactData, SlotBody, MIN_REPLY_LEN,
 };
 use frames::{Fixture, DATA_RING_RECORD_LEN};
 use ring_policy::config;
 use spr_interface::instruction::{InterfaceTransfer, TransactProof};
 use spr_interface::shape::SPP_SUPPORTED_SHAPES;
+use zolana_ring_client::MAX_CPI_DATA_LEN;
 
 /// The codec phases of one invocation, parse, the public legs and the SPP expansion, modeled as Pinocchio's bump that reclaims nothing.
 const BUDGET: usize = 12 * 1024;

@@ -1,9 +1,8 @@
 //! The record opens the merged note for its auditor.
 
 use custom_ring_interface::{
-    key_catalog::RingCircuit, CustomRingMergeIxData, InstructionTag, MergePublicInput, MergeRecord,
-    OutputRecord, RecordKind, RingMode, SealedMergeRecord, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN,
-    TAGGED_X25519_KEY_LEN,
+    key_catalog::RingCircuit, InstructionTag, MergePublicInput, RecordKind, RingMode,
+    MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, TAGGED_X25519_KEY_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -27,6 +26,8 @@ use spr_transaction::{
     ShieldedKeys, SppProofOutputUtxo, WalletUtxo,
 };
 use zeroize::Zeroizing;
+use zolana_ring_client::CustomRingMergeIxData;
+use zolana_ring_client::SealedMergeRecord;
 use zolana_ring_client::{
     rpc::{
         PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayMergeInputs, RelayQuote,
@@ -34,6 +35,8 @@ use zolana_ring_client::{
     },
     MergeRecordSeal,
 };
+use zolana_ring_keys::MergeRecord;
+use zolana_ring_keys::OutputRecord;
 use zolana_ring_transaction::MergeSeed;
 
 use crate::client::{RingClient, RingIndexerBackend};

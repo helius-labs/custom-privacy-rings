@@ -3,7 +3,7 @@
 use bytemuck::Zeroable;
 use custom_ring_interface::{
     max_application_messages, CustomRingError, InstructionTag, RingMode, RingPolicy, RingRail,
-    RingTransactData, MAX_CPI_DATA_LEN,
+    RingTransactData,
 };
 use solana_address::Address;
 use solana_instruction::Instruction;
@@ -15,6 +15,8 @@ use spr_interface::{instruction::TransactProof, pda, ZERO_NULLIFIER_PUBKEY};
 use spr_keypair::PublicKey;
 use spr_transaction::utxo::SppProofInputUtxo;
 use thiserror::Error;
+use zolana_ring_client::SppExpansion;
+use zolana_ring_client::MAX_CPI_DATA_LEN;
 
 use crate::RingError;
 

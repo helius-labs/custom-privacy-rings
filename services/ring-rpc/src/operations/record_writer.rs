@@ -15,11 +15,9 @@ use std::{
 
 use async_trait::async_trait;
 use custom_ring_interface::{
-    storage::Revision,
-    storage::StorageRegistry,
+    storage::{Revision, StorageRegistry},
     storage_instruction::{RecordWriteClassification, StorageUpdateIxData},
     ApplyRecordsIxData, CustomRingError, RecordWrite, RecordWriteData, RingPolicy, APPLY_BATCH,
-    PROOF_UNITS,
 };
 use custom_ring_sdk::{
     CustomRing, InitializeStorage, PrivateStorageWrite, ProvenPrivateWrite, RingError,
@@ -32,6 +30,7 @@ use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_indexer_api::Hash;
 use zeroize::Zeroizing;
 use zolana_operator_custody::{signed_transaction, SigningIdentity};
+use zolana_ring_client::PROOF_UNITS;
 use zolana_ring_client::{
     rpc::{
         GetPendingListApprovalsRequest, GetPendingListApprovalsResponse,

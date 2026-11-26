@@ -1,13 +1,16 @@
 //! What one inline transaction holds per rail and SPP shape, every axis measured jointly through the real encoder.
 
 use std::fmt::Write;
+use zolana_ring_client::TransferKeyRow;
 
 use anyhow::Result;
 use custom_ring_interface::{
-    key_catalog::{FrameKey, RingKey, TransferShape, RING_KEYS},
+    key_catalog::{FrameKey, TransferShape},
     RingRail,
 };
 use spr_interface::{shape::SPP_SUPPORTED_SHAPES, MAX_INTERFACE_TRANSFERS};
+use zolana_ring_client::RingKey;
+use zolana_ring_client::RING_KEYS;
 
 use super::{FrameRail, Legs, Load, Shape, Transfer, TransferFit, MIN};
 

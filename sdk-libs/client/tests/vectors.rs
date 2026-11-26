@@ -2,11 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use custom_ring_interface::blinding::ring_blinding_seed;
-use custom_ring_interface::{
-    domain,
-    stream::{DeliveredSlot, SlotSecret},
-};
+use custom_ring_interface::domain;
 use serde_json::{json, Value};
 use spr_hasher::primitives::solana_owner_identity;
 use spr_instruction::derivation::{
@@ -15,6 +11,9 @@ use spr_instruction::derivation::{
     DOMAIN_TRANSACT_OUTPUT_BLINDING_V1,
 };
 use spr_keypair::X25519Keypair;
+use zolana_ring_keys::ring_blinding_seed;
+use zolana_ring_keys::DeliveredSlot;
+use zolana_ring_keys::SlotSecret;
 
 const RING_SECRETS_JSON: &str = include_str!("../../../test-vectors/wallet/ring-secrets.json");
 

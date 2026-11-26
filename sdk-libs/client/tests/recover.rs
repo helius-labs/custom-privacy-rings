@@ -5,8 +5,10 @@ mod origin_fixture;
 #[path = "common/transfer.rs"]
 pub mod transfer;
 
-use custom_ring_interface::{MergeRecord, OutputRecord, RecordKind, RingMode};
+use custom_ring_interface::{RecordKind, RingMode};
 use std::{cell::Cell, sync::Mutex};
+use zolana_ring_keys::MergeRecord;
+use zolana_ring_keys::OutputRecord;
 
 use solana_address::Address;
 use solana_signature::Signature;

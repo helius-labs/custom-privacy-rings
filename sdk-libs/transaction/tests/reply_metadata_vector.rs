@@ -1,9 +1,10 @@
 //! Pins `test-vectors/wallet/reply_metadata.json`, the sealed reply and the claims a reader refuses.
 
-use custom_ring_interface::{stream::SlotSecret, MIN_REPLY_LEN};
+use custom_ring_interface::MIN_REPLY_LEN;
 use serde_json::{json, Value};
 use spr_keypair::{ShieldedAddress, ShieldedKeypair, SigningKey};
 use spr_transaction::{Data, DataRecord};
+use zolana_ring_keys::SlotSecret;
 use zolana_ring_transaction::{open_reply, seal_reply, ReplyMetadata};
 
 const VECTOR: &str = concat!(

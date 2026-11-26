@@ -1,4 +1,5 @@
 use std::{collections::VecDeque, sync::atomic::AtomicU64};
+use zolana_ring_client::StorageUpdateCodec;
 
 use bytemuck::Zeroable;
 use custom_ring_interface::{

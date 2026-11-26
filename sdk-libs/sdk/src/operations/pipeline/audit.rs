@@ -4,8 +4,7 @@
 //! slot's recipient key. A non-exit slot's record travels in its body, an exit's in the message.
 
 use custom_ring_interface::{
-    disclosure::AuditLayout, AuditEvidence, AuditStreamLayout, AuditorMessage, EntryRecord,
-    RecordKind,
+    disclosure::AuditLayout, AuditStreamLayout, AuditorMessage, RecordKind,
 };
 use spr_event::MessageData;
 use spr_hasher::primitives::pack_be;
@@ -14,6 +13,9 @@ use spr_transaction::{
     instructions::transact::SppProofInputs, utxo::SppProofInputUtxo, Mint, TransactionError,
 };
 use zolana_ring_client::AuditStreamSeal;
+use zolana_ring_keys::AuditEvidence;
+use zolana_ring_keys::AuditorMessageRead;
+use zolana_ring_keys::EntryRecord;
 use zolana_ring_transaction::{
     address_chain, note_count, published_outputs, ClassifiedInput, ExitSlot, RingOutputRail,
 };

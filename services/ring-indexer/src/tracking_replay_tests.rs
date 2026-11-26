@@ -14,6 +14,8 @@ use sea_orm::TransactionTrait;
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_indexer_api::Hash;
+use zolana_ring_client::StorageEventDecode;
+use zolana_ring_client::TrackingRegistryHost;
 use zolana_ring_indexer::tracking::{
     GetTrackingApplyProofInputsRequest, GetTrackingOpeningsRequest, GetTrackingRecordPoolRequest,
     GetTrackingRecordsRequest, GetTrackingRecordsResponse, RingTrackingEntryView,

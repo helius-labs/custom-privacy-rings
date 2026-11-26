@@ -6,6 +6,7 @@ use std::{
     thread::sleep,
     time::{Duration, Instant},
 };
+use zolana_ring_client::ListWriteData;
 
 use custom_ring_cli::{wait_for, Probe, Zolana};
 use custom_ring_interface::{

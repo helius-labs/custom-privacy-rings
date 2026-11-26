@@ -1,18 +1,19 @@
 //! Instructions of the ring roles and the upgrade authority.
 
+use custom_ring_interface::STORAGE_PROGRAM_ID;
 use custom_ring_interface::{
-    compute_unit_limit, tag, CoSignScope, InitializeIxData, InstructionTag, PolicyBindingIxData,
-    PolicySourceIxData, PolicyTableIxData, RingKind, RingPolicy, RingRole, RingRoles,
-    SetCoSignerRecordIxData, SetPausedIxData, SourceSpec, UpdateAuthorityIxData,
-    UpdatePolicyIxData,
+    tag, CoSignScope, InitializeIxData, InstructionTag, PolicyBindingIxData, PolicySourceIxData,
+    PolicyTableIxData, RingKind, RingPolicy, RingRole, RingRoles, SetCoSignerRecordIxData,
+    SetPausedIxData, SourceSpec, UpdateAuthorityIxData, UpdatePolicyIxData,
 };
-use custom_ring_interface::{STORAGE_PROGRAM_ID, SYSTEM_PROGRAM_ID};
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
 use spr_client::ComputeBudgetConfig;
 use spr_interface::pda;
 use spr_keypair::X25519Pubkey;
 use wincode::{config::DefaultConfig, SchemaWrite};
+use zolana_ring_client::compute_unit_limit;
+use zolana_ring_client::SYSTEM_PROGRAM_ID;
 use zolana_ring_policy::{ListId, ListSet, Rule, RuleTable, SourceMap};
 
 use crate::{submission::check_transaction_size, CustomRing, RingError};

@@ -2,10 +2,10 @@
 
 use curve25519_dalek::constants::{ED25519_BASEPOINT_POINT, EIGHT_TORSION};
 use custom_ring_interface::{
-    tracking::TrackingRegistry, CustomRingMergeIxData, InitializeIxData, PolicyBindingIxData,
-    PolicySourceIxData, RingPolicy, RingRole, RingRoles, SealedMergeRecord,
-    SetCoSignerRecordIxData, SetPausedIxData, SourceSlot, SourceSpec, UpdateAuthorityIxData,
-    UpdatePolicyIxData, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, STORAGE_PROGRAM_ID,
+    tracking::TrackingRegistry, InitializeIxData, PolicyBindingIxData, PolicySourceIxData,
+    RingPolicy, RingRole, RingRoles, SetCoSignerRecordIxData, SetPausedIxData, SourceSlot,
+    SourceSpec, UpdateAuthorityIxData, UpdatePolicyIxData, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN,
+    STORAGE_PROGRAM_ID,
 };
 use custom_ring_sdk::{
     tag, ClearCoSigner, CoSignScope, CustomRing, CustomRingMergeInstruction, InitialPolicy,
@@ -23,7 +23,10 @@ use spr_interface::{
 use spr_keypair::X25519Keypair;
 use spr_program::instruction::MergeRing;
 use wincode::{config::DefaultConfig, SchemaRead};
+use zolana_ring_client::CustomRingMergeIxData;
 use zolana_ring_client::ReaderKey;
+use zolana_ring_client::SealedMergeRecord;
+use zolana_ring_client::TrackingRegistryHost;
 use zolana_ring_policy::{
     ListId, PolicyTableError, Rule, RuleTable, RuleTableError, Subject, TableParts,
 };

@@ -14,7 +14,7 @@ use spl_token_2022_interface::{extension::PodStateWithExtensions, pod::PodAccoun
 use spr_hasher::primitives::solana_owner_identity;
 use spr_interface::SPL_TOKEN_ACCOUNT_INITIALIZED;
 
-use crate::{CustomRingError, SYSTEM_PROGRAM_ID};
+use crate::CustomRingError;
 
 pub const ANONYMOUS_PARTIES: usize = crate::cosign::MAX_CO_SIGNERS;
 
@@ -29,19 +29,6 @@ pub enum TokenAccountControl {
 pub struct TokenAccountState {
     pub mint: [u8; 32],
     pub control: TokenAccountControl,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum AnonymousExitDestination<'a> {
-    Sol {
-        recipient: &'a Address,
-        owner: &'a Address,
-        data_len: usize,
-    },
-    Spl {
-        token_account: &'a Address,
-        control: &'a TokenAccountControl,
-    },
 }
 
 pub trait SettlementAccount {
@@ -79,38 +66,6 @@ impl TokenAccountControl {
     pub fn owner(&self) -> &[u8; 32] {
         match self {
             Self::SoleOwner(owner) | Self::Shared(owner) => owner,
-        }
-    }
-}
-
-impl<'a> AnonymousExitDestination<'a> {
-    /// The key the anonymous audit proof proves apart from the hidden owner.
-    pub fn named_key(self) -> Result<&'a [u8; 32], CustomRingError> {
-        match self {
-            // Data or a program owner could name a second key.
-            Self::Sol {
-                recipient,
-                owner,
-                data_len,
-            } => {
-                if *owner == SYSTEM_PROGRAM_ID && data_len == 0 {
-                    Ok(recipient.as_array())
-                } else {
-                    Err(CustomRingError::AnonymousExitAccountHasData)
-                }
-            }
-            // The proof binds the owner only, a keypair address could be the hidden owner's.
-            Self::Spl { token_account, .. } if token_account.is_on_curve() => {
-                Err(CustomRingError::AnonymousExitTokenAccountOnCurve)
-            }
-            Self::Spl {
-                control: TokenAccountControl::SoleOwner(owner),
-                ..
-            } => Ok(owner),
-            Self::Spl {
-                control: TokenAccountControl::Shared(_),
-                ..
-            } => Err(CustomRingError::AnonymousExitTokenAccountShared),
         }
     }
 }

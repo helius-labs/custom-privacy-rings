@@ -4,14 +4,16 @@
 //! Read `update_queue` after for the stored states and `record_writer` for the passes that move them.
 
 use std::collections::BTreeMap;
+use zolana_ring_client::PolicySources;
 
 use custom_ring_interface::{
     domain,
     storage::{Revision, StorageRegistry},
-    ListRegistry, RecordWrite, RecordWriteData, RingPolicy, APPLY_BATCH,
+    RecordWrite, RecordWriteData, RingPolicy, APPLY_BATCH,
 };
 use solana_address::Address;
 use thiserror::Error;
+use zolana_ring_client::ListRegistry;
 use zolana_ring_client::{
     owner_record_key,
     rpc::{

@@ -2,7 +2,7 @@ use bytemuck::Zeroable;
 use custom_ring_interface::{
     chain_link, domain,
     owner_grant::OwnerGrant,
-    owner_signature::{Ed25519Signatures, OwnerSignature},
+    owner_signature::Ed25519Signatures,
     storage::{RegistryId, Revision, RootUpdate, StorageError, StorageRegistry},
     storage_instruction::{
         event_kind, tag, ApplyEnrollmentsIxData, ApplyEnrollmentsRequest, AssetWrite, EnrollIxData,
@@ -25,6 +25,14 @@ use spr_hasher::{
     primitives::{hash_bytes, pack_be, right_align, solana_owner_identity},
     Hasher, Poseidon,
 };
+use zolana_ring_client::EnrollmentRequestEncode;
+use zolana_ring_client::OwnerGrantHost;
+use zolana_ring_client::OwnerSignature;
+use zolana_ring_client::PolicySources;
+use zolana_ring_client::SignatureInstruction;
+use zolana_ring_client::StorageEventDecode;
+use zolana_ring_client::StorageUpdateCodec;
+use zolana_ring_client::TrackingRegistryHost;
 use zolana_ring_policy::{ListId, ListSet, Member, Rule, RuleTable, Subject};
 
 const PROGRAM: Address = Address::new_from_array([7; 32]);

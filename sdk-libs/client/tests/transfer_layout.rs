@@ -3,11 +3,14 @@
 mod frames;
 
 use core::ops::Range;
+use zolana_ring_client::CoSignerPairs;
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::SppExpansion;
 
 use custom_ring_interface::{
     cosign::CoSignRequirement, tag, CoSignScope, CoSigner, CoSignerCounts, CustomRingError,
-    KnownPrefix, RingPolicy, RingRail, RingTransactData, RootRead, TransferLayout, TransferPrefix,
-    CO_SIGNER, RING_POLICY,
+    RingPolicy, RingRail, RingTransactData, RootRead, TransferLayout, TransferPrefix, CO_SIGNER,
+    RING_POLICY,
 };
 use frames::Fixture;
 use serde_json::{json, Value};
@@ -20,6 +23,7 @@ use spr_interface::{
     instruction::{instruction_data::transact::CacheAccess, InterfaceTransfer, TransactProof},
     pda,
 };
+use zolana_ring_client::KnownPrefix;
 
 const VECTORS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

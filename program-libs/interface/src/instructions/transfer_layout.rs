@@ -12,7 +12,7 @@
 //! 4. The delegate's signer on the authority rails, then the mint when its permanent delegate signs, SPP receives neither.
 //! 5. SPP's list, forwarded whole. Payer and `ring_config` in its prefix, input trees, nullifier PDAs, owner run, settlement groups, cache accounts.
 //!
-//! `test-vectors/proof/transfer-layout.json` pins the windows, `tests/transfer_layout.rs` writes it.
+//! `test-vectors/proof/transfer-layout.json` pins the windows, `sdk-libs/client/tests/transfer_layout.rs` writes it.
 //!
 //! Read after `program-libs/interface/src/instructions/cosign.rs`. Read before
 //! `program-libs/interface/src/instructions/transfer_cpi.rs`, `programs/custom-ring/src/instructions/transfer/accounts.rs`.
@@ -40,51 +40,6 @@ pub trait TransferPrefix {
 
     /// A signer at `signer` other than the ring's delegate names its mint in the next slot.
     fn delegate_mint(&mut self, signer: usize) -> Result<bool, Self::Error>;
-}
-
-/// A prefix its builder or a located SPP window fixes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct KnownPrefix {
-    pub co_signer_pairs: usize,
-    pub delegate_mint: bool,
-}
-
-impl KnownPrefix {
-    /// The prefix of a list whose SPP window starts at `spp`, a delegate frame takes no pair.
-    pub fn ending_at(
-        frame: &RingTransactData<'_>,
-        ring: &RingPolicy,
-        spp: usize,
-    ) -> Result<Self, CustomRingError> {
-        let delegate = frame.rail.is_delegate();
-        let slots = spp.checked_sub(1 + registry_count(ring, delegate));
-        let (co_signer_pairs, delegate_mint) = match (delegate, slots) {
-            (true, Some(1)) => (0, false),
-            (true, Some(2)) => (0, true),
-            (false, Some(slots)) if slots % 2 == 0 => (slots / 2, false),
-            _ => return Err(CustomRingError::InvalidSettlementAccounts),
-        };
-        Ok(Self {
-            co_signer_pairs,
-            delegate_mint,
-        })
-    }
-}
-
-impl TransferPrefix for KnownPrefix {
-    type Error = CustomRingError;
-
-    fn co_signer_pairs(
-        &mut self,
-        _: usize,
-        _: Option<CoSignRequirement>,
-    ) -> Result<usize, CustomRingError> {
-        Ok(self.co_signer_pairs)
-    }
-
-    fn delegate_mint(&mut self, _: usize) -> Result<bool, CustomRingError> {
-        Ok(self.delegate_mint)
-    }
 }
 
 /// Indices into the whole list, the ring account at [`TransferLayout::RING`].
@@ -173,14 +128,6 @@ impl TransferLayout {
     /// The one slot of the ring auth PDA.
     pub const fn ring_config(&self) -> usize {
         self.spp + RING_TRANSACT_RING_CONFIG_INDEX
-    }
-
-    /// `(record, signer)` of each pair.
-    pub fn co_signer_pairs(&self) -> impl Iterator<Item = (usize, usize)> {
-        self.co_signers
-            .clone()
-            .step_by(2)
-            .map(|record| (record, record + 1))
     }
 
     /// The groups of `transfers`, the frame's legs, in leg order.

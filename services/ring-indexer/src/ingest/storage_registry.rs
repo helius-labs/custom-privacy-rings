@@ -4,6 +4,8 @@ use custom_ring_interface::{
 };
 use sea_orm::ConnectionTrait;
 use solana_address::Address;
+use zolana_ring_client::StorageRegistryAddress;
+use zolana_ring_client::StorageUpdateCodec;
 use zolana_ring_indexer::tree::MemberRecord;
 
 use crate::{

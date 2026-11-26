@@ -7,7 +7,6 @@
 //! `programs/custom-ring/src/instructions/verification/public_legs.rs`.
 
 use arrayvec::ArrayVec;
-use solana_address::Address;
 use spr_hasher::{
     primitives::{hash_bytes, right_align, BN254_SCALAR_MODULUS_BE},
     HasherError,
@@ -32,8 +31,6 @@ pub const RING_MERGE_PAYER_INDEX: usize = 3;
 
 /// SOL takes the zero asset address, whose asset field is [`SOL_ASSET_FIELD`].
 pub const SOL_ASSET_ADDRESS: [u8; 32] = [0u8; 32];
-
-pub const SYSTEM_PROGRAM_ID: Address = Address::new_from_array([0u8; 32]);
 
 /// A refused fold, `asset` the zero address for SOL.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]

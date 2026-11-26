@@ -2,12 +2,11 @@
 //! Every catalog key lands one real proof at the least load selecting it, its full capacity apart.
 
 use std::sync::{Arc, Mutex};
+use zolana_ring_client::TransferKeyRow;
 
 use super::*;
 use custom_ring_interface::{
-    key_catalog::{
-        ApplyMode, FrameKey, RingCircuit, RingKey, TransferShape, RING_KEYS, TRANSFER_SHAPES,
-    },
+    key_catalog::{ApplyMode, FrameKey, RingCircuit, TransferShape, TRANSFER_SHAPES},
     ParsedTransact, TRANSFER_OUTPUT_CAPACITIES,
 };
 use custom_ring_test_validator::{
@@ -17,6 +16,8 @@ use custom_ring_test_validator::{
 use spr_api::{ApiError, HttpClient, HttpFuture, HttpRequest};
 use spr_client::{Shape, SPP_SUPPORTED_SHAPES};
 use spr_test_utils::wallet::create_associated_token_account;
+use zolana_ring_client::RingKey;
+use zolana_ring_client::RING_KEYS;
 use zolana_ring_keys::ListSaltHolder;
 
 /// The prover holds one key's cache at a time, a restart drops it when the next key differs.

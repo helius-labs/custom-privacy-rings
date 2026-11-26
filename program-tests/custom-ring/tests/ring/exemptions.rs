@@ -5,6 +5,7 @@ use custom_ring_interface::{cosign::ApprovalMask, storage::Revision, RootRead};
 use custom_ring_sdk::{live_registry, SetCoSigner};
 use spr_program::instruction::TransactSolTransferAccounts;
 use spr_test_utils::test_validator_asserts::assert_optional_account_unchanged;
+use zolana_ring_client::FrameEncode;
 use zolana_ring_policy::MintPolicy;
 
 const NOTE: u64 = 1_000_000_000;

@@ -1,13 +1,14 @@
 mod frames;
 mod ring_policy;
 
-use custom_ring_interface::{
-    encode_confidential_output, AppMessage, RingPolicy, RingTransactData, Settlement, SlotBody,
-};
+use custom_ring_interface::{AppMessage, RingPolicy, RingTransactData, SlotBody};
 use frames::Fixture;
 use spr_interface::instruction::{
     instruction_data::transact::CacheAccess, ExternalDataPreimage, TransactIxDataRef, TransactProof,
 };
+use zolana_ring_client::Settlement;
+use zolana_ring_client::SppExpansion;
+use zolana_ring_keys::encode_confidential_output;
 
 #[test]
 fn borrowed_expansion_matches_owned_bytes_and_hashes_on_every_rail() {

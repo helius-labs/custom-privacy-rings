@@ -3,7 +3,6 @@
 use std::time::Duration;
 
 use custom_ring_interface::{
-    compute_unit_limit,
     storage::{Revision, StorageRegistry},
     tracking::TrackingRegistry,
     CustomRingError, InstructionTag, RingPolicy,
@@ -22,6 +21,7 @@ use spr_client::{
     compile_message, sign_transaction, AsyncRpc, ClientError, ComputeBudgetConfig,
     RpcSendTransactionConfig,
 };
+use zolana_ring_client::compute_unit_limit;
 use zolana_ring_policy::OwnerDebit;
 
 use crate::client::{RingClient, RingIndexerBackend};

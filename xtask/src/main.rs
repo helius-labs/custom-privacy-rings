@@ -1,13 +1,14 @@
 use std::path::Path;
 
 use anyhow::{bail, ensure, Context, Result};
-use custom_ring_interface::{key_catalog::RING_KEYS, proving_key_hashes};
 use serde_json::{json, Value};
 use xtask::create_release::{
     self, binary_json, build_rust_binary, pinned_sha256, read_json, release_targets, repo_root,
     require_file, stage_file, stage_program, CliBinary, Options, ProgramSource, ReleaseSet,
     PROVING_KEYS_DIR,
 };
+use zolana_ring_client::proving_key_hashes;
+use zolana_ring_client::RING_KEYS;
 
 mod frame_fit;
 

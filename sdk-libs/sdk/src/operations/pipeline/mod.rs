@@ -20,15 +20,16 @@ mod spp;
 mod tests;
 mod voucher;
 pub use voucher::VouchSigner;
+use zolana_ring_client::FittedSpend;
+use zolana_ring_client::SppExpansion;
 
 use custom_ring_interface::{
     cosign::{ApprovalMask, CoSignDemand, CoSignOperation},
-    domain::VouchMessage,
-    key_catalog::{RecordPools, RingCircuit, RowAuthorization, TransferAddresses, TransferSpend},
+    key_catalog::{RecordPools, RingCircuit, TransferSpend},
     AnonymousParties, CheckedAuthorization, CustomRingError, CustomRingProof, FramedSenderBundle,
     InputTrees, InstructionTag, ParsedTransact, PlainGroth16Proof, PolicyProof, PublicLeg,
-    PublicSlots, RecordForm, RingPolicy, RingRail, RootRead, Settlement, SignerSet,
-    TransferBinding, ANONYMOUS_PARTIES, TRANSFER_OUTPUT_CAPACITIES,
+    PublicSlots, RecordForm, RingPolicy, RingRail, RootRead, SignerSet, TransferBinding,
+    ANONYMOUS_PARTIES, TRANSFER_OUTPUT_CAPACITIES,
 };
 use solana_address::Address;
 use solana_instruction::Instruction;
@@ -51,6 +52,10 @@ use spr_transaction::{
     utxo::SppProofInputUtxo,
     ShieldedKeys, TransactionError,
 };
+use zolana_ring_client::RowAuthorization;
+use zolana_ring_client::Settlement;
+use zolana_ring_client::TransferAddresses;
+use zolana_ring_client::VouchMessage;
 use zolana_ring_client::{
     rpc::{ApprovedTransfer, SubjectListSalt},
     AsyncRingIndexer,

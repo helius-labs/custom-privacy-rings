@@ -1,0 +1,550 @@
+//! The records, envelopes and payloads of the auditor stream, mirror of `prover/circuits/audit`.
+//!
+//! The sealer and every reader share these codecs, a record decoded at another length or key bit opens to noise.
+
+use custom_ring_interface::{
+    bytes::Bytes,
+    disclosure::{AuditLayout, SealedKeys},
+    AuditStreamLayout, CustomRingError, RecordForm, RecordKind, StreamRegion,
+    DEFAULT_INPUT_BITS_LEN, ENTRY_RECORD_LEN, ENVELOPE_HEAD_LEN, ENVELOPE_KEY_LEN, EXIT_RECORD_LEN,
+    MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, RECIPIENT_PAYLOAD_LENGTH_LEN, RING_RECORD_LEN,
+    SEALED_KEY_BLOCKS, SEALED_KEY_LEN, SENDER_BUNDLE_LEN, TRANSFER_RECORD_LEN,
+};
+use spr_interface::ZERO_NULLIFIER_PUBKEY;
+
+/// Set in the kind byte exactly when a live record's key is `ZERO_NULLIFIER_PUBKEY`.
+pub const RECORD_ZERO_KEY_BIT: u8 = 4;
+const FIELD_LEN: usize = 32;
+
+pub trait SealedLayout {
+    /// A slot at or past `m` transmits no byte, the proof forces it empty.
+    fn recipient_key(self, slot: usize) -> StreamRegion;
+
+    /// `None` at any length but `keys_len`.
+    fn split_keys(self, sealed: &[u8]) -> Option<SealedKeys<'_>>;
+
+    fn layout(self) -> AuditLayout;
+
+    fn sealed_len(self) -> usize;
+}
+
+impl SealedLayout for AuditStreamLayout {
+    fn recipient_key(self, slot: usize) -> StreamRegion {
+        StreamRegion {
+            start_counter: self.first_key_counter() + (slot * SEALED_KEY_BLOCKS) as u32,
+            max_blocks: SEALED_KEY_BLOCKS,
+            len: match slot < self.outputs {
+                true => SEALED_KEY_LEN,
+                false => 0,
+            },
+        }
+    }
+
+    fn split_keys(self, sealed: &[u8]) -> Option<SealedKeys<'_>> {
+        self.layout()
+            .split_keys(sealed)
+            .filter(|_| sealed.len() == self.keys_len())
+    }
+
+    fn layout(self) -> AuditLayout {
+        AuditLayout {
+            entry: self.key.entry,
+            vouched: self.vouched,
+            records: self.records,
+        }
+    }
+
+    fn sealed_len(self) -> usize {
+        self.envelope().len + self.keys_len()
+    }
+}
+
+const RECORD_FORMS: [RecordForm; 4] = [
+    record_form(false, false),
+    record_form(false, true),
+    record_form(true, false),
+    record_form(true, true),
+];
+
+const fn record_form(data: bool, ring_data: bool) -> RecordForm {
+    RecordForm { data, ring_data }
+}
+
+pub trait RecipientBodyForms: Sized {
+    /// The forms a recipient body of `body_len` can hold, a reader without the frame tries each against the commitment.
+    fn of_recipient_body(body_len: usize) -> impl Iterator<Item = Self>;
+}
+
+impl RecipientBodyForms for RecordForm {
+    fn of_recipient_body(body_len: usize) -> impl Iterator<Item = Self> {
+        RECORD_FORMS
+            .into_iter()
+            .filter(move |form| form.fits_recipient_body(body_len))
+    }
+}
+
+/// A non-exit record names its key by the zero key bit alone, the proof derives the bit from the committed key.
+/// A ring note spends under a nonzero key only as its owner's registered tracking key, so an accepted
+/// nonzero-key spend matches the owner's immutable registered key, the one a reader takes from the owner's row.
+/// An exit publishes its key, the default ring registers nobody.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecordKey {
+    /// `ZERO_NULLIFIER_PUBKEY`, named by [`RECORD_ZERO_KEY_BIT`].
+    Zero,
+    /// A ring output's nonzero key, its owner's registered key, or a dummy's.
+    #[default]
+    Unpublished,
+    /// A nonzero key the record carries, an exit's or a merge output's.
+    Carried([u8; 32]),
+}
+
+impl RecordKey {
+    const fn sealed_bytes(self) -> [u8; 32] {
+        match self {
+            Self::Zero => ZERO_NULLIFIER_PUBKEY,
+            Self::Unpublished => [0; 32],
+            Self::Carried(key) => key,
+        }
+    }
+
+    fn read(zero_key: bool, carried: Option<[u8; 32]>) -> Result<Self, CustomRingError> {
+        let key = match carried {
+            None if zero_key => Self::Zero,
+            None => Self::Unpublished,
+            Some(key) if zero_key == (key == ZERO_NULLIFIER_PUBKEY) => match zero_key {
+                true => Self::Zero,
+                false => Self::Carried(key),
+            },
+            Some(_) => return Err(CustomRingError::RingTransactLength),
+        };
+        Ok(key)
+    }
+}
+
+/// One slot's record, the proof holds a dummy's plaintext to zero.
+/// SPP commits the owner key and the mint as hashes no reader inverts, so the record carries the raw values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutputRecord {
+    pub kind: RecordKind,
+    pub amount: u64,
+    pub owner_key: [u8; 32],
+    pub mint: [u8; 32],
+    /// SPP's derived blinding, the recipient holds no viewing secret to derive it.
+    pub blinding: [u8; 32],
+    pub key: RecordKey,
+    /// The proof holds both hashes to the opened note, zero under a clear form bit.
+    pub data_hash: [u8; 32],
+    /// Zero on an exit.
+    pub ring_data_hash: [u8; 32],
+}
+
+impl OutputRecord {
+    /// The sealed plaintext, a slot publishes its first [`Self::published_len`] bytes.
+    pub fn encode(&self, form: RecordForm) -> [u8; TRANSFER_RECORD_LEN] {
+        let mut out = [0; TRANSFER_RECORD_LEN];
+        if self.kind == RecordKind::Dummy {
+            return out;
+        }
+        out[..RING_RECORD_LEN].copy_from_slice(&self.encode_head());
+        let (first, second) = match self.kind {
+            RecordKind::Exit => (self.key.sealed_bytes(), self.data_hash),
+            RecordKind::Dummy | RecordKind::Ring if form.data => {
+                (self.data_hash, self.ring_data_hash)
+            }
+            // A clear data bit leaves the first hash cell to the ring data hash.
+            RecordKind::Dummy | RecordKind::Ring => (self.ring_data_hash, self.ring_data_hash),
+        };
+        out[RING_RECORD_LEN..EXIT_RECORD_LEN].copy_from_slice(&first);
+        out[EXIT_RECORD_LEN..].copy_from_slice(&second);
+        out
+    }
+
+    /// The bytes a slot publishes before encryption.
+    pub fn published(&self, form: RecordForm) -> Vec<u8> {
+        self.encode(form)[..self.published_len(form)].to_vec()
+    }
+
+    pub const fn published_len(&self, form: RecordForm) -> usize {
+        form.published_len(self.kind)
+    }
+
+    /// Refuses bytes off the published length of the kind under `form`.
+    pub fn decode(published: &[u8], form: RecordForm) -> Result<Self, CustomRingError> {
+        read_all(published, |bytes| {
+            let head = RecordHead::read(bytes)?;
+            let exit = head.record.kind == RecordKind::Exit;
+            let carried = match exit {
+                true => Some(*bytes.array()?),
+                false => None,
+            };
+            let mut hash = |published: bool| match published {
+                true => bytes.array().copied(),
+                false => Ok([0; 32]),
+            };
+            let data_hash = hash(form.data)?;
+            let ring_data_hash = hash(form.ring_data && !exit)?;
+            let record = head.with_key(carried)?;
+            if record.kind == RecordKind::Dummy && (data_hash, ring_data_hash) != ([0; 32], [0; 32])
+            {
+                return Err(CustomRingError::RingTransactLength);
+            }
+            Ok(Self {
+                data_hash,
+                ring_data_hash,
+                ..record
+            })
+        })
+    }
+
+    fn encode_head(&self) -> [u8; RING_RECORD_LEN] {
+        let mut out = [0; RING_RECORD_LEN];
+        out[0] = self.kind as u8
+            | (u8::from(self.key.sealed_bytes() == ZERO_NULLIFIER_PUBKEY) * RECORD_ZERO_KEY_BIT);
+        out[1..9].copy_from_slice(&self.amount.to_be_bytes());
+        out[9..41].copy_from_slice(&self.owner_key);
+        out[41..73].copy_from_slice(&self.mint);
+        out[73..].copy_from_slice(&self.blinding);
+        out
+    }
+}
+
+/// The published prefix of a record, before its key.
+struct RecordHead {
+    record: OutputRecord,
+    zero_key: bool,
+}
+
+impl RecordHead {
+    fn read(bytes: &mut Bytes<'_>) -> Result<Self, CustomRingError> {
+        let kind_byte = bytes.byte()?;
+        let kind = match kind_byte & !RECORD_ZERO_KEY_BIT {
+            0 => RecordKind::Dummy,
+            1 => RecordKind::Ring,
+            2 => RecordKind::Exit,
+            _ => return Err(CustomRingError::RingTransactLength),
+        };
+        Ok(Self {
+            record: OutputRecord {
+                kind,
+                amount: read_amount(bytes)?,
+                owner_key: *bytes.array()?,
+                mint: *bytes.array()?,
+                blinding: *bytes.array()?,
+                ..OutputRecord::default()
+            },
+            zero_key: kind_byte & RECORD_ZERO_KEY_BIT != 0,
+        })
+    }
+
+    /// A dummy carries no byte and no key, every other key follows the zero key bit.
+    fn with_key(self, carried: Option<[u8; 32]>) -> Result<OutputRecord, CustomRingError> {
+        if self.record.kind == RecordKind::Dummy {
+            return match self.record == OutputRecord::default()
+                && !self.zero_key
+                && carried.is_none_or(|key| key == [0; 32])
+            {
+                true => Ok(self.record),
+                false => Err(CustomRingError::RingTransactLength),
+            };
+        }
+        Ok(OutputRecord {
+            key: RecordKey::read(self.zero_key, carried)?,
+            ..self.record
+        })
+    }
+}
+
+/// A merge output's record, its seed rebuilds the blinding with no viewing secret.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct MergeRecord {
+    pub record: OutputRecord,
+    pub seed: [u8; 32],
+}
+
+/// The seed is the owner's nullifier secret, never printed.
+impl core::fmt::Debug for MergeRecord {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self { record, seed: _ } = self;
+        f.debug_struct("MergeRecord")
+            .field("record", record)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MergeRecord {
+    /// The full record form, the merge output's key travels with its seed.
+    pub fn encode(&self) -> [u8; MERGE_RECORD_LEN] {
+        let mut out = [0; MERGE_RECORD_LEN];
+        if self.record.kind != RecordKind::Dummy {
+            out[..RING_RECORD_LEN].copy_from_slice(&self.record.encode_head());
+            out[RING_RECORD_LEN..EXIT_RECORD_LEN].copy_from_slice(&self.record.key.sealed_bytes());
+        }
+        out[EXIT_RECORD_LEN..].copy_from_slice(&self.seed);
+        out
+    }
+
+    pub fn decode(plaintext: &[u8]) -> Result<Self, CustomRingError> {
+        read_all(plaintext, |bytes| {
+            let head = RecordHead::read(bytes)?;
+            let carried = *bytes.array()?;
+            Ok(Self {
+                record: head.with_key(Some(carried))?,
+                seed: *bytes.array()?,
+            })
+        })
+    }
+}
+
+/// What the auditor reads first of a merge, the key pair that opens its record.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct MergeEnvelope {
+    pub eph_sk: [u8; 32],
+    pub recipient_u: [u8; 32],
+}
+
+/// The ephemeral secret opens the record, never printed.
+impl core::fmt::Debug for MergeEnvelope {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            eph_sk: _,
+            recipient_u,
+        } = self;
+        f.debug_struct("MergeEnvelope")
+            .field("recipient_u", recipient_u)
+            .finish_non_exhaustive()
+    }
+}
+
+impl MergeEnvelope {
+    pub fn encode(&self) -> [u8; MERGE_ENVELOPE_LEN] {
+        let mut out = [0; MERGE_ENVELOPE_LEN];
+        out[..FIELD_LEN].copy_from_slice(&self.eph_sk);
+        out[FIELD_LEN..].copy_from_slice(&self.recipient_u);
+        out
+    }
+
+    pub fn decode(plaintext: &[u8]) -> Result<Self, CustomRingError> {
+        read_all(plaintext, |bytes| {
+            Ok(Self {
+                eph_sk: *bytes.array()?,
+                recipient_u: *bytes.array()?,
+            })
+        })
+    }
+}
+
+/// One default-ring input's record, zero on any other slot, never its blinding or nullifier secret.
+/// A default-ring note can lack an earlier ring record, `input_commitment` names it in place of the
+/// blinding and the proof holds every other field to its preimage.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntryRecord {
+    pub owner_key: [u8; 32],
+    pub nullifier_pk: [u8; 32],
+    pub amount: u64,
+    pub mint: [u8; 32],
+    /// SPP's spent UTXO hash, the value `private_tx_hash` chains.
+    pub input_commitment: [u8; 32],
+}
+
+impl EntryRecord {
+    fn extend(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.owner_key);
+        out.extend_from_slice(&self.nullifier_pk);
+        out.extend_from_slice(&self.amount.to_be_bytes());
+        out.extend_from_slice(&self.mint);
+        out.extend_from_slice(&self.input_commitment);
+    }
+
+    fn read(bytes: &mut Bytes<'_>) -> Result<Self, CustomRingError> {
+        Ok(Self {
+            owner_key: *bytes.array()?,
+            nullifier_pk: *bytes.array()?,
+            amount: read_amount(bytes)?,
+            mint: *bytes.array()?,
+            input_commitment: *bytes.array()?,
+        })
+    }
+}
+
+/// Entry evidence follows the sealed viewing key and note count.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuditEvidence {
+    None,
+    Entry {
+        /// Bit `k` names note `k`.
+        default_note_bits: u64,
+        /// One per published input, record `k` names note `k`.
+        inputs: Vec<EntryRecord>,
+    },
+}
+
+/// The auditor derives every output blinding from the sealed viewing secret, the published salt and `n0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditEnvelope {
+    pub tx_viewing_secret: [u8; ENVELOPE_KEY_LEN],
+    pub real_inputs: u8,
+    pub evidence: AuditEvidence,
+}
+
+impl AuditEnvelope {
+    /// Writes the raw fields, use `decode` to check the counts and the zero records.
+    pub fn encode(&self) -> Vec<u8> {
+        let evidence_len = match &self.evidence {
+            AuditEvidence::None => 0,
+            AuditEvidence::Entry { inputs, .. } => {
+                DEFAULT_INPUT_BITS_LEN + ENTRY_RECORD_LEN * inputs.len()
+            }
+        };
+        let mut out = Vec::with_capacity(ENVELOPE_HEAD_LEN + evidence_len);
+        out.extend_from_slice(&self.tx_viewing_secret);
+        out.push(self.real_inputs);
+        if let AuditEvidence::Entry {
+            default_note_bits,
+            inputs,
+        } = &self.evidence
+        {
+            out.extend_from_slice(&default_note_bits.to_be_bytes());
+            inputs.iter().for_each(|input| input.extend(&mut out));
+        }
+        out
+    }
+
+    /// Refuses lengths and counts outside `layout`, ciphertext authentication remains with the caller.
+    pub fn decode(plaintext: &[u8], layout: AuditStreamLayout) -> Result<Self, CustomRingError> {
+        // 1. The selected layout bounds both counts, read_all refuses bytes after its final record.
+        layout.checked()?;
+        read_all(plaintext, |bytes| {
+            let tx_viewing_secret = *bytes.array()?;
+            let real_inputs = bytes.byte()?;
+            let evidence = match layout.key.entry {
+                false => AuditEvidence::None,
+                true => AuditEvidence::Entry {
+                    default_note_bits: u64::from_be_bytes(*bytes.array()?),
+                    inputs: (0..layout.inputs)
+                        .map(|_| EntryRecord::read(bytes))
+                        .collect::<Result<_, CustomRingError>>()?,
+                },
+            };
+            // 2. R notes fit the published inputs, the circuit holds every note below n.
+            if usize::from(real_inputs) > layout.inputs {
+                return Err(CustomRingError::RingTransactLength);
+            }
+            // 3. Default bits select notes below R, every other record is zero as the circuit's note selector holds it.
+            // Selected values remain unverified here, the ring proof binds them to the input commitments.
+            if let AuditEvidence::Entry {
+                default_note_bits,
+                inputs,
+            } = &evidence
+            {
+                if default_note_bits
+                    .checked_shr(u32::from(real_inputs))
+                    .unwrap_or(0)
+                    != 0
+                {
+                    return Err(CustomRingError::RingTransactLength);
+                }
+                for (note, record) in inputs.iter().enumerate() {
+                    if default_note_bits & (1 << note) == 0 && *record != EntryRecord::default() {
+                        return Err(CustomRingError::RingTransactLength);
+                    }
+                }
+            }
+            Ok(Self {
+                tx_viewing_secret,
+                real_inputs,
+                evidence,
+            })
+        })
+    }
+}
+
+/// The recipient keys the auditor stream seals, slot `i` at key `i`.
+/// The auditor reads each `V_i` here, no directory names a recipient.
+pub fn encode_recipient_keys(keys: &[[u8; 32]]) -> Vec<u8> {
+    keys.as_flattened().to_vec()
+}
+
+pub fn decode_recipient_keys(
+    plaintext: &[u8],
+    layout: AuditStreamLayout,
+) -> Result<Vec<[u8; 32]>, CustomRingError> {
+    read_all(plaintext, |bytes| {
+        Ok(bytes.fields(layout.outputs)?.to_vec())
+    })
+}
+
+/// The unproven part of a recipient body, after the record under the same stream.
+/// It takes the keystream from the slot's published record length, so no keystream byte covers two published bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecipientPayload {
+    /// The application data, the record carries the hash the commitment reads.
+    pub data: Vec<u8>,
+}
+
+impl RecipientPayload {
+    /// `u16be(len) || data`, unpadded.
+    pub fn encoded_len(&self) -> usize {
+        RECIPIENT_PAYLOAD_LENGTH_LEN + self.data.len()
+    }
+
+    /// Zero padded to `width`, one width per frame keeps the payloads alike.
+    pub fn encode_padded(&self, width: usize) -> Result<Vec<u8>, CustomRingError> {
+        if width < self.encoded_len() || width > usize::from(u16::MAX) {
+            return Err(CustomRingError::OutputBodyLength);
+        }
+        let length =
+            u16::try_from(self.data.len()).map_err(|_| CustomRingError::OutputBodyLength)?;
+        let mut out = Vec::with_capacity(width);
+        out.extend_from_slice(&length.to_be_bytes());
+        out.extend_from_slice(&self.data);
+        out.resize(width, 0);
+        Ok(out)
+    }
+
+    pub fn decode(plaintext: &[u8]) -> Result<Self, CustomRingError> {
+        let mut bytes = Bytes::new(plaintext, CustomRingError::RingTransactLength);
+        let length = usize::from(u16::from_be_bytes(*bytes.array()?));
+        let data = bytes.take(length)?.to_vec();
+        match bytes.rest().iter().all(|byte| *byte == 0) {
+            true => Ok(Self { data }),
+            false => Err(CustomRingError::RingTransactLength),
+        }
+    }
+}
+
+/// `output_seed` outside the proof, the sender reads each `V_i` from the auditor stream, the key record `i` is sealed to.
+/// Sealed to the sender's viewing key at index `m`, an opening marks a candidate the sender checks further.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SenderBundle {
+    pub output_seed: [u8; 32],
+}
+
+impl SenderBundle {
+    pub const fn encode(&self) -> [u8; SENDER_BUNDLE_LEN] {
+        self.output_seed
+    }
+
+    pub fn decode(plaintext: &[u8]) -> Result<Self, CustomRingError> {
+        read_all(plaintext, |bytes| {
+            Ok(Self {
+                output_seed: *bytes.array()?,
+            })
+        })
+    }
+}
+
+fn read_amount(bytes: &mut Bytes<'_>) -> Result<u64, CustomRingError> {
+    Ok(u64::from_be_bytes(*bytes.array()?))
+}
+
+fn read_all<'a, T>(
+    plaintext: &'a [u8],
+    read: impl FnOnce(&mut Bytes<'a>) -> Result<T, CustomRingError>,
+) -> Result<T, CustomRingError> {
+    let mut bytes = Bytes::new(plaintext, CustomRingError::RingTransactLength);
+    let value = read(&mut bytes)?;
+    match bytes.rest().is_empty() {
+        true => Ok(value),
+        false => Err(CustomRingError::RingTransactLength),
+    }
+}

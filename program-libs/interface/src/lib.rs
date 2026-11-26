@@ -14,7 +14,7 @@
 //! 4. `instructions/transact.rs`. The frame, each section named against SPP's `TransactIxData`.
 //! 5. `proof/statement.rs`, `proof/domain.rs`. The statement in element order, with its Go twins.
 //! 6. `proof/audit_stream.rs`, `proof/disclosure.rs`, `codec/output.rs`, `codec/stream.rs`. What the auditor and a recipient read of each slot, one proven record per slot.
-//! 7. `proof/key_catalog.rs`, `proof/ring_keys.rs`, `proof/verification.rs`. The key serving each frame.
+//! 7. `proof/key_catalog.rs`, `proof/ring_keys.rs`, `proof/verification.rs`. The transfer shapes and the key serving each frame.
 //! 8. `instructions/merge.rs`, `instructions/withdrawals.rs`, `instructions/anonymous_exit.rs`, `instructions/cosign.rs`. The other paths.
 //!
 //! Beside the crate, `program-libs/policy/src/rule_table/mod.rs` holds the rule table,
@@ -28,10 +28,8 @@ pub mod anonymous_exit;
 pub mod audit_stream;
 #[path = "proof/auditor_key.rs"]
 mod auditor_key;
-#[path = "proof/blinding.rs"]
-pub mod blinding;
 #[path = "codec/bytes.rs"]
-mod bytes;
+pub mod bytes;
 #[path = "instructions/cosign.rs"]
 pub mod cosign;
 #[path = "proof/disclosure.rs"]
@@ -93,11 +91,6 @@ mod verifying_keys;
 #[cfg(feature = "verifying-keys")]
 pub use verifying_keys::*;
 
-#[cfg(feature = "verifying-keys")]
-pub fn proving_key_hashes() -> impl Iterator<Item = (&'static str, [u8; 32])> {
-    PROVING_KEY_SHA256S.iter().copied()
-}
-
 pub use anonymous_exit::*;
 pub use audit_stream::*;
 pub use auditor_key::is_auditor_key;
@@ -140,35 +133,10 @@ pub struct AuditorMessage<'a> {
     pub recipient_keys: &'a [u8],
     /// One record per exit in slot order, every other record opens its slot's body.
     pub exit_records: &'a [u8],
-    exit_record_len: usize,
+    pub exit_record_len: usize,
 }
 
 impl<'a> AuditorMessage<'a> {
-    /// `None` unless the key is tagged and every length is that of `layout` and `exits`.
-    pub fn parse(data: &'a [u8], layout: AuditStreamLayout, exits: usize) -> Option<Self> {
-        layout.checked().ok()?;
-        let (eph_pk, rest) = data.split_first_chunk::<TAGGED_X25519_KEY_LEN>()?;
-        let (envelope, rest) = rest.split_at_checked(layout.envelope().len)?;
-        let (recipient_keys, exit_records) = rest.split_at_checked(layout.keys_len())?;
-        let exit_record_len = layout.records.published_len(RecordKind::Exit);
-        (eph_pk[0] == VIEWING_PUBKEY_TAG
-            && exit_records.len() == exits.checked_mul(exit_record_len)?)
-        .then_some(Self {
-            eph_pk,
-            envelope,
-            recipient_keys,
-            exit_records,
-            exit_record_len,
-        })
-    }
-
-    /// Indexed among the exits, not the slots.
-    pub fn exit_record(&self, exit: usize) -> Option<&'a [u8]> {
-        self.exit_records
-            .chunks_exact(self.exit_record_len)
-            .nth(exit)
-    }
-
     /// `ciphertexts` is the envelope, the keys and the exit records in slot order.
     pub fn data<'c>(
         eph_u: &[u8; 32],

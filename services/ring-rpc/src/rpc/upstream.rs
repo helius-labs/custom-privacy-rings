@@ -1,4 +1,5 @@
 use std::{future::Future, num::NonZeroU32, time::Duration};
+use zolana_ring_client::OwnerGrantHost;
 
 use async_trait::async_trait;
 use custom_ring_interface::{

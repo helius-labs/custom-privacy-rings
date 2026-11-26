@@ -5,17 +5,20 @@ mod ring_policy;
 
 use frames::{spp_b, Fixture, DATA_RING_RECORD_LEN};
 use ring_policy::config;
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::SppExpansion;
+use zolana_ring_keys::AuditorMessageRead;
+use zolana_ring_keys::SealedLayout;
 
 use custom_ring_interface::{
     cosign::ApprovalMask, input_flag, key_catalog::RingCircuit, output_flag, shape_flag,
     stream::slot_tag, transact_flag, AuditKey, AuditStreamLayout, AuditorMessage,
     ConfidentialSender, CustomRingError, FramedSenderBundle, ParsedTransact, PlainGroth16Proof,
-    Replies, RingPolicy, RingRail, RingTransactData, Settlement, SignerSet, SlotBody,
-    TransferBinding, TransferFamily, TransferRoots, ANONYMOUS_PARTIES,
+    Replies, RingPolicy, RingRail, RingTransactData, SignerSet, SlotBody, TransferBinding,
+    TransferFamily, TransferRoots, ANONYMOUS_PARTIES,
 };
 use custom_ring_interface::{
-    encode_ring_body_output, encode_ring_sender_bundle_output, ring_body_output,
-    ring_sender_bundle_output_body, CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN,
+    encode_ring_sender_bundle_output, CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN,
     MIN_REPLY_LEN, RING_BODY_SCHEME_TAG, RING_RECORD_LEN, RING_SENDER_BUNDLE_SCHEME_TAG,
     SENDER_BUNDLE_LEN,
 };
@@ -27,6 +30,10 @@ use spr_interface::{
     instruction::{CircuitId, InterfaceTransfer, OwnerTag},
     shape::{Shape, SPP_SUPPORTED_SHAPES},
 };
+use zolana_ring_client::Settlement;
+use zolana_ring_keys::encode_ring_body_output;
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::ring_sender_bundle_output_body;
 
 const SHAPE_FLAG_BYTE: usize = 1;
 const INPUT_FLAG_BYTE: usize = 2;

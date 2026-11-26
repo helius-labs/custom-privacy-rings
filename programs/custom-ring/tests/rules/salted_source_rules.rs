@@ -7,6 +7,7 @@ use custom_ring_interface::{
 };
 use solana_address::Address;
 use solana_keypair::{Keypair, Signer};
+use zolana_ring_client::PolicySources;
 use zolana_ring_policy::{ListId, ListSet, Rule, Subject};
 
 use crate::common::{

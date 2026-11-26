@@ -1,6 +1,5 @@
 use custom_ring_interface::{
-    key_catalog::RingCircuit, storage::StorageError, stream::StreamError, CustomRingError,
-    PublicSlotError, RingRail,
+    key_catalog::RingCircuit, storage::StorageError, CustomRingError, PublicSlotError, RingRail,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -17,6 +16,7 @@ use zolana_ring_client::{
     AnonymousError, RingIndexerError, RingRpcError,
 };
 use zolana_ring_keys::RingKeyError;
+use zolana_ring_keys::StreamError;
 use zolana_ring_member_registry::RecordTreeError;
 use zolana_ring_policy::{
     ListId, MemberError, PolicyTableError, RuleRefusal, RuleTableError, SourceMapError, Writer,

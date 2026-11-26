@@ -1,8 +1,8 @@
 //! Ring proof requests by the key catalog, every proof checked against its verifying key.
 
 use custom_ring_interface::{
-    key_catalog::{RingCircuit, RingKey, RING_KEYS},
-    verifying_key, CustomRingProof, PlainGroth16Proof, PROVING_KEY_SHA256S,
+    key_catalog::RingCircuit, verifying_key, CustomRingProof, PlainGroth16Proof,
+    PROVING_KEY_SHA256S,
 };
 use serde::Serialize;
 use spr_client::{
@@ -10,6 +10,8 @@ use spr_client::{
     AsyncRpc, ClientError, Proof, ProofCompressed,
 };
 use zeroize::Zeroizing;
+use zolana_ring_client::RingKey;
+use zolana_ring_client::RING_KEYS;
 
 use crate::client::{RingClient, RingIndexerBackend};
 use crate::RingError;

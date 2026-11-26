@@ -2,14 +2,13 @@
 //!
 //! An auditor holding the sealed key and the salt rebuilds the seed, and through it each ring output's blinding.
 //!
-//! Read after `program-libs/interface/src/proof/audit_stream.rs`. Read before `program-libs/interface/src/codec/stream.rs`.
+//! Read after `program-libs/interface/src/proof/audit_stream.rs`.
 
+use custom_ring_interface::domain;
 use spr_hasher::{
     primitives::{pack_be, right_align},
     Hasher, HasherError, Poseidon,
 };
-
-use crate::domain;
 
 /// SPP's `blinding_seed`, the seed of every ring output's TXOB blinding.
 pub fn ring_blinding_seed(

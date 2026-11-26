@@ -2,8 +2,8 @@
 
 use bytemuck::Zeroable;
 use custom_ring_interface::{
-    tag, CoSignScope, CustomRingError, CustomRingMergeIxData, RootRead, SealedMergeRecord,
-    MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, RING_MERGE_PAYER_INDEX, RING_MERGE_RING_CONFIG_INDEX,
+    tag, CoSignScope, CustomRingError, RootRead, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN,
+    RING_MERGE_PAYER_INDEX, RING_MERGE_RING_CONFIG_INDEX,
 };
 use solana_address::Address;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
@@ -12,6 +12,8 @@ use solana_keypair::{Keypair, Signer};
 use spr_interface::instruction::instruction_data::merge_transact::{
     MergeOutputEncryption, MergeProof, MergeTransactIxData,
 };
+use zolana_ring_client::CustomRingMergeIxData;
+use zolana_ring_client::SealedMergeRecord;
 
 use crate::{
     common::{

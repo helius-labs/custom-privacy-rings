@@ -1,6 +1,7 @@
 //! Curator rings a policy reads lists from, bundled per cluster and discovered on chain.
 
 use std::{collections::BTreeMap, path::Path};
+use zolana_ring_client::PolicySources;
 
 use anyhow::{ensure, Context as _, Result};
 use custom_ring_interface::{RingAccount, RingPolicy};

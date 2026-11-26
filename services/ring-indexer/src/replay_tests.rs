@@ -2,6 +2,9 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
+use zolana_ring_client::StorageRegistryAddress;
+use zolana_ring_client::StorageUpdateCodec;
+use zolana_ring_client::TrackingRegistryHost;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use bytemuck::Zeroable;

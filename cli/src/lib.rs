@@ -100,7 +100,7 @@ use std::{
 
 use anyhow::{bail, ensure, Context as _, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
-use custom_ring_interface::{compute_unit_limit, CustomRingError, InstructionTag};
+use custom_ring_interface::{CustomRingError, InstructionTag};
 use custom_ring_sdk::{
     CustomRing, CustomRingConfig, RingError, RingMode, RingOperation, RingSubmission,
     SettledSubmission, MERGE_DEFAULT_INPUT_COUNT,
@@ -118,6 +118,7 @@ use spr_client::{
 };
 use spr_interface::error::ShieldedPoolError;
 use spr_keypair::ShieldedAddress;
+use zolana_ring_client::compute_unit_limit;
 use zolana_ring_client::ReaderKey;
 
 pub use crate::{

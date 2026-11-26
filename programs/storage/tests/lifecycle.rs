@@ -3,7 +3,7 @@ use custom_ring_interface::{
     key_catalog::{ApplyMode, RingCircuit},
     mint_policy_write,
     owner_grant::OwnerGrant,
-    owner_signature::{Ed25519Signatures, OwnerSignature},
+    owner_signature::Ed25519Signatures,
     storage::{RegistryId, Revision, RootUpdate, StorageError, StorageRegistry},
     storage_instruction::{
         tag, ApplyEnrollmentsIxData, ApplyEnrollmentsRequest, EnrollIxData, EnrollmentChange,
@@ -30,6 +30,13 @@ use spr_client::{
     prover::{Proof, ProofCompressed},
     sign_transaction, ComputeBudgetConfig,
 };
+use zolana_ring_client::EnrollmentRequestEncode;
+use zolana_ring_client::OwnerGrantHost;
+use zolana_ring_client::OwnerSignature;
+use zolana_ring_client::SignatureInstruction;
+use zolana_ring_client::StorageRegistryAddress;
+use zolana_ring_client::StorageUpdateCodec;
+use zolana_ring_client::TrackingRegistryHost;
 use zolana_ring_policy::{ListId, ListSet};
 
 const PROGRAM: Address = custom_ring_interface::STORAGE_PROGRAM_ID;

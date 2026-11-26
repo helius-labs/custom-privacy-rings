@@ -1524,7 +1524,7 @@ mod tests {
                     }
                 },
                 "meta": {"err": null, "status": {"Ok": null}, "fee": 0, "preBalances": [1], "postBalances": [1], "innerInstructions": []},
-                "version": "legacy"
+                "version": 1
             }))
         }).unwrap();
         let handle = server.start(module);

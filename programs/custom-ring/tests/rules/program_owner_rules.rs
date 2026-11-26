@@ -7,6 +7,8 @@ use custom_ring_interface::{
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_keypair::{Keypair, Signer};
+use zolana_ring_client::ApprovalEncode;
+use zolana_ring_client::FrameEncode;
 
 use crate::{
     common::{

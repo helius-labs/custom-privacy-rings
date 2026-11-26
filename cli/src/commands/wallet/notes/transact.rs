@@ -1,6 +1,7 @@
 //! `transact`, `transfer` and `deposit`, audited deposits and the ring transfers that spend them.
 
 use std::str::FromStr;
+use zolana_ring_client::PolicySources;
 
 use anyhow::{bail, ensure, Context as _, Result};
 use custom_ring_interface::{

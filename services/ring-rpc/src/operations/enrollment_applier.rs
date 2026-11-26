@@ -16,7 +16,6 @@ use std::{
 };
 
 use custom_ring_interface::{
-    compute_unit_limit,
     storage_instruction::{EnrollmentChange, ENROLLMENT_BATCH},
     tracking::{TrackingEntry, TrackingRegistry, TRACKING_ROOT_HISTORY},
     InstructionTag, RegisterKeyCheck,
@@ -29,6 +28,7 @@ use spr_client::{compile_message, ComputeBudgetConfig};
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
 use zolana_operator_custody::{signed_transaction, OperatorSigner, SigningIdentity};
+use zolana_ring_client::compute_unit_limit;
 use zolana_ring_client::rpc::{SubmitEnrollmentRequest, SubmitEnrollmentResponse};
 
 use crate::{

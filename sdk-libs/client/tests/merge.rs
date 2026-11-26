@@ -1,15 +1,13 @@
 //! The ring merge request around its compressed SPP proof point.
 
+#[path = "common/spp_point.rs"]
 mod common;
 
 use std::ops::Range;
 
 use custom_ring_interface::{
-    domain::{MERGE_OUTPUT_LABEL, MERGE_RECORD_LABEL},
-    storage::Revision,
-    CustomRingError, CustomRingMergeIxData, CustomRingMergeIxDataRef, CustomRingProof,
-    MergeEnvelope, MergeRecord, OutputRecord, PlainGroth16Proof, RecordKey, RecordKind,
-    SealedMergeRecord, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN,
+    storage::Revision, CustomRingError, CustomRingMergeIxDataRef, CustomRingProof,
+    PlainGroth16Proof, RecordKind, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN,
 };
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
 use spr_interface::instruction::{
@@ -19,6 +17,14 @@ use spr_interface::instruction::{
     },
     tag::RING_MERGE_TRANSACT,
 };
+use zolana_ring_client::CustomRingMergeIxData;
+use zolana_ring_client::SealedMergeRecord;
+use zolana_ring_keys::MergeEnvelope;
+use zolana_ring_keys::MergeRecord;
+use zolana_ring_keys::OutputRecord;
+use zolana_ring_keys::RecordKey;
+use zolana_ring_keys::MERGE_OUTPUT_LABEL;
+use zolana_ring_keys::MERGE_RECORD_LABEL;
 
 const FRAME_VECTOR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

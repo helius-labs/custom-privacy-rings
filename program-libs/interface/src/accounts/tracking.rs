@@ -43,7 +43,7 @@ use crate::{
         StorageError,
     },
     storage_instruction::{EnrollIxData, InitializeTrackingIxData},
-    STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN,
+    TAGGED_X25519_KEY_LEN,
 };
 
 /// One leaf per enrolled owner, at least `QUAD_HEIGHT` for `ZERO_SUBTREES` to serve both trees.
@@ -111,18 +111,6 @@ impl TrackingRegistry {
     /// The creator in the seeds keeps every other signer off its addresses.
     pub fn seeds<'a>(creator: &'a Address, ring_id: &'a [u8; 32]) -> [&'a [u8]; 3] {
         [Self::SEED, creator.as_ref(), ring_id]
-    }
-
-    pub fn find_address(creator: &Address, ring_id: &[u8; 32]) -> (Address, u8) {
-        Address::find_program_address(&Self::seeds(creator, ring_id), &STORAGE_PROGRAM_ID)
-    }
-
-    /// Holds only the sentinel root at revision zero, host only as the value overflows the SBF stack frame.
-    #[cfg(not(target_os = "solana"))]
-    pub fn new(authority: Address, ix: &InitializeTrackingIxData) -> Self {
-        let mut registry = Self::zeroed();
-        registry.init(authority, ix);
-        registry
     }
 
     /// `new` written into zeroed account data, the program builds no copy on its 4 KB stack frame.

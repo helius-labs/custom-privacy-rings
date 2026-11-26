@@ -1,13 +1,16 @@
 //! Reads the vectors `prover/circuits` writes from its solved witnesses, a mismatch names a statement the keys refuse.
 
 use custom_ring_interface::{
-    cosign::ApprovalMask, domain, key_catalog::RING_KEYS, AuditHead, AuditLayout,
-    ConfidentialSender, MergePublicInput, MergeRecord, RecordForm, RecordKind, RingOutput,
-    SignerSet, SlotBody, TransferFamily, TransferRoots, TransferStatement, ANONYMOUS_PARTIES,
+    cosign::ApprovalMask, domain, AuditHead, AuditLayout, ConfidentialSender, MergePublicInput,
+    RecordForm, RecordKind, RingOutput, SignerSet, SlotBody, TransferFamily, TransferRoots,
+    TransferStatement, ANONYMOUS_PARTIES,
 };
 use serde::Deserialize;
 use spr_hasher::{hash_chain::create_hash_chain_4_from_slice, primitives::right_align};
 use spr_interface::instruction::instruction_data::merge_transact::MergeOutputEncryption;
+use zolana_ring_client::KeyWidths;
+use zolana_ring_client::RING_KEYS;
+use zolana_ring_keys::MergeRecord;
 
 fn vector<T: for<'de> Deserialize<'de>>(name: &str) -> T {
     let path = format!("{}/../../test-vectors/{name}", env!("CARGO_MANIFEST_DIR"));

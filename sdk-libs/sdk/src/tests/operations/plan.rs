@@ -7,6 +7,8 @@ use custom_ring_interface::{
     AuditStreamLayout, RingRail,
 };
 use serde_json::{json, Value};
+use zolana_ring_client::FittedSpend;
+use zolana_ring_client::KeyWidths;
 
 use super::*;
 use crate::{RingError, TransferKey};

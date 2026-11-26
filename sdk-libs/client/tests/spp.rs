@@ -3,7 +3,7 @@
 use custom_ring_interface::{
     amount_field, signed_amount, CoSignScope, PublicLeg, PublicSlotError, PublicSlots,
     RING_MERGE_PAYER_INDEX, RING_MERGE_RING_CONFIG_INDEX, RING_TRANSACT_ACCOUNT_PREFIX_LEN,
-    RING_TRANSACT_RING_CONFIG_INDEX, SOL_ASSET_ADDRESS, SYSTEM_PROGRAM_ID, TRANSACT_PAYER_INDEX,
+    RING_TRANSACT_RING_CONFIG_INDEX, SOL_ASSET_ADDRESS, TRANSACT_PAYER_INDEX,
 };
 use solana_address::Address;
 use spr_hasher::primitives::{hash_bytes, right_align};
@@ -16,6 +16,7 @@ use spr_interface::{
     pda, N_PUBLIC_SLOTS, SOL_ASSET_FIELD,
 };
 use spr_transaction::instructions::transact::signed_magnitude_to_field;
+use zolana_ring_client::SYSTEM_PROGRAM_ID;
 
 const PAYER: Address = Address::new_from_array([1; 32]);
 const RING: Address = Address::new_from_array([2; 32]);

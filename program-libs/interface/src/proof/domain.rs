@@ -45,33 +45,11 @@ pub const VOUCH: u32 = 0x4352_5643;
 /// `"CRTX"`
 pub const TRANSFER_STATEMENT: u32 = 0x4352_5458;
 
-pub const AUDIT_STREAM_LABEL: &[u8; 9] = b"CRING/adt";
-pub const RECIPIENT_BODY_LABEL: &[u8; 9] = b"CRING/rcp";
-pub const REPLY_LABEL: &[u8; 9] = b"CRING/rpl";
-pub const SENDER_BUNDLE_LABEL: &[u8; 9] = b"CRING/snd";
-pub const REGISTER_KEY_LABEL: &[u8; 9] = b"CRING/nfk";
-pub const MERGE_RECORD_LABEL: &[u8; 9] = b"CRING/mrg";
 /// First line of the text an owner's wallet signs for one enrollment write.
 pub const ENROLLMENT_SIGNATURE_DOMAIN: &str = "zolana/ring-enrollment";
-/// Keeps a merge record's keystream apart from a transfer record's under the same key pair.
-pub const MERGE_OUTPUT_LABEL: &[u8; 9] = b"CRING/mro";
 
 pub fn field(domain: u32) -> [u8; 32] {
     right_align(&domain.to_be_bytes())
-}
-
-/// The transfer a voucher signs for, mirror `VouchDigest` in `prover/circuits/shared/derivation.go`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VouchMessage<'a> {
-    pub private_tx_hash: &'a [u8; 32],
-    pub withdrawal_hash: &'a [u8; 32],
-}
-
-impl VouchMessage<'_> {
-    /// `Poseidon(CRVC, private_tx_hash, withdrawal_hash)`, the tag keeps the signed bytes apart from SPP's owner authorization digest.
-    pub fn digest(&self) -> Result<[u8; 32], HasherError> {
-        Poseidon::hashv(&[&field(VOUCH), self.private_tx_hash, self.withdrawal_hash])
-    }
 }
 
 /// `Poseidon(CRPT, list_salt)`, final in the tracking leaf.

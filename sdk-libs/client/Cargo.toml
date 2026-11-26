@@ -19,7 +19,6 @@ rpc = [
     "dep:rand",
     "dep:solana-signer",
     "dep:spr-instruction",
-    "dep:wincode",
     "dep:zolana-secret-file",
     "solana-signature/verify",
 ]
@@ -37,6 +36,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 solana-account = { workspace = true }
+solana-bn254 = { workspace = true }
 solana-address = { workspace = true, features = ["curve25519"] }
 solana-commitment-config = { workspace = true, optional = true }
 solana-rpc-client-api = { workspace = true }
@@ -46,7 +46,7 @@ solana-transaction = { workspace = true, optional = true }
 solana-transaction-status-client-types = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
-wincode = { workspace = true, optional = true }
+wincode = { workspace = true }
 subtle = { workspace = true }
 zeroize = { workspace = true }
 borsh = { workspace = true }
@@ -68,11 +68,16 @@ zolana-secret-file = { workspace = true, optional = true }
 spr-transaction = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
+custom-ring-interface = { workspace = true, features = ["cpi"] }
 http = { workspace = true }
 bs58 = { workspace = true }
 solana-hash = { workspace = true }
 solana-keypair = { workspace = true }
+solana-message = { workspace = true }
+solana-program-error = { workspace = true }
 solana-signature = { workspace = true, features = ["verify"] }
+spl-token-2022-interface = { workspace = true }
 solana-transaction-status-client-types = { workspace = true }
 tokio = { workspace = true }
+x25519-dalek = { workspace = true }
 zolana-ring-client = { path = ".", features = ["rpc", "solana-rpc"] }

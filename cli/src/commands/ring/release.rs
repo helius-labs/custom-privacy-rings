@@ -9,7 +9,8 @@ use anyhow::{ensure, Context as _, Result};
 use serde::Deserialize;
 use zolana_cli_common::release::{ensure_at, ensure_cached, Asset, BinaryAsset};
 
-pub use custom_ring_interface::key_catalog::{RingKey, RING_KEYS};
+pub use zolana_ring_client::RingKey;
+pub use zolana_ring_client::RING_KEYS;
 
 const LOCK_JSON: &str = include_str!("../../../release-artifacts.lock");
 
@@ -33,7 +34,7 @@ impl RingRelease {
     /// The release pins every key the compiled verifiers check, or nothing downloads.
     pub fn from_lock() -> Result<Self> {
         let release = Self::parse(LOCK_JSON)?;
-        release.validate_keys(custom_ring_interface::proving_key_hashes())?;
+        release.validate_keys(zolana_ring_client::proving_key_hashes())?;
         Ok(release)
     }
 
@@ -152,7 +153,7 @@ mod tests {
         let release: Option<RingRelease> = serde_json::from_str(LOCK_JSON).unwrap();
         if let Some(release) = release {
             release
-                .validate_keys(custom_ring_interface::proving_key_hashes())
+                .validate_keys(zolana_ring_client::proving_key_hashes())
                 .unwrap();
             release.program().unwrap();
             release.genesis_program("storage_program").unwrap();

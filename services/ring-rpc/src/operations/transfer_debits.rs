@@ -1,6 +1,7 @@
 //! Each owner's outflow of the transfer a co-signer signs, read from the frame and the note index.
 
 use std::collections::HashMap;
+use zolana_ring_client::SppExpansion;
 
 use custom_ring_interface::{
     funder_account_position, settlement_mints, tag, InstructionTag, ParsedTransact, PublicLeg,
@@ -704,6 +705,7 @@ mod tests {
     use solana_instruction::{AccountMeta, Instruction};
     use spr_client::{compile_message, ComputeBudgetConfig};
     use zolana_ring_client::rpc::ApprovedTransfer;
+    use zolana_ring_client::ApprovalEncode;
 
     use super::*;
     use crate::cosigner::ApprovedCall;

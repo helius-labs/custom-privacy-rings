@@ -12,6 +12,7 @@ use sea_orm_migration::MigratorTrait;
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_indexer_api::Hash;
+use zolana_ring_client::StorageUpdateCodec;
 use zolana_ring_indexer::tree::{IndexedRecord, MemberRecord};
 use zolana_ring_member_registry::{MemberRegistryTree, RecordTree};
 use zolana_ring_policy::{ListId, ListSet};

@@ -19,6 +19,8 @@ use custom_ring_interface::{
 };
 use sea_orm::ConnectionTrait;
 use solana_address::Address;
+use zolana_ring_client::StorageEventDecode;
+use zolana_ring_client::TrackingRegistryHost;
 use zolana_ring_indexer::tree::{TrackingRecord, TrackingWriteProofInput};
 
 use crate::{

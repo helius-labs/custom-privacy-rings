@@ -1,6 +1,7 @@
-use custom_ring_interface::stream::{
-    confidential_slot_tag, DeliveredSlot, SlotSecret, StreamError,
-};
+use crate::confidential_slot_tag;
+use crate::DeliveredSlot;
+use crate::SlotSecret;
+use crate::StreamError;
 use spr_keypair::{
     shielded::{ShieldedAddress, ShieldedKeypair},
     viewing_key::{Salt, ViewTag},
@@ -381,7 +382,7 @@ fn slot_secret(
 
 #[cfg(test)]
 mod tests {
-    use custom_ring_interface::stream::SlotSecret;
+    use crate::SlotSecret;
     use spr_keypair::SigningKey;
 
     use super::*;

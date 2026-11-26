@@ -1,16 +1,15 @@
 //! The slots a sealed ring transfer publishes, in the compact form the ring program expands. A
 //! non-exit slot's record leads its body, an exit's record goes to the auditor message.
 
-use custom_ring_interface::{
-    ring_body_output, ring_sender_bundle_output_body, FramedSenderBundle, RingOutput, SlotBody,
-    TRANSFER_RECORD_LEN,
-};
+use custom_ring_interface::{FramedSenderBundle, RingOutput, SlotBody, TRANSFER_RECORD_LEN};
 use spr_event::confidential_encrypted_output_body;
 use spr_interface::instruction::instruction_data::transact::{OwnerTag, TransactOutput};
 use spr_keypair::{ShieldedAddress, X25519Pubkey};
 use spr_transaction::{
     instructions::transact::SppProofInputs, SppProofOutputUtxo, TransactionError,
 };
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::ring_sender_bundle_output_body;
 
 use crate::{
     anonymous_rail::published_outputs, record_of, AnonymousSlot, BodyForm, ExitSlot, RingDelivery,

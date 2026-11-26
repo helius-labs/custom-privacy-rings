@@ -13,7 +13,7 @@
 use custom_ring_interface::{
     domain,
     key_catalog::RingCircuit,
-    owner_signature::{Ed25519Signatures, OwnerSignature},
+    owner_signature::Ed25519Signatures,
     storage::{RegistryId, Revision, StorageRegistry},
     storage_instruction::{
         tag, ApplyEnrollmentsIxData, ApplyEnrollmentsRequest, AssetWrite, EnrollmentWrite,
@@ -22,7 +22,6 @@ use custom_ring_interface::{
     tag as ring_tag,
     tracking::TrackingEntry,
     ApplyRecordsIxData, ApplyRecordsStatement, CustomRingError, GRACE_SLOTS, STORAGE_PROGRAM_ID,
-    SYSTEM_PROGRAM_ID,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -31,6 +30,12 @@ use spr_client::AsyncRpc;
 use spr_hasher::primitives::solana_owner_identity;
 use spr_indexer_api::Hash;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
+use zolana_ring_client::EnrollmentRequestEncode;
+use zolana_ring_client::OwnerSignature;
+use zolana_ring_client::SignatureInstruction;
+use zolana_ring_client::StorageRegistryAddress;
+use zolana_ring_client::StorageUpdateCodec;
+use zolana_ring_client::SYSTEM_PROGRAM_ID;
 use zolana_ring_client::{
     records::path_of, resolver::tracking_record, rpc::SubmitEnrollmentRequest, AsyncRingIndexer,
 };

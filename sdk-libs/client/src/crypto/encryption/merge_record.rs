@@ -4,13 +4,15 @@
 //! record seals to its slot's key. An envelope seals that ephemeral secret and `V` to the auditor,
 //! who then derives the record's secret the owner derives.
 
-use custom_ring_interface::{
-    domain::{MERGE_OUTPUT_LABEL, MERGE_RECORD_LABEL},
-    stream::{DeliveredSlot, SlotSecret},
-    MergeEnvelope, MergeRecord, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, STREAM_FIRST_COUNTER,
-};
+use custom_ring_interface::{MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, STREAM_FIRST_COUNTER};
 use spr_keypair::{X25519Keypair, X25519Pubkey};
 use zeroize::{Zeroize, Zeroizing};
+use zolana_ring_keys::DeliveredSlot;
+use zolana_ring_keys::MergeEnvelope;
+use zolana_ring_keys::MergeRecord;
+use zolana_ring_keys::SlotSecret;
+use zolana_ring_keys::MERGE_OUTPUT_LABEL;
+use zolana_ring_keys::MERGE_RECORD_LABEL;
 use zolana_ring_keys::{symmetric_apply_audit, RingStream};
 
 use super::{opening_secret, sealing_secret, Result};

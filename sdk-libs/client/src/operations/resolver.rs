@@ -332,6 +332,7 @@ pub fn tracking_record(view: &RingTrackingRecordView) -> TrackingRecord {
 
 #[cfg(test)]
 mod tests {
+    use crate::TrackingRegistryHost;
     use async_trait::async_trait;
     use custom_ring_interface::{
         storage_instruction::InitializeTrackingIxData, tracking::TrackingEntry, STORAGE_PROGRAM_ID,

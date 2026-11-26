@@ -1,4 +1,4 @@
-use custom_ring_interface::stream::StreamError;
+use crate::StreamError;
 use spr_hasher::HasherError;
 use spr_keypair::KeypairError;
 use spr_transaction::TransactionError;

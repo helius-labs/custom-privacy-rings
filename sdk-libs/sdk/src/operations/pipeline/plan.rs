@@ -14,6 +14,7 @@ use custom_ring_interface::{
 };
 use spr_keypair::ShieldedAddress;
 use spr_transaction::instructions::transact::SppProofInputs;
+use zolana_ring_client::FittedSpend;
 use zolana_ring_transaction::RingOutputRail;
 
 use super::{Preview, TransferKey};

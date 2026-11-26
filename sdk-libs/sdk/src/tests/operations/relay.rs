@@ -1,6 +1,8 @@
 //! Relayed transfers against a stub Ring RPC.
 
 use std::sync::Mutex;
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::SppExpansion;
 
 use async_trait::async_trait;
 use custom_ring_interface::RingMode;
@@ -655,7 +657,7 @@ async fn a_relayed_spend_proves_on_the_key_its_owner_sealed() {
 fn opened_records(
     data: &custom_ring_interface::RingTransactData<'_>,
     opened: &zolana_ring_client::OpenedAudit,
-) -> Vec<custom_ring_interface::OutputRecord> {
+) -> Vec<zolana_ring_keys::OutputRecord> {
     let tx_key = &opened.tx_viewing_key;
     let keys = opened.recipient_keys(data.recipient_keys).unwrap();
     let first_nullifier = data.first_nullifier().unwrap();
@@ -664,7 +666,7 @@ fn opened_records(
         .zip(keys)
         .zip(0u32..)
         .map(|((output, key), slot)| {
-            let secret = custom_ring_interface::stream::DeliveredSlot {
+            let secret = zolana_ring_keys::DeliveredSlot {
                 agreement: &tx_key.ecdh(&key).unwrap(),
                 tx_viewing_pk: tx_key.pubkey().as_bytes(),
                 recipient_viewing_pk: key.as_bytes(),
@@ -686,14 +688,13 @@ mod delegate_message {
 
     use std::sync::Mutex;
 
-    use custom_ring_interface::{
-        compute_unit_limit, tag, CustomRingError, InstructionTag, RingRail, RingTransactData,
-    };
+    use custom_ring_interface::{tag, CustomRingError, InstructionTag, RingRail, RingTransactData};
     use solana_instruction::Instruction;
     use solana_signer::Signer;
     use spr_indexer_api::{Base64String, SerializableSignature};
     use spr_keypair::{ShieldedAddress, ShieldedKeypair, ViewingKey};
     use spr_transaction::{AssetRegistry, WalletUtxo};
+    use zolana_ring_client::compute_unit_limit;
     use zolana_ring_client::rpc::{
         AuthorityPayment, AuthorityTransfer, AuthorityWithdrawal, SerializableShieldedAddress,
         TxViewingSecret,
@@ -2098,7 +2099,7 @@ mod public_signers {
     };
 
     pub(super) const FEE_PAYER: Address = Address::new_from_array([0x44; 32]);
-    const UNITS: u32 = custom_ring_interface::compute_unit_limit(InstructionTag::Transfer);
+    const UNITS: u32 = zolana_ring_client::compute_unit_limit(InstructionTag::Transfer);
 
     pub(super) fn address(owner: &ShieldedKeypair) -> Address {
         Address::new_from_array(owner.signing_pubkey().as_ed25519().unwrap())
@@ -4675,9 +4676,9 @@ mod request_fixtures {
     //! Requests the normal SDK path writes, `prover/ring` solves each with no key.
 
     use custom_ring_interface::key_catalog::RingCircuit;
-    use custom_ring_interface::stream::DeliveredSlot;
     use spr_keypair::{random_blinding, ShieldedKeypair, X25519Pubkey};
     use spr_transaction::{Data, Utxo};
+    use zolana_ring_keys::DeliveredSlot;
 
     use super::public_signers::{assembled, chain, pay, quote, sent, transfer};
     use super::*;
@@ -4709,7 +4710,7 @@ mod request_fixtures {
     fn sender_bundle(
         assembled: &crate::pipeline::Assembled,
         sender: &ShieldedKeypair,
-    ) -> custom_ring_interface::SenderBundle {
+    ) -> zolana_ring_keys::SenderBundle {
         let inputs = &assembled.frame.proof_inputs;
         let external = &inputs.external_data;
         let tx_viewing_pk = X25519Pubkey::from_bytes(external.tx_viewing_pk).unwrap();
@@ -4724,8 +4725,7 @@ mod request_fixtures {
         .secret()
         .unwrap();
         let body =
-            custom_ring_interface::ring_sender_bundle_output_body(&external.messages[0].data)
-                .unwrap();
+            zolana_ring_keys::ring_sender_bundle_output_body(&external.messages[0].data).unwrap();
         zolana_ring_transaction::open_sender_bundle(body, &secret).unwrap()
     }
 

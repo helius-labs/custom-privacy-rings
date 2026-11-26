@@ -109,13 +109,12 @@ fn the_holder_reads_the_body_and_bundle_tags_and_no_dummy_or_change_tag() {
             frame(sender, sender_probes),
         ])
         .unwrap();
-    let hits =
-        |answers: &[Option<custom_ring_interface::stream::SlotSecret>]| -> Vec<Option<String>> {
-            answers
-                .iter()
-                .map(|answer| answer.as_ref().map(|secret| hex::encode(secret.as_bytes())))
-                .collect()
-        };
+    let hits = |answers: &[Option<zolana_ring_keys::SlotSecret>]| -> Vec<Option<String>> {
+        answers
+            .iter()
+            .map(|answer| answer.as_ref().map(|secret| hex::encode(secret.as_bytes())))
+            .collect()
+    };
     assert_eq!(
         hits(&answers[0]),
         [Some(vector.body_slot_secret.clone()), None, None],

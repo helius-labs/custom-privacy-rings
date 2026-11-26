@@ -28,20 +28,12 @@ spr-hasher = { workspace = true }
 spr-interface = { workspace = true }
 spr-event = { workspace = true }
 
-[target.'cfg(not(target_os = "solana"))'.dependencies]
-solana-bn254 = { workspace = true }
-
 [lints.rust.unexpected_cfgs]
 level = "warn"
 check-cfg = ['cfg(target_os, values("solana"))']
 
 [dev-dependencies]
-solana-message = { workspace = true }
-borsh = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-spr-keypair = { workspace = true }
-spr-instruction = { workspace = true }
-spr-transaction = { workspace = true }
 hex = { workspace = true }
 x25519-dalek = { workspace = true }

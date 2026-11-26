@@ -10,6 +10,7 @@ use solana_address::Address;
 use spr_keypair::X25519Pubkey;
 use zolana_operator_custody::OperatorSigner;
 use zolana_ring_client::rpc::{read_auditor_pubkey, write_auditor_pubkey};
+use zolana_ring_client::PolicySources;
 use zolana_ring_policy::{ListId, RuleTable};
 
 use crate::{

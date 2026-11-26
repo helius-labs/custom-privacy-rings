@@ -70,12 +70,14 @@ use std::{
     net::{TcpStream, ToSocketAddrs},
     time::Duration,
 };
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::ListWriteData;
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use custom_ring_cli::{wait_for, Landing, ModeName, Probe};
 use custom_ring_interface::{
-    ring_body_output, ring_sender_bundle_output_body, AnonymousProofData, CustomRingError,
-    RingMode, RingPolicy, RingRail, RingRole, RingTransactData, RING_POLICY, RING_POLICY_PDA_SEED,
+    AnonymousProofData, CustomRingError, RingMode, RingPolicy, RingRail, RingRole,
+    RingTransactData, RING_POLICY, RING_POLICY_PDA_SEED,
 };
 use custom_ring_sdk::{
     compute_unit_limit, AnonymousTransfer, CoSignScope, CustomRing, CustomRingMerge,
@@ -146,6 +148,8 @@ use zolana_ring_client::{
     auditor_view_tag, rpc::CreateAuditorKeyRequest, AuditedTransaction, AuditedUtxo, KnownUtxo,
     OutputOpening, RecoveryStep, RingRecovery, RingScan, SourceMember, ViewingHistory,
 };
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::ring_sender_bundle_output_body;
 use zolana_ring_keys::{RingAddress, RingPaymentRequest};
 use zolana_ring_policy::{ListId, Member, Rule, RuleTable, Subject};
 use zolana_ring_rpc::{

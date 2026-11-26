@@ -2,16 +2,26 @@
 
 use custom_ring_interface::tracking::ZERO_NULLIFIER_PUBKEY;
 use custom_ring_interface::{
-    ciphertext_digest, decode_recipient_keys, disclosure::SealedKeys, encode_recipient_keys,
-    key_catalog::TRANSFER_SHAPES, record_chain, AuditEnvelope, AuditEvidence, AuditKey,
-    AuditStreamLayout, AuditorMessage, CustomRingError, EntryRecord, OutputRecord,
-    RecipientPayload, RecordForm, RecordKey, RecordKind, RingOutput, SenderBundle, SlotBody,
-    ENTRY_RECORD_LEN, EXIT_RECORD_LEN, RECORD_ZERO_KEY_BIT, RING_RECORD_LEN, SEALED_KEY_LEN,
+    ciphertext_digest, disclosure::SealedKeys, key_catalog::TRANSFER_SHAPES, record_chain,
+    AuditKey, AuditStreamLayout, AuditorMessage, CustomRingError, RecordForm, RecordKind,
+    RingOutput, SlotBody, ENTRY_RECORD_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN, SEALED_KEY_LEN,
     SENDER_BUNDLE_LEN, STREAM_BLOCK_LEN, TRANSFER_RECORD_LEN,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
 use spr_hasher::{primitives::hash_bytes, Hasher, Poseidon};
+use zolana_ring_keys::decode_recipient_keys;
+use zolana_ring_keys::encode_recipient_keys;
+use zolana_ring_keys::AuditEnvelope;
+use zolana_ring_keys::AuditEvidence;
+use zolana_ring_keys::AuditorMessageRead;
+use zolana_ring_keys::EntryRecord;
+use zolana_ring_keys::OutputRecord;
+use zolana_ring_keys::RecipientPayload;
+use zolana_ring_keys::RecordKey;
+use zolana_ring_keys::SealedLayout;
+use zolana_ring_keys::SenderBundle;
+use zolana_ring_keys::RECORD_ZERO_KEY_BIT;
 
 const VECTORS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -704,7 +714,8 @@ fn the_solved_go_stream_reads_back_under_the_rust_layout() {
 
 #[test]
 fn a_ring_body_opens_with_its_record() {
-    use custom_ring_interface::{encode_ring_body_output, ring_body_output};
+    use zolana_ring_keys::encode_ring_body_output;
+    use zolana_ring_keys::ring_body_output;
     let body = [record().published(PLAIN), vec![0x55; 5]].concat();
     let data = encode_ring_body_output(&body, &[0x66; 97]).unwrap();
     let (read, reply) = ring_body_output(&data).unwrap();

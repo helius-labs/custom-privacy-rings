@@ -53,7 +53,6 @@ use spr_interface::{
     shape::{Shape, SPP_SUPPORTED_SHAPES},
     N_PUBLIC_SLOTS, SPL_TOKEN_2022_PROGRAM_ID,
 };
-use wincode::{containers, len::FixIntLen, Serialize};
 
 use crate::{
     anonymous_exit::ANONYMOUS_PARTIES,
@@ -69,7 +68,7 @@ use crate::{
         AuditHead, ConfidentialSender, SignerSet, TransferFamily, TransferRoots, TransferStatement,
     },
     storage::Revision,
-    stream::{framed_slot_tag, slot_tag, unframed_slot_tag},
+    stream::{slot_tag, unframed_slot_tag},
     CoSignScope, CustomRingProof, InstructionTag, LiveRoots, PlainGroth16Proof, RingMode,
     RingPolicy, RootRead, TAGGED_X25519_KEY_LEN,
 };
@@ -190,7 +189,7 @@ impl RingRail {
     }
 
     /// The key the header names, before the outputs are read.
-    fn key_shape(self, header: &FrameHeader) -> Result<TransferShape, CustomRingError> {
+    pub fn key_shape(self, header: &FrameHeader) -> Result<TransferShape, CustomRingError> {
         let supported = self
             .spp_rail(header.flags.public_owners)
             .supports(Shape::new(
@@ -422,7 +421,7 @@ impl<'a> RingOutput<'a> {
     }
 
     /// The bytes past the record, a payload or an exit's scheme 3 body.
-    const fn extra_len(&self) -> usize {
+    pub const fn extra_len(&self) -> usize {
         match self.body {
             SlotBody::Recipient(body) => body.len().saturating_sub(self.record.len()),
             SlotBody::Exit(body) => body.len(),
@@ -518,13 +517,6 @@ impl<'a> CheckedAuthorization<'a> {
             RingRail::AnonymousDelegate => Ok(Self::AnonymousDelegate),
         }
     }
-}
-
-/// One public leg's committed accounts, the asset account then the user account.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Settlement<'a> {
-    pub asset_account: &'a [u8; 32],
-    pub user_account: &'a [u8; 32],
 }
 
 /// The stream layout is always the one the data's own frame selects.
@@ -825,106 +817,7 @@ impl<'a> RingTransactData<'a> {
         ParsedTransact::new(data)
     }
 
-    /// The bytes `parse` reads back, refusing what it refuses.
-    pub fn encode(&self) -> Result<Vec<u8>, CustomRingError> {
-        self.encode_under(self.rail.key_shape(&FrameHeader::of(self)?)?)
-    }
-
-    /// For catalog sizing, `parse` refuses a `shape` off the catalog.
-    pub fn encode_under(&self, shape: TransferShape) -> Result<Vec<u8>, CustomRingError> {
-        let flags = self.flags();
-        let header = FrameHeader::of(self)?;
-        let stream = self.stream_under(shape);
-        self.validate_under(stream)?;
-        let interface_transfers =
-            <containers::Vec<InterfaceTransfer, FixIntLen<u8>> as Serialize>::serialize(
-                &self.interface_transfers,
-            )
-            .map_err(|_| CustomRingError::InvalidInstructionData)?;
-        let mut out = Vec::new();
-        out.push(flags.0);
-        out.extend(header.bytes()?);
-        out.push(self.approval.bits());
-        out.extend_from_slice(bytemuck::bytes_of(self.proof));
-        out.extend_from_slice(&self.tracking_revision.0);
-        if let Some(revision) = self.own_revision {
-            out.extend_from_slice(&revision.0);
-        }
-        if let Some(revision) = self.policy.and_then(|policy| policy.curator_revision) {
-            out.extend_from_slice(&revision.0);
-        }
-        out.extend_from_slice(&self.expiry_unix_ts.to_le_bytes());
-        out.extend_from_slice(self.tx_viewing_u);
-        out.extend_from_slice(self.salt);
-        if !self.extensions.is_empty() {
-            self.extensions.write(&mut out)?;
-        }
-        out.extend_from_slice(&interface_transfers);
-        out.extend_from_slice(self.spl_withdrawal_owners.as_flattened());
-        push_bitmap(&mut out, self.outputs.iter().map(RingOutput::is_exit));
-        for output in &self.outputs {
-            if self.has_data {
-                let len = u16::try_from(output.extra_len())
-                    .map_err(|_| CustomRingError::OutputBodyLength)?;
-                out.extend_from_slice(&len.to_le_bytes());
-            }
-            out.extend_from_slice(output.hash);
-            match output.body {
-                SlotBody::Exit(body) => {
-                    out.extend_from_slice(&output.owner_tag);
-                    out.extend_from_slice(output.record);
-                    out.extend_from_slice(body);
-                }
-                SlotBody::Recipient(body) => {
-                    out.extend_from_slice(&framed_slot_tag(&output.owner_tag));
-                    out.extend_from_slice(body);
-                }
-            }
-        }
-        if let Some(replies) = self.replies {
-            out.extend_from_slice(&replies.len.to_le_bytes());
-            out.extend_from_slice(replies.region);
-        }
-        if let Some(sender) = self.sender {
-            out.extend_from_slice(sender.tag);
-            out.extend_from_slice(sender.body);
-        }
-        out.extend_from_slice(self.envelope);
-        out.extend_from_slice(self.recipient_keys);
-        out.extend_from_slice(self.private_tx_hash);
-        if let Some(anonymous) = &self.anonymous {
-            out.extend_from_slice(anonymous.commitment);
-            out.extend_from_slice(anonymous.commitment_pok);
-            if let Some(tag) = anonymous.default_owner_tag {
-                out.extend_from_slice(tag);
-            }
-        }
-        if let Some(owner) = &self.in_proof_owner {
-            out.extend_from_slice(owner.owner);
-            out.extend_from_slice(owner.commitment);
-            out.extend_from_slice(owner.commitment_pok);
-        }
-        out.extend_from_slice(bytemuck::bytes_of(self.spp_proof));
-        out.extend_from_slice(self.nullifiers.as_flattened());
-        match self.input_trees {
-            InputTrees::One(context) => push_tree_context(&mut out, context)?,
-            InputTrees::Two {
-                first,
-                second,
-                second_inputs,
-            } => {
-                push_bitmap(
-                    &mut out,
-                    (0..self.nullifiers.len()).map(|input| (second_inputs >> input) & 1 == 1),
-                );
-                push_tree_context(&mut out, first)?;
-                push_tree_context(&mut out, second)?;
-            }
-        }
-        Ok(out)
-    }
-
-    fn validate_under(
+    pub fn validate_under(
         &self,
         stream: AuditStreamLayout,
     ) -> Result<CheckedAuthorization<'a>, CustomRingError> {
@@ -1076,22 +969,6 @@ impl<'a> RingTransactData<'a> {
         .ok_or(CustomRingError::RingShapeUnkeyed)
     }
 
-    /// The run SPP reads as owner signers, between the nullifier PDAs and the settlement groups.
-    pub fn owner_signers<'s, T>(
-        &self,
-        spp: &'s [T],
-        settlements: usize,
-    ) -> Result<&'s [T], CustomRingError> {
-        let start = crate::RING_TRANSACT_ACCOUNT_PREFIX_LEN
-            + self.input_trees.count()
-            + self.nullifiers.len();
-        settlements
-            .checked_add(self.cache_accounts())
-            .and_then(|tail| spp.len().checked_sub(tail))
-            .and_then(|end| spp.get(start..end))
-            .ok_or(CustomRingError::InvalidSettlementAccounts)
-    }
-
     /// The accounts of the cached selector, they end SPP's list.
     pub fn cache_accounts(&self) -> usize {
         self.extensions.cache.map_or(0, |access| {
@@ -1208,7 +1085,7 @@ impl<'a> RingTransactData<'a> {
         )
     }
 
-    fn flags(&self) -> TransactFlags {
+    pub fn flags(&self) -> TransactFlags {
         let bits = [
             (self.policy.is_some(), transact_flag::POLICY),
             (
@@ -1235,7 +1112,7 @@ impl<'a> RingTransactData<'a> {
 }
 
 impl<'a> FrameExtensions<'a> {
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
 
@@ -1283,46 +1160,6 @@ impl<'a> FrameExtensions<'a> {
             approval_totals,
         })
     }
-
-    fn write(&self, out: &mut Vec<u8>) -> Result<(), CustomRingError> {
-        let flag = |set: bool, bit: u8| if set { bit } else { 0 };
-        out.push(
-            flag(self.data_hash.is_some(), extension_flag::DATA_HASH)
-                | flag(
-                    self.ring_data_hash.is_some(),
-                    extension_flag::RING_DATA_HASH,
-                )
-                | flag(!self.messages.is_empty(), extension_flag::MESSAGES)
-                | flag(self.cache.is_some(), extension_flag::CACHE)
-                | flag(
-                    self.approval_totals.is_some(),
-                    extension_flag::APPROVAL_TOTALS,
-                ),
-        );
-        if let Some(hash) = self.data_hash {
-            out.extend_from_slice(hash);
-        }
-        if let Some(hash) = self.ring_data_hash {
-            out.extend_from_slice(hash);
-        }
-        if !self.messages.is_empty() {
-            out.push(count_byte(self.messages.len())?);
-            for message in &self.messages {
-                let len = u16::try_from(message.data.len())
-                    .map_err(|_| CustomRingError::OutputBodyLength)?;
-                out.extend_from_slice(message.view_tag);
-                out.extend_from_slice(&len.to_le_bytes());
-                out.extend_from_slice(message.data);
-            }
-        }
-        if let Some(cache) = &self.cache {
-            write_cache_access(cache, out);
-        }
-        if let Some(totals) = self.approval_totals {
-            out.extend_from_slice(totals);
-        }
-        Ok(())
-    }
 }
 
 /// The byte leading [`FrameExtensions`], one bit per optional field in wire order.
@@ -1346,13 +1183,6 @@ fn read_cache_access(bytes: &mut Bytes<'_>) -> Result<CacheAccess, CustomRingErr
         read_bitmap,
         write_slots,
     })
-}
-
-fn write_cache_access(cache: &CacheAccess, out: &mut Vec<u8>) {
-    out.extend_from_slice(&cache.read_bitmap.to_le_bytes());
-    for write in &cache.write_slots {
-        out.extend_from_slice(&[write.output, write.slot]);
-    }
 }
 
 /// Byte 0 of the compact data, one bit per optional section.
@@ -1398,7 +1228,7 @@ pub mod output_flag {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TransactFlags(u8);
+pub struct TransactFlags(pub u8);
 
 impl TransactFlags {
     const fn has(self, bit: u8) -> bool {
@@ -1427,9 +1257,6 @@ impl TransactFlags {
         self.has(transact_flag::OWN_ROOT)
     }
 }
-
-/// The runtime's ceiling on CPI instruction data, the expanded SPP call must fit it.
-pub const MAX_CPI_DATA_LEN: usize = 10 * 1024;
 
 /// SPP's `messages` vector has a `u8` length.
 pub const MAX_SPP_MESSAGES: usize = u8::MAX as usize;
@@ -1468,7 +1295,7 @@ fn check_extensions(
 
 /// Bytes 1 to 3 of the compact data, the SPP shape's index and the input count below their flags, then `m`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FrameHeader {
+pub struct FrameHeader {
     n_in: u8,
     n_out: u8,
     input_count: u8,
@@ -1506,7 +1333,7 @@ impl FrameHeader {
         Ok(header)
     }
 
-    fn of(data: &RingTransactData<'_>) -> Result<Self, CustomRingError> {
+    pub fn of(data: &RingTransactData<'_>) -> Result<Self, CustomRingError> {
         let flags = FrameFlags::of(data);
         flags.check(data.rail)?;
         let header = Self {
@@ -1527,7 +1354,7 @@ impl FrameHeader {
         }
     }
 
-    fn bytes(self) -> Result<[u8; 3], CustomRingError> {
+    pub fn bytes(self) -> Result<[u8; 3], CustomRingError> {
         let shape = Shape::new(usize::from(self.n_in), usize::from(self.n_out));
         let index = SPP_SUPPORTED_SHAPES
             .iter()
@@ -1628,20 +1455,4 @@ fn invalid<E>(_: E) -> CustomRingError {
 
 fn count_byte(count: usize) -> Result<u8, CustomRingError> {
     u8::try_from(count).map_err(|_| CustomRingError::RingTransactLength)
-}
-
-fn push_bitmap(out: &mut Vec<u8>, bits: impl ExactSizeIterator<Item = bool>) {
-    let mut bytes = vec![0u8; bits.len().div_ceil(8)];
-    for (index, _) in bits.enumerate().filter(|(_, set)| *set) {
-        bytes[index / 8] |= 1 << (index % 8);
-    }
-    out.extend_from_slice(&bytes);
-}
-
-fn push_tree_context(out: &mut Vec<u8>, context: TreeContext) -> Result<(), CustomRingError> {
-    out.extend(
-        <TreeContext as Serialize>::serialize(&context)
-            .map_err(|_| CustomRingError::InvalidInstructionData)?,
-    );
-    Ok(())
 }

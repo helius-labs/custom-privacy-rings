@@ -15,6 +15,7 @@ use custom_ring_interface::{
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
 use spr_hasher::primitives::{hash_bytes, solana_owner_identity};
+use zolana_ring_client::ListWriteData;
 use zolana_ring_member_registry::{
     MemberRecord, MemberRegistryTree, OpeningCheck, QuadPath, RecordOpening,
     RecordStatementContext, RecordTracking, RecordTree, RecordWriteProofInput, ZERO_SUBTREES,

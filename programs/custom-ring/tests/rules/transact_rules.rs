@@ -6,10 +6,10 @@ use custom_ring_interface::{
     funder_account_position, input_flag,
     key_catalog::{FrameKey, RingCircuit},
     spl_withdrawal_count, tag, transact_flag, AnonymousProofData, CoSignScope, CustomRingError,
-    CustomRingProof, FramedSenderBundle, InputTrees, KnownPrefix, PlainGroth16Proof, PolicyProof,
-    RingOutput, RingPolicy, RingRail, RingRole, RingTransactData, RootRead, SlotBody,
-    TransferLayout, EXIT_RECORD_LEN, RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX,
-    SENDER_BUNDLE_LEN, TRANSACT_PAYER_INDEX,
+    CustomRingProof, FramedSenderBundle, InputTrees, PlainGroth16Proof, PolicyProof, RingOutput,
+    RingPolicy, RingRail, RingRole, RingTransactData, RootRead, SlotBody, TransferLayout,
+    EXIT_RECORD_LEN, RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX, SENDER_BUNDLE_LEN,
+    TRANSACT_PAYER_INDEX,
 };
 use solana_address::Address;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
@@ -21,6 +21,10 @@ use spr_interface::{
     MAX_INTERFACE_TRANSFERS, SHIELDED_POOL_PROGRAM_ID,
 };
 use wincode::{containers, len::FixIntLen, Serialize};
+use zolana_ring_client::CoSignerPairs;
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::KnownPrefix;
+use zolana_ring_keys::SealedLayout;
 
 use crate::common::{
     delegate_ring, off_curve_g2, on_curve_g2, policy_pda, reaches_verification, refused, ring_auth,

@@ -2,6 +2,7 @@
 
 use custom_ring_interface::{tag, TRANSFER_OUTPUT_CAPACITIES};
 use solana_keypair::Signer;
+use zolana_ring_client::FrameEncode;
 
 use crate::{
     common::{reaches_verification, Ring, Setup},

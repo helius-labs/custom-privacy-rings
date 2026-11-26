@@ -3,10 +3,7 @@
 use std::sync::Mutex;
 
 use crate::ZolanaServices;
-use custom_ring_interface::{
-    blinding::ring_blinding_seed, encode_ring_body_output, encode_ring_sender_bundle_output,
-    stream::DeliveredSlot, OutputRecord, RecordForm, RecordKind, SenderBundle,
-};
+use custom_ring_interface::{encode_ring_sender_bundle_output, RecordForm, RecordKind};
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{
@@ -22,6 +19,11 @@ use spr_transaction::{
     utxo::blinding::derive_transact_output_blinding,
     AssetRegistry, Data, Mint, OwnerCx, Utxo, UtxoSerialization, WalletUtxo,
 };
+use zolana_ring_keys::encode_ring_body_output;
+use zolana_ring_keys::ring_blinding_seed;
+use zolana_ring_keys::DeliveredSlot;
+use zolana_ring_keys::OutputRecord;
+use zolana_ring_keys::SenderBundle;
 use zolana_ring_transaction::{record_key, seal_sender_bundle, OutputBlindings, RecipientBody};
 
 use super::{
@@ -61,7 +63,7 @@ fn slot_secret(
     owner: &ShieldedAddress,
     first_nullifier: &[u8; 32],
     output_index: u32,
-) -> custom_ring_interface::stream::SlotSecret {
+) -> zolana_ring_keys::SlotSecret {
     DeliveredSlot {
         agreement: &tx.ecdh(&owner.viewing_pubkey).unwrap(),
         tx_viewing_pk: tx.pubkey().as_bytes(),
@@ -79,7 +81,7 @@ fn ring_body(
     sealed: &Sealed<'_>,
     owner: &ShieldedAddress,
     blinding: [u8; 32],
-    secret: &custom_ring_interface::stream::SlotSecret,
+    secret: &zolana_ring_keys::SlotSecret,
 ) -> Vec<u8> {
     let record = OutputRecord {
         kind: RecordKind::Ring,

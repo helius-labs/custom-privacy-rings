@@ -6,6 +6,7 @@ use custom_ring_interface::{
 };
 use serde_json::{json, Value};
 use spr_interface::shape::SPP_SUPPORTED_SHAPES;
+use zolana_ring_client::FittedSpend;
 
 const VECTORS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

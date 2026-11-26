@@ -2,6 +2,7 @@ use bytemuck::Zeroable;
 use custom_ring_interface::{
     storage::Revision, storage_instruction::tag as storage_tag, RecordWriteData,
 };
+use zolana_ring_client::StorageRegistryAddress;
 use zolana_ring_policy::ListId;
 
 use super::*;
@@ -77,13 +78,13 @@ fn a_private_write_reads_the_pinned_tracking_registry() {
 #[test]
 fn a_full_batch_of_first_enrollments_fits_one_transaction() {
     use custom_ring_interface::{
-        compute_unit_limit,
         storage_instruction::{ENROLLMENT_BATCH, SIGNED_MESSAGE_MAX_LEN},
         CustomRingProof, InstructionTag,
     };
     use solana_message::v1::MAX_TRANSACTION_SIZE;
     use solana_signer::Signer;
     use spr_client::ComputeBudgetConfig;
+    use zolana_ring_client::compute_unit_limit;
 
     use crate::{
         tests::support::{keypair, ServedLeaf},

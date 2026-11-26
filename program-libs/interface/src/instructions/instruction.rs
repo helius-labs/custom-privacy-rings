@@ -1,4 +1,4 @@
-//! The instruction tags, compute budgets and data of every ring instruction but the transfer.
+//! The instruction tags and data of every ring instruction but the transfer.
 //!
 //! `WriteRecordsIxData::entry_within` holds a list write to its writer's lists and its value inside
 //! its mask. The apply circuit takes the chained value as given, a value past the mask would reach the tree.
@@ -9,7 +9,7 @@
 use bytemuck::{Pod, Zeroable};
 use solana_address::Address;
 use wincode::{containers, len::FixIntLen, SchemaRead, SchemaWrite};
-use zolana_ring_policy::{ListSet, ListWrite, MintPolicy, Writer};
+use zolana_ring_policy::{ListSet, MintPolicy};
 
 use crate::{
     error::CustomRingError,
@@ -19,7 +19,7 @@ use crate::{
 };
 
 macro_rules! instruction_tags {
-    ($($(#[$doc:meta])* $variant:ident = $tag:ident: $value:expr => $units:expr,)*) => {
+    ($($(#[$doc:meta])* $variant:ident = $tag:ident: $value:expr,)*) => {
         pub mod tag {
             $($(#[$doc])* pub const $tag: u8 = $value;)*
         }
@@ -40,38 +40,26 @@ macro_rules! instruction_tags {
                 }
             }
         }
-
-        pub const fn compute_unit_limit(tag: InstructionTag) -> u32 {
-            match tag {
-                $(InstructionTag::$variant => $units,)*
-            }
-        }
     };
 }
 
-const ACCOUNT_UNITS: u32 = 50_000;
-/// One policy hash plus a curator registry load.
-const POLICY_UNITS: u32 = 150_000;
-/// A ring proof, and for most the SPP CPI with its own proof.
-pub const PROOF_UNITS: u32 = 1_400_000;
-
 instruction_tags! {
-    Transfer = TRANSFER: 55 => PROOF_UNITS,
-    Merge = MERGE: 57 => PROOF_UNITS,
-    UpdateAuthority = UPDATE_AUTHORITY: 6 => ACCOUNT_UNITS,
-    SetPaused = SET_PAUSED: 11 => ACCOUNT_UNITS,
+    Transfer = TRANSFER: 55,
+    Merge = MERGE: 57,
+    UpdateAuthority = UPDATE_AUTHORITY: 6,
+    SetPaused = SET_PAUSED: 11,
     /// Ring-local tags must not collide with the forwarded SPP tags.
-    SetCoSigner = SET_CO_SIGNER: 27 => ACCOUNT_UNITS,
-    ClearCoSigner = CLEAR_CO_SIGNER: 62 => ACCOUNT_UNITS,
-    SetDelegate = SET_DELEGATE: 64 => ACCOUNT_UNITS,
+    SetCoSigner = SET_CO_SIGNER: 27,
+    ClearCoSigner = CLEAR_CO_SIGNER: 62,
+    SetDelegate = SET_DELEGATE: 64,
     /// Signed by a co-signer at the top level, it writes nothing.
-    ApproveTransfer = APPROVE_TRANSFER: 65 => ACCOUNT_UNITS,
-    AuthorityTransfer = AUTHORITY_TRANSFER: 56 => PROOF_UNITS,
+    ApproveTransfer = APPROVE_TRANSFER: 65,
+    AuthorityTransfer = AUTHORITY_TRANSFER: 56,
     /// Signed by the upgrade authority, one budget for the ring account, its policy, the tracking and SPP CPIs.
-    Initialize = INITIALIZE: 53 => 3 * ACCOUNT_UNITS + POLICY_UNITS,
-    UpdatePolicy = UPDATE_POLICY: 54 => POLICY_UNITS,
+    Initialize = INITIALIZE: 53,
+    UpdatePolicy = UPDATE_POLICY: 54,
     /// Signed by the enrollment writer, one storage CPI checks every owner signature and proof.
-    EnrollBatch = ENROLL_BATCH: 66 => PROOF_UNITS,
+    EnrollBatch = ENROLL_BATCH: 66,
 }
 
 /// Fixed for the ring's life.
@@ -258,13 +246,6 @@ macro_rules! fixed_ix_data {
 fixed_ix_data!(WriteRecordsIxData, ApplyRecordsIxData);
 
 impl WriteRecordsIxData {
-    pub const fn new(write: ListWrite) -> Self {
-        Self {
-            mask: write.mask().to_le_bytes(),
-            value: write.value().to_le_bytes(),
-        }
-    }
-
     pub const fn mask(&self) -> u64 {
         u64::from_le_bytes(self.mask)
     }
@@ -273,12 +254,7 @@ impl WriteRecordsIxData {
         u64::from_le_bytes(self.value)
     }
 
-    /// The entry of `writer` changing `member`'s lists, only the lists `writer` owns.
-    pub fn entry(&self, member: [u8; 32], writer: Writer) -> Result<RecordWrite, CustomRingError> {
-        self.entry_within(member, writer.writable())
-    }
-
-    pub(crate) fn entry_within(
+    pub fn entry_within(
         &self,
         member: [u8; 32],
         writable: ListSet,
@@ -302,15 +278,6 @@ impl WriteRecordsIxData {
 
 impl RecordWriteData {
     pub const SIZE: usize = core::mem::size_of::<Self>();
-
-    pub fn entry(&self) -> Result<RecordWrite, CustomRingError> {
-        list_and_mint_entry(
-            self.member,
-            &self.lists,
-            &self.mint_policy,
-            Writer::Authority.writable(),
-        )
-    }
 }
 
 pub type MintPolicyWrite = [u8; 1 + MintPolicy::LEN];
@@ -326,7 +293,7 @@ pub fn mint_policy_write(policy: Option<MintPolicy>) -> MintPolicyWrite {
 }
 
 /// A write that keeps both the lists and the mint settings is refused.
-pub(crate) fn list_and_mint_entry(
+pub fn list_and_mint_entry(
     member: [u8; 32],
     lists: &WriteRecordsIxData,
     mint_policy: &MintPolicyWrite,
@@ -383,7 +350,7 @@ const _: () = assert!(APPLY_BATCH <= u8::MAX as usize);
 #[cfg(test)]
 mod tests {
     use spr_hasher::primitives::right_align;
-    use zolana_ring_policy::ListId;
+    use zolana_ring_policy::{ListId, Writer};
 
     use super::*;
 
@@ -399,7 +366,8 @@ mod tests {
         let member = right_align(&[7]);
         let viewing = ListId::RingViewing.record_bit();
         let allow = ListId::Allow.record_bit();
-        let write = |mask, value| lists(mask, value).entry(member, Writer::Member);
+        let write =
+            |mask, value| lists(mask, value).entry_within(member, Writer::Member.writable());
         assert!(write(viewing, viewing).is_ok());
         assert_eq!(
             write(allow, allow),
@@ -418,7 +386,7 @@ mod tests {
         );
         assert_eq!(write(0, 0), Err(CustomRingError::ValueOutsideMask));
         assert_eq!(
-            lists(viewing, 0).entry([0; 32], Writer::Member),
+            lists(viewing, 0).entry_within([0; 32], Writer::Member.writable()),
             Err(CustomRingError::MemberOutOfRange)
         );
     }
@@ -426,12 +394,12 @@ mod tests {
     #[test]
     fn the_authority_writes_only_the_authority_lists() {
         let write = |mask| {
-            RecordWriteData {
-                mint_policy: mint_policy_write(None),
-                member: right_align(&[9]),
-                lists: lists(mask, 0),
-            }
-            .entry()
+            list_and_mint_entry(
+                right_align(&[9]),
+                &lists(mask, 0),
+                &mint_policy_write(None),
+                Writer::Authority.writable(),
+            )
         };
         assert!(write(ListId::Block.record_bit()).is_ok());
         assert_eq!(

@@ -11,6 +11,8 @@ use custom_ring_interface::{
 use solana_address::Address;
 use solana_instruction::AccountMeta;
 use solana_keypair::{Keypair, Signer};
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::TrackingRegistryHost;
 use zolana_ring_policy::{ring_id_field, ListId, ListSet};
 
 use crate::{

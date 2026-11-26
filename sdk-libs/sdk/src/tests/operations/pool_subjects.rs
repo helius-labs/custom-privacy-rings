@@ -5,6 +5,7 @@ use custom_ring_interface::{
 };
 use serde_json::json;
 use spr_interface::N_PUBLIC_SLOTS;
+use zolana_ring_client::KeyWidths;
 use zolana_ring_policy::{ListId, SourceMap};
 
 use super::{super::transfer_key, *};

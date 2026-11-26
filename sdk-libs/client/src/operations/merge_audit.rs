@@ -3,7 +3,7 @@ use std::{
     num::{NonZeroU32, NonZeroUsize},
 };
 
-use custom_ring_interface::{MergeRecord, RecordKind};
+use custom_ring_interface::RecordKind;
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{
@@ -18,6 +18,7 @@ use spr_indexer_api::Context;
 use spr_interface::instruction::instruction_data::merge_transact::merge_circuit_width;
 use spr_keypair::{X25519Keypair, X25519Pubkey};
 use spr_transaction::OutputSlot;
+use zolana_ring_keys::MergeRecord;
 use zolana_ring_transaction::{published_nullifier_pk, MergeSeed};
 
 use crate::{
@@ -371,11 +372,12 @@ fn remember_merge(
 
 #[cfg(test)]
 mod tests {
-    use custom_ring_interface::{OutputRecord, RecordKey};
     use spr_client::rpc::PaginationToken;
     use spr_event::{encode_merge_output_data, MergeOutputDataRef};
     use spr_interface::ZERO_NULLIFIER_PUBKEY;
     use spr_transaction::{OutputContext, OutputSlot};
+    use zolana_ring_keys::OutputRecord;
+    use zolana_ring_keys::RecordKey;
 
     use super::*;
     use crate::{encryption::MergeRecordSeal, origin::RingOrigin};

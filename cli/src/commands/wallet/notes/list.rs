@@ -2,7 +2,6 @@
 
 use anyhow::{bail, ensure, Context as _, Result};
 use clap::{builder::PossibleValue, Args, ValueEnum};
-use custom_ring_interface::ListRegistry;
 use custom_ring_sdk::{
     MemberRecords, OwnerListSalts, OwnerListTags, OwnerListTagsRead, PolicyUpdate, PrivateKeyKind,
     SaltedOwnerCheck, SourceOwner, UpdatePolicy, WalletRecordUpdate,
@@ -10,6 +9,8 @@ use custom_ring_sdk::{
 use solana_address::Address;
 use solana_signer::Signer;
 use zolana_ring_client::owner_record_key;
+use zolana_ring_client::ListRegistry;
+use zolana_ring_client::PolicySources;
 use zolana_ring_keys::{RingAddress, RingKeyError};
 use zolana_ring_policy::{ListId, ListSet, ListWrite, ListWriteError, Member};
 

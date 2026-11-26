@@ -17,6 +17,7 @@ use solana_keypair::{Keypair, Signer};
 use solana_transaction_error::TransactionError;
 use spr_account_checks::AccountError;
 use spr_interface::state::RingConfig;
+use zolana_ring_client::EnrollmentRequestEncode;
 use zolana_ring_policy::{ring_id_field, ListId, ListSet, Rule, Subject, TableParts};
 
 use crate::common::{

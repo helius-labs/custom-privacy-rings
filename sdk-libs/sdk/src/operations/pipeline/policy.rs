@@ -11,6 +11,8 @@ use spr_client::AsyncRpc;
 use spr_hasher::primitives::right_align;
 use spr_interface::{N_PUBLIC_SLOTS, ZERO_NULLIFIER_PUBKEY};
 use spr_transaction::instructions::transact::SppProofInputs;
+use zolana_ring_client::KeyWidths;
+use zolana_ring_client::WithdrawalLeg;
 use zolana_ring_client::{records::RecordPoolRead, AsyncRingIndexer};
 use zolana_ring_policy::{
     ApprovalInputs, EncodedRuleTable, Member, MintPolicy, OutputSubjects, OwnerDebit,

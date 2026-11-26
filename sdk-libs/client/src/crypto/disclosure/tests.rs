@@ -1,8 +1,9 @@
 use custom_ring_interface::{
-    AuditEvidence, AuditKey, AuditStreamLayout, EntryRecord, DEFAULT_INPUT_BITS_LEN,
-    ENTRY_RECORD_LEN, ENVELOPE_HEAD_LEN,
+    AuditKey, AuditStreamLayout, DEFAULT_INPUT_BITS_LEN, ENTRY_RECORD_LEN, ENVELOPE_HEAD_LEN,
 };
 use spr_hasher::primitives::BN254_SCALAR_MODULUS_BE;
+use zolana_ring_keys::AuditEvidence;
+use zolana_ring_keys::EntryRecord;
 
 use super::*;
 
@@ -293,7 +294,7 @@ fn evidence_outside_the_field_is_refused() {
     let auditor = X25519Keypair::new();
     let secret = *ViewingKey::new().secret_bytes();
     let plaintext = |evidence: AuditEvidence| {
-        custom_ring_interface::AuditEnvelope {
+        zolana_ring_keys::AuditEnvelope {
             tx_viewing_secret: secret,
             real_inputs: 1,
             evidence,
@@ -325,7 +326,7 @@ fn evidence_outside_the_field_is_refused() {
 fn an_entry_record_of_another_length_is_refused() {
     const FULL_OPENING_LEN: usize = 200;
     let auditor = X25519Keypair::new();
-    let plaintext = custom_ring_interface::AuditEnvelope {
+    let plaintext = zolana_ring_keys::AuditEnvelope {
         tx_viewing_secret: *ViewingKey::new().secret_bytes(),
         real_inputs: 1,
         evidence: entry_evidence(),

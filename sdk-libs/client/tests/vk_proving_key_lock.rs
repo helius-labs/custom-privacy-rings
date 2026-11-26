@@ -1,14 +1,14 @@
 //! Pins ring verifying keys to `proving-keys.lock` and the key catalog to the program's circuits.
-#![cfg(feature = "verifying-keys")]
 
 use std::collections::BTreeSet;
 
 use custom_ring_interface::{
-    key_catalog::{ApplyMode, RecordPools, RingCircuit, TransferSpend, RING_KEYS},
+    key_catalog::{ApplyMode, RecordPools, RingCircuit, TransferSpend},
     storage_instruction::ENROLLMENT_BATCH,
     verifying_key, RingRail, APPLY_BATCH, PROVING_KEY_SHA256S,
 };
 use spr_interface::{shape::SPP_SUPPORTED_SHAPES, MAX_INTERFACE_TRANSFERS};
+use zolana_ring_client::RING_KEYS;
 
 const LOCK: &str = include_str!("../../../prover/ring/proving-keys.lock");
 

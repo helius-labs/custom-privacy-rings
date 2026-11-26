@@ -1,10 +1,10 @@
-use custom_ring_interface::stream::StreamError;
 use solana_signature::Signature;
 use spr_api::BlockingInsideRuntime;
 use spr_client::ClientError;
 use thiserror::Error;
 use zolana_ring_indexer::rpc::RingRpcError;
 use zolana_ring_keys::RingKeyError;
+use zolana_ring_keys::StreamError;
 use zolana_ring_transaction::RingRailError;
 
 use crate::RingIndexerError;

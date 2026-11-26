@@ -9,7 +9,7 @@ use solana_address::Address;
 use crate::{
     storage::{storage_account, StorageError},
     storage_instruction::OwnerGrantIxData,
-    ReaderKeyBytes, READER_KEY_ED25519, READER_KEY_P256, STORAGE_PROGRAM_ID,
+    ReaderKeyBytes, READER_KEY_ED25519, READER_KEY_P256,
 };
 
 /// A program owner's on-chain consent to one reader, a PDA cannot sign off chain, the address names both.
@@ -32,18 +32,6 @@ impl OwnerGrant {
     ) -> [&'a [u8]; 5] {
         let (scheme, key) = reader.split_at(2);
         [Self::SEED, registry.as_ref(), owner.as_ref(), scheme, key]
-    }
-
-    pub fn find_address(
-        registry: &Address,
-        owner: &Address,
-        reader: &ReaderKeyBytes,
-    ) -> (Address, u8) {
-        Address::find_program_address(&Self::seeds(registry, owner, reader), &STORAGE_PROGRAM_ID)
-    }
-
-    pub const fn is_active(&self) -> bool {
-        self.active == 1
     }
 }
 

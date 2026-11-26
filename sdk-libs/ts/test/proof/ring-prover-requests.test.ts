@@ -597,7 +597,7 @@ const CIRCUIT_TYPES = [...GOLDEN_BY_CIRCUIT.keys()].sort();
 describe.runIf(HAS_GOLDENS)("ring prover request encoding against the Go goldens", () => {
   it("lists every ring key of ring_keys.rs and names one for each golden", () => {
     const rust = readFileSync(
-      new URL("../../../../program-libs/interface/src/proof/ring_keys.rs", import.meta.url),
+      new URL("../../../client/src/codec/ring_keys.rs", import.meta.url),
       "utf8",
     );
     const names = [...rust.matchAll(/name: "([a-z0-9-]+)"/gu)].map((match) => match[1]);

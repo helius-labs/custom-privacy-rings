@@ -1,6 +1,5 @@
 use bytemuck::{Pod, Zeroable};
 use custom_ring_interface::{
-    compute_unit_limit,
     storage::{Revision, Root, StorageRegistry},
     storage_instruction::InitializeIxData as StorageInitialize,
     tag,
@@ -28,6 +27,8 @@ use spr_interface::{
     state::{discriminator::PROTOCOL_CONFIG, ProtocolConfig},
     BPF_LOADER_UPGRADEABLE_ID, RING_AUTH_PDA_SEED, SHIELDED_POOL_PROGRAM_ID,
 };
+use zolana_ring_client::compute_unit_limit;
+use zolana_ring_client::TrackingRegistryHost;
 use zolana_ring_policy::{ring_id_field, ListId, Member, OutflowLimit, Rule, RuleTable, Subject};
 
 /// Any address serves as the ring program.

@@ -2,7 +2,7 @@
 
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, tag, AnonymousProofData, AppMessage, CustomRingError,
-    CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees, KnownPrefix,
+    CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
     PlainGroth16Proof, PolicyProof, Replies, RingOutput, RingPolicy, RingRail, RingTransactData,
     RootRead, SlotBody, TransferApproval, TransferLayout, MAX_SPP_CPI_ACCOUNTS,
 };
@@ -14,6 +14,10 @@ use spr_interface::instruction::{
 use spr_program::instruction::{
     RingAuthorityTransact, RingTransact, TransactInterfaceTransferAccounts,
 };
+use zolana_ring_client::ApprovalEncode;
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::KnownPrefix;
+use zolana_ring_client::SppExpansion;
 
 use zolana_ring_client::rpc::ApprovedTransfer;
 

@@ -10,7 +10,7 @@ use custom_ring_interface::{
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
 use spr_interface::instruction::{InterfaceTransfer, TreeContext};
 
-#[path = "../common/mod.rs"]
+#[path = "../common/spp_point.rs"]
 mod common;
 
 pub use common::spp_b;

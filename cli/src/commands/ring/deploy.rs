@@ -307,7 +307,7 @@ impl ProgramBinary {
         let binary = Self::parse(bytes)?;
         zolana_cli_common::release::verify_program_keys(
             bytes,
-            custom_ring_interface::proving_key_hashes(),
+            zolana_ring_client::proving_key_hashes(),
         )?;
         Ok(binary)
     }

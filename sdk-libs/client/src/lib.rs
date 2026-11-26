@@ -4,6 +4,8 @@
 pub mod anonymous;
 #[path = "state/anonymous_wallet.rs"]
 mod anonymous_wallet;
+#[path = "codec/compute_units.rs"]
+pub mod compute_units;
 #[path = "operations/confidential.rs"]
 mod confidential;
 #[path = "crypto/decrypt/mod.rs"]
@@ -17,18 +19,26 @@ mod encryption;
 mod error;
 #[path = "state/exposed_notes.rs"]
 mod exposed_notes;
+#[path = "codec/frame.rs"]
+pub mod frame;
 #[path = "rpc/history.rs"]
 pub mod history;
 #[path = "rpc/indexer.rs"]
 mod indexer;
+#[path = "codec/key_catalog.rs"]
+pub mod key_catalog;
 #[path = "state/known_utxo_index.rs"]
 mod known;
 #[path = "operations/merge_audit.rs"]
 mod merge_audit;
+#[path = "codec/merge_data.rs"]
+pub mod merge_data;
 #[path = "state/merge_ledger.rs"]
 mod merge_ledger;
 #[path = "codec/origin/mod.rs"]
 mod origin;
+#[path = "codec/owner_signature.rs"]
+pub mod owner_signature;
 #[path = "codec/program_data.rs"]
 mod program_data;
 #[path = "security/reader.rs"]
@@ -39,18 +49,28 @@ pub mod records;
 mod recover;
 #[path = "operations/resolver.rs"]
 pub mod resolver;
+#[path = "codec/ring_keys.rs"]
+mod ring_keys;
 #[cfg(feature = "rpc")]
 #[path = "rpc/mod.rs"]
 pub mod rpc;
 #[path = "operations/scan.rs"]
 mod scan;
+#[path = "codec/storage_accounts.rs"]
+pub mod storage_accounts;
+#[path = "codec/storage_data.rs"]
+pub mod storage_data;
 #[path = "rpc/tags.rs"]
 pub mod tags;
+#[path = "codec/transfer_accounts.rs"]
+pub mod transfer_accounts;
 mod types;
 #[path = "state/viewing_history.rs"]
 pub mod viewing_history;
 #[path = "operations/viewing_rotation.rs"]
 mod viewing_rotation;
+#[path = "codec/vouch.rs"]
+pub mod vouch;
 #[path = "operations/wallet_sync.rs"]
 mod wallet_sync;
 
@@ -64,13 +84,31 @@ pub use crate::anonymous::{
 pub use crate::anonymous_wallet::{
     AnonymousWallet, LedgerScan, PendingClaim, PendingNote, ScanCommit,
 };
+pub use crate::compute_units::{compute_unit_limit, PROOF_UNITS};
 pub use crate::delivered::RingNoteCodec;
+pub use crate::frame::{FrameEncode, Settlement, SppExpansion, MAX_CPI_DATA_LEN};
+pub use crate::key_catalog::{
+    proving_key_hashes, FittedSpend, KeyWidths, RingKey, RowAuthorization, TransferAddresses,
+    TransferKeyRow, RING_KEYS,
+};
+pub use crate::merge_data::{CustomRingMergeIxData, SealedMergeRecord};
 #[cfg(feature = "solana-rpc")]
 pub use crate::origin::{confirmed_origin, ConfirmedRingOrigins, ORIGIN_TRANSACTION_CONFIG};
+pub use crate::owner_signature::{OwnerSignature, SignatureInstruction};
+pub use crate::storage_accounts::{OwnerGrantHost, StorageRegistryAddress, TrackingRegistryHost};
+pub use crate::storage_data::{
+    AuthorityWriteEntry, EnrollmentRequestEncode, ListWriteData, StorageEventDecode,
+    StorageUpdateCodec,
+};
 pub use crate::tags::{HistoryRows, IndexerReads, TagWindow, TAGS_PER_REQUEST};
+pub use crate::transfer_accounts::{
+    AnonymousExitDestination, ApprovalEncode, CoSignerPairs, KnownPrefix, ListRegistry,
+    PolicySources, WithdrawalLeg, SYSTEM_PROGRAM_ID, TRANSFER_APPROVAL_DATA_LEN,
+};
 pub use crate::viewing_history::{
     AdvancedTag, StreamCounter, ViewingHistory, ViewingKeyEntry, PENDING_RETENTION,
 };
+pub use crate::vouch::VouchMessage;
 pub use crate::{
     confidential::{RingConfidentialNotes, RingConfidentialScan, RingFullScan},
     decrypt::{FramedRow, SealedRecipientKeys, TransactionAudit},

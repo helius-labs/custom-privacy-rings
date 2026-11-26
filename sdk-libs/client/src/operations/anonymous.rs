@@ -4,15 +4,13 @@
 mod recovery;
 pub use recovery::RecoveryStatus;
 pub(crate) use recovery::{RecoverySession, RecoveryUpdate};
+use zolana_ring_keys::RecipientBodyForms;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use custom_ring_interface::{
-    ring_body_output, ring_sender_bundle_output_body, stream::SlotSecret, AuditStreamLayout,
-    RecordForm, RingMode, SENDER_BUNDLE_LEN,
-};
+use custom_ring_interface::{AuditStreamLayout, RecordForm, RingMode, SENDER_BUNDLE_LEN};
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{AsyncRpc, IndexerRpcConfig};
@@ -21,6 +19,9 @@ use spr_transaction::{
     instructions::merge::MergeOutputPlaintext, DecryptionResult, DeriveRequest, Mint, ShieldedKeys,
     ShieldedTransaction, TransactionError, TransactionKeyRequest, WalletUtxo,
 };
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::ring_sender_bundle_output_body;
+use zolana_ring_keys::SlotSecret;
 use zolana_ring_keys::{RingDeliveryRequest, RingKeys, RingTagFrame, RingTagKind, RingTagProbe};
 use zolana_ring_transaction::{
     is_contributory, open_recipient_body, open_reply, open_sender_bundle, AnonymousOutput,
@@ -791,7 +792,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
         let (ciphertext, _) = ring_body_output(&slot.payload)?;
         let slot_index = u32::try_from(position).ok()?;
         let agreement = zeroize::Zeroizing::new(tx_viewing_key.ecdh(recipient).ok()?);
-        let secret = custom_ring_interface::stream::DeliveredSlot {
+        let secret = zolana_ring_keys::DeliveredSlot {
             agreement: &agreement,
             tx_viewing_pk: body.context.tx_viewing_pk.as_bytes(),
             recipient_viewing_pk: recipient.as_bytes(),

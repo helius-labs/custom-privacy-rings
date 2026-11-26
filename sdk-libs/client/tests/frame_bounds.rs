@@ -11,6 +11,8 @@ use spr_interface::{
     instruction::{InterfaceTransfer, TransactProof},
     MAX_INTERFACE_TRANSFERS,
 };
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::SppExpansion;
 
 const VIEW_TAG: [u8; 32] = [0xa7; 32];
 

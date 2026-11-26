@@ -1,9 +1,8 @@
 //! The ring output rails, read back as a recipient and the ring program read them.
 
 use custom_ring_interface::{
-    blinding::ring_blinding_seed, ring_body_output, stream::DeliveredSlot, stream::SlotSecret,
-    OutputRecord, RecipientPayload, RecordForm, RecordKey, RecordKind, SenderBundle, SlotBody,
-    CONFIDENTIAL_DATA_FREE_BODY_LEN, MIN_REPLY_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
+    RecordForm, RecordKind, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN, MIN_REPLY_LEN,
+    RING_RECORD_LEN, SENDER_BUNDLE_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -14,6 +13,14 @@ use spr_transaction::{
     instructions::transact::{ConfidentialTransaction, Shape, SppProofInputs, SppProofOutputUtxo},
     Data, Mint, TransactionError, Utxo, WalletUtxo,
 };
+use zolana_ring_keys::ring_blinding_seed;
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::DeliveredSlot;
+use zolana_ring_keys::OutputRecord;
+use zolana_ring_keys::RecipientPayload;
+use zolana_ring_keys::RecordKey;
+use zolana_ring_keys::SenderBundle;
+use zolana_ring_keys::SlotSecret;
 use zolana_ring_transaction::{
     open_recipient_body, open_reply, open_sender_bundle, random_tag_preimage, record_key,
     seal_reply, AnonymousOutput, AnonymousPlan, AnonymousSlot, BodyForm, OpenedBody, OpenedNote,

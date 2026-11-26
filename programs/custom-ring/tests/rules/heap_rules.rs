@@ -4,13 +4,14 @@
 mod resource_frames;
 
 use resource_frames::{MaximumPayload, Payload};
+use zolana_ring_client::FrameEncode;
 
 use std::collections::HashSet;
 
 use custom_ring_interface::{
     key_catalog::{FrameKey, TransferShape, TRANSFER_SHAPES},
-    tag, CustomRingError, RecipientPayload, RecordForm, RecordKind, Replies, RingPolicy, RingRail,
-    RingTransactData, RootRead, SlotBody, MAX_CPI_DATA_LEN, MIN_REPLY_LEN, TRANSFER_RECORD_LEN,
+    tag, CustomRingError, RecordForm, RecordKind, Replies, RingPolicy, RingRail, RingTransactData,
+    RootRead, SlotBody, MIN_REPLY_LEN, TRANSFER_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{error::InstructionError, AccountMeta, Instruction};
@@ -22,6 +23,8 @@ use spr_interface::{
     instruction::InterfaceTransfer, shape::Shape, MAX_INTERFACE_TRANSFERS,
     SPL_TOKEN_ACCOUNT_INITIALIZED, SPL_TOKEN_PROGRAM_ID,
 };
+use zolana_ring_client::MAX_CPI_DATA_LEN;
+use zolana_ring_keys::RecipientPayload;
 
 use crate::{
     common::{policy_pda, Ring, Sent, Setup, PROGRAM},

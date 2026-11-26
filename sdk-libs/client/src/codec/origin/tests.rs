@@ -1,3 +1,4 @@
+use crate::FrameEncode;
 use solana_address::Address;
 use solana_signature::Signature;
 use solana_transaction_status_client_types::EncodedConfirmedTransactionWithStatusMeta;
@@ -1066,11 +1067,9 @@ fn merge_proof() -> custom_ring_interface::CustomRingProof {
     }
 }
 
-fn record_merge_group() -> (
-    InstructionGroup,
-    custom_ring_interface::CustomRingMergeIxData,
-) {
-    use custom_ring_interface::{CustomRingMergeIxData, SealedMergeRecord};
+fn record_merge_group() -> (InstructionGroup, crate::CustomRingMergeIxData) {
+    use crate::CustomRingMergeIxData;
+    use crate::SealedMergeRecord;
     use spr_interface::instruction::instruction_data::merge_ring::MergeRingIxData;
     let (mut group, _) = confirmed_merge_fixture();
     let spp = MergeRingIxData::deserialize(&group.inner[0].data[1..]).unwrap();
