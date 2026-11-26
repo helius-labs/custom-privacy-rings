@@ -2,7 +2,10 @@ use std::{
     future::Future,
     net::{IpAddr, SocketAddr},
     pin::Pin,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -24,7 +27,11 @@ use jsonrpsee::{
 use serde::{de::DeserializeOwned, Serialize};
 use spr_rpc_http::{announce::Announcer, forward::UpstreamUrl, MethodPathLayer};
 use thiserror::Error;
-use tokio::net::TcpListener;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    sync::{watch, Semaphore},
+};
 use tower::Service;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -49,20 +56,42 @@ use zolana_ring_client::rpc::{
     SUBMIT_VAULT_ENROLLMENT,
 };
 
-use crate::{
-    audit::{AuditRead, Page},
+use ring_service_core::{
     client_identity::PeerAddress,
-    client_rate::{ClientLayer, ClientLimits, ClientRate, ClientRateLimiter},
-    error::RingRpcError,
-    health::health,
-    hub::{Hub, Lane, ReadinessStatus},
+    limits::Lane,
     origins::{OriginError, Origins},
-    relay::Relay,
     upstream::TransactionSource,
 };
 
+use crate::{
+    client_rate::{ClientLayer, ClientLimits, ClientRate, ClientRateLimiter},
+    error::RingRpcError,
+    health::health,
+    hub::{Hub, ReadinessStatus},
+};
+use ring_audit::audit::{AuditRead, Page};
+use ring_relay::relay::Relay;
+
 const MAX_REQUEST_BODY_SIZE: u32 = 64 * 1024;
 const MAX_RESPONSE_BODY_SIZE: u32 = 16 * 1024 * 1024;
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
+const IDLE_TIMEOUTS: IdleTimeouts = IdleTimeouts {
+    first_request: Duration::from_secs(10),
+    keep_alive: Duration::from_secs(60),
+};
+/// Bounds how long a refused client holds its socket.
+const REFUSAL_TIMEOUT: Duration = Duration::from_secs(1);
+const SERVER_FULL: &[u8] = b"HTTP/1.1 503 Service Unavailable\r\nconnection: close\r\n\
+retry-after: 1\r\ncontent-length: 0\r\n\r\n";
+
+/// How long a connection with no request in flight keeps its slot.
+#[derive(Clone, Copy)]
+struct IdleTimeouts {
+    /// From the accept to the end of the first request's headers.
+    first_request: Duration,
+    /// From the end of a response to the next request.
+    keep_alive: Duration,
+}
 
 /// Only a loopback bind keeps the decrypted audit data behind a TLS proxy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +134,14 @@ pub enum ServerError {
 pub async fn run_server<S: TransactionSource + 'static>(
     hub: Arc<Hub<S>>,
     options: ServerOptions,
+) -> Result<ServerHandle, ServerError> {
+    run_server_with_idle_timeouts(hub, options, IDLE_TIMEOUTS).await
+}
+
+async fn run_server_with_idle_timeouts<S: TransactionSource + 'static>(
+    hub: Arc<Hub<S>>,
+    options: ServerOptions,
+    idle_timeouts: IdleTimeouts,
 ) -> Result<ServerHandle, ServerError> {
     if options.bind_policy == BindPolicy::LoopbackOnly && !options.bind.is_loopback() {
         return Err(ServerError::PublicBind);
@@ -165,29 +202,60 @@ pub async fn run_server<S: TransactionSource + 'static>(
         });
     }
     // An owned accept loop, the jsonrpsee server hides the peer address from middleware.
+    let slots = usize::try_from(options.max_connections.max(1)).unwrap_or(usize::MAX);
+    let connections = Arc::new(Semaphore::new(slots));
+    // As many refusals as connections answer at once, a flood past both is dropped unanswered.
+    let refusals = Arc::new(Semaphore::new(slots));
     tokio::spawn(async move {
         loop {
             let (socket, peer) = tokio::select! {
                 accepted = listener.accept() => match accepted {
                     Ok(accepted) => accepted,
-                    Err(_) => continue,
+                    Err(_) => {
+                        tokio::select! {
+                            () = tokio::time::sleep(ACCEPT_ERROR_BACKOFF) => continue,
+                            () = stop.clone().shutdown() => break,
+                        }
+                    }
                 },
                 () = stop.clone().shutdown() => break,
             };
+            let Ok(permit) = connections.clone().try_acquire_owned() else {
+                if let Ok(refusal) = refusals.clone().try_acquire_owned() {
+                    tokio::spawn(async move {
+                        let _refusal = refusal;
+                        let _ = tokio::time::timeout(REFUSAL_TIMEOUT, refuse(socket)).await;
+                    });
+                }
+                continue;
+            };
             let _ = socket.set_nodelay(true);
             let service = services.clone().build(methods.clone(), stop.clone());
+            let (activity, idle) = ConnectionActivity::new(idle_timeouts);
             let connection =
                 tower::service_fn(move |request: HttpRequest<hyper::body::Incoming>| {
+                    let guard = activity.enter();
                     let mut request = request.map(HttpBody::new);
                     request.extensions_mut().insert(PeerAddress(peer));
                     let mut service = service.clone();
-                    async move { service.call(request).await }
+                    async move {
+                        let _guard = guard;
+                        service.call(request).await
+                    }
                 });
-            tokio::spawn(serve_with_graceful_shutdown(
+            let serving = tokio::spawn(serve_with_graceful_shutdown(
                 socket,
                 connection,
                 stop.clone().shutdown(),
             ));
+            tokio::spawn(async move {
+                let _permit = permit;
+                let mut serving = serving;
+                tokio::select! {
+                    _ = &mut serving => {}
+                    () = wait_idle_deadline(idle) => serving.abort(),
+                }
+            });
         }
     });
     Ok(handle)
@@ -238,7 +306,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         &mut module,
         RING_STATUS,
         |hub, request: RingStatusRequest| async move {
-            hub.admit(Lane::Public)?;
+            let _slot = hub.admit(Lane::Public)?;
             let service = hub.service(Some(request.ring_program_id.0))?;
             let configured = service.configured_auditor().await?;
             let chain = service.chain_status().await?;
@@ -271,7 +339,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: GetAuditedUtxosRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
-            service.audited_utxos(&request).await
+            Ok(service.audited_utxos(&request).await?)
         },
     )?;
     method(
@@ -280,7 +348,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: GetWalletStatusRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
-            service.wallet_status(&request).await
+            Ok(service.wallet_status(&request).await?)
         },
     )?;
     method(
@@ -289,7 +357,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: GetWalletStatusRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
-            service.release_wallet_snapshot(&request).await
+            Ok(service.release_wallet_snapshot(&request).await?)
         },
     )?;
     method(
@@ -322,7 +390,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: GetSpendCoverageRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring.0))?;
-            service.spend_coverage(&request).await
+            Ok(service.spend_coverage(&request).await?)
         },
     )?;
     method(
@@ -330,7 +398,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         SUBMIT_RECORD_UPDATE,
         |hub, request: SubmitRecordUpdateRequest| async move {
             let _slot = hub.admit(Lane::Authentication)?;
-            hub.record_writer()?.submit(request).await
+            Ok(hub.record_writer()?.submit(request).await?)
         },
     )?;
     method(
@@ -338,7 +406,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         PREPARE_VAULT_ENROLLMENT,
         |hub, request: VaultEnrollmentRequest| async move {
             let _slot = hub.admit(Lane::Authentication)?;
-            hub.enrollment_applier()?.prepare_vault(request).await
+            Ok(hub.enrollment_applier()?.prepare_vault(request).await?)
         },
     )?;
     method(
@@ -346,7 +414,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         SUBMIT_VAULT_ENROLLMENT,
         |hub, request: SignedVaultEnrollment| async move {
             let _slot = hub.admit(Lane::Authentication)?;
-            hub.enrollment_applier()?.submit_vault(request).await
+            Ok(hub.enrollment_applier()?.submit_vault(request).await?)
         },
     )?;
     method(
@@ -354,15 +422,15 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         SUBMIT_ENROLLMENT,
         |hub, request: SubmitEnrollmentRequest| async move {
             let _slot = hub.admit(Lane::Authentication)?;
-            hub.enrollment_applier()?.submit(request).await
+            Ok(hub.enrollment_applier()?.submit(request).await?)
         },
     )?;
     method(
         &mut module,
         GET_RECORD_UPDATE_STATUS,
         |hub, request: GetRecordUpdateStatusRequest| async move {
-            hub.admit(Lane::Public)?;
-            hub.record_writer()?.status(request).await
+            let _slot = hub.admit(Lane::Public)?;
+            Ok(hub.record_writer()?.status(request).await?)
         },
     )?;
     method(
@@ -419,7 +487,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: SetReaderGrantRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring.0))?;
-            service.set_reader_grant(&request).await
+            Ok(service.set_reader_grant(&request).await?)
         },
     )?;
     method(
@@ -439,41 +507,75 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         },
     )?;
     if let Some(relay) = relay {
-        module.merge(relay_module(relay)?)?;
+        register_relay_methods(&mut module, relay)?;
     }
     Ok(module)
 }
 
-pub fn relay_module(relay: Arc<Relay>) -> Result<RpcModule<Arc<Relay>>, RegisterMethodError> {
-    let mut module = RpcModule::new(relay);
+fn register_relay_methods<S: TransactionSource + 'static>(
+    module: &mut RpcModule<Arc<Hub<S>>>,
+    relay: Arc<Relay>,
+) -> Result<(), RegisterMethodError> {
+    let quote_relay = relay.clone();
     method(
-        &mut module,
+        module,
         GET_RELAY_QUOTE,
-        |relay, request: GetRelayQuoteRequest| async move { relay.quote(&request).await },
+        move |hub, request: GetRelayQuoteRequest| {
+            let relay = quote_relay.clone();
+            async move {
+                let _slot = hub.admit(Lane::Public)?;
+                Ok(relay.quote(&request).await?)
+            }
+        },
     )?;
+    let prepare_relay = relay.clone();
     method(
-        &mut module,
+        module,
         PREPARE_RELAY,
-        |relay, request: PrepareRelayRequest| async move { relay.prepare(&request).await },
+        move |hub, request: PrepareRelayRequest| {
+            let relay = prepare_relay.clone();
+            async move {
+                let _slot = hub.admit(Lane::Authentication)?;
+                Ok(relay.prepare(&request).await?)
+            }
+        },
     )?;
+    let submit_relay = relay.clone();
     method(
-        &mut module,
+        module,
         SUBMIT_RELAY,
-        |relay, request: SubmitRelayRequest| async move { relay.submit(&request).await },
+        move |hub, request: SubmitRelayRequest| {
+            let relay = submit_relay.clone();
+            async move {
+                let _slot = hub.admit(Lane::Authentication)?;
+                Ok(relay.submit(&request).await?)
+            }
+        },
     )?;
+    let co_sign_relay = relay.clone();
     method(
-        &mut module,
+        module,
         CO_SIGN_TRANSACTION,
-        |relay, request: CoSignTransactionRequest| async move {
-            relay.co_sign_transaction(&request).await
+        move |hub, request: CoSignTransactionRequest| {
+            let relay = co_sign_relay.clone();
+            async move {
+                let _slot = hub.admit(Lane::Authentication)?;
+                Ok(relay.co_sign_transaction(&request).await?)
+            }
         },
     )?;
     method(
-        &mut module,
+        module,
         GET_RELAY_STATUS,
-        |relay, request: GetRelayStatusRequest| async move { relay.status(&request).await },
+        move |hub, request: GetRelayStatusRequest| {
+            let relay = relay.clone();
+            async move {
+                let _slot = hub.admit(Lane::Public)?;
+                Ok(relay.status(&request).await?)
+            }
+        },
     )?;
-    Ok(module)
+    Ok(())
 }
 
 #[derive(Clone, Serialize)]
@@ -537,6 +639,81 @@ where
         }
     })?;
     Ok(())
+}
+
+/// Answers 503 and reads the request away, a close over unread bytes would reset the answer.
+async fn refuse(mut socket: tokio::net::TcpStream) -> std::io::Result<()> {
+    socket.write_all(SERVER_FULL).await?;
+    socket.shutdown().await?;
+    let mut unread = [0; 1024];
+    while socket.read(&mut unread).await? != 0 {}
+    Ok(())
+}
+
+struct ConnectionActivity {
+    in_flight: AtomicUsize,
+    deadline: watch::Sender<Option<tokio::time::Instant>>,
+    keep_alive: Duration,
+}
+
+struct InFlightGuard {
+    activity: Arc<ConnectionActivity>,
+}
+
+impl ConnectionActivity {
+    /// A socket that sends nothing ends at `first_request`, an idle one at `keep_alive` past its
+    /// last response.
+    fn new(timeouts: IdleTimeouts) -> (Arc<Self>, watch::Receiver<Option<tokio::time::Instant>>) {
+        let initial = tokio::time::Instant::now() + timeouts.first_request;
+        let (deadline, receiver) = watch::channel(Some(initial));
+        (
+            Arc::new(Self {
+                in_flight: AtomicUsize::new(0),
+                deadline,
+                keep_alive: timeouts.keep_alive,
+            }),
+            receiver,
+        )
+    }
+
+    fn enter(self: &Arc<Self>) -> InFlightGuard {
+        if self.in_flight.fetch_add(1, Ordering::AcqRel) == 0 {
+            let _ = self.deadline.send(None);
+        }
+        InFlightGuard {
+            activity: self.clone(),
+        }
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        if self.activity.in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let next = tokio::time::Instant::now() + self.activity.keep_alive;
+            let _ = self.activity.deadline.send(Some(next));
+        }
+    }
+}
+
+async fn wait_idle_deadline(mut receiver: watch::Receiver<Option<tokio::time::Instant>>) {
+    loop {
+        let target = *receiver.borrow_and_update();
+        match target {
+            Some(at) => tokio::select! {
+                () = tokio::time::sleep_until(at) => return,
+                changed = receiver.changed() => {
+                    if changed.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                }
+            },
+            None => {
+                if receiver.changed().await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    }
 }
 
 struct ReadyService<S, Inner> {
@@ -614,21 +791,26 @@ mod tests {
     use spr_indexer_api::Hash;
     use zolana_ring_client::rpc::RecordUpdate;
 
-    use crate::{
+    use ring_service_core::{
         client_identity::ClientIdentityPolicy,
-        client_rate::{BucketRate, ClientRates, RateLimit, NETWORK_CLIENTS},
-        config::RootSecret,
-        error::RingRpcError,
-        hub::ServiceIdentity,
+        keys::RootSecret,
         limits::{
             MAX_CONCURRENT_AUTHENTICATIONS, MAX_CONCURRENT_READS, MAX_REQUEST_UNITS_PER_SECOND,
         },
         origins::OriginPolicy,
-        record_update::RecordUpdateRefusal,
         upstream::{
             MergeAuditRequest, RecordsTip, RingConfiguration, RingFrame, RingHistoryPage,
             TransactionPage,
         },
+        ServiceError,
+    };
+
+    use ring_writer::record_update::RecordUpdateRefusal;
+
+    use crate::{
+        client_rate::{BucketRate, ClientRates, RateLimit, NETWORK_CLIENTS},
+        error::RingRpcError,
+        hub::ServiceIdentity,
     };
 
     use super::*;
@@ -751,7 +933,7 @@ mod tests {
             Ok(TEST_GENESIS)
         }
 
-        async fn tree_id(&self, _tree: Address) -> Result<u16, custom_ring_sdk::RingError> {
+        async fn tree_id(&self, _tree: Address) -> Result<u16, zolana_ring_client::RingError> {
             Ok(1)
         }
 
@@ -769,13 +951,14 @@ mod tests {
         let auditor = X25519Keypair::new();
         source.config = Some(RingConfiguration {
             auditor_pubkey: auditor.pubkey(),
-            roles: custom_ring_interface::RingRoles {
-                policy: Address::new_from_array([2; 32]),
+            mode: custom_ring_interface::RingMode::Confidential,
+            policy: custom_ring_interface::RingPolicy {
+                roles: custom_ring_interface::RingRoles {
+                    policy: Address::new_from_array([2; 32]),
+                    ..bytemuck::Zeroable::zeroed()
+                },
                 ..bytemuck::Zeroable::zeroed()
             },
-            mode: custom_ring_interface::RingMode::Confidential,
-            delegate: None,
-            ring_list_tag: [0; 32],
         });
         Arc::new(
             Hub::builder(source, identity(TEST_GENESIS))
@@ -1331,7 +1514,10 @@ mod tests {
             .map(|_| hub.admit(Lane::Read).expect("read slot"))
             .collect::<Vec<_>>();
 
-        assert!(matches!(hub.admit(Lane::Read), Err(RingRpcError::Busy)));
+        assert!(matches!(
+            hub.admit(Lane::Read),
+            Err(RingRpcError::Service(ServiceError::Busy))
+        ));
         drop(held);
         let _reopened = hub.admit(Lane::Read).expect("released slot");
     }
@@ -1340,13 +1526,13 @@ mod tests {
     fn authentication_attempts_do_not_consume_audit_capacity() {
         let hub = hub(source(), Origins::default());
         for _ in 0..MAX_REQUEST_UNITS_PER_SECOND {
-            hub.admit(Lane::Authentication).expect("authentication");
+            let _ = hub.admit(Lane::Authentication).expect("authentication");
         }
         assert!(matches!(
             hub.admit(Lane::Authentication),
-            Err(RingRpcError::Busy)
+            Err(RingRpcError::Service(ServiceError::Busy))
         ));
-        hub.admit(Lane::Read).expect("audit capacity");
+        let _ = hub.admit(Lane::Read).expect("audit capacity");
     }
 
     #[test]
@@ -1361,7 +1547,7 @@ mod tests {
 
         assert!(matches!(
             hub.admit(Lane::Authentication),
-            Err(RingRpcError::Busy)
+            Err(RingRpcError::Service(ServiceError::Busy))
         ));
         drop(held);
         let _reopened = hub.admit(Lane::Authentication).expect("released slot");
@@ -1399,5 +1585,159 @@ mod tests {
         assert_eq!(response.text().await.expect("body"), "unavailable cluster");
         handle.stop().expect("stop");
         handle.stopped().await;
+    }
+
+    const GET_HEALTH: &[u8] = b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+
+    /// One whole response, its status line first.
+    async fn response(stream: &mut tokio::net::TcpStream) -> String {
+        let mut read = Vec::new();
+        loop {
+            let text = String::from_utf8_lossy(&read).to_lowercase();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .map_or(0, |length| length.trim().parse::<usize>().expect("length"));
+                if body.len() >= length {
+                    return text;
+                }
+            }
+            let mut chunk = [0; 1024];
+            match stream.read(&mut chunk).await.expect("response bytes") {
+                0 => panic!("closed inside a response, read {text:?}"),
+                count => read.extend_from_slice(&chunk[..count]),
+            }
+        }
+    }
+
+    /// Returns once the server closed the socket.
+    async fn closed(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+        let mut read = Vec::new();
+        let ended = tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut read));
+        let _ = ended.await.expect("the server closes the socket");
+        read
+    }
+
+    /// A freed slot serves the next connection, a full server answers 503 until then.
+    async fn serves_again(addr: SocketAddr) {
+        let served = async {
+            loop {
+                let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+                // A connection past the refusal slots is dropped unanswered.
+                let mut status = [0; 12];
+                if stream.write_all(GET_HEALTH).await.is_ok()
+                    && stream.read_exact(&mut status).await.is_ok()
+                    && status.eq_ignore_ascii_case(b"HTTP/1.1 200")
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), served)
+            .await
+            .expect("a slot frees");
+    }
+
+    #[tokio::test]
+    async fn a_full_server_answers_503_and_serves_again_once_a_slot_frees() {
+        let listen_port = port();
+        let mut opts = options(listen_port, Duration::from_secs(2));
+        opts.max_connections = 1;
+        let handle = run_server(hub(source(), Origins::default()), opts)
+            .await
+            .expect("server");
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
+
+        let mut held = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        held.write_all(GET_HEALTH).await.expect("request");
+        assert!(response(&mut held).await.starts_with("http/1.1 200"));
+
+        let mut excess = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        excess.write_all(GET_HEALTH).await.expect("request");
+        let refused = String::from_utf8(closed(&mut excess).await).expect("text");
+        assert!(
+            refused.starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
+            "{refused:?}"
+        );
+        assert!(refused.contains("connection: close\r\n"));
+
+        drop(held);
+        serves_again(addr).await;
+        handle.stop().expect("stop");
+        handle.stopped().await;
+    }
+
+    /// The silent socket is the clock, its cut proves the first-request timeout passed.
+    #[tokio::test]
+    async fn a_silent_socket_is_cut_and_an_idle_keep_alive_connection_is_not() {
+        let listen_port = port();
+        let mut opts = options(listen_port, Duration::from_secs(2));
+        opts.max_connections = 2;
+        let timeouts = IdleTimeouts {
+            first_request: Duration::from_millis(50),
+            keep_alive: Duration::from_secs(3_600),
+        };
+        let handle =
+            run_server_with_idle_timeouts(hub(source(), Origins::default()), opts, timeouts)
+                .await
+                .expect("server");
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
+
+        let mut keep_alive = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        keep_alive.write_all(GET_HEALTH).await.expect("request");
+        assert!(response(&mut keep_alive).await.starts_with("http/1.1 200"));
+
+        for partial in [&b""[..], &b"POST / HTTP/1.1\r\nHost: localhost\r\n"[..]] {
+            let mut silent = tokio::net::TcpStream::connect(addr).await.expect("connect");
+            silent.write_all(partial).await.expect("partial request");
+            assert!(closed(&mut silent).await.is_empty());
+        }
+
+        keep_alive
+            .write_all(GET_HEALTH)
+            .await
+            .expect("second request");
+        assert!(response(&mut keep_alive).await.starts_with("http/1.1 200"));
+        serves_again(addr).await;
+        handle.stop().expect("stop");
+        handle.stopped().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_idle_deadline_moves_from_the_first_request_to_the_keep_alive_timeout() {
+        let timeouts = IdleTimeouts {
+            first_request: Duration::from_secs(10),
+            keep_alive: Duration::from_secs(60),
+        };
+        let cut_within = |idle, wait: u64| async move {
+            tokio::time::timeout(Duration::from_secs(wait), wait_idle_deadline(idle))
+                .await
+                .is_ok()
+        };
+
+        // 1. No request, the socket ends at the first-request timeout and no sooner.
+        let (_activity, idle) = ConnectionActivity::new(timeouts);
+        assert!(!cut_within(idle.clone(), 9).await);
+        assert!(cut_within(idle, 1).await);
+
+        // 2. A request in flight holds the connection past both timeouts.
+        let (activity, idle) = ConnectionActivity::new(timeouts);
+        let in_flight = activity.enter();
+        assert!(!cut_within(idle.clone(), 3_600).await);
+
+        // 3. Past its response the connection idles for the keep-alive timeout.
+        drop(in_flight);
+        assert!(!cut_within(idle.clone(), 59).await);
+        assert!(cut_within(idle.clone(), 1).await);
+
+        // 4. Each response starts the keep-alive timeout again.
+        let (activity, idle) = ConnectionActivity::new(timeouts);
+        drop(activity.enter());
+        assert!(!cut_within(idle.clone(), 59).await);
+        drop(activity.enter());
+        assert!(!cut_within(idle.clone(), 59).await);
+        assert!(cut_within(idle, 1).await);
     }
 }

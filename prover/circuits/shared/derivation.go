@@ -79,9 +79,6 @@ const (
 // ZeroNullifierPk permits nullifier derivation from the opening without a secret.
 var ZeroNullifierPk, _ = new(big.Int).SetString("2a09a9fd93c590c26b91effbb2499f07e8f7aa12e2b4940a3aed2411cb65e11c", 16)
 
-// SolAssetField is the native SOL asset, mirrored by SOL_ASSET_FIELD in zolana/program-libs/interface/src/lib.rs.
-var SolAssetField, _ = new(big.Int).SetString("2098f5fb9e239eab3ceac3f27b81e481dc3124d55ffed523a839ee8446b64864", 16)
-
 // BlindingSeed is SPP's blinding_seed Poseidon(CRBS, sk0, sk1, salt), every output blinding rebuilds from tx_viewing_sk.
 func BlindingSeed(api frontend.API, txViewingSk [2]frontend.Variable, salt frontend.Variable) frontend.Variable {
 	return gadget.PoseidonHash(api, []frontend.Variable{BlindingSeedDomain, txViewingSk[0], txViewingSk[1], salt})
@@ -102,10 +99,11 @@ func ListKey(api frontend.API, owner, listSalt frontend.Variable) frontend.Varia
 	return gadget.PoseidonHash(api, []frontend.Variable{ListKeyDomain, owner, listSalt})
 }
 
-// VouchDigest is Poseidon(CRVC, private_tx_hash, withdrawal_hash), the field a voucher signs as 32 big endian bytes, mirrored by VouchMessage::digest in program-libs/interface/src/proof/domain.rs.
+// VouchDigest is Poseidon(CRVC, ring_id, private_tx_hash, withdrawal_hash), the field a voucher signs as 32 big endian bytes, mirrored by VouchMessage::digest in sdk-libs/client/src/codec/vouch.rs.
 // The tag keeps the bytes apart from SPP's owner authorization digest, a vouch never authorizes a spend.
-func VouchDigest(api frontend.API, privateTxHash, withdrawalHash frontend.Variable) frontend.Variable {
-	return gadget.PoseidonHash(api, []frontend.Variable{VouchDomain, privateTxHash, withdrawalHash})
+// The ring id holds a vouch to one ring, a transfer of default-ring notes alone carries no ring id in private_tx_hash.
+func VouchDigest(api frontend.API, ringID, privateTxHash, withdrawalHash frontend.Variable) frontend.Variable {
+	return gadget.PoseidonHash(api, []frontend.Variable{VouchDomain, ringID, privateTxHash, withdrawalHash})
 }
 
 // AnonymousParties is one cell per co-signer, mirrored by ANONYMOUS_PARTIES.

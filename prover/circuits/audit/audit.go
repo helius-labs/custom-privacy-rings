@@ -171,7 +171,7 @@ func (w AuditWires) RecordChain(api frontend.API, e Envelope, opened Opened) fro
 	return gadget.HashChain4(api, hashes)
 }
 
-// publishedRecordHash is hash_bytes at PublishedRecordLen, the three lengths end chunks four, five and six of one 31 byte chain.
+// publishedRecordHash is hash_bytes at the published record length, the three lengths end chunks four, five and six of one 31 byte chain.
 func (l LayoutFlags) publishedRecordHash(api frontend.API, ciphertext []frontend.Variable, exit frontend.Variable) frontend.Variable {
 	const chunk = gadget.HashBytesChunkSize
 	link := func(chain frontend.Variable, bytes []frontend.Variable) frontend.Variable {
@@ -194,7 +194,7 @@ type Stream struct {
 	NoSpend frontend.Variable
 }
 
-// SealStream mirrors AuditEnvelope::encode and AuditStreamLayout in program-libs/interface/src/proof/audit_stream.rs.
+// SealStream mirrors AuditEnvelope::encode in sdk-libs/keys/src/audit_records.rs and AuditStreamLayout in program-libs/interface/src/proof/audit_stream.rs.
 func (w AuditWires) SealStream(api frontend.API, rc frontend.Rangechecker, e Envelope, shape StreamShape, opened Opened, spent SpentInputs) Stream {
 	ranges := shape.Ranges()
 	// 1. The envelope binds tx_viewing_sk and the note count before any entry records.

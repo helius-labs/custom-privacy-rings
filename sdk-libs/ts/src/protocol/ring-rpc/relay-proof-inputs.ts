@@ -6,6 +6,7 @@ import {
   SHIELDED_ADDRESS_LENGTH,
   Writer,
   X25519_PUBLIC_KEY_LENGTH,
+  ZERO_NULLIFIER_PK,
   addressBytes,
   byteVector,
   concatBytes,
@@ -46,9 +47,8 @@ import {
   type SettlementTransfer,
 } from "@heliuslabs/spr/transaction";
 
-import { AnonymousPlan } from "../../operations/payments/output-rail.js";
-import type { CoOwner } from "../../operations/payments/ring-spend.js";
-import type { RingListSalt } from "../../proof/policy-proof.js";
+import { AnonymousPlan } from "../transaction/anonymous-plan.js";
+import type { RingListSalt } from "../membership/policy.js";
 import { RingError } from "../error.js";
 
 /** Rust `RelayRail`. */
@@ -75,6 +75,12 @@ export type RelayLegAccounts =
       userTokenAccount: Address;
       tokenProgram: Address;
     }>;
+
+/** A public co-owner of later inputs, it signs the transaction and one prover holds its secret. */
+export interface CoOwner {
+  readonly owner: Address;
+  readonly nullifierKey: NullifierKey;
+}
 
 /** Rust `RelayProofInputs`. */
 export interface RelayProofInputs {
@@ -146,10 +152,13 @@ export function encodeRelayProofInputs(value: RelayProofInputs): Uint8Array {
     .u8(disclosed.length, "coOwners.length");
   for (const { owner, nullifierKey } of disclosed) {
     const secret = nullifierKey.secretBytes();
-    writer
-      .bytes(addressBytes(owner), 32, "coOwner.owner")
-      .bytes(secret, BLINDING_LENGTH, "coOwner.nullifierSecret");
-    secret.fill(0);
+    try {
+      writer
+        .bytes(addressBytes(owner), 32, "coOwner.owner")
+        .bytes(secret, BLINDING_LENGTH, "coOwner.nullifierSecret");
+    } finally {
+      secret.fill(0);
+    }
   }
   if (value.approvalBlinder === undefined) writer.u8(0, "approvalBlinder");
   else writer.u8(1, "approvalBlinder").bytes(value.approvalBlinder, 32, "approvalBlinder");
@@ -202,6 +211,7 @@ export function mergeRequestDigest(encoded: Uint8Array): Bytes32 {
 
 /** The caller wipes the returned bytes, they hold the nullifier secret. */
 export function encodeRelayMergeInputs(value: RelayMergeInputs): Uint8Array {
+  if (equalBytes(value.sender.nullifierPublicKey, ZERO_NULLIFIER_PK)) throw refused("nullifierKey");
   const writer = new Writer();
   const nullifierSecret = value.nullifierKey.secretBytes();
   try {
@@ -237,61 +247,73 @@ export async function decodeRelayProofInputs(
   const rail = readRail(reader);
   const ringProgramId = reader.address("ringProgramId");
   const sender = ShieldedAddress.fromBytes(reader.bytes(SHIELDED_ADDRESS_LENGTH, "sender"));
-  const nullifierKey = NullifierKey.fromSecret(
-    reader.bytes(BLINDING_LENGTH, "nullifierSecret") as Bytes31,
-  );
-  const txViewingKey = ViewingKey.fromBytes(reader.hash("txViewingSecret"));
-  if (!equalBytes(nullifierKey.publicKey(), sender.nullifierPublicKey))
-    throw refused("nullifierKey");
-  const leafIndexes: bigint[] = [];
-  const unresolved = reader.list("inputs", () => {
-    const { input, leafIndex } = readInput(reader, sender, nullifierKey);
-    leafIndexes.push(leafIndex);
-    return input;
-  });
-  const outputs = reader.list("outputs", () => readOutput(reader));
-  const external = readExternalData(reader);
-  const blindingSeed = reader.hash("blindingSeed");
-  const outputTreeId = reader.u16("outputTreeId");
-  const listSalts = reader.list("listSalts", () =>
-    Object.freeze({ owner: reader.hash("listSalts.owner"), salt: reader.hash("listSalts.salt") }),
-  );
-  const wideOwners = reader.u8("wideOwners") === 1;
-  const coOwners = reader.list("coOwners", () =>
-    Object.freeze({
-      owner: reader.address("coOwner.owner"),
-      nullifierKey: NullifierKey.fromSecret(
+  let nullifierKey: NullifierKey | undefined;
+  let txViewingKey: ViewingKey | undefined;
+  const coOwners: CoOwner[] = [];
+  try {
+    nullifierKey = NullifierKey.fromSecret(
+      reader.bytes(BLINDING_LENGTH, "nullifierSecret") as Bytes31,
+    );
+    txViewingKey = ViewingKey.fromBytes(reader.hash("txViewingSecret"));
+    if (!equalBytes(nullifierKey.publicKey(), sender.nullifierPublicKey))
+      throw refused("nullifierKey");
+    const senderKey = nullifierKey;
+    const leafIndexes: bigint[] = [];
+    const unresolved = reader.list("inputs", () => {
+      const { input, leafIndex } = readInput(reader, sender, senderKey);
+      leafIndexes.push(leafIndex);
+      return input;
+    });
+    const outputs = reader.list("outputs", () => readOutput(reader));
+    const external = readExternalData(reader);
+    const blindingSeed = reader.hash("blindingSeed");
+    const outputTreeId = reader.u16("outputTreeId");
+    const listSalts = reader.list("listSalts", () =>
+      Object.freeze({ owner: reader.hash("listSalts.owner"), salt: reader.hash("listSalts.salt") }),
+    );
+    const wideOwnersByte = reader.u8("wideOwners");
+    if (wideOwnersByte > 1) throw refused("wideOwners", wideOwnersByte);
+    const wideOwners = wideOwnersByte === 1;
+    reader.list("coOwners", () => {
+      const owner = reader.address("coOwner.owner");
+      const key = NullifierKey.fromSecret(
         reader.bytes(BLINDING_LENGTH, "coOwner.nullifierSecret") as Bytes31,
-      ),
-    }),
-  );
-  const approvalBlinder = readApprovalBlinder(reader);
-  reader.done();
-  const inputs = unresolved.map((input) => input(coOwners));
-  const legs = await Promise.all(external.legs.map(settlementLeg));
-  const externalData = createExternalData({
-    ...external.fields,
-    interfaceTransfers: legs.map((leg) => leg.transfer),
-  });
-  return Object.freeze({
-    rail,
-    ringProgramId,
-    sender,
-    nullifierKey,
-    txViewingKey,
-    inputs,
-    leafIndexes,
-    outputs,
-    externalData,
-    interfaceTransferAccounts: legs.map((leg) => leg.accounts),
-    blindingSeed,
-    outputTreeId,
-    wideOwners,
-    assets,
-    listSalts,
-    coOwners,
-    ...(approvalBlinder === undefined ? {} : { approvalBlinder }),
-  });
+      );
+      coOwners.push(Object.freeze({ owner, nullifierKey: key }));
+    });
+    const approvalBlinder = readApprovalBlinder(reader);
+    reader.done();
+    const inputs = unresolved.map((input) => input(coOwners));
+    const legs = await Promise.all(external.legs.map(settlementLeg));
+    const externalData = createExternalData({
+      ...external.fields,
+      interfaceTransfers: legs.map((leg) => leg.transfer),
+    });
+    return Object.freeze({
+      rail,
+      ringProgramId,
+      sender,
+      nullifierKey,
+      txViewingKey,
+      inputs,
+      leafIndexes,
+      outputs,
+      externalData,
+      interfaceTransferAccounts: legs.map((leg) => leg.accounts),
+      blindingSeed,
+      outputTreeId,
+      wideOwners,
+      assets,
+      listSalts,
+      coOwners: Object.freeze(coOwners),
+      ...(approvalBlinder === undefined ? {} : { approvalBlinder }),
+    });
+  } catch (error) {
+    nullifierKey?.destroy();
+    txViewingKey?.destroy();
+    for (const { nullifierKey: coOwnerKey } of coOwners) coOwnerKey.destroy();
+    throw error;
+  }
 }
 
 /** A wincode `Option`, any tag past one is not a canonical frame. */

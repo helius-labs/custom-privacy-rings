@@ -1,6 +1,6 @@
 import { ctr } from "@noble/ciphers/aes.js";
 
-import { checkedBytes, concatBytes, copyBytes, u32be } from "@heliuslabs/spr/internal";
+import { checkedBytes, concatBytes, copyBytes, rightAlign, u32be } from "@heliuslabs/spr/internal";
 import type { MessageData } from "@heliuslabs/spr/interface";
 import {
   type Bytes16,
@@ -11,7 +11,6 @@ import {
 } from "@heliuslabs/spr/keypair";
 import {
   DISCLOSURE_CHUNK_BYTES,
-  ENVELOPE_KEY_LEN,
   STREAM_FIRST_COUNTER,
   TAGGED_KEY_LEN,
   RECIPIENT_KEY_LEN,
@@ -172,30 +171,12 @@ export function sealSaltedAuditorStream(
     voucher?: AuditorRegion;
   }>,
 ): AuditorEnvelope {
-  const key = X25519Keypair.fromBytes(input.txViewingSecret);
-  try {
-    return sealRegions(key, input, (shared) => saltedSecret(shared, input.salt));
-  } finally {
-    key.destroy();
-  }
-}
-
-function sealRegions(
-  key: X25519Keypair,
-  input: Readonly<{
-    auditorPublicKey: X25519PublicKey;
-    envelope: Uint8Array;
-    recipientKeys: readonly AuditorRegion[];
-    voucher?: AuditorRegion;
-  }>,
-  keyed: (shared: Bytes32) => Bytes32,
-): AuditorEnvelope {
   const { auditorPublicKey } = input;
-  const publicKey = key.publicKey();
-  const secret = envelopeSecret(key, auditorPublicKey, publicKey, auditorPublicKey);
+  const key = X25519Keypair.fromBytes(input.txViewingSecret);
   let schedule: AuditSchedule | undefined;
   try {
-    const stream = (schedule = AuditSchedule.derive(keyed(secret), AUDIT_ENC_INFO));
+    const publicKey = key.publicKey();
+    const stream = (schedule = auditorSchedule(key, auditorPublicKey, publicKey, input));
     const envelope = stream.apply(STREAM_FIRST_COUNTER, input.envelope);
     const recipientKeys = Object.freeze(
       input.recipientKeys.map(({ counter, bytes }) => stream.apply(counter, bytes)),
@@ -210,8 +191,8 @@ function sealRegions(
         : { voucher: stream.apply(input.voucher.counter, input.voucher.bytes) }),
     });
   } finally {
-    secret.fill(0);
     schedule?.destroy();
+    key.destroy();
   }
 }
 
@@ -227,19 +208,10 @@ export function saltedAuditorSchedule(
   txViewingPublicKey: X25519PublicKey,
   salt: Bytes16,
 ): AuditSchedule {
-  const shared = envelopeSecret(
-    auditor,
-    txViewingPublicKey,
-    txViewingPublicKey,
-    auditor.publicKey(),
-  );
-  const salted = saltedSecret(shared, salt);
-  try {
-    return AuditSchedule.derive(salted, AUDIT_ENC_INFO);
-  } finally {
-    shared.fill(0);
-    salted.fill(0);
-  }
+  return auditorSchedule(auditor, txViewingPublicKey, txViewingPublicKey, {
+    auditorPublicKey: auditor.publicKey(),
+    salt,
+  });
 }
 
 /** The caller destroys the schedule. */
@@ -249,31 +221,27 @@ export function sealedAuditorSchedule(
   salt: Bytes16,
 ): AuditSchedule {
   const key = X25519Keypair.fromBytes(txViewingSecret);
-  const shared = envelopeSecret(key, auditorPublicKey, key.publicKey(), auditorPublicKey);
-  const salted = saltedSecret(shared, salt);
   try {
-    return AuditSchedule.derive(salted, AUDIT_ENC_INFO);
+    return auditorSchedule(key, auditorPublicKey, key.publicKey(), { auditorPublicKey, salt });
   } finally {
-    shared.fill(0);
-    salted.fill(0);
     key.destroy();
   }
 }
 
-/** The envelope's leading bytes, the evidence behind them opens with the transfer's layout. */
-export function openTransactionViewingSecret(
-  auditor: X25519Keypair,
-  message: Pick<AuditorMessage, "ephemeralPublicKey" | "envelope">,
-  salt: Bytes16,
-): Bytes32 {
-  const bytes = message.envelope.subarray(0, ENVELOPE_KEY_LEN);
-  if (bytes.length !== ENVELOPE_KEY_LEN)
-    throw new RingKeyError("KEYPAIR_DISCLOSURE_SHAPE", { name: "envelope" });
-  const schedule = saltedAuditorSchedule(auditor, message.ephemeralPublicKey, salt);
+function auditorSchedule(
+  local: X25519Keypair,
+  remote: X25519PublicKey,
+  ephemeralPublicKey: X25519PublicKey,
+  bound: Readonly<{ auditorPublicKey: X25519PublicKey; salt: Bytes16 }>,
+): AuditSchedule {
+  const shared = envelopeSecret(local, remote, ephemeralPublicKey, bound.auditorPublicKey);
+  let salted: Bytes32 | undefined;
   try {
-    return schedule.apply(STREAM_FIRST_COUNTER, bytes) as Bytes32;
+    salted = saltedSecret(shared, bound.salt);
+    return AuditSchedule.derive(salted, AUDIT_ENC_INFO);
   } finally {
-    schedule.destroy();
+    shared.fill(0);
+    salted?.fill(0);
   }
 }
 
@@ -360,7 +328,8 @@ function checkCounter(counter: number): void {
     throw new RingKeyError("KEYPAIR_DISCLOSURE_SHAPE", { name: "counter" });
 }
 
-function envelopeSecret(
+/** `auditSharedSecret` of the agreement, wiped once bound. */
+export function envelopeSecret(
   local: X25519Keypair,
   remote: X25519PublicKey,
   ephemeralPublicKey: X25519PublicKey,
@@ -372,10 +341,4 @@ function envelopeSecret(
   } finally {
     dh.fill(0);
   }
-}
-
-function rightAlign(bytes: Uint8Array): Bytes32 {
-  const output = new Uint8Array(32);
-  output.set(bytes, 32 - bytes.length);
-  return output as Bytes32;
 }

@@ -36,8 +36,7 @@ impl TransferApproval {
     pub const RECORD_ACCOUNT: usize = 1;
     pub const CO_SIGNER_ACCOUNT: usize = 2;
     pub const ACCOUNTS: usize = 3;
-    pub const DATA_LEN: usize = 1 + Self::BODY_LEN;
-    const BODY_LEN: usize = 1 + 32;
+    pub const BODY_LEN: usize = 1 + 32;
 
     /// `sha256(program_id || u32 LE data length || data || addresses)`, `data` from the transfer tag, the length keeps a data byte from reading as an address.
     #[inline(never)]
@@ -57,15 +56,6 @@ impl TransferApproval {
                 .map_err(|_| CustomRingError::TooManyAccounts)?;
         }
         Ok(Sha256::hashv(&preimage)?)
-    }
-
-    /// The instruction data from the tag.
-    pub fn encode(&self) -> [u8; Self::DATA_LEN] {
-        let mut data = [0; Self::DATA_LEN];
-        data[0] = tag::APPROVE_TRANSFER;
-        data[1] = self.position;
-        data[2..].copy_from_slice(&self.digest);
-        data
     }
 
     /// `None` unless `data` is exactly the tag and the body.
@@ -147,23 +137,5 @@ mod tests {
             digest(MAX_TRANSFER_ACCOUNTS + 1),
             Err(CustomRingError::TooManyAccounts)
         );
-    }
-
-    #[test]
-    fn approval_data_parses_only_at_its_exact_length_and_tag() {
-        let approval = TransferApproval {
-            position: 3,
-            digest: [9; 32],
-        };
-        let data = approval.encode();
-        assert_eq!(TransferApproval::parse(&data), Some(approval));
-        assert_eq!(TransferApproval::parse(&data[..33]), None);
-        assert_eq!(
-            TransferApproval::parse(&[data.as_slice(), &[0]].concat()),
-            None
-        );
-        let mut other_tag = data;
-        other_tag[0] = tag::TRANSFER;
-        assert_eq!(TransferApproval::parse(&other_tag), None);
     }
 }

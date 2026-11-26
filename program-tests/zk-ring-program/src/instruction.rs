@@ -78,9 +78,9 @@ pub fn process_instruction(
         ring_program: ring_program.address(),
         owner: &owner,
         accounts: transfer_accounts,
-        data: transfer,
+        data: frame.data(),
     }
-    .invoke_signed(Signer::from(seeds.as_slice()))
+    .invoke_signed_parsed(frame, Signer::from(seeds.as_slice()))
 }
 
 fn split_proof(data: &[u8]) -> Option<(CompressedProof, &[u8])> {

@@ -2,9 +2,9 @@ use std::fmt::Write;
 
 use anyhow::Result;
 use custom_ring_interface::{RingPolicy, RingRoles};
-use custom_ring_sdk::{live_registry, RingError, RingMode};
 use solana_address::Address;
 use spr_client::Rpc;
+use zolana_ring_client::{live_registry, RingError, RingMode};
 
 use crate::{
     config::{redact_text, redact_url, RingConfig, RoleName, Target},

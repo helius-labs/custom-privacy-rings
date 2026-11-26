@@ -15,7 +15,7 @@ keys=(
     RING_STORAGE_PROGRAM_ID RING_LOCALNET_AUTHORITY_SEED RING_TEST_MINT
 )
 unset "${keys[@]}"
-# The localnet account snapshots name the address of this public seed as the protocol authority.
+# Public seed, the localnet account snapshots name its address as the protocol authority.
 RING_LOCALNET_AUTHORITY_SEED=7a6f6c616e61206c6f63616c6e657420736e617073686f7420617574686f7269
 localnet_authority=HF3DijLymE9gVYeG3kX1N19WZXu5BH5yWBgsvnVtm7tw
 relay_budget_lamports=50000000000
@@ -93,7 +93,7 @@ solana airdrop 100 "$localnet_authority" --url "$RING_SOLANA_RPC_URL" >/dev/null
 ring_dir="$workdir/ring-rpc"
 # Ring RPC reads finalized ring history on Surfpool only under the fixture.
 export ZOLANA_RING_SURFPOOL_FIXTURE=1
-# Ring RPC signs through the local KMS, which keeps every key only while it runs.
+# Ring RPC signs through the local KMS, every key lives only while it runs.
 RING_RPC_LOCALNET_KMS="$(tools/ring-rpc-local.sh kms "$(setting localnet-kms-port)" "$workdir/kms.log")"
 export RING_RPC_LOCALNET_KMS
 tools/ring-rpc-local.sh custody "$ring_dir" "$RING_SOLANA_RPC_URL" co-signer enrollment-writer

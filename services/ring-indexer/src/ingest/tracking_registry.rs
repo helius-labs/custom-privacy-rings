@@ -19,6 +19,8 @@ use custom_ring_interface::{
 };
 use sea_orm::ConnectionTrait;
 use solana_address::Address;
+use zolana_ring_client::StorageEventDecode;
+use zolana_ring_client::TrackingRegistryHost;
 use zolana_ring_indexer::tree::{TrackingRecord, TrackingWriteProofInput};
 
 use crate::{
@@ -66,7 +68,7 @@ pub(crate) fn decode_event<'a>(
     parent: &Instruction,
     event: &'a Instruction,
 ) -> Option<RegistryInstruction<TrackingCall<'a>>> {
-    let StorageEvent::EnrollmentsApplied { header, writes } = StorageEvent::decode(&event.data)?;
+    let StorageEvent { header, writes } = StorageEvent::decode(&event.data)?;
     let registry = header.registry;
     let named = parent.accounts.get(1) == Some(&registry);
     Some(RegistryInstruction {

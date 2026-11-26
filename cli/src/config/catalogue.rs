@@ -4,7 +4,6 @@ use std::{collections::BTreeMap, path::Path};
 
 use anyhow::{ensure, Context as _, Result};
 use custom_ring_interface::{RingAccount, RingPolicy};
-use custom_ring_sdk::{CustomRing, ListRegistry};
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
 use spr_client::{ProgramAccountsFilter, Rpc, SolanaRpc};
@@ -12,6 +11,7 @@ use spr_interface::{
     pda,
     state::{discriminator::RING_CONFIG, RingConfig as SppRingConfig},
 };
+use zolana_ring_client::{CustomRing, ListRegistry, PolicySources};
 use zolana_ring_policy::ListId;
 
 use crate::{

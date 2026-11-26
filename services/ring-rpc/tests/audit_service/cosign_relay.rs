@@ -1,26 +1,31 @@
 //! The relay co-signs within its asset's window caps, sends once a second approver signed, and refuses an outflow beyond them, a proof naming a co-signer the run left out, or a ring whose auditor key it does not hold, and keeps a reservation while a stored relay holds it.
 
 use custom_ring_interface::TransferApproval;
-use custom_ring_sdk::CustomRing;
 use jsonrpsee::RpcModule;
+use ring_cosigner::cosign::CoSignError;
+use ring_relay::relay::{RelayError, RelayParts, RelayPayload};
+use ring_relay::relay_prover::{
+    DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver,
+};
+use ring_relay::RingRelayError;
+use ring_service_core::landing::ChainOutcome;
 use sea_orm::{ConnectionTrait, Statement};
 use solana_instruction::{AccountMeta, Instruction};
 use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_keypair::{ShieldedKeypair, SigningKey};
 use zolana_operator_custody::{CustodyError, OperatorSigner};
-use zolana_ring_client::rpc::{
-    ApprovedTransfer, CoSignList, CoSignListEdit, CoSignListEntry, CoSignSubjectKind,
-    CoSignTransactionRequest, CoSignTransactionResponse, EditCoSignList, EditCoSignListRequest,
-    GetCoSignListsRequest, GetCoSignListsResponse, GetRelayQuoteRequest, GetRelayStatusRequest,
-    PrepareRelayRequest, ReadCoSignLists, RelayId, RelayProofInputs, RelayQuote, RelayRail,
-    RelayStatus, RelayStep, SubmitRelayRequest, CO_SIGN_TRANSACTION, EDIT_CO_SIGN_LIST,
-    GET_CO_SIGN_LISTS, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
+use zolana_ring_client::{
+    rpc::{
+        ApprovedTransfer, CoSignList, CoSignListEdit, CoSignListEntry, CoSignSubjectKind,
+        CoSignTransactionRequest, CoSignTransactionResponse, EditCoSignList, EditCoSignListRequest,
+        GetCoSignListsRequest, GetCoSignListsResponse, GetRelayQuoteRequest, GetRelayStatusRequest,
+        PrepareRelayRequest, ReadCoSignLists, RelayId, RelayProofInputs, RelayQuote, RelayRail,
+        RelayStatus, RelayStep, SubmitRelayRequest, CO_SIGN_TRANSACTION, EDIT_CO_SIGN_LIST,
+        GET_CO_SIGN_LISTS, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
+    },
+    ApprovalEncode, CustomRing,
 };
 use zolana_ring_policy::{AssetLimits, MintPolicy};
-use zolana_ring_rpc::{
-    ChainOutcome, CoSignError, DelegateSeal, ProvenRelay, RelayError, RelayParties, RelayParts,
-    RelayPayload, RelayProofRequest, RelayProver,
-};
 
 use super::transfer::{Frame as TransferFrame, Publish, Rail};
 
@@ -54,11 +59,16 @@ fn sender_fields(amount: u64) -> UtxoFields {
 }
 
 impl FramedProver {
-    /// `[record, signer]` per co-signer, then SPP's transact list, `spp[1]` the output tree and the ring auth at 4.
+    /// The ring account and its tracking registry, `[record, signer]` per co-signer, then SPP's transact list.
     fn accounts(ring: Address, fee_payer: Address, named: &[Address]) -> Vec<AccountMeta> {
-        named
+        let prefix = [CustomRing::new(ring).policy_pda(), Address::default()]
+            .map(|account| AccountMeta::new_readonly(account, false));
+        let pairs = named
             .iter()
-            .flat_map(|signer| CustomRing::new(ring).co_signer_metas(*signer))
+            .flat_map(|signer| CustomRing::new(ring).co_signer_metas(*signer));
+        prefix
+            .into_iter()
+            .chain(pairs)
             .chain([
                 AccountMeta::new(fee_payer, true),
                 AccountMeta::new(spr_interface::pda::tree(TREE_ID), false),
@@ -121,7 +131,7 @@ impl FramedProver {
 
 #[async_trait::async_trait]
 impl RelayProver for FramedProver {
-    async fn prove(&self, request: RelayProofRequest<'_>) -> Result<ProvenRelay, RingRpcError> {
+    async fn prove(&self, request: RelayProofRequest<'_>) -> Result<ProvenRelay, RingRelayError> {
         let (ring, fee_payer) = (request.ring, request.parties.fee_payer);
         let framed = match &request.payload {
             RelayPayload::Transfer(inputs) => Some(self.frame(inputs)),
@@ -139,7 +149,7 @@ impl RelayProver for FramedProver {
         &self,
         seal: DelegateSeal<'_>,
         parties: RelayParties,
-    ) -> Result<RelayProofInputs, RingRpcError> {
+    ) -> Result<RelayProofInputs, RingRelayError> {
         self.inner.seal_delegate(seal, parties).await
     }
 }
@@ -264,6 +274,10 @@ impl CappedRelay {
                 ApproveClass::Withdrawals,
                 ApproveClass::Deposits,
             ]))
+            .with_relay_budget(ring_relay::relay_reservations::RelayBudget {
+                total_lamports: 100_000_000,
+                signer_lamports: 100_000_000,
+            })
             .with_relay(RelayParts {
                 store: store.clone(),
                 prover: Arc::new(FramedProver {
@@ -1220,9 +1234,9 @@ async fn a_direct_request_is_simulated_then_signed_under_the_same_rules() {
     *relay.chain.simulation_refusal.lock().expect("refusal") = Some("proof".to_owned());
     assert_eq!(
         refusal(direct().await),
-        RelayError::SendRefused {
+        jsonrpsee::types::ErrorObjectOwned::from(ServiceError::SendRefused {
             reason: String::new()
-        }
+        })
         .code()
     );
     *relay.chain.simulation_refusal.lock().expect("refusal") = None;
@@ -1299,12 +1313,13 @@ impl ProgramCall {
 
     /// The caller makes the approved call in every later simulation.
     fn runs_on(&self, relay: &CappedRelay) {
-        *relay.chain.simulated_calls.lock().expect("calls") = vec![zolana_ring_rpc::InnerCall {
-            position: 0,
-            program: RING,
-            accounts: self.transfer.accounts.iter().map(|key| key.0).collect(),
-            data: self.transfer.data.0.clone(),
-        }];
+        *relay.chain.simulated_calls.lock().expect("calls") =
+            vec![ring_service_core::landing::InnerCall {
+                position: 0,
+                program: RING,
+                accounts: self.transfer.accounts.iter().map(|key| key.0).collect(),
+                data: self.transfer.data.0.clone(),
+            }];
     }
 
     async fn co_sign(
@@ -1415,12 +1430,55 @@ async fn an_approved_call_holds_the_window_only_when_its_program_makes_it() {
     assert!(relay.reservations().await.is_empty());
 
     call.runs_on(&relay);
+    relay.chain.stale_blockhash.store(true, Ordering::Relaxed);
+    assert_eq!(
+        refusal(call.co_sign(&relay, Some(call.transfer.clone())).await),
+        CoSignError::StaleBlockhash.code()
+    );
+    assert!(relay.reservations().await.is_empty());
+    relay.chain.stale_blockhash.store(false, Ordering::Relaxed);
+
     call.co_sign(&relay, Some(call.transfer.clone()))
         .await
         .expect("co-signed");
     assert!(relay.chain.sent().is_empty());
     let cap = i64::try_from(SENDER_CAP).expect("cap");
     assert_eq!(relay.reservations().await, [(cap, "held".to_owned())]);
+}
+
+/// The wallet never sends, the sweep frees the cap once no block can land the message.
+#[tokio::test]
+async fn a_direct_reservation_the_wallet_never_lands_is_released_after_its_blockhash() {
+    let proving = CappedRelay::new(|| RelayRail::Confidential).await;
+    let call = ProgramCall::of(&proving.sends_cap().await, proving.co_signer);
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    call.runs_on(&relay);
+    call.co_sign(&relay, Some(call.transfer.clone()))
+        .await
+        .expect("co-signed");
+    let sweeper = relay.hub.relay().expect("relay");
+    let cap = i64::try_from(SENDER_CAP).expect("cap");
+
+    // 1. At the last valid height the reservation stays whatever the history covers.
+    relay.chain.slot.store(0, Ordering::Relaxed);
+    relay
+        .chain
+        .height
+        .store(LAST_VALID_BLOCK_HEIGHT, Ordering::Relaxed);
+    for _ in 0..2 {
+        sweeper.sweep_wallet_sends().await.expect("sweep");
+    }
+    assert_eq!(relay.reservations().await, [(cap, "held".to_owned())]);
+
+    // 2. One block later a first pass reads the expiry slot and the next releases.
+    relay
+        .chain
+        .height
+        .store(LAST_VALID_BLOCK_HEIGHT + 1, Ordering::Relaxed);
+    sweeper.sweep_wallet_sends().await.expect("sweep");
+    assert_eq!(relay.reservations().await, [(cap, "held".to_owned())]);
+    sweeper.sweep_wallet_sends().await.expect("sweep");
+    assert_eq!(relay.reservations().await, [(cap, "released".to_owned())]);
 }
 
 #[tokio::test]
@@ -1439,4 +1497,75 @@ async fn the_lists_decide_before_the_service_ingests_the_spent_note() {
     );
     relay.edit_list(&authority(), block).await.expect("blocked");
     assert_eq!(refusal(relay.pays(2).await), CoSignError::Blocked.code());
+}
+
+#[tokio::test]
+async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() {
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    let action = listing(CoSignList::Block, CoSignSubjectKind::Asset, SOL_MINT);
+    let foreign_target = ReadTarget {
+        cluster: GENESIS,
+        service: relay.hub.service_pubkey(),
+        ring: OTHER_RING,
+    };
+    let foreign_edit = EditCoSignListRequest::edit(foreign_target, deployer().pubkey(), action)
+        .sign(&deployer())
+        .expect("signed edit");
+    assert!(matches!(
+        relay.hub.edit_co_sign_list(&foreign_edit).await,
+        Err(RingRpcError::Audit(RingAuditError::RingNotServed))
+    ));
+
+    let fixture = Fixture::new();
+    let mut source = fixture.source();
+    source.configs.remove(&OTHER_RING);
+    source
+        .upgrade_authorities
+        .insert(OTHER_RING, deployer().pubkey());
+    source
+        .configs
+        .get_mut(&RING)
+        .expect("config")
+        .auditor_pubkey = X25519Keypair::new().pubkey();
+    let store = Store::open("sqlite::memory:", 1).await.expect("store");
+    let hub = Hub::builder(source, identity(GENESIS))
+        .with_store(store)
+        .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .expect("hub");
+
+    let uninitialized_edit = EditCoSignListRequest::edit(
+        ReadTarget {
+            cluster: GENESIS,
+            service: hub.service_pubkey(),
+            ring: OTHER_RING,
+        },
+        deployer().pubkey(),
+        action,
+    )
+    .sign(&deployer())
+    .expect("signed edit");
+    assert!(matches!(
+        hub.edit_co_sign_list(&uninitialized_edit).await,
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::NoConfig
+        )))
+    ));
+
+    let foreign_auditor_edit = EditCoSignListRequest::edit(
+        ReadTarget {
+            cluster: GENESIS,
+            service: hub.service_pubkey(),
+            ring: RING,
+        },
+        authority().pubkey(),
+        action,
+    )
+    .sign(&authority())
+    .expect("signed edit");
+    assert!(matches!(
+        hub.edit_co_sign_list(&foreign_auditor_edit).await,
+        Err(RingRpcError::Service(ServiceError::Unauthorized(
+            Unauthorized::AuditorKeyMismatch
+        )))
+    ));
 }

@@ -9,10 +9,7 @@ import {
   encodeStorageWrites,
   type StorageWrite,
 } from "../../../src/protocol/codec/storage-writes.js";
-import {
-  P256ReaderKey,
-  readerKeyMember,
-} from "../../../src/operations/management/reader-access.js";
+import { P256ReaderKey, readerKeyMember } from "../../../src/protocol/membership/reader-access.js";
 import {
   ListId,
   memberOfTag,

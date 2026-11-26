@@ -6,10 +6,12 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
+use zolana_ring_client::AuthorityWriteEntry;
+use zolana_ring_client::KeyWidths;
 
 use custom_ring_interface::{
     check_member,
-    key_catalog::{RecordPools, RING_KEYS},
+    key_catalog::RecordPools,
     mint_policy_write,
     storage::{chain_start, Revision, StorageRegistry},
     tracking::TrackingRegistry,
@@ -22,6 +24,7 @@ use solana_clock::DEFAULT_MS_PER_SLOT;
 use solana_transaction_status_client_types::TransactionDetails;
 use spr_indexer_api::{Context as ApiContext, Hash, SerializablePubkey};
 use tokio::sync::Mutex as AsyncMutex;
+use zolana_ring_client::RING_KEYS;
 use zolana_ring_indexer::{
     rpc::{
         GetStorageApplyProofInputsRequest, GetStorageApplyProofInputsResponse,
@@ -95,6 +98,7 @@ pub(crate) struct CachedChain {
 }
 
 pub(crate) struct ReadCache<T> {
+    /// Keyed by indexed registries alone, one entry each.
     reads: Mutex<HashMap<[u8; 32], Arc<CacheEntry<T>>>>,
 }
 

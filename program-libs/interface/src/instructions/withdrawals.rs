@@ -24,23 +24,6 @@ pub struct PolicyWithdrawal {
     pub amount: u64,
 }
 
-impl PolicyWithdrawal {
-    pub fn new(
-        owner: &[u8; 32],
-        mint: Option<&[u8; 32]>,
-        amount: u64,
-    ) -> Result<Self, HasherError> {
-        Ok(Self {
-            owner: solana_owner_identity(owner)?,
-            asset: match mint {
-                Some(mint) => hash_bytes(mint)?,
-                None => SOL_ASSET_FIELD,
-            },
-            amount,
-        })
-    }
-}
-
 /// Order and count matter, even when two legs pay the same owner and asset.
 pub fn policy_withdrawal_hash(legs: &[PolicyWithdrawal]) -> Result<[u8; 32], HasherError> {
     let head = [

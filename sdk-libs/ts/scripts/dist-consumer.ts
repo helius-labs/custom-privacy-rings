@@ -20,7 +20,6 @@ export type {
 export {
   RingAddress,
   RingPaymentRequest,
-  openTransactionViewingSecret,
   type AuditorEnvelope,
 } from "@heliuslabs/zolana-custom-rings/keypair";
 export {

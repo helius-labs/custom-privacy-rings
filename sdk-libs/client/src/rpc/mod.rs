@@ -13,8 +13,9 @@ use spr_indexer_api::{
 };
 use spr_interface::{state::RingConfig, RING_AUTH_PDA_SEED, SHIELDED_POOL_PROGRAM_ID};
 use spr_keypair::{KeypairError, X25519Keypair, X25519Pubkey};
+use subtle::ConstantTimeEq;
 use thiserror::Error;
-use zolana_secret_file::{create_new, SecretFileError, Visibility};
+use zolana_secret_file::{create_new, read_private, Access, SecretFileError, Visibility};
 
 mod authority_transfer;
 mod co_sign;
@@ -132,7 +133,6 @@ pub struct HealthResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fee_payer_pubkey: Option<SerializablePubkey>,
     /// Signs and pays every `EnrollBatch`, null without the enrollment writer.
-    #[serde(default)]
     pub enrollment_writer_pubkey: Option<SerializablePubkey>,
     pub relay: bool,
     pub record_writer: bool,
@@ -226,9 +226,7 @@ pub struct GetDecryptedTransactionsRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ring_program_id: Option<SerializablePubkey>,
     /// Opaque indexer cursor.
-    #[serde(default)]
     pub cursor: Option<Base64String>,
-    #[serde(default)]
     pub limit: Option<Limit>,
     /// Narrows the read to one wallet's rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1221,9 +1219,11 @@ pub fn unix_now() -> Result<u64, RequestBuildError> {
         .map_err(|_| RequestBuildError::Clock)
 }
 
+const PUBKEY_FILE_MAX_BYTES: u64 = 128;
+
 /// Clamping keeps every scalar off the identity, the unset all-zero secret is the only refusal.
 pub fn auditor_keypair(secret: &[u8; 32]) -> Result<X25519Keypair, KeyFileError> {
-    if secret.iter().all(|byte| *byte == 0) {
+    if bool::from(secret.ct_eq(&[0u8; 32])) {
         return Err(KeyFileError::ZeroAuditorKey);
     }
     Ok(X25519Keypair::from_bytes(secret))
@@ -1235,10 +1235,7 @@ pub fn write_auditor_pubkey(path: &Path, pubkey: &X25519Pubkey) -> Result<(), Ke
 }
 
 pub fn read_auditor_pubkey(path: &Path) -> Result<X25519Pubkey, KeyFileError> {
-    let text = std::fs::read_to_string(path).map_err(|source| SecretFileError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let text = read_private(path, Access::Shared, PUBKEY_FILE_MAX_BYTES)?;
     let bytes = hex::decode(text.trim())
         .ok()
         .and_then(|bytes| <[u8; 33]>::try_from(bytes).ok())

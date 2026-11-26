@@ -100,11 +100,7 @@ use std::{
 
 use anyhow::{bail, ensure, Context as _, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
-use custom_ring_interface::{compute_unit_limit, CustomRingError, InstructionTag};
-use custom_ring_sdk::{
-    CustomRing, CustomRingConfig, RingError, RingMode, RingOperation, RingSubmission,
-    SettledSubmission, MERGE_DEFAULT_INPUT_COUNT,
-};
+use custom_ring_interface::{CustomRingError, InstructionTag};
 use solana_address::Address;
 use solana_instruction::{error::InstructionError, Instruction};
 use solana_keypair::Keypair;
@@ -118,7 +114,10 @@ use spr_client::{
 };
 use spr_interface::error::ShieldedPoolError;
 use spr_keypair::ShieldedAddress;
-use zolana_ring_client::ReaderKey;
+use zolana_ring_client::{
+    compute_unit_limit, CustomRing, CustomRingConfig, ReaderKey, RingError, RingMode,
+    RingOperation, RingSubmission, SettledSubmission, MERGE_DEFAULT_INPUT_COUNT,
+};
 
 pub use crate::{
     chain::{transaction_error, Chain, Zolana, ZolanaServices},
@@ -318,16 +317,6 @@ mod tests {
     #[test]
     fn the_command_tree_is_well_formed() {
         Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn dev_uses_the_localnet_command() {
-        assert!(matches!(
-            Cli::try_parse_from(["zolana-ring", "dev", "--no-start"])
-                .unwrap()
-                .command,
-            Command::Localnet(LocalnetArgs { no_start: true })
-        ));
     }
 
     #[test]

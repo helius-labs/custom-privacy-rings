@@ -48,6 +48,9 @@ impl ContextSetup {
         } = self;
         let root = config_root(&config_path);
         let urls = config.urls();
+        for url in [&urls.rpc, &urls.indexer, &urls.prover] {
+            ring_rpc::check_service_url(url)?;
+        }
         let zolana = ZolanaServices {
             rpc: SolanaRpc::new(urls.rpc.clone()),
             indexer: SprIndexer::new(&urls.indexer),
@@ -90,7 +93,7 @@ impl Context {
 
     pub fn ring_client(
         &self,
-    ) -> &custom_ring_sdk::RingClient<Blocking<SolanaRpc>, Blocking<SprIndexer>> {
+    ) -> &zolana_ring_client::RingClient<Blocking<SolanaRpc>, Blocking<SprIndexer>> {
         self.zolana.ring_client()
     }
 
@@ -194,18 +197,18 @@ impl Context {
         Ok(())
     }
 
-    pub fn ring_rpc(&self) -> RingRpcClient {
+    pub fn ring_rpc(&self) -> Result<RingRpcClient> {
         RingRpcClient::new(&self.config.urls().ring_rpc)
     }
 
-    pub fn record_update_target(&self) -> Result<custom_ring_sdk::RecordUpdateTarget> {
+    pub fn record_update_target(&self) -> Result<zolana_ring_client::RecordUpdateTarget> {
         let policy = self
             .block(
                 self.ring
                     .read::<custom_ring_interface::RingPolicy>(self.chain()),
             )?
             .context("the ring has no policy account, run `zolana-ring init` first")?;
-        Ok(custom_ring_sdk::RecordUpdateTarget {
+        Ok(zolana_ring_client::RecordUpdateTarget {
             genesis_hash: self.rpc().genesis_hash()?,
             ring: self.ring,
             registry: policy.records,
@@ -214,7 +217,7 @@ impl Context {
     }
 
     pub fn ring_rpc_target(&self) -> Result<zolana_ring_client::rpc::ReadTarget> {
-        let service = self.ring_rpc().service_pubkey()?;
+        let service = self.ring_rpc()?.service_pubkey()?;
         if let Trust::Pinned(pinned) = self.trust(Trust::Unpinned)? {
             ensure!(
                 pinned == service,
@@ -295,6 +298,64 @@ pub(crate) fn cached<T>(cell: &OnceCell<T>, load: impl FnOnce() -> Result<T>) ->
         None => {
             let value = load()?;
             Ok(cell.get_or_init(|| value))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::Defaults;
+
+    fn open_with_urls(rpc: &str, indexer: &str, prover: &str) -> Result<Context> {
+        let config: RingConfig = toml::from_str(&format!(
+            "name = \"ctx\"\ntarget = \"localnet\"\nprogram_id = \"11111111111111111111111111111111\"\n\n\
+             [localnet]\nrpc = \"{rpc}\"\nindexer = \"{indexer}\"\nprover = \"{prover}\"\nring_rpc = \"http://127.0.0.1:8785\"\n\n\
+             [devnet]\nrpc = \"https://api.devnet.solana.com\"\nindexer = \"https://indexer.example\"\nprover = \"https://prover.example\"\nring_rpc = \"https://ring.example\"\n"
+        ))
+        .expect("ring.toml");
+        ContextSetup {
+            config_path: PathBuf::from("ring.toml"),
+            config,
+            ask: Box::new(Defaults),
+            catalogue: None,
+            prover_tee_policy: None,
+            fee_payer_keypair: None,
+        }
+        .open()
+    }
+
+    #[test]
+    fn open_enforces_https_or_loopback_across_rpc_indexer_and_prover() {
+        assert!(open_with_urls(
+            "http://127.0.0.1:8899",
+            "http://localhost:8786",
+            "https://prover.example"
+        )
+        .is_ok());
+
+        for (rpc, indexer, prover) in [
+            (
+                "http://rpc.example?api-key=secret",
+                "http://127.0.0.1:8786",
+                "http://127.0.0.1:3001",
+            ),
+            (
+                "http://127.0.0.1:8899",
+                "http://indexer.example?api-key=secret",
+                "http://127.0.0.1:3001",
+            ),
+            (
+                "http://127.0.0.1:8899",
+                "http://127.0.0.1:8786",
+                "http://.localhost:3001?api-key=secret",
+            ),
+        ] {
+            let error = open_with_urls(rpc, indexer, prover)
+                .err()
+                .expect("non-loopback http")
+                .to_string();
+            assert!(!error.contains("secret"), "{error}");
         }
     }
 }

@@ -36,7 +36,7 @@ export PROVER_INDEXER_URL := localnet-ring-indexer-url
 export PROVER_BIN := justfile_directory() / "target/prover-server"
 # Mirrored by GENESIS_PROGRAMS in cli/src/commands/ring/localnet.rs.
 ring-genesis-programs := "--sbf-program rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL target/deploy/storage_program.so"
-sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-keys zolana-ring-transaction zolana-ring-rpc custom-ring-sdk custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
+sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-keys zolana-ring-transaction zolana-ring-rpc ring-service-core ring-writer ring-audit ring-cosigner ring-relay custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
 
 default:
     @just --list
@@ -130,7 +130,7 @@ build-localnet-archives dir="target/nextest-archives":
 test-hermetic: test-program-fast test-sdk-libs test-ring-indexer
 
 test-program-fast: build-programs
-    cargo nextest run -p custom-ring-program -p storage-program --tests
+    cargo nextest run -p custom-ring-test-validator --test rules --test storage_lifecycle
 
 test-sdk-libs:
     cargo nextest run {{prepend("-p ", sdk-lib-crates)}}
@@ -171,7 +171,7 @@ test-postgres:
     cargo test --locked -p ring-indexer --lib --features surfpool-fixture -- --ignored
     export RING_RPC_TEST_POSTGRES_URL="postgres://postgres@127.0.0.1:$port/ring_rpc"
     # One store, one test at a time.
-    cargo test --locked -p zolana-ring-rpc --lib -- --test-threads=1 --include-ignored postgres relay_reservations
+    cargo test --locked -p ring-writer -p ring-audit -p ring-cosigner -p ring-relay --lib -- --test-threads=1 --include-ignored postgres relay_reservations
     cargo test --locked -p zolana-ring-rpc --test relay_service -- --test-threads=1
     cargo test --locked -p zolana-ring-rpc --test audit_service -- --test-threads=1 --ignored
 
@@ -720,6 +720,7 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
         --prover-url {{localnet-prover-url}} --reader-grants "$reader_grants" \
         --enrollment-apply-ring "$e2e_rings" \
         --enrollment-budget-lamports 1000000000 \
+        --relay-budget-lamports 1000000000 --relay-signer-budget-lamports 1000000000 \
         > "$workdir/ring-rpc-$reader_grants.log" 2>&1 &
       printf 'waiting for ring rpc %s ' "$ring_rpc_url"
       for _ in $(seq 1 60); do

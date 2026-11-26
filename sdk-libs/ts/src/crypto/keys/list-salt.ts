@@ -21,19 +21,23 @@ const LIST_SALT_INFO = new TextEncoder().encode("CRING/mrg_seed/v1");
 /** `key` is the identity viewing key, no root the auditor holds reaches another ring's salt. */
 export function listSaltOf(key: ViewingKey, ringProgramId: Address): Bytes32 {
   const secret = key.secretBytes();
-  const viewRoot = extract(sha256, secret, VIEW_ROOT_SALT);
+  let viewRoot: Uint8Array | undefined;
+  let expanded: Uint8Array | undefined;
   try {
+    viewRoot = extract(sha256, secret, VIEW_ROOT_SALT);
     const info = new Uint8Array(LIST_SALT_INFO.length + 64);
     info.set(LIST_SALT_INFO);
     info.set(addressBytes(ringProgramId, "ring program id"), LIST_SALT_INFO.length);
     info.set(LIST_SALT_LABEL, LIST_SALT_INFO.length + 32);
+    expanded = expand(sha256, viewRoot, info, 31);
     const salt = new Uint8Array(32);
-    salt.set(expand(sha256, viewRoot, info, 31), 1);
+    salt.set(expanded, 1);
     salt[31] = (salt[31] as number) | 1;
     return salt as Bytes32;
   } finally {
     secret.fill(0);
-    viewRoot.fill(0);
+    viewRoot?.fill(0);
+    expanded?.fill(0);
   }
 }
 

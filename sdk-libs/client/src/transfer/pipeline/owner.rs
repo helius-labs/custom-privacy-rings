@@ -1,0 +1,295 @@
+//! The confidential rail.
+
+use custom_ring_interface::{RingMode, RingRail};
+use spr_client::{
+    AsyncRpc, OwnerAuthorization, ProofAuthority, RingAuthorizer, SettlementAccountValidation,
+};
+
+use super::VouchSigner;
+pub(super) use crate::rpc::deposit_funder;
+use crate::rpc::TokenAccountSetup;
+use spr_interface::shape::Shape;
+use spr_keypair::{viewing_key::Salt, NullifierKey, ShieldedAddress, SigningKey};
+use spr_program::instruction::TransactInterfaceTransferAccounts;
+use spr_transaction::instructions::transact::ConfidentialTransaction;
+
+use super::{
+    anonymous::{CoOwner, HiddenOwner},
+    canonical_shape,
+    public_owners::check_zero_key_inputs,
+    sealed, shape_keyed, ApprovalDisclosure, CoOwnerKey, DeliveredRail, OutputSeal, OwnerKey, Rail,
+    RailKind, RingSender, RingTransfer, SealedOutputs, Spend, Staged, TransferAuthority,
+};
+use crate::{CustomRing, CustomRingConfig, RingError};
+
+/// The sender's spends, it signs the assembled Solana transaction itself or inside the proof.
+pub struct Owner<'a> {
+    pub(super) sender: &'a dyn RingSender,
+    pub(super) owner_key: Option<OwnerKey<'a>>,
+    pub(super) transaction: ConfidentialTransaction,
+    pub(super) interface_transfer_accounts: Vec<TransactInterfaceTransferAccounts>,
+    pub(super) shape: Option<Shape>,
+    pub(super) in_proof_owner: Option<&'a SigningKey>,
+    pub(super) authorizer: Option<&'a RingAuthorizer<'a>>,
+    pub(super) token_account_setup: Vec<TokenAccountSetup>,
+    /// The other owners of a signer rail spend, each signs the transaction.
+    pub(super) co_owners: Vec<CoOwner<'a>>,
+    pub(super) voucher: Option<&'a dyn VouchSigner>,
+}
+
+pub struct CustomRingTransferInput<'a> {
+    pub ring: CustomRing,
+    /// Only transaction keys and the address are read, the signing key may live elsewhere.
+    pub sender: &'a dyn RingSender,
+    /// Completes the real inputs, `None` only for an all-padding transfer.
+    pub nullifier_key: Option<&'a NullifierKey>,
+    pub transaction: ConfidentialTransaction,
+}
+
+pub type CustomRingTransfer<'a> = RingTransfer<Owner<'a>>;
+
+impl sealed::Sealed for Owner<'_> {}
+
+impl Rail for Owner<'_> {
+    fn kind(&self) -> RailKind<'_> {
+        RailKind::Owner(self)
+    }
+}
+
+impl<'a> RingTransfer<Owner<'a>> {
+    pub fn new(input: CustomRingTransferInput<'a>) -> Self {
+        Self {
+            ring: input.ring,
+            co_signers: Vec::new(),
+            priority_fee: None,
+            rail: Owner {
+                sender: input.sender,
+                owner_key: input.nullifier_key.map(OwnerKey::Held),
+                transaction: input.transaction,
+                interface_transfer_accounts: Vec::new(),
+                shape: None,
+                in_proof_owner: None,
+                authorizer: None,
+                token_account_setup: Vec::new(),
+                co_owners: Vec::new(),
+                voucher: None,
+            },
+            list_salts: Vec::new(),
+            ring_salt: None,
+            approval: ApprovalDisclosure::None,
+            seal_row: None,
+            program: None,
+        }
+    }
+
+    /// Another owner of the spent notes, it signs the transaction and one prover holds its secret.
+    #[must_use = "use the updated transfer"]
+    pub fn with_co_owner(mut self, co_owner: CoOwner<'a>) -> Self {
+        self.rail.co_owners.push(co_owner);
+        self
+    }
+
+    /// The sender's signing key signs inside the proof, any fee payer sends the transaction.
+    #[must_use = "use the updated transfer"]
+    pub fn with_in_proof_owner(mut self, signer: &'a SigningKey) -> Self {
+        self.rail.in_proof_owner = Some(signer);
+        self
+    }
+
+    #[must_use = "use the updated transfer"]
+    pub(crate) fn with_authorizer(mut self, authorizer: &'a RingAuthorizer<'a>) -> Self {
+        self.rail.authorizer = Some(authorizer);
+        self
+    }
+
+    /// Completes the real inputs in place of a nullifier key, a relay refuses it.
+    #[must_use = "use the updated transfer"]
+    pub(crate) fn with_proof_authority(mut self, authority: &'a dyn ProofAuthority) -> Self {
+        self.rail.owner_key = Some(OwnerKey::Reserved(authority));
+        self
+    }
+
+    /// A listed wallet signs `VouchMessage::digest` of the transfer, its Allow and PrivateAllow entries admit every sender and payment owner, the auditor reads its key, and a salted list of the table needs its salt through `with_list_salt`.
+    #[must_use = "use the updated transfer"]
+    pub fn with_voucher(mut self, voucher: &'a dyn VouchSigner) -> Self {
+        self.rail.voucher = Some(voucher);
+        self
+    }
+
+    /// Ring RPC creates each account before a relayed withdrawal pays it.
+    #[must_use = "use the updated transfer"]
+    pub fn with_token_account_setup(mut self, setup: Vec<TokenAccountSetup>) -> Self {
+        self.rail.token_account_setup = setup;
+        self
+    }
+
+    #[must_use = "use the updated transfer"]
+    pub fn with_interface_transfer_accounts(
+        mut self,
+        accounts: Vec<TransactInterfaceTransferAccounts>,
+    ) -> Self {
+        self.rail.interface_transfer_accounts = accounts;
+        self
+    }
+
+    /// Unset, staging pads to the smallest supported shape.
+    pub fn with_shape(mut self, shape: Shape) -> Result<Self, RingError> {
+        if !shape_keyed(RingRail::Confidential, shape) {
+            return Err(RingError::ShapeUnkeyed {
+                rail: RingRail::Confidential,
+            });
+        }
+        self.rail.shape = Some(shape);
+        Ok(self)
+    }
+}
+
+impl<'a> Owner<'a> {
+    /// The rail pads under its own blinding seed, a caller never pads.
+    pub(super) fn shape(&self, sender: &ShieldedAddress) -> Result<Shape, RingError> {
+        match self.shape {
+            Some(shape) => Ok(shape),
+            None => canonical_shape(&self.transaction, sender),
+        }
+    }
+
+    pub(super) fn check_settlement_accounts(&self) -> Result<(), RingError> {
+        let transfers: Vec<_> = self
+            .transaction
+            .interface_transfers()?
+            .into_iter()
+            .map(|transfer| transfer.interface_transfer())
+            .collect();
+        SettlementAccountValidation {
+            transfers: &transfers,
+            accounts: &self.interface_transfer_accounts,
+        }
+        .validate()?;
+        Ok(())
+    }
+
+    /// A funder signs its public leg and owns no spent note, so it joins neither the owner run nor
+    /// the policy's approvers. Its signature names its key in public, a hidden owner funding a leg
+    /// links itself, and the funder's party cell refuses that proof. The refusal here spares the proof.
+    pub(super) fn check_deposit_funders(&self, hidden: HiddenOwner) -> Result<(), RingError> {
+        let transfers = self.transaction.interface_transfers()?;
+        hidden.check_signers(
+            transfers
+                .iter()
+                .zip(&self.interface_transfer_accounts)
+                .filter_map(|(transfer, accounts)| {
+                    deposit_funder(&transfer.interface_transfer(), accounts)
+                }),
+        )
+    }
+
+    pub(super) async fn stage<R: AsyncRpc + ?Sized>(
+        &self,
+        _ring: CustomRing,
+        _client: &R,
+        config: &CustomRingConfig,
+        program_salt: Option<Salt>,
+    ) -> Result<Staged<'_>, RingError> {
+        let sender = self.signer_rail_sender(config)?;
+        self.stage_signers(sender, config, program_salt)
+    }
+
+    pub(super) fn seal(
+        &self,
+        config: &CustomRingConfig,
+        program_salt: Option<Salt>,
+    ) -> Result<SealedOutputs, RingError> {
+        let sender = self.signer_rail_sender(config)?;
+        self.seal_signers(&sender, config, program_salt)
+    }
+
+    fn signer_rail_sender(&self, config: &CustomRingConfig) -> Result<ShieldedAddress, RingError> {
+        if config.mode == RingMode::Anonymous {
+            return Err(RingError::MissingAnonymousSigner);
+        }
+        let sender = self.sender.address()?;
+        check_zero_key_inputs(self.transaction.inputs(), &sender.signing_pubkey)?;
+        Ok(sender)
+    }
+
+    pub(super) fn seal_signers(
+        &self,
+        sender: &ShieldedAddress,
+        config: &CustomRingConfig,
+        program_salt: Option<Salt>,
+    ) -> Result<SealedOutputs, RingError> {
+        if program_salt.is_some() && self.in_proof_owner.is_some() {
+            return Err(RingError::ProgramRailUnsupported);
+        }
+        self.check_settlement_accounts()?;
+        let shape = self.shape(sender)?;
+        OutputSeal {
+            keys: self.sender,
+            sender,
+            auditor: config.auditor_pubkey,
+            delivery: DeliveredRail {
+                outputs: shape.n_outputs(),
+                rail: RingRail::Confidential,
+            }
+            .delivery()?,
+            shape,
+            program_salt,
+        }
+        .seal(self.transaction.clone())
+    }
+
+    /// The signer rail, zero-key notes admitted by the caller.
+    pub(super) fn stage_signers(
+        &self,
+        sender: ShieldedAddress,
+        config: &CustomRingConfig,
+        program_salt: Option<Salt>,
+    ) -> Result<Staged<'_>, RingError> {
+        let SealedOutputs { rail, proof_inputs } =
+            self.seal_signers(&sender, config, program_salt)?;
+        let (owner_signers, spend) = match self.in_proof_owner {
+            Some(signer) => {
+                if signer.pubkey() != sender.signing_pubkey {
+                    return Err(RingError::InProofOwnerMismatch);
+                }
+                // Co-owners beside the in-proof owner sign in public, SPP allows the mix.
+                let in_proof = signer.pubkey().as_ed25519()?;
+                let co_owners = proof_inputs
+                    .owner_signer_pubkeys()?
+                    .into_iter()
+                    .filter(|owner| owner.to_bytes() != in_proof)
+                    .collect();
+                (
+                    co_owners,
+                    Spend::InProofOwner(OwnerAuthorization::SigningKey(signer)),
+                )
+            }
+            None => (
+                proof_inputs.owner_signer_pubkeys()?,
+                Spend::Owner(self.authorizer),
+            ),
+        };
+        Ok(Staged {
+            authority: self.authority()?,
+            owner_signers,
+            proof_inputs,
+            rail,
+            sender,
+            interface_transfer_accounts: self.interface_transfer_accounts.clone(),
+            spend,
+            presealed: None,
+            list_salts: Vec::new(),
+        })
+    }
+
+    pub(super) fn authority(&self) -> Result<TransferAuthority<'a>, RingError> {
+        Ok(TransferAuthority {
+            owner: self.owner_key,
+            co_owners: self
+                .co_owners
+                .iter()
+                .map(CoOwnerKey::of)
+                .collect::<Result<_, RingError>>()?,
+        })
+    }
+}

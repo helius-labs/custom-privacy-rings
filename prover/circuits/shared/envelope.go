@@ -102,7 +102,7 @@ func (e Envelope) seal(api frontend.API, sealed Sealed, secret frontend.Variable
 	return sealed
 }
 
-// SlotSeal keys its stream with DeliveredSlot::secret in program-libs/interface/src/codec/stream.rs, no constraint ties recipient_u to the intended recipient.
+// SlotSeal keys its stream with DeliveredSlot::secret in sdk-libs/keys/src/slot_secret.rs, no constraint ties recipient_u to the intended recipient.
 //
 //	dh     = X25519(eph_sk, recipient_u)
 //	secret = Poseidon(CRDS, pack_be(dh), Eph, pack_be(0x04 ‖ recipient_u), salt, index, n0)

@@ -7,12 +7,6 @@ use custom_ring_interface::{
     cosign::{ApprovalMask, CoSignOperation, CoSignRequirement},
     RingPolicy, RingRail,
 };
-use custom_ring_sdk::{
-    entry_shape_keyed, select_spend_where, shape_keyed, AnonymousMove, AnonymousPayment,
-    CoSignScope, CustomRingConfig, CustomRingTransfer, CustomRingTransferInput, DepositAsset,
-    DepositRecipient, EntrySpend, ListRegistry, LocalSigners, PublicOwnerTransfer, RingDeposit,
-    RingDepositReceipt, RingMode, RingOperation, RingPayment, RingSubmission,
-};
 use solana_address::Address;
 use solana_keypair::Keypair;
 use solana_signature::Signature;
@@ -25,7 +19,13 @@ use spr_transaction::{
     },
     Data, ShieldedKeys, SpendableDecryptionResult, WalletUtxo, SOL_MINT,
 };
-use zolana_ring_client::{mint_balances, owner_record_key, rpc::DecryptedOutputKind, ReaderKey};
+use zolana_ring_client::{
+    entry_shape_keyed, mint_balances, owner_record_key, rpc::DecryptedOutputKind,
+    select_spend_where, shape_keyed, AnonymousMove, AnonymousPayment, CoSignScope,
+    CustomRingConfig, CustomRingTransfer, CustomRingTransferInput, DepositAsset, DepositRecipient,
+    EntrySpend, ListRegistry, LocalSigners, PolicySources, PublicOwnerTransfer, ReaderKey,
+    RingDeposit, RingDepositReceipt, RingMode, RingOperation, RingPayment, RingSubmission,
+};
 use zolana_ring_keys::{
     ring_address::RING_PAYMENT_SCHEME, ListSaltHolder, RingAddress, RingPaymentRequest,
     RotatingRingKeys,
@@ -245,7 +245,7 @@ pub fn run(ctx: &Context, args: TransactArgs) -> Result<()> {
         spend_public: None,
     };
     payments.fits(&inputs)?;
-    ctx.ring_rpc().check_serves(program)?;
+    ctx.ring_rpc()?.check_serves(program)?;
     let authority = ctx.authority()?;
     let reader = ReaderKey::ed25519(authority.address())?;
     ensure!(
@@ -356,7 +356,7 @@ pub fn run_transfer(ctx: &Context, args: TransferArgs) -> Result<()> {
         }
     };
     payments.fits(&inputs)?;
-    ctx.ring_rpc().check_serves(ctx.ring.program_id())?;
+    ctx.ring_rpc()?.check_serves(ctx.ring.program_id())?;
     // A public spend needs no row, its zero-key change serves an unenrolled wallet.
     if args.spend_public.is_none() {
         KeyEnrollment {
@@ -830,7 +830,7 @@ impl Outflow {
         let member = Member::asset(&self.mint)?;
         let read = crate::records::read_one(
             &ctx.zolana,
-            custom_ring_sdk::MemberRecords {
+            zolana_ring_client::MemberRecords {
                 ring: ctx.ring,
                 members: &[member],
             },
@@ -1382,7 +1382,7 @@ fn held_total(utxos: &[WalletUtxo]) -> Result<u64> {
 fn granted(ctx: &Context, reader: &ReaderKey) -> Result<bool> {
     let read = records::read_one(
         &ctx.zolana,
-        custom_ring_sdk::MemberRecords {
+        zolana_ring_client::MemberRecords {
             ring: ctx.ring,
             members: &[reader.record_key()?],
         },
@@ -1420,7 +1420,7 @@ fn read_back(ctx: &Context, reader: &dyn Signer, signature: Signature) -> Result
     ctx.wait_for_indexed(signature)?;
     let target = ctx.ring_rpc_target()?;
     let opened = ctx
-        .ring_rpc()
+        .ring_rpc()?
         // The submission carries one ring operation, its SPP event sits at index zero.
         .wait_for_decrypted(target, reader, signature, 0)
         .context("the ring rpc did not open the transfer")?;
@@ -1590,7 +1590,7 @@ mod tests {
             cosigner: None,
         };
         assert_eq!(deposits(DepositAsset::Sol).drawn_lamports(), 7);
-        let spl = DepositAsset::Spl(custom_ring_sdk::DepositSplAccounts {
+        let spl = DepositAsset::Spl(zolana_ring_client::DepositSplAccounts {
             mint: RING,
             user_token: RING,
             token_program: RING,
@@ -1992,7 +1992,7 @@ mod tests {
     fn an_anonymous_held_spend_stays_within_a_keyed_width() {
         let within = |spendable: Spendable, outputs: usize, spends_default_ring: bool| {
             let widest = spendable.widest_anonymous(outputs).unwrap();
-            let key = custom_ring_sdk::transfer_key(TransferSpend {
+            let key = zolana_ring_client::transfer_key(TransferSpend {
                 rail: RingRail::Anonymous,
                 inputs: widest,
                 outputs,

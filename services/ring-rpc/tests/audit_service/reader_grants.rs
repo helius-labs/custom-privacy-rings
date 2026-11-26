@@ -3,12 +3,13 @@
 use super::*;
 use custom_ring_interface::{InProofOwner, RingRail, RingTransactData};
 use zolana_ring_client::rpc::{GetWalletStatusResponse, GET_WALLET_STATUS};
+use zolana_ring_client::FrameEncode;
 
 async fn wallet_read(
     service: &AuditService<StaticSource>,
     reader: &Keypair,
     wallet: Address,
-) -> Result<GetWalletActivityResponse, RingRpcError> {
+) -> Result<GetWalletActivityResponse, RingAuditError> {
     let request = WalletActivity::read(target(RING), wallet)
         .sign(reader)
         .expect("request");
@@ -25,7 +26,7 @@ async fn wallet_read(
 async fn ring_read(
     service: &AuditService<StaticSource>,
     reader: &Keypair,
-) -> Result<GetDecryptedTransactionsResponse, RingRpcError> {
+) -> Result<GetDecryptedTransactionsResponse, RingAuditError> {
     service
         .read(AuditRead {
             read: PagedRead::DecryptedTransactions,
@@ -67,20 +68,22 @@ fn set_grant(
     )
 }
 
-fn granted(result: Result<GetDecryptedTransactionsResponse, RingRpcError>) -> Vec<Signature> {
+fn granted(result: Result<GetDecryptedTransactionsResponse, RingAuditError>) -> Vec<Signature> {
     let page = result.expect("granted read").value;
     assert!(page.skipped.is_empty());
     page.items.iter().map(|item| item.tx_signature.0).collect()
 }
 
-fn activity(result: Result<GetWalletActivityResponse, RingRpcError>) -> Vec<WalletActivity> {
+fn activity(result: Result<GetWalletActivityResponse, RingAuditError>) -> Vec<WalletActivity> {
     result.expect("granted read").value.items
 }
 
-fn not_granted<T>(result: Result<T, RingRpcError>) -> bool {
+fn not_granted<T>(result: Result<T, RingAuditError>) -> bool {
     matches!(
         result,
-        Err(RingRpcError::Unauthorized(Unauthorized::NotGranted))
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
+            Unauthorized::NotGranted
+        )))
     )
 }
 
@@ -815,4 +818,51 @@ async fn padding_beside_a_resolved_anonymous_input_leaves_a_sole_owner() {
     service.backfill_utxos().await.expect("backfill");
     let items = activity(wallet_read(&service, &reader, OWNER).await);
     assert_eq!(sender_amounts(items), [500, 7]);
+}
+
+#[tokio::test]
+async fn set_reader_grant_for_unserved_ring_writes_no_grant_or_nonce() {
+    use sea_orm::{ConnectionTrait, Statement};
+
+    let fixture = Fixture::new();
+    let store = Store::open("sqlite::memory:", 1).await.expect("store");
+    let hub = Arc::new(
+        Hub::builder(fixture.source(), identity(GENESIS))
+            .with_origins(origins())
+            .with_store(store.clone())
+            .with_reader_grants(ReaderGrantStore::Database)
+            .with_grant_rows_key(grant_rows_key())
+            .local(RING, X25519Keypair::new())
+            .expect("hub"),
+    );
+    let module = rpc_module(hub).expect("module");
+    let wallet = Keypair::new_from_array([55; 32]);
+    let reader = stranger();
+
+    for request in [
+        set_grant(
+            &wallet,
+            Some(wallet.pubkey()),
+            &reader,
+            ReaderGrantAction::Grant,
+        ),
+        set_grant(&authority(), None, &reader, ReaderGrantAction::Grant),
+    ] {
+        let refused: Result<ReaderGrantAction, _> = module.call(SET_READER_GRANT, request).await;
+        assert!(refused.is_err());
+    }
+    for table in ["grants", "replay_nonces"] {
+        let count: i64 = store
+            .connection()
+            .query_one(Statement::from_string(
+                store.connection().get_database_backend(),
+                format!("SELECT COUNT(*) AS count FROM {table}"),
+            ))
+            .await
+            .expect("query")
+            .expect("row")
+            .try_get("", "count")
+            .expect("count");
+        assert_eq!(count, 0, "{table} must remain empty");
+    }
 }

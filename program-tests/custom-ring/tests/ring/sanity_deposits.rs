@@ -22,12 +22,12 @@ fn an_sdk_batch_deposit_settles_through_a_transfer() -> Result<()> {
     ];
     let client = env.client.ring_client();
     for notes in [3_usize, 5] {
-        let batch = custom_ring_sdk::RingDepositBatch {
+        let batch = zolana_ring_client::RingDepositBatch {
             ring,
             payer: &env.payer,
             tree: env.tree,
             outputs: (0..notes)
-                .map(|slot| custom_ring_sdk::DepositOutput {
+                .map(|slot| zolana_ring_client::DepositOutput {
                     recipient: DepositRecipient::Confidential(recipients[slot % 2]),
                     asset: DepositAsset::Sol,
                     amount: AMOUNT,

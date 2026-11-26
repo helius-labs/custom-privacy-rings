@@ -135,13 +135,20 @@ pub struct OutputPayloadError {
 pub enum OutputPayloadErrorKind {
     /// The slot's record holds a value outside the field.
     Disclosure,
-    /// A dummy's derived opening hashes to another commitment.
+    /// The slot's derived dummy or keyed record hashes to another commitment.
     Commitment,
-    /// The record rebuilds another commitment under its key, it stands without its data hashes.
-    Payload,
 }
 
 impl AuditedTransaction {
+    /// The first payload error whose slot holds no proven record.
+    pub fn unopened(&self) -> Option<&OutputPayloadError> {
+        self.payload_errors.iter().find(|error| {
+            self.outputs
+                .iter()
+                .all(|output| output.slot_index != error.slot_index)
+        })
+    }
+
     pub fn utxos(&self) -> impl Iterator<Item = CreatedUtxo> + '_ {
         self.outputs.iter().filter_map(AuditedOutput::created)
     }
@@ -291,8 +298,7 @@ impl AuditedTransaction {
         owners
     }
 
-    /// An owner `registered` does not name stays unresolved, a resolved output that does not
-    /// rebuild reports `Payload`.
+    /// Unlisted owners stay unresolved and a failed commitment rebuild records `Commitment`.
     pub fn resolve_owners(
         &mut self,
         ring: Address,
@@ -328,7 +334,7 @@ impl AuditedTransaction {
                 at,
                 OutputPayloadError {
                     slot_index,
-                    kind: OutputPayloadErrorKind::Payload,
+                    kind: OutputPayloadErrorKind::Commitment,
                 },
             );
         }

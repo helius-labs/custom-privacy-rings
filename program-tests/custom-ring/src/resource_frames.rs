@@ -1,6 +1,9 @@
-use custom_ring_interface::{AppMessage, RingPolicy, RingTransactData, MAX_CPI_DATA_LEN};
+use custom_ring_interface::{AppMessage, RingPolicy, RingTransactData};
 use solana_message::v1::MAX_TRANSACTION_SIZE;
 use spr_interface::instruction::TransactProof;
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::SppExpansion;
+use zolana_ring_client::MAX_CPI_DATA_LEN;
 
 /// An inline frame never passes the transaction it rides in, a bound above every settled frame.
 const FRAME_CEILING: usize = MAX_TRANSACTION_SIZE;

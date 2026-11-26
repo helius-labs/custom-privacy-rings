@@ -48,7 +48,6 @@ pub enum Command {
     /// Record devnet in ring.toml and probe the deployed services.
     Devnet,
     /// Record localnet in ring.toml and start the validator, Photon, the prover and the ring rpc.
-    #[command(alias = "dev")]
     Localnet(LocalnetArgs),
     /// Deploy the released program under the authority, or upgrade it in place.
     #[command(args_conflicts_with_subcommands = true)]
@@ -441,7 +440,7 @@ pub struct MergeArgs {
     #[arg(
         long,
         default_value_t = MERGE_DEFAULT_INPUT_COUNT as u64,
-        value_parser = clap::value_parser!(u64).range(2..=custom_ring_sdk::MAX_RING_MERGE_INPUTS as u64)
+        value_parser = clap::value_parser!(u64).range(2..=zolana_ring_client::MAX_RING_MERGE_INPUTS as u64)
     )]
     pub count: u64,
     #[command(flatten)]

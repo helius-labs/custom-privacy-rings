@@ -13,10 +13,7 @@ import {
 export const RING_FEATURES = ["transfer", "deposit", "merge", "enroll", "applyRecords"] as const;
 export type RingFeature = (typeof RING_FEATURES)[number];
 
-/**
- * `unpinned` the SDK pins no key for it, `missing` the prover leaves the keys out, `mismatched` the
- * prover's keys differ from the pins, `unverified` the catalog check failed before reaching them.
- */
+/** `unverified` when the catalog check failed ahead of the keys. */
 export type RingCapabilityReason = "unpinned" | "missing" | "mismatched" | "unverified";
 
 export type RingCapability =

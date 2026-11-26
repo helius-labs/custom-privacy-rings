@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 
+import { SHIELDED_POOL_CPI_AUTHORITY, SOL_INTERFACE } from "@heliuslabs/spr/interface";
+import { fetchRingPolicy } from "../../../src/protocol/membership/config.js";
 import { initializePoseidon } from "@heliuslabs/spr";
 import { getCreateAssociatedTokenAccountInstructionAsync } from "@heliuslabs/spr/instructions";
 import type { Bytes32, Instruction } from "@heliuslabs/spr/interface";
@@ -36,6 +38,7 @@ import { publishedOutputs } from "../../../src/operations/payments/output-rail.j
 import { SIZE_PROBE_LIFETIME } from "../../../src/operations/workflow/compile.js";
 import {
   sealedTransferTerms,
+  stagedLegs,
   type SealedTransfer,
 } from "../../../src/operations/workflow/pipeline.js";
 import { RING_COSIGN_TRANSFERS } from "../../../src/protocol/codec/ring-codecs.js";
@@ -233,12 +236,12 @@ async function paid(): Promise<Paid> {
     terms,
     instruction,
     message,
-    pending: (held, framed = message, knownNotes = []) =>
+    pending: async (held, framed = message, knownNotes = []) =>
       new OwnerApproval({
         relayId: RELAY_ID,
         message: framed,
         terms: held,
-        config: { mode: "anonymous", auditorPublicKey: fixture.auditor.publicKey() },
+        config: await fetchRingPolicy(fixture.client, fixture.ringProgramId),
         knownNotes,
       }).pending(),
     payTo: async (owner) => (await payTo(owner).rail.prove(fixture.client)).instruction(),
@@ -257,7 +260,7 @@ function termsOfCall(fixture: Fixture, signer: Address): readonly RelayTransferT
       published: publishedOutputs(proofInputs.outputs).map((output) => ({ output })),
       proofInputs,
     } as unknown as SealedTransfer,
-    ownerSigners: [signer],
+    staged: { ownerSigners: [signer] },
     setup: [],
   });
 }
@@ -517,7 +520,7 @@ describe("relay transfer terms", () => {
     const [framedTerms] = termsOfCall(fixture, owner);
     if (framedTerms === undefined) throw new Error("the frame names the co-owner");
     expect(framedTerms.nullifiers).toEqual(terms.nullifiers);
-    const approval = (
+    const approval = async (
       framed: Instruction,
       knownNotes: readonly Pick<WalletUtxo, "nullifier">[],
     ): Promise<PendingRelaySignature> =>
@@ -525,7 +528,7 @@ describe("relay transfer terms", () => {
         relayId: RELAY_ID,
         message: messageOf(fixture.authority, [framed]),
         terms: framedTerms,
-        config: { mode: "anonymous", auditorPublicKey: fixture.auditor.publicKey() },
+        config: await fetchRingPolicy(fixture.client, fixture.ringProgramId),
         knownNotes,
       }).pending();
     const [spent] = terms.nullifiers;
@@ -604,6 +607,109 @@ describe("relay transfer terms", () => {
       setup: [{ ...setup, owner: randomAddress() }],
     });
     expect(refusal(() => other.verify(payeeAddress))).toBe("Instructions");
+
+    const escalatedSetup: Instruction = {
+      ...create,
+      accounts: (create.accounts ?? []).map((meta) =>
+        meta.address === setup.owner ? { ...meta, role: AccountRole.WRITABLE } : meta,
+      ),
+    };
+    const escalated = await framed([escalatedSetup, instruction], { ...terms, setup: [setup] });
+    expect(refusal(() => escalated.verify(payeeAddress))).toBe("Accounts");
+  });
+
+  it("names each staged leg with its whole settlement group in frame order", () => {
+    const [mint, vault, funder, source, program, recipient, account] = [
+      randomAddress(),
+      randomAddress(),
+      randomAddress(),
+      randomAddress(),
+      randomAddress(),
+      randomAddress(),
+      randomAddress(),
+    ];
+    const deposits = [
+      { kind: "sol", funder },
+      {
+        kind: "spl",
+        mint,
+        splTokenInterface: vault,
+        funder,
+        sourceTokenAccount: source,
+        tokenProgram: program,
+      },
+    ] as const;
+    const withdrawal = {
+      kind: "spl",
+      mint,
+      splTokenInterface: vault,
+      recipientTokenAccount: account,
+      tokenProgram: program,
+    } as const;
+    const transfers = [
+      { kind: "sol", isDeposit: true, amount: 5n, userSolAccount: funder },
+      {
+        kind: "spl",
+        mint,
+        isDeposit: true,
+        amount: 6n,
+        tokenAccount: source,
+        splInterfaceBump: 255,
+      },
+      {
+        kind: "spl",
+        mint,
+        isDeposit: false,
+        amount: 7n,
+        tokenAccount: account,
+        splInterfaceBump: 255,
+      },
+    ] as const;
+    expect(stagedLegs({ transfers, deposits, withdrawal })).toEqual([
+      {
+        leg: { direction: "deposit", mint: null, amount: 5n, accounts: [SOL_INTERFACE, funder] },
+        funder,
+      },
+      {
+        leg: {
+          direction: "deposit",
+          mint,
+          amount: 6n,
+          accounts: [mint, vault, funder, source, program],
+        },
+        funder,
+      },
+      {
+        leg: {
+          direction: "withdrawal",
+          mint,
+          amount: 7n,
+          accounts: [SHIELDED_POOL_CPI_AUTHORITY, mint, vault, account, program],
+        },
+      },
+    ]);
+    expect(
+      stagedLegs({
+        transfers: [{ kind: "sol", isDeposit: false, amount: 7n, userSolAccount: recipient }],
+        deposits: [],
+        withdrawal: { kind: "sol", recipient },
+      }),
+    ).toEqual([
+      {
+        leg: {
+          direction: "withdrawal",
+          mint: null,
+          amount: 7n,
+          accounts: [SOL_INTERFACE, recipient],
+        },
+      },
+    ]);
+    for (const staged of [
+      { transfers, deposits: deposits.slice(1), withdrawal },
+      { transfers, deposits, withdrawal: undefined },
+      { transfers: transfers.slice(1), deposits, withdrawal },
+    ])
+      expect(() => stagedLegs(staged)).toThrow("RING_SETTLEMENT_ACCOUNTS_INVALID");
   });
 
   it("writes and reads the terms as the Rust vector does", () => {
@@ -616,6 +722,17 @@ describe("relay transfer terms", () => {
     const terms = decodeRelayTransferTerms(wire);
     expect(terms.slots[0]?.amount).toBe(2n ** 64n - 1n);
     expect(terms.slots[0]?.slot).toBe(7);
+    expect(
+      terms.legs.map(({ direction, mint, amount, accounts }) => [
+        direction,
+        mint === null,
+        amount,
+        accounts.length,
+      ]),
+    ).toEqual([
+      ["withdrawal", false, 2n ** 64n - 1n, 5],
+      ["deposit", true, 20n, 2],
+    ]);
     expect(encodeRelayTransferTerms(terms)).toBe(wire);
   });
 
@@ -626,6 +743,17 @@ describe("relay transfer terms", () => {
       refusal(() => decodeRelayTransferTerms(JSON.stringify({ ...wire, ...changed })));
     expect(undecodable({ extra: 1 })).toBe("Undecodable");
     expect(undecodable({ nullifiers: ["1"] })).toBe("Undecodable");
+    const leg = { direction: "deposit", mint: null, amount: 1, accounts: [terms.signer] };
+    expect(undecodable({ legs: [leg] })).toBe("accepted");
+    for (const changed of [
+      { ...leg, funder: terms.signer },
+      { ...leg, direction: "refund" },
+      { ...leg, accounts: ["1"] },
+      { direction: leg.direction, amount: leg.amount, accounts: leg.accounts },
+    ])
+      expect(undecodable({ legs: [changed] })).toBe("Undecodable");
+    const { legs: _legs, ...legless } = wire;
+    expect(refusal(() => decodeRelayTransferTerms(JSON.stringify(legless)))).toBe("Undecodable");
     const setup = { owner: terms.signer, mint: terms.signer, tokenProgram: terms.signer };
     expect(undecodable({ setup: [{ ...setup, extra: 1 }] })).toBe("Undecodable");
     const opening = (wire["slots"] as readonly object[])[0];

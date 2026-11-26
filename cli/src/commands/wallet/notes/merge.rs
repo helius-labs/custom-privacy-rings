@@ -3,13 +3,14 @@
 use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{anyhow, ensure, Result};
-use custom_ring_sdk::select_merge_where;
-use custom_ring_sdk::{FittedMerge, MergeProofInput, RingMergeOperation, MAX_RING_MERGE_INPUTS};
 use solana_address::Address;
 use solana_signer::Signer;
 use spr_interface::pda;
 use spr_keypair::ShieldedKeypair;
 use spr_transaction::{SpendableDecryptionResult, WalletUtxo, SOL_MINT};
+use zolana_ring_client::{
+    select_merge_where, FittedMerge, MergeProofInput, RingMergeOperation, MAX_RING_MERGE_INPUTS,
+};
 
 use crate::{
     assets, fund::MIN_AUTHORITY_BALANCE, line, member::KeyEnrollment, wallet::WalletScan, Context,

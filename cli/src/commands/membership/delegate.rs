@@ -1,13 +1,12 @@
 //! `delegate move`, the permanent delegate spends a member's ring notes.
 
 use anyhow::{anyhow, ensure, Context as _, Result};
-use custom_ring_sdk::{
-    DelegateMove, DelegatePayment, DelegateSource, DelegateSourceError, ResolvedSource,
-    TrackingEnrollment,
-};
 use spr_client::{IndexerRpcConfig, Rpc};
 use spr_transaction::SOL_MINT;
-use zolana_ring_client::{RecoveryStep, RingRecovery, SourceMember};
+use zolana_ring_client::{
+    DelegateMove, DelegatePayment, DelegateSource, DelegateSourceError, RecoveryStep,
+    ResolvedSource, RingRecovery, SourceMember, TrackingEnrollment,
+};
 
 use crate::{
     assets,
@@ -99,7 +98,7 @@ pub fn run_move(ctx: &Context, args: DelegateMoveArgs) -> Result<()> {
         .select(ctx.ring_client()),
     )?;
     ctx.require_balance(authority.address(), SENDER_FEE_BUDGET + PAYER_FEE_BUDGET)?;
-    ctx.ring_rpc().check_serves(ctx.ring.program_id())?;
+    ctx.ring_rpc()?.check_serves(ctx.ring.program_id())?;
     let operators = Operators {
         payer: authority.as_ref(),
         signers: &[delegate.as_ref()],

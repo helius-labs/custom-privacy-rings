@@ -33,9 +33,16 @@ use instructions::{
     process_owner_grant_ix, process_update_authority_ix, process_update_ix,
 };
 
-#[cfg(all(feature = "bpf-entrypoint", not(feature = "no-entrypoint")))]
+#[cfg(feature = "bpf-entrypoint")]
 mod entrypoint {
     pinocchio::entrypoint!(crate::process_instruction);
+
+    solana_security_txt::security_txt! {
+        name: "Solana Privacy Rings Storage",
+        project_url: "https://github.com/helius-labs/zolana-custom-rings",
+        contacts: "email:privacydisclosures@helius.xyz",
+        policy: "Please report security vulnerabilities privately to privacydisclosures@helius.xyz."
+    }
 }
 
 mod instructions;

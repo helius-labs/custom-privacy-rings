@@ -3,8 +3,9 @@
 use std::{path::Path, sync::Arc};
 
 use custom_ring_interface::TransferApproval;
-use custom_ring_sdk::{ApplicationData, NoteData, ProgramCommitment};
 use custom_ring_test_validator::{ring_rpc::CoSigningRingRpc, shared::CoSigned};
+use ring_cosigner::cosign::{ApproveClass, CoSignError, CoSignerApproval};
+use ring_writer::record_update::MAX_LIMIT_WINDOW_SLOTS;
 use solana_message::VersionedMessage;
 use spr_program::{
     hasher::{data_hash, DataHasher},
@@ -17,9 +18,11 @@ use zk_ring_program::{
     },
     client::{owner, ProvenInstruction},
 };
-use zolana_ring_client::rpc::{CoSignTransactionRequest, CoSignTransactionResponse};
+use zolana_ring_client::{
+    rpc::{CoSignTransactionRequest, CoSignTransactionResponse},
+    ApplicationData, ApprovalEncode, NoteData, ProgramCommitment,
+};
 use zolana_ring_policy::AssetLimits;
-use zolana_ring_rpc::{ApproveClass, CoSignError, CoSignerApproval, MAX_LIMIT_WINDOW_SLOTS};
 
 use super::*;
 
@@ -65,8 +68,8 @@ impl ProgramStep<'_> {
         to: ShieldedAddress,
         amount: u64,
         application: Option<ApplicationData>,
-    ) -> custom_ring_sdk::AnonymousPayment {
-        custom_ring_sdk::AnonymousPayment {
+    ) -> zolana_ring_client::AnonymousPayment {
+        zolana_ring_client::AnonymousPayment {
             to: RingAddress {
                 recipient: to,
                 ring_program_id: self.ring.program_id(),
@@ -83,7 +86,7 @@ impl ProgramStep<'_> {
     }
 
     /// The change leads the outputs as the circuits order them.
-    fn transfer(&self, payer: Address) -> Result<custom_ring_sdk::PublicOwnerTransfer<'_>> {
+    fn transfer(&self, payer: Address) -> Result<zolana_ring_client::PublicOwnerTransfer<'_>> {
         let ring_program = self.ring.program_id();
         let address = self.keys.address()?;
         let inputs = std::iter::once(self.token)
@@ -312,7 +315,7 @@ impl Updated {
             payer: &env.payer,
             holder: &cosign_admin,
         }
-        .send(&[custom_ring_sdk::SetCoSigner {
+        .send(&[zolana_ring_client::SetCoSigner {
             ring,
             payer: env.payer.pubkey(),
             authority: cosign_admin.pubkey(),

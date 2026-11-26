@@ -3,7 +3,7 @@ import { bigintToBytes, inputCircuitUtxo, outputCircuitUtxo } from "@heliuslabs/
 import { DUMMY_DOMAIN, UTXO_DOMAIN, treeIdField } from "@heliuslabs/spr/interface";
 import type { ProofInputUtxo, ProofOutputUtxo, TreeId } from "@heliuslabs/spr/transaction";
 
-import type { RingSlotOpening } from "./ring.js";
+import type { RingSlotOpening } from "../../protocol/proof/ring-proof-requests.js";
 
 /** Rust `Opening::input`, a dummy opens its domain, tree and blinding only. */
 export function ringInputOpening(input: ProofInputUtxo): RingSlotOpening {

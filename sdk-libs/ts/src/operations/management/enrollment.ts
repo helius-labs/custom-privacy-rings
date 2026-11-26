@@ -1,5 +1,5 @@
 /**
- * A nonzero key enrolls in the ring's tracking registry, Rust `custom_ring_sdk::enrollment`.
+ * A nonzero key enrolls in the ring's tracking registry, Rust `zolana_ring_client::enrollment`.
  *
  * Ring RPC alone writes an enrollment on chain, batching owner-signed writes into one `EnrollBatch`.
  * A first enrollment is an Enroll write of its record and `RegisterKey` proof, the owner signs
@@ -43,7 +43,7 @@ import { registerKeyStatementHash } from "../../protocol/proof/statement.js";
 import type { SignedEnrollment } from "../../protocol/ring-rpc/enrollment-write.js";
 import type { RingProver, TrackingReader } from "../../rpc/ports.js";
 import { fetchTrackingRegistry, readTrackingOpenings } from "../../rpc/tracking-resolver.js";
-import { readerKeyBytes, type ReaderKey } from "./reader-access.js";
+import { readerKeyBytes, type ReaderKey } from "../../protocol/membership/reader-access.js";
 import { sealNullifierKey } from "./register-key.js";
 
 export const OWNER_GRANT_TAG = 8;

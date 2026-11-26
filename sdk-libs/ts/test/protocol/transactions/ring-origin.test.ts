@@ -48,7 +48,7 @@ import {
 import { solanaRpcReads } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import { ringFrame, ringInstructionData } from "../../helpers/ring-frame.js";
 
-// Mirrors sdk-libs/client/tests/origin.rs.
+// Mirrors sdk-libs/client/src/codec/origin/tests.rs.
 const RING = address("zYYvj4LTBF4Lz2FBhDaAbJ7CsVWvHjyanxQJPmN2dSU");
 const OTHER = address("ComputeBudget111111111111111111111111111111");
 const POOL = SHIELDED_POOL_PROGRAM_ID;
@@ -222,42 +222,36 @@ function confirmedTransaction(
 }
 
 describe("confirmedInstructionGroups", () => {
-  it("indexes a lookup table's loaded addresses after the static keys", () => {
-    const loaded = { writable: [OTHER], readonly: [POOL] };
-    expect(
-      confirmedInstructionGroups(
-        confirmedTransaction(loaded, {
-          writableIndexes: [3],
-          readonlyIndexes: [9],
-        }),
-      ),
-    ).toEqual(confirmedInstructionGroups(confirmedTransaction({ writable: [], readonly: [] })));
-  });
-
-  it("refuses loaded addresses that differ from the lookups the message names", () => {
-    const loaded = { writable: [OTHER], readonly: [POOL] };
-    for (const transaction of [
-      confirmedTransaction(loaded),
-      confirmedTransaction(
-        { writable: [], readonly: [] },
-        { writableIndexes: [3], readonlyIndexes: [9] },
-      ),
-      confirmedTransaction(loaded, {
-        writableIndexes: [3, 4],
-        readonlyIndexes: [9],
-      }),
-    ])
+  it("refuses a lookup table, a loaded address and any version but 1", () => {
+    const none = { writable: [], readonly: [] };
+    const lookup = { writableIndexes: [3], readonlyIndexes: [9] };
+    const refused = (transaction: unknown, path: string) =>
       expect(() => confirmedInstructionGroups(transaction)).toThrow(
-        expect.objectContaining({ code: "RING_ORIGIN_DECODE" }),
+        expect.objectContaining({ code: "RING_ORIGIN_DECODE", details: { path } }),
       );
-    const missing = confirmedTransaction(loaded, {
-      writableIndexes: [3],
-      readonlyIndexes: [9],
-    }) as { meta: Record<string, unknown> };
-    delete missing.meta["loadedAddresses"];
-    expect(() => confirmedInstructionGroups(missing)).toThrow(
-      expect.objectContaining({ code: "RING_ORIGIN_DECODE" }),
+    // A version 0 transaction whose loaded addresses match its lookups index-for-index.
+    const versionZero = {
+      ...(confirmedTransaction({ writable: [OTHER], readonly: [POOL] }, lookup) as object),
+      version: 0,
+    };
+    refused(versionZero, "transaction.version");
+    refused({ ...versionZero, version: 1 }, "message.addressTableLookups");
+    refused(confirmedTransaction(none, lookup), "message.addressTableLookups");
+    refused(
+      confirmedTransaction(none, { writableIndexes: [], readonlyIndexes: [] }),
+      "message.addressTableLookups",
     );
+    refused(
+      confirmedTransaction({ writable: [OTHER], readonly: [] }),
+      "meta.loadedAddresses.writable",
+    );
+    refused(
+      confirmedTransaction({ writable: [], readonly: [POOL] }),
+      "meta.loadedAddresses.readonly",
+    );
+    for (const version of ["legacy", 0, 2, 1n, "1", undefined])
+      refused({ ...(confirmedTransaction(none) as object), version }, "transaction.version");
+    expect(confirmedInstructionGroups(confirmedTransaction(none))).toHaveLength(1);
   });
 
   it("reads program ids from the message account keys", () => {
@@ -331,7 +325,7 @@ const SETTLEMENT_KEYS: readonly Address[] = [
 const keyIndex = (account: Address) => SETTLEMENT_KEYS.indexOf(account);
 const zeros = (length: number) => new Uint8Array(length);
 
-// Rust pins all payloads to TransactIxData::serialize in client/tests/origin.rs.
+// Rust pins all payloads to TransactIxData::serialize in sdk-libs/client/src/codec/origin/tests.rs.
 describe("cached ring settlement wire vectors", () => {
   const vectors = readFileSync(
     new URL("../../../../../test-vectors/settlement/cached_ring_settlement.hex", import.meta.url),
@@ -444,7 +438,7 @@ function settlementTransaction(outer: readonly unknown[], inner: readonly unknow
       err: null,
       innerInstructions: inner.length === 0 ? [] : [{ index: 0, instructions: inner }],
     },
-    version: 0,
+    version: 1,
   };
 }
 
@@ -614,7 +608,7 @@ describe("confirmedRingWithdrawals", () => {
   });
 
   it("names the withdrawals of an anonymous ring transact", () => {
-    // sdk-libs/client/tests/origin.rs pins the same payload.
+    // sdk-libs/client/src/codec/origin/tests.rs pins the same payload.
     const hex = readFileSync(
       new URL(
         "../../../../../test-vectors/settlement/anonymous_ring_settlement.hex",
@@ -834,6 +828,7 @@ function confirmedEvent(
         },
       ],
     },
+    version: 1,
   };
 }
 

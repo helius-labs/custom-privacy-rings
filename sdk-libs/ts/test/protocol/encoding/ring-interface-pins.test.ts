@@ -49,16 +49,25 @@ function camel(name: string): string {
 describe("ring interface pins", () => {
   it("tags and budgets every instruction like Rust `instruction_tags!`", () => {
     const source = rust("instructions/instruction.rs");
+    const budgetSource = readFileSync(
+      new URL("../../../../client/src/codec/compute_units.rs", import.meta.url),
+      "utf8",
+    );
     const units = new Map(
-      [...source.matchAll(/^(?:pub )?const ([A-Z_]+): u32 = ([\d_]+);$/gmu)].map(
+      [...budgetSource.matchAll(/^(?:pub )?const ([A-Z_]+): u32 = ([\d_]+);$/gmu)].map(
         ([, name = "", value = ""]) => [name, integer(value)] as const,
       ),
     );
     const tags = new Map(Object.entries(RingInstructionTag));
     const spp = new Map<string, number>(Object.entries(InstructionTag));
-    const rows = [
-      ...source.matchAll(/^ {4}([A-Za-z0-9]+) = [A-Z0-9_]+: ([\w:]+) => ([\w *+]+),$/gmu),
-    ];
+    const budgets = new Map(
+      [...budgetSource.matchAll(/^ {8}InstructionTag::([A-Za-z0-9]+) => ([\w *+]+),$/gmu)].map(
+        ([, variant = "", budget = ""]) => [variant, budget] as const,
+      ),
+    );
+    const rows = [...source.matchAll(/^ {4}([A-Za-z0-9]+) = [A-Z0-9_]+: ([\w:]+),$/gmu)].map(
+      ([row = "", variant = "", tag = ""]) => [row, variant, tag, budgets.get(variant)] as const,
+    );
     const budgetOf = (expression: string) =>
       expression
         .split("+")
@@ -72,14 +81,15 @@ describe("ring interface pins", () => {
     expect(rows.map(([, variant = ""]) => lowerFirst(variant)).sort()).toEqual(
       [...tags.keys()].sort(),
     );
-    for (const [, variant = "", tag = "", budget = ""] of rows) {
+    for (const [, variant, tag, budget] of rows) {
       const name = lowerFirst(variant);
       const forwarded = /::([A-Z_]+)$/u.exec(tag)?.[1];
       const expected = forwarded === undefined ? Number(tag) : spp.get(camel(forwarded));
       const actual = tags.get(name);
       expect(actual, name).toBe(expected);
       if (actual === undefined) continue;
-      expect(BigInt(ringComputeUnitLimit(actual)), name).toBe(budgetOf(budget));
+      expect(budget, name).toBeDefined();
+      expect(BigInt(ringComputeUnitLimit(actual)), name).toBe(budgetOf(budget ?? ""));
     }
   });
 
@@ -115,7 +125,7 @@ describe("ring interface pins", () => {
 
   it("reads the storage registry at the discriminator and size Rust asserts", () => {
     const source = rust("accounts/storage.rs");
-    expect(Number(/pub const DISCRIMINATOR: u8 = (\d+);/u.exec(source)?.[1])).toBe(
+    expect(Number(/storage_account!\(StorageRegistry, (\d+),/u.exec(source)?.[1])).toBe(
       STORAGE_REGISTRY_DISCRIMINATOR,
     );
     expect(Number(/assert!\(StorageRegistry::SIZE == (\d+)\)/u.exec(source)?.[1])).toBe(

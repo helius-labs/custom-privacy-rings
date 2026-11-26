@@ -1,6 +1,5 @@
 use custom_ring_interface::{
-    encode_confidential_output, encode_ring_body_output, AuditKey, AuditStreamLayout,
-    AuditorMessage, RecordForm, CONFIDENTIAL_DATA_FREE_BODY_LEN, RECORD_ZERO_KEY_BIT,
+    AuditKey, AuditStreamLayout, AuditorMessage, RecordForm, CONFIDENTIAL_DATA_FREE_BODY_LEN,
 };
 use serde_json::Value;
 use solana_address::Address;
@@ -10,6 +9,9 @@ use spr_hasher::primitives::hash_bytes;
 use spr_keypair::{ViewingKey, X25519Keypair};
 use spr_transaction::{OutputContext, OutputSlot, ShieldedTransaction};
 use zolana_ring_client::{OutputOpening, TransactionAudit};
+use zolana_ring_keys::encode_confidential_output;
+use zolana_ring_keys::encode_ring_body_output;
+use zolana_ring_keys::RECORD_ZERO_KEY_BIT;
 
 const STREAM: &str = include_str!("../../../test-vectors/audit/audit-stream.json");
 const RING: Address = Address::new_from_array([0x90; 32]);

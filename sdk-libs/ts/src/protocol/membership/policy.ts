@@ -2,7 +2,7 @@ import type { MintPolicy } from "./mint-policy.js";
 import type { Address } from "@solana/kit";
 
 import { RingDomain, domainField } from "../../crypto/derivation/ring-domain.js";
-import type { PolicyTableProofInputs } from "../../rpc/prover/ring.js";
+import type { PolicyTableProofInputs } from "../proof/ring-proof-requests.js";
 import {
   hashBytes,
   solanaOwnerIdentity,
@@ -19,7 +19,7 @@ import {
   isZero,
 } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
-import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../../rpc/prover/types.js";
+import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../codec/ring-codecs.js";
 
 import {
   registryCurator,
@@ -319,15 +319,11 @@ export function validateRuleTable(table: RuleTable): void {
 /** Mirrors Rust `EncodedRuleTable::decode`, the padding is checked by `decodeRingPolicy`. */
 export function decodeRuleTable(config: EncodedRuleTable): RuleTable {
   if (config.rules.length > RING_RULE_SLOTS) throw ruleTableInvalid("TooManyRules");
-  return checkedRuleTable({ ...config, rules: config.rules.map(decodeRule) });
+  return buildRuleTable({ ...config, rules: config.rules.map(decodeRule) });
 }
 
 export interface RuleTableInput {
   readonly rules: readonly Rule[];
-}
-
-export function buildRuleTable(input: RuleTableInput): RuleTable {
-  return checkedRuleTable(input);
 }
 
 /** Mirrors Rust `RuleTable::encode`, counted rows without the zero padding. */
@@ -338,9 +334,7 @@ export function encodeRuleTable(table: RuleTable): EncodedRuleTable {
 }
 
 /** Rust `try_build` in its order, a decoded and a built table refuse alike. */
-function checkedRuleTable(
-  table: Omit<EncodedRuleTable, "rules"> & Readonly<{ rules: readonly Rule[] }>,
-): RuleTable {
+export function buildRuleTable(table: RuleTableInput): RuleTable {
   const { rules } = table;
   if (rules.length > RING_RULE_SLOTS) throw ruleTableInvalid("TooManyRules");
   const signatures = new Set<string>();
@@ -727,17 +721,12 @@ export type Member = Bytes32 & { readonly [memberBrand]: true };
 /** Mirrors Rust `Member::owner_tag`, the derivation `zolana-ring list add` applies to `--owner`. */
 export function memberOfTag(tag: Uint8Array): Member {
   if (tag.length !== 32) throw entryInvalid("tagLength");
-  return checkedMember(solanaOwnerIdentity(tag) as Bytes32);
-}
-
-/** Mirrors Rust `Member::owner_identity`, an owner of any curve by `ownerProofInputHash`. */
-export function memberOfIdentity(identity: Bytes32): Member {
-  return checkedMember(identity);
+  return memberOfIdentity(solanaOwnerIdentity(tag) as Bytes32);
 }
 
 /** Mirrors Rust `Member::public`, the key of every public list of `owner` in the own and curator registries. */
 export function publicMember(owner: Member): Member {
-  return checkedMember(publicListKey(checkedMember(owner)));
+  return memberOfIdentity(publicListKey(memberOfIdentity(owner)));
 }
 
 /** Mirrors Rust `owner_record_key`, the one record every writer and reader of an owner's lists names. */
@@ -747,21 +736,22 @@ export function ownerRecordKey(owner: Uint8Array): Member {
 
 /** Mirrors Rust `Member::asset`, the mint as the UTXO asset field. */
 export function memberOfAsset(mint: Address): Member {
-  return checkedMember(hashBytes(decodeAddress(mint)) as Bytes32);
+  return memberOfIdentity(hashBytes(decodeAddress(mint)) as Bytes32);
 }
 
 /** Mirrors Rust `Member::wallet_grant`, its `reader` list is the wallet's grant to `reader`. */
 export function walletGrantMember(wallet: Member, reader: Member): Member {
-  return checkedMember(
+  return memberOfIdentity(
     poseidon([
       domainField(RingDomain.walletGrant),
-      checkedMember(wallet),
-      checkedMember(reader),
+      memberOfIdentity(wallet),
+      memberOfIdentity(reader),
     ]) as Bytes32,
   );
 }
 
-function checkedMember(bytes: Bytes32): Member {
+/** Mirrors Rust `Member::owner_identity`, an owner of any curve by `ownerProofInputHash`. */
+export function memberOfIdentity(bytes: Bytes32): Member {
   if (equalBytes(bytes, ZERO_32)) throw entryInvalid("zeroMember");
   return bytes as Member;
 }
@@ -791,4 +781,10 @@ function entryInvalid(reason: string): RingError {
 
 function fieldU8(value: number): Bytes32 {
   return rightAlign(Uint8Array.of(value));
+}
+
+/** From the owner's `RingAddress` or `RingKeys.listSalt`. */
+export interface RingListSalt {
+  readonly owner: Bytes32;
+  readonly salt: Bytes32;
 }

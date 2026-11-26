@@ -27,9 +27,6 @@ export const RING_AUTHORITY_SHAPES: readonly Shape[] = Object.freeze(
   ),
 );
 
-/** The widest spend a ring authority transaction takes. */
-export const RING_AUTHORITY_MAX_INPUTS = Math.max(...RING_AUTHORITY_WIDTHS);
-
 /** Rust `Shape::is_ring_authority`. */
 export function isRingAuthorityShape(shape: Shape): boolean {
   return RING_AUTHORITY_SHAPES.some(

@@ -4,12 +4,12 @@ use std::fmt::Display;
 
 use anyhow::{bail, ensure, Context as _, Result};
 use custom_ring_interface::RingPolicy;
-use custom_ring_sdk::{
-    live_registry, AuthorityRecordUpdate, MemberRecords, RecordUpdateTarget, RingError,
-};
 use spr_client::{BlockingIndexer, BlockingRpc};
 use spr_indexer_api::Hash;
-use zolana_ring_client::{records::MemberOpeningRead, RingIndexer};
+use zolana_ring_client::{
+    live_registry, records::MemberOpeningRead, AuthorityRecordUpdate, MemberRecords,
+    RecordUpdateTarget, RingError, RingIndexer,
+};
 use zolana_ring_policy::Member;
 
 use crate::{wait_for, Context, Probe, Zolana};
@@ -166,7 +166,7 @@ impl Context {
         let authority = self.authority()?;
         let update = build(AuthorityRecordUpdate::new(target, authority.address()))?;
         let signed = update.sign(&self.request_signer(authority.as_ref()))?;
-        self.ring_rpc()
+        self.ring_rpc()?
             .apply_record_update(signed.with_unregistered_owners(unregistered))
     }
 }

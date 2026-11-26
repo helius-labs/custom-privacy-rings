@@ -9,7 +9,15 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use custom_ring_cli::{wait_for, Probe};
-use custom_ring_sdk::{RingError, RingRelay};
+use ring_cosigner::cosign::CoSignerApproval;
+use ring_relay::managed_merge::ManagedMerge;
+use ring_relay::relay_reservations::RelayBudget;
+use ring_relay::relay_services::{RelayServices, RelayServicesInit};
+use ring_service_core::database::{Store, STORE_CONNECTIONS};
+use ring_service_core::upstream::{ChainSource, TransactionSource, Upstreams};
+use ring_writer::enrollment_applier::EnrollmentApplierParts;
+use ring_writer::record_writer::RECORD_FLUSH_INTERVAL;
+use ring_writer::storage_chain::LiveStorageChain;
 use sea_orm::{ConnectionTrait, Statement, Value};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
@@ -21,20 +29,18 @@ use spr_client::ClientError;
 use spr_keypair::X25519Keypair;
 use spr_test_utils::localnet::isolated_temp_path;
 use zolana_operator_custody::SigningIdentity;
-use zolana_ring_client::rpc::{
-    CoSignTransactionRequest, CoSignTransactionResponse, GetRelayQuoteRequest,
-    GetRelayStatusRequest, PrepareAuthorityTransferRequest, PrepareRelayRequest, ReadTarget,
-    RelayId, RelayOperation, RelayQuote, RelayStatus, RelayStep, ServiceTarget,
-    SetMergeSettingsRequest, SetMergeSettingsResponse, SubmitRelayRequest, CO_SIGN_TRANSACTION,
-    GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY,
-    SET_MERGE_SETTINGS, SUBMIT_RELAY,
+use zolana_ring_client::{
+    rpc::{
+        CoSignTransactionRequest, CoSignTransactionResponse, GetRelayQuoteRequest,
+        GetRelayStatusRequest, PrepareAuthorityTransferRequest, PrepareRelayRequest, ReadTarget,
+        RelayId, RelayOperation, RelayQuote, RelayStatus, RelayStep, ServiceTarget,
+        SetMergeSettingsRequest, SetMergeSettingsResponse, SubmitRelayRequest, CO_SIGN_TRANSACTION,
+        GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY,
+        SET_MERGE_SETTINGS, SUBMIT_RELAY,
+    },
+    RingError, RingRelay,
 };
-use zolana_ring_rpc::{
-    run_server, BindPolicy, ChainSource, ClientLimits, CoSignerApproval, EnrollmentApplierParts,
-    Hub, LiveStorageChain, ManagedMerge, RelayBudget, RelayServices, RelayServicesInit,
-    ServerOptions, ServiceIdentity, Store, TransactionSource, Upstreams, RECORD_FLUSH_INTERVAL,
-    STORE_CONNECTIONS,
-};
+use zolana_ring_rpc::{run_server, BindPolicy, ClientLimits, Hub, ServerOptions, ServiceIdentity};
 
 use crate::shared::{prover_url, TestEnv, ACTOR_AIRDROP};
 
@@ -197,11 +203,15 @@ impl RingRpcSpec<'_> {
         RelayServicesInit {
             fee_payer: Arc::new(fee_payer),
             store,
-            rpc_url: &self.env.rpc_url,
-            indexer_url: &self.env.indexer_url,
+            upstreams: Upstreams {
+                indexer_url: &self.env.indexer_url,
+                rpc_url: &self.env.rpc_url,
+                timeout: Duration::from_secs(30),
+            },
             prover_url: &prover_url(),
         }
         .build()
+        .expect("relay services")
     }
 
     fn start(self, server: ServerParts) -> Result<Served> {

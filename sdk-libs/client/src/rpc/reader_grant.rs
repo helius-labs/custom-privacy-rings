@@ -40,8 +40,6 @@ pub struct ReaderGrantAttestation {
 }
 
 pub type ReaderGrantRequest = SignedRequest<ReaderGrantAttestation>;
-/// The action the service holds for the grant after the write.
-pub type SetReaderGrantResponse = ReaderGrantAction;
 
 impl ReaderGrantAction {
     pub const fn name(self) -> &'static str {

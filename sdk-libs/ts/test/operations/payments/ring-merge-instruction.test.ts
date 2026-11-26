@@ -18,7 +18,7 @@ import {
   MERGE_ENVELOPE_LEN,
   MERGE_RECORD_LEN,
 } from "../../../src/protocol/codec/ring-disclosure-layout.js";
-import { CUSTOM_RING_PROOF_LENGTH } from "../../../src/protocol/proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../../../src/protocol/codec/ring-codecs.js";
 import { RingInstructionTag } from "../../../src/protocol/transaction/instruction-tag.js";
 
 const RING = address("9vyTbYGyh3cwxkAQpjjFQGXmdJP6p9B6YcQ5pNuXPNbh");

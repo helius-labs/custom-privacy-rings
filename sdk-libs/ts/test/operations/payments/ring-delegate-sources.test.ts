@@ -4,6 +4,8 @@ import {
   getCompiledTransactionMessageDecoder,
   signature,
 } from "@solana/kit";
+import type { RingPolicy } from "../../../src/protocol/codec/ring-codecs.js";
+import { fetchRingPolicy } from "../../../src/protocol/membership/config.js";
 import { initializePoseidon, SHIELDED_POOL_PROGRAM_ID } from "@heliuslabs/spr";
 import { StateDiscriminator } from "@heliuslabs/spr/interface";
 import type { Address, Bytes32, Instruction } from "@heliuslabs/spr/interface";
@@ -88,6 +90,10 @@ function registryAccount(mint: Address, assetId: bigint): string {
   data.set(addressBytes(mint), 8);
   new DataView(data.buffer).setBigUint64(40, assetId, true);
   return Buffer.from(data).toString("base64");
+}
+
+function policyOf(fixture: Fixture): Promise<RingPolicy> {
+  return fetchRingPolicy(fixture.client, fixture.ringProgramId);
 }
 
 async function moveRing(mode: RingMode, owners: readonly ShieldedKeypair[]) {
@@ -202,10 +208,11 @@ describe("delegate sources", () => {
       const { fixture, delegate } = await moveRing(mode, [source, payee]);
       const { transfer, notes } = movingFrom(fixture, delegate, [source], payee, 4n);
       const instruction = await (await transfer.prove(fixture.client)).instruction();
+      const { delegate: _named, ...unnamed } = await policyOf(fixture);
       const asked = {
         request: requestFor(fixture, delegate, [source], payee, 4n),
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-        config: { mode, auditorPublicKey: fixture.auditor.publicKey() },
+        config: unnamed,
         outputTreeId: fixture.client.treeId,
       };
       const allowed = allowedOf([{ owner: source, notes }]);
@@ -235,7 +242,7 @@ describe("delegate sources", () => {
       const expected = await expectedDelegate({
         request: requestFor(fixture, delegate, sources, payee, amount),
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-        config: { mode, auditorPublicKey: fixture.auditor.publicKey(), delegate },
+        config: await policyOf(fixture),
         outputTreeId: fixture.client.treeId,
         allowed: allowedOf(sources.map((owner, at) => ({ owner, notes: notes.slice(at, at + 1) }))),
       });
@@ -270,7 +277,7 @@ describe("delegate sources", () => {
         const refused = await expectedDelegate({
           request: asked,
           quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-          config: { mode, auditorPublicKey: fixture.auditor.publicKey(), delegate },
+          config: await policyOf(fixture),
           outputTreeId,
           allowed: allowedOf(
             sources.map((owner, at) => ({ owner, notes: notes.slice(at, at + 1) })),
@@ -307,7 +314,7 @@ describe("delegate sources", () => {
       const expected = await expectedDelegate({
         request: requestFor(fixture, delegate, [member], payee, 15n),
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-        config: { mode, auditorPublicKey: fixture.auditor.publicKey(), delegate },
+        config: await policyOf(fixture),
         outputTreeId: fixture.client.treeId,
         allowed: allowedOf([{ owner: member, notes: notes.slice(0, 1) }]),
       });
@@ -348,7 +355,7 @@ describe("delegate sources", () => {
       const asked = {
         request: requestFor(fixture, delegate, [member], payee, 4n),
         quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-        config: { mode, auditorPublicKey: fixture.auditor.publicKey(), delegate },
+        config: await policyOf(fixture),
         outputTreeId: fixture.client.treeId,
       };
 
@@ -646,7 +653,7 @@ describe("delegate sources", () => {
             ],
           ),
           quote: { feePayer: fixture.authority, validUntilSlot: 100n },
-          config: { mode, auditorPublicKey: fixture.auditor.publicKey(), delegate },
+          config: await policyOf(fixture),
           outputTreeId: fixture.client.treeId,
           allowed: allowedOf(recovered),
         });

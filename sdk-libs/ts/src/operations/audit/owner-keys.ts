@@ -9,7 +9,7 @@ import type { ChainReader } from "@heliuslabs/spr/client";
 import { bytesKey } from "@heliuslabs/spr/internal";
 import type { Bytes32, RequestContext } from "@heliuslabs/spr/interface";
 
-import { MAX_RING_MEMBER_BATCH } from "../../protocol/indexer/indexer-limits.js";
+import { MAX_RING_MEMBER_BATCH } from "../../protocol/indexer/indexer-codec.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
 import { memberOfTag } from "../../protocol/membership/policy.js";
 import { verifyTrackingOpening } from "../../protocol/membership/tracking.js";

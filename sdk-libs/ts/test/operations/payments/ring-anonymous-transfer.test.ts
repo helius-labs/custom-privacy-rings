@@ -41,6 +41,7 @@ import {
   TransactWithdrawal,
   type Bytes31,
   type Bytes32,
+  type Bytes64,
 } from "@heliuslabs/spr/interface";
 import {
   NullifierKey,
@@ -72,7 +73,7 @@ import {
   ringIntentHash,
   type RingApprovalRequest,
 } from "../../../src/protocol/transaction/intent.js";
-import { ringProofCircuit } from "../../../src/rpc/prover/ring.js";
+import { ringProofCircuit } from "../../../src/protocol/proof/ring-proof-requests.js";
 import { ringCoSignerAddress, ringPolicyAddress } from "../../../src/protocol/pda/index.js";
 import { ringCircuitType } from "../../../src/protocol/proof/proving-keys.js";
 import { RingAddress, RingPaymentRequest } from "../../../src/crypto/keys/ring-address.js";
@@ -1469,6 +1470,20 @@ describe("anonymous ring signer", () => {
       }).prove(ring.client),
       "RING_ANONYMOUS_SIGNER_MISMATCH",
     );
+    const validSigner = signingKeySpendSigner(sender.signing);
+    const badSigRing = await anonymousRing();
+    await expect(
+      rail({
+        fixture: badSigRing,
+        sender,
+        transfer: spend(badSigRing, sender),
+        signer: {
+          publicKey: () => validSigner.publicKey(),
+          sign: async () => new Uint8Array(63) as unknown as Bytes64,
+        } as AnonymousSpendSigner,
+      }).prove(badSigRing.client),
+    ).rejects.toThrow(ringError("RING_INVALID_LENGTH"));
+    expect(badSigRing.sppCalls).toHaveLength(0);
     await refused(
       ring,
       rail({

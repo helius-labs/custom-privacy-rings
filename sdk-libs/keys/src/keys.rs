@@ -1,6 +1,7 @@
-use custom_ring_interface::stream::{
-    confidential_slot_tag, DeliveredSlot, SlotSecret, StreamError,
-};
+use crate::confidential_slot_tag;
+use crate::DeliveredSlot;
+use crate::SlotSecret;
+use crate::StreamError;
 use spr_keypair::{
     shielded::{ShieldedAddress, ShieldedKeypair},
     viewing_key::{Salt, ViewTag},
@@ -346,8 +347,8 @@ impl<'a, H: HeldKeys> Agreements<'a, H> {
             Some((key, tx, _)) if key == viewing_pubkey && tx == tx_viewing_pk
         );
         if !current {
-            let agreement = self.holder.held(viewing_pubkey)?.ecdh(tx_viewing_pk)?;
-            self.latest = Some((*viewing_pubkey, *tx_viewing_pk, Zeroizing::new(agreement)));
+            let agreement = Zeroizing::new(self.holder.held(viewing_pubkey)?.ecdh(tx_viewing_pk)?);
+            self.latest = Some((*viewing_pubkey, *tx_viewing_pk, agreement));
             #[cfg(test)]
             {
                 self.computed += 1;
@@ -381,7 +382,7 @@ fn slot_secret(
 
 #[cfg(test)]
 mod tests {
-    use custom_ring_interface::stream::SlotSecret;
+    use crate::SlotSecret;
     use spr_keypair::SigningKey;
 
     use super::*;

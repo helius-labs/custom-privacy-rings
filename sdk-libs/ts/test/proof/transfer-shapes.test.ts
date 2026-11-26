@@ -93,7 +93,7 @@ describe("the 16-output key", () => {
 /** Rust `RING_KEYS` as TS circuits, a transfer's `inputs` is the TS `class`. */
 function rustRingKeys(): readonly Readonly<{ circuit: RingKeyCircuit; name: string }>[] {
   const source = readFileSync(
-    new URL("../../../../program-libs/interface/src/proof/ring_keys.rs", import.meta.url),
+    new URL("../../../client/src/codec/ring_keys.rs", import.meta.url),
     "utf8",
   );
   return [

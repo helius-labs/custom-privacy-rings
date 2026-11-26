@@ -22,7 +22,7 @@ import {
   type TrackingWriteProofInput,
   type TransferProofRequest,
   type VoucherProofInput,
-} from "../../src/rpc/prover/ring.js";
+} from "../../src/protocol/proof/ring-proof-requests.js";
 import { ZERO_32, concatBytes, encodeBase58, isZero } from "@heliuslabs/spr/internal";
 import { UTXO_DOMAIN } from "@heliuslabs/spr/interface";
 import type { Address, Bytes16, Bytes31, Bytes32, Bytes33 } from "@heliuslabs/spr/interface";
@@ -109,7 +109,7 @@ const GOLDEN_FILES = HAS_GOLDENS
 const GOLDEN_BY_CIRCUIT = new Map(
   GOLDEN_FILES.map((file) => [basename(file, ".json"), file] as const),
 );
-const RUST_FIXTURES = new URL("../../../sdk/tests/fixtures/", import.meta.url);
+const RUST_FIXTURES = new URL("../../../client/tests/fixtures/", import.meta.url);
 const RUST_TRANSFER_FIXTURES = readdirSync(RUST_FIXTURES).filter(
   (name) => name.startsWith("custom-ring-transfer-") && name.endsWith(".json"),
 );
@@ -597,7 +597,7 @@ const CIRCUIT_TYPES = [...GOLDEN_BY_CIRCUIT.keys()].sort();
 describe.runIf(HAS_GOLDENS)("ring prover request encoding against the Go goldens", () => {
   it("lists every ring key of ring_keys.rs and names one for each golden", () => {
     const rust = readFileSync(
-      new URL("../../../../program-libs/interface/src/proof/ring_keys.rs", import.meta.url),
+      new URL("../../../client/src/codec/ring_keys.rs", import.meta.url),
       "utf8",
     );
     const names = [...rust.matchAll(/name: "([a-z0-9-]+)"/gu)].map((match) => match[1]);
@@ -973,7 +973,11 @@ function checkTransferStatement(typed: TransferProofRequest): void {
   expect(
     ed25519.verify(
       typed.voucher.signature,
-      vouchDigest({ privateTxHash: typed.privateTxHash, withdrawalHash: typed.withdrawalHash }),
+      vouchDigest({
+        ringId: typed.ringId,
+        privateTxHash: typed.privateTxHash,
+        withdrawalHash: typed.withdrawalHash,
+      }),
       typed.voucher.publicKey,
     ),
   ).toBe(true);

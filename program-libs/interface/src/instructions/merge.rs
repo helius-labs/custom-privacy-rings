@@ -7,73 +7,22 @@
 //! Read after `program-libs/interface/src/proof/statement.rs`. Read before
 //! `programs/custom-ring/src/instructions/settlement/merge.rs`, `prover/circuits/merge.go`.
 
+use crate::{
+    bytes::Bytes, error::CustomRingError, storage::Revision, CustomRingProof, MERGE_ENVELOPE_LEN,
+    MERGE_RECORD_LEN, TAGGED_X25519_KEY_LEN,
+};
 use spr_hasher::{
     hash_chain::create_hash_chain_from_slice,
     primitives::{hash_bytes, pack_be, right_align},
     HasherError,
 };
 use spr_interface::instruction::{
-    instruction_data::merge_transact::{MergeOutputEncryption, MergeTransactIxData},
-    tag::RING_MERGE_TRANSACT,
-};
-use wincode::{SchemaRead, SchemaWrite};
-
-use crate::{
-    bytes::Bytes, error::CustomRingError, storage::Revision, CustomRingProof, MERGE_ENVELOPE_LEN,
-    MERGE_RECORD_LEN, TAGGED_X25519_KEY_LEN,
+    instruction_data::merge_transact::MergeOutputEncryption, tag::RING_MERGE_TRANSACT,
 };
 
 pub const MERGE_PUBLIC_INPUT_ELEMENTS: usize = 16;
 /// `expiry_unix_ts u64 || proof.a` open the SPP merge body ahead of `proof.b`.
-const MERGE_B_OFFSET: usize = core::mem::size_of::<u64>() + 32;
-
-/// A `MergeRecord` of kind `Ring` sealed to the owner's viewing key, and the envelope that opens it for the auditor.
-#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct SealedMergeRecord {
-    pub proof: CustomRingProof,
-    pub eph_pk: [u8; TAGGED_X25519_KEY_LEN],
-    pub envelope: [u8; MERGE_ENVELOPE_LEN],
-    pub record: [u8; MERGE_RECORD_LEN],
-}
-
-/// Tag 57, the SPP merge body with `proof.b` compressed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CustomRingMergeIxData {
-    pub tracking_revision: Revision,
-    pub output_ring_data_hash: [u8; 32],
-    pub sealed: SealedMergeRecord,
-    pub merge: MergeTransactIxData,
-}
-
-#[cfg(not(target_os = "solana"))]
-impl CustomRingMergeIxData {
-    /// The bytes after the instruction tag.
-    pub fn serialize(&self) -> Result<Vec<u8>, CustomRingError> {
-        let body = self.merge.serialize().map_err(invalid_data)?;
-        let (head, rest) = body
-            .split_at_checked(MERGE_B_OFFSET)
-            .ok_or(CustomRingError::InvalidInstructionData)?;
-        let tail = rest
-            .get(self.merge.proof.b.len()..)
-            .ok_or(CustomRingError::InvalidInstructionData)?;
-        let b = solana_bn254::compression::prelude::alt_bn128_g2_compress_be(&self.merge.proof.b)
-            .map_err(|_| CustomRingError::InvalidSppProofPoint)?;
-        Ok([
-            &self.tracking_revision.0[..],
-            &self.output_ring_data_hash,
-            &wincode::serialize(&self.sealed).map_err(invalid_data)?,
-            head,
-            &b,
-            tail,
-        ]
-        .concat())
-    }
-}
-
-#[cfg(not(target_os = "solana"))]
-fn invalid_data<E>(_: E) -> CustomRingError {
-    CustomRingError::InvalidInstructionData
-}
+pub const MERGE_B_OFFSET: usize = core::mem::size_of::<u64>() + 32;
 
 /// Borrowed view of the tag 57 request.
 pub struct CustomRingMergeIxDataRef<'a> {

@@ -38,11 +38,6 @@ export const RECIPIENT_KEY_BLOCKS = 2;
 /** `u16be(len)` ahead of a payload. */
 export const PAYLOAD_LENGTH_LEN = 2;
 
-/** Rust `pack_be_chunks`, the fields `length` bytes pack into. */
-export function packedChunks(length: number): number {
-  return Math.ceil(length / DISCLOSURE_CHUNK_BYTES);
-}
-
 /** A record's kind without its zero-key bit, the circuit derives it from the slot's domain and ring id, Rust `RecordKind`. */
 export const RecordKind = Object.freeze({ dummy: 0, ring: 1, exit: 2 } as const);
 export type RecordKind = (typeof RecordKind)[keyof typeof RecordKind];

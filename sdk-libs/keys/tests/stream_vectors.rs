@@ -6,10 +6,7 @@ use aes::{
     Aes256,
 };
 use ctr::Ctr32BE;
-use custom_ring_interface::{
-    domain::{AUDIT_STREAM_LABEL, REGISTER_KEY_LABEL},
-    STREAM_FIRST_COUNTER,
-};
+use custom_ring_interface::STREAM_FIRST_COUNTER;
 use serde_json::{json, Value};
 use spr_hasher::{
     primitives::{pack_be, right_align},
@@ -17,6 +14,8 @@ use spr_hasher::{
 };
 use spr_keypair::{ViewingKey, X25519Keypair, X25519Pubkey};
 use zolana_ring_keys::RingStream;
+use zolana_ring_keys::AUDIT_STREAM_LABEL;
+use zolana_ring_keys::REGISTER_KEY_LABEL;
 
 const VECTOR: &str = include_str!("../../../test-vectors/audit/auditor-stream.json");
 

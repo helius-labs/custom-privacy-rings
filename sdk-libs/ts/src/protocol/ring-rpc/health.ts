@@ -33,23 +33,41 @@ function invalid(path: string): RingError {
 
 const { record, address, boolean } = wireDecoder(invalid);
 
-/** Unknown fields pass, so a newer service still answers an older client. */
+const SKIPPED_KEYS = ["coSignerPubkey", "storageAuthorityPubkey", "feePayerPubkey"];
+const REQUIRED_FIELDS = [
+  "mode",
+  "servicePubkey",
+  "enrollmentWriterPubkey",
+  "relay",
+  "recordWriter",
+  "enrollmentWrites",
+  "readerGrants",
+];
+
+/** Rust `deny_unknown_fields`, a role key is skipped and the enrollment writer is null without its role. */
 export function decodeRingRpcHealth(value: unknown): RingRpcHealth {
   const wire = record(value, "result");
+  if (
+    Object.keys(wire).some((key) => !REQUIRED_FIELDS.includes(key) && !SKIPPED_KEYS.includes(key))
+  )
+    throw invalid("result.shape");
+  const missing = REQUIRED_FIELDS.find((key) => !Object.hasOwn(wire, key));
+  if (missing !== undefined) throw invalid(`result.${missing}`);
   const mode = wire["mode"];
   if (mode !== "local" && mode !== "derived") throw invalid("result.mode");
   const readerGrants = wire["readerGrants"];
   if (readerGrants !== "tree" && readerGrants !== "database") {
     throw invalid("result.readerGrants");
   }
-  const optionalKey = (field: string): Address | undefined => {
-    const key = wire[field];
-    return key === undefined || key === null ? undefined : address(key, `result.${field}`);
-  };
+  const optionalKey = (field: string): Address | undefined =>
+    wire[field] === undefined ? undefined : address(wire[field], `result.${field}`);
   const coSigner = optionalKey("coSignerPubkey");
   const storageAuthority = optionalKey("storageAuthorityPubkey");
   const feePayer = optionalKey("feePayerPubkey");
-  const enrollmentWriter = optionalKey("enrollmentWriterPubkey");
+  const enrollmentWriter =
+    wire["enrollmentWriterPubkey"] === null
+      ? undefined
+      : address(wire["enrollmentWriterPubkey"], "result.enrollmentWriterPubkey");
   return Object.freeze({
     mode,
     servicePublicKey: address(wire["servicePubkey"], "result.servicePubkey"),

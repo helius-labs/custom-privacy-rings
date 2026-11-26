@@ -169,3 +169,12 @@ export interface ApplyProofInputs {
   /** Instruction order. */
   readonly writes: readonly RecordWriteProofInput[];
 }
+
+/** An opening the indexer served, unverified until checked against the bound root. */
+export type RingMemberOpening = RecordOpening;
+
+/** A leaf the indexer served. */
+export type RingServedRecord = Readonly<{
+  record: MemberRecord;
+  path: QuadPath;
+}>;

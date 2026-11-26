@@ -14,11 +14,8 @@ import {
 
 import { RingDomain, domainField } from "../../crypto/derivation/ring-domain.js";
 import { ringIdField } from "../../crypto/derivation/ring-stream.js";
-import { signMessage } from "../../rpc/ring-rpc.js";
-import {
-  AUTHORITY_WRITABLE_LISTS,
-  MEMBER_WRITABLE_LISTS,
-} from "../../operations/management/record-writes.js";
+import { signMessage } from "./read-signer.js";
+import { AUTHORITY_WRITABLE_LISTS, MEMBER_WRITABLE_LISTS } from "../membership/record-writes.js";
 import { RingError } from "../error.js";
 import type { RecordWrite } from "../membership/member-registry.js";
 import { checkMember, writeChain } from "../membership/member-opening.js";
@@ -88,11 +85,10 @@ export function recordUpdateWrite(entry: RecordUpdateEntry): RecordWrite {
 
 /**
  * Mirrored by `RecordUpdateStatement::hash` in `sdk-libs/client/src/rpc/record_update.rs`.
- *   `Poseidon(CRRU, hash_bytes(genesis_hash), hash_bytes(ring), hash_bytes(registry), entries_hash, valid_until_slot[, awaited_lists])`
+ *   `Poseidon(CRRU, hash_bytes(genesis_hash), hash_bytes(ring), hash_bytes(registry), entries_hash, valid_until_slot, awaited_lists)`
  */
 export function recordUpdateStatementHash(input: UnsignedRecordUpdate): Bytes32 {
-  const { genesisHash, ring, entries, validUntilSlot } = input.update;
-  const awaitedLists = input.update.awaitedLists ?? 0n;
+  const { genesisHash, ring, entries, validUntilSlot, awaitedLists } = input.update;
   if (validUntilSlot < 0n || validUntilSlot > U64_MAX) throw invalid("ValidUntilSlot");
   if (awaitedLists < 0n || awaitedLists > U64_MAX) throw invalid("AwaitedLists");
   return poseidon([
@@ -102,8 +98,8 @@ export function recordUpdateStatementHash(input: UnsignedRecordUpdate): Bytes32 
     hashBytes(addressBytes(input.registry, "registry")) as Bytes32,
     entries.map(recordUpdateWrite).reduce(writeChain, ZERO_32),
     bigIntBytes(validUntilSlot) as Bytes32,
-    // The width binds the wait to the signature, a pending update never verifies as a plain one.
-    ...(awaitedLists === 0n ? [] : [bigIntBytes(awaitedLists) as Bytes32]),
+    // The signature binds the wait, a pending update never verifies as a plain one.
+    bigIntBytes(awaitedLists) as Bytes32,
   ]);
 }
 
@@ -131,7 +127,12 @@ export function verifyRecordUpdate(request: SubmitRecordUpdateRequest): Bytes32 
   const hash = recordUpdateStatementHash(request);
   const signature = base58Encoder.encode(request.signature);
   const message = messageText(request, request.signer, hash);
-  if (!ed25519.verify(new Uint8Array(signature), message, addressBytes(request.signer, "signer")))
+  if (
+    signature.length !== 64 ||
+    !ed25519.verify(new Uint8Array(signature), message, addressBytes(request.signer, "signer"), {
+      zip215: false,
+    })
+  )
     throw invalid("Signature");
   return hash;
 }

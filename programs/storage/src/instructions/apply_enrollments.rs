@@ -120,7 +120,7 @@ pub fn process_apply_enrollments_ix(
     };
     emit_event(
         program_id,
-        &StorageEvent::EnrollmentsApplied {
+        &StorageEvent {
             header,
             writes: request.writes,
         },

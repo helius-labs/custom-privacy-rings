@@ -1,6 +1,8 @@
 /** The transfer key catalog, Rust `key_catalog.rs` and `Shapes` in `prover/circuits/transfer`. */
 import type { RingRail } from "../transaction/transact.js";
-import { N_PUBLIC_SLOTS } from "../transaction/spp.js";
+import { TRANSFER_SHAPES } from "./ring-transfer-shapes.js";
+
+export { TRANSFER_SHAPES };
 
 /** One transfer key, Rust `TransferShape`. */
 export interface TransferShape {
@@ -14,61 +16,14 @@ export interface TransferShape {
   readonly entry: boolean;
   /** A public record and the records under the owner's salt and the ring salt fit. */
   readonly wide: boolean;
+  /** Header wide bit, clear on narrow entry keys whose pools stay wide. */
+  readonly frameWide: boolean;
   /** The most tracking rows one inline transaction on the key opens. */
   readonly tracking: number;
   /** Excludes input and public slot assets. */
   readonly records: number;
+  readonly pools: PolicyPoolCapacity;
 }
-
-/** Rust `narrow`, `wide` and `entry`. */
-const shape = (
-  outputs: number,
-  inputs: number,
-  withdrawals: number,
-  owners: number,
-  family: Readonly<{ entry: boolean; wide: boolean }>,
-  [tracking, records]: readonly [number, number],
-): TransferShape =>
-  Object.freeze({
-    outputs,
-    inputs,
-    withdrawals,
-    owners,
-    ...family,
-    tracking,
-    records,
-  });
-
-const NARROW = Object.freeze({ entry: false, wide: false });
-const WIDE = Object.freeze({ entry: false, wide: true });
-const ENTRY = Object.freeze({ entry: true, wide: true });
-
-/** Ascending outputs, a frame takes the first that holds its SPP width. */
-const NARROW_SHAPES: readonly TransferShape[] = Object.freeze([
-  shape(2, 24, 4, 4, NARROW, [6, 12]),
-  shape(4, 24, 4, 4, NARROW, [8, 16]),
-  shape(8, 16, 4, 4, NARROW, [12, 24]),
-  shape(16, 4, 4, 2, NARROW, [21, 74]),
-]);
-/** The wide flag takes the first row holding the frame, the last only past 24 inputs. */
-const WIDE_SHAPES: readonly TransferShape[] = Object.freeze([
-  shape(8, 24, 32, 13, WIDE, [42, 115]),
-  shape(2, 40, 4, 9, WIDE, [12, 19]),
-]);
-/** A frame takes the first row holding its width. */
-const ENTRY_SHAPES: readonly TransferShape[] = Object.freeze([
-  shape(4, 8, 4, 8, ENTRY, [16, 52]),
-  shape(8, 2, 4, 2, ENTRY, [14, 50]),
-  shape(8, 5, 4, 4, ENTRY, [16, 56]),
-]);
-const WIDE_ENTRY_SHAPE = shape(8, 8, 32, 8, ENTRY, [41, 110]);
-
-export const TRANSFER_SHAPES: readonly TransferShape[] = Object.freeze([
-  ...NARROW_SHAPES,
-  ...WIDE_SHAPES,
-  ...ENTRY_SHAPES,
-  WIDE_ENTRY_SHAPE,
-]);
 
 /** What names a frame's key, nothing else moves a record's counter, Rust `FrameKey`. */
 export interface FrameKey {
@@ -82,14 +37,17 @@ export interface FrameKey {
 
 /** `undefined` when the catalog keys none, Rust `FrameKey::shape`. */
 export function frameKeyShape(key: FrameKey): TransferShape | undefined {
-  const holds = (entry: TransferShape): boolean =>
-    key.outputs <= entry.outputs && key.inputs <= entry.inputs;
   // SPP's authority rail holds every input to the ring.
-  if (key.spendsDefaultRing) {
-    if (key.rail === "delegate" || key.rail === "anonymousDelegate") return undefined;
-    return (key.wide ? [WIDE_ENTRY_SHAPE] : ENTRY_SHAPES).find(holds);
+  if (key.spendsDefaultRing && (key.rail === "delegate" || key.rail === "anonymousDelegate")) {
+    return undefined;
   }
-  return (key.wide ? WIDE_SHAPES : NARROW_SHAPES).find(holds);
+  return TRANSFER_SHAPES.find(
+    (entry) =>
+      entry.entry === key.spendsDefaultRing &&
+      entry.frameWide === key.wide &&
+      key.outputs <= entry.outputs &&
+      key.inputs <= entry.inputs,
+  );
 }
 
 /** A transfer key, Rust `RingCircuit::Transfer`. */
@@ -150,14 +108,7 @@ export function signerSlots(circuit: TransferKeyCircuit): number {
 export function transferPoolCapacity(circuit: TransferKeyCircuit): PolicyPoolCapacity {
   const row = TRANSFER_SHAPES.find((entry) => sameCircuit(shapeCircuit(entry), circuit));
   if (row === undefined) throw new RangeError(`no catalog key ${transferCircuitType(circuit)}`);
-  const records = row.records + row.inputs;
-  // Withdrawals settle through the public slots, their assets are at most N_PUBLIC_SLOTS.
-  const withdrawalAssets = Math.min(row.withdrawals, N_PUBLIC_SLOTS);
-  return Object.freeze({
-    own: records + Math.max(withdrawalAssets, N_PUBLIC_SLOTS),
-    curator: records + withdrawalAssets,
-    tracking: row.tracking,
-  });
+  return row.pools;
 }
 
 function sameCircuit(left: TransferKeyCircuit, right: TransferKeyCircuit): boolean {
@@ -186,9 +137,10 @@ export function transferKeys(): readonly TransferKeyCircuit[] {
 const SPP_ADDRESSES = 4;
 /** Rust `RING_ADDRESSES`, ring program, policy, config, own, curator and tracking registries. */
 const RING_ADDRESSES = 6;
-import { MAX_TRANSACTION_ADDRESSES } from "../transaction/v1-limits.js";
-
-export { MAX_TRANSACTION_ADDRESSES };
+/** The version 1 transaction ceilings, Rust `solana_message::v1`. */
+export const MAX_TRANSACTION_ADDRESSES = 64;
+export const MAX_TRANSACTION_SIGNATURES = 12;
+export const MAX_TRANSACTION_INSTRUCTIONS = 64;
 
 /** What takes a v1 transaction's addresses beside its owner signers, Rust `TransferAddresses`. */
 export interface TransferAddresses {
@@ -219,7 +171,7 @@ function shapeCircuit(entry: TransferShape): TransferKeyCircuit {
 
 /** Rust `TransferShape::holds`. */
 function shapeHolds(entry: TransferShape, spend: TransferSpend): boolean {
-  const pools = transferPoolCapacity(shapeCircuit(entry));
+  const { pools } = entry;
   return (
     Number.isInteger(spend.inputs) &&
     spend.inputs >= 1 &&

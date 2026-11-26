@@ -19,6 +19,7 @@ import {
   encodePrepareRelayRequest,
 } from "../protocol/ring-rpc/ring-rpc-codec.js";
 import type { OwnerDebit } from "../protocol/membership/owner-debits.js";
+import type { RingPolicy } from "../protocol/codec/ring-codecs.js";
 import type {
   PrepareAuthorityTransferRequest,
   PrepareRelayRequest,
@@ -31,7 +32,6 @@ import {
   expectedPublicOwner,
   type RelayFunderTerms,
   type RelayTransferTerms,
-  type DelegateRingConfig,
   type ExpectedRelayMessage,
   type ExpectedSealed,
   expectedDelegate,
@@ -101,9 +101,12 @@ export class UnsignedRelay {
   }
 
   async sign(context?: RequestContext): Promise<PreparedRelay> {
-    const ownerSignature = base58.decode(
-      await this.#signer.sign(this.#messageHash, context),
-    ) as Signature;
+    const signature = await this.#signer.sign(this.#messageHash, context);
+    if (!(signature instanceof Uint8Array) || signature.length !== 64)
+      throw new RingError("RING_RELAY_OWNER_SIGNATURE", {
+        details: { length: signature instanceof Uint8Array ? signature.length : -1 },
+      });
+    const ownerSignature = base58.decode(signature) as Signature;
     return new PreparedRelay(
       { ...this.#request, intent: { ...this.#request.intent, ownerSignature } },
       this.#expected,
@@ -239,7 +242,7 @@ export class PendingRelaySignature {
     Object.freeze(this);
   }
 
-  /** The message Ring RPC returned, a copy, which a sealed frame's funder checks with `FunderApproval`. */
+  /** A copy of the message Ring RPC returned, a sealed frame's funder checks it with `FunderApproval`. */
   message(): Uint8Array {
     return this.#message.slice();
   }
@@ -323,7 +326,7 @@ export interface OwnerApprovalInput {
   readonly relayId: Hash;
   readonly message: Uint8Array;
   readonly terms: RelayTransferTerms;
-  readonly config: DelegateRingConfig;
+  readonly config: RingPolicy;
   /** Every note the wallet holds, the nullifiers are the wallet's own derivation. */
   readonly knownNotes: readonly Pick<WalletUtxo, "nullifier">[];
 }

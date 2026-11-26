@@ -34,7 +34,7 @@ import type {
   TreeContext,
   Shape,
 } from "@heliuslabs/spr/interface";
-import { CUSTOM_RING_PROOF_LENGTH } from "../proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../codec/ring-codecs.js";
 import {
   PAYLOAD_LENGTH_LEN,
   RecordKind,
@@ -575,8 +575,6 @@ interface FrameHeader {
   readonly flags: FrameFlags;
 }
 
-/** A storage revision, little endian u64. */
-export const REVISION_LENGTH = 8;
 /** `a ‖ b ‖ c` with `b` compressed, Rust `PlainGroth16Proof::SIZE`. */
 export const PLAIN_GROTH16_PROOF_LENGTH = 128;
 const VIEWING_PUBKEY_TAG = 4;

@@ -1,4 +1,4 @@
-//! What the ring reads of the pinned SPP account lists and public legs, pinned by `tests/spp.rs`.
+//! What the ring reads of the pinned SPP account lists and public legs, pinned by `sdk-libs/client/tests/spp.rs`.
 //!
 //! SPP reads its lists by position and folds its legs in one order. A wrong index or stride here
 //! would verify the ring proof against accounts SPP does not settle.
@@ -7,7 +7,6 @@
 //! `programs/custom-ring/src/instructions/verification/public_legs.rs`.
 
 use arrayvec::ArrayVec;
-use solana_address::Address;
 use spr_hasher::{
     primitives::{hash_bytes, right_align, BN254_SCALAR_MODULUS_BE},
     HasherError,
@@ -32,8 +31,6 @@ pub const RING_MERGE_PAYER_INDEX: usize = 3;
 
 /// SOL takes the zero asset address, whose asset field is [`SOL_ASSET_FIELD`].
 pub const SOL_ASSET_ADDRESS: [u8; 32] = [0u8; 32];
-
-pub const SYSTEM_PROGRAM_ID: Address = Address::new_from_array([0u8; 32]);
 
 /// A refused fold, `asset` the zero address for SOL.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -87,11 +84,7 @@ impl PublicSlots {
         let mut slots = Self::default();
         for leg in legs {
             let PublicLeg { transfer, mint } = leg?;
-            slots.classes = slots.classes
-                | match transfer.is_deposit() {
-                    true => CoSignScope::DEPOSITS,
-                    false => CoSignScope::WITHDRAWALS,
-                };
+            slots.classes = slots.classes | leg_class(&transfer);
             slots.add(mint.unwrap_or(SOL_ASSET_ADDRESS), signed_amount(transfer))?;
         }
         if let Some(slot) = slots.slots.iter().find(|slot| slot.net == 0) {
@@ -181,6 +174,13 @@ impl PublicSlot {
             false => self.gross,
         };
         Ok(Self { net, gross, ..self })
+    }
+}
+
+pub const fn leg_class(transfer: &InterfaceTransfer) -> CoSignScope {
+    match transfer.is_deposit() {
+        true => CoSignScope::DEPOSITS,
+        false => CoSignScope::WITHDRAWALS,
     }
 }
 

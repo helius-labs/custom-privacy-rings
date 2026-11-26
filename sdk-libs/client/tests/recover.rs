@@ -5,8 +5,10 @@ mod origin_fixture;
 #[path = "common/transfer.rs"]
 pub mod transfer;
 
-use custom_ring_interface::{MergeRecord, OutputRecord, RecordKind, RingMode};
+use custom_ring_interface::{RecordKind, RingMode};
 use std::{cell::Cell, sync::Mutex};
+use zolana_ring_keys::MergeRecord;
+use zolana_ring_keys::OutputRecord;
 
 use solana_address::Address;
 use solana_signature::Signature;
@@ -733,6 +735,27 @@ async fn missing_or_invalid_mandatory_disclosure_never_returns_a_partial_balance
             AuditError::MissingAuditorMessage | AuditError::UnopenedOutput { slot: 0, .. }
         ));
     }
+}
+
+#[tokio::test]
+async fn a_record_that_rebuilds_another_commitment_is_no_refusal() {
+    let fixture = Fixture::new();
+    let exposed = UtxoFields {
+        owner_key: [0x66; 32],
+        nullifier_pk: spr_interface::ZERO_NULLIFIER_PUBKEY,
+        ..UtxoFields::default()
+    };
+    let (held, mut tx) = fixture.encrypt_beside(fixture.output(4), 2, Beside::OtherMember(exposed));
+    tx.output_slots[1].output_context.hash[31] ^= 1;
+    let history = History {
+        transactions: vec![tx],
+        ..Default::default()
+    };
+    let recovered = fixture
+        .run(fixture.recovery(), &history)
+        .await
+        .expect("the slot keeps its proven record");
+    assert_eq!(recovered.utxos, [held]);
 }
 
 #[tokio::test]

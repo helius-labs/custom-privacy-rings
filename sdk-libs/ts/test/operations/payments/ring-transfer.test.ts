@@ -89,7 +89,7 @@ import {
 import { BLOCKHASH, kitReads } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 
 import type { FixtureRecord } from "../../helpers/member-registry.js";
-import { ringProofCircuit } from "../../../src/rpc/prover/ring.js";
+import { ringProofCircuit } from "../../../src/protocol/proof/ring-proof-requests.js";
 import { ringCircuitType } from "../../../src/protocol/proof/proving-keys.js";
 import {
   bindingSigners,
@@ -117,10 +117,7 @@ import {
   type RingFixtureOptions,
 } from "../../helpers/ring-pipeline.js";
 
-import {
-  RING_AUTHORITY_MAX_INPUTS,
-  RING_AUTHORITY_SHAPES,
-} from "../../../src/protocol/transaction/spp.js";
+import { RING_AUTHORITY_SHAPES } from "../../../src/protocol/transaction/spp.js";
 
 const assets = new AssetRegistry();
 const EMPTY_TABLE: RuleTable = buildRuleTable({ rules: [] });
@@ -769,6 +766,7 @@ describe("policy ring", () => {
     const key = vouching.publicKey().ed25519();
     expect(request.voucher.publicKey).toEqual(key);
     const digest = vouchDigest({
+      ringId: request.ringId,
       privateTxHash: request.privateTxHash,
       withdrawalHash: request.withdrawalHash,
     });
@@ -833,6 +831,7 @@ describe("policy ring", () => {
       curatorRing: 0,
     });
     const digest = vouchDigest({
+      ringId: request.ringId,
       privateTxHash: request.privateTxHash,
       withdrawalHash: request.withdrawalHash,
     });
@@ -1581,7 +1580,9 @@ describe("delegate move builder", () => {
     await expect(wide.build).rejects.toMatchObject({
       code: "RING_BUILD_TRANSFER",
       causeCode: "RING_TOO_MANY_INPUTS",
-      cause: { details: { maximum: RING_AUTHORITY_MAX_INPUTS } },
+      cause: {
+        details: { maximum: Math.max(...RING_AUTHORITY_SHAPES.map((shape) => shape.inputs)) },
+      },
     });
     expect(wide.requests).toEqual([]);
   });

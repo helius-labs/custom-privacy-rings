@@ -77,14 +77,7 @@ pub fn check_name(name: &str) -> Result<(), String> {
 }
 
 fn check_url(text: &str) -> Result<(), String> {
-    let rest = text
-        .strip_prefix("http://")
-        .or_else(|| text.strip_prefix("https://"));
-    match rest.map(|rest| rest.split(['/', '?']).next().unwrap_or_default()) {
-        None => Err("a URL starts with http:// or https://".to_owned()),
-        Some("") => Err("a URL names a host".to_owned()),
-        Some(_) => Ok(()),
-    }
+    crate::ring_rpc::check_service_url(text).map_err(|error| error.to_string())
 }
 
 fn check_address(text: &str) -> Result<(), String> {
@@ -762,7 +755,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             compiled.shared_sources,
-            vec![(ListId::Block, custom_ring_sdk::CustomRing::new(CURATOR))]
+            vec![(ListId::Block, zolana_ring_client::CustomRing::new(CURATOR))]
         );
         assert!(policy.sources.get(Target::Devnet).is_empty());
     }
@@ -1061,7 +1054,10 @@ pub(crate) mod tests {
     #[test]
     fn answers_are_checked_before_they_are_taken() {
         assert!(check_url("http://127.0.0.1:8899").is_ok());
+        assert!(check_url("http://127.0.0.1:8785").is_ok());
         assert!(check_url("https://api.devnet.solana.com").is_ok());
+        assert!(check_url("https://example.com").is_ok());
+        assert!(check_url("http://example.com").is_err());
         assert!(check_url("127.0.0.1:8899").is_err());
         assert!(check_url("http:///path").is_err());
         assert!(check_amount("").is_ok());

@@ -144,7 +144,7 @@ function ringError(code: string, details?: Readonly<Record<string, unknown>>): u
 }
 
 describe("auditor envelope", () => {
-  // Pinned by prover/ringtest/ringaudit/kdf_test.go and sdk-libs/client/src/crypto/encryption/mod.rs.
+  // Pinned by sdk-libs/client/src/crypto/encryption/mod.rs.
   const auditor = X25519Keypair.fromBytes(
     hex("01323130373635343b3a39383f3e3d3c23222120272625242b2a29282f2e2d2c", 32),
   );
@@ -619,7 +619,7 @@ describe("auditRing", () => {
     });
     // Under the clear form the hash reads as a payload, the record rebuilds another commitment.
     const clear = await scan([transaction], TRANSFERS, { auditor });
-    expect(clear.transactions[0]?.payloadErrors).toEqual([{ slotIndex: 0, kind: "payload" }]);
+    expect(clear.transactions[0]?.payloadErrors).toEqual([{ slotIndex: 0, kind: "commitment" }]);
   });
 
   it("keeps each proven record that rebuilds another commitment and reports the payload", async () => {
@@ -634,8 +634,8 @@ describe("auditRing", () => {
     // The proof binds the record to the commitment, a record off it still reads.
     expect(audited?.outputs.map((output) => output.opening.kind)).toEqual(["ring", "exit"]);
     expect(audited?.payloadErrors).toEqual([
-      { slotIndex: 0, kind: "payload" },
-      { slotIndex: 1, kind: "payload" },
+      { slotIndex: 0, kind: "commitment" },
+      { slotIndex: 1, kind: "commitment" },
     ]);
     const [ringOutput, exitOutput] = audited?.outputs ?? [];
     if (ringOutput?.opening.kind !== "ring" || exitOutput?.opening.kind !== "exit")
@@ -736,8 +736,8 @@ describe("auditRing", () => {
     const [audited, spent] = page.transactions;
     // The ring data hash binds every slot, the exit's record misses it too.
     expect(audited?.payloadErrors).toEqual([
-      { slotIndex: 0, kind: "payload" },
-      { slotIndex: 1, kind: "payload" },
+      { slotIndex: 0, kind: "commitment" },
+      { slotIndex: 1, kind: "commitment" },
     ]);
     expect(audited?.outputs[0]?.opening).toMatchObject({ kind: "ring" });
     if (audited?.outputs[0]?.opening.kind !== "ring") throw new Error("ring output");
@@ -789,7 +789,7 @@ describe("auditRing", () => {
       secrets: ownerSecrets,
     });
     const [audited, spent] = page.transactions;
-    expect(audited?.payloadErrors).toEqual([{ slotIndex: 0, kind: "payload" }]);
+    expect(audited?.payloadErrors).toEqual([{ slotIndex: 0, kind: "commitment" }]);
     if (audited?.outputs[0]?.opening.kind !== "ring") throw new Error("ring output");
     expect(audited.outputs[0].opening.utxo).not.toHaveProperty("nullifierPk");
     expect(spent?.inputs[0]?.opening).toEqual({ kind: "unresolved" });
@@ -827,7 +827,7 @@ describe("auditRing", () => {
         accounts: await auditAccounts(new Map([[OTHER_OWNER, otherKey]])),
       })
     ).transactions[0]!;
-    expect(audited.payloadErrors).toEqual([{ slotIndex: 0, kind: "payload" }]);
+    expect(audited.payloadErrors).toEqual([{ slotIndex: 0, kind: "commitment" }]);
     // An unrebuilt key names no owner and derives no nullifier, its claims drop with it.
     const [ringOutput] = audited.outputs;
     if (ringOutput?.opening.kind !== "ring") throw new Error("ring output");

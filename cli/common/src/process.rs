@@ -1,5 +1,7 @@
 use std::{
     env,
+    fs::{self, OpenOptions},
+    io::Read,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -8,6 +10,8 @@ use std::{
 };
 
 use anyhow::{bail, ensure, Context, Result};
+
+use zolana_secret_file::{replace, Visibility};
 
 pub const PROCESS_SCOPE_ENV: &str = "ZOLANA_PROCESS_SCOPE_DIR";
 pub const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(3);
@@ -109,12 +113,28 @@ struct OwnedReceipt {
     identity: String,
 }
 
+const MAX_RECEIPT_BYTES: u64 = 4096;
+
 impl OwnedReceipt {
     fn read(path: &Path) -> Option<Self> {
-        if !std::fs::symlink_metadata(path).ok()?.file_type().is_file() {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(
+            &mut options,
+            libc::O_NOFOLLOW | libc::O_NONBLOCK,
+        );
+        let file = options.open(path).ok()?;
+        if !file.metadata().ok()?.is_file() {
             return None;
         }
-        let receipt = std::fs::read_to_string(path).ok()?;
+        let mut receipt = String::new();
+        file.take(MAX_RECEIPT_BYTES.saturating_add(1))
+            .read_to_string(&mut receipt)
+            .ok()?;
+        if receipt.len() as u64 > MAX_RECEIPT_BYTES {
+            return None;
+        }
         let (pid, identity) = receipt.trim_end().split_once('\n')?;
         if !valid_pid(pid) || identity.is_empty() {
             return None;
@@ -133,12 +153,14 @@ impl OwnedReceipt {
 
 fn record_owned_process(scope: &Path, name: &str, pid: u32) -> Result<()> {
     ensure!(
-        name.chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-'),
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-'),
         "invalid scoped service name"
     );
     let path = scope.join(name).with_extension(RECEIPT_EXTENSION);
-    if std::fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
+    if fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
         bail!("scoped service receipt is not a regular file");
     }
     if OwnedReceipt::read(&path).is_some_and(|receipt| receipt.alive()) {
@@ -147,7 +169,12 @@ fn record_owned_process(scope: &Path, name: &str, pid: u32) -> Result<()> {
     let pid = pid.to_string();
     let identity =
         process_identity(&pid).context("spawned service exited before ownership was recorded")?;
-    std::fs::write(path, format!("{pid}\n{identity}\n")).context("record task-owned service")
+    replace(
+        &path,
+        format!("{pid}\n{identity}\n").as_bytes(),
+        Visibility::Secret,
+    )
+    .context("record task-owned service")
 }
 
 /// Escalation needs the same identity after the grace period.

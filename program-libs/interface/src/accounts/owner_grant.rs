@@ -7,8 +7,9 @@ use bytemuck::{Pod, Zeroable};
 use solana_address::Address;
 
 use crate::{
-    storage::StorageError, storage_instruction::OwnerGrantIxData, ReaderKeyBytes,
-    READER_KEY_ED25519, READER_KEY_P256, STORAGE_PROGRAM_ID,
+    storage::{storage_account, StorageError},
+    storage_instruction::OwnerGrantIxData,
+    ReaderKeyBytes, READER_KEY_ED25519, READER_KEY_P256,
 };
 
 /// A program owner's on-chain consent to one reader, a PDA cannot sign off chain, the address names both.
@@ -20,11 +21,9 @@ pub struct OwnerGrant {
     pub active: u8,
 }
 
-impl OwnerGrant {
-    pub const DISCRIMINATOR: u8 = 5;
-    pub const SEED: &'static [u8] = b"owner_grant";
-    pub const SIZE: usize = core::mem::size_of::<Self>();
+storage_account!(OwnerGrant, 5, b"owner_grant", |_: &Self| true);
 
+impl OwnerGrant {
     /// One account per owner per reader, the key splits because a seed holds 32 bytes.
     pub fn seeds<'a>(
         registry: &'a Address,
@@ -34,36 +33,6 @@ impl OwnerGrant {
         let (scheme, key) = reader.split_at(2);
         [Self::SEED, registry.as_ref(), owner.as_ref(), scheme, key]
     }
-
-    pub fn find_address(
-        registry: &Address,
-        owner: &Address,
-        reader: &ReaderKeyBytes,
-    ) -> (Address, u8) {
-        Address::find_program_address(&Self::seeds(registry, owner, reader), &STORAGE_PROGRAM_ID)
-    }
-
-    pub fn from_data(data: &[u8]) -> Option<&Self> {
-        bytemuck::try_from_bytes::<Self>(data)
-            .ok()
-            .filter(|account| account.discriminator == Self::DISCRIMINATOR)
-    }
-
-    pub fn from_data_mut(data: &mut [u8]) -> Option<&mut Self> {
-        bytemuck::try_from_bytes_mut::<Self>(data)
-            .ok()
-            .filter(|account| account.discriminator == Self::DISCRIMINATOR)
-    }
-
-    pub fn decode(owner: &Address, data: &[u8]) -> Option<Self> {
-        (*owner == STORAGE_PROGRAM_ID)
-            .then(|| Self::from_data(data).copied())
-            .flatten()
-    }
-
-    pub const fn is_active(&self) -> bool {
-        self.active == 1
-    }
 }
 
 impl OwnerGrantIxData {
@@ -71,7 +40,7 @@ impl OwnerGrantIxData {
     pub fn check(&self) -> Result<(), StorageError> {
         let canonical = match self.reader[0] {
             READER_KEY_ED25519 => self.reader[33] == 0,
-            READER_KEY_P256 => true,
+            READER_KEY_P256 => matches!(self.reader[1], 0x02 | 0x03),
             _ => false,
         };
         if !canonical {
@@ -84,5 +53,29 @@ impl OwnerGrantIxData {
     }
 }
 
-const _: () = assert!(core::mem::align_of::<OwnerGrant>() == 1);
 const _: () = assert!(OwnerGrant::SIZE == 2);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn p256_reader_key_requires_compressed_sec1_prefix() {
+        for prefix in [0x02, 0x03] {
+            let mut reader = [7; 34];
+            reader[0] = READER_KEY_P256;
+            reader[1] = prefix;
+            assert_eq!(OwnerGrantIxData { reader, active: 1 }.check(), Ok(()));
+        }
+        for bad_prefix in [0x00, 0x01, 0x04, 0x06, 0xff] {
+            let mut reader = [7; 34];
+            reader[0] = READER_KEY_P256;
+            reader[1] = bad_prefix;
+            assert_eq!(
+                OwnerGrantIxData { reader, active: 1 }.check(),
+                Err(StorageError::InvalidReaderKey),
+                "bad_prefix={bad_prefix:#x}"
+            );
+        }
+    }
+}

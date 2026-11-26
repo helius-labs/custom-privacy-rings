@@ -3,13 +3,22 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Parser;
 use log::{info, warn};
+use ring_audit::wallet_snapshots::WalletSnapshotLimits;
+use ring_cosigner::cosign::CoSignerApproval;
+use ring_relay::managed_merge::MANAGED_MERGE_INTERVAL;
+use ring_relay::relay_reservations::RelayBudget;
+use ring_relay::relay_services::RelayServicesInit;
+use ring_relay::role_pins::RolePins;
+use ring_service_core::database::{Store, STORE_CONNECTIONS};
+use ring_service_core::keys::KeySource;
+use ring_service_core::origins::OriginPolicy;
+use ring_service_core::upstream::{ChainSource, TransactionSource, Upstreams};
+use ring_writer::enrollment_applier::EnrollmentApplierParts;
+use ring_writer::record_writer::RECORD_FLUSH_INTERVAL;
+use ring_writer::storage_chain::{live_ring_client, LiveStorageChain};
 use zolana_ring_client::rpc::KeyMode;
 use zolana_ring_rpc::{
-    live_ring_client, run_server, Announce, ChainSource, Cli, CoSignerApproval, Command,
-    EnrollmentApplierParts, Hub, KeySource, LiveStorageChain, OriginPolicy, RelayBudget,
-    RelayServicesInit, RolePins, ServeArgs, ServeKeys, ServerOptions, ServiceIdentity, Store,
-    TransactionSource, Upstreams, WalletSnapshotLimits, MANAGED_MERGE_INTERVAL,
-    RECORD_FLUSH_INTERVAL, STORE_CONNECTIONS,
+    run_server, Announce, Cli, Command, Hub, ServeArgs, ServeKeys, ServerOptions, ServiceIdentity,
 };
 
 #[tokio::main]
@@ -94,11 +103,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             RelayServicesInit {
                 fee_payer,
                 store,
-                rpc_url: &args.rpc_url,
-                indexer_url: &args.indexer_url,
+                upstreams,
                 prover_url,
             }
-            .build(),
+            .build()?,
         ),
         _ => None,
     };
@@ -173,7 +181,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     info!("service pubkey {}", hub.service_pubkey());
     match hub.relay() {
         None => {
-            warn!("relay off, token account creation needs a fee payer and a relay budget")
+            warn!("relay off, it needs a fee payer and a relay budget")
         }
         Some(relay) => {
             info!("relay fee payer {}", relay.fee_payer());
@@ -183,7 +191,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     relay_budget.total_lamports, relay_budget.signer_lamports
                 ),
                 false => warn!(
-                    "token account creates off, set --relay-budget-lamports and --relay-signer-budget-lamports and fund the fee payer to turn them on"
+                    "relay sends off, set --relay-budget-lamports and --relay-signer-budget-lamports and fund the fee payer to turn them on"
                 ),
             }
         }
@@ -208,7 +216,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     }
     if let (Ok(writer), Some(prover_url)) = (hub.record_writer(), &args.prover_url) {
         info!("storage authority {}", writer.authority());
-        hub.serve_private_writes(live_ring_client(upstreams, prover_url))?;
+        hub.serve_private_writes(live_ring_client(upstreams, prover_url)?)?;
     }
     hub.spawn_workers();
     let handle = run_server(hub, options).await?;

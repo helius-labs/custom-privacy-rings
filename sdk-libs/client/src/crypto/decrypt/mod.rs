@@ -1,7 +1,4 @@
-use custom_ring_interface::{
-    blinding::ring_blinding_seed, ring_body_output, stream::DeliveredSlot, AuditEvidence,
-    AuditStreamLayout, AuditorMessage, EntryRecord, OutputRecord, ParsedTransact, RecordKind,
-};
+use custom_ring_interface::{AuditStreamLayout, AuditorMessage, ParsedTransact, RecordKind};
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::ProofInputUtxo;
@@ -13,6 +10,13 @@ use spr_transaction::{
     utxo::{derive_output_blinding_seed, derive_transact_output_blinding, DUMMY_DOMAIN},
     OutputContext, OutputSlot, ShieldedTransaction,
 };
+use zolana_ring_keys::ring_blinding_seed;
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::AuditEvidence;
+use zolana_ring_keys::AuditorMessageRead;
+use zolana_ring_keys::DeliveredSlot;
+use zolana_ring_keys::EntryRecord;
+use zolana_ring_keys::OutputRecord;
 
 use zolana_ring_transaction::{open_recipient_body, published_nullifier_pk, OpenedRecipientBody};
 
@@ -338,7 +342,7 @@ impl Transfer {
                     ring_data_hash: None,
                     ..opened
                 },
-                Some(OutputPayloadErrorKind::Payload),
+                Some(OutputPayloadErrorKind::Commitment),
             ),
         };
         Ok(SlotRead {

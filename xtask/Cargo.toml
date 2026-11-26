@@ -22,3 +22,5 @@ spr-transaction = { workspace = true }
 xtask = { path = "../zolana/xtask" }
 zk-ring-program = { path = "../program-tests/zk-ring-program" }
 zolana-cli-common = { workspace = true }
+zolana-ring-client = { workspace = true }
+zolana-ring-keys = { workspace = true }

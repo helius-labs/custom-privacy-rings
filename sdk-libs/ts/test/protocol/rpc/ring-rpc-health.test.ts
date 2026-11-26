@@ -18,10 +18,8 @@ describe("Ring RPC health", () => {
         mode: "derived",
         servicePubkey: KEY,
         feePayerPubkey: KEY,
-        coSignerPubkey: null,
         enrollmentWriterPubkey: WRITER,
         ...SWITCHES,
-        newerField: 1,
       }),
     ).toEqual({
       mode: "derived",
@@ -43,10 +41,21 @@ describe("Ring RPC health", () => {
     ).not.toHaveProperty("enrollmentWriterPublicKey");
   });
 
-  it.each(["relay", "recordWriter", "enrollmentWrites", "readerGrants"])(
+  const WIRE = { mode: "local", servicePubkey: KEY, enrollmentWriterPubkey: null, ...SWITCHES };
+
+  it.each([
+    ["an unknown field", { newerField: 1 }, "result.shape"],
+    ["a null skipped role key", { coSignerPubkey: null }, "result.coSignerPubkey"],
+  ])("refuses %s", (_name, change, path) => {
+    expect(() => decodeRingRpcHealth({ ...WIRE, ...change })).toThrow(
+      expect.objectContaining({ code: "RING_RPC", details: expect.objectContaining({ path }) }),
+    );
+  });
+
+  it.each(["relay", "recordWriter", "enrollmentWrites", "readerGrants", "enrollmentWriterPubkey"])(
     "refuses a result without %s",
     (field) => {
-      const wire: Record<string, unknown> = { mode: "local", servicePubkey: KEY, ...SWITCHES };
+      const wire: Record<string, unknown> = { ...WIRE };
       delete wire[field];
       expect(() => decodeRingRpcHealth(wire)).toThrow(
         expect.objectContaining({

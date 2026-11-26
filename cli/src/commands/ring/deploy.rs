@@ -11,7 +11,6 @@ use std::{
 
 use anyhow::{bail, ensure, Context as _, Result};
 use custom_ring_interface::{RingAccount, RingPolicy};
-use custom_ring_sdk::CustomRing;
 use sha2::{Digest, Sha256};
 use solana_account::Account;
 use solana_address::Address;
@@ -23,7 +22,7 @@ use solana_sbpf::elf_parser::{
 use solana_system_interface::instruction as system;
 use spr_client::Rpc;
 use zolana_operator_custody::{OperatorSigner, SigningIdentity};
-use zolana_ring_client::ProgramData;
+use zolana_ring_client::{CustomRing, ProgramData};
 
 use crate::{
     line, policy::Pinned, release::RingProgram, submission::Operators, workspace::Workspace,
@@ -307,7 +306,7 @@ impl ProgramBinary {
         let binary = Self::parse(bytes)?;
         zolana_cli_common::release::verify_program_keys(
             bytes,
-            custom_ring_interface::proving_key_hashes(),
+            zolana_ring_client::proving_key_hashes(),
         )?;
         Ok(binary)
     }

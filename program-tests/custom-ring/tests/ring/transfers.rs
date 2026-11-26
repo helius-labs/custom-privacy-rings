@@ -29,12 +29,12 @@ fn auditor_sees_every_ring_transfer() -> Result<()> {
     register.create_records(rpc)?;
     let rejection = ExpectRejection {
         payer: &env.payer,
-        instructions: &[custom_ring_sdk::Initialize {
+        instructions: &[zolana_ring_client::Initialize {
             ring,
             payer: authority,
             authority,
             auditor_pubkey: auditor_pk,
-            kind: custom_ring_sdk::RingKind::Policy,
+            kind: zolana_ring_client::RingKind::Policy,
             roles: RingRoleKeys::of(&env.payer).roles(&env.payer),
             policy: None,
         }
@@ -347,7 +347,7 @@ fn auditor_sees_every_ring_transfer() -> Result<()> {
     // 11. The admin hands the pauser role over, only the new key pauses the ring.
     let successor = env.funded_keypair()?;
     rpc.create_and_send_transaction(
-        &[custom_ring_sdk::UpdateAuthority {
+        &[zolana_ring_client::UpdateAuthority {
             ring,
             admin: role_keys.admin.pubkey(),
             new_authority: successor.pubkey(),
@@ -1028,7 +1028,7 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
         payer: &env.payer,
         holder: &cosign_admin,
     }
-    .send(&[custom_ring_sdk::SetCoSigner {
+    .send(&[zolana_ring_client::SetCoSigner {
         ring,
         payer: env.payer.pubkey(),
         authority: cosign_admin.pubkey(),

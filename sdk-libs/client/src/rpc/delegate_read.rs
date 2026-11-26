@@ -6,11 +6,13 @@ use solana_signer::Signer;
 use spr_indexer_api::{Base64String, Hash, SerializablePubkey, SerializableSignature};
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use spr_keypair::{constants::BLINDING_LEN, NullifierKey};
+use zeroize::Zeroize;
 
 use super::{
     base64, Attestation, GetWalletStatusResponse, ReadBuildError, ReadTarget, RequestBuildError,
     SignedRequest, WalletNote,
 };
+use crate::REDACTED;
 
 pub const GET_DELEGATE_NOTES: &str = "getDelegateNotes";
 pub const RELEASE_DELEGATE_SNAPSHOT: &str = "releaseDelegateSnapshot";
@@ -31,13 +33,37 @@ pub struct GetDelegateNotesRequest {
     pub signature: SerializableSignature,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct GetDelegateNotesResponse {
     /// Right aligned, absent while the owner holds no registration or its seal is unread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullifier_secret: Option<Hash>,
     pub status: GetWalletStatusResponse,
+}
+
+impl core::fmt::Debug for GetDelegateNotesResponse {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            nullifier_secret,
+            status,
+        } = self;
+        f.debug_struct("GetDelegateNotesResponse")
+            .field(
+                "nullifier_secret",
+                &nullifier_secret.as_ref().map(|_| REDACTED),
+            )
+            .field("status", status)
+            .finish()
+    }
+}
+
+impl Drop for GetDelegateNotesResponse {
+    fn drop(&mut self) {
+        if let Some(secret) = &mut self.nullifier_secret {
+            secret.0.zeroize();
+        }
+    }
 }
 
 impl GetDelegateNotesResponse {
@@ -266,9 +292,12 @@ mod tests {
             .pubkey()
             .unwrap();
         assert!(read.nullifier_key(&note(foreign)).is_none());
+        let rendered = format!("{read:?}");
+        assert!(rendered.contains(REDACTED), "{rendered}");
+        assert!(!rendered.contains("7, 7, 7"), "{rendered}");
         let unread = GetDelegateNotesResponse {
             nullifier_secret: None,
-            ..read
+            status: read.status.clone(),
         };
         assert!(unread
             .nullifier_key(&note(registered.pubkey().unwrap()))

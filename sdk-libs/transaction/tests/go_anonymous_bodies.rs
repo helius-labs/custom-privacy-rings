@@ -1,11 +1,12 @@
 //! Reads `test-vectors/audit/anonymous_bodies.json`, the ciphertexts of a witness the anonymous key solves.
 
-use custom_ring_interface::{
-    stream::SlotSecret, OutputRecord, RecordForm, RecordKey, RecordKind, SenderBundle,
-    RING_RECORD_LEN,
-};
+use custom_ring_interface::{RecordForm, RecordKind, RING_RECORD_LEN};
 use serde::Deserialize;
 use spr_keypair::{ViewingKey, X25519Pubkey};
+use zolana_ring_keys::OutputRecord;
+use zolana_ring_keys::RecordKey;
+use zolana_ring_keys::SenderBundle;
+use zolana_ring_keys::SlotSecret;
 use zolana_ring_transaction::{
     open_recipient_body, open_sender_bundle, seal_sender_bundle, AnonymousPlan, AnonymousSlot,
     PayloadRead, RecipientBody, RingDelivery, RingOutputRail,

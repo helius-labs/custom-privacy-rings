@@ -7,15 +7,7 @@ import {
   treeAddress,
 } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
-import {
-  SOL_MINT,
-  AssetRegistry,
-  Utxo,
-  ProofInputUtxo,
-  Wallet,
-  deserializeWallet,
-  serializeWallet,
-} from "@heliuslabs/spr/transaction";
+import { SOL_MINT, AssetRegistry, Utxo, ProofInputUtxo, Wallet } from "@heliuslabs/spr/transaction";
 import {
   loadPersistedWallet,
   savePersistedWallet,
@@ -374,17 +366,6 @@ it("serializes saves with sync and leaves the newest checkpoint in the store", a
   await saving;
   await sending;
   expect((await loadPersistedWallet(f))?.pendingSubmissions()).toHaveLength(1);
-});
-
-it.each([2, 3])("upgrades version %s without losing notes or history", (version) => {
-  const f = funded(0);
-  const old = JSON.parse(serializeWallet(f.wallet)) as Record<string, unknown>;
-  old["version"] = version;
-  delete old["pendingSubmissions"];
-  const loaded = deserializeWallet(JSON.stringify(old));
-  expect(loaded.utxos()).toEqual(f.wallet.utxos());
-  expect(loaded.pendingSubmissions()).toEqual([]);
-  expect(JSON.parse(serializeWallet(loaded))).toMatchObject({ version: 5 });
 });
 
 it("saves an existing unknown signature when persistence is attached", async () => {

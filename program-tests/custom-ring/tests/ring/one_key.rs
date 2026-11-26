@@ -10,12 +10,12 @@ use base64::Engine;
 use bytemuck::Pod;
 use custom_ring_cli::{Zolana, ZolanaServices};
 use custom_ring_interface::{
-    key_catalog::{RingCircuit, RING_KEYS},
+    key_catalog::RingCircuit,
     policy_withdrawal_hash,
     storage::{Revision, Root, StorageRegistry},
     tracking::{viewing_hash, TrackingRegistry},
     verifying_key, RingProof, SignerSet, SlotBody, TransferBinding, TransferRoots,
-    ANONYMOUS_PARTIES, MAX_CPI_DATA_LEN, PROVING_KEY_SHA256S, TAGGED_X25519_KEY_LEN,
+    ANONYMOUS_PARTIES, PROVING_KEY_SHA256S, TAGGED_X25519_KEY_LEN,
 };
 use custom_ring_test_validator::policy::RELEASED;
 use serde_json::Value;
@@ -33,7 +33,9 @@ use spr_indexer_api::Hash;
 use spr_interface::N_PUBLIC_SLOTS;
 use spr_keypair::NullifierKey;
 use zeroize::Zeroizing;
-use zolana_ring_client::{RingIndexer, RingIndexerError};
+use zolana_ring_client::{
+    RingIndexer, RingIndexerError, SppExpansion, MAX_CPI_DATA_LEN, RING_KEYS,
+};
 use zolana_ring_indexer::{
     rpc::{
         GetStorageRecordPoolRequest, GetStorageRecordPoolResponse, RingIndexedMemberRecordView,
@@ -325,7 +327,7 @@ struct ReplayedBody {
 
 impl ProveRequest for ReplayedBody {
     fn body(&self) -> Result<Zeroizing<String>, ClientError> {
-        custom_ring_sdk::secret_json_body(&self.body)
+        zolana_ring_client::secret_json_body(&self.body)
     }
 
     fn proving_key(&self) -> Result<ExpectedProvingKey, ClientError> {

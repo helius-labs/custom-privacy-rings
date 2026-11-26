@@ -104,4 +104,58 @@ describe("ring member registry wire", () => {
     expect(decoded.records.map((entry) => entry.path.index)).toEqual([1, 2]);
     expect(decoded.nextLeafIndex).toBeUndefined();
   });
+
+  it("accepts u64 strings only past 2^53 and rejects negative, overflowed or small strings", async () => {
+    const request = {
+      registry: REGISTRY,
+      members: [new Uint8Array(32).fill(5) as Bytes32],
+      expectedRoot: zero,
+    };
+    const u64Max = "18446744073709551615";
+    const pastSafe = "9007199254740993";
+    const wide = {
+      ...openings,
+      root: { ...root, revision: pastSafe },
+      openings: [
+        {
+          ...opening,
+          record: {
+            ...record,
+            lists: u64Max,
+            mintPolicy: {
+              ...record.mintPolicy,
+              cap: u64Max,
+              threshold: pastSafe,
+              limits: { ...record.mintPolicy.limits, senderCap: u64Max },
+            },
+          },
+        },
+      ],
+    };
+    const decoded = await indexerFor({ result: wide }).getStorageMemberOpenings(request);
+    expect(decoded.root.revision).toBe(BigInt(pastSafe));
+    const decodedOpening = decoded.openings[0];
+    if (decodedOpening?.kind !== "present") throw new Error("expected present");
+    expect(decodedOpening.record.lists).toBe(BigInt(u64Max));
+    expect(decodedOpening.record.mintPolicy.cap).toBe(BigInt(u64Max));
+    expect(decodedOpening.record.mintPolicy.threshold).toBe(BigInt(pastSafe));
+    expect(decodedOpening.record.mintPolicy.limits.senderCap).toBe(BigInt(u64Max));
+
+    // The transport quotes an integer only past the safe range, a quoted smaller one has a second spelling.
+    for (const bad of ["-1", "-0", "01", "+1", "18446744073709551616", "5", "9007199254740991"]) {
+      await expect(
+        indexerFor({
+          result: { ...openings, root: { ...root, revision: bad } },
+        }).getStorageMemberOpenings(request),
+      ).rejects.toMatchObject({ code: "CLIENT_INVALID_RPC_RESPONSE" });
+      await expect(
+        indexerFor({
+          result: {
+            ...openings,
+            openings: [{ ...opening, record: { ...record, lists: bad } }],
+          },
+        }).getStorageMemberOpenings(request),
+      ).rejects.toMatchObject({ code: "CLIENT_INVALID_RPC_RESPONSE" });
+    }
+  });
 });

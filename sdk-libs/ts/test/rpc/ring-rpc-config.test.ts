@@ -20,6 +20,7 @@ function strictFetch() {
           result: {
             mode: "local",
             servicePubkey: "11111111111111111111111111111111",
+            enrollmentWriterPubkey: null,
             relay: false,
             recordWriter: false,
             enrollmentWrites: false,

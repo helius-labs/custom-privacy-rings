@@ -1,7 +1,7 @@
 //! Row encoding over generated inputs.
 
 use proptest::prelude::*;
-use zolana_ring_policy::{Guard, ListSet, Rule, RuleSource, RuleTable, Subject, MAX_SOURCES};
+use zolana_ring_policy::{Guard, ListSet, Rule, RuleTable, Subject, MAX_SOURCES};
 
 fn subject() -> impl Strategy<Value = Subject> {
     prop_oneof![
@@ -20,20 +20,15 @@ fn guard() -> impl Strategy<Value = Guard> {
     ]
 }
 
-fn source() -> impl Strategy<Value = RuleSource> {
-    prop_oneof![
-        (lists(), lists()).prop_map(|(present, absent)| RuleSource::Lists { present, absent }),
-    ]
-}
-
 fn lists() -> impl Strategy<Value = ListSet> {
     (0u64..1 << MAX_SOURCES).prop_map(|bits| ListSet::from_record_bits(bits).unwrap())
 }
 
 fn rule() -> impl Strategy<Value = Rule> {
-    (subject(), source(), guard()).prop_map(|(subject, source, guard)| Rule {
+    (subject(), lists(), lists(), guard()).prop_map(|(subject, present, absent, guard)| Rule {
         subject,
-        source,
+        present,
+        absent,
         guard,
     })
 }

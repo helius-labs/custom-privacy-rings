@@ -21,7 +21,7 @@
 
 use custom_ring_interface::{
     storage::{chain_start, RootUpdate, StorageError},
-    storage_instruction::StorageUpdateIxData,
+    storage_instruction::ParsedStorageUpdate,
     verifying_key, write_chain, ApplyRecordsStatement, PrivateWrites, RingProof,
 };
 use pinocchio::{
@@ -37,14 +37,15 @@ pub fn process_update_ix(
     accounts: &mut [AccountView],
     data: &[u8],
 ) -> ProgramResult {
-    let ix = StorageUpdateIxData::parse(data)?;
+    let parsed = ParsedStorageUpdate::parse(data)?;
+    let ix = &parsed.data;
     let [authority_account, registry_account, tracking_accounts @ ..] = accounts else {
         return Err(StorageError::MissingAccounts.into());
     };
     // 1. The authority and current revision fix the registry state and the start of the write chain.
     check_signer(authority_account)?;
-    let chain_start = chain_start(registry_account.address(), ix.revision)?;
-    let registry = load_registry_mut(program_id, registry_account)?;
+    let registry_address = *registry_account.address();
+    let mut registry = load_registry_mut(program_id, registry_account)?;
     check_authority(&registry, authority_account)?;
     if registry.newest().revision != ix.revision {
         return Err(StorageError::RevisionChanged.into());
@@ -53,7 +54,7 @@ pub fn process_update_ix(
     // 2. The bitmap derives from private masks and authenticated asset preimages, and parsing paired it
     // with the tracking revision. The pinned registry serves the root the selected rows open under.
     let private = match (
-        ix.private_writes()?,
+        parsed.private_writes(),
         ix.tracking_revision,
         tracking_accounts,
     ) {
@@ -76,13 +77,13 @@ pub fn process_update_ix(
         _ => return Err(StorageError::InvalidTrackingRegistry.into()),
     };
     // 3. The chain binds every write in instruction order, including writes with unchanged leaves.
-    let chain_end = ix.entries().try_fold(
-        chain_start,
-        |chain, entry| -> Result<[u8; 32], ProgramError> {
-            let entry = entry.map_err(|_| StorageError::InvalidWrite)?;
-            write_chain(&chain, &entry).map_err(|_| StorageError::HashingFailed.into())
-        },
-    )?;
+    let chain_start = chain_start(&registry_address, ix.revision)?;
+    let chain_end = parsed
+        .entries()
+        .iter()
+        .try_fold(chain_start, |chain, entry| {
+            write_chain(&chain, entry).map_err(|_| ProgramError::from(StorageError::HashingFailed))
+        })?;
     let statement = ApplyRecordsStatement {
         old_root: registry.newest().hash,
         new_root: ix.apply.new_root,
@@ -103,7 +104,6 @@ pub fn process_update_ix(
     .verify()
     .map_err(|_| StorageError::ProofVerificationFailed)?;
     // 5. The policy root and the tracking floor move together after verification.
-    let mut registry = registry;
-    registry.update(RootUpdate { slot, data: &ix })?;
+    registry.update(RootUpdate { slot, data: ix })?;
     Ok(())
 }

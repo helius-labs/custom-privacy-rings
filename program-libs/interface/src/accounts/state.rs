@@ -20,9 +20,7 @@ use bytemuck::{Pod, Zeroable};
 use solana_address::Address;
 use spr_hasher::HasherError;
 use wincode::{SchemaRead, SchemaWrite};
-use zolana_ring_policy::{
-    registry_field, EncodedRuleTable, ListId, ListSet, PolicySource, RuleTable, SourceMap,
-};
+use zolana_ring_policy::{registry_field, EncodedRuleTable, ListSet, PolicySource, SourceMap};
 
 use crate::{
     error::CustomRingError,
@@ -33,7 +31,7 @@ use crate::{
 
 /// Roots a transfer proof may bind, applications in between leave it provable.
 pub const ROOT_HISTORY: usize = 32;
-/// One slot per list the enum can name, all eight enter the hash.
+/// One slot per list the enum can name, all nine enter the hash.
 pub const N_SOURCE_SLOTS: usize = zolana_ring_policy::MAX_SOURCES;
 
 /// Created only at its canonical PDA, an owned account with the discriminator needs no address check.
@@ -319,15 +317,6 @@ impl RingPolicy {
         Ok(())
     }
 
-    /// The registry serving `list_id`, `None` when the table does not reference it.
-    pub fn registry_for(&self, list_id: ListId) -> Option<ListRegistry> {
-        let slot = self.sources[list_id.slot()];
-        (slot.list_id != 0).then(|| match slot.registry {
-            registry if registry == Address::default() => ListRegistry::Own,
-            registry => ListRegistry::Curator(registry),
-        })
-    }
-
     /// The one curator registry the sources name, `None` when every list is the ring's own.
     pub fn curator(&self) -> Option<Address> {
         self.sources
@@ -336,18 +325,9 @@ impl RingPolicy {
             .find(|registry| *registry != Address::default())
     }
 
-    /// The map `policy_hash` was computed over.
-    pub fn source_map(&self) -> Result<SourceMap, CustomRingError> {
-        source_map_of(&self.sources, self.ring_list_tag)
-    }
-
     /// `SourceMap::salted` of `source_map`, read from the slots with no registry hash.
     pub fn salted(&self) -> ListSet {
         ListSet::salted_among(|list_id| self.sources[list_id.slot()].list_id != 0)
-    }
-
-    pub fn rule_table(&self) -> Result<RuleTable, CustomRingError> {
-        Ok(self.rules.validate(&self.source_map()?)?)
     }
 
     /// Account order after the ring account.
@@ -438,12 +418,6 @@ impl SourceSlot {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ListRegistry {
-    Own,
-    Curator(Address),
-}
-
 /// Policy roots only, every read also takes the pinned tracking registry.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum RootRead {
@@ -502,24 +476,6 @@ impl LiveRoots<'_> {
             .map_err(|_| CustomRingError::RootNotServed)
     }
 
-    /// Without the records, `None` at revision zero and `unread` otherwise.
-    pub fn own_if_read(
-        &self,
-        revision: Revision,
-        unread: CustomRingError,
-    ) -> Result<Option<[u8; 32]>, CustomRingError> {
-        Self::named(self.served(self.own, revision)?, revision, unread)
-    }
-
-    /// Without a curator, `None` at revision zero and `unread` otherwise.
-    pub fn curator_if_read(
-        &self,
-        revision: Revision,
-        unread: CustomRingError,
-    ) -> Result<Option<[u8; 32]>, CustomRingError> {
-        Self::named(self.served(self.curator, revision)?, revision, unread)
-    }
-
     fn served(
         &self,
         registry: Option<&StorageRegistry>,
@@ -532,17 +488,6 @@ impl LiveRoots<'_> {
                     .map_err(|_| CustomRingError::RootNotServed)
             })
             .transpose()
-    }
-
-    fn named(
-        root: Option<[u8; 32]>,
-        revision: Revision,
-        unread: CustomRingError,
-    ) -> Result<Option<[u8; 32]>, CustomRingError> {
-        match root {
-            None if revision.value() != 0 => Err(unread),
-            root => Ok(root),
-        }
     }
 }
 
@@ -746,7 +691,7 @@ fn source_address<'a>(slot: &'a SourceSlot, records: &'a Address) -> &'a Address
     }
 }
 
-fn source_map_of(
+pub fn source_map_of(
     sources: &[SourceSlot; N_SOURCE_SLOTS],
     ring_list_tag: [u8; 32],
 ) -> Result<SourceMap, CustomRingError> {

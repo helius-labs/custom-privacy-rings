@@ -27,7 +27,6 @@ use crate::{
     member_registry::{MEMBER_REGISTRY_EMPTY_ROOT, QUAD_CAPACITY},
     state::ROOT_HISTORY,
     storage_instruction::{InitializeIxData, StorageUpdateIxData},
-    STORAGE_PROGRAM_ID,
 };
 
 /// Little endian, counts a registry's updates from the sentinel root at zero.
@@ -75,6 +74,50 @@ pub struct RootUpdate<'a> {
     pub data: &'a StorageUpdateIxData<'a>,
 }
 
+/// The image every storage program account reads through, `$valid` holds the field invariants.
+macro_rules! storage_account {
+    ($ty:ident, $discriminator:literal, $seed:literal, $valid:expr) => {
+        impl $ty {
+            /// Zero marks an uninitialized account.
+            pub const DISCRIMINATOR: u8 = $discriminator;
+            pub const SEED: &'static [u8] = $seed;
+            pub const SIZE: usize = core::mem::size_of::<Self>();
+
+            pub fn from_data(data: &[u8]) -> Option<&Self> {
+                bytemuck::try_from_bytes::<Self>(data)
+                    .ok()
+                    .filter(|account| account.valid())
+            }
+
+            pub fn from_data_mut(data: &mut [u8]) -> Option<&mut Self> {
+                bytemuck::try_from_bytes_mut::<Self>(data)
+                    .ok()
+                    .filter(|account| account.valid())
+            }
+
+            /// Host only, a registry copy overflows the 4 KB SBF stack frame.
+            #[cfg(not(target_os = "solana"))]
+            pub fn decode(owner: &solana_address::Address, data: &[u8]) -> Option<Self> {
+                (*owner == $crate::STORAGE_PROGRAM_ID)
+                    .then(|| Self::from_data(data).copied())
+                    .flatten()
+            }
+
+            fn valid(&self) -> bool {
+                self.discriminator == Self::DISCRIMINATOR && ($valid)(self)
+            }
+        }
+
+        // Byte fields only, the `Pod` image is the account data with no padding.
+        const _: () = assert!(core::mem::align_of::<$ty>() == 1);
+    };
+}
+pub(crate) use storage_account;
+
+storage_account!(StorageRegistry, 1, b"storage", |registry: &Self| {
+    (1..=QUAD_CAPACITY).contains(&registry.next_index())
+});
+
 impl From<u64> for Revision {
     fn from(value: u64) -> Self {
         Self(value.to_le_bytes())
@@ -94,18 +137,9 @@ impl Root {
 }
 
 impl StorageRegistry {
-    /// Zero marks an uninitialized account.
-    pub const DISCRIMINATOR: u8 = 1;
-    pub const SEED: &'static [u8] = b"storage";
-    pub const SIZE: usize = core::mem::size_of::<Self>();
-
     /// The creator in the seeds keeps every other signer off its addresses.
     pub fn seeds<'a>(creator: &'a Address, registry_id: &'a RegistryId) -> [&'a [u8]; 3] {
         [Self::SEED, creator.as_ref(), &registry_id.0]
-    }
-
-    pub fn find_address(creator: &Address, registry_id: &RegistryId) -> (Address, u8) {
-        Address::find_program_address(&Self::seeds(creator, registry_id), &STORAGE_PROGRAM_ID)
     }
 
     /// Holds only the sentinel root at revision zero.
@@ -119,24 +153,6 @@ impl StorageRegistry {
         registry.next_index = 1u64.to_le_bytes();
         registry.roots[0].hash = MEMBER_REGISTRY_EMPTY_ROOT;
         registry
-    }
-
-    pub fn from_data(data: &[u8]) -> Option<&Self> {
-        bytemuck::try_from_bytes::<Self>(data)
-            .ok()
-            .filter(|registry| registry.valid())
-    }
-
-    pub fn decode(owner: &Address, data: &[u8]) -> Option<Self> {
-        (*owner == STORAGE_PROGRAM_ID)
-            .then(|| Self::from_data(data).copied())
-            .flatten()
-    }
-
-    pub fn from_data_mut(data: &mut [u8]) -> Option<&mut Self> {
-        bytemuck::try_from_bytes_mut::<Self>(data)
-            .ok()
-            .filter(|registry| registry.valid())
     }
 
     pub const fn grace_slots(&self) -> u64 {
@@ -163,6 +179,9 @@ impl StorageRegistry {
     /// Writes nothing on a refusal.
     pub fn update(&mut self, update: RootUpdate<'_>) -> Result<(), StorageError> {
         let RootUpdate { slot, data } = update;
+        if !(1..=QUAD_CAPACITY).contains(&data.apply.new_next_index()) {
+            return Err(StorageError::InvalidInstructionData);
+        }
         // 1. A private owner write needs a pinned tracking registry and raises the floor to its proven revision.
         // Parsing already paired the revision with a nonzero private bitmap.
         let floor = match data.tracking_revision {
@@ -190,18 +209,22 @@ impl StorageRegistry {
         self.next_index = data.apply.new_next_index;
         Ok(())
     }
-
-    fn valid(&self) -> bool {
-        self.discriminator == Self::DISCRIMINATOR
-            && (1..=QUAD_CAPACITY).contains(&self.next_index())
-    }
 }
 
 /// `APPLY_RECORDS` binds the registry address and revision before the ordered writes.
 pub fn chain_start(registry: &Address, revision: Revision) -> Result<[u8; 32], StorageError> {
+    chain_start_under(domain::APPLY_RECORDS, registry, revision)
+}
+
+/// `statement` is the domain, a records chain never opens an enrollment proof.
+pub(crate) fn chain_start_under(
+    statement: u32,
+    registry: &Address,
+    revision: Revision,
+) -> Result<[u8; 32], StorageError> {
     let registry = registry_field(registry.as_array()).map_err(|_| StorageError::HashingFailed)?;
     create_hash_chain_4_from_slice(&[
-        domain::field(domain::APPLY_RECORDS),
+        domain::field(statement),
         registry,
         right_align(&revision.value().to_be_bytes()),
     ])
@@ -292,8 +315,6 @@ pub enum StorageError {
     InvalidInstructionData = 9005,
     #[error("update carries more writes than one apply proof takes")]
     BatchTooLarge = 9006,
-    #[error("write is not a record write")]
-    InvalidWrite = 9007,
     #[error("apply proof does not verify")]
     ProofVerificationFailed = 9008,
     #[error("hashing failed")]
@@ -348,6 +369,72 @@ impl From<StorageError> for ProgramError {
     }
 }
 
-// Byte fields only, the `Pod` image is the account data with no padding.
-const _: () = assert!(core::mem::align_of::<StorageRegistry>() == 1);
 const _: () = assert!(StorageRegistry::SIZE == 1657);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ApplyRecordsIxData, RecordWriteData, WriteRecordsIxData};
+
+    fn dummy_update(apply: &ApplyRecordsIxData) -> StorageUpdateIxData<'_> {
+        StorageUpdateIxData {
+            revision: Revision::from(0),
+            writes: vec![RecordWriteData {
+                member: [1; 32],
+                lists: WriteRecordsIxData {
+                    mask: 1u64.to_le_bytes(),
+                    value: 1u64.to_le_bytes(),
+                },
+                mint_policy: crate::mint_policy_write(None),
+            }],
+            asset_writes: Vec::new(),
+            tracking_revision: None,
+            apply,
+        }
+    }
+
+    #[test]
+    fn update_refuses_next_index_outside_quad_capacity() {
+        let mut registry = StorageRegistry::new(
+            Address::new_from_array([1; 32]),
+            &InitializeIxData {
+                registry_id: RegistryId([2; 32]),
+                grace_slots: 10u64.to_le_bytes(),
+                ring_id: [0; 32],
+                tracking_registry: Address::default(),
+            },
+        );
+        let before = registry;
+        for bad_index in [0, QUAD_CAPACITY + 1, u64::MAX] {
+            let apply = ApplyRecordsIxData {
+                new_root: [9; 32],
+                new_next_index: bad_index.to_le_bytes(),
+                ..ApplyRecordsIxData::zeroed()
+            };
+            let data = dummy_update(&apply);
+            assert_eq!(
+                registry.update(RootUpdate {
+                    slot: 10,
+                    data: &data,
+                }),
+                Err(StorageError::InvalidInstructionData),
+                "bad_index={bad_index}"
+            );
+            assert_eq!(registry, before);
+        }
+        let apply = ApplyRecordsIxData {
+            new_root: [9; 32],
+            new_next_index: QUAD_CAPACITY.to_le_bytes(),
+            ..ApplyRecordsIxData::zeroed()
+        };
+        let data = dummy_update(&apply);
+        registry
+            .update(RootUpdate {
+                slot: 10,
+                data: &data,
+            })
+            .unwrap();
+        assert_eq!(registry.next_index(), QUAD_CAPACITY);
+        assert!(StorageRegistry::from_data(bytemuck::bytes_of(&registry)).is_some());
+    }
+}

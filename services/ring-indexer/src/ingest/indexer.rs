@@ -97,7 +97,10 @@ impl Indexer {
         tokio::spawn(async move {
             // A restarted index serves again only after its first catch up.
             if let Err(error) = self.suspend().await {
-                log::error!("cannot mark ring lookups unavailable ({error:#})");
+                log::error!(
+                    "cannot mark ring lookups unavailable ({})",
+                    zolana_ring_indexer::redact::redacted(&format!("{error:#}"))
+                );
             }
             let mut delay = 1;
             loop {
@@ -111,10 +114,16 @@ impl Indexer {
                         delay = 1;
                     }
                     Err(error) => {
-                        log::error!("ring indexer failed ({error:#})");
+                        log::error!(
+                            "ring indexer failed ({})",
+                            zolana_ring_indexer::redact::redacted(&format!("{error:#}"))
+                        );
                         self.readiness.clear();
                         if let Err(error) = self.suspend().await {
-                            log::error!("cannot mark ring lookups unavailable ({error:#})");
+                            log::error!(
+                                "cannot mark ring lookups unavailable ({})",
+                                zolana_ring_indexer::redact::redacted(&format!("{error:#}"))
+                            );
                         }
                         delay = (delay * 2).min(MAX_RETRY_DELAY_SECS);
                     }

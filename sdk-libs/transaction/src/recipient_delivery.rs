@@ -4,12 +4,7 @@
 //! record, its data hashes included, to the slot's opening and its ciphertext to the statement. The
 //! payload holds the application data alone and stays the sender's word.
 
-use custom_ring_interface::{
-    domain::{RECIPIENT_BODY_LABEL, REPLY_LABEL, SENDER_BUNDLE_LABEL},
-    stream::SlotSecret,
-    OutputRecord, RecipientPayload, RecordForm, RecordKey, RecordKind, SenderBundle,
-    RECORD_ZERO_KEY_BIT, SENDER_BUNDLE_LEN,
-};
+use custom_ring_interface::{RecordForm, RecordKind, SENDER_BUNDLE_LEN};
 use solana_address::Address;
 use spr_hasher::primitives::is_canonical_x25519_public_key;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
@@ -20,6 +15,16 @@ use spr_transaction::{
 };
 use zeroize::Zeroizing;
 use zolana_ring_keys::symmetric_apply_audit;
+use zolana_ring_keys::OutputRecord;
+use zolana_ring_keys::RecipientBodyForms;
+use zolana_ring_keys::RecipientPayload;
+use zolana_ring_keys::RecordKey;
+use zolana_ring_keys::SenderBundle;
+use zolana_ring_keys::SlotSecret;
+use zolana_ring_keys::RECIPIENT_BODY_LABEL;
+use zolana_ring_keys::RECORD_ZERO_KEY_BIT;
+use zolana_ring_keys::REPLY_LABEL;
+use zolana_ring_keys::SENDER_BUNDLE_LABEL;
 
 use crate::{RingAssets, RingRailError};
 

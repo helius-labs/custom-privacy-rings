@@ -2,7 +2,6 @@
 
 use std::future::Future;
 
-use custom_ring_sdk::RingClient;
 use solana_signature::Signature;
 use solana_transaction_error::TransactionError;
 use spr_api::{BlockingInsideRuntime, BlockingRuntime};
@@ -10,6 +9,7 @@ use spr_client::{
     AsyncProverClient, AsyncRpc, AsyncSprClient, Blocking, ClientError, IndexerPollConfig,
     SolanaRpc, SprIndexer,
 };
+use zolana_ring_client::RingClient;
 
 pub struct Zolana<R = SolanaRpc, I = SprIndexer> {
     chain: RingClient<Blocking<R>, Blocking<I>>,

@@ -2,14 +2,14 @@
 
 use anyhow::{bail, ensure, Context as _, Result};
 use custom_ring_interface::RingRoles;
-use custom_ring_sdk::{
-    CustomRingConfig, InitialPolicy, Initialize, ListRegistry, PolicyTable, PolicyUpdate,
-    RingError, RingKind, SourceOwner, UpdatePolicy,
-};
 use solana_address::Address;
 use spr_keypair::X25519Pubkey;
 use zolana_operator_custody::OperatorSigner;
-use zolana_ring_client::rpc::{read_auditor_pubkey, write_auditor_pubkey};
+use zolana_ring_client::{
+    rpc::{read_auditor_pubkey, write_auditor_pubkey},
+    CustomRingConfig, InitialPolicy, Initialize, ListRegistry, PolicySources, PolicyTable,
+    PolicyUpdate, RingError, RingKind, SourceOwner, UpdatePolicy,
+};
 use zolana_ring_policy::{ListId, RuleTable};
 
 use crate::{
@@ -95,7 +95,7 @@ pub fn run(ctx: &Context, args: InitArgs) -> Result<()> {
                 true => Trust::Unpinned,
                 false => Trust::Refuse,
             })?;
-            ctx.ring_rpc()
+            ctx.ring_rpc()?
                 .release_auditor_key(
                     ctx.ring.program_id(),
                     genesis_hash,
@@ -215,7 +215,7 @@ impl RingInitialization<'_> {
     fn send(self, ctx: &Context) -> Result<()> {
         let target = self.policy_authority.address();
         let records = ctx
-            .ring_rpc()
+            .ring_rpc()?
             .create_records_registry(ctx.ring_rpc_target()?, &ctx.request_signer(self.deployer))?;
         let empty = RuleTable::empty();
         let (rules, shared_sources) = match self.policy {

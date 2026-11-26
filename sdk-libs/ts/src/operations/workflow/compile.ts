@@ -29,7 +29,7 @@ import {
   MAX_TRANSACTION_ADDRESSES,
   MAX_TRANSACTION_INSTRUCTIONS,
   MAX_TRANSACTION_SIGNATURES,
-} from "../../protocol/transaction/v1-limits.js";
+} from "../../protocol/proof/transfer-shapes.js";
 
 export { MAX_TRANSACTION_ADDRESSES, MAX_TRANSACTION_INSTRUCTIONS, MAX_TRANSACTION_SIGNATURES };
 

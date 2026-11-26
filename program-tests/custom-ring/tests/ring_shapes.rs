@@ -5,9 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use custom_ring_interface::{
-    key_catalog::{
-        ApplyMode, FrameKey, RingCircuit, RingKey, TransferShape, RING_KEYS, TRANSFER_SHAPES,
-    },
+    key_catalog::{ApplyMode, FrameKey, RingCircuit, TransferShape, TRANSFER_SHAPES},
     ParsedTransact, TRANSFER_OUTPUT_CAPACITIES,
 };
 use custom_ring_test_validator::{
@@ -17,6 +15,7 @@ use custom_ring_test_validator::{
 use spr_api::{ApiError, HttpClient, HttpFuture, HttpRequest};
 use spr_client::{Shape, SPP_SUPPORTED_SHAPES};
 use spr_test_utils::wallet::create_associated_token_account;
+use zolana_ring_client::{RingKey, TransferKeyRow, RING_KEYS};
 use zolana_ring_keys::ListSaltHolder;
 
 /// The prover holds one key's cache at a time, a restart drops it when the next key differs.
@@ -81,7 +80,7 @@ const TRANSFER_KEY_PREFIX: &str = "custom-ring-transfer-";
 
 include!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../sdk-libs/sdk/src/tests/operations/size_pins.rs"
+    "/../../sdk-libs/client/src/tests/transfer/pipeline/size_pins.rs"
 ));
 
 fn pinned_bytes(rail: Measured, n_in: usize, n_out: usize) -> Option<usize> {
@@ -135,7 +134,7 @@ impl Column {
     }
 
     fn keyed(self, shape: Shape) -> bool {
-        self != Self::Salted && custom_ring_sdk::shape_keyed(self.rail(), shape)
+        self != Self::Salted && zolana_ring_client::shape_keyed(self.rail(), shape)
     }
 
     /// One proof per key the column owns, each at the least load selecting it.
@@ -1509,13 +1508,14 @@ impl ShapeRing<'_> {
                     let mut anonymous = owner_transfer(transaction(env.payer.pubkey())?)?
                         .with_anonymous_signer(&sender.signing_key);
                     for recipient in &recipients {
-                        anonymous = anonymous.with_payment(custom_ring_sdk::AnonymousPayment {
-                            to: ring_address(recipient, program)?,
-                            asset: env.assets.mint(&asset)?,
-                            amount,
-                            reply: None,
-                            data: custom_ring_sdk::NoteData::default(),
-                        })?;
+                        anonymous =
+                            anonymous.with_payment(zolana_ring_client::AnonymousPayment {
+                                to: ring_address(recipient, program)?,
+                                asset: env.assets.mint(&asset)?,
+                                amount,
+                                reply: None,
+                                data: zolana_ring_client::NoteData::default(),
+                            })?;
                     }
                     Ok(match env.run(anonymous.with_shape(shape)?.prove(client)) {
                         Err(error) if error.is_projection_lag() => Probe::Retry(error.into()),

@@ -6,7 +6,7 @@ import { SigningKey, type ShieldedPublicKey } from "@heliuslabs/spr/keypair";
 
 import { RingDomain, domainHash } from "../crypto/derivation/ring-domain.js";
 import { RingError } from "../protocol/error.js";
-import type { VoucherProofInput } from "../rpc/prover/ring.js";
+import type { VoucherProofInput } from "../protocol/proof/ring-proof-requests.js";
 
 /** A wallet on the ring's allow list, Rust `VouchSigner`. */
 export interface VouchSigner {
@@ -17,13 +17,16 @@ export interface VouchSigner {
 
 /** The transfer a voucher signs for, Rust `VouchMessage`. */
 export interface VouchMessage {
+  /** A frame of default-ring notes alone names its ring nowhere else. */
+  readonly ringId: Bytes32;
   readonly privateTxHash: Bytes32;
   readonly withdrawalHash: Bytes32;
 }
 
-/** `Poseidon(CRVC, private_tx_hash, withdrawal_hash)`, the voucher signs its 32 big endian bytes. */
+/** `Poseidon(CRVC, ring_id, private_tx_hash, withdrawal_hash)`, the voucher signs its 32 big endian bytes. */
 export function vouchDigest(message: VouchMessage): Bytes32 {
   return domainHash(RingDomain.vouch, [
+    copyBytes(message.ringId),
     copyBytes(message.privateTxHash),
     copyBytes(message.withdrawalHash),
   ]);
@@ -39,7 +42,7 @@ export async function signVouch(
   if (voucher !== undefined) {
     const publicKey = voucher.publicKey().ed25519();
     const signature = await voucher.sign(digest, context);
-    if (!ed25519.verify(signature, digest, publicKey))
+    if (signature.length !== 64 || !ed25519.verify(signature, digest, publicKey, { zip215: false }))
       throw new RingError("RING_VOUCHER_SIGNATURE_MISMATCH");
     return Object.freeze({ publicKey, signature });
   }

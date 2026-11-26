@@ -14,6 +14,8 @@ use sea_orm::TransactionTrait;
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_indexer_api::Hash;
+use zolana_ring_client::StorageEventDecode;
+use zolana_ring_client::TrackingRegistryHost;
 use zolana_ring_indexer::tracking::{
     GetTrackingApplyProofInputsRequest, GetTrackingOpeningsRequest, GetTrackingRecordPoolRequest,
     GetTrackingRecordsRequest, GetTrackingRecordsResponse, RingTrackingEntryView,
@@ -189,7 +191,7 @@ impl Ledger {
             vec![tag::APPLY_ENROLLMENTS],
             1,
         );
-        let event = StorageEvent::EnrollmentsApplied {
+        let event = StorageEvent {
             header,
             writes: borrowed,
         };
@@ -412,8 +414,7 @@ async fn an_event_off_the_projected_root_or_revision_stops_the_projection() {
         let (parent, event) = ledger
             .apply(&mut TrackingTree::new().unwrap(), &writes)
             .await;
-        let StorageEvent::EnrollmentsApplied { mut header, .. } =
-            StorageEvent::decode(&event.data).unwrap();
+        let StorageEvent { mut header, .. } = StorageEvent::decode(&event.data).unwrap();
         match forge {
             0 => header.new_root = field(8),
             1 => header.revision.0[0] ^= 1,
@@ -618,14 +619,14 @@ async fn a_registry_off_its_canonical_address_is_not_indexed() {
 /// Serves the scan straight from the indexer's own `getTrackingRecords` handler.
 struct Endpoint<'a>(&'a Ledger);
 
-impl zolana_ring_rpc::TrackingSource for Endpoint<'_> {
+impl ring_audit::tracking::TrackingSource for Endpoint<'_> {
     async fn root(
         &self,
         _ring: Address,
-        _finality: zolana_ring_rpc::Finality,
-    ) -> Result<Option<zolana_ring_rpc::TrackingRoot>, spr_client::ClientError> {
+        _finality: ring_service_core::upstream::Finality,
+    ) -> Result<Option<ring_service_core::upstream::TrackingRoot>, spr_client::ClientError> {
         let newest = self.0.state().await.account.newest();
-        Ok(Some(zolana_ring_rpc::TrackingRoot {
+        Ok(Some(ring_service_core::upstream::TrackingRoot {
             registry: self.0.registry,
             root: newest.hash,
             revision: newest.revision.value(),
@@ -678,7 +679,7 @@ async fn a_fresh_auditor_scans_the_indexer_endpoint_from_the_first_leaf_and_hold
     ledger.land_apply(2, apply).await;
     ledger.serve(2).await;
 
-    let held = zolana_ring_rpc::tracking_fixture::fresh_scan(
+    let held = ring_audit::tracking::fixture::fresh_scan(
         Address::new_from_array([60; 32]),
         &auditor,
         &Endpoint(&ledger),

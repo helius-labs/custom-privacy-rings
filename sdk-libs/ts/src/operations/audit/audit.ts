@@ -43,7 +43,6 @@ import {
 import {
   saltedAuditorSchedule,
   auditorViewTag,
-  openTransactionViewingSecret,
   parseAuditorMessage,
   type AuditorMessage,
 } from "../../crypto/audit/audit.js";
@@ -119,11 +118,8 @@ export interface AuditedRingOutput {
   readonly opening: OutputOpening;
 }
 
-/**
- * Rust `OutputPayloadErrorKind`. `disclosure` and `commitment` leave the slot unopened, `payload`
- * keeps the record in `outputs` without its data hashes.
- */
-export type OutputPayloadErrorKind = "disclosure" | "commitment" | "payload";
+/** Rust `OutputPayloadErrorKind`, a slot also in `outputs` keeps its proven record without its data hashes. */
+export type OutputPayloadErrorKind = "disclosure" | "commitment";
 
 export interface OutputPayloadError {
   readonly slotIndex: number;
@@ -194,8 +190,6 @@ export interface AuditedRingTransaction {
 /** Rust `UtxoOwner`. */
 export type UtxoOwner =
   | Readonly<{ kind: "keyed"; nullifierPk: Bytes32 }>
-  /** A deposit capsule discloses the owner hash alone. */
-  | Readonly<{ kind: "deposited"; ownerHash: Bytes32 }>
   /** A ring record publishes no nonzero key, `resolveKnownUtxo` keys it under the owner's registered key. */
   | Readonly<{ kind: "unresolved" }>;
 
@@ -334,15 +328,6 @@ export function auditorMessage(
   return message.data;
 }
 
-/** The envelope's key alone, a full audit reads it from `openAuditEnvelope`. */
-export function recoverTransactionViewingKey(
-  auditor: X25519Keypair,
-  message: AuditorMessage,
-  salt: Bytes16,
-): ViewingKey {
-  return canonicalViewingKey(openTransactionViewingSecret(auditor, message, salt));
-}
-
 export interface TransactionAuditInput {
   readonly auditor: X25519Keypair;
   readonly transaction: IndexedShieldedTransaction;
@@ -452,7 +437,9 @@ export function openRingTransfer(input: TransactionAuditInput): OpenedRingAudit 
           }),
         );
       if (!opened.ok || opened.payload === false)
-        payloadErrors.push(Object.freeze({ slotIndex, kind: opened.ok ? "payload" : opened.kind }));
+        payloadErrors.push(
+          Object.freeze({ slotIndex, kind: opened.ok ? "commitment" : opened.kind }),
+        );
     });
     // The auditor's own index places each nullifier, the stream names none.
     const inputs = transaction.nullifiers.map((nullifier) =>
@@ -519,7 +506,6 @@ export function openedUtxo(utxo: AuditedUtxo, treeId: number): KnownUtxo {
 /** Rust `KnownUtxo::audited`, the opening without its tree. */
 function auditedUtxo(utxo: KnownUtxo): AuditedUtxo {
   const { owner, treeId: _treeId, ...fields } = utxo;
-  if (owner.kind === "deposited") throw auditRefusal("deposited output");
   return Object.freeze({
     ...fields,
     ...(owner.kind === "keyed" ? { nullifierPk: owner.nullifierPk } : {}),
@@ -594,7 +580,7 @@ export function resolveRingOwners(
   if (!changed) return transaction;
   const payloadErrors = [
     ...transaction.payloadErrors,
-    ...failed.map((slotIndex) => Object.freeze({ slotIndex, kind: "payload" as const })),
+    ...failed.map((slotIndex) => Object.freeze({ slotIndex, kind: "commitment" as const })),
   ].sort((left, right) => left.slotIndex - right.slotIndex);
   return Object.freeze({
     ...transaction,
@@ -627,21 +613,9 @@ export function knownUtxoOwnerHash(
   switch (utxo.owner.kind) {
     case "keyed":
       return ownerHash(solanaOwnerIdentity(utxo.ownerKey), utxo.owner.nullifierPk) as Bytes32;
-    case "deposited":
-      return utxo.owner.ownerHash;
     case "unresolved":
       return undefined;
   }
-}
-
-/** Rust `AuditedTransaction::has_unknown_assets`, a registry refresh may name the mint, a delivered slot opens only after it. */
-export function hasUnknownAssets(transaction: AuditedRingTransaction): boolean {
-  return (
-    auditedUtxos(transaction).some(({ utxo }) => utxo.mint === undefined) ||
-    transaction.inputs.some(
-      (input) => input.opening.kind === "opened" && input.opening.mint === undefined,
-    )
-  );
 }
 
 /** Mirrors Rust `RingScan::audit`, each tagged event attributed through its confirmed call stack. */

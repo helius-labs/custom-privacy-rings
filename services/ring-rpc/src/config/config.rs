@@ -14,20 +14,20 @@ use solana_hash::Hash;
 use spr_keypair::X25519Keypair;
 use spr_rpc_http::forward::UpstreamUrl;
 use thiserror::Error;
-use zeroize::Zeroizing;
 use zolana_operator_custody::{
     CustodyError, KeyArn, Kms, KmsEndpoint, RpcCustody, SecretContext, SecretPurpose, SignerRef,
     SigningIdentity, WrappedSecret,
 };
 
-use crate::{
-    client_rate::ClientLimitArgs,
-    cosign::ApproveClass,
+use crate::{client_rate::ClientLimitArgs, server::BindPolicy};
+use ring_audit::wallet_snapshots::WalletSnapshotLimits;
+use ring_cosigner::cosign::ApproveClass;
+use ring_service_core::{
     keys::KeySource,
+    keys::{GrantRowsSecret, RootSecret},
     origins::{loopback_url, OriginTransport},
-    server::BindPolicy,
-    wallet_snapshots::WalletSnapshotLimits,
 };
+use ring_writer::record_update::ReaderGrantStore;
 
 const DEFAULT_ENROLLMENT_MAX_RINGS: usize = 256;
 
@@ -109,10 +109,10 @@ pub struct ServeArgs {
     /// The service URL Photon connects to.
     #[arg(long, env = "RING_RPC_PUBLIC_URL", requires = "photon_registry_url")]
     pub public_url: Option<UpstreamUrl>,
-    /// Lamports reserved and spent over the store's life on enrollments and token accounts, zero refuses every charge.
+    /// Lamports reserved and spent over the store's life on the fee, tree fees and setup rent of every relayed message, zero sends none.
     #[arg(long, env = "RING_RPC_RELAY_BUDGET_LAMPORTS", default_value_t = 0)]
     pub relay_budget_lamports: u64,
-    /// Lamports one signer holds outstanding at once, the fees of its attempts that never landed stay counted, zero refuses every charge.
+    /// Lamports one signer holds outstanding at once, the fees of its attempts that never landed stay counted, zero sends none.
     #[arg(
         long,
         env = "RING_RPC_RELAY_SIGNER_BUDGET_LAMPORTS",
@@ -166,15 +166,6 @@ pub struct ServeArgs {
     pub reader_grants: ReaderGrantStore,
     #[command(flatten)]
     pub client_limits: ClientLimitArgs,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
-pub enum ReaderGrantStore {
-    /// `Reader` lists of the ring's own storage tree.
-    #[default]
-    Tree,
-    /// Sealed rows of the service store, signed through `setReaderGrant`.
-    Database,
 }
 
 #[derive(Debug, Args)]
@@ -234,9 +225,6 @@ pub struct ServeKeys {
     pub enrollment_applier: Option<SigningIdentity>,
 }
 
-pub struct GrantRowsSecret(Zeroizing<[u8; 32]>);
-pub struct RootSecret(Zeroizing<[u8; 32]>);
-
 #[derive(Debug, Error)]
 pub enum CustodyConfigError {
     #[error("cannot read the custody manifest")]
@@ -270,10 +258,6 @@ pub enum CustodyConfigError {
     #[error(transparent)]
     Kms(#[from] CustodyError),
 }
-
-#[derive(Debug, Error)]
-#[error("root secret cannot be zero")]
-pub struct RootSecretError;
 
 impl ProvisionArgs {
     pub async fn provision(self) -> Result<WrappedSecret, CustodyConfigError> {
@@ -367,7 +351,7 @@ impl ServeArgs {
                 if bool::from(secret.as_slice().ct_eq(grant.as_slice())) {
                     return Err(CustodyConfigError::SharedSecret);
                 }
-                Some(GrantRowsSecret(grant))
+                Some(GrantRowsSecret::unwrapped(grant))
             }
             None => None,
         };
@@ -376,7 +360,7 @@ impl ServeArgs {
                 ring,
                 auditor: X25519Keypair::from_bytes(&secret),
             },
-            None => KeySource::Derived(RootSecret(secret)),
+            None => KeySource::Derived(RootSecret::unwrapped(secret)),
         };
         let (service, storage_authority, co_signer, fee_payer, enrollment_applier) = tokio::try_join!(
             kms.signer(&manifest.service),
@@ -476,31 +460,6 @@ impl KmsArgs {
     }
 }
 
-impl RootSecret {
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn from_bytes(bytes: [u8; 32]) -> Result<Self, RootSecretError> {
-        if bytes == [0; 32] {
-            return Err(RootSecretError);
-        }
-        Ok(Self(Zeroizing::new(bytes)))
-    }
-
-    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-impl GrantRowsSecret {
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(Zeroizing::new(bytes))
-    }
-
-    pub(crate) fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
 async fn optional_signer(
     kms: &Kms,
     identity: Option<&SignerRef>,
@@ -520,12 +479,14 @@ mod tests {
     use solana_signer::Signer;
 
     use super::*;
-    use crate::{
+    use ring_service_core::{
         database::Store,
-        hub::{Hub, ServiceIdentity},
-        storage_chain::LiveStorageChain,
         upstream::{ChainSource, Upstreams},
     };
+
+    use ring_writer::storage_chain::LiveStorageChain;
+
+    use crate::hub::{Hub, ServiceIdentity};
 
     const KEY_ARN: &str =
         "arn:aws:kms:us-east-1:123456789012:key/1a2b3c4d-0000-4000-8000-000000000000";

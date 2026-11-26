@@ -67,7 +67,7 @@ import { PreparedRelay } from "../../rpc/relay.js";
 import type { RingMergeClient, TrackingReader } from "../../rpc/ports.js";
 import { relayRequestAttestation, type RingServiceTarget } from "../../rpc/ring-rpc.js";
 import { ringAuthAddress, ringPolicyAddress } from "../../protocol/pda/index.js";
-import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/codec/ring-codecs.js";
 import {
   MERGE_ENVELOPE_LEN,
   MERGE_RECORD_LEN,
@@ -196,9 +196,12 @@ export async function prepareRingMergeRelay(params: RingMergeRelayParams): Promi
       signer: getBase58Decoder().decode(owner) as Address,
       request: { kind: "merge", digest: mergeRequestDigest(payload) },
     });
-    const ownerSignature = getBase58Decoder().decode(
-      await params.signer.sign(request),
-    ) as Signature;
+    const signature = await params.signer.sign(request);
+    if (!(signature instanceof Uint8Array) || signature.length !== 64)
+      throw new RingError("RING_RELAY_OWNER_SIGNATURE", {
+        details: { length: signature instanceof Uint8Array ? signature.length : -1 },
+      });
+    const ownerSignature = getBase58Decoder().decode(signature) as Signature;
     return new PreparedRelay({
       ring: params.ringProgramId,
       quote: params.quote,

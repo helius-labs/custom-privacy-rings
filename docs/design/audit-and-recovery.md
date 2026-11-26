@@ -35,7 +35,7 @@ The auditor holds one viewing key for the ring's life. Every operation proves a 
 ## Nullifier secrets
 
 - A wallet has one nullifier secret. Enrollment seals it to the ring's auditor key beside the wallet's list salt, and the program verifies the seal proof, see [tracking](records-and-roots.md#tracking).
-- The tracking authorization keeps the ciphertext in an account. A restarted auditor checks each row the ring indexer serves against the tracking root and each seal against the row's `ct_hash`, then opens the seal.
+- The `EnrollmentsApplied` event carries the ciphertext, and the tracking leaf holds its hash. A restarted auditor checks each row the ring indexer serves against the tracking root and each seal against the row's `ct_hash`, then opens the seal.
 - A tracking scan that has not reached the root's next index is no evidence that an owner is unenrolled.
 - With a secret the auditor derives the nullifier of any note whose hash and blinding it knows. The derivation reaches every ring and the default pool.
 - One leaked secret therefore exposes that wallet's spends across every ring it enrolled on. A wallet that wants separation uses another keypair per ring.
@@ -51,7 +51,7 @@ The auditor holds one viewing key for the ring's life. Every operation proves a 
 
 A body is the record, then under `HAS_DATA` a payload with the application data alone, see [slot body](../spec/crypto/disclosure.md#slot-body). The cipher has no authentication, so the commitment a reader rebuilds under its own keys is the only proof of ownership.
 
-The sender's SDK pays a nonzero key to any owner, enrolled or not, since only the owner's enrolled key spends the note. It refuses the literal zero key, and the zero key for an owner with a tracking row under the root it verified. For an enrolled owner it reads the viewing key from the owner's authorization account and refuses an address that names another. That check protects an honest sender and binds nobody else.
+The sender's SDK pays a nonzero key to any owner, enrolled or not, since only the owner's enrolled key spends the note. It refuses the literal zero key, and the zero key for an owner with a tracking row under the root it verified. For an enrolled owner it checks the address's viewing key against the viewing key hash of the owner's row and refuses an address that names another. That check protects an honest sender and binds nobody else.
 
 ## Auditor fallback
 
@@ -76,7 +76,7 @@ The sender's SDK pays a nonzero key to any owner, enrolled or not, since only th
 
 Durable recovery fixes its target slot and stores its continuation with the wallet. `Paused` means coverage is incomplete. Absorb each returned scan, then repeat the same durable call and scan scope. Rust full scans keep `with_full_scan(ring)`. TypeScript full scans repeat `fullScanWallet` with the same ring.
 
-An unspent note whose nullifier check has not reached the target reads `PendingSpendCheck` in Rust or `pendingSpendCheck` in TypeScript. Wallet balances and exposed-note lists omit it. Rust `funding_notes` also omits it. `notes` remains the full inventory. Rust `require_complete` refuses an unfinished session.
+An unspent note whose nullifier check has not reached the target reads `PendingSpendCheck` in Rust or `pendingSpendCheck` in TypeScript. Wallet balances and exposed-note lists omit it. `notes` remains the full inventory.
 
 TypeScript sets its target at or above the saved recovery floor, ring and tag positions, core checkpoints, private-transaction slots and configured `requireSlot`. The recovery floor retains the highest committed target or authenticated note observation. Imported notes without publication slots supply no additional floor.
 

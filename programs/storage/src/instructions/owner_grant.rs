@@ -3,7 +3,7 @@
 //! A wallet signs its Reader grant off chain. A PDA cannot, so its program signs here through CPI.
 //!
 //! Read after `programs/storage/src/lib.rs`, `program-libs/interface/src/accounts/tracking.rs`. Read
-//! before `services/ring-rpc/src/rpc/upstream.rs`.
+//! before `services/ring-service-core/src/rpc/upstream.rs`.
 //!
 //! Guarantees:
 //! 1. The grant sits at an address that names the registry, the owner and the reader, and the owner alone writes it.

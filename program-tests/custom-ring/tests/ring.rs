@@ -74,15 +74,8 @@ use std::{
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use custom_ring_cli::{wait_for, Landing, ModeName, Probe};
 use custom_ring_interface::{
-    ring_body_output, ring_sender_bundle_output_body, AnonymousProofData, CustomRingError,
-    RingMode, RingPolicy, RingRail, RingRole, RingTransactData, RING_POLICY, RING_POLICY_PDA_SEED,
-};
-use custom_ring_sdk::{
-    compute_unit_limit, AnonymousTransfer, CoSignScope, CustomRing, CustomRingMerge,
-    CustomRingTransfer, CustomRingTransferInput, DelegateOutput, DelegateTransfer,
-    DelegateTransferInput, DepositRecipient, InstructionTag, MergeProofInput, ProvenRingTransfer,
-    RingClient, RingDeposit, RingDepositReceipt, RingError, RingMergeOperation, RingOperation,
-    RingRegistration,
+    AnonymousProofData, CustomRingError, RingMode, RingPolicy, RingRail, RingRole,
+    RingTransactData, RING_POLICY, RING_POLICY_PDA_SEED,
 };
 use custom_ring_test_validator::{
     cli::{merged, RingProject, RingToml},
@@ -98,6 +91,11 @@ use custom_ring_test_validator::{
         RingRoleKeys, SendAs, TestEnv, Tier, WalletSync, USDC_ASSET_ID,
     },
 };
+use ring_audit::RingAuditError;
+use ring_service_core::authorize::Unauthorized;
+use ring_service_core::keys::RootSecret;
+use ring_service_core::upstream::{ChainSource, TransactionSource, Upstreams};
+use ring_service_core::ServiceError;
 use solana_address::Address;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
@@ -143,15 +141,19 @@ use spr_transaction::{
 use spr_tree::TreeAccount;
 use spr_user_registry_interface::user_registry_program_id;
 use zolana_ring_client::{
-    auditor_view_tag, rpc::CreateAuditorKeyRequest, AuditedTransaction, AuditedUtxo, KnownUtxo,
-    OutputOpening, RecoveryStep, RingRecovery, RingScan, SourceMember, ViewingHistory,
+    auditor_view_tag, compute_unit_limit, rpc::CreateAuditorKeyRequest, AnonymousTransfer,
+    AuditedTransaction, AuditedUtxo, CoSignScope, CustomRing, CustomRingMerge, CustomRingTransfer,
+    CustomRingTransferInput, DelegateOutput, DelegateTransfer, DelegateTransferInput,
+    DepositRecipient, FrameEncode, InstructionTag, KnownUtxo, ListWriteData, MergeProofInput,
+    OutputOpening, ProvenRingTransfer, RecoveryStep, RingClient, RingDeposit, RingDepositReceipt,
+    RingError, RingMergeOperation, RingOperation, RingRecovery, RingRegistration, RingScan,
+    SourceMember, ViewingHistory,
 };
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::ring_sender_bundle_output_body;
 use zolana_ring_keys::{RingAddress, RingPaymentRequest};
 use zolana_ring_policy::{ListId, Member, Rule, RuleTable, Subject};
-use zolana_ring_rpc::{
-    ChainSource, Hub, RingRpcError, RootSecret, ServiceIdentity, TransactionSource, Unauthorized,
-    Upstreams,
-};
+use zolana_ring_rpc::{Hub, ServiceIdentity};
 
 /// Lamports moved by the two transaction-shape probes. Small enough that the
 /// payer's airdrop covers both plus fees.
@@ -212,7 +214,7 @@ const USDC_FINAL_CHANGE: u64 = USDC_EXIT_CHANGE - USDC_WITHDRAW_AMOUNT - USDC_FI
 
 fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
     let count = amounts.len().to_string();
-    let merged_count = amounts.len().min(custom_ring_sdk::MAX_RING_MERGE_INPUTS);
+    let merged_count = amounts.len().min(zolana_ring_client::MAX_RING_MERGE_INPUTS);
     let total: u64 = amounts[..merged_count].iter().sum();
     let env = setup()?;
     let tree = env.register_default_tree()?;
@@ -352,7 +354,7 @@ impl DelegateAppointment<'_> {
     fn send(self, env: &TestEnv) -> Result<()> {
         let admin = RingRoleKeys::of(&env.payer).admin;
         env.client.rpc().create_and_send_transaction(
-            &[custom_ring_sdk::SetDelegate {
+            &[zolana_ring_client::SetDelegate {
                 ring: self.ring,
                 authority: admin.pubkey(),
                 delegate: self.delegate.pubkey(),
@@ -869,12 +871,12 @@ impl<'a> AnonymousPayment<'a> {
             transaction,
         })
         .with_anonymous_signer(&self.sender.signing_key)
-        .with_payment(custom_ring_sdk::AnonymousPayment {
+        .with_payment(zolana_ring_client::AnonymousPayment {
             to: self.to,
             asset: Mint::SOL,
             amount: self.amount,
             reply: None,
-            data: custom_ring_sdk::NoteData::default(),
+            data: zolana_ring_client::NoteData::default(),
         })?
         .with_shape(shape)?)
     }

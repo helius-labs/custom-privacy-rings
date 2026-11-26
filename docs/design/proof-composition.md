@@ -73,7 +73,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The program takes any signer in the delegate slot of `AuthorityTransfer`. A signer other than the ring's delegate names a mint in the next slot. The program requires a Token-2022 mint whose `PermanentDelegate` is that signer, in `MintDelegate::asset`, the parse Ring RPC and the Rust SDK also run, and writes `hash_bytes(mint)` as `delegate_asset`. The program writes zero for the ring's delegate.
 - The circuit holds the asset of every live input and every live output to a nonzero `delegate_asset`, an exit included, in `assertAsset`. A zero value holds nothing.
 - SPP conserves each asset over the notes and the public slots, and the program refuses a deposit leg on the rail, so no withdrawal of another asset balances.
-- The tests are `TestDelegateAssetHoldsEveryNote`, `a_mint_names_its_asset_only_to_its_live_permanent_delegate` in `program-libs/interface/tests/transact.rs`, `a_mint_names_its_live_permanent_delegate_on_the_authority_rail` in `programs/custom-ring/tests/rules/transact_rules.rs` and `a_mint_delegate_moves_its_mint_alone_and_reads_no_secret` in `services/ring-rpc/src/operations/authority_transfer.rs`.
+- The tests are `TestDelegateAssetHoldsEveryNote`, `a_mint_names_its_asset_only_to_its_live_permanent_delegate` in `sdk-libs/client/tests/transact.rs`, `a_mint_names_its_live_permanent_delegate_on_the_authority_rail` in `program-tests/custom-ring/tests/rules/transact_rules.rs` and `a_mint_delegate_moves_its_mint_alone_and_reads_no_secret` in `services/ring-relay/src/operations/authority_transfer.rs`.
 
 ### The signer set is the run SPP authorizes
 
@@ -106,7 +106,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - An owner reads its public lists at `ListKey(owner, 0)`, and an asset at its asset field.
 - The circuit forces a present owner's salt to open its row's `list_tag`, then reads the record at the forced salted key. Every owner also reads the record at `Poseidon(CRPR, owner, ring_salt)` under the salt that opens the policy's `ring_list_tag`, and a zero tag reads no such record. Registration refuses a zero salt, so no private record sits on the public key.
 - `RegistrySlots::load` refuses a salted source that pins another tracking registry. `LiveRoots::tracking` refuses a tracking revision below the highest floor of the salted sources.
-- The tests in `programs/custom-ring/tests/rules/storage_root_rules.rs` are `a_tracking_root_below_the_salted_floor_is_refused_at_load` and `a_private_list_mapped_to_a_curator_on_another_tracking_registry_is_refused`.
+- The tests in `program-tests/custom-ring/tests/rules/storage_root_rules.rs` are `a_tracking_root_below_the_salted_floor_is_refused_at_load` and `a_private_list_mapped_to_a_curator_on_another_tracking_registry_is_refused`.
 - The tests in `prover/circuits/policy` are `TestPooledPolicyBindsSubjectReferences`, `TestRecordPoolBindsEveryActiveQuery`, `TestPublicAndPrivateBlocksAreTwoRules` and `TestPresentRowCannotSkipTheSaltedRead`.
 
 ### Every owner, payment and input asset meets its rules
@@ -119,7 +119,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 ### A voucher's allow entry admits the transfer it signs
 
-- The circuit verifies one Ed25519 signature over `Poseidon(CRVC, private_tx_hash, withdrawal_hash)` on every proof, in `VoucherWires.Open`. The tag keeps the signed bytes apart from SPP's owner authorization digest, so a vouch authorizes no spend.
+- The circuit verifies one Ed25519 signature over `Poseidon(CRVC, ring_id, private_tx_hash, withdrawal_hash)` on every proof, in `VoucherWires.Open`. `ring_id` is the statement's ring id, so a vouch made for one ring verifies on no other, a transfer of default-ring notes alone included. The tag keeps the signed bytes apart from SPP's owner authorization digest, so a vouch authorizes no spend.
 - The program sets the vouched flag from the frame, through bit 0 of the layout element. No prover bit sets it.
 - The circuit refuses a vouched transfer unless `Screened` is set, in `resolveSubjects`, so the delegate rail and a ring with no rule table take no voucher.
 - The circuit reads the signer's records as an owner's and refuses a signer on neither `Allow` nor `PrivateAllow`, in `assertVouches`. It holds the signer to every sender rule in `assertSenderRules`. The key the stream seals is therefore a listed key the sender rules admit.
@@ -156,7 +156,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit reads `SelectCount(m, 1, N)`. A live note at or past `m` is refused, every record cell past `m` multiplies by zero, and the key digest stops at `m`.
 - The key's cost does not fall with `m`.
 - A hidden dummy is a published slot. It has a zero record and stays out of the private chain.
-- The tests are `TestCompactFrames` in `prover/circuits/audit`, and `bitmap_bits_past_the_count_are_refused` in `program-libs/interface/tests/transact.rs`.
+- The tests are `TestCompactFrames` in `prover/circuits/audit`, and `bitmap_bits_past_the_count_are_refused` in `sdk-libs/client/tests/transact.rs`.
 
 ### Every slot's record opens to its key and the auditor reads the key
 
@@ -193,21 +193,21 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 - SPP takes one signature as authorization for every data-bearing output of that signer. No statement element counts them.
 - A relayed signer's SDK requires one opening per published slot, each rebuilding its slot's commitment, before it signs. That check is the reader's and binds nobody else.
-- The test is `a_data_recipient_reads_every_slot_and_signs` in `sdk-libs/sdk/src/tests/operations/relay.rs`.
+- The test is `a_data_recipient_reads_every_slot_and_signs` in `sdk-libs/client/src/tests/transfer/pipeline/relay.rs`.
 
 ### Roots come from the ring's registries
 
 - The program reads each root live at the frame's revision, from the account the ring binds, through `RootRead`.
 - The program refuses a records registry of another ring at `Initialize`. It refuses a salted source that pins another tracking registry at `Initialize` and `UpdatePolicy`, before it stores the policy. It refuses one again when a frame reads it.
-- The tests are `programs/custom-ring/tests/rules/storage_root_rules.rs` and `programs/custom-ring/tests/rules/operator_rules.rs`.
+- The tests are `program-tests/custom-ring/tests/rules/storage_root_rules.rs` and `program-tests/custom-ring/tests/rules/operator_rules.rs`.
 
 ### An enrollment binds its owner and its seal
 
-- The Storage program computes the member from the signer. It takes the ring id and the auditor key from the tracking registry the ring created.
+- The Storage program computes the member from the owner each write names, and holds that owner to its Ed25519 signature or its CPI signature. It takes the ring id and the auditor key from the tracking registry the ring created.
 - The circuit holds the nullifier key and the list tag to nonzero secrets, and seals both secrets under `CRING/nfk`, in `RegisterKeyCircuit`.
-- The program computes each applied entry from its account and refuses an account already applied. `ApplyEnrollmentsCircuit` inserts each owner once at the next index and keeps the tree sorted, so no insert changes a leaf's member, nullifier key, ciphertext hash or list tag.
+- The program computes each applied entry from the write its owner signed, and marks it proven only when its `RegisterKey` proof verifies. `ApplyEnrollmentsCircuit` inserts a proven entry of an absent owner once at the next index and keeps the tree sorted. An entry of a present owner moves only its viewing key hash, so no write changes a leaf's member, nullifier key, ciphertext hash or list tag.
 - The proof does not show that the secret came from a particular derivation. A wallet that seals another secret harms itself alone.
-- The tests in `prover/circuits/registry` are `TestRegisterKeySealsTheEnrolledSecret`, `TestRegisterKeyRefusals`, `TestApplyEnrollmentsAppliesEntriesInNamedOrder`, `TestApplyEnrollmentsRefusals` and `TestApplyEnrollmentsAtCapacity`. The tests in `programs/storage/tests/lifecycle.rs` are `a_first_enrollment_needs_the_owner_and_a_proof_the_pairing_accepts`, `a_rotation_moves_the_viewing_key_with_no_proof` and `anyone_applies_named_enrollments_with_no_authority_signature`. `a_pda_enrolls_and_applies_its_key_on_the_validator` in `program-tests/custom-ring/tests/ring/sanity.rs` runs both steps on the validator.
+- The tests in `prover/circuits/registry` are `TestRegisterKeySealsTheEnrolledSecret`, `TestRegisterKeyRefusals`, `TestApplyEnrollmentsAppliesEntriesInNamedOrder`, `TestApplyEnrollmentsUpdatesPresentOwnersAndSkipsUnprovenAbsentOnes`, `TestApplyEnrollmentsRefusals` and `TestApplyEnrollmentsAtCapacity`. The tests in `program-tests/custom-ring/tests/storage_lifecycle.rs` are `a_batch_applies_only_what_each_owner_signed_over_its_registry`, `an_apply_needs_the_registry_authority_and_the_storage_program`, `an_apply_refuses_a_write_no_proof_or_signature_binds` and `signed_rotations_reach_the_apply_proof_under_the_registry_authority`. The tests in `program-tests/custom-ring/tests/rules/operator_rules.rs` are `only_the_enrollment_writer_reaches_storage_through_the_ring_pda` and `pda_enrollment_requires_one_owner_signature_per_invocation`.
 
 ### A private owner write proves its owner's row and raises the floor
 
@@ -215,7 +215,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - A batch with a private write proves under the private apply key. Its statement adds the private write bitmap and the tracking root at the revision the update names. The program reads that root from the tracking registry the source pins.
 - `ApplyRecordsCircuit` proves that `ListKey(member, salt)` equals the written member, and that the salt opens the `list_tag` of the owner's row under that root. The row must hold a nonzero nullifier key, and the write a private list bit.
 - After the proof the program raises `tracking_floor` to the revision together with the new root. A refusal writes neither.
-- The tests are `TestPrivateWriteOpensTheOwnersTrackingRow` and `TestPrivateKeyRefusesAPublicMask` in `prover/ringtest/ringregistry`, and `a_private_write_refuses_a_missing_or_substituted_tracking_registry` and `private_proof_failure_and_stale_revision_keep_the_root_and_floor` in `programs/storage/tests/lifecycle.rs`.
+- The tests are `TestPrivateWriteOpensTheOwnersTrackingRow` and `TestPrivateKeyRefusesAPublicMask` in `prover/ringtest/ringregistry`, and `a_private_write_refuses_a_missing_or_substituted_tracking_registry` and `private_proof_failure_and_stale_revision_keep_the_root_and_floor` in `program-tests/custom-ring/tests/storage_lifecycle.rs`.
 
 ### A policy update applies its writes in order
 
@@ -234,9 +234,9 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 - The program forwards SPP's merge and reads the tracking root under the ring authority alone.
 - The circuit holds the output hash to the record's fields and the seed's blinding. It seals the record and the seed under `CRING/mro` to the owner's viewing key, and `eph_sk` with that key under `CRING/mrg` to the auditor.
-- The circuit holds a nonzero key to its owner's row. A zero key reads no row, and the statement names the owner for SPP's signature. No constraint holds the payer apart from the owner.
+- The circuit holds the owner's nullifier key to its enrolled row under the tracking root. Registration enrolls no zero key, so no zero-key merge proves. No constraint holds the payer apart from the owner.
 - SPP's proof ties every input to that owner, asset and sum, and refuses a note with a data hash. No list, guard, cap or co-signer rule is proven.
-- The tests are `TestMergeRefusals`, `TestMergeRecordOffItsOpening`, `TestMergeRecordIsSealedToTheEnvelopesKey`, `TestMergeTrackingRow`, `TestMergeModes`, `TestMergeZeroKeyIgnoresEveryRow`, `TestMergePayer` and `TestMergeRecordRebuildsTheOutput` in `prover/circuits`.
+- The tests are `TestMergeRefusals`, `TestMergeRecordOffItsOpening`, `TestMergeRecordIsSealedToTheEnvelopesKey`, `TestMergeTrackingRow`, `TestMergeRefusesTheZeroKey`, `TestMergePayer` and `TestMergeRecordRebuildsTheOutput` in `prover/circuits`.
 
 ### A deposit is a transfer that spends no note
 
@@ -247,7 +247,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 ## What no proof covers
 
-- The circuit constrains no payload, slot tag, sender bundle or reply, and no recipient key choice. `the_external_data_hash_binds_every_delivery_byte` in `program-libs/interface/tests/transact.rs` pins the byte binding.
+- The circuit constrains no payload, slot tag, sender bundle or reply, and no recipient key choice. `the_external_data_hash_binds_every_delivery_byte` in `sdk-libs/client/tests/transact.rs` pins the byte binding.
 - A reader rebuilds a commitment under its own keys, and that match is its only authentication. [Recipient delivery](audit-and-recovery.md#recipient-delivery) states what recovers a bad tag, a wrong key and a bad payload.
 - A reader's coverage describes finalized history, and no proof backs it. [Reading through Ring RPC](audit-and-recovery.md#reading-through-ring-rpc) states what it claims.
 - A hidden owner's privacy rests on the conditions in [privacy](privacy.md). No constraint covers them.

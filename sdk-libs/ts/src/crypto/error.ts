@@ -16,7 +16,6 @@ export const RING_KEY_ERROR_RUST_VARIANT = Object.freeze({
   KEYPAIR_UNKNOWN_VIEWING_KEY: "UnknownViewingKey",
   KEYPAIR_DISCLOSURE_SHAPE: "AuditError::DisclosureLayout",
   KEYPAIR_DISCLOSURE_PADDING: null,
-  KEYPAIR_DISCLOSURE_FIELD: "AuditError::DisclosureField",
   KEYPAIR_INVALID_LENGTH: null,
 } as const);
 

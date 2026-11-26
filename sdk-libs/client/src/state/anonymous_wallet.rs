@@ -17,8 +17,8 @@ use zolana_ring_transaction::RingAssets;
 use crate::anonymous::{RecoverySession, RecoveryUpdate};
 
 use crate::{
-    is_zero_key, mint_balances, note_state, AnonymousError, AnonymousScan, MintBalance, NoteState,
-    SenderClaim, ViewingHistory,
+    mint_balances, note_state, AnonymousError, AnonymousScan, MintBalance, NoteState, SenderClaim,
+    ViewingHistory,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,9 +204,7 @@ impl fmt::Debug for PendingClaim {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct WalletJson {
-    #[serde(default)]
     revision: WalletRevision,
-    #[serde(default)]
     recovery: Option<RecoverySession>,
     history: Value,
     notes: Vec<WalletUtxo>,
@@ -259,25 +257,12 @@ impl AnonymousWallet {
         }
     }
 
-    pub fn funding_notes(&self) -> impl Iterator<Item = &WalletUtxo> {
-        self.checked_notes()
-            .filter(|note| !is_zero_key(note) && !self.spent_nullifiers.contains(&note.nullifier))
-    }
-
     fn checked_notes(&self) -> impl Iterator<Item = &WalletUtxo> {
         self.notes.iter().filter(|note| {
             self.recovery
                 .as_ref()
                 .is_none_or(|session| session.checked.contains(&note.nullifier))
         })
-    }
-
-    pub fn require_complete(&self) -> Result<(), AnonymousError> {
-        if self.recovery.is_some() {
-            Err(AnonymousError::SyncIncomplete)
-        } else {
-            Ok(())
-        }
     }
 
     pub fn notes(&self) -> &[WalletUtxo] {
@@ -302,12 +287,6 @@ impl AnonymousWallet {
             return NoteState::PendingSpendCheck;
         }
         note_state(note, |nullifier| self.spent_nullifiers.contains(nullifier))
-    }
-
-    /// Unspent zero-key notes, spent only through an explicit public spend.
-    pub fn exposed_notes(&self) -> impl Iterator<Item = &WalletUtxo> {
-        self.checked_notes()
-            .filter(|note| is_zero_key(note) && !self.spent_nullifiers.contains(&note.nullifier))
     }
 
     pub fn balances(&self) -> BTreeMap<Address, MintBalance> {

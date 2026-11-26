@@ -1,7 +1,7 @@
 [package]
 name = "zolana-ring-client"
 version = "0.1.0"
-description = "Custom ring audit encryption and transaction recovery client."
+description = "Custom ring client, the codecs, audit encryption and recovery, and under `operations` the builders, proofs and submission."
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,6 +11,7 @@ default = []
 solana-rpc = [
     "spr-client/solana-rpc",
     "dep:solana-commitment-config",
+    "dep:solana-transaction",
     "dep:solana-transaction-status-client-types",
 ]
 rpc = [
@@ -18,10 +19,26 @@ rpc = [
     "dep:rand",
     "dep:solana-signer",
     "dep:spr-instruction",
-    "dep:wincode",
     "dep:zolana-secret-file",
     "solana-signature/verify",
 ]
+operations = [
+    "rpc",
+    "dep:futures",
+    "dep:solana-commitment-config",
+    "dep:solana-instruction",
+    "dep:solana-instruction-error",
+    "dep:solana-message",
+    "dep:solana-sdk-ids",
+    "dep:solana-transaction",
+    "dep:solana-transaction-error",
+    "dep:solana-transaction-status-client-types",
+    "dep:spr-program",
+    "dep:spr-tree",
+    "solana-transaction/serde",
+    "solana-transaction/verify",
+]
+proofs = ["operations", "spr-client/proofs"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -30,21 +47,30 @@ bytemuck = { workspace = true }
 p256 = { workspace = true }
 hex = { workspace = true }
 custom-ring-interface = { workspace = true }
+futures = { workspace = true, optional = true }
 curve25519-dalek = { version = "4.1", default-features = false }
 rand = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 solana-account = { workspace = true }
+solana-bn254 = { workspace = true }
 solana-address = { workspace = true, features = ["curve25519"] }
 solana-commitment-config = { workspace = true, optional = true }
+solana-instruction = { workspace = true, optional = true }
+solana-instruction-error = { workspace = true, optional = true }
+solana-message = { workspace = true, features = ["wincode"], optional = true }
 solana-rpc-client-api = { workspace = true }
+solana-sdk-ids = { workspace = true, optional = true }
 solana-signature = { workspace = true }
 solana-signer = { workspace = true, optional = true }
+solana-transaction = { workspace = true, optional = true }
+solana-transaction-error = { workspace = true, optional = true }
 solana-transaction-status-client-types = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
-wincode = { workspace = true, optional = true }
+wincode = { workspace = true }
+subtle = { workspace = true }
 zeroize = { workspace = true }
 borsh = { workspace = true }
 spr-api = { workspace = true }
@@ -56,6 +82,8 @@ spr-interface = { workspace = true }
 spr-hasher = { workspace = true }
 spr-indexer-api = { workspace = true }
 spr-keypair = { workspace = true }
+spr-program = { workspace = true, optional = true }
+spr-tree = { workspace = true, optional = true }
 zolana-ring-indexer = { workspace = true }
 zolana-ring-keys = { workspace = true }
 zolana-ring-member-registry = { workspace = true }
@@ -65,12 +93,19 @@ zolana-secret-file = { workspace = true, optional = true }
 spr-transaction = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
+custom-ring-interface = { workspace = true, features = ["cpi"] }
 http = { workspace = true }
 bs58 = { workspace = true }
 solana-hash = { workspace = true }
+num-bigint = { workspace = true }
 solana-keypair = { workspace = true }
+solana-message = { workspace = true }
+solana-rpc-client = { workspace = true }
+solana-system-interface = { workspace = true }
+solana-program-error = { workspace = true }
 solana-signature = { workspace = true, features = ["verify"] }
-solana-transaction = { workspace = true }
+spl-token-2022-interface = { workspace = true }
 solana-transaction-status-client-types = { workspace = true }
-tokio = { workspace = true }
-zolana-ring-client = { path = ".", features = ["rpc", "solana-rpc"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+x25519-dalek = { workspace = true }
+zolana-ring-client = { path = ".", features = ["operations", "solana-rpc"] }

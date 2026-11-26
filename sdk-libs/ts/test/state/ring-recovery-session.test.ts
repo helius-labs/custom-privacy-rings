@@ -331,9 +331,13 @@ describe("durable recovery", () => {
     );
     expect(source.tagQueries.at(-1)?.minContextSlot).toBe(200n);
     expect(restored.toJson()).toBe(document);
-    const old = JSON.parse(document);
-    delete old.recoveryFloor;
-    expect(AnonymousWallet.fromJson(JSON.stringify(old))._recoveryMinimumSlot()).toBe(200n);
+    for (const field of ["recoveryFloor", "revision"]) {
+      const partial = JSON.parse(document);
+      delete partial[field];
+      expect(() => AnonymousWallet.fromJson(JSON.stringify(partial))).toThrow(
+        "RING_WALLET_DOCUMENT",
+      );
+    }
   });
 
   it("uses the highest ring, tag and core checkpoint as the target floor", async () => {
@@ -353,5 +357,60 @@ describe("durable recovery", () => {
     ).rejects.toThrow("RING_HISTORY_PAGE_INVALID");
     expect(source.tagQueries.at(-1)?.minContextSlot).toBe(300n);
     expect(source.ringQueries).toEqual([]);
+  });
+
+  it("rejects unknown keys on recovery session objects and invalid owner hex", async () => {
+    const source = new RecoverySource();
+    const alice = new ScanWallet(1);
+    const bob = new ScanWallet(2);
+    await alice.pay(source.indexer, [{ to: bob.address, amount: 7n }], { slot: 10n });
+    const sync = AnonymousSync.create(bob.keys, ASSETS).withScanLimits({
+      pageSize: 1,
+      maxPages: 1,
+    });
+    const held = wallet(bob);
+    await held.absorb(await sync.fetchWallet(source.client(), held));
+    const base = JSON.parse(held.toJson()) as {
+      recovery: Record<string, unknown> & {
+        tasks: Record<string, unknown>[];
+        active: Record<string, unknown> | null;
+      };
+    };
+
+    const withExtraSession = structuredClone(base);
+    withExtraSession.recovery["extra"] = true;
+    expect(() => AnonymousWallet.fromJson(JSON.stringify(withExtraSession))).toThrow(
+      "RING_WALLET_DOCUMENT",
+    );
+
+    const withBadOwner = structuredClone(base);
+    withBadOwner.recovery["owner"] = "not-valid-hex";
+    expect(() => AnonymousWallet.fromJson(JSON.stringify(withBadOwner))).toThrow(
+      "RING_WALLET_DOCUMENT",
+    );
+
+    const withShortOwner = structuredClone(base);
+    withShortOwner.recovery["owner"] = "00".repeat(32);
+    expect(() => AnonymousWallet.fromJson(JSON.stringify(withShortOwner))).toThrow(
+      "RING_WALLET_DOCUMENT",
+    );
+
+    const withExtraTask = structuredClone(base);
+    withExtraTask.recovery.tasks[0]!["extra"] = 1;
+    expect(() => AnonymousWallet.fromJson(JSON.stringify(withExtraTask))).toThrow(
+      "RING_WALLET_DOCUMENT",
+    );
+
+    const withExtraActive = structuredClone(base);
+    withExtraActive.recovery.active = {
+      limit: 1,
+      token: null,
+      workOffset: 0,
+      nullifiers: ["00".repeat(32)],
+      extra: 1,
+    };
+    expect(() => AnonymousWallet.fromJson(JSON.stringify(withExtraActive))).toThrow(
+      "RING_WALLET_DOCUMENT",
+    );
   });
 });

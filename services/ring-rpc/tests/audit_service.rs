@@ -24,6 +24,7 @@ pub mod transfer;
 
 use custom_ring_interface::CoSignScope;
 use custom_ring_interface::{RecordWrite, RingMode, RING_TRANSACT_ACCOUNT_PREFIX_LEN};
+use ring_audit::tracking::fixture::{Enrollment, TrackingLedger};
 use spr_keypair::NullifierKey;
 use spr_keypair::{X25519Keypair, X25519Pubkey};
 use std::{
@@ -36,13 +37,27 @@ use std::{
     },
     time::Duration,
 };
-use zolana_ring_client::rpc::WalletEnrollment;
 use zolana_ring_indexer::tracking::{GetTrackingRecordsRequest, GetTrackingRecordsResponse};
 use zolana_ring_member_registry::{MemberRecord, MemberRegistryTree, RecordOpening, RecordTree};
 use zolana_ring_policy::{ListId, Member, MintPolicy};
-use zolana_ring_rpc::tracking_fixture::{Enrollment, TrackingLedger};
 
 use p256::ecdsa::signature::hazmat::PrehashSigner;
+use ring_audit::audit::{AuditRead, AuditService, Page};
+use ring_audit::RingAuditError;
+use ring_cosigner::cosign::{ApproveClass, CoSignerApproval};
+use ring_service_core::authorize::{ReadCheck, Unauthorized, AUTH_SKEW};
+use ring_service_core::clock::Clock;
+use ring_service_core::database::Store;
+use ring_service_core::error::CarriedFault;
+use ring_service_core::keys::{GrantRowsSecret, RootSecret};
+use ring_service_core::origins::{OriginPolicy, Origins};
+use ring_service_core::upstream::{
+    MergeAuditRequest, RecordsTip, RingConfiguration, RingFrame, RingHistoryPage, ScopeUnreadable,
+    TransactionPage, TransactionSource,
+};
+use ring_service_core::ServiceError;
+use ring_writer::record_update::ReaderGrantStore;
+use ring_writer::WriterError;
 use sha2::Digest;
 use solana_address::Address;
 use solana_keypair::Keypair;
@@ -65,24 +80,19 @@ use zolana_ring_client::{
         GetDecryptedTransactionsResponse, GetWalletActivityResponse, HealthResponse, KeyMode,
         PagedRead, ReadAttestation, ReadAuth, ReadBuildError, ReadSignature, ReadSigner,
         ReadTarget, ReaderGrantAction, ReaderGrantAttestation, ReaderGrantRequest, RingChainStatus,
-        SkippedReason, WalletActivity, WalletStatusRequest, WalletView, WebAuthnAssertion,
-        AUDITED_UTXOS_LIMIT, CREATE_AUDITOR_KEY, GET_AUDITED_MERGES, GET_AUDITED_UTXOS,
-        GET_DECRYPTED_TRANSACTIONS, HEALTH, SET_READER_GRANT,
+        SkippedReason, WalletActivity, WalletEnrollment, WalletStatusRequest, WalletView,
+        WebAuthnAssertion, AUDITED_UTXOS_LIMIT, CREATE_AUDITOR_KEY, GET_AUDITED_MERGES,
+        GET_AUDITED_UTXOS, GET_DECRYPTED_TRANSACTIONS, HEALTH, SET_READER_GRANT,
     },
-    AuditError, MergeAuditPage, ReaderKey, RingOrigin, RingWithdrawal,
+    AuditError, MergeAuditPage, P256ReaderKey, ReaderKey, RingIndexerError, RingOrigin,
+    RingWithdrawal, StorageTip,
 };
-use zolana_ring_client::{P256ReaderKey, RingIndexerError, StorageTip};
 use zolana_ring_indexer::rpc::{
     GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse,
     GetStorageMemberRecordsRequest, GetStorageMemberRecordsResponse, RingIndexedMemberRecordView,
     RingMemberOpening, RingMemberRecordView, RingRecordPathView, StorageRootView,
 };
-use zolana_ring_rpc::{
-    rpc_module, ApproveClass, AuditRead, AuditService, Clock, CoSignerApproval, GrantRowsSecret,
-    Hub, MergeAuditRequest, OriginPolicy, Origins, Page, ReadCheck, ReaderGrantStore, RecordsTip,
-    RingConfiguration, RingFrame, RingHistoryPage, RingRpcError, RootSecret, ServiceIdentity,
-    Store, TransactionPage, TransactionSource, Unauthorized, AUTH_SKEW,
-};
+use zolana_ring_rpc::{rpc_module, Hub, RingRpcError, ServiceIdentity};
 use zolana_ring_transaction::RingAssets;
 
 use transfer::{field, x25519_u, Disclosure, Frame, Output, Publish, Rail, Transfer, UtxoFields};
@@ -584,15 +594,15 @@ impl TransactionSource for StaticSource {
         &self,
         _ring: Address,
         signer: Address,
-    ) -> Result<Option<CoSignScope>, RingRpcError> {
+    ) -> Result<Option<CoSignScope>, ScopeUnreadable> {
         Ok(self.co_signers.get(&signer).copied())
     }
 
     async fn tracking_root(
         &self,
         _ring: Address,
-        _finality: zolana_ring_rpc::Finality,
-    ) -> Result<Option<zolana_ring_rpc::TrackingRoot>, ClientError> {
+        _finality: ring_service_core::upstream::Finality,
+    ) -> Result<Option<ring_service_core::upstream::TrackingRoot>, ClientError> {
         Ok(self.tracking.0.root())
     }
 
@@ -607,7 +617,7 @@ impl TransactionSource for StaticSource {
         &self,
         _ring: Address,
         owner: Address,
-    ) -> Result<WalletEnrollment, RingRpcError> {
+    ) -> Result<WalletEnrollment, ServiceError> {
         Ok(self.tracking.0.enrollment(&owner))
     }
 
@@ -843,7 +853,7 @@ impl TransactionSource for StaticSource {
         Ok(GENESIS)
     }
 
-    async fn tree_id(&self, _tree: Address) -> Result<u16, custom_ring_sdk::RingError> {
+    async fn tree_id(&self, _tree: Address) -> Result<u16, zolana_ring_client::RingError> {
         Ok(TREE_ID)
     }
 
@@ -1081,13 +1091,14 @@ impl Fixture {
                 RING,
                 RingConfiguration {
                     auditor_pubkey: self.auditor.pubkey(),
-                    roles: custom_ring_interface::RingRoles {
-                        policy: authority().pubkey(),
+                    mode: RingMode::Confidential,
+                    policy: custom_ring_interface::RingPolicy {
+                        roles: custom_ring_interface::RingRoles {
+                            policy: authority().pubkey(),
+                            ..bytemuck::Zeroable::zeroed()
+                        },
                         ..bytemuck::Zeroable::zeroed()
                     },
-                    mode: RingMode::Confidential,
-                    delegate: None,
-                    ring_list_tag: [0; 32],
                 },
             )]),
             chain: HashMap::new(),
@@ -1257,7 +1268,7 @@ async fn read_at(
 async fn read_at_result(
     service: &AuditService<StaticSource>,
     cursor: Option<u8>,
-) -> Result<GetDecryptedTransactionsResponse, RingRpcError> {
+) -> Result<GetDecryptedTransactionsResponse, RingAuditError> {
     let page = Page::new(cursor.map(audit_cursor), None).expect("page");
     let request = match cursor {
         Some(byte) => GetDecryptedTransactionsRequest::read(target(RING))
@@ -1432,7 +1443,7 @@ fn request_builder_rejects_noncanonical_pages() {
     ));
     assert!(matches!(
         Page::new(Some(Vec::new().into()), None),
-        Err(RingRpcError::InvalidPage)
+        Err(RingAuditError::InvalidPage)
     ));
 }
 
@@ -1452,7 +1463,7 @@ fn signed_by(authority: &Keypair) -> CreateAuditorKeyRequest {
 async fn authorize(
     hub: &Hub<StaticSource>,
     request: &CreateAuditorKeyRequest,
-) -> Result<(), RingRpcError> {
+) -> Result<(), RingAuditError> {
     hub.service(Some(RING))
         .expect("service")
         .auditor_key_statement(&request.auth)
@@ -1475,6 +1486,6 @@ fn released(created: &CreateAuditorKeyResponse, request: &CreateAuditorKeyReques
         .verify(created.service_pubkey.0.as_ref(), &statement.message())
 }
 
-fn refused(result: Result<(), RingRpcError>, expected: Unauthorized) -> bool {
-    matches!(result, Err(RingRpcError::Unauthorized(reason)) if reason == expected)
+fn refused(result: Result<(), RingAuditError>, expected: Unauthorized) -> bool {
+    matches!(result, Err(RingAuditError::Service(ServiceError::Unauthorized(reason))) if reason == expected)
 }

@@ -4,16 +4,22 @@
 //! Read before `programs/custom-ring/src/instructions/transfer/processor.rs`.
 
 use spr_interface::instruction::{
-    instruction_data::transact::validate_interface_transfers, ExternalDataPreimage, InputUtxo,
-    MessageData, OwnerTag, TransactIxData, TransactIxDataRef, TransactOutput, TransactProof,
+    InputUtxo, MessageData, OwnerTag, TransactIxData, TransactOutput, TransactProof,
 };
 
-use super::{invalid, RingOutput, RingTransactData, Settlement, SlotBody};
+use super::{invalid, ParsedTransact, RingOutput, RingTransactData, SlotBody};
 use crate::{
     error::CustomRingError,
     output::{encode_ring_sender_bundle_output, OutputPayload},
     tagged_x25519, AuditorMessage, RingPolicy,
 };
+
+impl ParsedTransact<'_> {
+    pub fn spp_instruction_data(&self, ring: &RingPolicy) -> Result<Vec<u8>, CustomRingError> {
+        self.data
+            .spp_instruction_data_validated(ring, self.data.spp_proof_points()?)
+    }
+}
 
 impl<'a> RingOutput<'a> {
     pub fn transact_output(&self, reply: &[u8]) -> Result<TransactOutput, CustomRingError> {
@@ -40,16 +46,7 @@ impl RingTransactData<'_> {
         AuditorMessage::data(self.tx_viewing_u, self.auditor_ciphertexts())
     }
 
-    /// The SPP data the program forwards, `b` decompressed for SPP's verifier.
-    pub fn expand(&self, ring: &RingPolicy) -> Result<TransactIxData, CustomRingError> {
-        self.transact_ix_data(ring, self.spp_proof_points()?)
-    }
-
-    pub fn spp_instruction_data(&self, ring: &RingPolicy) -> Result<Vec<u8>, CustomRingError> {
-        self.spp_instruction_data_under(ring, self.spp_proof_points()?)
-    }
-
-    fn spp_proof_points(&self) -> Result<TransactProof, CustomRingError> {
+    pub fn spp_proof_points(&self) -> Result<TransactProof, CustomRingError> {
         let b = groth16_solana::decompression::decompress_g2(&self.spp_proof.proof_b)
             .map_err(|_| CustomRingError::InvalidSppProofPoint)?;
         Ok(TransactProof {
@@ -59,15 +56,12 @@ impl RingTransactData<'_> {
         })
     }
 
-    /// The tag and the expansion under `proof` in one buffer, the program's heap holds no second copy.
-    pub fn spp_instruction_data_under(
+    pub fn spp_instruction_data_validated(
         &self,
         ring: &RingPolicy,
         proof: TransactProof,
     ) -> Result<Vec<u8>, CustomRingError> {
-        let expanded = self.transact_ix_data(ring, proof)?;
-        // The refusal `TransactIxData::serialize` applies, here behind the SPP tag.
-        validate_interface_transfers(&expanded.interface_transfers).map_err(invalid)?;
+        let expanded = self.transact_ix_data_validated(ring, proof)?;
         let len = wincode::serialized_size(&expanded).map_err(invalid)?;
         let mut data = Vec::with_capacity(usize::try_from(len).map_err(invalid)?.saturating_add(1));
         data.push(self.rail.spp_tag());
@@ -75,36 +69,11 @@ impl RingTransactData<'_> {
         Ok(data)
     }
 
-    /// The external data hash the SPP proof binds, computable before either proof exists.
-    pub fn external_data_hash(
-        &self,
-        ring: &RingPolicy,
-        settlements: &[Settlement<'_>],
-    ) -> Result<[u8; 32], CustomRingError> {
-        let data = self.spp_instruction_data_under(ring, TransactProof::zeroed())?;
-        let (tag, expanded) = data
-            .split_first()
-            .ok_or(CustomRingError::InvalidInstructionData)?;
-        // 1. SPP's own parser fixes the prefix boundary, the bytes before `private_tx_hash`.
-        let (_, prefix) =
-            TransactIxDataRef::parse_with_external_data_prefix(expanded).map_err(invalid)?;
-        let tag = [*tag];
-        let mut preimage = ExternalDataPreimage::new(&tag, prefix);
-        // 2. The caller must supply settlements in transfer order. Each pair binds asset then user after the prefix.
-        // Inline owner tags are already in the prefix.
-        for settlement in settlements {
-            preimage.push_settlement(settlement.asset_account, settlement.user_account)?;
-        }
-        Ok(preimage.finish()?)
-    }
-
-    /// The expansion under `proof`, a client sizes the transaction with a zeroed one.
-    pub fn transact_ix_data(
+    pub fn transact_ix_data_validated(
         &self,
         ring: &RingPolicy,
         proof: TransactProof,
     ) -> Result<TransactIxData, CustomRingError> {
-        self.validate_under(self.audit_stream()?)?;
         // The auditor's `u` without its tag, the program takes it from the account and a frame names no reader.
         let view_tag = auditor_tag(ring);
         Ok(TransactIxData {

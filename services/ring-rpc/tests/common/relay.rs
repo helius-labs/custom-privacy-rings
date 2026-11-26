@@ -6,6 +6,13 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
+use ring_relay::relay::RelayPayload;
+use ring_relay::relay_prover::{
+    DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver,
+};
+use ring_relay::RingRelayError;
+use ring_service_core::landing::{ChainOutcome, ChainSubmit, LatestBlockhash};
+use ring_service_core::ServiceError;
 use solana_address::Address;
 use solana_hash::Hash;
 use solana_instruction::{AccountMeta, Instruction};
@@ -31,10 +38,6 @@ use zolana_ring_client::rpc::{
     PrepareRelayRequest, ProofInputBytes, ReadTarget, RelayIntent, RelayProofInputs, RelayQuote,
     RelayRail, RelayRequestAttestation,
 };
-use zolana_ring_rpc::{
-    ChainOutcome, ChainSubmit, DelegateSeal, LatestBlockhash, ProvenRelay, RelayError,
-    RelayParties, RelayPayload, RelayProofRequest, RelayProver, RingRpcError,
-};
 use zolana_ring_transaction::AnonymousPlan;
 
 pub const SLOT: u64 = 1_000;
@@ -52,11 +55,15 @@ pub struct RecordingProver {
     pub co_signers: Option<Vec<Address>>,
     /// The next proven transfer's data, a frame past one transaction.
     pub frame: Mutex<Option<Vec<u8>>>,
+    /// Absent charges `TREE_FEES`.
+    pub tree_fees: Mutex<Option<u64>>,
+    /// Written into every proven message's header.
+    pub priority_fee: Mutex<Option<u64>>,
 }
 
 #[async_trait]
 impl RelayProver for RecordingProver {
-    async fn prove(&self, request: RelayProofRequest<'_>) -> Result<ProvenRelay, RingRpcError> {
+    async fn prove(&self, request: RelayProofRequest<'_>) -> Result<ProvenRelay, RingRelayError> {
         self.requests
             .lock()
             .expect("requests")
@@ -91,10 +98,17 @@ impl RelayProver for RecordingProver {
                 accounts,
                 data,
             },
-            budget: ComputeBudgetConfig::new(400_000),
+            budget: match *self.priority_fee.lock().expect("priority fee") {
+                Some(lamports) => ComputeBudgetConfig::new(400_000).with_priority_fee(lamports),
+                None => ComputeBudgetConfig::new(400_000),
+            },
             co_signers,
             signers,
-            tree_fees: TREE_FEES,
+            tree_fees: self
+                .tree_fees
+                .lock()
+                .expect("tree fees")
+                .unwrap_or(TREE_FEES),
         })
     }
 
@@ -102,7 +116,7 @@ impl RelayProver for RecordingProver {
         &self,
         _seal: DelegateSeal<'_>,
         _parties: RelayParties,
-    ) -> Result<RelayProofInputs, RingRpcError> {
+    ) -> Result<RelayProofInputs, RingRelayError> {
         unreachable!("the wallet seals its own transfer")
     }
 }
@@ -120,7 +134,9 @@ pub struct RecordingChain {
     pub slot: AtomicU64,
     pub accounts: Mutex<Vec<Address>>,
     pub simulation_refusal: Mutex<Option<String>>,
-    pub simulated_calls: Mutex<Vec<zolana_ring_rpc::InnerCall>>,
+    pub simulated_calls: Mutex<Vec<ring_service_core::landing::InnerCall>>,
+    /// The cluster holds no blockhash a co-signed message names.
+    pub stale_blockhash: AtomicBool,
 }
 
 impl Default for RecordingChain {
@@ -135,6 +151,7 @@ impl Default for RecordingChain {
             accounts: Mutex::default(),
             simulation_refusal: Mutex::default(),
             simulated_calls: Mutex::default(),
+            stale_blockhash: AtomicBool::new(false),
         }
     }
 }
@@ -150,22 +167,22 @@ impl ChainSubmit for RecordingChain {
     async fn simulate(
         &self,
         _message: &solana_message::VersionedMessage,
-    ) -> Result<zolana_ring_rpc::Simulation, RingRpcError> {
+    ) -> Result<ring_service_core::landing::Simulation, ServiceError> {
         Ok(
             match self.simulation_refusal.lock().expect("refusal").clone() {
-                Some(reason) => zolana_ring_rpc::Simulation::Refused { reason },
-                None => zolana_ring_rpc::Simulation::Passed {
+                Some(reason) => ring_service_core::landing::Simulation::Refused { reason },
+                None => ring_service_core::landing::Simulation::Passed {
                     calls: self.simulated_calls.lock().expect("calls").clone(),
                 },
             },
         )
     }
 
-    async fn slot(&self) -> Result<u64, RingRpcError> {
+    async fn slot(&self) -> Result<u64, ServiceError> {
         Ok(self.slot.load(Ordering::Relaxed))
     }
 
-    async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, RingRpcError> {
+    async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, ServiceError> {
         Ok(self
             .accounts
             .lock()
@@ -174,12 +191,12 @@ impl ChainSubmit for RecordingChain {
             .then(Vec::new))
     }
 
-    async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, RingRpcError> {
+    async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
         Ok(RENT_LAMPORTS)
     }
 
     /// Its first eight bytes name its last valid height, the window the start height's blockhash spans.
-    async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+    async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
         let height = self.height.load(Ordering::Relaxed);
         let last_valid = height + LAST_VALID_BLOCK_HEIGHT - START_HEIGHT;
         let mut blockhash = [0; 32];
@@ -187,35 +204,33 @@ impl ChainSubmit for RecordingChain {
         Ok((Hash::new_from_array(blockhash), last_valid).into())
     }
 
-    async fn block_height(&self) -> Result<u64, RingRpcError> {
+    async fn block_height(&self) -> Result<u64, ServiceError> {
         Ok(self.height.load(Ordering::Relaxed))
     }
 
-    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), RingRpcError> {
+    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), ServiceError> {
         if self.refuse_next.swap(false, Ordering::Relaxed) {
-            return Err(RelayError::SendRefused {
+            return Err(ServiceError::SendRefused {
                 reason: "preflight refused".to_owned(),
-            }
-            .into());
+            });
         }
         let blockhash = transaction.message.recent_blockhash().to_bytes();
         let last_valid = u64::from_le_bytes(blockhash[..8].try_into().expect("eight bytes"));
         if self.height.load(Ordering::Relaxed) > last_valid {
-            return Err(RelayError::SendRefused {
+            return Err(ServiceError::SendRefused {
                 reason: "Blockhash not found".to_owned(),
-            }
-            .into());
+            });
         }
         self.sent.lock().expect("sent").push(transaction.clone());
         match self.reply_lost.swap(false, Ordering::Relaxed) {
-            true => Err(RingRpcError::Upstream(ClientError::Rpc(
+            true => Err(ServiceError::Upstream(ClientError::Rpc(
                 "the send reply was lost".to_owned(),
             ))),
             false => Ok(()),
         }
     }
 
-    async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, RingRpcError> {
+    async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, ServiceError> {
         if let Some(outcome) = self.outcome.lock().expect("outcome").clone() {
             return Ok(outcome);
         }
@@ -224,6 +239,22 @@ impl ChainSubmit for RecordingChain {
             .iter()
             .any(|transaction| transaction.signatures[0] == signature)
             .then_some(ChainOutcome::Confirmed { slot: SLOT + 1 }))
+    }
+
+    async fn blockhash_expiry(&self, _blockhash: Hash) -> Result<Option<u64>, ServiceError> {
+        if self.stale_blockhash.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        Ok(Some(self.latest_blockhash().await?.last_valid_block_height))
+    }
+
+    async fn finalized_tip(
+        &self,
+    ) -> Result<ring_service_core::landing::FinalizedTip, ServiceError> {
+        Ok(ring_service_core::landing::FinalizedTip {
+            slot: self.slot.load(Ordering::Relaxed),
+            block_height: self.height.load(Ordering::Relaxed),
+        })
     }
 }
 

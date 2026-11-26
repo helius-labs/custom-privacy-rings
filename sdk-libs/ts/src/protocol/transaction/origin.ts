@@ -44,6 +44,7 @@ import {
 } from "../../crypto/audit/merge-disclosure.js";
 import { RingTransactData, landedRingRail, type RingRail } from "./transact.js";
 import { readMergeData, writeInterfaceTransfer } from "../codec/codecs.js";
+import { cacheAccountCount as cacheAccounts, settlementAccountCount } from "./transfer-layout.js";
 
 const base58Encoder = getBase58Encoder();
 
@@ -252,11 +253,11 @@ export function ringWithdrawalsOf(
     const settlement = settlementDataOf(instruction);
     if (settlement === undefined) continue;
     const { transfers, cacheAccountCount } = settlement;
-    const total = transfers.reduce((sum, transfer) => sum + settlementWidth(transfer), 0);
+    const total = transfers.reduce((sum, transfer) => sum + settlementAccountCount(transfer), 0);
     let at = instruction.accounts.length - cacheAccountCount - total;
     if (at < 0) throw invalid("settlementAccounts");
     for (const transfer of transfers) {
-      const width = settlementWidth(transfer);
+      const width = settlementAccountCount(transfer);
       const leg = withdrawalLeg(transfer, instruction.accounts.slice(at, at + width));
       at += width;
       if (leg !== undefined) withdrawals.push(leg);
@@ -273,6 +274,7 @@ export function confirmedInstructionGroups(
   transaction: unknown,
 ): readonly OriginInstructionGroup[] {
   const wire = record(transaction, "transaction");
+  if (wire["version"] !== 1) throw invalid("transaction.version");
   const encoded = record(wire["transaction"], "transaction.transaction");
   const message = record(encoded["message"], "transaction.transaction.message");
   const meta = record(wire["meta"], "transaction.meta");
@@ -311,40 +313,22 @@ export function confirmedInstructionGroups(
   );
 }
 
-/** Static keys, then the loaded writable and readonly addresses, the order instruction indexes count in. */
+/** Version 1 carries every account in the message, a lookup table or a loaded address is refused. */
 function messageAccountKeys(
   message: Readonly<Record<string, unknown>>,
   meta: Readonly<Record<string, unknown>>,
 ): readonly Address[] {
-  const statics = addresses(message["accountKeys"], "message.accountKeys");
-  const lookups = message["addressTableLookups"];
-  const tables =
-    lookups === undefined || lookups === null
-      ? []
-      : list(lookups, "message.addressTableLookups").map((lookup, index) =>
-          record(lookup, `message.addressTableLookups[${index}]`),
-        );
+  const empty = (value: unknown, path: string) => {
+    if (value !== undefined && value !== null && list(value, path).length > 0) throw invalid(path);
+  };
+  empty(message["addressTableLookups"], "message.addressTableLookups");
   const loaded = meta["loadedAddresses"];
-  if (loaded === undefined || loaded === null) {
-    if (tables.length > 0) throw invalid("meta.loadedAddresses");
-    return statics;
+  if (loaded !== undefined && loaded !== null) {
+    const loadedRecord = record(loaded, "meta.loadedAddresses");
+    empty(loadedRecord["writable"], "meta.loadedAddresses.writable");
+    empty(loadedRecord["readonly"], "meta.loadedAddresses.readonly");
   }
-  const loadedRecord = record(loaded, "meta.loadedAddresses");
-  const writable = addresses(loadedRecord["writable"], "meta.loadedAddresses.writable");
-  const readonly = addresses(loadedRecord["readonly"], "meta.loadedAddresses.readonly");
-  const indexes = (key: "writableIndexes" | "readonlyIndexes") =>
-    tables.reduce(
-      (count, table, index) =>
-        count + list(table[key], `message.addressTableLookups[${index}].${key}`).length,
-      0,
-    );
-  // Each lookup index loads one address, any other count names accounts no lookup loaded.
-  if (
-    writable.length !== indexes("writableIndexes") ||
-    readonly.length !== indexes("readonlyIndexes")
-  )
-    throw invalid("meta.loadedAddresses");
-  return [...statics, ...writable, ...readonly];
+  return addresses(message["accountKeys"], "message.accountKeys");
 }
 
 /** The public settlement legs a confirmed transaction paid out of `ring`. */
@@ -702,11 +686,6 @@ function boundFrame(
   };
 }
 
-/** Mirrors Rust `InterfaceTransfer::settlement_account_count`, the accounts `append_interface_transfer_accounts` adds. */
-function settlementWidth(transfer: InterfaceTransfer): number {
-  return transfer.kind === "splDeposit" || transfer.kind === "splWithdrawal" ? 5 : 2;
-}
-
 /** A deposit settles value into the pool and names no recipient. */
 function withdrawalLeg(
   transfer: InterfaceTransfer,
@@ -827,8 +806,8 @@ function readTransferData(reader: Reader, accounts: readonly Address[]): Confirm
     const reads = reader.u64("circuit.cacheAccess.readBitmap");
     const firstWrite = reader.bytes(2, "circuit.cacheAccess.writeSlots[0]");
     reader.bytes(2 * (MAX_CACHE_WRITES - 1), "circuit.cacheAccess.writeSlots");
-    const writes = firstWrite.some((byte) => byte !== 0xff);
-    cacheAccountCount = (reads === 0n ? 0 : 1) + (writes ? 2 : 0);
+    const [output = 0xff, slot = 0xff] = firstWrite;
+    cacheAccountCount = cacheAccounts({ readBitmap: reads, writeSlots: [{ output, slot }] });
   }
   reader.bytes(192, "proof");
   const inputs = Array.from({ length: reader.u8("inputs.length") }, () => ({

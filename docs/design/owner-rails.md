@@ -44,7 +44,7 @@ A zero-key note has `nullifier_secret = 0`. Anyone who knows its opening compute
 - A hidden owner may spend a zero-key note, and that spend names it to anyone who holds the opening. The SDKs refuse it by default, and a caller can waive that. A public signer spends it on the public-owner rail or as a public co-owner.
 - The delegate moves a zero-key note with its owner unpublished.
 - A wallet reports such a note as exposed if spent and never selects it automatically. `spend_public` names the wallet that becomes public.
-- A program-owned note uses the zero key, and its program signs through CPI.
+- A program-owned note may use the zero key, and its program signs through CPI.
 
 ## Program owners
 

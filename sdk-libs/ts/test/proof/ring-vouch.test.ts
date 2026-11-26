@@ -17,16 +17,20 @@ const field = (byte: number): Bytes32 => {
   value[31] = byte;
   return value as Bytes32;
 };
-const message = { privateTxHash: field(3), withdrawalHash: field(9) };
+const message = { ringId: field(5), privateTxHash: field(3), withdrawalHash: field(9) };
 
 describe("the vouch digest", () => {
-  it("hashes the CRVC tag, the private tx hash and the withdrawal hash in that order", () => {
+  it("hashes the CRVC tag, the ring id, the private tx hash and the withdrawal hash in that order", () => {
     const tag = rightAlign(u32be(Buffer.from("CRVC", "ascii").readUInt32BE(0)));
     const digest = vouchDigest(message);
-    expect(digest).toEqual(poseidon([tag, field(3), field(9)]));
-    expect(digest).not.toEqual(poseidon([tag, field(9), field(3)]));
-    expect(digest).not.toEqual(poseidon([field(3), field(9)]));
-    expect(message).toEqual({ privateTxHash: field(3), withdrawalHash: field(9) });
+    expect(digest).toEqual(poseidon([tag, field(5), field(3), field(9)]));
+    expect(digest).not.toEqual(poseidon([tag, field(5), field(9), field(3)]));
+    expect(digest).not.toEqual(poseidon([tag, field(3), field(9)]));
+    expect(message).toEqual({
+      ringId: field(5),
+      privateTxHash: field(3),
+      withdrawalHash: field(9),
+    });
   });
 });
 
@@ -40,6 +44,13 @@ describe("signVouch", () => {
       ed25519.verify(
         signed.signature,
         vouchDigest({ ...message, withdrawalHash: field(8) }),
+        signed.publicKey,
+      ),
+    ).toBe(false);
+    expect(
+      ed25519.verify(
+        signed.signature,
+        vouchDigest({ ...message, ringId: field(6) }),
         signed.publicKey,
       ),
     ).toBe(false);

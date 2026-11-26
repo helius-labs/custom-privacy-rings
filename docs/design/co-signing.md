@@ -50,7 +50,7 @@ As an example, S spends 1000, deposits 1000, returns 1000 to S and exits 1000 to
 - A co-signed message contains one ring instruction, and Ring RPC refuses a second relevant instruction. A program transfer's message instead holds the `ApproveTransfer` instructions and the one program instruction they name. Ring RPC also refuses a message that is not version 1.
 - `owner_debits` in `program-libs/policy/src/quantities.rs` is the Rust computation. A shared vector pins it to the circuit.
 - The window read and the reservation commit in one database transaction, so no allowance is granted twice.
-- Admission reads its slot after the asset locks and before the window totals. A backward slot or a changed final slot refuses the reservation.
+- Admission reads one slot before its transaction. A slot behind the newest reservation of the same assets counts at that reservation's slot.
 - Replicas with the same signing key share one store and reserve a signature once. A released signature cannot reserve again. Different signing keys cannot share one message allowance.
 - Windows start at admission. Commit delay and transaction landing do not move the reservation's slot.
 - A delegate frame reads no limit and reserves nothing.
@@ -83,7 +83,10 @@ The lists are the centralized form of the ring's proven lists. The ring proves n
 - Ring RPC simulates the message first. No co-signer rule verifies the ring proof, and the simulation runs the program's check of it.
 - The same rules then run as on a relayed transfer.
 - A program transfer adds `approvedTransfer`, the data and ordered accounts of the ring call. Ring RPC signs the `ApproveTransfer` only when its digest commits to that call and the simulation makes the call exactly once. It refuses a digest of another call with `-32164` and a call the simulation makes other than once with `-32176`.
-- Ring RPC never learns whether such a transaction landed. Its window reservation stays held and counts in each window.
+- The message must name a blockhash the cluster holds, and its reservation records the last valid block height.
+- Ring RPC learns the end from the finalized ring history. A published nullifier of the frame confirms the reservation. Once the block height passed the recorded height and the history covers a later finalized slot without those nullifiers, the reservation is released.
+- One transfer holds one reservation. A second message with the same nullifiers and amounts takes it over, and another transfer of one of those nullifiers is refused until the reservation ends.
+- A frame of public legs alone spends no note, so each proof of one holds a reservation until its blockhash expires.
 
 ### Limits of the lists
 
@@ -96,7 +99,7 @@ The lists are the centralized form of the ring's proven lists. The ring proves n
 
 ### Your own rule
 
-A deployment adds a check with one type that implements `CoSignRule` and one `HubBuilder::with_co_signer_rule` call. The rule sees the ring, the message and the co-signature, and it reads what it needs from its own sources. A rule that reserves state keys it by the co-signature and frees it in `settle`.
+A rule implements `CoSignRule`. It sees the ring, the message and the co-signature, and it reads what it needs from its own sources. A rule that reserves state keys it by the co-signature and frees it in `settle`. The relay settles a message it sends, and the rule settles a message the wallet sends in `sweep`.
 
 ## What passes them
 

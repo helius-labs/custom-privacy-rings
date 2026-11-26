@@ -5,16 +5,20 @@
 //! auditor holding the viewing secret and the key derives that secret and opens it.
 
 use custom_ring_interface::{
-    decode_recipient_keys, disclosure::SealedKeys, domain::AUDIT_STREAM_LABEL,
-    encode_recipient_keys, AuditEvidence, AuditStreamLayout, StreamRegion, STREAM_FIRST_COUNTER,
+    disclosure::SealedKeys, AuditStreamLayout, StreamRegion, STREAM_FIRST_COUNTER,
 };
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_keypair::{ViewingKey, X25519Keypair, X25519Pubkey};
 use zeroize::{Zeroize, Zeroizing};
+use zolana_ring_keys::decode_recipient_keys;
+use zolana_ring_keys::encode_recipient_keys;
+use zolana_ring_keys::AuditEvidence;
 use zolana_ring_keys::RingStream;
+use zolana_ring_keys::SealedLayout;
+use zolana_ring_keys::AUDIT_STREAM_LABEL;
 
 use crate::{
-    encryption::{opening_salted_stream, sealing_salted_stream},
+    encryption::{opening_secret, salted_stream, sealing_secret},
     AuditError,
 };
 
@@ -57,8 +61,12 @@ impl AuditStreamSeal<'_> {
             return Err(AuditError::DisclosureLayout);
         }
         let key = X25519Keypair::from_bytes(&tx_viewing_key.secret_bytes());
-        let stream = sealing_salted_stream(&key, auditor_pk, salt, AUDIT_STREAM_LABEL)?;
-        let mut plaintext = custom_ring_interface::AuditEnvelope {
+        let stream = salted_stream(
+            &*sealing_secret(&key, auditor_pk)?,
+            salt,
+            AUDIT_STREAM_LABEL,
+        )?;
+        let mut plaintext = zolana_ring_keys::AuditEnvelope {
             tx_viewing_secret: *tx_viewing_key.secret_bytes(),
             real_inputs,
             evidence,
@@ -67,7 +75,7 @@ impl AuditStreamSeal<'_> {
         plaintext.tx_viewing_secret.zeroize();
         // The opener's checks hold on the seal, a seal off its layout never leaves the wallet.
         let checked =
-            custom_ring_interface::AuditEnvelope::decode(&envelope, layout).map(|mut opened| {
+            zolana_ring_keys::AuditEnvelope::decode(&envelope, layout).map(|mut opened| {
                 opened.tx_viewing_secret.zeroize();
             });
         if checked.is_err() || envelope.len() != layout.envelope().len {
@@ -115,12 +123,8 @@ impl AuditEnvelope<'_> {
         auditor: &X25519Keypair,
         layout: AuditStreamLayout,
     ) -> Result<OpenedAudit, AuditError> {
-        let stream = opening_salted_stream(
-            auditor,
-            &X25519Pubkey::from_u(self.eph_u)?,
-            self.salt,
-            AUDIT_STREAM_LABEL,
-        )?;
+        let secret = opening_secret(auditor, &X25519Pubkey::from_u(self.eph_u)?)?;
+        let stream = salted_stream(&secret, self.salt, AUDIT_STREAM_LABEL)?;
         self.decode(stream, layout)
     }
 
@@ -132,7 +136,11 @@ impl AuditEnvelope<'_> {
         layout: AuditStreamLayout,
     ) -> Result<OpenedAudit, AuditError> {
         let key = X25519Keypair::from_bytes(&tx_viewing_key.secret_bytes());
-        let stream = sealing_salted_stream(&key, auditor_pk, self.salt, AUDIT_STREAM_LABEL)?;
+        let stream = salted_stream(
+            &*sealing_secret(&key, auditor_pk)?,
+            self.salt,
+            AUDIT_STREAM_LABEL,
+        )?;
         self.decode(stream, layout)
     }
 
@@ -143,7 +151,7 @@ impl AuditEnvelope<'_> {
     ) -> Result<OpenedAudit, AuditError> {
         let mut plaintext = Zeroizing::new(self.ciphertext.to_vec());
         stream.apply_at(STREAM_FIRST_COUNTER, &mut plaintext);
-        let mut envelope = custom_ring_interface::AuditEnvelope::decode(&plaintext, layout)
+        let mut envelope = zolana_ring_keys::AuditEnvelope::decode(&plaintext, layout)
             .map_err(|_| AuditError::DisclosureField)?;
         let tx_viewing_key = ViewingKey::from_canonical_bytes(&envelope.tx_viewing_secret)
             .map_err(|_| AuditError::NonCanonicalViewingKey);

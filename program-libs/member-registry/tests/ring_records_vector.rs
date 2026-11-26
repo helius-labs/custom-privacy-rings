@@ -105,10 +105,14 @@ struct Opening {
 
 /// A list write with no mint settings, as `Update` instruction data carries it.
 fn list_write(member: [u8; 32], set: ListSet, clear: ListSet) -> RecordWriteData {
+    let write = ListChange { set, clear }.check().expect("list write");
     RecordWriteData {
         mint_policy: mint_policy_write(None),
         member,
-        lists: WriteRecordsIxData::new(ListChange { set, clear }.check().expect("list write")),
+        lists: WriteRecordsIxData {
+            mask: write.mask().to_le_bytes(),
+            value: write.value().to_le_bytes(),
+        },
     }
 }
 

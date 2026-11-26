@@ -75,7 +75,7 @@ func SenderBundleTag(t testing.TB, secret *big.Int) *big.Int {
 }
 
 // VouchDigest mirrors shared.VouchDigest.
-func VouchDigest(t testing.TB, privateTxHash, withdrawalHash *big.Int) *big.Int {
+func VouchDigest(t testing.TB, ringID, privateTxHash, withdrawalHash *big.Int) *big.Int {
 	t.Helper()
-	return ringtest.MustPoseidonHash(t, big.NewInt(shared.VouchDomain), privateTxHash, withdrawalHash)
+	return ringtest.MustPoseidonHash(t, big.NewInt(shared.VouchDomain), ringID, privateTxHash, withdrawalHash)
 }

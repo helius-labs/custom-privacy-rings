@@ -14,10 +14,11 @@ use solana_address::Address;
 use zolana_ring_policy::{ListSet, Member};
 
 use crate::{
+    bytes::Bytes,
     domain,
     error::CustomRingError,
     instruction::{list_and_mint_entry, write_count},
-    member_registry::RecordWrite,
+    member_registry::{RecordWrite, APPLY_BATCH},
     storage::{RegistryId, Revision, StorageError},
     tracking::{check_viewing_key, TrackingEntry},
     ApplyRecordsIxData, CustomRingProof, ReaderKeyBytes, RecordWriteData,
@@ -167,13 +168,11 @@ pub struct EnrollmentsAppliedEvent {
 
 /// `tag::EMIT_EVENT || kind || body`, trusted only as the inner instruction of a successful `ApplyEnrollments` of the storage program.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StorageEvent<'a> {
-    /// The header, then the batch's writes as the instruction carried them, proofs included.
-    EnrollmentsApplied {
-        header: EnrollmentsAppliedEvent,
-        /// The tracking leaf holds the `RegisterKey` seal as `ct_hash` alone, the auditor opens each enrolled secret from these writes.
-        writes: Vec<EnrollmentWrite<'a>>,
-    },
+pub struct StorageEvent<'a> {
+    pub header: EnrollmentsAppliedEvent,
+    /// The batch's writes as the instruction carried them, proofs included.
+    /// The tracking leaf holds the `RegisterKey` seal as `ct_hash` alone, the auditor opens each enrolled secret from these writes.
+    pub writes: Vec<EnrollmentWrite<'a>>,
 }
 
 /// Tag 8, accounts `payer, owner, tracking_registry, grant, system_program`.
@@ -211,6 +210,13 @@ pub struct StorageUpdateIxData<'a> {
     pub apply: &'a ApplyRecordsIxData,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedStorageUpdate<'a> {
+    pub data: StorageUpdateIxData<'a>,
+    entries: Vec<RecordWrite>,
+    private_writes: u16,
+}
+
 impl InitializeIxData {
     pub const SIZE: usize = core::mem::size_of::<Self>();
 
@@ -230,36 +236,21 @@ impl EnrollIxData {
 impl<'a> EnrollmentWrite<'a> {
     /// One write and the bytes after it.
     pub fn parse(data: &'a [u8]) -> Result<(Self, &'a [u8]), StorageError> {
-        let invalid = StorageError::InvalidInstructionData;
-        let (owner, rest) = data.split_first_chunk::<32>().ok_or(invalid)?;
-        let (kind, rest) = rest.split_first().ok_or(invalid)?;
-        let (change, rest) = match *kind {
-            enrollment_kind::ENROLL => {
-                let (ix, rest) = rest.split_at_checked(EnrollIxData::SIZE).ok_or(invalid)?;
-                let (proof, rest) = rest
-                    .split_at_checked(CustomRingProof::SIZE)
-                    .ok_or(invalid)?;
-                let change = EnrollmentChange::Enroll {
-                    ix: bytemuck::try_from_bytes(ix).map_err(|_| invalid)?,
-                    proof: bytemuck::try_from_bytes(proof).map_err(|_| invalid)?,
-                };
-                (change, rest)
-            }
-            enrollment_kind::ROTATE => {
-                let (viewing_u, rest) = rest.split_first_chunk::<32>().ok_or(invalid)?;
-                let (prior_viewing_u, rest) = rest.split_first_chunk::<32>().ok_or(invalid)?;
-                let (prior_seq, rest) = rest.split_first_chunk::<8>().ok_or(invalid)?;
-                let change = EnrollmentChange::Rotate {
-                    viewing_u,
-                    prior_viewing_u,
-                    prior_seq,
-                };
-                (change, rest)
-            }
-            _ => return Err(invalid),
+        let mut bytes = Bytes::new(data, StorageError::InvalidInstructionData);
+        let owner = bytes.pod()?;
+        let change = match bytes.byte()? {
+            enrollment_kind::ENROLL => EnrollmentChange::Enroll {
+                ix: bytes.pod()?,
+                proof: bytes.pod()?,
+            },
+            enrollment_kind::ROTATE => EnrollmentChange::Rotate {
+                viewing_u: bytes.array()?,
+                prior_viewing_u: bytes.array()?,
+                prior_seq: bytes.array()?,
+            },
+            _ => return Err(StorageError::InvalidInstructionData),
         };
-        let owner = bytemuck::try_from_bytes(owner).map_err(|_| invalid)?;
-        Ok((Self { owner, change }, rest))
+        Ok((Self { owner, change }, bytes.rest()))
     }
 
     pub fn encode_into(&self, data: &mut Vec<u8>) {
@@ -353,24 +344,13 @@ impl<'a> EnrollmentWrite<'a> {
 impl<'a> ApplyEnrollmentsRequest<'a> {
     /// The header and exactly `count` writes.
     pub fn parse(data: &'a [u8]) -> Result<Self, StorageError> {
-        let (ix, writes) = data
-            .split_at_checked(ApplyEnrollmentsIxData::SIZE)
-            .ok_or(StorageError::InvalidInstructionData)?;
-        let ix: &ApplyEnrollmentsIxData =
-            bytemuck::try_from_bytes(ix).map_err(|_| StorageError::InvalidInstructionData)?;
+        let mut bytes = Bytes::new(data, StorageError::InvalidInstructionData);
+        let ix: &ApplyEnrollmentsIxData = bytes.pod()?;
         ApplyEnrollmentsIxData::check_count(ix.count)?;
         Ok(Self {
             ix,
-            writes: parse_writes(ix.count, writes)?,
+            writes: parse_writes(ix.count, bytes.rest())?,
         })
-    }
-
-    pub fn encode(&self) -> Vec<u8> {
-        let mut data = bytemuck::bytes_of(self.ix).to_vec();
-        self.writes
-            .iter()
-            .for_each(|write| write.encode_into(&mut data));
-        data
     }
 }
 
@@ -397,27 +377,12 @@ impl OwnerGrantIxData {
 
 impl<'a> StorageEvent<'a> {
     pub fn encode(&self) -> Vec<u8> {
-        let Self::EnrollmentsApplied { header, writes } = self;
         let mut data = vec![tag::EMIT_EVENT, event_kind::ENROLLMENTS_APPLIED];
-        data.extend_from_slice(bytemuck::bytes_of(header));
-        writes.iter().for_each(|write| write.encode_into(&mut data));
+        data.extend_from_slice(bytemuck::bytes_of(&self.header));
+        self.writes
+            .iter()
+            .for_each(|write| write.encode_into(&mut data));
         data
-    }
-
-    /// `None` unless the tag, the kind, the header and exactly its `count` writes match.
-    pub fn decode(data: &'a [u8]) -> Option<Self> {
-        let ([tag::EMIT_EVENT, event_kind::ENROLLMENTS_APPLIED], body) =
-            data.split_first_chunk::<2>()?
-        else {
-            return None;
-        };
-        let (header, writes) =
-            body.split_at_checked(core::mem::size_of::<EnrollmentsAppliedEvent>())?;
-        let header: EnrollmentsAppliedEvent = bytemuck::try_pod_read_unaligned(header).ok()?;
-        Some(Self::EnrollmentsApplied {
-            header,
-            writes: parse_writes(header.count, writes).ok()?,
-        })
     }
 }
 
@@ -427,6 +392,11 @@ where
 {
     /// One bit per write whose private mask needs its owner's tracking row.
     pub fn private_writes(self) -> Result<u16, StorageError> {
+        self.classify().map(|(_, private_writes)| private_writes)
+    }
+
+    fn classify(self) -> Result<(Vec<RecordWrite>, u16), StorageError> {
+        let mut entries = Vec::with_capacity(self.entries.size_hint().0.min(APPLY_BATCH));
         let mut assets = self.asset_writes.iter().peekable();
         let mut private_writes = 0u16;
         let mut count = 0;
@@ -454,39 +424,30 @@ where
             } else if private {
                 private_writes |= 1u16 << index;
             }
+            entries.push(entry);
         }
         // 3. Empty batches and asset positions outside the consumed writes have no valid statement.
         storage_write_count(count)?;
         if assets.next().is_some() {
             return Err(StorageError::InvalidAssetWrite);
         }
-        Ok(private_writes)
+        Ok((entries, private_writes))
     }
 }
 
-impl<'a> StorageUpdateIxData<'a> {
+impl<'a> ParsedStorageUpdate<'a> {
     pub fn parse(data: &'a [u8]) -> Result<Self, StorageError> {
         // 1. The bounded write count fixes every record boundary before optional proof metadata.
-        let (revision, data) = data
-            .split_first_chunk::<8>()
-            .ok_or(StorageError::InvalidInstructionData)?;
-        let (count, rest) = data
-            .split_first()
-            .ok_or(StorageError::InvalidInstructionData)?;
-        let count = usize::from(storage_write_count(usize::from(*count))?);
-        let (writes, rest) = rest
-            .split_at_checked(count * core::mem::size_of::<RecordWriteData>())
-            .ok_or(StorageError::InvalidInstructionData)?;
+        let mut bytes = Bytes::new(data, StorageError::InvalidInstructionData);
+        let revision = Revision(*bytes.array()?);
+        let count = usize::from(storage_write_count(usize::from(bytes.byte()?))?);
+        let writes = bytes.take(count * core::mem::size_of::<RecordWriteData>())?;
         // 2. Asset preimages name write positions, their hashes and ordering are checked with the derived bitmap.
-        let (asset_count, rest) = rest
-            .split_first()
-            .ok_or(StorageError::InvalidInstructionData)?;
-        if usize::from(*asset_count) > count {
+        let asset_count = usize::from(bytes.byte()?);
+        if asset_count > count {
             return Err(StorageError::InvalidAssetWrite);
         }
-        let (assets, rest) = rest
-            .split_at_checked(usize::from(*asset_count) * core::mem::size_of::<AssetWrite>())
-            .ok_or(StorageError::InvalidInstructionData)?;
+        let assets = bytes.take(asset_count * core::mem::size_of::<AssetWrite>())?;
         let writes: Vec<RecordWriteData> = writes
             .as_chunks::<{ core::mem::size_of::<RecordWriteData>() }>()
             .0
@@ -500,66 +461,40 @@ impl<'a> StorageUpdateIxData<'a> {
             .map(|bytes| bytemuck::pod_read_unaligned(bytes))
             .collect();
         // 3. The derived bitmap, never a flag, decides whether a tracking revision follows.
-        let private_writes = RecordWriteClassification {
+        let (entries, private_writes) = RecordWriteClassification {
             entries: writes.iter().map(RecordWriteData::storage_entry),
             asset_writes: &asset_writes,
         }
-        .private_writes()?;
-        let (tracking_revision, rest) = match private_writes {
-            0 => (None, rest),
-            _ => {
-                let (revision, rest) = rest
-                    .split_first_chunk::<8>()
-                    .ok_or(StorageError::InvalidInstructionData)?;
-                (Some(Revision(*revision)), rest)
-            }
+        .classify()?;
+        let tracking_revision = match private_writes {
+            0 => None,
+            _ => Some(Revision(*bytes.array()?)),
         };
-        let apply =
-            ApplyRecordsIxData::parse(rest).map_err(|_| StorageError::InvalidInstructionData)?;
+        let apply = ApplyRecordsIxData::parse(bytes.rest())
+            .map_err(|_| StorageError::InvalidInstructionData)?;
         // 4. The restrictive bit has one encoding, the statement binds it.
         if apply.restrictive > 1 {
             return Err(StorageError::InvalidInstructionData);
         }
         Ok(Self {
-            revision: Revision(*revision),
-            writes,
-            asset_writes,
-            tracking_revision,
-            apply,
+            data: StorageUpdateIxData {
+                revision,
+                writes,
+                asset_writes,
+                tracking_revision,
+                apply,
+            },
+            entries,
+            private_writes,
         })
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>, StorageError> {
-        let count = storage_write_count(self.writes.len())?;
-        if (self.private_writes()? != 0) != self.tracking_revision.is_some() {
-            return Err(StorageError::InvalidTrackingRegistry);
-        }
-        let asset_count =
-            u8::try_from(self.asset_writes.len()).map_err(|_| StorageError::InvalidAssetWrite)?;
-        let mut data = Vec::new();
-        data.extend_from_slice(&self.revision.0);
-        data.push(count);
-        data.extend_from_slice(bytemuck::cast_slice(&self.writes));
-        data.push(asset_count);
-        data.extend_from_slice(bytemuck::cast_slice(&self.asset_writes));
-        if let Some(revision) = self.tracking_revision {
-            data.extend_from_slice(&revision.0);
-        }
-        data.extend_from_slice(bytemuck::bytes_of(self.apply));
-        Ok(data)
+    pub fn entries(&self) -> &[RecordWrite] {
+        &self.entries
     }
 
-    pub fn private_writes(&self) -> Result<u16, StorageError> {
-        RecordWriteClassification {
-            entries: self.entries(),
-            asset_writes: &self.asset_writes,
-        }
-        .private_writes()
-    }
-
-    /// The leaf writes the apply proof hashes, a mint settings tag above 1 refused.
-    pub fn entries(&self) -> impl Iterator<Item = Result<RecordWrite, CustomRingError>> + '_ {
-        self.writes.iter().map(RecordWriteData::storage_entry)
+    pub const fn private_writes(&self) -> u16 {
+        self.private_writes
     }
 }
 
@@ -576,7 +511,7 @@ impl RecordWriteData {
 }
 
 /// Exactly `count` writes and no byte after them.
-fn parse_writes(count: u8, mut data: &[u8]) -> Result<Vec<EnrollmentWrite<'_>>, StorageError> {
+pub fn parse_writes(count: u8, mut data: &[u8]) -> Result<Vec<EnrollmentWrite<'_>>, StorageError> {
     let writes = (0..count)
         .map(|_| {
             let (write, rest) = EnrollmentWrite::parse(data)?;
@@ -590,7 +525,7 @@ fn parse_writes(count: u8, mut data: &[u8]) -> Result<Vec<EnrollmentWrite<'_>>, 
     }
 }
 
-fn storage_write_count(count: usize) -> Result<u8, StorageError> {
+pub fn storage_write_count(count: usize) -> Result<u8, StorageError> {
     write_count(count).map_err(|error| match error {
         CustomRingError::AuthorityBatchTooLarge => StorageError::BatchTooLarge,
         _ => StorageError::InvalidInstructionData,

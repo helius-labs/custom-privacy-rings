@@ -52,9 +52,7 @@ const (
 	SubjectAsset       = 4
 
 	ModePresent = 1
-	ModeAbsent  = 2
 
-	GuardAlways             = 0
 	GuardAboveAmount        = 1
 	GuardAboveAmountByAsset = 2
 )
@@ -98,7 +96,6 @@ type ruleFields struct {
 	admitWeight                [NSources]frontend.Variable
 	onOwner, onAsset, onSender frontend.Variable
 	scalarGuard, assetGuard    frontend.Variable
-	listBits, altBits          []frontend.Variable
 }
 
 // ruleParts mirrors Row in program-libs/policy/src/rule_table/mod.rs, read from the low byte of the big-endian field.
@@ -212,8 +209,6 @@ func decodeRule(api frontend.API, rc frontend.Rangechecker, packed frontend.Vari
 		onSender:    is(subject, SubjectSender),
 		scalarGuard: is(guard, GuardAboveAmount),
 		assetGuard:  is(guard, GuardAboveAmountByAsset),
-		listBits:    listBits,
-		altBits:     altBits,
 	}
 	// 5. A list of a present mask admits a subject on it, a list of an absent or the alternative mask a subject off it.
 	// A subject's admission is admitBase plus admitWeight per list it is on. A list then adds inPresent to a subject on it and inAbsent to a subject off it, one sum per rule and no select per list.

@@ -23,7 +23,8 @@ import {
   type WalletUtxo,
 } from "@heliuslabs/spr/transaction";
 
-import { AnonymousPlan, RingOutputRail } from "../../src/operations/payments/output-rail.js";
+import { RingOutputRail } from "../../src/operations/payments/output-rail.js";
+import { AnonymousPlan } from "../../src/protocol/transaction/anonymous-plan.js";
 import { sealAudit } from "../../src/proof/audit-proof.js";
 import { auditorMessageData } from "../../src/crypto/audit/audit.js";
 import { frameKeyShape } from "../../src/protocol/proof/transfer-shapes.js";

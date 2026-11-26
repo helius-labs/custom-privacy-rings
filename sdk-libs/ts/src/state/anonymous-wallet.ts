@@ -382,7 +382,6 @@ function invalid(reason: string): RingError {
 }
 
 function storedRevision(value: unknown): bigint {
-  if (value === undefined) return 0n;
   if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value))
     throw invalid("invalid wallet revision");
   return BigInt(value);

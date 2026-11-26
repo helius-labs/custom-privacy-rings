@@ -276,7 +276,7 @@ func TestApplyEnrollmentsKeys(t *testing.T) {
 			t.Fatalf("built a capacity %d no apply key ships", unshipped)
 		}
 	}
-	unchecked := &registry.ApplyEnrollmentsCircuit{NumWrites: 3, Writes: make([]registry.EnrollmentWrite, 3)}
+	unchecked := &registry.ApplyEnrollmentsCircuit{Batch: registry.Batch{NumWrites: 3}, Writes: make([]registry.EnrollmentWrite, 3)}
 	if _, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, unchecked); err == nil {
 		t.Fatal("compiled a capacity no apply key ships")
 	}

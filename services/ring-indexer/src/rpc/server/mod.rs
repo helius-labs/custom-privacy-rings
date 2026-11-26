@@ -103,6 +103,7 @@ impl Server {
         let server = ServerBuilder::default()
             .set_config(
                 ServerConfig::builder()
+                    .http_only()
                     .max_connections(max_connections)
                     .max_request_body_size(MAX_BODY_BYTES)
                     .build(),

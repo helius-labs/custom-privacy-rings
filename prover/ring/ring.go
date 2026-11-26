@@ -77,10 +77,19 @@ type pooledParams interface {
 // bindPolicy refuses a pool index outside the key's pools before assignment.
 func bindPolicy[P pooledParams, S any, C pooledCircuit](k Key, constructor func(S) (C, error), shape S) common.ExtensionCircuit {
 	extension := bind[P](k, constructor, shape)
+	var pools policy.RecordPoolShape
+	var trackingPool int
+	if k.Pools != nil {
+		pools = k.Pools.RecordPoolShape
+		trackingPool = k.Pools.Tracking
+	} else {
+		circuit := extension.Circuit().(C)
+		pools = circuit.RecordPools()
+		trackingPool = circuit.TrackingPoolSize()
+	}
 	plain := extension.Request
 	extension.Request = func() common.ExtensionRequest {
-		circuit := extension.Circuit().(C)
-		return &policyRequest[P]{request: plain().(*request[P]), pools: circuit.RecordPools(), trackingPool: circuit.TrackingPoolSize()}
+		return &policyRequest[P]{request: plain().(*request[P]), pools: pools, trackingPool: trackingPool}
 	}
 	return extension
 }

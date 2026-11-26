@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 use super::*;
 use crate::{
     AuditedEntryInput, OutputPayloadError,
-    OutputPayloadErrorKind::{self, Commitment, Disclosure, Payload},
+    OutputPayloadErrorKind::{self, Commitment, Disclosure},
 };
 
 fn temp_dir(label: &str) -> PathBuf {
@@ -526,13 +526,13 @@ fn a_wallet_activity_page_keeps_its_wire_json() {
 fn payload_errors_keep_the_encoding_of_the_shared_vector() {
     // A new kind fails to compile here, `kinds` and the vector must then name it.
     let named = |kind: OutputPayloadErrorKind| match kind {
-        Disclosure | Commitment | Payload => kind,
+        Disclosure | Commitment => kind,
     };
-    let kinds = [Disclosure, Commitment, Payload].map(named);
+    let kinds = [Disclosure, Commitment].map(named);
     let slots = [(2, Commitment), (5, Disclosure)]
         .map(|(slot_index, kind)| DecryptedPayloadError { slot_index, kind });
     let written = serde_json::json!({
-        "description": "Payload errors of a DecryptedTransaction as the ring rpc serializes them. kinds names every OutputPayloadErrorKind, payload keeps the record in outputs. commitment_and_disclosure holds the errors of one transfer whose slot 2 record opens to another commitment and whose slot 5 record holds a value outside the field. Written by the sdk-libs/client rpc tests and decoded by the TypeScript RingRpc tests.",
+        "description": "Payload errors of a DecryptedTransaction as the ring rpc serializes them. kinds names every OutputPayloadErrorKind, a commitment error of a keyed record keeps the record in outputs. commitment_and_disclosure holds the errors of one transfer whose slot 2 record opens to another commitment and whose slot 5 record holds a value outside the field. Written by the sdk-libs/client rpc tests and decoded by the TypeScript RingRpc tests.",
         "kinds": kinds,
         "commitment_and_disclosure": slots,
     });
@@ -602,6 +602,32 @@ fn public_key_files_round_trip_and_reject_other_lengths() {
         read_auditor_pubkey(&short),
         Err(KeyFileError::PubkeyEncoding)
     ));
+    let oversized = dir.join("oversized.pub");
+    std::fs::write(&oversized, "a".repeat(256)).expect("oversized");
+    assert!(matches!(
+        read_auditor_pubkey(&oversized),
+        Err(KeyFileError::File(SecretFileError::TooLong { .. }))
+    ));
+    #[cfg(unix)]
+    {
+        let link = dir.join("link.pub");
+        std::os::unix::fs::symlink(&path, &link).expect("symlink");
+        assert!(matches!(
+            read_auditor_pubkey(&link),
+            Err(KeyFileError::File(SecretFileError::Read { .. }))
+        ));
+    }
+    assert!(matches!(
+        auditor_keypair(&[0; 32]),
+        Err(KeyFileError::ZeroAuditorKey)
+    ));
+    let mut first_bit = [0u8; 32];
+    first_bit[0] = 1;
+    let mut last_bit = [0u8; 32];
+    last_bit[31] = 1;
+    assert!(auditor_keypair(&first_bit).is_ok());
+    assert!(auditor_keypair(&last_bit).is_ok());
+    assert!(auditor_keypair(&[1; 32]).is_ok());
     std::fs::remove_dir_all(dir).expect("cleanup");
 }
 

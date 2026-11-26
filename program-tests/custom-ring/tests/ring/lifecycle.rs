@@ -214,8 +214,10 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
             .block_on(service.auditor_key_statement(&request.auth))
             .map(drop)
     };
-    let expect_refusal = |result: Result<(), RingRpcError>, expected: Unauthorized| match result {
-        Err(RingRpcError::Unauthorized(reason)) if reason == expected => Ok(()),
+    let expect_refusal = |result: Result<(), RingAuditError>, expected: Unauthorized| match result {
+        Err(RingAuditError::Service(ServiceError::Unauthorized(reason))) if reason == expected => {
+            Ok(())
+        }
         other => Err(anyhow!("expected {expected:?}, got {other:?}")),
     };
     let stranger = Keypair::new();
@@ -244,12 +246,12 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
         ..RingRoleKeys::of(&env.payer).roles(&env.payer)
     };
     rpc.create_and_send_transaction(
-        &[custom_ring_sdk::Initialize {
+        &[zolana_ring_client::Initialize {
             ring,
             payer: env.payer.pubkey(),
             authority: env.payer.pubkey(),
             auditor_pubkey: service.auditor_pubkey(),
-            kind: custom_ring_sdk::RingKind::AuditOnly,
+            kind: zolana_ring_client::RingKind::AuditOnly,
             roles,
             policy: None,
         }

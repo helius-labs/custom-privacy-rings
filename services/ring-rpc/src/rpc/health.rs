@@ -1,6 +1,9 @@
 use zolana_ring_client::rpc::{HealthResponse, ReaderGrantMode};
 
-use crate::{grants::Grants, hub::Hub, upstream::TransactionSource};
+use ring_service_core::upstream::TransactionSource;
+
+use crate::hub::Hub;
+pub use ring_audit::grants::Grants;
 
 pub(crate) fn health<S: TransactionSource>(hub: &Hub<S>) -> HealthResponse {
     let relay = hub.relay();
@@ -32,15 +35,20 @@ mod tests {
     use solana_signer::Signer;
 
     use super::*;
-    use crate::{
-        config::{GrantRowsSecret, ReaderGrantStore, RootSecret},
+    use ring_service_core::{
         database::Store,
-        enrollment_applier::{EnrollmentApplier, EnrollmentApplierParts},
-        hub::{HubBuilder, ServiceIdentity},
-        relay_services::RelayServicesInit,
-        storage_chain::LiveStorageChain,
+        keys::{GrantRowsSecret, RootSecret},
         upstream::{ChainSource, Upstreams},
     };
+
+    use ring_writer::{
+        enrollment_applier::{EnrollmentApplier, EnrollmentApplierParts},
+        record_update::ReaderGrantStore,
+        storage_chain::LiveStorageChain,
+    };
+
+    use crate::hub::{HubBuilder, ServiceIdentity};
+    use ring_relay::relay_services::RelayServicesInit;
 
     const UNREACHABLE: &str = "http://127.0.0.1:1";
     const UPSTREAMS: Upstreams<'static> = Upstreams {
@@ -95,11 +103,15 @@ mod tests {
         let relay = RelayServicesInit {
             fee_payer: Arc::new(key(4)),
             store: store.clone(),
-            rpc_url: UNREACHABLE,
-            indexer_url: UNREACHABLE,
+            upstreams: Upstreams {
+                indexer_url: UNREACHABLE,
+                rpc_url: UNREACHABLE,
+                timeout: Duration::from_secs(1),
+            },
             prover_url: UNREACHABLE,
         }
-        .build();
+        .build()
+        .expect("relay services");
         let full = builder()
             .with_store(store)
             .with_storage_chain(chain(), Arc::new(key(2)))

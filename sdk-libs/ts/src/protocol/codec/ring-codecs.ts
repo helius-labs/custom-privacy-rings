@@ -1,11 +1,16 @@
-import { CUSTOM_RING_PROOF_LENGTH } from "../proof/custom-ring-proof.js";
 import { Reader, encodeBase58, ZERO_32, equalBytes } from "@heliuslabs/spr/internal";
 import type { Address, Bytes32, Bytes33 } from "@heliuslabs/spr/interface";
 import { X25519PublicKey } from "@heliuslabs/spr/keypair";
-import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../../rpc/prover/types.js";
 import { QUAD_CAPACITY, ROOT_HISTORY } from "../membership/member-registry.js";
 
 import { RingError } from "../error.js";
+
+export const CUSTOM_RING_PROOF_LENGTH = 192;
+
+/** Rust `MAX_RULES`, the fixed rule table width. */
+export const RING_RULE_SLOTS = 16;
+/** Rust `MAX_SOURCES`, the positional source map width. */
+export const RING_SOURCE_SLOTS = 9;
 
 /** Mirrors Rust `RingMode`, set once at creation and never cleared. */
 export type RingMode = "confidential" | "anonymous";
@@ -260,8 +265,6 @@ export function registryRoot(
       (revision === current || slot < root.expiresAt),
   )?.hash;
 }
-
-export { CUSTOM_RING_PROOF_LENGTH };
 
 export function checkedCustomRingProof(proof: Uint8Array): Uint8Array {
   if (proof.length !== CUSTOM_RING_PROOF_LENGTH) {

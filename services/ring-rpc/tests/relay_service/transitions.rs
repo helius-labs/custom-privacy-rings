@@ -2,12 +2,13 @@
 
 use std::{sync::Mutex, time::Duration};
 
+use ring_cosigner::cosign::{
+    CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement, Ticket,
+};
+use ring_cosigner::RingCosignerError;
+use ring_service_core::landing::{ChainOutcome, ChainSubmit, FinalizedTip, LatestBlockhash};
 use tokio::sync::Notify;
 use zolana_ring_client::rpc::RelayId;
-use zolana_ring_rpc::{
-    ChainOutcome, ChainSubmit, CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement,
-    LatestBlockhash, Ticket,
-};
 
 use super::*;
 
@@ -71,19 +72,19 @@ impl ChainSubmit for WorkerChain {
     async fn simulate(
         &self,
         message: &solana_message::VersionedMessage,
-    ) -> Result<zolana_ring_rpc::Simulation, RingRpcError> {
+    ) -> Result<ring_service_core::landing::Simulation, ServiceError> {
         self.chain.simulate(message).await
     }
 
-    async fn slot(&self) -> Result<u64, RingRpcError> {
+    async fn slot(&self) -> Result<u64, ServiceError> {
         self.chain.slot().await
     }
 
-    async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+    async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
         self.chain.latest_blockhash().await
     }
 
-    async fn block_height(&self) -> Result<u64, RingRpcError> {
+    async fn block_height(&self) -> Result<u64, ServiceError> {
         self.height_gate.pass().await;
         match self.height {
             Some(height) => Ok(height),
@@ -91,15 +92,15 @@ impl ChainSubmit for WorkerChain {
         }
     }
 
-    async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, RingRpcError> {
+    async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, ServiceError> {
         self.chain.account_data(address).await
     }
 
-    async fn rent_exempt_lamports(&self, data_len: usize) -> Result<u64, RingRpcError> {
+    async fn rent_exempt_lamports(&self, data_len: usize) -> Result<u64, ServiceError> {
         self.chain.rent_exempt_lamports(data_len).await
     }
 
-    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), RingRpcError> {
+    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), ServiceError> {
         self.send_gate.pass().await;
         match self.lost_sends {
             true => Ok(()),
@@ -107,7 +108,7 @@ impl ChainSubmit for WorkerChain {
         }
     }
 
-    async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, RingRpcError> {
+    async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, ServiceError> {
         self.outcome_gate.pass().await;
         self.chain.outcome(signature).await
     }
@@ -140,15 +141,19 @@ impl CoSignPolicy for RecordingCoSigner {
         Some(self.keypair.pubkey())
     }
 
-    async fn decide(&self, request: &CoSignRequest) -> Result<CoSignDecision, RingRpcError> {
+    async fn decide(&self, request: &CoSignRequest) -> Result<CoSignDecision, RingCosignerError> {
         self.gate.pass().await;
         Ok(CoSignDecision::Signed(
             self.keypair.sign_message(&request.message.serialize()),
         ))
     }
 
-    async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
+    async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingCosignerError> {
         self.settled.lock().expect("settled").push(settlement);
+        Ok(())
+    }
+
+    async fn sweep(&self, _tip: FinalizedTip) -> Result<(), RingCosignerError> {
         Ok(())
     }
 }
@@ -169,7 +174,7 @@ impl Worker {
                 fee_payer: Arc::new(Keypair::new_from_array([31; 32])),
                 chain: self.chain,
             },
-            SERVICE,
+            *SERVICE,
         )
         .with_rings(Arc::new(OneRing(RING)))
         .with_budget(RelayBudget {
@@ -239,7 +244,7 @@ async fn duplicate_submissions_send_once_and_keep_the_co_sign_allowance() {
     let worker = || Worker {
         chain: Arc::new(WorkerChain::of(&fixture)),
         co_signer: Some(co_signer.clone()),
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     };
     let (first, second) = (worker().start(&fixture), worker().start(&fixture));
     let submit = signed_deposit(&fixture, &first).await;
@@ -281,13 +286,13 @@ async fn a_stale_worker_does_not_overwrite_a_settled_relay() {
     let live = Worker {
         chain: Arc::new(WorkerChain::of(&fixture)),
         co_signer: Some(co_signer.clone()),
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let stale = Worker {
         chain: stale_chain.clone(),
         co_signer: Some(co_signer.clone()),
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let submit = signed_deposit(&fixture, &live).await;
@@ -329,7 +334,7 @@ async fn a_restarted_service_resends_the_stored_attempt() {
             ..WorkerChain::of(&fixture)
         }),
         co_signer: None,
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let quote = fixture.quote(RelayOperation::Anonymous).await;
@@ -348,7 +353,7 @@ async fn a_restarted_service_resends_the_stored_attempt() {
     let after = Worker {
         chain: Arc::new(WorkerChain::of(&fixture)),
         co_signer: None,
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     after.track().await.expect("a tracking pass");
@@ -367,13 +372,13 @@ async fn a_refused_first_send_keeps_a_pending_tracker_copy_open() {
     let first = Worker {
         chain: first_chain.clone(),
         co_signer: Some(co_signer.clone()),
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let tracker = Worker {
         chain: Arc::new(WorkerChain::of(&fixture)),
         co_signer: Some(co_signer.clone()),
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let submit = signed_deposit(&fixture, &first).await;
@@ -419,7 +424,7 @@ async fn a_delayed_relay_leaves_another_relay_progressing() {
     let relay = Worker {
         chain: chain.clone(),
         co_signer: None,
-        budget: 0,
+        budget: super::FRAME_BUDGET,
     }
     .start(&fixture);
     let quote = fixture.quote(RelayOperation::Anonymous).await;

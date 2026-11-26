@@ -1,5 +1,5 @@
 import { type RingMemberOpening, type RingRecordReader, type StorageRoot } from "./ports.js";
-import { MAX_RING_MEMBER_BATCH } from "../protocol/indexer/indexer-limits.js";
+import { MAX_RING_MEMBER_BATCH } from "../protocol/indexer/indexer-codec.js";
 import type { ChainReader } from "@heliuslabs/spr/client";
 import { equalBytes, waitForProjection } from "@heliuslabs/spr/internal";
 import type { Address, Bytes32, RequestContext } from "@heliuslabs/spr/interface";

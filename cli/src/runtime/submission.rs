@@ -1,5 +1,4 @@
 use anyhow::Result;
-use custom_ring_sdk::{LocalSigners, SubmissionSigners};
 use solana_hash::Hash;
 use solana_message::VersionedMessage;
 use solana_signer::SignerError;
@@ -8,6 +7,7 @@ use thiserror::Error;
 use zolana_operator_custody::{
     presigned_transaction, signed_transaction, CollectedSignature, OperatorSigner,
 };
+use zolana_ring_client::{LocalSigners, SubmissionSigners};
 
 use super::{
     line, Address, Context, Instruction, RingError, RingOperation, RingRpcClient, RingSubmission,
@@ -140,7 +140,7 @@ impl MemberSigners<'_> {
                     wallet: self.wallet,
                     cosigner,
                     ring: ctx.ring.program_id(),
-                    rpc: ctx.ring_rpc(),
+                    rpc: ctx.ring_rpc()?,
                 },
             }
             .settle(&ctx.zolana),
@@ -333,7 +333,7 @@ mod tests {
     fn unreachable_ring_rpc() -> RingRpcClient {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
         let url = format!("http://{}", listener.local_addr().expect("address"));
-        RingRpcClient::new(&url)
+        RingRpcClient::new(&url).expect("loopback")
     }
 
     #[test]

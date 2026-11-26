@@ -41,7 +41,7 @@ import {
   depositRequestDigest,
   mergeRequestDigest,
 } from "../../../src/protocol/ring-rpc/relay-proof-inputs.js";
-import { P256ReaderKey } from "../../../src/operations/management/reader-access.js";
+import { P256ReaderKey } from "../../../src/protocol/membership/reader-access.js";
 import {
   RingAuthorityTransferRequest,
   RingReaderGrantRequest,
@@ -190,14 +190,39 @@ describe("getListSalt", () => {
     expect(JSON.stringify(encodeGetListSaltRequest(request))).toBe(vector.wire);
   });
 
-  it("reads a salt and an owner with no row", async () => {
+  it("returns both salts as served and rejects a non-canonical one", async () => {
     const { request } = await signed();
-    const salt = new Uint8Array(32).fill(9);
-    const text = getBase58Decoder().decode(salt);
-    await expect(answering({ result: { listSalt: text } }).getListSalt(request)).resolves.toEqual(
-      salt,
-    );
-    await expect(answering({ result: {} }).getListSalt(request)).resolves.toBeUndefined();
+    const listSalt = new Uint8Array(32).fill(9);
+    const ringSalt = new Uint8Array(32).fill(7);
+    const listText = getBase58Decoder().decode(listSalt);
+    const ringText = getBase58Decoder().decode(ringSalt);
+
+    const both = await answering({
+      result: { listSalt: listText, ringSalt: ringText },
+    }).getListSalt(request);
+    expect(both).toEqual({ listSalt, ringSalt });
+    expect(Object.isFrozen(both)).toBe(true);
+    // A ring salt never reads as the owner's salt.
+    const ringOnly = await answering({ result: { ringSalt: ringText } }).getListSalt(request);
+    expect(ringOnly).toEqual({ ringSalt });
+    expect("listSalt" in ringOnly).toBe(false);
+    const ownerOnly = await answering({ result: { listSalt: listText } }).getListSalt(request);
+    expect(ownerOnly).toEqual({ listSalt });
+    expect("ringSalt" in ownerOnly).toBe(false);
+    expect(await answering({ result: {} }).getListSalt(request)).toEqual({});
+
+    const nonCanonical = getBase58Decoder().decode(new Uint8Array(32).fill(0xff));
+    for (const [result, path] of [
+      [{ listSalt: nonCanonical }, "result.listSalt"],
+      [{ ringSalt: nonCanonical }, "result.ringSalt"],
+      [{ listSalt: listText, ringSalt: nonCanonical }, "result.ringSalt"],
+      [{ listSalt: nonCanonical, ringSalt: ringText }, "result.listSalt"],
+    ] as const)
+      await expect(answering({ result }).getListSalt(request)).rejects.toMatchObject({
+        code: "RING_RPC",
+        details: { path },
+      });
+    expect(() => RingListSaltRequest.forOwner(target, "bad-owner" as Address)).toThrow("RING_RPC");
   });
 
   it("names -32226 as a signer writing no salted list", async () => {
@@ -255,12 +280,20 @@ describe("prepareAuthorityTransfer", () => {
       (array as Uint8Array).fill(4);
       return array;
     });
-    const signed = await RingAuthorityTransferRequest.forTransfer(target, transfer)
+    const key = ViewingKey.fromBytes(new Uint8Array(32).fill(6) as Bytes32).secretBytes();
+    const expectedKey = key.slice();
+    const request = RingAuthorityTransferRequest.forTransfer(target, transfer)
       .at(1_700_000_000n)
-      .withTxViewingKey(ViewingKey.fromBytes(new Uint8Array(32).fill(6) as Bytes32).secretBytes())
-      .sign(delegate)
-      .finally(() => nonce.mockRestore());
+      .withTxViewingKey(key);
+    key.fill(0);
+    const signed = await request.sign(delegate).finally(() => nonce.mockRestore());
+    expect(signed.txViewingKey).toEqual(expectedKey);
     expect(JSON.stringify(encodePrepareAuthorityTransferRequest(signed))).toBe(vector.wire);
+    expect(() =>
+      RingAuthorityTransferRequest.forTransfer(target, transfer).withTxViewingKey(
+        new Uint8Array(31) as Bytes32,
+      ),
+    ).toThrow("RING_RPC");
   });
 });
 
@@ -748,14 +781,25 @@ describe("co-sign", () => {
     }
   });
 
-  it("sends each method and names a refusal", async () => {
+  it("sends each method, verifies co-signatures, and names a refusal", async () => {
     const sent: unknown[] = [];
-    const signer = filled(8, 32) as Address;
-    const signature = filled(6, 64) as Signature;
+    const coSignerSecret = new Uint8Array(32).fill(8);
+    const signer = base58.decode(ed25519.getPublicKey(coSignerSecret)) as Address;
     const message = "AwQF" as indexerTypes.Base64String;
+    const messageBytes = Uint8Array.from(Buffer.from(message, "base64"));
+    const signature = base58.decode(ed25519.sign(messageBytes, coSignerSecret)) as Signature;
     await expect(
       answering({ result: { signer, signature } }, sent).coSignTransaction({ ring, message }),
     ).resolves.toEqual({ signer, signature });
+    await expect(
+      answering({ result: { signer, signature: filled(6, 64) as Signature } }).coSignTransaction({
+        ring,
+        message,
+      }),
+    ).rejects.toMatchObject({
+      code: "RING_RPC",
+      details: { method: "coSignTransaction", reason: "invalid cosignature" },
+    });
     const edit = {
       ring,
       edit: "set",
@@ -789,18 +833,20 @@ describe("co-sign", () => {
 });
 
 describe("ring rpc refusals", () => {
-  it("names -32167 to -32169, -32174 and -32175 as the co-sign list refusals", () => {
+  it("names -32167 to -32169 and -32175 as the co-sign list refusals and leaves -32174 unnamed", () => {
     expect([-32167, -32168, -32169, -32174, -32175].map(ringRpcRefusalName)).toEqual([
       "frozen",
       "blocked",
       "notAllowed",
-      "customRefused",
+      undefined,
       "listSubject",
     ]);
   });
 
-  it("names -32176 as a simulation without exactly one approved transfer call", () => {
+  it("names -32176 to -32178 as the co-sign simulation, blockhash and reservation refusals", () => {
     expect(ringRpcRefusalName(-32176)).toBe("approvedCallNotOnce");
+    expect(ringRpcRefusalName(-32177)).toBe("staleBlockhash");
+    expect(ringRpcRefusalName(-32178)).toBe("inputReserved");
   });
 
   it("names -32227 and -32228 as delegate notes outside the requested sources", () => {

@@ -31,9 +31,6 @@ func (f *Field) UnmarshalJSON(data []byte) error {
 	if err := b.UnmarshalJSON(data); err != nil {
 		return err
 	}
-	if b == nil {
-		return nil
-	}
 	value := new(big.Int).SetBytes(b)
 	if len(b) != 32 || value.Cmp(fr.Modulus()) >= 0 {
 		return errNotCanonical
@@ -48,7 +45,7 @@ func (b Bytes) MarshalJSON() ([]byte, error) {
 
 func (b *Bytes) UnmarshalJSON(data []byte) error {
 	if string(data) == "null" {
-		return nil
+		return errors.New("custom-ring: null value")
 	}
 	var s string
 	if err := json.Unmarshal(data, &s); err != nil {

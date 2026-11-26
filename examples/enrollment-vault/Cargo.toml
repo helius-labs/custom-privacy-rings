@@ -8,7 +8,7 @@ publish = false
 crate-type = ["cdylib", "lib"]
 
 [dependencies]
-custom-ring-interface = { path = "../../program-libs/interface", default-features = false, features = ["cpi", "enrollment-cpi"] }
+custom-ring-interface = { path = "../../program-libs/interface", default-features = false, features = ["cpi"] }
 pinocchio = { workspace = true, features = ["cpi"] }
 
 [lints.rust.unexpected_cfgs]

@@ -1,11 +1,12 @@
 use anyhow::Result;
 use custom_ring_interface::storage_instruction::EnrollIxData;
-use custom_ring_sdk::{CustomRing, Enroll, EnrollmentRead, RingError};
 use solana_signer::Signer;
 use spr_client::{BlockingIndexer, BlockingRpc};
 use spr_keypair::ShieldedKeypair;
 use spr_transaction::ShieldedKeys;
-use zolana_ring_client::{RegisteredKeys, RingIndexer};
+use zolana_ring_client::{
+    CustomRing, Enroll, EnrollmentRead, RegisteredKeys, RingError, RingIndexer,
+};
 use zolana_ring_keys::ListSaltHolder;
 
 use crate::{line, wait_for, Context, KeyCommand, Probe, Zolana};
@@ -86,7 +87,8 @@ fn register(ctx: &Context, member: &ShieldedKeypair) -> Result<()> {
         }
         .prove(ctx.ring_client()),
     )?;
-    ctx.ring_rpc().submit_enrollment(enrollment.sign(member)?)?;
+    ctx.ring_rpc()?
+        .submit_enrollment(enrollment.sign(member)?)?;
     Ok(())
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ListId } from "../../../src/protocol/membership/policy.js";
-import { checkWriter, listWrite } from "../../../src/operations/management/record-writes.js";
+import { checkWriter, listWrite } from "../../../src/protocol/membership/record-writes.js";
 
 describe("list writes", () => {
   it("refuses a list the writer does not write and a write that changes nothing or both ways", () => {

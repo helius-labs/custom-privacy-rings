@@ -190,7 +190,7 @@ func (c *TransferCircuit) Define(api frontend.API) error {
 	stream := c.Shape.Stream()
 	// The voucher signs the notes step 6 binds and the legs the policy binds, one set of key wires feeds the stream and the policy, so the auditor reads the signer the sender rules held.
 	layout := stream.AssertLayout(api, c.Layout)
-	vouch := c.Voucher.Open(api, rc, layout.Vouched, shared.VouchDigest(api, c.PrivateTxHash, c.WithdrawalHash))
+	vouch := c.Voucher.Open(api, rc, layout.Vouched, shared.VouchDigest(api, c.RingProgramID, c.PrivateTxHash, c.WithdrawalHash))
 	w := audit.AuditWires{FirstNullifier: c.FirstNullifier, RingProgramID: c.RingProgramID, TxViewingSk: c.TxViewingSk, AuditorPk: c.AuditorPk, Salt: c.Salt, Layout: c.Layout, Vouched: vouch.Active, Voucher: vouch.Key}
 	envelope := w.OpenEnvelope(api, rc)
 	opened := stream.OpenSlots(api, rc, layout, c.Outputs, c.OutputCount)

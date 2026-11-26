@@ -2,14 +2,9 @@
 
 use custom_ring_interface::stream::slot_tag;
 use custom_ring_interface::{
-    blinding::ring_blinding_seed,
-    encode_ring_body_output, encode_ring_sender_bundle_output,
-    key_catalog::FrameKey,
-    ring_body_output,
-    stream::{DeliveredSlot, SlotSecret},
-    tag as ring_tag, tagged_x25519, AnonymousProofData, AuditEvidence, AuditKey, AuditStreamLayout,
-    AuditorMessage, CustomRingProof, EntryRecord, FrameExtensions, FramedSenderBundle,
-    InProofOwner, InputTrees, OutputRecord, PlainGroth16Proof, RecipientPayload, RecordForm,
+    encode_ring_sender_bundle_output, key_catalog::FrameKey, tag as ring_tag, tagged_x25519,
+    AnonymousProofData, AuditKey, AuditStreamLayout, AuditorMessage, CustomRingProof,
+    FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees, PlainGroth16Proof, RecordForm,
     RecordKind, RingOutput, RingRail, RingTransactData, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN,
     EXIT_RECORD_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
 };
@@ -33,10 +28,21 @@ use spr_transaction::{
     utxo::{derive_transact_output_blinding, DUMMY_DOMAIN, UTXO_DOMAIN},
     OutputContext, OutputSlot, ShieldedTransaction,
 };
+use zolana_ring_client::FrameEncode;
 use zolana_ring_client::{
     AuditStreamSeal, AuditedUtxo, KnownUtxo, OutputOpening, RingOwnerTag, SealedAuditStream,
     UtxoOwner,
 };
+use zolana_ring_keys::encode_ring_body_output;
+use zolana_ring_keys::ring_blinding_seed;
+use zolana_ring_keys::ring_body_output;
+use zolana_ring_keys::AuditEvidence;
+use zolana_ring_keys::AuditorMessageRead;
+use zolana_ring_keys::DeliveredSlot;
+use zolana_ring_keys::EntryRecord;
+use zolana_ring_keys::OutputRecord;
+use zolana_ring_keys::RecipientPayload;
+use zolana_ring_keys::SlotSecret;
 use zolana_ring_transaction::{record_key, RecipientBody};
 
 /// Byte `i` is `seed ^ i` under a `0x01` lead byte, the Go `ringaudit.Scalar`.
@@ -608,8 +614,7 @@ impl Transfer {
                 let bundle = tx.messages.first().unwrap();
                 FramedSenderBundle {
                     tag: &bundle.view_tag,
-                    body: custom_ring_interface::ring_sender_bundle_output_body(&bundle.data)
-                        .unwrap(),
+                    body: zolana_ring_keys::ring_sender_bundle_output_body(&bundle.data).unwrap(),
                 }
             }),
             envelope: message.envelope,
@@ -649,7 +654,7 @@ fn wire<'a>(slot: &'a OutputSlot, record: &'a [u8]) -> RingOutput<'a> {
     let payload = &slot.payload;
     let body = match ring_body_output(payload) {
         Some((body, _)) => SlotBody::Recipient(body),
-        None => SlotBody::Exit(custom_ring_interface::encrypted_output(payload).unwrap().1),
+        None => SlotBody::Exit(zolana_ring_keys::encrypted_output(payload).unwrap().1),
     };
     RingOutput {
         hash: &slot.output_context.hash,

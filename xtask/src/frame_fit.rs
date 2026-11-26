@@ -3,6 +3,10 @@
 //! `run` prints `test-vectors/proof/ring-frame-fit.md`, and a test pins the committed table.
 
 use std::{collections::BTreeSet, fmt::Write};
+use zolana_ring_client::ApprovalEncode;
+use zolana_ring_client::FittedSpend;
+use zolana_ring_client::FrameEncode;
+use zolana_ring_client::SppExpansion;
 
 use anyhow::{Context, Result};
 use custom_ring_interface::{
@@ -11,12 +15,11 @@ use custom_ring_interface::{
     spl_withdrawal_count,
     storage::Revision,
     stream::slot_tag,
-    tag, AnonymousProofData, AppMessage, CustomRingError, CustomRingMergeIxData, CustomRingProof,
-    FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof,
-    RecipientPayload, RecordForm, RecordKind, Replies, RingOutput, RingPolicy, RingRail,
-    RingTransactData, RootRead, SealedMergeRecord, SlotBody, TransferApproval, MAX_CPI_DATA_LEN,
-    MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, MIN_REPLY_LEN, RECIPIENT_KEY_LEN, SENDER_BUNDLE_LEN,
-    TAGGED_X25519_KEY_LEN, TRANSFER_RECORD_LEN,
+    tag, AnonymousProofData, AppMessage, CustomRingError, CustomRingProof, FrameExtensions,
+    FramedSenderBundle, InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof, RecordForm,
+    RecordKind, Replies, RingOutput, RingPolicy, RingRail, RingTransactData, RootRead, SlotBody,
+    TransferApproval, TransferLayout, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, MIN_REPLY_LEN,
+    RECIPIENT_KEY_LEN, SENDER_BUNDLE_LEN, TAGGED_X25519_KEY_LEN, TRANSFER_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -37,6 +40,11 @@ use spr_program::instruction::{
     TransactSolTransferAccounts, TransactSplWithdrawalAccounts,
 };
 use spr_transaction::{serialization::confidential::ConfidentialOutputPlaintext, Data, DataRecord};
+use zolana_ring_client::CustomRingMergeIxData;
+use zolana_ring_client::KnownPrefix;
+use zolana_ring_client::SealedMergeRecord;
+use zolana_ring_client::MAX_CPI_DATA_LEN;
+use zolana_ring_keys::RecipientPayload;
 
 pub mod inline_capacity;
 
@@ -374,11 +382,8 @@ impl Transfer {
         let delegate = rail.is_delegate();
         let policy_roots = load.policy_roots && !delegate;
         let co_signer = load.co_signer && !delegate;
-        let read = match policy_roots {
-            true => RootRead::Policy,
-            false => RootRead::None,
-        };
-        let config = ring_config(load.curator);
+        let config = ring_config(policy_roots, load.curator);
+        let read = RootRead::transfer(&config, delegate);
         let anonymous_frame = rail.anonymous_frame();
 
         let proof = CustomRingProof {
@@ -617,21 +622,6 @@ impl Transfer {
                 .accounts
             }
         };
-        if !delegate {
-            let settlements = data
-                .interface_transfers
-                .iter()
-                .map(|transfer| transfer.settlement_account_count())
-                .sum();
-            let read = data
-                .owner_signers(&spp, settlements)
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
-            anyhow::ensure!(
-                read.len() == self.owners,
-                "the program reads another owner run"
-            );
-        }
-
         let mut metas = RingPrefix {
             config: &config,
             read,
@@ -643,11 +633,23 @@ impl Transfer {
             metas.push(AccountMeta::new_readonly(DELEGATE, true));
         }
         metas.extend(spp);
+        let layout = TransferLayout::new(
+            &data,
+            &config,
+            metas.len(),
+            &mut KnownPrefix {
+                co_signer_pairs: usize::from(co_signer),
+                delegate_mint: false,
+            },
+        )?;
+        anyhow::ensure!(
+            layout.owners.len() == owner_signers.len() * usize::from(!delegate),
+            "the program reads another owner run"
+        );
         if load.program {
             // The PDA signs the inner call alone.
-            metas
+            metas[layout.owners.clone()]
                 .iter_mut()
-                .filter(|meta| owner_signers.contains(&meta.pubkey))
                 .for_each(|meta| meta.is_signer = false);
         }
         let ring_tag = match delegate {
@@ -755,11 +757,15 @@ fn through_program(transfer: Instruction, co_signer: bool) -> Vec<Instruction> {
     approval.into_iter().chain([call]).collect()
 }
 
-fn ring_config(curator: bool) -> Box<RingPolicy> {
+/// A ring whose transfers read the roots the load names.
+fn ring_config(policy_roots: bool, curator: bool) -> Box<RingPolicy> {
     let mut config: Box<RingPolicy> = bytemuck::zeroed_box();
     config.auditor_pubkey[0] = 4;
-    config.records = OWN;
     config.tracking = TRACKING;
+    if policy_roots {
+        config.records = OWN;
+        config.policy_hash = [1; 32];
+    }
     if curator {
         config.sources[0].registry = CURATOR;
     }
@@ -839,7 +845,7 @@ fn merge_fit(width: usize) -> Result<Fit> {
     .instruction()
     .accounts;
     let mut metas = RingPrefix {
-        config: &ring_config(true),
+        config: &ring_config(true, true),
         read: RootRead::merge(),
         co_signer: false,
         approved: false,

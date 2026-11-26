@@ -1,17 +1,18 @@
 //! Each relay operation lands through a served Ring RPC that pays the fee and proves with the suite's prover.
 
 use anyhow::bail;
-use custom_ring_sdk::{
-    AllowedNullifiers, FunderApproval, MergeRelay, RelaySent, RequestedAuthorityTransfer,
-    ResolvedSource, TrackingEnrollment,
-};
 use custom_ring_test_validator::{
     policy::{DEPOSIT, TRANSFER_AMOUNT},
     ring_rpc::RelayedRingRpc,
 };
-use zolana_ring_client::rpc::{
-    AuthorityPayment, AuthorityTransfer, AuthorityTransferAttestation, AuthorityTransferRequest,
-    MergeSettings, MergeSettingsAttestation, MergeSettingsRequest, RelayId, RelayOperation,
+use zolana_ring_client::{
+    rpc::{
+        AuthorityPayment, AuthorityTransfer, AuthorityTransferAttestation,
+        AuthorityTransferRequest, MergeSettings, MergeSettingsAttestation, MergeSettingsRequest,
+        RelayId, RelayOperation,
+    },
+    AllowedNullifiers, FunderApproval, MergeRelay, RelaySent, RequestedAuthorityTransfer,
+    ResolvedSource, TrackingEnrollment,
 };
 
 use super::*;
@@ -249,7 +250,7 @@ fn a_relayed_authority_transfer_moves_the_enrolled_members_note() -> Result<()> 
             request,
             quote: &quote,
             config: &config,
-            requester: custom_ring_sdk::DelegateRequester::Ring(allowed.clone()),
+            requester: zolana_ring_client::DelegateRequester::Ring(allowed.clone()),
             output_tree_id: env.tree_id(env.tree)?,
         }
         .prepare()?;

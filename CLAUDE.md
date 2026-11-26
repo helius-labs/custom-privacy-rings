@@ -10,9 +10,10 @@ The zolana notes above apply here, with their paths read under `zolana/`.
   into it, so a zolana change and its ring change build together locally. Land
   the zolana side first, then move the pin with `just zolana-bump <commit>`.
 - The layout mirrors zolana: `programs/custom-ring`, `program-libs/{interface,
-  policy,member-registry}`, `sdk-libs/{client,indexer,keys,sdk,secret-file,
+  policy,member-registry}`, `sdk-libs/{client,indexer,keys,secret-file,
   transaction,ts}`,
-  `program-tests/custom-ring`, `services/{ring-indexer,ring-rpc}`, `cli`, `xtask`.
+  `program-tests/custom-ring`, `services/{ring-indexer,ring-service-core,ring-writer,
+  ring-audit,ring-cosigner,ring-relay,ring-rpc}`, `cli`, `xtask`.
 - Large package implementations group by technical layer: protocol or codec,
   crypto or proof, RPC, state or storage, operations, and CLI UI. Keep a small
   package flat when each source file already has one clear purpose. Rust crate

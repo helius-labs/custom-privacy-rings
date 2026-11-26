@@ -44,7 +44,6 @@ export {
   envelopeBlocks,
   envelopeRegion,
   firstRecipientKeyCounter,
-  packedChunks,
   publishedRecordLen,
   recipientBodyForms,
   recipientKeyRegion,
@@ -94,7 +93,6 @@ export type {
 } from "../protocol/codec/audit-stream.js";
 export {
   canonicalViewingKey,
-  disclosurePlaintext,
   openExitRecord,
   openOutputSlot,
   openRingDisclosure,

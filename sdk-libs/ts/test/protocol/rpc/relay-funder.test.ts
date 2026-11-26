@@ -11,6 +11,7 @@ import { SIZE_PROBE_LIFETIME } from "../../../src/operations/workflow/compile.js
 import { FunderApproval } from "../../../src/proof/cosign.js";
 import { PendingRelaySignature } from "../../../src/rpc/relay.js";
 import { anonymousPartyIdentities } from "../../../src/protocol/membership/parties.js";
+import { decodeRingPolicy } from "../../../src/protocol/codec/ring-codecs.js";
 import { ringAuthAddress, ringPolicyAddress } from "../../../src/protocol/pda/index.js";
 import { RingInstructionTag } from "../../../src/protocol/transaction/instruction-tag.js";
 import {
@@ -18,9 +19,11 @@ import {
   decodeRelayFunderTerms,
   encodeRelayFunderTerms,
   expectedFunder,
+  type PublicLeg,
   type RelayFunderTerms,
 } from "../../../src/rpc/relay-message.js";
 import type { RingTransactData } from "../../../src/protocol/transaction/transact.js";
+import { ringPolicyData } from "../../helpers/ring-accounts.js";
 import { ringFrame, ringInstructionData } from "../../helpers/ring-frame.js";
 
 const key = (byte: number): Address => encodeBase58(new Uint8Array(32).fill(byte));
@@ -32,6 +35,8 @@ const READ = AccountRole.READONLY;
 const WRITE = AccountRole.WRITABLE;
 const SIGN_WRITE = AccountRole.WRITABLE_SIGNER;
 const RELAY_ID = "11111111111111111111111111111111" as never;
+const POLICY = decodeRingPolicy(ringPolicyData({ bump: 255, tracking: key(40) }));
+const TRACKING: AccountMeta = { address: POLICY.tracking, role: AccountRole.READONLY };
 
 beforeAll(initializePoseidon);
 
@@ -43,12 +48,13 @@ const terms = (legs: RelayFunderTerms["legs"]): RelayFunderTerms => ({
   setup: [],
 });
 
-/** The ring account, SPP's head, one tree, then the legs' settlement groups. */
+/** The ring account, its tracking registry, SPP's head, one tree, then the legs' settlement groups. */
 async function message(
   input: Readonly<{
     transfers: RingTransactData["interfaceTransfers"];
     groups: readonly AccountMeta[];
     run?: readonly AccountMeta[];
+    registry?: AccountMeta;
   }>,
 ): Promise<Uint8Array> {
   const frame: RingTransactData = {
@@ -58,6 +64,7 @@ async function message(
   const spp = (at: number, role: AccountRole): AccountMeta => ({ address: key(at), role });
   const accounts: AccountMeta[] = [
     { address: await ringPolicyAddress(RING), role: READ },
+    input.registry ?? TRACKING,
     { address: PAYER, role: SIGN_WRITE },
     spp(10, WRITE),
     spp(11, READ),
@@ -82,7 +89,7 @@ async function verdict(
   bytes: Uint8Array,
   signer: Address = FUNDER,
 ): Promise<string> {
-  const expected = await expectedFunder({ terms: named, config: { mode: "confidential" } });
+  const expected = await expectedFunder({ terms: named, config: POLICY });
   try {
     checkRelayMessage(expected, bytes, signer);
     return "Accepted";
@@ -96,23 +103,29 @@ const solGroup: readonly AccountMeta[] = [
   { address: key(30), role: WRITE },
   { address: FUNDER, role: SIGN_WRITE },
 ];
+const sol = (amount: bigint): PublicLeg => ({
+  direction: "deposit",
+  mint: null,
+  amount,
+  accounts: solGroup.map((meta) => meta.address),
+});
 
 describe("a public funder's check", () => {
   it("passes the legs its terms name", async () => {
     const bytes = await message({ transfers: [solLeg(5n)], groups: solGroup });
-    expect(await verdict(terms([{ amount: 5n }]), bytes)).toBe("Accepted");
+    expect(await verdict(terms([sol(5n)]), bytes)).toBe("Accepted");
     const pending = await new FunderApproval({
       relayId: RELAY_ID,
       message: bytes,
-      terms: terms([{ amount: 5n }]),
-      config: { mode: "confidential" },
+      terms: terms([sol(5n)]),
+      config: POLICY,
     }).pending();
     expect(pending.verify(FUNDER).signer).toBe(FUNDER);
   });
 
   it("signs a sealed deposit frame through the funder's own terms and the returned message", async () => {
     const bytes = await message({ transfers: [solLeg(5n)], groups: solGroup });
-    const named = terms([{ amount: 5n }]);
+    const named = terms([sol(5n)]);
     const sealed = new PendingRelaySignature(RELAY_ID, bytes, {
       kind: "sealed",
       terms: [],
@@ -126,20 +139,43 @@ describe("a public funder's check", () => {
       relayId: RELAY_ID,
       message: sealed.message(),
       terms: funder,
-      config: { mode: "confidential" },
+      config: POLICY,
     }).pending();
     expect(pending.verify(FUNDER).signer).toBe(FUNDER);
   });
 
   it("refuses another amount, a missing leg and a leg it did not name", async () => {
     const one = await message({ transfers: [solLeg(5n)], groups: solGroup });
-    expect(await verdict(terms([{ amount: 6n }]), one)).toBe("FunderLegs");
-    expect(await verdict(terms([{ amount: 5n }, { amount: 7n }]), one)).toBe("FunderLegs");
+    expect(await verdict(terms([sol(6n)]), one)).toBe("Legs");
+    expect(await verdict(terms([sol(5n), sol(7n)]), one)).toBe("Legs");
     const two = await message({
       transfers: [solLeg(5n), solLeg(7n)],
       groups: [...solGroup, { address: key(30), role: WRITE }, solGroup[1] as AccountMeta],
     });
-    expect(await verdict(terms([{ amount: 5n }]), two)).toBe("FunderLegs");
+    expect(await verdict(terms([sol(5n)]), two)).toBe("Legs");
+    expect(await verdict(terms([sol(7n), sol(5n)]), two)).toBe("Legs");
+    expect(await verdict(terms([sol(5n), sol(7n)]), two)).toBe("Accepted");
+  });
+
+  it("refuses a leg of another direction, mint or settlement account", async () => {
+    const bytes = await message({ transfers: [solLeg(5n)], groups: solGroup });
+    for (const changed of [
+      { direction: "withdrawal" as const },
+      { mint: MINT },
+      { accounts: [key(34), FUNDER] },
+      { accounts: [...sol(5n).accounts, key(34)] },
+    ])
+      expect(await verdict(terms([{ ...sol(5n), ...changed }]), bytes)).toBe("Legs");
+  });
+
+  it("refuses a leg another key funds, the frame holds no leg of the signer", async () => {
+    const bytes = await message({
+      transfers: [solLeg(5n)],
+      groups: [solGroup[0] as AccountMeta, { address: key(35), role: SIGN_WRITE }],
+    });
+    expect(await verdict(terms([{ ...sol(5n), accounts: [key(30), key(35)] }]), bytes)).toBe(
+      "Legs",
+    );
   });
 
   it("refuses a key the frame also names in the owner run", async () => {
@@ -148,21 +184,72 @@ describe("a public funder's check", () => {
       groups: solGroup,
       run: [{ address: FUNDER, role: AccountRole.READONLY_SIGNER }],
     });
-    expect(await verdict(terms([{ amount: 5n }]), bytes)).toBe("Accounts");
+    expect(await verdict(terms([sol(5n)]), bytes)).toBe("Accounts");
+  });
+
+  it("refuses a writable account in the ring prefix ahead of SPP", async () => {
+    const bytes = await message({
+      transfers: [solLeg(5n)],
+      groups: solGroup,
+      registry: { address: POLICY.tracking, role: WRITE },
+    });
+    expect(await verdict(terms([sol(5n)]), bytes)).toBe("Accounts");
+  });
+
+  it("refuses a writable funder signer when terms fund only SPL legs", async () => {
+    const splLeg = { kind: "splDeposit" as const, amount: 5n, splInterfaceBump: 255 };
+    const splGroup = (role: AccountRole): readonly AccountMeta[] => [
+      { address: MINT, role: READ },
+      { address: key(31), role: WRITE },
+      { address: FUNDER, role },
+      { address: key(32), role: WRITE },
+      { address: key(33), role: READ },
+    ];
+    const readonlyFunder = await message({
+      transfers: [splLeg],
+      groups: splGroup(AccountRole.READONLY_SIGNER),
+    });
+    const spl: PublicLeg = {
+      direction: "deposit",
+      mint: MINT,
+      amount: 5n,
+      accounts: splGroup(READ).map((meta) => meta.address),
+    };
+    expect(await verdict(terms([spl]), readonlyFunder)).toBe("Accepted");
+    const writableFunder = await message({
+      transfers: [splLeg],
+      groups: splGroup(SIGN_WRITE),
+    });
+    expect(await verdict(terms([spl]), writableFunder)).toBe("Accounts");
   });
 
   it("reads terms with no leg and another signer as unrequested", async () => {
     const bytes = await message({ transfers: [solLeg(5n)], groups: solGroup });
     expect(await verdict(terms([]), bytes)).toBe("Unrequested");
-    expect(await verdict(terms([{ amount: 5n }]), bytes, key(9))).toBe("Unrequested");
+    expect(await verdict(terms([sol(5n)]), bytes, key(9))).toBe("Unrequested");
   });
 
   it("encodes its terms as Rust serde, null on a SOL leg", () => {
-    const named = terms([{ amount: 5n }, { mint: MINT, amount: (1n << 60n) + 1n }]);
+    const named = terms([
+      sol(5n),
+      { direction: "deposit", mint: MINT, amount: (1n << 60n) + 1n, accounts: [MINT, key(31)] },
+    ]);
     const text = encodeRelayFunderTerms(named);
-    expect(text).toContain('"mint":null');
-    expect(encodeRelayFunderTerms(decodeRelayFunderTerms(text))).toBe(text);
-    expect(() => decodeRelayFunderTerms(text.replace('"legs"', '"lags"'))).toThrow();
+    expect(text).toContain(
+      `{"direction":"deposit","mint":null,"amount":5,"accounts":["${key(30)}","${FUNDER}"]}`,
+    );
+    expect(text).toContain(`"amount":${(1n << 60n) + 1n},`);
+    expect(decodeRelayFunderTerms(text)).toEqual(named);
+    for (const [from, to] of [
+      ['"legs"', '"lags"'],
+      ['"direction":"deposit","mint":null,', '"mint":null,'],
+      ['"direction":"deposit","mint":null', '"direction":"refund","mint":null'],
+      ['"mint":null,', '"mint":null,"funder":null,'],
+      ['"mint":null', '"mint":7'],
+    ] as const)
+      expect(() => decodeRelayFunderTerms(text.replace(from, to))).toThrow(
+        "RING_RELAY_MESSAGE_INVALID",
+      );
   });
 });
 

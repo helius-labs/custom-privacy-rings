@@ -21,7 +21,7 @@ import { domainField, RingDomain } from "../../crypto/derivation/ring-domain.js"
 import { RingError } from "../error.js";
 import type { StorageRegistryRoot } from "../codec/ring-codecs.js";
 import { coveredPaths, foldQuadPath, type PoolSubject, type QuadPath } from "./member-registry.js";
-import { FIELD_MAX } from "./member-opening.js";
+import { checkMember, FIELD_MAX } from "./member-opening.js";
 
 export const TRACKING_GRACE_SLOTS = 750n;
 /** Rust `TRACKING_QUAD_HEIGHT`. */
@@ -117,11 +117,11 @@ export function decodeTrackingRegistry(data: Uint8Array): TrackingRegistry {
 
 export function decodeOwnerGrant(data: Uint8Array): OwnerGrant {
   const reader = account(data, OWNER_GRANT_DISCRIMINATOR, OWNER_GRANT_SIZE);
-  const grant = Object.freeze({
-    active: reader.u8("active") === 1,
-  });
+  const active = reader.u8("active");
   reader.done();
-  return grant;
+  if (active !== 0 && active !== 1)
+    throw new RingError("RING_TRACKING_INVALID", { details: { active } });
+  return Object.freeze({ active: active === 1 });
 }
 
 /** Rust `TrackingEntry::from_enroll`, proven since every Enroll carries a `RegisterKey` proof. */
@@ -205,6 +205,7 @@ export function verifyTrackingOpening(
   root: Bytes32,
   member: Bytes32,
 ): TrackingRecord | undefined {
+  checkMember(member);
   const leaf = opening.kind === "present" ? opening.record : opening.low;
   const held =
     opening.kind === "present"
@@ -277,15 +278,30 @@ export function verifyTrackingPool(
     },
     refuse,
   );
+  pool.records.forEach(({ record }, at) => {
+    if (
+      !equalBytes(
+        foldQuadPath(
+          fullPaths[at] as QuadPath,
+          trackingRecordHash(record),
+          refuse,
+          TRACKING_QUAD_HEIGHT,
+        ),
+        root,
+      )
+    )
+      throw invalid("RootMismatch");
+  });
   const rows = members.map((member, subject) => {
     const at = pool.subjects[subject];
     const served = at === undefined ? undefined : pool.records[at];
     const path = at === undefined ? undefined : fullPaths[at];
     if (served === undefined || path === undefined) throw invalid("SubjectIndex");
-    const opening: TrackingOpening = equalBytes(served.record.member, member)
-      ? { kind: "present", record: served.record, path }
-      : { kind: "absent", low: served.record, path };
-    return verifyTrackingOpening(opening, root, member);
+    checkMember(member);
+    if (equalBytes(served.record.member, member)) return served.record;
+    if (!fieldBelow(served.record.member, member) || !fieldBelow(member, served.record.next))
+      throw invalid("NotBracketed");
+    return undefined;
   });
   const records = cyclic(pool.records, openings);
   return Object.freeze({

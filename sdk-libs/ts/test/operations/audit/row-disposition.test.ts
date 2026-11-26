@@ -61,7 +61,7 @@ describe("auditFailureKind", () => {
   });
 
   it("splits a disclosure refusal from other key material", () => {
-    expect(auditFailureKind(new RingKeyError("KEYPAIR_DISCLOSURE_FIELD"))).toBe("auditData");
+    expect(auditFailureKind(new RingKeyError("KEYPAIR_DISCLOSURE_SHAPE"))).toBe("auditData");
     expect(auditFailureKind(new RingKeyError("KEYPAIR_INVALID_LENGTH"))).toBe("keyMaterial");
     expect(auditFailureKind(new TransactionError("TRANSACTION_INVALID_LENGTH"))).toBe("auditData");
   });

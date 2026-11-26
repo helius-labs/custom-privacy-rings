@@ -31,10 +31,10 @@ impl EnrollmentOwner<'_> {
     }
 }
 
-#[cfg(feature = "enrollment-cpi")]
+#[cfg(feature = "cpi")]
 pub use cpi::{PdaEnrollment, VaultEnrollmentPolicy};
 
-#[cfg(feature = "enrollment-cpi")]
+#[cfg(feature = "cpi")]
 mod cpi {
     use pinocchio::{
         cpi::{invoke_signed, Signer},
@@ -128,7 +128,7 @@ mod cpi {
             let accounts = [
                 InstructionAccount::readonly_signer(self.writer.address()),
                 InstructionAccount::readonly(self.policy.address()),
-                InstructionAccount::writable(self.ring_auth.address()),
+                InstructionAccount::readonly(self.ring_auth.address()),
                 InstructionAccount::writable(self.tracking.address()),
                 InstructionAccount::readonly_signer(self.vault.address()),
                 InstructionAccount::readonly(self.storage.address()),

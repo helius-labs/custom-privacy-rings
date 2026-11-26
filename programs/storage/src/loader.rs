@@ -42,24 +42,13 @@ pub struct RegistryInit<'a> {
 impl RegistryInit<'_> {
     #[inline(always)]
     pub fn init(self, account: &mut AccountView) -> ProgramResult {
-        let seeds = StorageRegistry::seeds(self.creator, &self.ix.registry_id);
-        let (address, bump) = Address::derive_program_address(&seeds, self.program_id)
-            .ok_or(StorageError::InvalidRegistry)?;
-        if account.address() != &address {
-            return Err(StorageError::InvalidRegistry.into());
-        }
-        check_writable(account)?;
-        if account.data_len() != 0 {
-            return Err(StorageError::AlreadyInitialized.into());
-        }
         CanonicalPda {
             program_id: self.program_id,
             payer: self.payer,
-            seeds: &seeds,
-            bump,
-            size: StorageRegistry::SIZE,
+            seeds: &StorageRegistry::seeds(self.creator, &self.ix.registry_id),
+            invalid: StorageError::InvalidRegistry,
         }
-        .create(account)?;
+        .create(account, StorageRegistry::SIZE)?;
         account
             .try_borrow_mut()?
             .copy_from_slice(bytemuck::bytes_of(&StorageRegistry::new(
@@ -82,23 +71,13 @@ pub struct TrackingRegistryInit<'a> {
 impl TrackingRegistryInit<'_> {
     #[inline(always)]
     pub fn init(self, account: &mut AccountView) -> ProgramResult {
-        let seeds = TrackingRegistry::seeds(self.creator, &self.ix.ring_id);
-        let (address, bump) = Address::derive_program_address(&seeds, self.program_id)
-            .ok_or(StorageError::InvalidTrackingRegistry)?;
-        if account.address() != &address || !account.is_writable() {
-            return Err(StorageError::InvalidTrackingRegistry.into());
-        }
-        if account.data_len() != 0 {
-            return Err(StorageError::AlreadyInitialized.into());
-        }
         CanonicalPda {
             program_id: self.program_id,
             payer: self.payer,
-            seeds: &seeds,
-            bump,
-            size: TrackingRegistry::SIZE,
+            seeds: &TrackingRegistry::seeds(self.creator, &self.ix.ring_id),
+            invalid: StorageError::InvalidTrackingRegistry,
         }
-        .create(account)?;
+        .create(account, TrackingRegistry::SIZE)?;
         bytemuck::try_from_bytes_mut::<TrackingRegistry>(&mut account.try_borrow_mut()?)
             .map_err(|_| StorageError::InvalidTrackingRegistry)?
             .init(*self.creator, self.ix);
@@ -120,38 +99,31 @@ impl OwnerGrantWrite<'_> {
     /// Creates the grant, a later call changes only whether it is active.
     #[inline(always)]
     pub fn write(self, account: &mut AccountView) -> ProgramResult {
-        let seeds = OwnerGrant::seeds(self.registry, self.owner, &self.ix.reader);
-        let (address, bump) = Address::derive_program_address(&seeds, self.program_id)
-            .ok_or(StorageError::InvalidOwnerGrant)?;
         // The derivation names the owner, whose signature the processor checked.
-        if account.address() != &address || !account.is_writable() {
-            return Err(StorageError::InvalidOwnerGrant.into());
-        }
-        if account.data_len() != 0 {
-            if !account.owned_by(self.program_id) {
-                return Err(StorageError::InvalidOwnerGrant.into());
-            }
-            let mut grant =
-                RefMut::filter_map(account.try_borrow_mut()?, OwnerGrant::from_data_mut)
-                    .map_err(|_| StorageError::InvalidOwnerGrant)?;
-            grant.active = self.ix.active;
-            return Ok(());
-        }
-        CanonicalPda {
+        let pda = CanonicalPda {
             program_id: self.program_id,
             payer: self.payer,
-            seeds: &seeds,
-            bump,
-            size: OwnerGrant::SIZE,
-        }
-        .create(account)?;
-        let grant = OwnerGrant {
-            discriminator: OwnerGrant::DISCRIMINATOR,
-            active: self.ix.active,
+            seeds: &OwnerGrant::seeds(self.registry, self.owner, &self.ix.reader),
+            invalid: StorageError::InvalidOwnerGrant,
         };
-        account
-            .try_borrow_mut()?
-            .copy_from_slice(bytemuck::bytes_of(&grant));
+        if account.data_len() == 0 {
+            pda.create(account, OwnerGrant::SIZE)?;
+            let grant = OwnerGrant {
+                discriminator: OwnerGrant::DISCRIMINATOR,
+                active: self.ix.active,
+            };
+            account
+                .try_borrow_mut()?
+                .copy_from_slice(bytemuck::bytes_of(&grant));
+            return Ok(());
+        }
+        pda.bump(account)?;
+        if !account.owned_by(self.program_id) {
+            return Err(StorageError::InvalidOwnerGrant.into());
+        }
+        RefMut::filter_map(account.try_borrow_mut()?, OwnerGrant::from_data_mut)
+            .map_err(|_| StorageError::InvalidOwnerGrant)?
+            .active = self.ix.active;
         Ok(())
     }
 }
@@ -325,20 +297,33 @@ fn check_writable(account: &AccountView) -> Result<(), StorageError> {
     }
 }
 
-/// Handles a donated balance, `seeds` and `bump` come from the caller's derivation.
+/// The PDA of `seeds`, `invalid` for another address or a read-only account.
 #[must_use]
-struct CanonicalPda<'a> {
+struct CanonicalPda<'a, const N: usize> {
     program_id: &'a Address,
     payer: &'a AccountView,
-    seeds: &'a [&'a [u8]],
-    bump: u8,
-    size: usize,
+    seeds: &'a [&'a [u8]; N],
+    invalid: StorageError,
 }
 
-impl CanonicalPda<'_> {
+impl<const N: usize> CanonicalPda<'_, N> {
+    /// The canonical bump, never one from instruction data.
+    fn bump(&self, account: &AccountView) -> Result<u8, StorageError> {
+        let (address, bump) =
+            Address::derive_program_address(self.seeds, self.program_id).ok_or(self.invalid)?;
+        if account.address() != &address || !account.is_writable() {
+            return Err(self.invalid);
+        }
+        Ok(bump)
+    }
+
+    /// Refuses an occupied account and handles a donated balance.
     #[inline(always)]
-    fn create(self, account: &mut AccountView) -> ProgramResult {
-        let bump = [self.bump];
+    fn create(self, account: &mut AccountView, size: usize) -> ProgramResult {
+        let bump = [self.bump(account)?];
+        if account.data_len() != 0 {
+            return Err(StorageError::AlreadyInitialized.into());
+        }
         // The slot past the last seed keeps the bump, the slice below ends on it.
         let mut signer_seeds: [Seed; MAX_SIGNER_SEEDS] =
             core::array::from_fn(|_| Seed::from(&bump));
@@ -347,11 +332,11 @@ impl CanonicalPda<'_> {
         }
         pinocchio_system::create_account_with_minimum_balance_signed(
             account,
-            self.size,
+            size,
             self.program_id,
             self.payer,
             None,
-            &[Signer::from(&signer_seeds[..=self.seeds.len()])],
+            &[Signer::from(&signer_seeds[..=N])],
         )
     }
 }

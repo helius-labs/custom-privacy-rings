@@ -111,8 +111,7 @@ async function checkCurators(
   if (curators.size > 1) throw sourceInvalid("MultipleCurators");
   for (const curator of curators) {
     if (curator === records) throw sourceInvalid("OwnCurator");
-    if ((await params.client.getAccount(curator, context)) === undefined)
-      throw new RingError("RING_MEMBER_REGISTRY_MISSING", { details: { registry: curator } });
+    await fetchStorageRegistry(params.client, curator, context);
   }
 }
 

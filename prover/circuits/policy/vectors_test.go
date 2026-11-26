@@ -84,8 +84,8 @@ type ruleParts struct {
 
 var (
 	subjects = map[string]uint64{"output_owner": policy.SubjectOutputOwner, "sender": policy.SubjectSender, "asset": policy.SubjectAsset}
-	modes    = map[string]uint64{"present": policy.ModePresent, "absent": policy.ModeAbsent}
-	guards   = map[string]uint64{"always": policy.GuardAlways, "above_amount": policy.GuardAboveAmount, "above_amount_by_asset": policy.GuardAboveAmountByAsset}
+	modes    = map[string]uint64{"present": policy.ModePresent, "absent": ringpolicy.ModeAbsent}
+	guards   = map[string]uint64{"always": 0, "above_amount": policy.GuardAboveAmount, "above_amount_by_asset": policy.GuardAboveAmountByAsset}
 )
 
 type tableCircuit struct {

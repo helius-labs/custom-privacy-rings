@@ -30,9 +30,10 @@ authorized delegate move a member's notes. See the [spec](docs/spec.md),
 
 ## Roles
 
-Four role keys govern a ring. The admin rotates the roles and appoints the
+Five role keys govern a ring. The admin rotates the roles and appoints the
 delegate, the policy authority sets the policy and the lists, the pauser pauses
-the ring and the co-signer admin sets the co-signers. The auditor opens ring
+the ring, the co-signer admin sets the co-signers and the enrollment writer
+sends the enrollment batches. The auditor opens ring
 activity, and members own notes and may write their own registry records. A curator supplies
 lists to another ring's policy. A delegate can move notes only through the
 ring's delegate checks; an authorized reader can query the ring RPC without

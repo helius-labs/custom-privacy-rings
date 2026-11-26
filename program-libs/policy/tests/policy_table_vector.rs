@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use solana_address::Address;
 use zolana_ring_policy::{
     registry_field, EncodedRuleTable, Guard, ListId, ListSet, Member, Mode, PolicySource, Rule,
-    RuleSource, RuleTable, SourceMap, Subject, TableParts, MAX_RULES,
+    RuleTable, SourceMap, Subject, TableParts, MAX_RULES,
 };
 
 const VECTORS: &str = concat!(
@@ -102,7 +102,7 @@ impl Source {
 impl RuleParts {
     /// Read from the rule's subject, lists and guard, never from its row.
     fn new(rule: &Rule) -> Self {
-        let RuleSource::Lists { present, absent } = rule.source;
+        let (present, absent) = (rule.present, rule.absent);
         let mode = rule.primary_mode();
         let (mask, alternative) = match mode {
             Mode::Present => (present, absent),

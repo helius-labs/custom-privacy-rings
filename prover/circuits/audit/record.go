@@ -16,7 +16,7 @@
 // A transfer record ends on two fields its slot's class selects before any byte is cut. An exit holds its
 // nullifier key, then its data hash. A ring slot holds its data hash on a data frame and its ring data
 // hash otherwise, then its ring data hash, and seals no nullifier key. A slot publishes a prefix,
-// PublishedRecordLen in audit/layout.go, so the hashes a frame's layout names are published bytes.
+// so the hashes a frame's layout names are published bytes.
 //
 // Only an exit publishes its nullifier key. A non-exit record names its key by the
 // ZeroKey bit alone, set exactly when the key is the public Poseidon(0). A nonzero key on a ring note
@@ -56,9 +56,8 @@ import (
 
 // The record's kind byte, mirrored by RecordKind in program-libs/interface/src/proof/audit_stream.rs.
 const (
-	KindDummy = 0
-	KindRing  = 1
-	KindExit  = 2
+	KindRing = 1
+	KindExit = 2
 	// KindZeroKey adds to KindRing or KindExit.
 	KindZeroKey = 4
 )
@@ -161,7 +160,7 @@ type MergeRecord struct {
 	Seed frontend.Variable
 }
 
-// Encode mirrors MergeRecord::encode in program-libs/interface/src/proof/audit_stream.rs.
+// Encode mirrors MergeRecord::encode in sdk-libs/keys/src/audit_records.rs.
 func (o MergeRecord) Encode(api frontend.API, rc frontend.Rangechecker) []frontend.Variable {
 	seed := ringgadget.FieldToBytesBEWith(api, rc, api.Mul(o.Live, o.Seed))
 	return slices.Concat(o.RecordOpening.Encode(api, rc), seed[:])
@@ -191,7 +190,7 @@ type evidence struct {
 	realInputs frontend.Variable
 }
 
-// evidence mirrors AuditEnvelope::encode in program-libs/interface/src/proof/audit_stream.rs past the sealed key.
+// evidence mirrors AuditEnvelope::encode in sdk-libs/keys/src/audit_records.rs past the sealed key.
 func (s SpentInputs) evidence(api frontend.API, rc frontend.Rangechecker, ranges StreamRanges) evidence {
 	if len(s.Slots) != ranges.InputClass {
 		panic("audit: the input section differs from the key's class")
@@ -224,7 +223,7 @@ func (s SpentInputs) evidence(api frontend.API, rc frontend.Rangechecker, ranges
 	return evidence{head: head, entries: entries, realInputs: realInputs}
 }
 
-// encode mirrors EntryRecord::extend in program-libs/interface/src/proof/audit_stream.rs, zero off a default-ring note.
+// encode mirrors EntryRecord::extend in sdk-libs/keys/src/audit_records.rs, zero off a default-ring note.
 func (e EntryWires) encode(api frontend.API, rc frontend.Rangechecker, slot shared.Output) []frontend.Variable {
 	live := slot.Exit
 	// Per input owner and key, mixed owners read apart with no nullifier secret disclosed.

@@ -47,7 +47,10 @@ export function ringRpcCoSigner(input: RingRpcCoSignerInput): TransactionPartial
           );
           if (answer.signer !== signer) throw refused("signer is not the expected co-signer");
           const signature = new Uint8Array(base58Encoder.encode(answer.signature));
-          if (!ed25519.verify(signature, message, publicKey))
+          if (
+            signature.length !== 64 ||
+            !ed25519.verify(signature, message, publicKey, { zip215: false })
+          )
             throw refused("co-signature is invalid");
           return Object.freeze({ [signer]: signature as SignatureBytes });
         }),

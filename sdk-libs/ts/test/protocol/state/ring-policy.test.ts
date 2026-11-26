@@ -259,7 +259,6 @@ describe("rule tables", () => {
   });
 });
 
-/** Mirrors `sdk-libs/sdk/tests/go_policy_vectors.rs`. */
 const RECORDS_PDA = addressOf(filled(0x11));
 const CURATOR_PDA = addressOf(filled(0x12));
 function rule(
@@ -410,7 +409,6 @@ describe("rule table builder", () => {
   });
 });
 
-/** Mirrors `sdk-libs/sdk/tests/go_policy_vectors.rs`. */
 describe("policy hash", () => {
   const records = filled(0);
   const curator = hex(Buffer.from(hashBytes(filled(0x12))).toString("hex"));

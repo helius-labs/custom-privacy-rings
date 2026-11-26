@@ -4,7 +4,7 @@ import type { Address, RequestContext } from "@heliuslabs/spr";
 import { decodeRingPolicy, RING_ROLES, type RingAuthorityRole } from "../codec/ring-codecs.js";
 import { ringPolicyAddress } from "../pda/index.js";
 import { RingError } from "../error.js";
-import { readerKeyEquals, type ReaderKey } from "../../operations/management/reader-access.js";
+import { readerKeyEquals, type ReaderKey } from "./reader-access.js";
 
 type AccountReader = Pick<ChainReader, "getMultipleAccounts">;
 

@@ -2,6 +2,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
+use zolana_ring_client::TrackingRegistryHost;
 
 use custom_ring_interface::{
     storage::{RegistryId, Revision, StorageRegistry},

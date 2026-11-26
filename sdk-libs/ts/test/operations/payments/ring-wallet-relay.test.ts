@@ -511,6 +511,22 @@ describe("wallet relay", () => {
         Promise.resolve({ intentHash: new Uint8Array(32) as Bytes32 }),
       ),
     ).rejects.toMatchObject({ cause: { code: "RING_INTENT_MISMATCH" } });
+    const validSigner = signingKeySpendSigner(sender.signing);
+    await expect(
+      prepareRingMergeRelay({
+        client: network.client,
+        ringProgramId: fixture.ringProgramId,
+        wallet: sender.wallet,
+        nullifierKey: sender.keypair.nullifierKey(),
+        signer: {
+          publicKey: () => validSigner.publicKey(),
+          sign: async () => new Uint8Array(63) as unknown as Bytes64,
+        },
+        ringRpc: RING_RPC,
+        quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+        approve: approveUnattended,
+      }),
+    ).rejects.toMatchObject({ cause: { code: "RING_RELAY_OWNER_SIGNATURE" } });
     const relay = await merge(fixture.authority);
 
     expect(approvals).toMatchObject([

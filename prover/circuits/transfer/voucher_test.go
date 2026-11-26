@@ -4,9 +4,11 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/helius-labs/zolana-custom-rings/prover/circuits/transfer"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringaudit"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringtransfer"
+	"github.com/helius-labs/zolana/prover/server/prover-test/spp/spptest"
 )
 
 func vouchedWorld() ringtransfer.Confidential {
@@ -36,7 +38,7 @@ func TestVoucherAdmitsUnlistedOwners(t *testing.T) {
 // Every nonnative gadget closes there, each case below changes the voucher wires alone of a build the test first solves.
 const rangeTable = "nonnative.(*rangeTable).build"
 
-// A vouch is a signature over one transfer's hashes by the key the proof names.
+// A vouch is a signature over one ring and one transfer's hashes by the key the proof names.
 func TestVouchBindsTheTransfer(t *testing.T) {
 	requireSolved(t, vouchedWorld().Build(t).Circuit)
 	hashes := func(b ringtransfer.Built) (privateTxHash, withdrawalHash *big.Int) {
@@ -54,6 +56,26 @@ func TestVouchBindsTheTransfer(t *testing.T) {
 		b.Circuit.Voucher = b.Audit.VoucherWires(t, privateTxHash, new(big.Int).Add(withdrawalHash, big.NewInt(1)))
 		refused(t, b.Circuit, rangeTable)
 	})
+	t.Run("a signature made for another ring", func(t *testing.T) {
+		b := vouchedWorld().Build(t)
+		refused(t, onAnotherRing(t, b), rangeTable)
+	})
+	// No note of the frame carries the ring id, the digest alone names the ring.
+	t.Run("a signature made for another ring over default-ring notes alone", func(t *testing.T) {
+		b := defaultRingWorld(t).Build(t)
+		for _, input := range b.Circuit.Inputs {
+			if ringtest.AsBigInt(input.RingProgramID).Sign() != 0 {
+				t.Fatal("the frame spends a ring note")
+			}
+		}
+		for _, output := range b.Circuit.Outputs {
+			if ringtest.AsBigInt(output.Output.RingProgramID).Sign() != 0 {
+				t.Fatal("the frame pays a ring note")
+			}
+		}
+		requireSolved(t, b.Circuit)
+		refused(t, onAnotherRing(t, defaultRingWorld(t).Build(t)), rangeTable)
+	})
 	t.Run("another key's signature", func(t *testing.T) {
 		b := vouchedWorld().Build(t)
 		unvouched := b.Audit
@@ -67,4 +89,23 @@ func TestVouchBindsTheTransfer(t *testing.T) {
 		b.Circuit.Voucher.Signature[0] = ringtest.AsBigInt(b.Circuit.Voucher.Signature[0]).Uint64() ^ 1
 		refused(t, b.Circuit, "ed25519.Verify")
 	})
+}
+
+// onAnotherRing replaces the vouch by the same key's signature over the same hashes under another ring id.
+func onAnotherRing(t *testing.T, b ringtransfer.Built) *transfer.TransferCircuit {
+	t.Helper()
+	other := b.Audit
+	other.RingProgramID = new(big.Int).Add(other.RingProgramID, big.NewInt(1))
+	b.Circuit.Voucher = other.VoucherWires(t, ringtest.AsBigInt(b.Circuit.PrivateTxHash), ringtest.AsBigInt(b.Circuit.WithdrawalHash))
+	return b.Circuit
+}
+
+// defaultRingWorld spends one default-ring note into exits on an entry key, a vouched frame with no ring note.
+func defaultRingWorld(t *testing.T) ringtransfer.Confidential {
+	t.Helper()
+	w := ringtransfer.Signed(confEntry2)
+	w.Voucher, w.Unlisted = ringaudit.VoucherKey, true
+	w.Exits = []int{0, 1, 2, 3}
+	w.Inputs = []ringaudit.Input{{Utxo: ringaudit.SpentUtxo(t, ringtransfer.Sender(t), spptest.MustNullifierPk(t, big.NewInt(8)), big.NewInt(0), 70, 53), OwnerKey: ringtransfer.SenderKey(), Mint: ringaudit.FixtureMint}}
+	return w
 }

@@ -297,13 +297,13 @@ func (r AuditReader) Read(t testing.TB, stream Stream, i int, published *big.Int
 	// CTR is its own inverse.
 	record := ringprotocol.SealRecord(t, txViewingSk, u, r.Salt, i, r.FirstNullifier, shared.OutputRecordInfo, stream.Record(i))
 	kind, zeroKey := record[0]&^audit.KindZeroKey, record[0]&audit.KindZeroKey != 0
-	if record[0] == audit.KindDummy {
-		if len(record) != audit.PublishedRecordLen(false, r.Data, r.RingData) || slices.ContainsFunc(record, func(b byte) bool { return b != 0 }) {
+	if record[0] == KindDummy {
+		if len(record) != PublishedRecordLen(false, r.Data, r.RingData) || slices.ContainsFunc(record, func(b byte) bool { return b != 0 }) {
 			return nil, fmt.Errorf("slot %d: a dummy carries a value", i)
 		}
 		return nil, nil
 	}
-	if (kind != audit.KindRing && kind != audit.KindExit) || len(record) != audit.PublishedRecordLen(kind == audit.KindExit, r.Data, r.RingData) {
+	if (kind != audit.KindRing && kind != audit.KindExit) || len(record) != PublishedRecordLen(kind == audit.KindExit, r.Data, r.RingData) {
 		return nil, fmt.Errorf("slot %d: not a record", i)
 	}
 	note := Note{

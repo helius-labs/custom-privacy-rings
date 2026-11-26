@@ -5,7 +5,7 @@ import type { Bytes32, Bytes33 } from "@heliuslabs/spr/interface";
 import { hashBytes, hashChain4 } from "@heliuslabs/spr/internal";
 import { poseidon } from "@heliuslabs/spr/keypair";
 
-import { CUSTOM_RING_PROOF_LENGTH } from "../../../src/protocol/proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../../../src/protocol/codec/ring-codecs.js";
 import { field, ringFrame, ringInstructionData } from "../../helpers/ring-frame.js";
 import { RingError } from "../../../src/protocol/error.js";
 import {

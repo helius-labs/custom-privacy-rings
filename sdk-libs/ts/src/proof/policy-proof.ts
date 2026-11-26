@@ -33,8 +33,8 @@ import type {
   PolicySubjectEntry,
   PolicyTableProofInputs,
   TrackingProofInputs,
-} from "../rpc/prover/ring.js";
-import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../rpc/prover/types.js";
+} from "../protocol/proof/ring-proof-requests.js";
+import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../protocol/codec/ring-codecs.js";
 
 import type { RingPolicy } from "../protocol/codec/ring-codecs.js";
 import { RingError } from "../protocol/error.js";
@@ -69,6 +69,7 @@ import {
   type PinnedPolicy,
   type RecordLists,
   type SourceView,
+  type RingListSalt,
 } from "../protocol/membership/policy.js";
 import {
   verifyTrackingPool,
@@ -146,12 +147,6 @@ export interface PolicyInputs {
 export interface PolicyProving {
   readonly ringId: Bytes32;
   readonly publicSlots: PublicSlots;
-}
-
-/** From the owner's `RingAddress` or `RingKeys.listSalt`. */
-export interface RingListSalt {
-  readonly owner: Bytes32;
-  readonly salt: Bytes32;
 }
 
 /** Read before any record opens. */

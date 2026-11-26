@@ -138,7 +138,9 @@ async fn missing_event_index_fails_closed() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::InvalidIndexerResponse)
+        Err(RingAuditError::Service(
+            ServiceError::InvalidIndexerResponse
+        ))
     ));
 }
 
@@ -159,7 +161,9 @@ async fn unknown_origins_fail_the_page() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::Origin(AuditError::Unavailable { .. }))
+        Err(RingAuditError::Service(ServiceError::Origin(
+            AuditError::Unavailable { .. }
+        )))
     ));
 }
 
@@ -190,7 +194,9 @@ async fn accepted_nonces_are_single_use() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::Unauthorized(Unauthorized::Replay))
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
+            Unauthorized::Replay
+        )))
     ));
     let distinct = auth(&delegate());
     assert!(service
@@ -223,7 +229,9 @@ async fn indexer_pages_must_match_the_attested_bounds() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::InvalidIndexerResponse)
+        Err(RingAuditError::Service(
+            ServiceError::InvalidIndexerResponse
+        ))
     ));
 
     // A page over its limit in Solana transactions.
@@ -241,7 +249,9 @@ async fn indexer_pages_must_match_the_attested_bounds() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::InvalidIndexerResponse)
+        Err(RingAuditError::Service(
+            ServiceError::InvalidIndexerResponse
+        ))
     ));
 
     // A token that does not advance past the one requested.
@@ -264,7 +274,9 @@ async fn indexer_pages_must_match_the_attested_bounds() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::InvalidIndexerResponse)
+        Err(RingAuditError::Service(
+            ServiceError::InvalidIndexerResponse
+        ))
     ));
 
     let mut source = fixture.source();
@@ -281,7 +293,9 @@ async fn indexer_pages_must_match_the_attested_bounds() {
                 wallet: None,
             })
             .await,
-        Err(RingRpcError::InvalidIndexerResponse)
+        Err(RingAuditError::Service(
+            ServiceError::InvalidIndexerResponse
+        ))
     ));
 }
 
@@ -401,26 +415,28 @@ async fn two_rings_read_only_their_own_transactions() {
             ring_a,
             RingConfiguration {
                 auditor_pubkey: key_a,
-                roles: custom_ring_interface::RingRoles {
-                    policy: authority().pubkey(),
+                mode: RingMode::Confidential,
+                policy: custom_ring_interface::RingPolicy {
+                    roles: custom_ring_interface::RingRoles {
+                        policy: authority().pubkey(),
+                        ..bytemuck::Zeroable::zeroed()
+                    },
                     ..bytemuck::Zeroable::zeroed()
                 },
-                mode: RingMode::Confidential,
-                delegate: None,
-                ring_list_tag: [0; 32],
             },
         ),
         (
             ring_b,
             RingConfiguration {
                 auditor_pubkey: key_b,
-                roles: custom_ring_interface::RingRoles {
-                    policy: authority().pubkey(),
+                mode: RingMode::Confidential,
+                policy: custom_ring_interface::RingPolicy {
+                    roles: custom_ring_interface::RingRoles {
+                        policy: authority().pubkey(),
+                        ..bytemuck::Zeroable::zeroed()
+                    },
                     ..bytemuck::Zeroable::zeroed()
                 },
-                mode: RingMode::Confidential,
-                delegate: None,
-                ring_list_tag: [0; 32],
             },
         ),
     ]);
@@ -515,7 +531,7 @@ async fn an_outsider_row_never_reaches_the_origin_read() {
 async fn a_cursor_outside_its_query_is_refused() {
     assert!(matches!(
         Page::new(Some(vec![2; 75].into()), None),
-        Err(RingRpcError::InvalidPage)
+        Err(RingAuditError::InvalidPage)
     ));
     let fixture = Fixture::new();
     let service = fixture
@@ -554,7 +570,7 @@ async fn a_cursor_outside_its_query_is_refused() {
                     wallet: None,
                 })
                 .await,
-            Err(RingRpcError::InvalidPage)
+            Err(RingAuditError::InvalidPage)
         ));
     }
 }

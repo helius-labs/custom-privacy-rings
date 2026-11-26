@@ -351,6 +351,9 @@ type MergeParams struct {
 
 // Unmarshal refuses an unknown or repeated key, a missing key without omitempty and trailing data.
 func Unmarshal(data []byte, v any) error {
+	if len(data) > MaxBodyBytes {
+		return fmt.Errorf("custom-ring: request body exceeds %d bytes", MaxBodyBytes)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := strictly(decoder, reflect.TypeOf(v).Elem(), 0); err != nil {
 		return fmt.Errorf("custom-ring: %w", err)
@@ -361,7 +364,11 @@ func Unmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
 
-const maxDepth = 32
+const (
+	MaxBodyBytes    = 8 << 20
+	maxDepth        = 32
+	maxJSONArrayLen = 4096
+)
 
 var unmarshaler = reflect.TypeFor[json.Unmarshaler]()
 
@@ -380,7 +387,7 @@ func strictly(decoder *json.Decoder, t reflect.Type, depth int) error {
 	}
 	custom := reflect.PointerTo(t).Implements(unmarshaler)
 	if token == nil {
-		if nullable || custom {
+		if nullable {
 			return nil
 		}
 		return errors.New("null value")
@@ -443,6 +450,9 @@ func strictArray(decoder *json.Decoder, t reflect.Type, token json.Token, depth 
 		return errors.New("expected an array")
 	}
 	for i := 0; decoder.More(); i++ {
+		if i >= maxJSONArrayLen {
+			return fmt.Errorf("array exceeds %d elements", maxJSONArrayLen)
+		}
 		if err := strictly(decoder, t.Elem(), depth+1); err != nil {
 			return fmt.Errorf("[%d]: %w", i, err)
 		}

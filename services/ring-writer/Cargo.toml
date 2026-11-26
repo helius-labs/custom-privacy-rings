@@ -1,0 +1,49 @@
+[package]
+name = "ring-writer"
+version = "0.1.0"
+description = "Record writer and enrollment applier of the ring RPC."
+edition.workspace = true
+license.workspace = true
+publish = false
+repository.workspace = true
+
+[features]
+test-fixtures = ["ring-service-core/test-fixtures", "zolana-operator-custody/test-fixtures"]
+
+[dependencies]
+async-trait = { workspace = true }
+bytemuck = { workspace = true }
+clap = { workspace = true }
+custom-ring-interface = { workspace = true }
+hex = { workspace = true }
+jsonrpsee = { workspace = true }
+log = { workspace = true }
+ring-service-core = { workspace = true }
+sea-orm = { workspace = true }
+serde_json = { workspace = true }
+solana-account = { workspace = true }
+solana-address = { workspace = true, features = ["curve25519"] }
+solana-hash = { workspace = true }
+solana-instruction = { workspace = true }
+solana-message = { workspace = true }
+solana-signature = { workspace = true, features = ["verify"] }
+solana-transaction = { workspace = true }
+spr-client = { workspace = true, features = ["solana-rpc"] }
+spr-indexer-api = { workspace = true }
+spr-keypair = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+zeroize = { workspace = true }
+zolana-operator-custody = { workspace = true }
+zolana-ring-client = { workspace = true, features = ["operations", "solana-rpc"] }
+zolana-ring-indexer = { workspace = true }
+zolana-ring-member-registry = { workspace = true }
+zolana-ring-policy = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }
+ring-service-core = { workspace = true, features = ["test-fixtures"] }
+solana-keypair = { workspace = true }
+solana-signer = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+zolana-operator-custody = { workspace = true, features = ["test-fixtures"] }

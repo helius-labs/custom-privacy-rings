@@ -100,14 +100,15 @@ A tracking registry holds one leaf per enrolled owner.
 | Member | `solana_owner_identity(owner)`, for a wallet or a PDA |
 | List tag | `Poseidon(CRPT, list_salt)`. `RegisterKey` proves it, and it is final |
 | Ciphertext hash | `ct_hash = hash_bytes(ciphertext)`, the 64-byte nullifier secret and list salt sealed to the auditor key |
-| Tracking leaf | `Poseidon(CRTK, member, next, nullifier_pk, ct_hash, list_tag)`, 6 inputs |
+| Viewing hash | `viewing_hash = Poseidon(CRVH, pack_be(viewing_u), right_align(seq as u64 BE))`, 4 inputs. `seq` is `0` at the first enrollment and rises by one with each rotation |
+| Tracking leaf | `Poseidon(CRTK, member, next, nullifier_pk, ct_hash, list_tag, viewing_hash)`, 7 inputs |
 | Sentinel | `member = 0`, `next = q - 1`, every other field `0`, at leaf `0` |
 | Tree node | `Poseidon(c_0, c_1, c_2, c_3)`, height 16, the leaf index as 32 bits |
-| Tracking entry | `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag)`, 5 inputs |
+| Tracking entry | `Poseidon(CRTQ, member, nullifier_pk, ct_hash, list_tag, viewing_hash, prior_viewing_hash, proven)`, 8 inputs. A first enrollment has `prior_viewing_hash = 0` and `proven = 1`. A rotation has zero `nullifier_pk`, `ct_hash` and `list_tag`, and `proven = 0` |
 | Entry chain start | `HashChain4([CRTA, hash_bytes(registry address), right_align(revision as u64 BE)])` |
 | Entry chain | `chain(-1) = chain_start`, `chain(p) = Poseidon(chain(p - 1), entry_p)` |
 
-An unwritten leaf is `0`. The sentinel carries a zero `nullifier_pk`, and a query for an absent owner reads a zero key. The program computes every entry from the owner's tracking authorization, never from instruction data. No leaf holds a viewing key. The apply proof inserts each entry once, at the next index. Its member, nullifier key, ciphertext hash and list tag stay fixed. An insertion changes its predecessor's `next` and leaf hash. `test-vectors/registry/tracking-records.json` pins both hashes, the entry chain and the apply statement. A present owner opens by its leaf, and an absent one proves `member < owner < next` for a leaf under the frame's tracking root.
+An unwritten leaf is `0`. The sentinel carries a zero `nullifier_pk`, and a query for an absent owner reads a zero key. The program computes every entry from the write its owner signed. A leaf holds the hash of a viewing key and never the key. The apply proof inserts a proven entry of an absent owner once, at the next index. Its member, nullifier key, ciphertext hash and list tag stay fixed, and a later entry of that owner moves only `viewing_hash`. An insertion changes its predecessor's `next` and leaf hash. `test-vectors/registry/tracking-records.json` pins both hashes, the entry chain and the apply statement. A present owner opens by its leaf, and an absent one proves `member < owner < next` for a leaf under the frame's tracking root.
 
 ## List key
 
@@ -155,6 +156,7 @@ Each amount is a u128 under `right_align`. An output slot reads the largest char
 | `CRRG` | `0x43525247` | register key statement |
 | `CRTK` | `0x4352544b` | tracking leaf |
 | `CRTQ` | `0x43525451` | tracking entry |
+| `CRVH` | `0x43525648` | viewing hash |
 | `CRTA` | `0x43525441` | apply enrollments statement and entry chain start |
 | `CRPT` | `0x43525054` | list tag |
 | `CRPL` | `0x4352504c` | owner lookup key |

@@ -14,9 +14,11 @@ pub use render::render;
 use std::collections::BTreeMap;
 
 use anyhow::{ensure, Context as _, Result};
-use custom_ring_interface::{ListRegistry, RingPolicy};
-use custom_ring_sdk::{CustomRing, PinnedPolicy, PolicyTable, PolicyUpdate, UpdatePolicy};
+use custom_ring_interface::RingPolicy;
 use solana_address::Address;
+use zolana_ring_client::{
+    CustomRing, ListRegistry, PinnedPolicy, PolicySources, PolicyTable, PolicyUpdate, UpdatePolicy,
+};
 use zolana_ring_policy::{MintPolicy, RuleTable};
 
 use crate::{

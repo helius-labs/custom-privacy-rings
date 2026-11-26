@@ -36,7 +36,7 @@ Storage checks owner consent, verifies the tree update, and publishes the new ro
 
 ### Enroll a vault PDA
 
-Enable the `enrollment-cpi` feature of `custom-ring-interface` in the vault program. Pass instruction data that starts with `ENROLL_PDA` to `PdaEnrollment::parse` unchanged.
+Enable the `cpi` feature of `custom-ring-interface` in the vault program. Pass instruction data that starts with `ENROLL_PDA` to `PdaEnrollment::parse` unchanged.
 
 Check that the vault program owns `enrollment.vault()` before reading its manager, ring and tracking registry. Derive the expected vault address from your program's seeds. If the vault restricts enrollment keys, check `enrollment.change()` before signing.
 
@@ -60,7 +60,7 @@ Pass the vault's seeds and bump in the Pinocchio `Signer`. The helper requires t
 Set `Enroll::owner` to the vault PDA.
 
 ```rust
-use custom_ring_sdk::EnrollVault;
+use zolana_ring_client::EnrollVault;
 
 let signature = EnrollVault {
     enrollment,
@@ -79,7 +79,7 @@ The manager signs the transaction after the SDK prepares the proof. Ring RPC add
 
 ## Limits
 
-An enrollment is public, anyone can see a wallet enrolled on a ring. Accounts created here are never closed, which is what prices a flood of first enrollments. The program verifies no policy. A consumer reads a root and authenticates the registry, the rules and the action before it acts.
+An enrollment is public, anyone can see a wallet enrolled on a ring. The program verifies no policy. A consumer reads a root and authenticates the registry, the rules and the action before it acts.
 
 ## Tests
 
@@ -87,7 +87,7 @@ Build and run the lifecycle test from the workspace root.
 
 ```sh
 just build-storage-program
-cargo test --locked -p storage-program --test lifecycle
+cargo test --locked -p custom-ring-test-validator --test storage_lifecycle
 ```
 
 Tests that settle a real proof read [proofs.json](tests/proofs.json), a key rotation regenerates it. The others seed accounts and stop at the proof check, so they show the checks ahead of the pairing and never that a proof settles. To replace the fixtures, install the pinned ring proving keys and run the generator from `prover/`. The proofs bind the registry address, and the test refuses a fixture made for another address.

@@ -1,4 +1,5 @@
 use super::*;
+use zolana_ring_client::PolicySources;
 
 /// The operator cli runs an anonymous ring, a separate fee payer funds the hidden owner's
 /// deposits and payment, and `audit` opens the payment with the auditor key.

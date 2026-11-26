@@ -54,7 +54,7 @@ import {
   ProofInputUtxo,
   Utxo,
 } from "@heliuslabs/spr/transaction";
-import type { RingProofRequest } from "../../src/rpc/prover/ring.js";
+import type { RingProofRequest } from "../../src/protocol/proof/ring-proof-requests.js";
 import { ringAuthAddress, ringPolicyAddress, ringPolicyPda } from "../../src/protocol/pda/index.js";
 import {
   openExitRecord,

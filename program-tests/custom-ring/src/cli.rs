@@ -7,7 +7,6 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use custom_ring_cli::{config::OperatorManifest, ListName, ModeName, SENDER_KEYPAIR_FILE};
-use custom_ring_sdk::CustomRing;
 use solana_address::Address;
 use solana_keypair::Keypair;
 use solana_loader_v3_interface::instruction as loader;
@@ -16,6 +15,7 @@ use solana_signer::Signer;
 use spr_keypair::{ShieldedKeypair, X25519Keypair};
 use spr_test_utils::localnet::isolated_temp_path;
 use zolana_operator_custody::{KeyArn, SecretContext, SecretPurpose};
+use zolana_ring_client::CustomRing;
 use zolana_ring_policy::ListId;
 
 use crate::{
@@ -135,7 +135,7 @@ impl RingProject {
     }
 
     pub fn enrollment_rpc(&self) -> custom_ring_cli::RingRpcClient {
-        custom_ring_cli::RingRpcClient::new(&self.ring_rpc.url)
+        custom_ring_cli::RingRpcClient::new(&self.ring_rpc.url).expect("ring rpc url")
     }
 
     pub fn write_member_fee_payer(&self) -> Result<&'static str> {

@@ -15,6 +15,28 @@ import (
 	"github.com/helius-labs/zolana/prover/server/prover-test/spp/spptest"
 )
 
+// The flags of the audit statement's layout value, mirrored by AuditLayout::value in program-libs/interface/src/proof/disclosure.rs.
+const (
+	LayoutVouched  = 1 << 0
+	LayoutEntry    = 1 << 1
+	LayoutData     = 1 << 2
+	LayoutRingData = 1 << 3
+)
+
+// KindDummy is the kind byte of an unused slot's record.
+const KindDummy = 0
+
+// PublishedRecordLen is the prefix of audit.TransferRecordLen a slot publishes.
+func PublishedRecordLen(exit, data, ringData bool) int {
+	fields := 0
+	for _, published := range []bool{data, exit || ringData} {
+		if published {
+			fields++
+		}
+	}
+	return audit.RingRecordLen + fields*(audit.RecordLen-audit.RingRecordLen)
+}
+
 // Slot is one output with the preimages its record names, the host twin of audit.OutputWires.
 type Slot struct {
 	Utxo     Utxo
@@ -68,7 +90,7 @@ func (s Slot) Record(t testing.TB, data bool) []byte {
 
 // PublishedLen is the record bytes slot i carries under the frame's flags.
 func (a Audit) PublishedLen(i int) int {
-	return audit.PublishedRecordLen(a.Outputs[i].Utxo.isExit(), a.Data, a.RingData)
+	return PublishedRecordLen(a.Outputs[i].Utxo.isExit(), a.Data, a.RingData)
 }
 
 // Input is one spent slot with the preimages its entry evidence names, the host twin of audit.EntryWires.
@@ -153,8 +175,8 @@ func (a Audit) OutputCount() int {
 }
 
 func (a Audit) Layout() int64 {
-	return ringtest.Bit(a.Shape.Entry)*audit.LayoutEntry + ringtest.Bit(a.Vouched())*audit.LayoutVouched +
-		ringtest.Bit(a.Data)*audit.LayoutData + ringtest.Bit(a.RingData)*audit.LayoutRingData
+	return ringtest.Bit(a.Shape.Entry)*LayoutEntry + ringtest.Bit(a.Vouched())*LayoutVouched +
+		ringtest.Bit(a.Data)*LayoutData + ringtest.Bit(a.RingData)*LayoutRingData
 }
 
 // RealInputs is R, the spent notes among the slots.

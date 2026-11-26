@@ -1,6 +1,6 @@
 use jsonrpsee::types::{error::ErrorCode, ErrorObjectOwned};
 use thiserror::Error;
-use zolana_ring_indexer::rpc::RingRpcError;
+use zolana_ring_indexer::{redact::redacted, rpc::RingRpcError};
 
 #[derive(Error, Clone, Debug, PartialEq, Eq)]
 pub enum RingApiError {
@@ -36,7 +36,7 @@ impl From<RingApiError> for ErrorObjectOwned {
                 )
             }
             RingApiError::Internal(reason) => {
-                log::error!("ring lookup failed ({reason})");
+                log::error!("ring lookup failed ({})", redacted(reason));
                 return Self::owned(
                     ErrorCode::InternalError.code(),
                     "internal server error",
@@ -45,5 +45,18 @@ impl From<RingApiError> for ErrorObjectOwned {
             }
         };
         Self::owned(refusal.code(), error.to_string(), None::<()>)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_internal_fault_reaches_the_client_without_its_reason() {
+        let reason = "connect postgres://admin:secret@db.internal:5432/ring?api-key=f00d";
+        let internal = ErrorObjectOwned::from(RingApiError::Internal(reason.to_owned()));
+        assert_eq!(internal.code(), ErrorCode::InternalError.code());
+        assert_eq!(internal.message(), "internal server error");
     }
 }

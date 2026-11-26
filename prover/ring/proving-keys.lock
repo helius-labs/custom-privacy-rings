@@ -1,5 +1,5 @@
 {
-  "release": "https://github.com/helius-labs/zolana-custom-rings/releases/download/ring-production-keys-v20",
+  "release": "https://github.com/helius-labs/zolana-custom-rings/releases/download/ring-production-keys-v21",
   "keys": {
     "custom_ring_apply_enrollments_1.key": {
       "sha256": "3d238da30b162fd46e4725b58af2ded1d25112766a1e25cc8dedd1d634e8193b",
@@ -82,53 +82,53 @@
       "source": "release"
     },
     "custom_ring_transfer_16_in4_w4_s2.key": {
-      "sha256": "1c5cc04c09fa4f278ffcffe6b13423a35ac8e4fa262a6cabf6431b75d54d6837",
-      "size": 667562671,
+      "sha256": "b8f5391883ff56752c7e2e8aa5c244fe401e9918ad98462b6ed5e57d58b1ed32",
+      "size": 646567395,
       "source": "release"
     },
     "custom_ring_transfer_2_in24_w4_s4.key": {
-      "sha256": "fa51a57af14cc2cc52ec97d56f53e4b56def45c51f16a59cfb579fcd491c11e1",
-      "size": 287081604,
+      "sha256": "2e2708398e7126dd92389f64c8cc2ce9346d10a9bf7dd137e24c4d7c5b8e4667",
+      "size": 277044510,
       "source": "release"
     },
     "custom_ring_transfer_4_in24_w4_s4.key": {
-      "sha256": "567c754ad383c979a40debbfc6af6e5b0e09533143b8d8fa1caafe58a8ab0f44",
-      "size": 334007535,
+      "sha256": "c8149302c233f6cd247463a3f8246a964866205db48e317bc477139797ee6f54",
+      "size": 322805953,
       "source": "release"
     },
     "custom_ring_transfer_8_in16_w4_s4.key": {
-      "sha256": "3bb8f6c0adf468cab6e9ac76bb53c70bb67fe025700fd11b79751aad64f7597e",
-      "size": 404952468,
+      "sha256": "54820294f387af77ea20e70d8db20b3689ec4da4b8f6f3fd4b3649f1f29ed2c6",
+      "size": 393180281,
       "source": "release"
     },
     "custom_ring_transfer_entry_4_in8_w4_s8.key": {
-      "sha256": "a37d1336d9092a7eb52eb0273aede86d094c2682b492af04d5c93a550f7d9555",
-      "size": 417341725,
+      "sha256": "2da7cfe9d4039eb420fbee1fb99295c1cb95600da7eaa19dd62279a0a3d53e59",
+      "size": 400547340,
       "source": "release"
     },
     "custom_ring_transfer_entry_8_in2_w4_s2.key": {
-      "sha256": "30d5ea4f4730160a58da4eb320881ad7a0f670c3f6799c33000f16caea4b29de",
-      "size": 434964060,
+      "sha256": "71552317e960042b4b311064237ad251949cca517f1f39ef221711d58f3a92d4",
+      "size": 420207353,
       "source": "release"
     },
     "custom_ring_transfer_entry_8_in5_w4_s4.key": {
-      "sha256": "bc5cdc94cd19c727dc5a6945eae4bf9ebdfebff8cec2e898ca596f4b496215bd",
-      "size": 507200716,
+      "sha256": "7fcc7b6b41c1ac529d8fc0c735995b960d0b460945a0e2d6cb0f11472b4d1b09",
+      "size": 490156332,
       "source": "release"
     },
     "custom_ring_transfer_entry_8_in8_w32_s8.key": {
-      "sha256": "ad02dfba0e8864ee72f545dc9da01685532274667f6a0c54853f6d148df915bb",
-      "size": 699355468,
+      "sha256": "f2107ebcb0d5623cb78d7df2a0a8e173a1b19ab63b20438297c58f8c4f6d2c06",
+      "size": 668116952,
       "source": "release"
     },
     "custom_ring_transfer_wide_2_in40_w4_s9.key": {
-      "sha256": "6a354d4ebeafd4eaef3c804e4fa9595ce661ffe37ef0528b61237eedfedc697b",
-      "size": 361358505,
+      "sha256": "a93fa1f42b628d5a9ff86d0307b6d541d528d5a5e39662c984ed3b2b1bb3cbf9",
+      "size": 345472289,
       "source": "release"
     },
     "custom_ring_transfer_wide_8_in24_w32_s13.key": {
-      "sha256": "b4e0a85ff533cf20aa89d83fa76f93b91c39e44dea078c68067949735db3adc0",
-      "size": 726890089,
+      "sha256": "72790027cf32a8f1de0798f0bfead8d0927316b2bc666c2b25343e922166e069",
+      "size": 691651382,
       "source": "release"
     }
   }

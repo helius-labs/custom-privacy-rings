@@ -247,8 +247,10 @@ function applyRows(
   for (const transaction of audited) {
     // No stream classifies a nullifier, an address or padding one marks no note it never matches.
     for (const { nullifier } of transaction.inputs) found.realInputs.push(nullifier);
-    // An unopened record could hide a source UTXO, a payload error keeps its record.
-    const [unopened] = transaction.payloadErrors.filter((error) => error.kind !== "payload");
+    // An unopened record could hide a source UTXO, Rust `AuditedTransaction::unopened`.
+    const unopened = transaction.payloadErrors.find((error) =>
+      transaction.outputs.every((output) => output.slotIndex !== error.slotIndex),
+    );
     if (unopened !== undefined)
       throw new RingError("RING_AUDIT_OUTPUT_MISMATCH", {
         details: { reason: "unopened", slotIndex: unopened.slotIndex },

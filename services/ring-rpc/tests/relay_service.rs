@@ -4,42 +4,56 @@
 mod attempts;
 #[path = "common/relay.rs"]
 mod relay_fixture;
-#[path = "common/store.rs"]
+#[path = "../../ring-relay/tests/common/store.rs"]
 mod store_fixture;
 #[path = "relay_service/transitions.rs"]
 mod transitions;
 #[path = "common/wide_frame.rs"]
 mod wide_frame;
 
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::{atomic::Ordering, Arc, LazyLock};
 
 use async_trait::async_trait;
 use jsonrpsee::RpcModule;
+use ring_relay::relay::{Relay, RelayError, RelayParts, ServedRings, ABANDONED_AFTER_SLOTS};
+use ring_relay::relay_reservations::RelayBudget;
+use ring_relay::RingRelayError;
+use ring_service_core::database::{Store, STORE_CONNECTIONS};
+use ring_service_core::landing::ChainOutcome;
+use ring_service_core::migration::Migrator;
+use ring_service_core::upstream::{
+    MergeAuditRequest, RecordsTip, RingConfiguration, RingFrame, RingHistoryPage, TransactionPage,
+    TransactionSource,
+};
+use ring_service_core::ServiceError;
 use sea_orm::{ConnectionTrait, Statement};
 use solana_address::Address;
 use solana_keypair::Keypair;
 use solana_signature::Signature;
 use solana_signer::Signer;
 use solana_transaction::versioned::VersionedTransaction;
+use spr_client::{ClientError, GetShieldedTransactionsByTagsResponse};
 use spr_instruction::instruction::{
     CreateAssociatedTokenAccount, TransactInterfaceTransferAccounts, TransactSolTransferAccounts,
     TransactSplWithdrawalAccounts,
 };
 use spr_interface::SPL_TOKEN_PROGRAM_ID;
-use spr_keypair::NullifierKey;
+use spr_keypair::{NullifierKey, X25519Keypair, X25519Pubkey};
 use spr_transaction::{
     instructions::transact::SettlementTransfer, utxo::SppProofInputUtxo, WalletUtxo,
 };
-use zolana_ring_client::rpc::{
-    GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, ProofInputBytes, RelayIntent,
-    RelayMergeInputs, RelayOperation, RelayProofInputs, RelayQuote, RelayRail,
-    RelayRequestAttestation, RelayStatus, RelayStep, ServiceTarget, SubmitRelayRequest,
-    TokenAccountSetup, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
+use zolana_ring_client::{
+    rpc::{
+        GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, ProofInputBytes,
+        RelayIntent, RelayMergeInputs, RelayOperation, RelayProofInputs, RelayQuote, RelayRail,
+        RelayRequestAttestation, RelayStatus, RelayStep, RingChainStatus, ServiceTarget,
+        SubmitRelayRequest, TokenAccountSetup, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY,
+        SUBMIT_RELAY,
+    },
+    AuditError, RingIndexerError, RingOrigin,
 };
-use zolana_ring_rpc::{
-    relay_module, Migrator, Relay, RelayBudget, RelayError, RelayParts, RingRpcError, ServedRings,
-    Store, ABANDONED_AFTER_SLOTS, STORE_CONNECTIONS,
-};
+use zolana_ring_rpc::{rpc_module, Hub, ServiceIdentity};
+use zolana_ring_transaction::RingAssets;
 
 use wide_frame::wide_frame;
 
@@ -50,23 +64,143 @@ use relay_fixture::{
 
 const RING: Address = Address::new_from_array([6; 32]);
 /// The relay under test runs as this service.
-const SERVICE: ServiceTarget = ServiceTarget {
+static SERVICE: LazyLock<ServiceTarget> = LazyLock::new(|| ServiceTarget {
     cluster: [61; 32],
-    service: Address::new_from_array([62; 32]),
-};
+    service: service_key().pubkey(),
+});
+
+fn service_key() -> Keypair {
+    Keypair::new_from_array([62; 32])
+}
+
+/// Serves `RING` alone, a relay reads only its configuration.
+struct RingSource {
+    auditor: X25519Pubkey,
+}
+
+fn unused<T>() -> Result<T, ClientError> {
+    Err(ClientError::Rpc("unused source".to_owned()))
+}
+
+impl TransactionSource for RingSource {
+    async fn is_mint_delegate(
+        &self,
+        _mint: Address,
+        _signer: Address,
+    ) -> Result<bool, ClientError> {
+        Ok(false)
+    }
+
+    async fn transactions_by_tag(
+        &self,
+        _request: TransactionPage,
+    ) -> Result<GetShieldedTransactionsByTagsResponse, ClientError> {
+        unused()
+    }
+
+    async fn ring_frame(
+        &self,
+        _frame: RingFrame,
+    ) -> Result<Vec<spr_transaction::ShieldedTransaction>, ClientError> {
+        unused()
+    }
+
+    async fn ring_history(
+        &self,
+        _request: RingHistoryPage,
+    ) -> Result<GetShieldedTransactionsByTagsResponse, ClientError> {
+        unused()
+    }
+
+    async fn merge_audit_page(
+        &self,
+        _request: MergeAuditRequest<'_>,
+    ) -> Result<zolana_ring_client::MergeAuditPage, AuditError> {
+        Err(AuditError::InvalidMemberRegistry)
+    }
+
+    async fn transaction_origin(
+        &self,
+        signature: Signature,
+        _event_index: u16,
+        _ring: Address,
+    ) -> Result<RingOrigin, AuditError> {
+        Err(AuditError::Unavailable {
+            signature,
+            message: "unused source".to_owned(),
+        })
+    }
+
+    async fn ring_config(&self, ring: Address) -> Result<Option<RingConfiguration>, ClientError> {
+        Ok((ring == RING).then(|| RingConfiguration {
+            auditor_pubkey: self.auditor,
+            mode: custom_ring_interface::RingMode::Confidential,
+            policy: custom_ring_interface::RingPolicy {
+                delegate: ring_delegate().pubkey(),
+                ..bytemuck::Zeroable::zeroed()
+            },
+        }))
+    }
+
+    async fn ring_chain_status(&self, _ring: Address) -> Result<RingChainStatus, ClientError> {
+        Ok(RingChainStatus::default())
+    }
+
+    async fn slot(&self) -> Result<u64, ClientError> {
+        unused()
+    }
+
+    async fn records_root(&self, _ring: Address) -> Result<RecordsTip, ClientError> {
+        Ok(RecordsTip::NoPolicy)
+    }
+
+    async fn storage_member_openings(
+        &self,
+        _request: zolana_ring_indexer::rpc::GetStorageMemberOpeningsRequest,
+    ) -> Result<zolana_ring_indexer::rpc::GetStorageMemberOpeningsResponse, RingIndexerError> {
+        Ok(unused()?)
+    }
+
+    async fn storage_member_records(
+        &self,
+        _request: zolana_ring_indexer::rpc::GetStorageMemberRecordsRequest,
+    ) -> Result<zolana_ring_indexer::rpc::GetStorageMemberRecordsResponse, RingIndexerError> {
+        Ok(unused()?)
+    }
+
+    async fn upgrade_authority(&self, _program: Address) -> Result<Option<Address>, ClientError> {
+        Ok(None)
+    }
+
+    async fn health(&self) -> Result<(), ClientError> {
+        Ok(())
+    }
+
+    async fn genesis_hash(&self) -> Result<[u8; 32], ClientError> {
+        Ok(SERVICE.cluster)
+    }
+
+    async fn tree_id(&self, _tree: Address) -> Result<u16, zolana_ring_client::RingError> {
+        Ok(1)
+    }
+
+    async fn ring_assets(&self) -> Result<RingAssets, ClientError> {
+        Ok(RingAssets::new([]).expect("assets"))
+    }
+}
 
 struct OneRing(Address);
 
 #[async_trait]
 impl ServedRings for OneRing {
-    async fn check(&self, ring: Address) -> Result<(), RingRpcError> {
+    async fn check(&self, ring: Address) -> Result<(), RingRelayError> {
         match ring == self.0 {
             true => Ok(()),
             false => Err(RelayError::RingNotServed.into()),
         }
     }
 
-    async fn delegate(&self, _ring: Address) -> Result<Option<Address>, RingRpcError> {
+    async fn delegate(&self, _ring: Address) -> Result<Option<Address>, RingRelayError> {
         Ok(Some(ring_delegate().pubkey()))
     }
 }
@@ -77,7 +211,7 @@ fn ring_delegate() -> Keypair {
 
 struct Fixture {
     relay: Arc<Relay>,
-    module: RpcModule<Arc<Relay>>,
+    module: RpcModule<Arc<Hub<RingSource>>>,
     prover: Arc<RecordingProver>,
     chain: Arc<RecordingChain>,
     fee_payer: Address,
@@ -86,7 +220,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        Self::with_budget(0).await
+        Self::with_budget(FRAME_BUDGET).await
     }
 
     async fn with_budget(budget: u64) -> Self {
@@ -103,21 +237,29 @@ impl Fixture {
         let fee_payer = Keypair::new_from_array([31; 32]);
         let fee_payer_address = fee_payer.pubkey();
         let store = store_fixture::test_store().await;
-        let relay = Relay::new(
-            RelayParts {
+        let auditor = X25519Keypair::new();
+        let source = RingSource {
+            auditor: auditor.pubkey(),
+        };
+        let identity = ServiceIdentity {
+            genesis_hash: SERVICE.cluster,
+            service: Arc::new(service_key()),
+        };
+        let hub = Hub::builder(source, identity)
+            .with_store(store.clone())
+            .with_relay(RelayParts {
                 store: store.clone(),
                 prover: prover.clone(),
                 fee_payer: Arc::new(fee_payer),
                 chain: chain.clone(),
-            },
-            SERVICE,
-        )
-        .with_rings(Arc::new(OneRing(RING)))
-        .with_budget(budget);
-        let relay = Arc::new(relay);
+            })
+            .with_relay_budget(budget)
+            .local(RING, auditor)
+            .expect("hub");
+        let hub = Arc::new(hub);
         Self {
-            relay: relay.clone(),
-            module: relay_module(relay).expect("module"),
+            relay: hub.relay().expect("relay").clone(),
+            module: rpc_module(hub).expect("module"),
             prover,
             chain,
             fee_payer: fee_payer_address,
@@ -353,15 +495,15 @@ async fn an_unsigned_deposit_reaches_no_prover_and_stores_nothing() {
     };
     let other_service = ServiceTarget {
         service: Address::new_from_array([63; 32]),
-        ..SERVICE
+        ..*SERVICE
     };
     let other_cluster = ServiceTarget {
         cluster: [64; 32],
-        ..SERVICE
+        ..*SERVICE
     };
 
     for request in [
-        signed(&Keypair::new_from_array([43; 32]), &text(SERVICE)),
+        signed(&Keypair::new_from_array([43; 32]), &text(*SERVICE)),
         signed(&depositor, &proof_inputs.deposit_request_digest()),
         signed(&depositor, &text(other_service)),
         signed(&depositor, &text(other_cluster)),
@@ -586,6 +728,102 @@ async fn a_funded_relay_holds_its_reservation_until_it_settles() {
     assert!(next.is_ok(), "the share returned, got {next:?}");
 }
 
+/// The fee payer pays a fee for every message, a relay with nothing else to fund still spends.
+#[tokio::test]
+async fn a_relay_with_no_setup_and_no_tree_fee_sends_nothing_at_a_zero_budget() {
+    for budget in [
+        RelayBudget::default(),
+        RelayBudget {
+            total_lamports: u64::MAX >> 1,
+            signer_lamports: 0,
+        },
+        RelayBudget {
+            total_lamports: 0,
+            signer_lamports: u64::MAX >> 1,
+        },
+    ] {
+        let fixture = Fixture::with_budgets(budget).await;
+        *fixture.prover.tree_fees.lock().expect("tree fees") = Some(0);
+        let quote = fixture.quote(RelayOperation::Confidential).await;
+        let request = signed_request(quote, &proof_inputs(RING, RelayRail::Confidential));
+        for _ in 0..2 {
+            let refused = fixture.prepare(&request).await;
+            assert!(
+                refused_with(&refused, RelayError::BudgetUnset),
+                "{refused:?}"
+            );
+        }
+        assert!(fixture.sent().is_empty());
+        assert_eq!(fixture.row_count().await, 0);
+        assert_eq!(fixture.committed().await, 0);
+    }
+}
+
+/// One lamport short of the fee refuses, the fee alone is what a relay with nothing else holds.
+#[tokio::test]
+async fn a_relay_holds_its_base_and_priority_fee_and_keeps_them_once_landed() {
+    const PRIORITY_FEE: u64 = 7_000;
+    let fee = 5_000 + PRIORITY_FEE;
+    for (budget, fits) in [(fee - 1, false), (fee, true)] {
+        let fixture = Fixture::with_budget(budget).await;
+        *fixture.prover.tree_fees.lock().expect("tree fees") = Some(0);
+        *fixture.prover.priority_fee.lock().expect("priority fee") = Some(PRIORITY_FEE);
+        let quote = fixture.quote(RelayOperation::Confidential).await;
+        let request = signed_request(quote, &proof_inputs(RING, RelayRail::Confidential));
+        fixture.pending(true);
+        let prepared = fixture.prepare(&request).await;
+        if !fits {
+            assert!(refused_with(&prepared, RelayError::Budget), "{prepared:?}");
+            assert!(fixture.sent().is_empty());
+            assert_eq!(fixture.committed().await, 0);
+            continue;
+        }
+        let step = prepared.expect("relayed");
+        assert_eq!(fixture.outstanding().await, fee as i64);
+        fixture.pending(false);
+        let status = fixture.status(step).await;
+        assert!(
+            matches!(status, RelayStatus::Confirmed { .. }),
+            "{status:?}"
+        );
+        assert_eq!(fixture.outstanding().await, 0);
+        assert_eq!(fixture.committed().await, fee as i64);
+    }
+}
+
+/// An expired message cost nothing, a reverted one cost its fee and never its rent or tree fees.
+#[tokio::test]
+async fn a_failed_relay_returns_what_the_chain_did_not_take() {
+    for (reverted, kept) in [(false, 0), (true, 5_000)] {
+        let fixture = Fixture::with_budget(FUNDED_LAMPORTS).await;
+        let quote = fixture.quote(RelayOperation::Confidential).await;
+        fixture.pending(true);
+        let step = fixture
+            .prepare(&funded_transfer(&fixture, quote, 15))
+            .await
+            .expect("relayed");
+        assert_eq!(fixture.outstanding().await, FUNDED_LAMPORTS as i64);
+        assert_eq!(fixture.committed().await, FUNDED_LAMPORTS as i64);
+
+        match reverted {
+            true => {
+                *fixture.chain.outcome.lock().expect("outcome") =
+                    Some(Some(ChainOutcome::Failed {
+                        reason: "custom program error".to_owned(),
+                    }));
+            }
+            false => fixture
+                .chain
+                .height
+                .store(LAST_VALID_BLOCK_HEIGHT + 1, Ordering::Relaxed),
+        }
+        let status = fixture.status(step).await;
+        assert!(matches!(status, RelayStatus::Failed { .. }), "{status:?}");
+        assert_eq!(fixture.row_count().await, 0);
+        assert_eq!(fixture.committed().await, kept);
+    }
+}
+
 /// A retried request names the same relay and is charged once.
 #[tokio::test]
 async fn a_retried_funded_relay_is_charged_once() {
@@ -631,7 +869,7 @@ async fn a_merge_relays_with_one_wallet_call() {
         RelayRequestAttestation::merge(service.ring(RING), owner_wallet().pubkey(), &proof_inputs)
             .message()
     };
-    let owner_signature = owner_wallet().sign_message(&text(SERVICE)).into();
+    let owner_signature = owner_wallet().sign_message(&text(*SERVICE)).into();
     let signed_by = |owner_signature| PrepareRelayRequest {
         ring: RING.into(),
         quote: quote.clone(),
@@ -643,11 +881,11 @@ async fn a_merge_relays_with_one_wallet_call() {
     };
     let other_service = ServiceTarget {
         service: Address::new_from_array([63; 32]),
-        ..SERVICE
+        ..*SERVICE
     };
 
     for refused in [
-        Keypair::new_from_array([43; 32]).sign_message(&text(SERVICE)),
+        Keypair::new_from_array([43; 32]).sign_message(&text(*SERVICE)),
         owner_wallet().sign_message(&proof_inputs.merge_request_digest()),
         owner_wallet().sign_message(&text(other_service)),
     ] {
@@ -768,7 +1006,7 @@ async fn a_delegate_frame_relays_under_the_delegates_signature() {
 
     assert!(matches!(step, RelayStep::SignMessage { .. }), "{step:?}");
     assert!(fixture.sent().is_empty());
-    assert_eq!(fixture.outstanding().await, 0);
+    assert_eq!(fixture.outstanding().await, TREE_FEES as i64 + 10_000);
     let connection = fixture.store.connection();
     let signer: Vec<u8> = connection
         .query_one(Statement::from_string(
@@ -805,11 +1043,16 @@ async fn an_unsigned_or_foreign_delegate_request_consumes_nothing() {
     assert_eq!(fixture.committed().await, 0);
 }
 
-/// The relay's fee payer funds the create, only a missing account costs rent and holds the tree fees.
+/// Tree fees charge the budget even when the token account exists.
 #[tokio::test]
 async fn token_account_setup_reserves_the_rent_of_a_missing_account() {
     let (mint, token_owner) = (TOKEN_MINT, TOKEN_OWNER);
-    for (budget, exists) in [(0, false), (0, true), (FRAME_BUDGET, false)] {
+    for (budget, exists) in [
+        (0, false),
+        (0, true),
+        (FRAME_BUDGET, true),
+        (FRAME_BUDGET, false),
+    ] {
         let fixture = Fixture::with_budget(budget).await;
         let token_program = Address::new_from_array(SPL_TOKEN_PROGRAM_ID);
         let token_account = CreateAssociatedTokenAccount {
@@ -863,7 +1106,7 @@ async fn token_account_setup_reserves_the_rent_of_a_missing_account() {
 
         let prepared = fixture.prepare(&request).await;
 
-        if budget == 0 && !exists {
+        if budget == 0 {
             assert!(
                 refused_with(&prepared, RelayError::BudgetUnset),
                 "{prepared:?}"
@@ -885,7 +1128,7 @@ async fn token_account_setup_reserves_the_rent_of_a_missing_account() {
         );
         let fee = i64::from(fixture.sent()[0].message.header().num_required_signatures) * 5_000;
         let kept = if exists {
-            0
+            TREE_FEES as i64 + fee
         } else {
             RENT_LAMPORTS as i64 + TREE_FEES as i64 + fee
         };

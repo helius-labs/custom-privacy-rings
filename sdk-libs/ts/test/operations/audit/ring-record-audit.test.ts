@@ -267,7 +267,7 @@ describe("the transfer reader", () => {
       records: new Map([[0, hex(entry.records[1] as string)]]),
     });
     // The ring proof binds the record to its commitment, a mismatch lands on the payload.
-    expect(row.payloadErrors).toEqual([{ slotIndex: 0, kind: "payload" }]);
+    expect(row.payloadErrors).toEqual([{ slotIndex: 0, kind: "commitment" }]);
     const [kept] = row.outputs;
     expect(kept?.slotIndex).toBe(0);
     if (kept?.opening.kind !== "ring" && kept?.opening.kind !== "exit") throw new Error("a record");
@@ -652,6 +652,7 @@ describe("the origin", () => {
           },
         ],
       },
+      version: 1,
     });
     const indexed: IndexedShieldedTransaction = {
       slot: 7n,
