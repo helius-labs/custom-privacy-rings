@@ -22,7 +22,7 @@ import type {
   EntryOpeningProofInput,
   OutputOpeningProofInput,
   RingSlotOpening,
-} from "../rpc/prover/ring.js";
+} from "../protocol/proof/ring-proof-requests.js";
 import {
   EMPTY_ENTRY_RECORD,
   InputClass,

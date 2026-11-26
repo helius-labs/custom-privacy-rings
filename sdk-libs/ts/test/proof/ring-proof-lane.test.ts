@@ -48,7 +48,7 @@ import { RingError } from "../../src/protocol/error.js";
 import { RING_KEYS, ringProvingKey } from "../../src/protocol/proof/proving-keys.js";
 import { fittedSpend, ownerSignerCapacity } from "../../src/protocol/proof/transfer-shapes.js";
 import { ApprovalMask } from "../../src/protocol/transaction/transact.js";
-import { RING_SOURCE_SLOTS } from "../../src/rpc/prover/types.js";
+import { RING_SOURCE_SLOTS } from "../../src/protocol/codec/ring-codecs.js";
 import { canopyLevels, QUAD_ARITY } from "../../src/protocol/membership/member-registry.js";
 import { TRACKING_QUAD_HEIGHT, viewingKeyHash } from "../../src/protocol/membership/tracking.js";
 import { unopenedRecordPool } from "../../src/protocol/membership/member-opening.js";
@@ -61,7 +61,7 @@ import {
   ringProofRequestBody,
   type TransferProofRequest,
   type MergeProofRequest,
-} from "../../src/rpc/prover/ring.js";
+} from "../../src/protocol/proof/ring-proof-requests.js";
 
 await initializePoseidon();
 

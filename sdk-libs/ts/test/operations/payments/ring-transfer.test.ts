@@ -89,7 +89,7 @@ import {
 import { BLOCKHASH, kitReads } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 
 import type { FixtureRecord } from "../../helpers/member-registry.js";
-import { ringProofCircuit } from "../../../src/rpc/prover/ring.js";
+import { ringProofCircuit } from "../../../src/protocol/proof/ring-proof-requests.js";
 import { ringCircuitType } from "../../../src/protocol/proof/proving-keys.js";
 import {
   bindingSigners,

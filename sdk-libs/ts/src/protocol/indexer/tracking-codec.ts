@@ -17,7 +17,7 @@ import {
   type TrackingOpening,
   type TrackingRecord,
 } from "../membership/tracking.js";
-import { MAX_RING_MEMBER_BATCH } from "./indexer-limits.js";
+import { MAX_RING_MEMBER_BATCH } from "./indexer-codec.js";
 import { schemaWire } from "../wire-primitives.js";
 
 const { array, context, object, wireInteger } = indexerCodec;

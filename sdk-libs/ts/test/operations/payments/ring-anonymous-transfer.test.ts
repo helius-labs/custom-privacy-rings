@@ -73,7 +73,7 @@ import {
   ringIntentHash,
   type RingApprovalRequest,
 } from "../../../src/protocol/transaction/intent.js";
-import { ringProofCircuit } from "../../../src/rpc/prover/ring.js";
+import { ringProofCircuit } from "../../../src/protocol/proof/ring-proof-requests.js";
 import { ringCoSignerAddress, ringPolicyAddress } from "../../../src/protocol/pda/index.js";
 import { ringCircuitType } from "../../../src/protocol/proof/proving-keys.js";
 import { RingAddress, RingPaymentRequest } from "../../../src/crypto/keys/ring-address.js";

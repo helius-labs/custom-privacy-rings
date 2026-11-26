@@ -108,8 +108,8 @@ export {
   AUTHORITY_WRITABLE_LISTS,
   MEMBER_WRITABLE_LISTS,
   listWrite,
-} from "../operations/management/record-writes.js";
-export type { ListWrite } from "../operations/management/record-writes.js";
+} from "../protocol/membership/record-writes.js";
+export type { ListWrite } from "../protocol/membership/record-writes.js";
 export {
   AuthorityRecordUpdate,
   WalletRecordUpdate,
@@ -191,7 +191,7 @@ export type {
   SentCheck,
   SentPayment,
 } from "../state/anonymous-sync.js";
-export type { PlannedPayment } from "../operations/payments/output-rail.js";
+export type { PlannedPayment } from "../protocol/transaction/anonymous-plan.js";
 export { ringNoteCodec, syncRingWallet } from "../state/ring-sync.js";
 export type { RingNoteCodecInput, RingSyncClient, RingSyncInput } from "../state/ring-sync.js";
 export { LocalRingKeys, isRingKeys, ringWalletKeys } from "../state/ring-keys.js";
@@ -615,8 +615,8 @@ export {
   readerKeyMember,
   readerKeyRecordKey,
   readerKeyToString,
-} from "../operations/management/reader-access.js";
-export type { ReaderKey } from "../operations/management/reader-access.js";
+} from "../protocol/membership/reader-access.js";
+export type { ReaderKey } from "../protocol/membership/reader-access.js";
 export { createPasskey, passkeyReader, type Passkey } from "../crypto/keys/passkey.js";
 export {
   OWNER_GRANT_TAG,
@@ -700,7 +700,7 @@ export {
   type SetupEffect,
   type SpentInput,
 } from "../operations/workflow/address-ceiling.js";
-export type { RingListSalt } from "../proof/policy-proof.js";
+export type { RingListSalt } from "../protocol/membership/policy.js";
 export type { RingPublicSpend } from "../operations/payments/transfer.js";
 export type { RingMergeSealer } from "../crypto/audit/merge-disclosure.js";
 export {
@@ -732,8 +732,8 @@ export {
   checkCoOwnerKeys,
   ringSpendAuthority,
   ringSpendTransfer,
-  type CoOwner,
 } from "../operations/payments/ring-spend.js";
+export { type CoOwner } from "../protocol/ring-rpc/relay-proof-inputs.js";
 export { noteNullifierPublicKey, ringProofInput } from "../operations/workflow/selection.js";
 export { RECOVERY_DIAGNOSTIC_SAMPLES } from "../state/recovery-session.js";
 export type { RecoveryCoverage, RecoveryWallet } from "../state/recovery-session.js";

@@ -45,7 +45,7 @@ import {
   readerKeyFromBytes,
   readerKeyToString,
   type ReaderKey,
-} from "../../../src/operations/management/reader-access.js";
+} from "../../../src/protocol/membership/reader-access.js";
 import {
   RING_AUDITED_UTXOS_LIMIT,
   RING_PAYLOAD_ERROR_KINDS,

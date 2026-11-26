@@ -5,7 +5,11 @@ import type { Proof, ProvingKeyReport } from "@heliuslabs/spr/client";
 
 import { RingError } from "../../protocol/error.js";
 import { RING_PROVING_KEY_SHA256S } from "../../protocol/proof/proving-keys.js";
-import { ringProofRequestBody, ringRequestKey, type RingProofRequest } from "./ring.js";
+import {
+  ringProofRequestBody,
+  ringRequestKey,
+  type RingProofRequest,
+} from "../../protocol/proof/ring-proof-requests.js";
 
 export class CustomRingProver {
   readonly #prover: ProverClient;

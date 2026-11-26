@@ -67,7 +67,7 @@ import { PreparedRelay } from "../../rpc/relay.js";
 import type { RingMergeClient, TrackingReader } from "../../rpc/ports.js";
 import { relayRequestAttestation, type RingServiceTarget } from "../../rpc/ring-rpc.js";
 import { ringAuthAddress, ringPolicyAddress } from "../../protocol/pda/index.js";
-import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/codec/ring-codecs.js";
 import {
   MERGE_ENVELOPE_LEN,
   MERGE_RECORD_LEN,

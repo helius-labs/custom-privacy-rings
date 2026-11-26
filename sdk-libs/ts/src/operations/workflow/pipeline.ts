@@ -51,7 +51,7 @@ import {
 } from "../../rpc/relay-message.js";
 import { SppProofInputs, createExternalData } from "@heliuslabs/spr/transaction";
 import type { ProofInputUtxo, ProofOutputUtxo } from "@heliuslabs/spr/transaction";
-import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/codec/ring-codecs.js";
 import {
   ringApprovedCoSignerMetas,
   ringAuthAddress,
@@ -94,8 +94,8 @@ import {
   type BoundRoot,
   type PolicyInputs,
   type PolicyReadClient,
-  type RingListSalt,
 } from "../../proof/policy-proof.js";
+import { type RingListSalt } from "../../protocol/membership/policy.js";
 import {
   cacheAccessOf,
   checkOwnerSignerBound,

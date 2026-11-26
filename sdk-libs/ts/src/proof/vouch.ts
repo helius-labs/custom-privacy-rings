@@ -6,7 +6,7 @@ import { SigningKey, type ShieldedPublicKey } from "@heliuslabs/spr/keypair";
 
 import { RingDomain, domainHash } from "../crypto/derivation/ring-domain.js";
 import { RingError } from "../protocol/error.js";
-import type { VoucherProofInput } from "../rpc/prover/ring.js";
+import type { VoucherProofInput } from "../protocol/proof/ring-proof-requests.js";
 
 /** A wallet on the ring's allow list, Rust `VouchSigner`. */
 export interface VouchSigner {

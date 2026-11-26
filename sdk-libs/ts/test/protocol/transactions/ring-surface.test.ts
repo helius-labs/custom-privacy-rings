@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { compressProof, parseProof } from "@heliuslabs/spr/client";
 import { customRingProof } from "../../../src/rpc/prover/proof.js";
-import { CUSTOM_RING_PROOF_LENGTH } from "../../../src/protocol/proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../../../src/protocol/codec/ring-codecs.js";
 import {
   RING_PROVING_KEY_SHA256S,
   ringProvingKey,

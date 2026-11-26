@@ -54,7 +54,7 @@ import {
 } from "../../../src/protocol/membership/tracking.js";
 import { ownerGrantPda, STORAGE_PROGRAM_ID } from "../../../src/protocol/pda/index.js";
 import { registerKeyStatementHash } from "../../../src/protocol/proof/statement.js";
-import type { RegisterKeyProofRequest } from "../../../src/rpc/prover/ring.js";
+import type { RegisterKeyProofRequest } from "../../../src/protocol/proof/ring-proof-requests.js";
 import { poseidon } from "@heliuslabs/spr/internal";
 import type { FixtureTrackingEntry } from "../../helpers/member-registry.js";
 import { ringTrackingClient, trackingClient } from "../../helpers/tracking-client.js";

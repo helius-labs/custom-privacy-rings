@@ -32,7 +32,7 @@ import {
   createProofOutput,
 } from "@heliuslabs/spr/transaction";
 
-import { AnonymousPlan } from "../../../src/operations/payments/output-rail.js";
+import { AnonymousPlan } from "../../../src/protocol/transaction/anonymous-plan.js";
 import {
   decodeRelayProofInputs,
   depositRequestDigest,

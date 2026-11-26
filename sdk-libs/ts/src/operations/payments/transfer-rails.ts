@@ -1,36 +1,23 @@
 /** The rails of a ring transfer, Rust `RingTransfer<Owner>`, `<Anonymous>`, `<PublicOwners>` and `<Delegated>`. */
-import { getBase64Decoder } from "@solana/kit";
 
 import {
   equalBytes,
   isZero,
-  ownerSignerAddresses,
   prepareRingAuthorityTransfer,
   addressBytes,
 } from "@heliuslabs/spr/internal";
 import type { AnonymousRingTransactProver } from "../../rpc/ports.js";
-import type {
-  PreparedOwnerSignature,
-  ProofAuthority,
-  Prover,
-  WalletKeys,
-} from "@heliuslabs/spr/client";
+import type { ProofAuthority, Prover, WalletKeys } from "@heliuslabs/spr/client";
 import { type Shape, InstructionTag } from "@heliuslabs/spr/interface";
 import type {
   Address,
-  Bytes16,
   Bytes32,
   RequestContext,
   TransactWithdrawal,
 } from "@heliuslabs/spr/interface";
-import { associatedTokenAddress, signerAddress } from "@heliuslabs/spr/internal";
 import type { NullifierKey, ShieldedAddress } from "@heliuslabs/spr/keypair";
-import type {
-  ExpectedSealed,
-  RelayTransferTerms,
-  TokenAccountCreate,
-} from "../../rpc/relay-message.js";
-import { randomBlinding, randomSalt, ShieldedPublicKey, ViewingKey } from "@heliuslabs/spr/keypair";
+import type { ExpectedSealed } from "../../rpc/relay-message.js";
+import { randomSalt, ViewingKey } from "@heliuslabs/spr/keypair";
 import type {
   AssetRegistry,
   ProofInputUtxo,
@@ -46,81 +33,58 @@ import {
   type PreparedTransfer,
   type WithdrawalTarget,
 } from "@heliuslabs/spr/transaction";
-import {
-  encodeRelayProofInputs,
-  relayLegs,
-  type RelayLeg,
-  type RelayLegAccounts,
-} from "../../protocol/ring-rpc/relay-proof-inputs.js";
-import type {
-  RelayIntent,
-  RelayQuote,
-  TokenAccountSetup,
-} from "../../protocol/ring-rpc/ring-rpc-types.js";
+import { type RelayLeg } from "../../protocol/ring-rpc/relay-proof-inputs.js";
+import type { RelayQuote, TokenAccountSetup } from "../../protocol/ring-rpc/ring-rpc-types.js";
 import { UnsignedRelay } from "../../rpc/relay.js";
 
 import {
-  anonymousExitTokenOwner,
-  checkAnonymousSigner,
-  checkHiddenParties,
-  checkHiddenOwnerSpends,
-  checkEntryInputs,
   type AnonymousPayment,
   type OwnerExposure,
   type AnonymousSpendSigner,
 } from "./anonymous.js";
 import type { VouchSigner } from "../../proof/vouch.js";
-import type { RingPolicy } from "../../protocol/codec/ring-codecs.js";
-import { fetchRingPolicy, requireActiveRing } from "../../protocol/membership/config.js";
 import { RingInstructionTag } from "../../protocol/transaction/instruction-tag.js";
 import {
   isAnonymousFrame,
   ringRail,
   type FrameExtensions,
 } from "../../protocol/transaction/transact.js";
-import { RingError, RingProgramError } from "../../protocol/error.js";
-import {
-  chargedOutflowsOf,
-  relayListSalts,
-  saltsByOwner,
-  type RingListSalt,
-} from "../../proof/policy-proof.js";
-import { transferApprovalOf } from "../../proof/transfer-proof.js";
-import { isDefaultRingNote } from "../../proof/audit-proof.js";
+import { RingError } from "../../protocol/error.js";
+import { saltsByOwner } from "../../proof/policy-proof.js";
+import { type RingListSalt } from "../../protocol/membership/policy.js";
 import { anonymousPartyIdentities } from "../../protocol/membership/parties.js";
 import {
-  proveStagedTransfer,
-  sealRelayedTransfer,
-  sealedTransferTerms,
-  stagedLegs,
-  type SealedTransfer,
-  type AnonymousSpendValues,
-  type CoSignerForm,
   type ProvenRingTransfer,
-  type RailSpend,
   type RingProvingClient,
   type RingTransactionFrame,
-  type StagedTransfer,
-  type StagedTransferInput,
   type TransactDeposit,
 } from "../workflow/pipeline.js";
-import {
-  checkProgramCommitment,
-  ProgramPlan,
-  type ProgramCommitment,
-} from "../workflow/program-commitment.js";
+import { ProgramPlan, type ProgramCommitment } from "../workflow/program-commitment.js";
 import type { SealRow } from "../workflow/transfer-plan.js";
-import { isSmallOrder } from "../../crypto/keys/x25519.js";
-import { AnonymousPlan, declarePayment, RingOutputRail } from "./output-rail.js";
+import { declarePayment } from "./output-rail.js";
+import { AnonymousPlan } from "../../protocol/transaction/anonymous-plan.js";
+import { current, openLine, step } from "./transfer-line.js";
 import {
-  checkCoOwnerKeys,
-  checkZeroKeyInputs,
-  ringSpendAuthority,
-  standIn,
-  type CoOwner,
-} from "./ring-spend.js";
-
-const base64 = getBase64Decoder();
+  activeConfig,
+  approvedStage,
+  checkWithdrawalAccounts,
+  inProofSpend,
+  programPlan,
+  proveRail,
+  proveSealed,
+  relayDeposit,
+  relaySpend,
+  sealOutputs,
+  signedSpend,
+  stageTransfer,
+  type AnonymousRail,
+  type ConfidentialRail,
+  type Owned,
+  type PublicOwnersRail,
+  type RailTransfer,
+} from "./rail-staging.js";
+import { checkCoOwnerKeys, ringSpendAuthority, standIn } from "./ring-spend.js";
+import { type CoOwner } from "../../protocol/ring-rpc/relay-proof-inputs.js";
 
 /** Notes SPP reads from a cache account instead of proving their inclusion, Rust `ReadCache`. */
 export interface ReadCache {
@@ -180,35 +144,26 @@ export interface CustomRingTransferInput {
   readonly program?: ProgramCommitment;
 }
 
-/** `bound` once a ring step wrote into the transfer, its line alone then holds what the outputs carry. */
-type Steps = { taken: number; bound: boolean };
-
-/** One line of builder values per `ConfidentialTransfer`, a value behind `steps.taken` is superseded. */
-type Owned = CustomRingTransferInput & Readonly<{ steps: Steps; step: number }>;
-
-const lines = new WeakMap<ConfidentialTransfer, Steps>();
-
-/** Rust consumes a builder on each step, here a value another step has passed is refused. */
-function live<T extends Owned>(owner: T): T {
-  if (owner.step !== owner.steps.taken) throw new RingError("RING_TRANSFER_SUPERSEDED");
-  return owner;
-}
-
-/** Taken once a step changed the shared transfer, every earlier value is then superseded. */
-function advanced<T extends Owned>(owner: T): T {
-  owner.steps.taken += 1;
-  owner.steps.bound = true;
-  return { ...owner, step: owner.steps.taken };
-}
-
 /** A payment's address carries its recipient's list salt, none under the zero key, a salt the builder holds otherwise is refused. */
-function withPaymentSalt<T extends Owned>(owner: T, payment: AnonymousPayment): T {
+function withPaymentSalt(owner: Owned, payment: AnonymousPayment): Owned {
   const { recipient, listSalt } = payment.to;
   if (isZero(listSalt)) return owner;
   const salt = { owner: recipient.signingPublicKey.ownerProofInputHash(), salt: listSalt };
   const listSalts = [...(owner.listSalts ?? []), salt];
   saltsByOwner(listSalts);
   return { ...owner, listSalts };
+}
+
+/** Every ring output owner other than the sender is paid through one step, Rust `with_payment`. */
+function payOn(line: Owned, payment: AnonymousPayment) {
+  return step(
+    line,
+    (owner) => {
+      checkPaymentRing(payment, owner.ringProgramId);
+      return withPaymentSalt(owner, payment);
+    },
+    (salted) => declarePayment(salted.transfer, payment),
+  );
 }
 
 /** The confidential rail, the owner signs its spends in public or inside the proof, Rust `RingTransfer<Owner>`. */
@@ -232,28 +187,27 @@ export class CustomRingTransfer {
   }
 
   get #input(): Owned {
-    return live(this.#held);
+    return current(this.#held);
   }
 
   /** A second line supersedes the first until a ring step wrote into `transfer`, then it is refused. */
   static new(input: CustomRingTransferInput): CustomRingTransfer {
-    const steps = lines.get(input.transfer) ?? { taken: 0, bound: false };
-    if (steps.bound) throw new RingError("RING_TRANSFER_SUPERSEDED");
-    input.transfer.withRingProgramId(input.ringProgramId);
-    lines.set(input.transfer, steps);
-    steps.taken += 1;
-    return new CustomRingTransfer({ ...input, steps, step: steps.taken }, undefined, undefined);
+    const line = openLine(input, (transfer) => {
+      transfer.withRingProgramId(input.ringProgramId);
+    });
+    return new CustomRingTransfer(line, undefined, undefined);
   }
 
   /** @internal The line writes the output tree and then holds `transfer`, a later line over it is refused. */
   withOutputTree(outputTreeId: number): CustomRingTransfer {
-    const input = this.#input;
-    input.transfer.withOutputTreeId(outputTreeId);
-    return new CustomRingTransfer(
-      advanced(input),
-      this.#withdrawal,
-      this.#inProofOwner,
-      this.#coOwners,
+    return this.#with(
+      step(
+        this.#held,
+        (owner) => owner,
+        ({ transfer }) => {
+          transfer.withOutputTreeId(outputTreeId);
+        },
+      ).line,
     );
   }
 
@@ -261,44 +215,30 @@ export class CustomRingTransfer {
   withOutput(
     output: Readonly<{ recipient: ShieldedAddress; asset: Address; amount: bigint }>,
   ): CustomRingTransfer {
-    const input = this.#input;
-    input.transfer.send(output.recipient, output.asset, output.amount);
-    return new CustomRingTransfer(
-      advanced(input),
-      this.#withdrawal,
-      this.#inProofOwner,
-      this.#coOwners,
+    return this.#with(
+      step(
+        this.#held,
+        (owner) => owner,
+        ({ transfer }) => {
+          transfer.send(output.recipient, output.asset, output.amount);
+        },
+      ).line,
     );
   }
 
   /** The frame carries a digest of its totals, the opening reads as `approvalOpening`. */
   withExactApproval(): CustomRingTransfer {
-    return new CustomRingTransfer(
-      { ...this.#input, exactApproval: true },
-      this.#withdrawal,
-      this.#inProofOwner,
-      this.#coOwners,
-    );
+    return this.#with({ ...this.#input, exactApproval: true });
   }
 
   /** `voucher` signs the transfer inside the proof, its allow entry stands in for every sender and payment owner. */
   withVoucher(voucher: VouchSigner): CustomRingTransfer {
-    return new CustomRingTransfer(
-      { ...this.#input, voucher },
-      this.#withdrawal,
-      this.#inProofOwner,
-      this.#coOwners,
-    );
+    return this.#with({ ...this.#input, voucher });
   }
 
   /** Staging seals under the committed salt and refuses another hash, each co-signer approves the program's call. */
   withProgram(commitment: ProgramCommitment): CustomRingTransfer {
-    return new CustomRingTransfer(
-      { ...this.#input, program: commitment },
-      this.#withdrawal,
-      this.#inProofOwner,
-      this.#coOwners,
-    );
+    return this.#with({ ...this.#input, program: commitment });
   }
 
   /** Draws the salt, a transfer changed after the plan stages another hash, Rust `plan_for_program`. */
@@ -306,7 +246,7 @@ export class CustomRingTransfer {
     client: Pick<RingProvingClient, "getAccount">,
     context?: RequestContext,
   ): Promise<ProgramPlan> {
-    return programPlan(await this.#stage(client, context, randomSalt()));
+    return programPlan(await stageTransfer(this.#rail(), client, context, randomSalt()));
   }
 
   /** The settlement accounts of the transfer's public withdrawal, Rust `with_interface_transfer_accounts`. */
@@ -387,19 +327,7 @@ export class CustomRingTransfer {
     input: DepositRelayInput,
     context?: RequestContext,
   ): Promise<DepositRelayFrame> {
-    const { config, staged, prepared } = await this.#stage(client, context);
-    try {
-      return depositRelayFrame({
-        owner: this.#input,
-        config,
-        prepared,
-        staged,
-        spend: { rail: "confidential" },
-        input,
-      });
-    } finally {
-      staged.rail.txViewingKey.destroy();
-    }
+    return relayDeposit({ transfer: this.#rail(), client, relay: input }, context);
   }
 
   async #prepareRelay(
@@ -408,79 +336,7 @@ export class CustomRingTransfer {
     approval: RingTransferApproval | undefined,
     context: RequestContext | undefined,
   ): Promise<UnsignedRelay> {
-    const { ringProgramId, keys } = this.#input;
-    const signer = this.#inProofOwner;
-    if (signer === undefined) throw new RingError("RING_IN_PROOF_OWNER_MISMATCH");
-    checkRelayUnvouched(this.#input);
-    const { quote } = input;
-    const { config, staged, prepared, owner, approvalBlinder } = await this.#stage(client, context);
-    try {
-      if (owner === undefined) throw new RingError("RING_IN_PROOF_OWNER_MISMATCH");
-      if (prepared.payer !== quote.feePayer)
-        throw new RingError("RING_RELAY_PAYER_MISMATCH", {
-          details: { payer: prepared.payer, feePayer: quote.feePayer },
-        });
-      const sealed = sealRelayedTransfer({
-        ringProgramId,
-        config,
-        staged: { ...staged, spend: { rail: "confidential", inProofOwner: owner } },
-        ...(input.sealRow === undefined ? {} : { sealRow: input.sealRow }),
-      });
-      let payload: Uint8Array | undefined;
-      try {
-        const { proofInputs } = sealed;
-        await approval?.approve({ prepared, proofInputs, coSigners: [] });
-        payload = encodeRelayProofInputs({
-          rail: { kind: "confidential" },
-          ringProgramId,
-          sender: keys.address(),
-          nullifierKey: input.nullifierKey,
-          txViewingKey: staged.rail.txViewingKey,
-          inputs: proofInputs.inputUtxos,
-          leafIndexes: proofInputs.inputUtxos.map((spent) => leafIndexOf(spent, input.notes)),
-          outputs: proofInputs.outputs,
-          externalData: proofInputs.externalData,
-          interfaceTransferAccounts: staged.withdrawal === undefined ? [] : [staged.withdrawal],
-          blindingSeed: proofInputs.blindingSeed,
-          outputTreeId: proofInputs.outputTreeId,
-          wideOwners: sealed.plan.wideOwners,
-          assets: this.#input.assets,
-          listSalts: relayListSalts(config, this.#input.listSalts ?? []),
-          coOwners: this.#coOwners,
-          ...stagedBlinder(approvalBlinder),
-        });
-        const coSigners = this.#input.coSigners ?? [];
-        const terms = sealedTransferTerms({
-          ringProgramId,
-          feePayer: quote.feePayer,
-          sealed,
-          staged,
-          setup: await tokenAccountCreates(input.tokenAccountSetup, staged.withdrawal),
-        });
-        return new UnsignedRelay({
-          signer,
-          messageHash: proofInputs.messageHash(),
-          request: {
-            ring: ringProgramId,
-            quote,
-            ...(coSigners.length === 0 ? {} : { coSigners }),
-            intent: {
-              operation: "confidential",
-              proofInputs: base64.decode(payload) as RelayIntent["proofInputs"],
-              ...(input.tokenAccountSetup === undefined
-                ? {}
-                : { tokenAccountSetup: input.tokenAccountSetup }),
-            },
-          },
-          expected: sealedExpectation(terms, approvalBlinder, sealed),
-        });
-      } finally {
-        payload?.fill(0);
-        sealed.sealed.ephemeralSecret.fill(0);
-      }
-    } finally {
-      staged.rail.txViewingKey.destroy();
-    }
+    return relaySpend({ transfer: this.#rail(), client, relay: input, approval }, context);
   }
 
   async #prove(
@@ -488,193 +344,27 @@ export class CustomRingTransfer {
     approval: RingTransferApproval | undefined,
     context: RequestContext | undefined,
   ): Promise<ProvenRingTransfer> {
-    const { ringProgramId } = this.#input;
-    const { config, staged, prepared, owner, approvalBlinder } = await this.#stage(client, context);
-    try {
-      return await proveStagedTransfer(
-        {
-          client,
-          ringProgramId,
-          config,
-          staged: {
-            ...staged,
-            ...stagedBlinder(approvalBlinder),
-            spend: this.#spend(client, owner),
-          },
-          ...suppliedCoSigners(this.#input.coSigners),
-          listSalts: this.#input.listSalts ?? [],
-          ...suppliedVoucher(this.#input),
-          ...ringSalted(this.#input.ringSalt),
-          ...approvedStage(approval, prepared),
-        },
-        context,
-      );
-    } finally {
-      staged.rail.txViewingKey.destroy();
-    }
+    const transfer = this.#rail();
+    const signer = this.#inProofOwner;
+    const prover =
+      signer === undefined
+        ? signedSpend(transfer, client)
+        : inProofSpend({ transfer, client, signer });
+    return proveRail({ transfer, client, prover, approval }, context);
   }
 
-  /** The confidential rail's SPP proof, the in-proof owner signs the final inputs inside it. */
-  #spend(client: CustomRingTransferClient, owner: Bytes32 | undefined): RailSpend {
-    const { ringProgramId, keys } = this.#input;
-    const signer = this.#inProofOwner;
-    if (signer === undefined || owner === undefined)
-      return {
-        rail: "confidential",
-        prove: (inputs, proveContext) =>
-          client.proveRingTransact(
-            inputs,
-            ringProgramId,
-            ringSpendAuthority({
-              keys,
-              coOwners: this.#coOwners,
-              proofInputs: inputs,
-              sender: keys.address(),
-            }),
-            { outputTree: client },
-            proveContext,
-          ),
-      };
+  #with(input: Owned): CustomRingTransfer {
+    return new CustomRingTransfer(input, this.#withdrawal, this.#inProofOwner, this.#coOwners);
+  }
+
+  #rail(): RailTransfer<ConfidentialRail> {
     return {
-      rail: "confidential",
-      inProofOwner: owner,
-      // SPP's anonymous rail hides the owner, the statement publishes it.
-      prove: async (inputs, proveContext) =>
-        client.proveAnonymousRingTransact(
-          {
-            proofInputs: inputs,
-            ringProgramId,
-            owner: await preparedOwnerSignature(signer, owner, inputs, proveContext),
-            keys: ringSpendAuthority({
-              keys,
-              coOwners: this.#coOwners,
-              proofInputs: inputs,
-              sender: keys.address(),
-            }),
-            config: { outputTree: client },
-          },
-          proveContext,
-        ),
+      owner: this.#input,
+      withdrawal: this.#withdrawal,
+      coOwners: this.#coOwners,
+      rail: { kind: "confidential", inProofOwner: this.#inProofOwner },
     };
   }
-
-  /** The caller destroys `staged.rail.txViewingKey`. */
-  async #stage(
-    client: Pick<RingProvingClient, "getAccount">,
-    context: RequestContext | undefined,
-    planSalt?: Bytes16,
-  ): Promise<
-    Readonly<{
-      config: RingPolicy;
-      staged: Omit<StagedTransfer, "spend">;
-      prepared: PreparedTransfer;
-      owner: Bytes32 | undefined;
-      approvalBlinder: Bytes32 | undefined;
-    }>
-  > {
-    const { ringProgramId, keys, program } = this.#input;
-    const config = await activeConfig(client, ringProgramId, context);
-    if (config.mode === "anonymous")
-      throw new RingError("RING_ANONYMOUS_SIGNER_REQUIRED", { details: { ringProgramId } });
-    const programSalt = planSalt ?? program?.salt;
-    // A program's proof holds hashes only a transaction signer's rail reproduces.
-    if (programSalt !== undefined && this.#inProofOwner !== undefined)
-      throw new RingError("RING_PROGRAM_RAIL_UNSUPPORTED");
-    const sender = keys.address();
-    const owner = inProofOwnerKey(this.#inProofOwner, sender);
-    const prepared = this.#input.transfer.prepare();
-    checkWithdrawalAccounts(prepared, this.#withdrawal);
-    checkDepositAccounts(prepared, this.#input.deposits);
-    const rail = new RingOutputRail(
-      await transactionKey(keys, sender, prepared, context),
-      prepared.firstNullifier,
-      { kind: "delivered" },
-      [],
-      programSalt,
-    );
-    try {
-      const proofInputs = rail.encrypt({
-        prepared,
-        sender,
-        assets: this.#input.assets,
-        auditor: config.auditorPublicKey,
-        instructionDiscriminator: InstructionTag.ringTransact,
-      });
-      checkZeroKeyInputs(proofInputs.inputUtxos, sender.signingPublicKey);
-      if (owner !== undefined) checkRingNotes(proofInputs);
-      // An in-proof owner may sit beside signing co-owners, the run names them alone.
-      const ownerSigners = ownerSignerAddresses(proofInputs.inputUtxos, proofInputs.outputs, owner);
-      if (!spendsNothing(proofInputs) && owner === undefined && ownerSigners.length === 0)
-        throw new RingError("RING_NO_SIGNING_OWNER");
-      checkCoOwnerKeys(proofInputs, sender, this.#coOwners);
-      return {
-        config,
-        prepared,
-        owner,
-        approvalBlinder: attemptBlinder(this.#input),
-        staged: {
-          proofInputs,
-          rail,
-          sender,
-          ownerSigners,
-          ...stagedDeposits(this.#input),
-          ...(this.#withdrawal === undefined ? {} : { withdrawal: this.#withdrawal }),
-          ...(this.#input.withdrawalOwner === undefined
-            ? {}
-            : { withdrawalOwner: this.#input.withdrawalOwner }),
-          ...(this.#input.extensions === undefined ? {} : { extensions: this.#input.extensions }),
-          ...(planSalt === undefined ? committedStage(program, proofInputs) : {}),
-        },
-      };
-    } catch (cause) {
-      rail.txViewingKey.destroy();
-      throw cause;
-    }
-  }
-}
-
-async function preparedOwnerSignature(
-  signer: AnonymousSpendSigner,
-  owner: Bytes32,
-  proofInputs: SppProofInputs,
-  context: RequestContext | undefined,
-): Promise<PreparedOwnerSignature> {
-  const ownerSignature = await signer.sign(proofInputs.messageHash(), context);
-  if (!(ownerSignature instanceof Uint8Array) || ownerSignature.length !== 64)
-    throw new RingError("RING_INVALID_LENGTH", {
-      details: {
-        name: "ownerSignature",
-        expected: 64,
-        actual: ownerSignature instanceof Uint8Array ? ownerSignature.length : -1,
-      },
-    });
-  return {
-    ownerPublicKey: owner,
-    ownerSignature,
-  };
-}
-
-/** SPP's anonymous rail publishes the owner of a default-ring note, Rust `RingError::InProofDefaultRingInput`. */
-function checkRingNotes(proofInputs: SppProofInputs): void {
-  const index = proofInputs.inputUtxos.findIndex(isDefaultRingNote);
-  if (index >= 0) throw new RingError("RING_IN_PROOF_DEFAULT_RING_INPUT", { details: { index } });
-}
-
-/** Padding alone, an address input still needs its owner to sign. */
-function spendsNothing(proofInputs: SppProofInputs): boolean {
-  return proofInputs.inputUtxos.every((spent) => spent.isDummy() || spent.isCompact());
-}
-
-/** The signer must hold the sender's signing key. */
-function inProofOwnerKey(
-  signer: AnonymousSpendSigner | undefined,
-  sender: ShieldedAddress,
-): Bytes32 | undefined {
-  if (signer === undefined) return undefined;
-  const signing = signer.publicKey();
-  if (!(signing instanceof ShieldedPublicKey) || !signing.equals(sender.signingPublicKey))
-    throw new RingError("RING_IN_PROOF_OWNER_MISMATCH");
-  return signing.ed25519();
 }
 
 /** The hidden owner's spends on an anonymous ring, no transaction signer names the owner, Rust `RingTransfer<Anonymous>`. */
@@ -704,7 +394,7 @@ export class AnonymousTransfer {
   }
 
   get #owner(): Owned {
-    return live(this.#held);
+    return current(this.#held);
   }
 
   /** @internal */
@@ -731,61 +421,56 @@ export class AnonymousTransfer {
 
   /** A public co-owner of later `ringSpendTransfer` inputs signs the transaction. */
   withCoOwner(coOwner: CoOwner): AnonymousTransfer {
-    return new AnonymousTransfer({
-      ...this.#fields(),
-      coOwners: [...this.#coOwners, Object.freeze({ ...coOwner })],
-    });
+    return this.#with({ coOwners: [...this.#coOwners, Object.freeze({ ...coOwner })] });
   }
 
   /** Every ring output owner other than the sender is paid here, Rust `with_payment`. */
   withPayment(payment: AnonymousPayment): AnonymousTransfer {
-    if (payment.to.ringProgramId !== this.#owner.ringProgramId)
-      throw new RingError("RING_FOREIGN_RING", {
-        details: { address: payment.to.ringProgramId, ring: this.#owner.ringProgramId },
-      });
     const fields = this.#fields();
-    const salted = withPaymentSalt(fields.owner, payment);
-    const declared = declarePayment(salted.transfer, payment);
+    const paid = payOn(fields.owner, payment);
     return new AnonymousTransfer({
       ...fields,
-      owner: advanced(salted),
-      payments: Object.freeze([...this.#payments, declared]),
+      owner: paid.line,
+      payments: Object.freeze([...this.#payments, paid.written]),
     });
   }
 
   /** Named notes spend from `cache`, SPP checks each slot against the frame's selector, Rust `with_read_cache`. */
   withReadCache(readCache: ReadCache): AnonymousTransfer {
-    return new AnonymousTransfer({ ...this.#fields(), readCache });
+    return this.#with({ readCache });
   }
 
   /** The frame carries a digest of its totals, the opening reads as `approvalOpening`. */
   withExactApproval(): AnonymousTransfer {
-    return new AnonymousTransfer({
-      ...this.#fields(),
-      owner: { ...this.#owner, exactApproval: true },
-    });
+    return this.#with({ owner: { ...this.#owner, exactApproval: true } });
   }
 
   /** `voucher` signs the transfer inside the proof, its allow entry stands in for every sender and payment owner. */
   withVoucher(voucher: VouchSigner): AnonymousTransfer {
-    return new AnonymousTransfer({ ...this.#fields(), owner: { ...this.#owner, voucher } });
+    return this.#with({ owner: { ...this.#owner, voucher } });
   }
 
   /** Pads to `shape`, else the transfer takes the smallest supported shape. */
   withShape(shape: Shape): AnonymousTransfer {
     const fields = this.#fields();
-    fields.owner.transfer.withShape(shape);
-    return new AnonymousTransfer({ ...fields, owner: advanced(fields.owner), shape });
+    const shaped = step(
+      fields.owner,
+      (owner) => owner,
+      ({ transfer }) => {
+        transfer.withShape(shape);
+      },
+    );
+    return new AnonymousTransfer({ ...fields, owner: shaped.line, shape });
   }
 
   /** A missing exit token account must be the owner's associated token account. */
   withExitTokenOwner(owner: Address): AnonymousTransfer {
-    return new AnonymousTransfer({ ...this.#fields(), exitTokenOwner: owner });
+    return this.#with({ exitTokenOwner: owner });
   }
 
   /** Admits the parties and zero-key spends `OwnerExposure` names, a co-signer stays refused, Rust `with_owner_exposure`. */
   withOwnerExposure(exposure: OwnerExposure): AnonymousTransfer {
-    return new AnonymousTransfer({ ...this.#fields(), exposure });
+    return this.#with({ exposure });
   }
 
   prove(client: AnonymousTransferClient, context?: RequestContext): Promise<ProvenRingTransfer> {
@@ -799,53 +484,6 @@ export class AnonymousTransfer {
     context?: RequestContext,
   ): Promise<ProvenRingTransfer> {
     return this.#prove(client, approval, context);
-  }
-
-  async #prove(
-    client: AnonymousTransferClient,
-    approval: RingTransferApproval | undefined,
-    context: RequestContext | undefined,
-  ): Promise<ProvenRingTransfer> {
-    const { ringProgramId, keys } = this.#owner;
-    const { config, staged, prepared, owner, approvalBlinder } = await this.#stage(client, context);
-    try {
-      const spend: StagedTransfer["spend"] = {
-        rail: "anonymous",
-        anonymous: staged.anonymous,
-        prove: async (inputs, proveContext) =>
-          client.proveAnonymousRingTransact(
-            {
-              proofInputs: inputs,
-              ringProgramId,
-              owner: await preparedOwnerSignature(this.#signer, owner, inputs, proveContext),
-              keys: ringSpendAuthority({
-                keys,
-                coOwners: this.#coOwners,
-                proofInputs: inputs,
-                sender: keys.address(),
-              }),
-              config: { outputTree: client },
-            },
-            proveContext,
-          ),
-      };
-      return await proveStagedTransfer(
-        {
-          client,
-          ringProgramId,
-          config,
-          staged: { ...staged, ...stagedBlinder(approvalBlinder), spend },
-          ...suppliedCoSigners(this.#owner.coSigners),
-          listSalts: this.#owner.listSalts ?? [],
-          ...suppliedVoucher(this.#owner),
-          ...ringSalted(this.#owner.ringSalt),
-          ...approvedStage(approval, prepared),
-        },
-        context,
-      );
-    } finally {
-      staged.rail.txViewingKey.destroy();
-    }
   }
 
   /** Rust `prepare_relay`, the wallet reads no Merkle path and no record. */
@@ -867,195 +505,45 @@ export class AnonymousTransfer {
     return this.#prepareRelay(client, input, approval, context);
   }
 
+  async #prove(
+    client: AnonymousTransferClient,
+    approval: RingTransferApproval | undefined,
+    context: RequestContext | undefined,
+  ): Promise<ProvenRingTransfer> {
+    const transfer = this.#rail();
+    const prover = inProofSpend({ transfer, client, signer: this.#signer });
+    return proveRail({ transfer, client, prover, approval }, context);
+  }
+
   async #prepareRelay(
     client: Pick<RingProvingClient, "getAccount">,
     input: RingRelayInput,
     approval: RingTransferApproval | undefined,
     context: RequestContext | undefined,
   ): Promise<PreparedRingRelay> {
-    const { ringProgramId, keys } = this.#owner;
-    checkRelayUnvouched(this.#owner);
-    const { quote } = input;
-    const { config, staged, prepared, approvalBlinder } = await this.#stage(client, context);
-    try {
-      if (prepared.payer !== quote.feePayer)
-        throw new RingError("RING_RELAY_PAYER_MISMATCH", {
-          details: { payer: prepared.payer, feePayer: quote.feePayer },
-        });
-      const sealed = sealRelayedTransfer({
-        ringProgramId,
-        config,
-        staged: { ...staged, spend: { rail: "anonymous" } },
-        ...(input.sealRow === undefined ? {} : { sealRow: input.sealRow }),
-      });
-      let payload: Uint8Array | undefined;
-      try {
-        const { proofInputs } = sealed;
-        await approval?.approve({ prepared, proofInputs, coSigners: [] });
-        const plan = staged.rail.delivery;
-        if (plan.kind !== "anonymous") throw new RingError("RING_NOT_ANONYMOUS");
-        payload = encodeRelayProofInputs({
-          rail: {
-            kind: "anonymous",
-            plan: plan.plan,
-            ...(this.#exitTokenOwner === undefined ? {} : { exitTokenOwner: this.#exitTokenOwner }),
-            ownerExposed: this.#exposure === "accepted",
-          },
-          ringProgramId,
-          sender: keys.address(),
-          nullifierKey: input.nullifierKey,
-          txViewingKey: staged.rail.txViewingKey,
-          inputs: proofInputs.inputUtxos,
-          leafIndexes: proofInputs.inputUtxos.map((spent) => leafIndexOf(spent, input.notes)),
-          outputs: proofInputs.outputs,
-          externalData: proofInputs.externalData,
-          interfaceTransferAccounts: staged.withdrawal === undefined ? [] : [staged.withdrawal],
-          blindingSeed: proofInputs.blindingSeed,
-          outputTreeId: proofInputs.outputTreeId,
-          wideOwners: sealed.plan.wideOwners,
-          assets: this.#owner.assets,
-          listSalts: relayListSalts(config, this.#owner.listSalts ?? []),
-          coOwners: this.#coOwners,
-          ...stagedBlinder(approvalBlinder),
-        });
-        const coSigners = this.#owner.coSigners ?? [];
-        const terms = sealedTransferTerms({
-          ringProgramId,
-          feePayer: quote.feePayer,
-          sealed,
-          staged,
-          setup: await tokenAccountCreates(input.tokenAccountSetup, staged.withdrawal),
-        });
-        return Object.freeze({
-          relay: new UnsignedRelay({
-            signer: this.#signer,
-            messageHash: proofInputs.messageHash(),
-            request: {
-              ring: ringProgramId,
-              quote,
-              ...(coSigners.length === 0 ? {} : { coSigners }),
-              intent: {
-                operation: "anonymous",
-                proofInputs: base64.decode(payload) as RelayIntent["proofInputs"],
-                ...(input.tokenAccountSetup === undefined
-                  ? {}
-                  : { tokenAccountSetup: input.tokenAccountSetup }),
-              },
-            },
-            expected: sealedExpectation(terms, approvalBlinder, sealed),
-          }),
-        });
-      } finally {
-        payload?.fill(0);
-        sealed.sealed.ephemeralSecret.fill(0);
-      }
-    } finally {
-      staged.rail.txViewingKey.destroy();
-    }
+    return Object.freeze({
+      relay: await relaySpend({ transfer: this.#rail(), client, relay: input, approval }, context),
+    });
   }
 
-  /** The caller destroys `staged.rail.txViewingKey`. */
-  async #stage(
-    client: Pick<RingProvingClient, "getAccount">,
-    context: RequestContext | undefined,
-  ): Promise<
-    Readonly<{
-      config: RingPolicy;
-      staged: Omit<StagedTransfer, "spend"> & Readonly<{ anonymous: AnonymousSpendValues }>;
-      prepared: PreparedTransfer;
-      owner: Bytes32;
-      exitTokenOwner: Address | undefined;
-      approvalBlinder: Bytes32 | undefined;
-    }>
-  > {
-    const { ringProgramId, keys } = this.#owner;
-    if (this.#owner.program !== undefined) throw new RingError("RING_PROGRAM_RAIL_UNSUPPORTED");
-    const config = await activeConfig(client, ringProgramId, context);
-    if (config.mode !== "anonymous")
-      throw new RingError("RING_NOT_ANONYMOUS", { details: { ringProgramId } });
-    const sender = keys.address();
-    const prepared = this.#owner.transfer.prepare();
-    checkWithdrawalAccounts(prepared, this.#withdrawal);
-    const owner = checkAnonymousSigner({ signer: this.#signer, sender });
-    // The proof no longer holds the payer, a funder or the exit apart from the hidden owner, each
-    // would name it, so the wallet refuses them unless the caller accepts the exposure.
-    const guarded = this.#exposure === "refused" ? owner : undefined;
-    if (guarded !== undefined)
-      checkHiddenParties(guarded, [
-        prepared.payer,
-        ...(this.#owner.deposits ?? []).map(({ funder }) => signerAddress(funder)),
-      ]);
-    const exitTokenOwner = await anonymousExitTokenOwner(
-      {
-        client,
-        transfers: prepared.interfaceTransfers,
-        ...(guarded === undefined ? {} : { hiddenOwner: guarded }),
-        ...(this.#exitTokenOwner === undefined ? {} : { tokenOwner: this.#exitTokenOwner }),
+  #with(changed: Partial<AnonymousFields>): AnonymousTransfer {
+    return new AnonymousTransfer({ ...this.#fields(), ...changed });
+  }
+
+  #rail(): RailTransfer<AnonymousRail> {
+    return {
+      owner: this.#owner,
+      withdrawal: this.#withdrawal,
+      coOwners: this.#coOwners,
+      rail: {
+        kind: "anonymous",
+        signer: this.#signer,
+        payments: this.#payments,
+        exitTokenOwner: this.#exitTokenOwner,
+        readCache: this.#readCache,
+        exposure: this.#exposure,
       },
-      context,
-    );
-    if (this.#payments.some((payment) => isSmallOrder(payment.to.recipient.viewingPublicKey)))
-      throw new RingError("RING_RECIPIENT_KEY_NOT_CONTRIBUTORY");
-    const rail = new RingOutputRail(
-      await transactionKey(keys, sender, prepared, context),
-      prepared.firstNullifier,
-      { kind: "anonymous", plan: anonymousPlan(this.#payments) },
-      this.#payments,
-    );
-    try {
-      const encrypted = rail.encrypt({
-        prepared,
-        sender,
-        assets: this.#owner.assets,
-        auditor: config.auditorPublicKey,
-        instructionDiscriminator: InstructionTag.ringTransact,
-      });
-      const proofInputs =
-        this.#readCache === undefined ? encrypted : withReadCacheSlots(encrypted, this.#readCache);
-      // A cached write needs a public writer signing beside the hidden owner, and no party cell or
-      // signer class names one. A cached read and an address slot name no signer.
-      if (proofInputs.outputs.some((output) => output.cacheSlot !== undefined))
-        throw new RingError("RING_TRANSACT_DATA_INVALID", {
-          details: { reason: "InvalidAnonymousSlot" },
-        });
-      // A zero-key note opens to anyone holding its opening, its spend names the spender.
-      if (guarded !== undefined)
-        checkZeroKeyInputs(proofInputs.inputUtxos, sender.signingPublicKey);
-      const coOwners = ownerSignerAddresses(proofInputs.inputUtxos, proofInputs.outputs, owner);
-      checkHiddenOwnerSpends(proofInputs, sender);
-      checkEntryInputs(proofInputs, sender);
-      checkCoOwnerKeys(proofInputs, sender, this.#coOwners);
-      const staged = {
-        proofInputs,
-        rail,
-        sender,
-        ownerSigners: coOwners,
-        ...(this.#withdrawal === undefined ? {} : { withdrawal: this.#withdrawal }),
-        ...(this.#owner.extensions === undefined ? {} : { extensions: this.#owner.extensions }),
-        anonymous: {
-          ...(exitTokenOwner === undefined ? {} : { tokenOwner: exitTokenOwner }),
-          // A hidden co-signer approves its own outflow, no exposure waiver admits it.
-          partyIdentities: (coSigners: readonly Address[]) => {
-            if (coSigners.some((coSigner) => equalBytes(addressBytes(coSigner), owner)))
-              throw new RingError("RING_CO_SIGNER_INVALID", {
-                details: { reason: "CoSignerIsOwner", code: RingProgramError.coSignerIsOwner },
-              });
-            return anonymousPartyIdentities(coSigners);
-          },
-        },
-      };
-      return Object.freeze({
-        config,
-        staged,
-        prepared,
-        owner,
-        exitTokenOwner,
-        approvalBlinder: attemptBlinder(this.#owner),
-      });
-    } catch (cause) {
-      rail.txViewingKey.destroy();
-      throw cause;
-    }
+    };
   }
 
   #fields(): AnonymousFields {
@@ -1106,7 +594,7 @@ export class PublicOwnerTransfer {
   }
 
   get #owner(): Owned {
-    return live(this.#held);
+    return current(this.#held);
   }
 
   /** @internal */
@@ -1128,53 +616,23 @@ export class PublicOwnerTransfer {
 
   /** Every ring output owner other than the wallet is paid here, Rust `with_payment`. */
   withPayment(payment: AnonymousPayment): PublicOwnerTransfer {
-    checkPaymentRing(payment, this.#owner.ringProgramId);
-    const salted = withPaymentSalt(this.#owner, payment);
-    const declared = declarePayment(salted.transfer, payment);
-    return new PublicOwnerTransfer({
-      owner: advanced(salted),
-      withdrawal: this.#withdrawal,
-      wallet: this.#wallet,
-      inProofOwner: this.#inProofOwner,
-      coOwners: this.#coOwners,
-      payments: Object.freeze([...this.#payments, declared]),
-    });
+    const paid = payOn(this.#held, payment);
+    return this.#with(paid.line, Object.freeze([...this.#payments, paid.written]));
   }
 
   /** The frame carries a digest of its totals, the opening reads as `approvalOpening`. */
   withExactApproval(): PublicOwnerTransfer {
-    return new PublicOwnerTransfer({
-      owner: { ...this.#owner, exactApproval: true },
-      withdrawal: this.#withdrawal,
-      wallet: this.#wallet,
-      inProofOwner: this.#inProofOwner,
-      coOwners: this.#coOwners,
-      payments: this.#payments,
-    });
+    return this.#with({ ...this.#owner, exactApproval: true });
   }
 
   /** `voucher` signs the transfer inside the proof, its allow entry stands in for every sender and payment owner. */
   withVoucher(voucher: VouchSigner): PublicOwnerTransfer {
-    return new PublicOwnerTransfer({
-      owner: { ...this.#owner, voucher },
-      withdrawal: this.#withdrawal,
-      wallet: this.#wallet,
-      inProofOwner: this.#inProofOwner,
-      coOwners: this.#coOwners,
-      payments: this.#payments,
-    });
+    return this.#with({ ...this.#owner, voucher });
   }
 
   /** Staging seals under the committed salt and refuses another hash, each co-signer approves the program's call. */
   withProgram(commitment: ProgramCommitment): PublicOwnerTransfer {
-    return new PublicOwnerTransfer({
-      owner: { ...this.#owner, program: commitment },
-      withdrawal: this.#withdrawal,
-      wallet: this.#wallet,
-      inProofOwner: this.#inProofOwner,
-      coOwners: this.#coOwners,
-      payments: this.#payments,
-    });
+    return this.#with({ ...this.#owner, program: commitment });
   }
 
   /** Draws the salt, a transfer changed after the plan stages another hash, Rust `plan_for_program`. */
@@ -1182,7 +640,7 @@ export class PublicOwnerTransfer {
     client: Pick<RingProvingClient, "getAccount">,
     context?: RequestContext,
   ): Promise<ProgramPlan> {
-    return programPlan(await this.#stage(client, context, randomSalt()));
+    return programPlan(await stageTransfer(this.#rail(), client, context, randomSalt()));
   }
 
   prove(client: PublicOwnerTransferClient, context?: RequestContext): Promise<ProvenRingTransfer> {
@@ -1198,142 +656,50 @@ export class PublicOwnerTransfer {
     return this.#prove(client, approval, context);
   }
 
-  async #prove(
-    client: PublicOwnerTransferClient,
-    approval: RingTransferApproval | undefined,
-    context: RequestContext | undefined,
-  ): Promise<ProvenRingTransfer> {
-    const { ringProgramId, keys } = this.#owner;
-    const { config, prepared, staged, spend } = await this.#stage(client, context);
-    const prove: RailSpend["prove"] = (inputs, proveContext) =>
-      client.proveRingTransact(
-        inputs,
-        ringProgramId,
-        ringSpendAuthority({
-          keys,
-          coOwners: this.#coOwners,
-          proofInputs: inputs,
-          sender: staged.sender,
-        }),
-        { outputTree: client },
-        proveContext,
-      );
-    try {
-      return await proveStagedTransfer(
-        {
-          client,
-          ringProgramId,
-          config,
-          staged: { ...staged, spend: { ...spend, prove } },
-          ...suppliedCoSigners(this.#owner.coSigners),
-          listSalts: this.#owner.listSalts ?? [],
-          ...suppliedVoucher(this.#owner),
-          ...ringSalted(this.#owner.ringSalt),
-          ...approvedStage(approval, prepared),
-        },
-        context,
-      );
-    } finally {
-      staged.rail.txViewingKey.destroy();
-    }
-  }
-
   /** @internal Rust `deposit_relay`, the wallet reads no record. */
   async depositRelay(
     client: Pick<RingProvingClient, "getAccount">,
     input: DepositRelayInput,
     context?: RequestContext,
   ): Promise<DepositRelayFrame> {
-    const { config, prepared, staged, spend } = await this.#stage(client, context);
-    try {
-      return depositRelayFrame({ owner: this.#owner, config, prepared, staged, spend, input });
-    } finally {
-      staged.rail.txViewingKey.destroy();
-    }
+    return relayDeposit({ transfer: this.#rail(), client, relay: input }, context);
   }
 
-  /** The caller destroys `staged.rail.txViewingKey`. */
-  async #stage(
-    client: Pick<RingProvingClient, "getAccount">,
+  async #prove(
+    client: PublicOwnerTransferClient,
+    approval: RingTransferApproval | undefined,
     context: RequestContext | undefined,
-    planSalt?: Bytes16,
-  ): Promise<
-    Readonly<{
-      config: RingPolicy;
-      prepared: PreparedTransfer;
-      staged: Omit<StagedTransfer, "spend">;
-      spend: Omit<RailSpend, "prove">;
-    }>
-  > {
-    const { ringProgramId, keys, program } = this.#owner;
-    const sender = keys.address();
-    if (sender.solanaAddress() !== this.#wallet)
-      throw new RingError("RING_PUBLIC_SPEND_WALLET_MISMATCH", {
-        details: { named: this.#wallet, sender: sender.solanaAddress() },
-      });
-    if (this.#inProofOwner) throw new RingError("RING_PUBLIC_SPEND_IN_PROOF_OWNER");
-    const config = await activeConfig(client, ringProgramId, context);
-    const anonymous = config.mode === "anonymous";
-    const prepared = this.#owner.transfer.prepare();
-    checkWithdrawalAccounts(prepared, this.#withdrawal);
-    checkDepositAccounts(prepared, this.#owner.deposits);
-    if (
-      anonymous &&
-      this.#payments.some((payment) => isSmallOrder(payment.to.recipient.viewingPublicKey))
-    )
-      throw new RingError("RING_RECIPIENT_KEY_NOT_CONTRIBUTORY");
-    const rail = new RingOutputRail(
-      await transactionKey(keys, sender, prepared, context),
-      prepared.firstNullifier,
-      anonymous
-        ? { kind: "anonymous", plan: anonymousPlan(this.#payments) }
-        : { kind: "delivered" },
-      this.#payments,
-      planSalt ?? program?.salt,
+  ): Promise<ProvenRingTransfer> {
+    const transfer = this.#rail();
+    return proveRail(
+      { transfer, client, prover: signedSpend(transfer, client), approval },
+      context,
     );
-    try {
-      const spent = prepared.inputs.find((input) => input.utxo.amount > 0n)?.utxo.asset;
-      const proofInputs = rail.encrypt({
-        prepared,
-        sender,
-        assets: this.#owner.assets,
-        auditor: config.auditorPublicKey,
-        instructionDiscriminator: InstructionTag.ringTransact,
-        ...((planSalt ?? program) === undefined || spent === undefined
-          ? {}
-          : { zeroChangeAsset: spent }),
-      });
-      checkCoOwnerKeys(proofInputs, sender, this.#coOwners);
-      const ownerSigners = ownerSignerAddresses(proofInputs.inputUtxos, proofInputs.outputs);
-      const spend: Omit<RailSpend, "prove"> = anonymous
-        ? {
-            rail: "anonymous",
-            publicOwners: true,
-            anonymous: {
-              partyIdentities: (coSigners) => anonymousPartyIdentities(coSigners),
-            },
-          }
-        : { rail: "confidential" };
-      return {
-        config,
-        prepared,
-        spend,
-        staged: {
-          proofInputs,
-          rail,
-          sender,
-          ownerSigners,
-          ...stagedDeposits(this.#owner),
-          ...(this.#withdrawal === undefined ? {} : { withdrawal: this.#withdrawal }),
-          ...(this.#owner.extensions === undefined ? {} : { extensions: this.#owner.extensions }),
-          ...stagedBlinder(attemptBlinder(this.#owner)),
-          ...(planSalt === undefined ? committedStage(program, proofInputs) : {}),
-        },
-      };
-    } catch (cause) {
-      rail.txViewingKey.destroy();
-      throw cause;
-    }
+  }
+
+  #with(owner: Owned, payments: readonly AnonymousPayment[] = this.#payments): PublicOwnerTransfer {
+    return new PublicOwnerTransfer({
+      owner,
+      withdrawal: this.#withdrawal,
+      wallet: this.#wallet,
+      inProofOwner: this.#inProofOwner,
+      coOwners: this.#coOwners,
+      payments,
+    });
+  }
+
+  #rail(): RailTransfer<PublicOwnersRail> {
+    return {
+      owner: this.#owner,
+      withdrawal: this.#withdrawal,
+      coOwners: this.#coOwners,
+      rail: {
+        kind: "publicOwners",
+        wallet: this.#wallet,
+        inProofOwner: this.#inProofOwner,
+        payments: this.#payments,
+      },
+    };
   }
 }
 
@@ -1351,17 +717,6 @@ function checkPaymentRing(payment: AnonymousPayment, ringProgramId: Address): vo
     throw new RingError("RING_FOREIGN_RING", {
       details: { address: payment.to.ringProgramId, ring: ringProgramId },
     });
-}
-
-function anonymousPlan(payments: readonly AnonymousPayment[]): AnonymousPlan {
-  return payments.reduce(
-    (planned, payment) =>
-      planned.withPayment({
-        recipient: payment.to.recipient.viewingPublicKey,
-        reply: payment.reply,
-      }),
-    AnonymousPlan.create(),
-  );
 }
 
 /** One output of a delegate move. */
@@ -1473,69 +828,74 @@ export class DelegateTransfer {
       outputTreeId: input.outputTreeId ?? first.treeId,
     });
     checkWithdrawalAccounts(prepared, input.withdrawal?.accounts);
+    const anonymous = isAnonymousFrame(railKind);
     // The member never signs, the transaction key seals the move to the auditor.
-    const rail = new RingOutputRail(
-      input.txViewingKey === undefined
-        ? ViewingKey.generate()
-        : ViewingKey.fromBytes(input.txViewingKey.slice() as Bytes32),
-      prepared.firstNullifier,
-      isAnonymousFrame(railKind)
-        ? { kind: "anonymous", plan: delegatePlan(input.outputs) }
-        : { kind: "delivered" },
-    );
-    try {
-      const proofInputs = rail.encrypt({
+    const sealed = sealOutputs(
+      {
+        key:
+          input.txViewingKey === undefined
+            ? ViewingKey.generate()
+            : ViewingKey.fromBytes(input.txViewingKey.slice() as Bytes32),
         prepared,
+        delivery: () =>
+          anonymous
+            ? { kind: "anonymous", plan: delegatePlan(input.outputs) }
+            : { kind: "delivered" },
+        payments: [],
+        salt: undefined,
         sender: input.source,
         assets: input.assets,
         auditor: config.auditorPublicKey,
         instructionDiscriminator: InstructionTag.ringAuthorityTransact,
-      });
-      checkCoOwnerKeys(proofInputs, input.source, coSources);
-      return await proveStagedTransfer(
-        {
-          client,
-          ringProgramId,
-          config,
-          staged: {
-            proofInputs,
-            rail,
-            sender: input.source,
-            ownerSigners: [],
-            ...(input.withdrawal === undefined ? {} : { withdrawal: input.withdrawal.accounts }),
-            spend: {
-              rail: railKind,
-              delegate: input.delegate,
-              ...(isAnonymousFrame(railKind)
-                ? {
-                    anonymous: {
-                      partyIdentities: (coSigners: readonly Address[]) =>
-                        anonymousPartyIdentities(coSigners),
-                    },
-                  }
-                : {}),
-              prove: (inputs, proveContext) =>
-                client.proveRingAuthorityTransact(
-                  inputs,
-                  ringProgramId,
-                  ringSpendAuthority({
-                    keys: input.sourceProofs,
-                    coOwners: coSources,
-                    proofInputs: inputs,
-                    sender: input.source,
-                  }),
-                  proveContext,
-                  client,
-                ),
-            },
+        zeroChangeAsset: undefined,
+      },
+      (rail, proofInputs) => {
+        checkCoOwnerKeys(proofInputs, input.source, coSources);
+        return { rail, proofInputs };
+      },
+    );
+    return proveSealed(
+      sealed.rail,
+      () => ({
+        client,
+        ringProgramId,
+        config,
+        staged: {
+          proofInputs: sealed.proofInputs,
+          rail: sealed.rail,
+          sender: input.source,
+          ownerSigners: [],
+          ...(input.withdrawal === undefined ? {} : { withdrawal: input.withdrawal.accounts }),
+          spend: {
+            rail: railKind,
+            delegate: input.delegate,
+            ...(anonymous
+              ? {
+                  anonymous: {
+                    partyIdentities: (coSigners: readonly Address[]) =>
+                      anonymousPartyIdentities(coSigners),
+                  },
+                }
+              : {}),
+            prove: (inputs, proveContext) =>
+              client.proveRingAuthorityTransact(
+                inputs,
+                ringProgramId,
+                ringSpendAuthority({
+                  keys: input.sourceProofs,
+                  coOwners: coSources,
+                  proofInputs: inputs,
+                  sender: input.source,
+                }),
+                proveContext,
+                client,
+              ),
           },
-          ...approvedStage(approval, prepared),
         },
-        context,
-      );
-    } finally {
-      rail.txViewingKey.destroy();
-    }
+        ...approvedStage(approval, prepared),
+      }),
+      context,
+    );
   }
 }
 
@@ -1608,200 +968,9 @@ function settlementLeg(withdrawal: DelegateWithdrawal): SettlementTransfer {
       };
 }
 
-function suppliedCoSigners(
-  coSigners: readonly Address[] | undefined,
-): Pick<StagedTransferInput, "coSigners"> {
-  return coSigners === undefined ? {} : { coSigners };
-}
-
-function suppliedVoucher(
-  input: Pick<CustomRingTransferInput, "voucher">,
-): Pick<StagedTransferInput, "voucher"> {
-  return input.voucher === undefined ? {} : { voucher: input.voucher };
-}
-
-/** Ring RPC proves a relayed transfer unvouched. */
-function checkRelayUnvouched(input: Pick<CustomRingTransferInput, "voucher">): void {
-  if (input.voucher !== undefined) throw new RingError("RING_RELAY_VOUCHER_UNSUPPORTED");
-}
-
 /** A Solana address names a wallet or a PDA alike, a key rebuilt as Ed25519 never equals a PDA owner. */
 function ownedBy(spent: ProofInputUtxo, owner: Address): boolean {
   return equalBytes(spent.utxo.owner.confidentialViewTag(), addressBytes(owner));
-}
-
-/** Drawn per attempt, a retry never reuses a blinder a co-signer has seen. */
-function attemptBlinder(input: CustomRingTransferInput): Bytes32 | undefined {
-  return input.exactApproval === true ? randomBlinding() : undefined;
-}
-
-function stagedBlinder(blinder: Bytes32 | undefined): Readonly<{ approvalBlinder?: Bytes32 }> {
-  return blinder === undefined ? {} : { approvalBlinder: blinder };
-}
-
-/** The relay builds the frame, the sealing wallet hands the opening to its co-signer. */
-function sealedExpectation(
-  terms: readonly RelayTransferTerms[],
-  blinder: Bytes32 | undefined,
-  sealed: Pick<SealedTransfer, "proofInputs" | "plan">,
-): ExpectedSealed {
-  return Object.freeze({
-    kind: "sealed",
-    terms,
-    chargedOutflows: chargedOutflowsOf(sealed.proofInputs),
-    ...(blinder === undefined
-      ? {}
-      : {
-          approval: transferApprovalOf(sealed.proofInputs, sealed.plan.layout.capacity, blinder)
-            .opening,
-        }),
-  });
-}
-
-function programPlan(stage: Readonly<{ staged: Omit<StagedTransfer, "spend"> }>): ProgramPlan {
-  stage.staged.rail.txViewingKey.destroy();
-  return new ProgramPlan(stage.staged.proofInputs);
-}
-
-/** The staged hashes equal the committed ones before any proof, the co-signers then approve the program's call. */
-function committedStage(
-  program: ProgramCommitment | undefined,
-  proofInputs: SppProofInputs,
-): Readonly<{ coSignerForm?: CoSignerForm }> {
-  if (program === undefined) return {};
-  checkProgramCommitment(program, proofInputs);
-  return { coSignerForm: "approval" };
-}
-
-/** After sealing, a slot's cache source changes no blinding and no output. */
-function withReadCacheSlots(proofInputs: SppProofInputs, readCache: ReadCache): SppProofInputs {
-  const inputUtxos = proofInputs.inputUtxos.slice();
-  for (const note of readCache.notes) {
-    const at = inputUtxos.findIndex((spent) => equalBytes(spent.nullifier(), note.nullifier));
-    const spent = inputUtxos[at];
-    if (spent === undefined)
-      throw new RingError("RING_TRANSACT_DATA_INVALID", {
-        details: { reason: "CachedInputUnknown" },
-      });
-    inputUtxos[at] = spent.withCacheSlot(note.slot);
-  }
-  return new SppProofInputs({
-    payer: proofInputs.payer,
-    inputUtxos,
-    outputs: proofInputs.outputs,
-    externalData: proofInputs.externalData,
-    blindingSeed: proofInputs.blindingSeed,
-    outputTreeId: proofInputs.outputTreeId,
-  }).withReadCache(readCache.cache);
-}
-
-/** Rust `RelayProofInputs::token_account_setup`, each account the withdrawal pays. */
-async function tokenAccountCreates(
-  setup: readonly TokenAccountSetup[] | undefined,
-  withdrawal: TransactWithdrawal | undefined,
-): Promise<readonly TokenAccountCreate[]> {
-  const created = new Set<Address>();
-  return Promise.all(
-    (setup ?? []).map(async (entry, index) => {
-      const refused = (): RingError =>
-        new RingError("RING_RELAY_PROOF_INPUTS", {
-          details: { reason: "tokenAccountSetup", index },
-        });
-      if (withdrawal?.kind !== "spl" || withdrawal.mint !== entry.mint) throw refused();
-      const { tokenProgram } = withdrawal;
-      const account = await associatedTokenAddress(entry.owner, entry.mint, tokenProgram);
-      if (account !== withdrawal.recipientTokenAccount || created.has(account)) throw refused();
-      created.add(account);
-      return Object.freeze({ owner: entry.owner, mint: entry.mint, tokenProgram });
-    }),
-  );
-}
-
-/** The approval a pipeline runs, bound to the prepared transfer the rail proves. */
-function approvedStage(
-  approval: RingTransferApproval | undefined,
-  prepared: PreparedTransfer,
-): Pick<StagedTransferInput, "transaction" | "approve"> {
-  if (approval === undefined) return {};
-  return {
-    transaction: approval.transaction,
-    approve: (coSigners, proofInputs) => approval.approve({ prepared, proofInputs, coSigners }),
-  };
-}
-
-/** The ring's config once SPP's registration admits it, Rust `require_config` and `require_active`. */
-async function activeConfig(
-  client: Pick<RingProvingClient, "getAccount">,
-  ringProgramId: Address,
-  context: RequestContext | undefined,
-): Promise<RingPolicy> {
-  const [config] = await Promise.all([
-    fetchRingPolicy(client, ringProgramId, context),
-    requireActiveRing(client, ringProgramId, context),
-  ]);
-  return config;
-}
-
-/** The sender's transaction key, derived by its key holder from the first nullifier. */
-async function transactionKey(
-  keys: WalletKeys,
-  sender: ShieldedAddress,
-  prepared: PreparedTransfer,
-  context: RequestContext | undefined,
-): Promise<ViewingKey> {
-  const derived = await keys.transactionKeys(
-    [{ viewingPublicKey: sender.viewingPublicKey, firstNullifier: prepared.firstNullifier }],
-    context,
-  );
-  const [key, ...extra] = derived;
-  for (const surplus of extra) surplus.destroy();
-  if (key === undefined)
-    throw new RingError("RING_KEYS_REQUIRED", { details: { reason: "transactionKey" } });
-  return key;
-}
-
-/** A public withdrawal names its settlement accounts, a transfer without one names none. */
-function checkWithdrawalAccounts(
-  prepared: PreparedTransfer,
-  withdrawal: TransactWithdrawal | undefined,
-): void {
-  const leg = prepared.interfaceTransfers.find((transfer) => !transfer.isDeposit);
-  const matches =
-    leg === undefined
-      ? withdrawal === undefined
-      : withdrawal !== undefined &&
-        (leg.kind === "sol"
-          ? withdrawal.kind === "sol" && withdrawal.recipient === leg.userSolAccount
-          : withdrawal.kind === "spl" &&
-            withdrawal.mint === leg.mint &&
-            withdrawal.recipientTokenAccount === leg.tokenAccount);
-  if (!matches) throw new RingError("RING_SETTLEMENT_ACCOUNTS_INVALID");
-}
-
-/** Each deposit leg names its funder's accounts in leg order, Rust `funder_account_position`. */
-function checkDepositAccounts(
-  prepared: PreparedTransfer,
-  deposits: readonly TransactDeposit[] | undefined,
-): void {
-  const legs = prepared.interfaceTransfers.filter((transfer) => transfer.isDeposit);
-  const accounts = deposits ?? [];
-  const matches =
-    legs.length === accounts.length &&
-    legs.every((leg, index) => {
-      const named = accounts[index];
-      return leg.kind === "sol"
-        ? named?.kind === "sol" && signerAddress(named.funder) === leg.userSolAccount
-        : named?.kind === "spl" &&
-            named.mint === leg.mint &&
-            named.sourceTokenAccount === leg.tokenAccount;
-    });
-  if (!matches) throw new RingError("RING_SETTLEMENT_ACCOUNTS_INVALID");
-}
-
-function stagedDeposits(
-  input: CustomRingTransferInput,
-): Readonly<{ deposits?: readonly TransactDeposit[] }> {
-  return input.deposits === undefined ? {} : { deposits: input.deposits };
 }
 
 export interface RingRelayInput {
@@ -1830,107 +999,6 @@ export interface DepositRelayFrame {
   readonly expected: ExpectedSealed;
 }
 
-/** One funder term per funding key, Ring RPC builds the frame and the funder signs its legs. */
-function depositRelayFrame(
-  input: Readonly<{
-    owner: CustomRingTransferInput;
-    config: RingPolicy;
-    prepared: PreparedTransfer;
-    staged: Omit<StagedTransfer, "spend">;
-    spend: Pick<RailSpend, "rail" | "publicOwners">;
-    input: DepositRelayInput;
-  }>,
-): DepositRelayFrame {
-  const { owner, config, prepared, staged, spend } = input;
-  checkRelayUnvouched(owner);
-  const { quote, nullifierKey } = input.input;
-  if (prepared.payer !== quote.feePayer)
-    throw new RingError("RING_RELAY_PAYER_MISMATCH", {
-      details: { payer: prepared.payer, feePayer: quote.feePayer },
-    });
-  const deposits = owner.deposits ?? [];
-  const funders = [...new Set(deposits.map(({ funder }) => signerAddress(funder)))];
-  // The fee payer signs whatever the relay sends, a leg naming it would fund the note from the relay.
-  if (funders.includes(quote.feePayer)) throw new RingError("RING_RELAY_FEE_PAYER_FUNDS_DEPOSIT");
-  const sealed = sealRelayedTransfer({
-    ringProgramId: owner.ringProgramId,
-    config,
-    staged: { ...staged, spend },
-  });
-  try {
-    const { proofInputs } = sealed;
-    const plan = staged.rail.delivery;
-    const legs = proofInputs.externalData.interfaceTransfers;
-    const funded = stagedLegs({ transfers: legs, deposits, withdrawal: undefined });
-    return Object.freeze({
-      payload: encodeRelayProofInputs({
-        rail: { kind: "deposit", ...(plan.kind === "anonymous" ? { plan: plan.plan } : {}) },
-        ringProgramId: owner.ringProgramId,
-        sender: staged.sender,
-        nullifierKey,
-        txViewingKey: staged.rail.txViewingKey,
-        inputs: proofInputs.inputUtxos,
-        leafIndexes: proofInputs.inputUtxos.map(() => 0n),
-        outputs: proofInputs.outputs,
-        externalData: proofInputs.externalData,
-        interfaceTransferAccounts: deposits.map(relayLegAccounts),
-        blindingSeed: proofInputs.blindingSeed,
-        outputTreeId: proofInputs.outputTreeId,
-        wideOwners: sealed.plan.wideOwners,
-        assets: owner.assets,
-        listSalts: relayListSalts(config, owner.listSalts ?? []),
-        coOwners: [],
-      }),
-      legs: relayLegs(legs),
-      expected: Object.freeze({
-        kind: "sealed",
-        terms: [],
-        funders: funders.map((signer) =>
-          Object.freeze({
-            ring: owner.ringProgramId,
-            feePayer: quote.feePayer,
-            signer,
-            legs: Object.freeze(
-              funded.filter(({ funder }) => funder === signer).map(({ leg }) => leg),
-            ),
-            setup: [],
-          }),
-        ),
-        chargedOutflows: chargedOutflowsOf(proofInputs),
-      }),
-    });
-  } finally {
-    sealed.sealed.ephemeralSecret.fill(0);
-  }
-}
-
-/** The relay wire's account group of one deposit leg, a SOL leg names its funder. */
-function relayLegAccounts(deposit: TransactDeposit): RelayLegAccounts {
-  return deposit.kind === "sol"
-    ? { kind: "sol", recipient: signerAddress(deposit.funder) }
-    : {
-        kind: "splDeposit",
-        mint: deposit.mint,
-        splTokenInterface: deposit.splTokenInterface,
-        tokenAuthority: signerAddress(deposit.funder),
-        userTokenAccount: deposit.sourceTokenAccount,
-        tokenProgram: deposit.tokenProgram,
-      };
-}
-
 export interface PreparedRingRelay {
   readonly relay: UnsignedRelay;
-}
-
-/** A padding slot names no leaf. */
-function leafIndexOf(input: ProofInputUtxo, notes: readonly WalletUtxo[]): bigint {
-  if (input.isDummy()) return 0n;
-  const note = notes.find((entry) => equalBytes(entry.nullifier, input.nullifier()));
-  if (note === undefined)
-    throw new RingError("RING_RELAY_PROOF_INPUTS", { details: { reason: "leafIndex" } });
-  return note.outputContext.leafIndex;
-}
-
-function ringSalted(ringSalt: Bytes32 | undefined): Readonly<{ ringSalt?: Bytes32 }> {
-  return ringSalt === undefined ? {} : { ringSalt };
 }

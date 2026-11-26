@@ -2,7 +2,7 @@ import { SPP_SUPPORTED_SHAPES } from "@heliuslabs/spr/interface";
 import type { Bytes16, Bytes32 } from "@heliuslabs/spr/interface";
 import { clampViewingSecret } from "@heliuslabs/spr/internal";
 
-import { CUSTOM_RING_PROOF_LENGTH } from "../../src/protocol/proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../../src/protocol/codec/ring-codecs.js";
 import {
   PAYLOAD_LENGTH_LEN,
   envelopeRegion,

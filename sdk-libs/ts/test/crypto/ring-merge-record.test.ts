@@ -27,7 +27,7 @@ import {
   MERGE_ENVELOPE_LEN,
   MERGE_RECORD_LEN,
 } from "../../src/protocol/codec/ring-disclosure-layout.js";
-import { CUSTOM_RING_PROOF_LENGTH } from "../../src/protocol/proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../../src/protocol/codec/ring-codecs.js";
 import { RingError } from "../../src/protocol/error.js";
 
 const hex = (value: string): Uint8Array => hexToBytes(value.replace(/^0x/, ""));

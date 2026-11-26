@@ -13,13 +13,8 @@ import {
 } from "@heliuslabs/spr/internal";
 import { type Bytes32, type Bytes33, ShieldedPublicKey } from "@heliuslabs/spr";
 
-import {
-  memberOfIdentity,
-  memberOfTag,
-  ownerRecordKey,
-  type Member,
-} from "../../protocol/membership/policy.js";
-import { RingError } from "../../protocol/error.js";
+import { memberOfIdentity, memberOfTag, ownerRecordKey, type Member } from "./policy.js";
+import { RingError } from "../error.js";
 
 /** Passkey public key for ring-rpc audit access. */
 export class P256ReaderKey {

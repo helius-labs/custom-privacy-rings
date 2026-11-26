@@ -1,5 +1,5 @@
-import { RingError } from "../../protocol/error.js";
-import { LIST_IDS, ListId, listWriter, recordBit } from "../../protocol/membership/policy.js";
+import { RingError } from "../error.js";
+import { LIST_IDS, ListId, listWriter, recordBit } from "./policy.js";
 
 /** Rust `ListWrite`, the lists one write sets and clears. */
 export interface ListWrite {

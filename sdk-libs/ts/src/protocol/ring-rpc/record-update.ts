@@ -14,11 +14,8 @@ import {
 
 import { RingDomain, domainField } from "../../crypto/derivation/ring-domain.js";
 import { ringIdField } from "../../crypto/derivation/ring-stream.js";
-import { signMessage } from "../../rpc/ring-rpc.js";
-import {
-  AUTHORITY_WRITABLE_LISTS,
-  MEMBER_WRITABLE_LISTS,
-} from "../../operations/management/record-writes.js";
+import { signMessage } from "./read-signer.js";
+import { AUTHORITY_WRITABLE_LISTS, MEMBER_WRITABLE_LISTS } from "../membership/record-writes.js";
 import { RingError } from "../error.js";
 import type { RecordWrite } from "../membership/member-registry.js";
 import { checkMember, writeChain } from "../membership/member-opening.js";

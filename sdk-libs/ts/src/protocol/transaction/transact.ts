@@ -34,7 +34,7 @@ import type {
   TreeContext,
   Shape,
 } from "@heliuslabs/spr/interface";
-import { CUSTOM_RING_PROOF_LENGTH } from "../proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../codec/ring-codecs.js";
 import {
   PAYLOAD_LENGTH_LEN,
   RecordKind,

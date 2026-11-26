@@ -137,9 +137,10 @@ export function transferKeys(): readonly TransferKeyCircuit[] {
 const SPP_ADDRESSES = 4;
 /** Rust `RING_ADDRESSES`, ring program, policy, config, own, curator and tracking registries. */
 const RING_ADDRESSES = 6;
-import { MAX_TRANSACTION_ADDRESSES } from "../transaction/v1-limits.js";
-
-export { MAX_TRANSACTION_ADDRESSES };
+/** The version 1 transaction ceilings, Rust `solana_message::v1`. */
+export const MAX_TRANSACTION_ADDRESSES = 64;
+export const MAX_TRANSACTION_SIGNATURES = 12;
+export const MAX_TRANSACTION_INSTRUCTIONS = 64;
 
 /** What takes a v1 transaction's addresses beside its owner signers, Rust `TransferAddresses`. */
 export interface TransferAddresses {

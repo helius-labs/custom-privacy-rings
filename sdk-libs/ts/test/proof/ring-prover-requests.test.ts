@@ -22,7 +22,7 @@ import {
   type TrackingWriteProofInput,
   type TransferProofRequest,
   type VoucherProofInput,
-} from "../../src/rpc/prover/ring.js";
+} from "../../src/protocol/proof/ring-proof-requests.js";
 import { ZERO_32, concatBytes, encodeBase58, isZero } from "@heliuslabs/spr/internal";
 import { UTXO_DOMAIN } from "@heliuslabs/spr/interface";
 import type { Address, Bytes16, Bytes31, Bytes32, Bytes33 } from "@heliuslabs/spr/interface";
@@ -109,7 +109,7 @@ const GOLDEN_FILES = HAS_GOLDENS
 const GOLDEN_BY_CIRCUIT = new Map(
   GOLDEN_FILES.map((file) => [basename(file, ".json"), file] as const),
 );
-const RUST_FIXTURES = new URL("../../../sdk/tests/fixtures/", import.meta.url);
+const RUST_FIXTURES = new URL("../../../client/tests/fixtures/", import.meta.url);
 const RUST_TRANSFER_FIXTURES = readdirSync(RUST_FIXTURES).filter(
   (name) => name.startsWith("custom-ring-transfer-") && name.endsWith(".json"),
 );

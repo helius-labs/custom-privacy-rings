@@ -12,7 +12,13 @@ import type {
   RecordUpdateEntry,
   SubmitRecordUpdateRequest,
 } from "../../protocol/ring-rpc/ring-rpc-types.js";
-import { checkWriter, listBits, listMask, listWrite, type ListWrite } from "./record-writes.js";
+import {
+  checkWriter,
+  listBits,
+  listMask,
+  listWrite,
+  type ListWrite,
+} from "../../protocol/membership/record-writes.js";
 
 /** The writer refuses the update after `validUntilSlot`. */
 export interface RecordUpdateTarget {

@@ -9,7 +9,6 @@ import {
   canopyLevels,
 } from "../membership/member-registry.js";
 import { schemaWire, toU64 } from "../wire-primitives.js";
-import { MAX_RING_MEMBER_BATCH } from "./indexer-limits.js";
 import type {
   RingMemberOpeningView,
   RingMemberRecordView,
@@ -25,6 +24,9 @@ import type {
   StorageRecordPoolResponse,
   StorageRootView,
 } from "./indexer-types.js";
+
+/** `spr_indexer_api::MAX_RING_MEMBER_PAGE_LIMIT`: members one ring page or opening batch names. */
+export const MAX_RING_MEMBER_BATCH = 100;
 
 const { array, context, object, toWireInteger, wireInteger } = indexerCodec;
 const { checkedAddress, checkedHash, schemaFailure } = indexerScalars;

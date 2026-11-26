@@ -5,12 +5,9 @@ import { describe, expect, it } from "vitest";
 
 import type { Address, Bytes32, Bytes33 } from "@heliuslabs/spr/interface";
 import { addressBytes, indexerScalars } from "@heliuslabs/spr/internal";
-import {
-  P256ReaderKey,
-  readerKeyMember,
-} from "../../../src/operations/management/reader-access.js";
+import { P256ReaderKey, readerKeyMember } from "../../../src/protocol/membership/reader-access.js";
 import { WalletRecordUpdate } from "../../../src/operations/management/record-updates.js";
-import { listWrite } from "../../../src/operations/management/record-writes.js";
+import { listWrite } from "../../../src/protocol/membership/record-writes.js";
 import { listTagOf } from "../../../src/crypto/keys/list-salt.js";
 import { ListId, memberOfTag, recordBit } from "../../../src/protocol/membership/policy.js";
 import {

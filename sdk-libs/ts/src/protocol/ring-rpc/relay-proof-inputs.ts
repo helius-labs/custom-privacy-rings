@@ -47,9 +47,8 @@ import {
   type SettlementTransfer,
 } from "@heliuslabs/spr/transaction";
 
-import { AnonymousPlan } from "../../operations/payments/output-rail.js";
-import type { CoOwner } from "../../operations/payments/ring-spend.js";
-import type { RingListSalt } from "../../proof/policy-proof.js";
+import { AnonymousPlan } from "../transaction/anonymous-plan.js";
+import type { RingListSalt } from "../membership/policy.js";
 import { RingError } from "../error.js";
 
 /** Rust `RelayRail`. */
@@ -76,6 +75,12 @@ export type RelayLegAccounts =
       userTokenAccount: Address;
       tokenProgram: Address;
     }>;
+
+/** A public co-owner of later inputs, it signs the transaction and one prover holds its secret. */
+export interface CoOwner {
+  readonly owner: Address;
+  readonly nullifierKey: NullifierKey;
+}
 
 /** Rust `RelayProofInputs`. */
 export interface RelayProofInputs {

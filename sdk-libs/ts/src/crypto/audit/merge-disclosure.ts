@@ -20,7 +20,7 @@ import type {
 import { X25519Keypair, X25519PublicKey } from "@heliuslabs/spr/keypair";
 import type { Bytes16, NullifierKey } from "@heliuslabs/spr/keypair";
 
-import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/codec/ring-codecs.js";
 import {
   decodeMergeRecord,
   encodeMergeRecord,
@@ -37,8 +37,7 @@ import {
 import { decompressG2 } from "../../protocol/codec/codecs.js";
 import { RingError } from "../../protocol/error.js";
 import { taggedX25519 } from "../../protocol/transaction/transact.js";
-import type { RingProver } from "../../rpc/ports.js";
-import type { MergeProofRequest } from "../../rpc/prover/ring.js";
+import type { MergeProofRequest, RingProver } from "../../protocol/proof/ring-proof-requests.js";
 import { x25519FromU } from "../keys/x25519.js";
 import { domainField, RingDomain } from "../derivation/ring-domain.js";
 import { deliveredSlotSecret } from "../derivation/ring-stream.js";

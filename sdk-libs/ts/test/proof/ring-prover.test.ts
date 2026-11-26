@@ -5,7 +5,7 @@ import { ProverClient } from "@heliuslabs/spr/internal";
 
 import { RING_PROVING_KEY_SHA256S } from "../../src/protocol/proof/proving-keys.js";
 import { CustomRingProver } from "../../src/rpc/prover/client.js";
-import type { RegisterKeyProofRequest } from "../../src/rpc/prover/ring.js";
+import type { RegisterKeyProofRequest } from "../../src/protocol/proof/ring-proof-requests.js";
 import { proofFor } from "../helpers/proofs.js";
 
 function bytes(value: number): Bytes32 {

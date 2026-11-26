@@ -4,7 +4,10 @@ import { NO_CACHE_WRITES, type Bytes32, type CacheAccess } from "@heliuslabs/spr
 import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
 import type { ProofInputUtxo, SppProofInputs } from "@heliuslabs/spr/transaction";
 
-import type { TransferProofRequest, VoucherProofInput } from "../rpc/prover/ring.js";
+import type {
+  TransferProofRequest,
+  VoucherProofInput,
+} from "../protocol/proof/ring-proof-requests.js";
 import type { RingOutputRail } from "../operations/payments/output-rail.js";
 import {
   frameKeyShape,

@@ -5,8 +5,8 @@ import {
   P256ReaderKey,
   checkedReaderKey,
   readerKeyBytes,
-} from "../../operations/management/reader-access.js";
-import type { RingReadSigner, WebAuthnSignature } from "../../rpc/ring-rpc.js";
+} from "../../protocol/membership/reader-access.js";
+import type { RingReadSigner, WebAuthnSignature } from "../../protocol/ring-rpc/read-signer.js";
 
 export interface Passkey {
   readonly credentialId: Uint8Array;

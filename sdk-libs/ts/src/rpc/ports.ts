@@ -12,9 +12,8 @@ import type {
 import type { Address, Signature } from "@solana/kit";
 
 import type {
-  MemberRecord,
-  QuadPath,
-  RecordOpening,
+  RingMemberOpening,
+  RingServedRecord,
 } from "../protocol/membership/member-registry.js";
 import type { RingTransactInstructionData } from "../protocol/proof/circuit.js";
 import type {
@@ -23,7 +22,9 @@ import type {
   TrackingRecordPoolRequest,
 } from "../protocol/indexer/tracking-codec.js";
 import type { ServedTrackingPool } from "../protocol/membership/tracking.js";
-import type { RingProofRequest } from "./prover/ring.js";
+import type { RingProver } from "../protocol/proof/ring-proof-requests.js";
+
+export type { RingMemberOpening, RingProver, RingServedRecord };
 
 /** The nullifier key an owner enrolled, sealed to the auditor. */
 export interface RingSealedKey {
@@ -33,9 +34,6 @@ export interface RingSealedKey {
   readonly ephemeralPublicKey: X25519PublicKey;
   readonly ciphertext: Bytes64;
 }
-
-/** An opening the indexer served, unverified until checked against the bound root. */
-export type RingMemberOpening = RecordOpening;
 
 /** A root a `StorageRegistry` history holds, named by the revision the ring program reads. */
 export interface StorageRoot {
@@ -90,12 +88,6 @@ export interface StorageRecordPool {
   readonly subjects: readonly number[];
 }
 
-/** A leaf the indexer served. */
-export type RingServedRecord = Readonly<{
-  record: MemberRecord;
-  path: QuadPath;
-}>;
-
 export interface RingRecordReader {
   getStorageMemberOpenings(
     request: StorageOpeningsRequest,
@@ -143,11 +135,6 @@ export interface RingSubmissionTransport {
     context?: RequestContext,
   ): Promise<RingSubmissionStatus | undefined>;
   status(pending: RingSubmissionPending, context?: RequestContext): Promise<RingSubmissionStatus>;
-}
-
-export interface RingProver {
-  /** One ring proof, the 192-byte `CustomRingProof` the ring program verifies. */
-  proveRing(request: RingProofRequest, context?: RequestContext): Promise<Uint8Array>;
 }
 
 export type RingMergeClient = TreeContext &

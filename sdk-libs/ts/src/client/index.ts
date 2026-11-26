@@ -14,7 +14,7 @@ export {
 } from "../rpc/ring-capabilities.js";
 export { ringInputOpening, ringOutputOpening } from "../rpc/prover/assembly.js";
 export { customRingProof } from "../rpc/prover/proof.js";
-export { CUSTOM_RING_PROOF_LENGTH } from "../protocol/proof/custom-ring-proof.js";
+export { CUSTOM_RING_PROOF_LENGTH } from "../protocol/codec/ring-codecs.js";
 export {
   RING_KEYS,
   RING_PROVING_KEY_SHA256S,
@@ -23,7 +23,7 @@ export {
 } from "../protocol/proof/proving-keys.js";
 export type { RingKeyCircuit } from "../protocol/proof/proving-keys.js";
 export type { TransferKeyCircuit } from "../protocol/proof/transfer-shapes.js";
-export { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../rpc/prover/types.js";
+export { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../protocol/codec/ring-codecs.js";
 export type {
   ApplyEnrollmentsProofRequest,
   ApplyRecordsProofRequest,
@@ -46,7 +46,7 @@ export type {
   TrackingWriteProofInput,
   TransferProofInputs,
   VoucherProofInput,
-} from "../rpc/prover/ring.js";
+} from "../protocol/proof/ring-proof-requests.js";
 export type {
   AnonymousRingTransactProver,
   ProvenAnonymousRingTransact,

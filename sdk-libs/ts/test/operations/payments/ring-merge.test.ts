@@ -70,7 +70,10 @@ import {
   Wallet,
   assetField,
 } from "@heliuslabs/spr/transaction";
-import type { MergeProofRequest, RingProofRequest } from "../../../src/rpc/prover/ring.js";
+import type {
+  MergeProofRequest,
+  RingProofRequest,
+} from "../../../src/protocol/proof/ring-proof-requests.js";
 import { ringAuthAddress, ringPolicyPda } from "../../../src/protocol/pda/index.js";
 import type { RingMode } from "../../../src/protocol/codec/ring-codecs.js";
 import {
@@ -80,7 +83,7 @@ import {
 } from "../../../src/index.js";
 import { RingInstructionTag } from "../../../src/protocol/transaction/instruction-tag.js";
 import { RecordKind } from "../../../src/protocol/codec/audit-stream.js";
-import { CUSTOM_RING_PROOF_LENGTH } from "../../../src/protocol/proof/custom-ring-proof.js";
+import { CUSTOM_RING_PROOF_LENGTH } from "../../../src/protocol/codec/ring-codecs.js";
 import {
   decodeRingMergeRequest,
   mergePublicInputHash,

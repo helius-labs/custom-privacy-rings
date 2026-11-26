@@ -27,12 +27,7 @@ import {
 } from "@heliuslabs/spr/transaction";
 
 import { RingError } from "../../protocol/error.js";
-
-/** A public co-owner of later inputs, it signs the transaction and one prover holds its secret. */
-export interface CoOwner {
-  readonly owner: Address;
-  readonly nullifierKey: NullifierKey;
-}
+import type { CoOwner } from "../../protocol/ring-rpc/relay-proof-inputs.js";
 
 /** Input 0 seeds every output blinding, the rail refuses a frame whose hidden owner does not lead it. */
 export function ringSpendTransfer(

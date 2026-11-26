@@ -35,7 +35,7 @@ interface RekeyCase {
 
 const CASES = JSON.parse(
   readFileSync(
-    new URL("../../../../sdk/tests/fixtures/transfer-plan-rekey.json", import.meta.url),
+    new URL("../../../../client/tests/fixtures/transfer-plan-rekey.json", import.meta.url),
     "utf8",
   ),
 ) as readonly RekeyCase[];

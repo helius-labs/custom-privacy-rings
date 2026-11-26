@@ -2,7 +2,7 @@ import type { MintPolicy } from "./mint-policy.js";
 import type { Address } from "@solana/kit";
 
 import { RingDomain, domainField } from "../../crypto/derivation/ring-domain.js";
-import type { PolicyTableProofInputs } from "../../rpc/prover/ring.js";
+import type { PolicyTableProofInputs } from "../proof/ring-proof-requests.js";
 import {
   hashBytes,
   solanaOwnerIdentity,
@@ -19,7 +19,7 @@ import {
   isZero,
 } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
-import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../../rpc/prover/types.js";
+import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../codec/ring-codecs.js";
 
 import {
   registryCurator,
@@ -781,4 +781,10 @@ function entryInvalid(reason: string): RingError {
 
 function fieldU8(value: number): Bytes32 {
   return rightAlign(Uint8Array.of(value));
+}
+
+/** From the owner's `RingAddress` or `RingKeys.listSalt`. */
+export interface RingListSalt {
+  readonly owner: Bytes32;
+  readonly salt: Bytes32;
 }

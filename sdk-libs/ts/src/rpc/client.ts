@@ -33,7 +33,7 @@ import type {
 } from "./ports.js";
 import { CustomRingProver } from "./prover/client.js";
 import { customRingProof } from "./prover/proof.js";
-import type { RingProofRequest } from "./prover/ring.js";
+import type { RingProofRequest } from "../protocol/proof/ring-proof-requests.js";
 
 export type CustomRingClientConfig = Omit<SprClientConfig, "provingKeys"> & {
   readonly provingKeys?: never;

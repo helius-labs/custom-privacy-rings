@@ -43,7 +43,7 @@ import {
 } from "../../protocol/transaction/intent.js";
 import type { Wallet, WalletUtxo } from "@heliuslabs/spr/transaction";
 import { ringSpendTransfer } from "./ring-spend.js";
-import type { RingListSalt } from "../../proof/policy-proof.js";
+import type { RingListSalt } from "../../protocol/membership/policy.js";
 import { frameKeyShape, TRANSFER_SHAPES } from "../../protocol/proof/transfer-shapes.js";
 import type { ReplyMetadata } from "../../protocol/codec/anonymous-delivery.js";
 import { RingAddress, RingPaymentRequest } from "../../crypto/keys/ring-address.js";
@@ -223,32 +223,19 @@ export interface RingWithdrawalTransactionParams extends RingSpendParams {
 }
 
 /** Unsigned, the fee payer and any co-signer sign. */
+/** Unsigned, the fee payer and any co-signer sign. */
 export async function buildRingTransferTransaction(
   input: (RingTransferTransactionParams | RingMultiTransferParams) & RingOwnerRail,
   context?: RequestContext,
 ): Promise<Transaction> {
-  return (
-    await buildRingSend(
-      { params: paidSpend(input), rail: ownerRail(input), destination: "ring", retry: {} },
-      context,
-    )
-  ).transaction;
+  return buildSpendTransaction(paidSpend(input), input, ringSend, context);
 }
 
 export function createRingTransferSubmission(
   input: (RingTransferTransactionParams | RingMultiTransferParams) & RingDirectRail,
   context?: RequestContext,
 ): Promise<RingTransactionSubmission> {
-  const params = paidSpend(input);
-  return RingTransactionSubmission.fromBuilder(
-    {
-      wallet: input.wallet,
-      registry: input.client,
-      build: (retry, buildContext) =>
-        buildRingSend({ params, rail: input, destination: "ring", retry }, buildContext),
-    },
-    context,
-  );
+  return createSpendSubmission(paidSpend(input), input, ringSend, context);
 }
 
 /**
@@ -259,28 +246,14 @@ export async function buildRingExitTransaction(
   input: RingExitTransactionParams & RingOwnerRail,
   context?: RequestContext,
 ): Promise<Transaction> {
-  return (
-    await buildRingSend(
-      { params: paidSpend(input), rail: ownerRail(input), destination: "default", retry: {} },
-      context,
-    )
-  ).transaction;
+  return buildSpendTransaction(paidSpend(input), input, defaultSend, context);
 }
 
 export function createRingExitSubmission(
   input: RingExitTransactionParams & RingDirectRail,
   context?: RequestContext,
 ): Promise<RingTransactionSubmission> {
-  const params = paidSpend(input);
-  return RingTransactionSubmission.fromBuilder(
-    {
-      wallet: input.wallet,
-      registry: input.client,
-      build: (retry, buildContext) =>
-        buildRingSend({ params, rail: input, destination: "default", retry }, buildContext),
-    },
-    context,
-  );
+  return createSpendSubmission(paidSpend(input), input, defaultSend, context);
 }
 
 /** Default UTXOs of the sender enter the ring as its own ring notes. */
@@ -288,23 +261,14 @@ export async function buildRingEntryTransaction(
   input: RingEntryTransactionParams & RingOwnerRail,
   context?: RequestContext,
 ): Promise<Transaction> {
-  return (await buildRingEntry({ params: input, rail: ownerRail(input), retry: {} }, context))
-    .transaction;
+  return buildSpendTransaction(input, input, entryStrategy, context);
 }
 
 export function createRingEntrySubmission(
   input: RingEntryTransactionParams & RingDirectRail,
   context?: RequestContext,
 ): Promise<RingTransactionSubmission> {
-  return RingTransactionSubmission.fromBuilder(
-    {
-      wallet: input.wallet,
-      registry: input.client,
-      build: (retry, buildContext) =>
-        buildRingEntry({ params: input, rail: input, retry }, buildContext),
-    },
-    context,
-  );
+  return createSpendSubmission(input, input, entryStrategy, context);
 }
 
 /**
@@ -315,23 +279,14 @@ export async function buildRingWithdrawalTransaction(
   input: RingWithdrawalTransactionParams & RingOwnerRail,
   context?: RequestContext,
 ): Promise<Transaction> {
-  return (await buildRingWithdrawal({ params: input, rail: ownerRail(input), retry: {} }, context))
-    .transaction;
+  return buildSpendTransaction(input, input, withdrawalStrategy, context);
 }
 
 export function createRingWithdrawalSubmission(
   input: RingWithdrawalTransactionParams & RingDirectRail,
   context?: RequestContext,
 ): Promise<RingTransactionSubmission> {
-  return RingTransactionSubmission.fromBuilder(
-    {
-      wallet: input.wallet,
-      registry: input.client,
-      build: (retry, buildContext) =>
-        buildRingWithdrawal({ params: input, rail: input, retry }, buildContext),
-    },
-    context,
-  );
+  return createSpendSubmission(input, input, withdrawalStrategy, context);
 }
 
 /** Ring RPC reads the paths and records, proves and sends. */
@@ -342,7 +297,7 @@ export function prepareRingTransferRelay<R extends RingRelayRail>(
   context?: RequestContext,
 ): Promise<PreparedSpendRelay> {
   const params = paidSpend(input);
-  return relayRingSpend({ params, strategy: sendStrategy(params, "ring") }, context);
+  return relayRingSpend({ params, strategy: ringSend(params) }, context);
 }
 
 export function prepareRingExitRelay<R extends RingRelayRail>(
@@ -350,7 +305,7 @@ export function prepareRingExitRelay<R extends RingRelayRail>(
   context?: RequestContext,
 ): Promise<PreparedSpendRelay> {
   const params = paidSpend(input);
-  return relayRingSpend({ params, strategy: sendStrategy(params, "default") }, context);
+  return relayRingSpend({ params, strategy: defaultSend(params) }, context);
 }
 
 /** Anonymous rings alone, the in-proof owner of a confidential relay refuses every default-ring note. */
@@ -445,49 +400,60 @@ function ownerRail(input: RingOwnerRail): RingOwnerRail {
   return input.inProofOwner === undefined ? {} : { inProofOwner: input.inProofOwner };
 }
 
-function buildRingSend(
+/** The strategy one operation stages its spend under, read again on every build. */
+type SpendOperation<Spend, Resolved> = (spend: Spend) => RingSpendStrategy<Resolved>;
+
+const ringSend = (spend: SendParams) => sendStrategy(spend, "ring");
+
+const defaultSend = (spend: SendParams) => sendStrategy(spend, "default");
+
+/** One build of an operation on the rail its caller names. */
+function buildDirectSpend<Spend extends RingSpendParams, Resolved>(
   input: Readonly<{
-    params: RingSpendParams & PaidSpend;
+    params: Spend;
     rail: RingDirectRail;
-    destination: "ring" | "default";
+    operation: SpendOperation<Spend & SendRails, Resolved>;
     retry: RingSubmissionBuildState;
   }>,
   context: RequestContext | undefined,
 ): Promise<RingSubmissionAttempt> {
-  const { params, rail, destination, retry } = input;
-  const send = {
+  const { params, rail, retry } = input;
+  const railed = {
     ...params,
     ...(rail.anonymous === undefined ? {} : { anonymous: rail.anonymous }),
     ...(rail.spendPublic === undefined ? {} : { spendPublic: rail.spendPublic }),
   };
-  return buildRingSpend(
-    { params, rail, strategy: sendStrategy(send, destination), retry },
+  return buildRingSpend({ params, rail, strategy: input.operation(railed), retry }, context);
+}
+
+async function buildSpendTransaction<Spend extends RingSpendParams, Resolved>(
+  params: Spend,
+  rail: RingOwnerRail,
+  operation: SpendOperation<Spend & SendRails, Resolved>,
+  context: RequestContext | undefined,
+): Promise<Transaction> {
+  const attempt = await buildDirectSpend(
+    { params, rail: ownerRail(rail), operation, retry: {} },
     context,
   );
+  return attempt.transaction;
 }
 
-function buildRingEntry(
-  input: Readonly<{
-    params: RingEntryTransactionParams;
-    rail: RingDirectRail;
-    retry: RingSubmissionBuildState;
-  }>,
+function createSpendSubmission<Spend extends RingSpendParams, Resolved>(
+  params: Spend,
+  rail: RingDirectRail,
+  operation: SpendOperation<Spend & SendRails, Resolved>,
   context: RequestContext | undefined,
-): Promise<RingSubmissionAttempt> {
-  const { params, rail, retry } = input;
-  return buildRingSpend({ params, rail, strategy: entryStrategy(params), retry }, context);
-}
-
-function buildRingWithdrawal(
-  input: Readonly<{
-    params: RingWithdrawalTransactionParams;
-    rail: RingDirectRail;
-    retry: RingSubmissionBuildState;
-  }>,
-  context: RequestContext | undefined,
-): Promise<RingSubmissionAttempt> {
-  const { params, rail, retry } = input;
-  return buildRingSpend({ params, rail, strategy: withdrawalStrategy(params), retry }, context);
+): Promise<RingTransactionSubmission> {
+  return RingTransactionSubmission.fromBuilder(
+    {
+      wallet: params.wallet,
+      registry: params.client,
+      build: (retry, buildContext) =>
+        buildDirectSpend({ params, rail, operation, retry }, buildContext),
+    },
+    context,
+  );
 }
 
 /** A spend whose recipients are its payments, `amount` their sum. */
@@ -507,8 +473,9 @@ function paidSpend<
   return { ...input, amount, payments };
 }
 
-type SendParams = PaidSpend &
-  Readonly<{ anonymous?: AnonymousSpendOwner; spendPublic?: RingPublicSpend }>;
+type SendRails = Readonly<{ anonymous?: AnonymousSpendOwner; spendPublic?: RingPublicSpend }>;
+
+type SendParams = PaidSpend & SendRails;
 
 function sendStrategy(
   params: SendParams,

@@ -52,7 +52,7 @@ import { resolveRingOutputTree } from "../../protocol/membership/trees.js";
 import { RingInstructionTag } from "../../protocol/transaction/instruction-tag.js";
 import { depositRequestDigest } from "../../protocol/ring-rpc/relay-proof-inputs.js";
 import type { RelayIntent, RelayQuote } from "../../protocol/ring-rpc/ring-rpc-types.js";
-import type { RingListSalt } from "../../proof/policy-proof.js";
+import type { RingListSalt } from "../../protocol/membership/policy.js";
 import { PreparedRelay } from "../../rpc/relay.js";
 import { mismatch } from "../../rpc/relay-message.js";
 import {

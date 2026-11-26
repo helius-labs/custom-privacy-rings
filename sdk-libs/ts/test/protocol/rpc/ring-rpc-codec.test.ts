@@ -41,7 +41,7 @@ import {
   depositRequestDigest,
   mergeRequestDigest,
 } from "../../../src/protocol/ring-rpc/relay-proof-inputs.js";
-import { P256ReaderKey } from "../../../src/operations/management/reader-access.js";
+import { P256ReaderKey } from "../../../src/protocol/membership/reader-access.js";
 import {
   RingAuthorityTransferRequest,
   RingReaderGrantRequest,

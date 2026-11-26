@@ -42,7 +42,8 @@ import {
   type DelegateWithdrawal,
   type RingTransferApproval,
 } from "../payments/transfer-rails.js";
-import { standIn, type CoOwner } from "../payments/ring-spend.js";
+import { standIn } from "../payments/ring-spend.js";
+import { type CoOwner } from "../../protocol/ring-rpc/relay-proof-inputs.js";
 import {
   ringIntentMismatch,
   ringProofInputs,

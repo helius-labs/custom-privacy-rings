@@ -8,7 +8,6 @@ import {
 } from "./mint-policy.js";
 import { hexToBytes } from "@noble/hashes/utils.js";
 
-import { type RingMemberOpening, type RingServedRecord } from "../../rpc/ports.js";
 import {
   BN254_SCALAR_ORDER,
   checkedBytes,
@@ -35,6 +34,8 @@ import {
   type RecordOpening,
   type RecordPool,
   type RecordWriteProofInput,
+  type RingMemberOpening,
+  type RingServedRecord,
 } from "./member-registry.js";
 
 import { RingDomain, domainField } from "../../crypto/derivation/ring-domain.js";

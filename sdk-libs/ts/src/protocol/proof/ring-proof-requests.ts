@@ -5,7 +5,7 @@ import {
   mintPolicyWriteField,
   type AssetLimits,
   type MintPolicy,
-} from "../../protocol/membership/mint-policy.js";
+} from "../membership/mint-policy.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { InterfaceError } from "@heliuslabs/spr/interface";
@@ -15,7 +15,7 @@ import {
   bytesField,
   type ExpectedProvingKey,
 } from "@heliuslabs/spr/internal";
-import type { Bytes16, Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
+import type { Bytes16, Bytes32, Bytes64, RequestContext } from "@heliuslabs/spr/interface";
 import { ClientError } from "@heliuslabs/spr/client";
 import {
   APPLY_BATCH,
@@ -30,32 +30,32 @@ import {
   type RecordWrite,
   type RecordPool,
   type RecordWriteProofInput,
-} from "../../protocol/membership/member-registry.js";
+} from "../membership/member-registry.js";
 import type {
   TrackingEntry,
   TrackingFields,
   TrackingOpening,
   TrackingRecord,
-} from "../../protocol/membership/tracking.js";
-import { TRACKING_CAPACITY, TRACKING_QUAD_HEIGHT } from "../../protocol/membership/tracking.js";
+} from "../membership/tracking.js";
+import { TRACKING_CAPACITY, TRACKING_QUAD_HEIGHT } from "../membership/tracking.js";
 import {
   applyKeyWidth,
   enrollmentKeyWidth,
   ringCircuitType,
   ringProvingKey,
   type RingKeyCircuit,
-} from "../../protocol/proof/proving-keys.js";
+} from "./proving-keys.js";
 import {
   transferKeys,
   transferPoolCapacity,
   type PolicyPoolCapacity,
   type TransferKeyCircuit,
-} from "../../protocol/proof/transfer-shapes.js";
-import { auditLayoutValue, type AuditLayout } from "../../protocol/codec/ring-disclosure-layout.js";
-import { ANONYMOUS_PARTIES } from "../../protocol/transaction/transact.js";
-import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "./types.js";
-import { ENROLLMENT_BATCH } from "../../protocol/ring-rpc/enrollment-write.js";
-import { N_PUBLIC_SLOTS } from "../../protocol/transaction/spp.js";
+} from "./transfer-shapes.js";
+import { auditLayoutValue, type AuditLayout } from "../codec/ring-disclosure-layout.js";
+import { ANONYMOUS_PARTIES } from "../transaction/transact.js";
+import { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../codec/ring-codecs.js";
+import { ENROLLMENT_BATCH } from "../ring-rpc/enrollment-write.js";
+import { N_PUBLIC_SLOTS } from "../transaction/spp.js";
 
 /** Go `Opening`, one transaction slot as the ring circuits open it. */
 export interface RingSlotOpening {
@@ -332,6 +332,11 @@ export type RingProofRequest =
   | MergeProofRequest;
 
 /** The key a request proves under, its list widths pick the shape. */
+export interface RingProver {
+  /** One ring proof, the 192-byte `CustomRingProof` the ring program verifies. */
+  proveRing(request: RingProofRequest, context?: RequestContext): Promise<Uint8Array>;
+}
+
 export function ringProofCircuit(request: RingProofRequest): RingKeyCircuit {
   switch (request.kind) {
     case "transfer":

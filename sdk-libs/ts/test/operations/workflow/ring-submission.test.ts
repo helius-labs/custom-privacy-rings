@@ -40,7 +40,7 @@ const STALE_ROOT: RingSubmissionStatus = {
 /** The `(CustomRingError, Reproof)` rows of the Rust SDK's one retry table, as TS codes. */
 const RUST_REPROOF = [
   ...readFileSync(
-    new URL("../../../../sdk/src/operations/submission.rs", import.meta.url),
+    new URL("../../../../client/src/transport/submission.rs", import.meta.url),
     "utf8",
   ).matchAll(/^ {4}\(CustomRingError::(\w+), Reproof::(Fixes|IfMoved)\),$/gmu),
 ].map(([, error = "", reproof = ""]) => {
