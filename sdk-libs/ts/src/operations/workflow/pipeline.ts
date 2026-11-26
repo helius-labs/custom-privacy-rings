@@ -67,9 +67,9 @@ import {
   isDefaultRingNote,
   ownerRows,
   sealAudit,
-  sealedAuditMessage,
   type SealedAudit,
 } from "../../proof/audit-proof.js";
+import { auditorMessageData } from "../../crypto/audit/audit.js";
 import { type RingPolicy } from "../../protocol/codec/ring-codecs.js";
 import {
   NO_DEMAND,
@@ -595,7 +595,7 @@ function sealStagedTransfer(
       shape,
       proofInputs: withAuditorMessage(
         staged.proofInputs,
-        sealedAuditMessage(sealed, auditor),
+        auditorMessageData(sealed, auditor),
         staged.extensions ?? NO_EXTENSIONS,
       ),
     });

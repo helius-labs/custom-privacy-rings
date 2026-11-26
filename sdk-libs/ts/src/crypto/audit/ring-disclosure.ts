@@ -211,15 +211,6 @@ function openSlotBody(slotSecret: Bytes32, body: Uint8Array, form: RecordForm): 
   }
 }
 
-/** The plaintext concatenation the circuit hashes, `envelope ‖ keys ‖ voucher`. */
-export function disclosurePlaintext(disclosure: RingDisclosure): Uint8Array {
-  return concatBytes(
-    encodeAuditEnvelope(disclosure.envelope),
-    ...disclosure.recipientKeys,
-    ...(disclosure.voucher === undefined ? [] : [disclosure.voucher]),
-  );
-}
-
 /** Wipes `recovered`, the circuit seals the clamped encoding and an alias is refused. */
 export function canonicalViewingKey(recovered: Bytes32): ViewingKey {
   const canonical = clampViewingSecret(recovered);

@@ -427,11 +427,9 @@ export {
   auditRingTransaction,
   auditedUtxos,
   auditorMessage,
-  hasUnknownAssets,
   knownUtxoHash,
   openRingTransfer,
   openedUtxo,
-  recoverTransactionViewingKey,
   resolveKnownUtxo,
   resolveRingOwners,
   unresolvedOwners,
@@ -692,7 +690,6 @@ export {
 export type { TransactionSize } from "../operations/workflow/compile.js";
 export {
   decideAddressCeiling,
-  spentInputOf,
   TransactionFit,
   type CeilingDecision,
   type Fit,

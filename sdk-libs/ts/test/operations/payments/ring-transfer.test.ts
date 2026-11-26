@@ -117,10 +117,7 @@ import {
   type RingFixtureOptions,
 } from "../../helpers/ring-pipeline.js";
 
-import {
-  RING_AUTHORITY_MAX_INPUTS,
-  RING_AUTHORITY_SHAPES,
-} from "../../../src/protocol/transaction/spp.js";
+import { RING_AUTHORITY_SHAPES } from "../../../src/protocol/transaction/spp.js";
 
 const assets = new AssetRegistry();
 const EMPTY_TABLE: RuleTable = buildRuleTable({ rules: [] });
@@ -1581,7 +1578,9 @@ describe("delegate move builder", () => {
     await expect(wide.build).rejects.toMatchObject({
       code: "RING_BUILD_TRANSFER",
       causeCode: "RING_TOO_MANY_INPUTS",
-      cause: { details: { maximum: RING_AUTHORITY_MAX_INPUTS } },
+      cause: {
+        details: { maximum: Math.max(...RING_AUTHORITY_SHAPES.map((shape) => shape.inputs)) },
+      },
     });
     expect(wide.requests).toEqual([]);
   });

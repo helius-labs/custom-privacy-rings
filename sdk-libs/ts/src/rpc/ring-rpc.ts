@@ -41,11 +41,7 @@ import { X25519PublicKey, KeypairError, NullifierKey } from "@heliuslabs/spr/key
 import type { Bytes31 } from "@heliuslabs/spr/keypair";
 import { ringIdField } from "../crypto/derivation/ring-stream.js";
 import { isSmallOrder } from "../crypto/keys/x25519.js";
-import {
-  snapshotPages,
-  SNAPSHOT_CURSOR_LENGTH,
-  SNAPSHOT_CURSOR_VERSION,
-} from "./wallet-snapshot.js";
+import { snapshotPages, SNAPSHOT_CURSOR_LENGTH } from "./wallet-snapshot.js";
 
 import {
   knownUtxoHash,
@@ -57,6 +53,7 @@ import {
   type OutputPayloadErrorKind,
 } from "../operations/audit/audit.js";
 import { RingError } from "../protocol/error.js";
+import { wirePrimitives } from "../protocol/wire-primitives.js";
 import type { OwnerListSalts } from "../protocol/membership/private-list.js";
 import { decodeRingRpcHealth, type RingRpcHealth } from "../protocol/ring-rpc/health.js";
 import { ringRecordsAddress } from "../protocol/pda/index.js";
@@ -1703,12 +1700,8 @@ export class RingRpc {
           });
         }),
       ),
-      ...(cursor === undefined || cursor === null
-        ? {}
-        : { cursor: base64(cursor, "result.cursor") }),
-      ...(oldestSlot === undefined || oldestSlot === null
-        ? {}
-        : { oldestSlot: u64(oldestSlot, "result.oldestSlot") }),
+      ...(cursor === undefined ? {} : { cursor: base64(cursor, "result.cursor") }),
+      ...(oldestSlot === undefined ? {} : { oldestSlot: u64(oldestSlot, "result.oldestSlot") }),
     });
   }
 
@@ -1730,13 +1723,13 @@ export class RingRpc {
     return Object.freeze({
       ringProgramId: ring,
       state,
-      ...(absent(config)
+      ...(config === undefined
         ? {}
         : {
             configAuditorPublicKey: x25519Key(config, "result.configAuditorPubkey"),
           }),
       servicePublicKey: address(wire["servicePubkey"], "result.servicePubkey"),
-      ...(absent(activation) ? {} : { activation: decodeActivation(activation) }),
+      ...(activation === undefined ? {} : { activation: decodeActivation(activation) }),
     });
   }
 
@@ -2244,12 +2237,14 @@ export class RingRpc {
       NO_FIELDS,
       "result",
     );
-    const listSalt = absent(wire["listSalt"])
-      ? undefined
-      : canonicalHash(wire["listSalt"], "result.listSalt");
-    const ringSalt = absent(wire["ringSalt"])
-      ? undefined
-      : canonicalHash(wire["ringSalt"], "result.ringSalt");
+    const listSalt =
+      wire["listSalt"] === undefined
+        ? undefined
+        : canonicalHash(wire["listSalt"], "result.listSalt");
+    const ringSalt =
+      wire["ringSalt"] === undefined
+        ? undefined
+        : canonicalHash(wire["ringSalt"], "result.ringSalt");
     return Object.freeze({
       ...(listSalt === undefined ? {} : { listSalt }),
       ...(ringSalt === undefined ? {} : { ringSalt }),
@@ -2580,7 +2575,7 @@ function decodeTransaction(wire: Record<string, unknown>): DecryptedRingTransact
     defaultInputs,
     nullifiers: Object.freeze(nullifiers),
     spenders: Object.freeze(
-      absent(wire["spenders"])
+      wire["spenders"] === undefined
         ? []
         : list(wire["spenders"], "spenders").map((key, index) =>
             address(key, `spenders[${index}]`),
@@ -2590,7 +2585,9 @@ function decodeTransaction(wire: Record<string, unknown>): DecryptedRingTransact
       list(wire["signers"], "signers").map((key, index) => address(key, `signers[${index}]`)),
     ),
     withdrawals: decodeWithdrawals(wire["withdrawals"]),
-    ...(absent(wire["vouchedBy"]) ? {} : { vouchedBy: address(wire["vouchedBy"], "vouchedBy") }),
+    ...(wire["vouchedBy"] === undefined
+      ? {}
+      : { vouchedBy: address(wire["vouchedBy"], "vouchedBy") }),
   });
 }
 
@@ -2797,18 +2794,18 @@ function decodeOutput(wire: Record<string, unknown>, path: string): DecryptedRin
   const utxo = wire["utxo"];
   const tag = wire["tag"];
   let opening: OutputOpening;
-  if (kind === "ring" && !absent(utxo) && !absent(tag)) {
+  if (kind === "ring" && utxo !== undefined && tag !== undefined) {
     opening = Object.freeze({
       kind,
       utxo: decodeDecryptedUtxo(record(utxo, `${path}.utxo`), `${path}.utxo`),
       ownerTag: Object.freeze({ kind: "view", tag: hash(tag, `${path}.tag`) }),
     });
-  } else if (kind === "exit" && !absent(utxo) && absent(tag)) {
+  } else if (kind === "exit" && utxo !== undefined && tag === undefined) {
     opening = Object.freeze({
       kind,
       utxo: decodeDecryptedUtxo(record(utxo, `${path}.utxo`), `${path}.utxo`),
     });
-  } else if (kind === "dummy" && absent(utxo) && absent(tag)) {
+  } else if (kind === "dummy" && utxo === undefined && tag === undefined) {
     opening = Object.freeze({ kind });
   } else {
     throw invalid(`${path}.kind`);
@@ -2832,7 +2829,7 @@ function decodeDecryptedUtxo(wire: Record<string, unknown>, path: string): Audit
     throw invalid(`${path}.mint`);
   return Object.freeze({
     ...fields,
-    ...(absent(nullifierPk)
+    ...(nullifierPk === undefined
       ? {}
       : { nullifierPk: canonicalHash(nullifierPk, `${path}.nullifierPk`) }),
   });
@@ -2842,17 +2839,17 @@ function decodeDecryptedUtxo(wire: Record<string, unknown>, path: string): Audit
 function decodeKnownUtxo(wire: Record<string, unknown>, path: string): KnownUtxo {
   const nullifierPk = wire["nullifierPk"];
   const ownerHash = wire["ownerHash"];
-  if (!absent(nullifierPk) && !absent(ownerHash)) throw invalid(`${path}.ownerHash`);
+  if (nullifierPk !== undefined && ownerHash !== undefined) throw invalid(`${path}.ownerHash`);
   const fields = utxoFields(wire, path, canonicalHash);
   // The commitment binds the asset field alone, a named mint must derive it.
   if (fields.mint !== undefined && !equalBytes(assetField(fields.mint), fields.asset))
     throw invalid(`${path}.mint`);
-  const unresolved = absent(nullifierPk) && absent(ownerHash);
+  const unresolved = nullifierPk === undefined && ownerHash === undefined;
   return Object.freeze({
     ...fields,
     owner: unresolved
       ? Object.freeze({ kind: "unresolved" })
-      : absent(ownerHash)
+      : ownerHash === undefined
         ? Object.freeze({
             kind: "keyed",
             nullifierPk: canonicalHash(nullifierPk, `${path}.nullifierPk`),
@@ -2874,7 +2871,7 @@ function utxoFields(
   return {
     ownerKey: hash(wire["ownerKey"], `${path}.ownerKey`),
     asset: field(wire["asset"], `${path}.asset`),
-    ...(absent(mint) ? {} : { mint: address(mint, `${path}.mint`) }),
+    ...(mint === undefined ? {} : { mint: address(mint, `${path}.mint`) }),
     amount: u64(wire["amount"], `${path}.amount`),
     blinding: field(wire["blinding"], `${path}.blinding`),
     ...optionalDataHashes(wire, path, field),
@@ -2889,8 +2886,10 @@ function optionalDataHashes(
   const dataHash = wire["dataHash"];
   const ringDataHash = wire["ringDataHash"];
   return {
-    ...(absent(dataHash) ? {} : { dataHash: field(dataHash, `${path}.dataHash`) }),
-    ...(absent(ringDataHash) ? {} : { ringDataHash: field(ringDataHash, `${path}.ringDataHash`) }),
+    ...(dataHash === undefined ? {} : { dataHash: field(dataHash, `${path}.dataHash`) }),
+    ...(ringDataHash === undefined
+      ? {}
+      : { ringDataHash: field(ringDataHash, `${path}.ringDataHash`) }),
   };
 }
 
@@ -2903,7 +2902,7 @@ function canonicalHash(input: unknown, path: string): Bytes32 {
 
 /** Absent reads empty, Rust skips an empty list. */
 function decodeDefaultInputs(value: unknown, path: string): readonly DecryptedRingDefaultInput[] {
-  if (absent(value)) return Object.freeze([]);
+  if (value === undefined) return Object.freeze([]);
   return Object.freeze(
     list(value, path).map((entry, index) => {
       const at = `${path}[${index}]`;
@@ -2924,9 +2923,10 @@ function decodeDefaultInputs(value: unknown, path: string): readonly DecryptedRi
 function decodeAuditedMerge(value: unknown, path: string): AuditedRingMerge {
   const wire = exactRecord(value, AUDITED_MERGE_FIELDS, AUDITED_MERGE_REQUIRED_FIELDS, path);
   const asset = canonicalHash(wire["asset"], `${path}.asset`);
-  const realNullifiers = absent(wire["realNullifiers"])
-    ? []
-    : mergeCommitments(wire["realNullifiers"], `${path}.realNullifiers`);
+  const realNullifiers =
+    wire["realNullifiers"] === undefined
+      ? []
+      : mergeCommitments(wire["realNullifiers"], `${path}.realNullifiers`);
   return Object.freeze({
     ...mergeRow(wire, path),
     ownerKey: hash(wire["ownerKey"], `${path}.ownerKey`),
@@ -2968,7 +2968,6 @@ function mergeRow(
 export const RING_PAYLOAD_ERROR_KINDS: readonly OutputPayloadErrorKind[] = Object.freeze([
   "disclosure",
   "commitment",
-  "payload",
 ]);
 
 function payloadErrorKind(value: unknown, path: string): OutputPayloadErrorKind {
@@ -2990,28 +2989,12 @@ function decodeActivation(value: unknown): RingActivation {
   });
 }
 
-function absent(value: unknown): boolean {
-  return value === undefined || value === null;
-}
-
-/** A slot index, rejected outside the u32 range. */
 function u32(value: unknown, path: string): number {
-  const decoded = integer(value, path);
-  if (decoded < 0n || decoded > 0xffff_ffffn) throw invalid(path);
-  return Number(decoded);
+  return count(value, path, 0xffff_ffff);
 }
 
-/** An SPP event ordinal cannot exceed the indexer's u16 wire range. */
 function u16(value: unknown, path: string): number {
-  const decoded = integer(value, path);
-  if (decoded < 0n || decoded > 0xffffn) throw invalid(path);
-  return Number(decoded);
-}
-
-function u64(value: unknown, path: string): bigint {
-  const decoded = integer(value, path);
-  if (decoded < 0n || decoded > 0xffff_ffff_ffff_ffffn) throw invalid(path);
-  return decoded;
+  return count(value, path, 0xffff);
 }
 
 function decodeSkipped(wire: Record<string, unknown>): SkippedRingTransaction {
@@ -3031,8 +3014,11 @@ function invalid(path: string): RingError {
   });
 }
 
-const { record, list, string, address, signature, signedInteger, integer, base64, base58 } =
+const { record, list, string, address, signature, signedInteger, base64, base58 } =
   wireDecoder(invalid);
+const { u64, count, hash } = wirePrimitives((path) => {
+  throw invalid(path);
+});
 
 function invalidRequest(field: string): RingError {
   return new RingError("RING_RPC", {
@@ -3084,8 +3070,7 @@ function requestBytes(value: unknown, length: number, field: string): Uint8Array
 
 function checkedSnapshotCursor(cursor: unknown): Uint8Array {
   const checked = checkedReadCursor(cursor);
-  if (checked.length !== SNAPSHOT_CURSOR_LENGTH || checked[0] !== SNAPSHOT_CURSOR_VERSION)
-    throw invalidRequest("cursor");
+  if (checked.length !== SNAPSHOT_CURSOR_LENGTH) throw invalidRequest("cursor");
   return checked;
 }
 
@@ -3297,12 +3282,6 @@ function checkedSignedAuditorKeyRequest(value: unknown): SignedAuditorKeyRequest
     signature: requestBytes(request["signature"], 64, "signature") as Bytes64,
     timestamp: checkedUnixTimestamp(request["timestamp"], "timestamp"),
   });
-}
-
-function hash(value: unknown, path: string): Bytes32 {
-  const bytes = base58(value, path);
-  if (bytes.length !== 32) throw invalid(path);
-  return bytes as Bytes32;
 }
 
 function x25519Key(value: unknown, path: string): X25519PublicKey {

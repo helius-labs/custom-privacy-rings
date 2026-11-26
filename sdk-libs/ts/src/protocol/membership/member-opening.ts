@@ -17,7 +17,6 @@ import {
   bytesToBigInt,
   copy,
   equalBytes,
-  isCanonicalField,
   poseidon,
 } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
@@ -72,8 +71,8 @@ export function checkMember(member: Bytes32): Bytes32 {
 
 export function memberRecordHash(record: MemberRecord): Bytes32 {
   return poseidon([
-    checkCanonicalField(record.member, "record member"),
-    checkCanonicalField(record.next, "record next"),
+    checkedBytes<Bytes32>(record.member, 32, "record member"),
+    checkedBytes<Bytes32>(record.next, 32, "record next"),
     u64Field(record.lists, "lists"),
     mintPolicyField(record.mintPolicy),
     u64Field(record.mintPolicy.withdrawalThreshold, "withdrawal threshold"),
@@ -133,10 +132,10 @@ export function verifyRecordOpening(
 ): MemberRecord | undefined {
   checkMember(member);
   const leaf = opening.kind === "present" ? opening.record : opening.low;
-  const leafHash = memberRecordHash(leaf);
   if (opening.kind === "present" ? !equalBytes(leaf.member, member) : !brackets(leaf, member))
     invalid("NotBracketed");
-  if (!equalBytes(quadPathRoot(opening.path, leafHash), root)) invalid("RootMismatch");
+  if (!equalBytes(quadPathRoot(opening.path, memberRecordHash(leaf)), root))
+    invalid("RootMismatch");
   return opening.kind === "present" ? opening.record : undefined;
 }
 
@@ -144,8 +143,7 @@ export function verifyRecordOpening(
 export class MemberOpeningRead {
   readonly opening: RingMemberOpening;
 
-  /** @internal */
-  constructor(opening: RingMemberOpening) {
+  private constructor(opening: RingMemberOpening) {
     this.opening = opening;
     Object.freeze(this);
   }
@@ -202,11 +200,10 @@ export function verifyRecordPool(
     const served = at === undefined ? undefined : pool.records[at];
     const path = at === undefined ? undefined : paths[at];
     if (served === undefined || path === undefined) invalid("SubjectIndex");
-    checkMember(member);
-    if (equalBytes(served.record.member, member))
-      return new MemberOpeningRead({ kind: "present", record: served.record, path });
-    if (!brackets(served.record, member)) invalid("NotBracketed");
-    return new MemberOpeningRead({ kind: "absent", low: served.record, path });
+    const opening: RingMemberOpening = equalBytes(served.record.member, member)
+      ? { kind: "present", record: served.record, path }
+      : { kind: "absent", low: served.record, path };
+    return MemberOpeningRead.verify(opening, root, member);
   });
 }
 
@@ -325,7 +322,6 @@ function replayWrite(
     return [quadPathRoot(write.slot, memberRecordHash(writtenRecord(record, entry))), nextIndex];
   }
   const { low } = write;
-  const lowHash = memberRecordHash(low);
   if (
     !brackets(low, entry.member) ||
     !equalBytes(write.oldNext, low.next) ||
@@ -333,7 +329,8 @@ function replayWrite(
     !isEmptyMintPolicy(write.oldMintPolicy)
   )
     invalid("NotBracketed");
-  if (!equalBytes(quadPathRoot(write.lowPath, lowHash), root)) invalid("RootMismatch");
+  if (!equalBytes(quadPathRoot(write.lowPath, memberRecordHash(low)), root))
+    invalid("RootMismatch");
   const inserted = writtenRecord(
     {
       member: entry.member,
@@ -386,12 +383,6 @@ function checkedU64(value: bigint, name: string): bigint {
   if (typeof value !== "bigint" || value < 0n || value > U64_MAX)
     throw new RingError("RING_MEMBER_REGISTRY_INVALID", { details: { reason: "U64", name } });
   return value;
-}
-
-function checkCanonicalField(value: Bytes32, name: string): Bytes32 {
-  const checked = checkedBytes<Bytes32>(value, 32, name);
-  if (!isCanonicalField(checked)) invalid("NonCanonicalField");
-  return checked;
 }
 
 function invalid(reason: string): never {

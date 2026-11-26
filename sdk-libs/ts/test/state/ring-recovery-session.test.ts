@@ -331,9 +331,13 @@ describe("durable recovery", () => {
     );
     expect(source.tagQueries.at(-1)?.minContextSlot).toBe(200n);
     expect(restored.toJson()).toBe(document);
-    const old = JSON.parse(document);
-    delete old.recoveryFloor;
-    expect(AnonymousWallet.fromJson(JSON.stringify(old))._recoveryMinimumSlot()).toBe(200n);
+    for (const field of ["recoveryFloor", "revision"]) {
+      const partial = JSON.parse(document);
+      delete partial[field];
+      expect(() => AnonymousWallet.fromJson(JSON.stringify(partial))).toThrow(
+        "RING_WALLET_DOCUMENT",
+      );
+    }
   });
 
   it("uses the highest ring, tag and core checkpoint as the target floor", async () => {

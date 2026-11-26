@@ -4,8 +4,8 @@ import type { RequestContext } from "@heliuslabs/spr/interface";
 import { RingError } from "../protocol/error.js";
 import type { RingWalletStatusPage } from "./ring-rpc.js";
 
-export const SNAPSHOT_CURSOR_LENGTH = 129;
-export const SNAPSHOT_CURSOR_VERSION = 2;
+/** Rust `WALLET_SNAPSHOT_CURSOR_LEN`, ring, wallet, snapshot and position at 32 bytes each. */
+export const SNAPSHOT_CURSOR_LENGTH = 128;
 const SNAPSHOT_POSITION_OFFSET = SNAPSHOT_CURSOR_LENGTH - 32;
 
 interface SnapshotReader<Page> {
@@ -32,7 +32,6 @@ export async function* snapshotPages<Page>(
         if (
           status.snapshotExpiresAt === undefined ||
           status.cursor.length !== SNAPSHOT_CURSOR_LENGTH ||
-          status.cursor[0] !== SNAPSHOT_CURSOR_VERSION ||
           (releaseCursor !== undefined &&
             (!equalBytes(
               releaseCursor.subarray(0, SNAPSHOT_POSITION_OFFSET),

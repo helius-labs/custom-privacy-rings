@@ -105,7 +105,7 @@ describe("ring member registry wire", () => {
     expect(decoded.nextLeafIndex).toBeUndefined();
   });
 
-  it("accepts canonical u64 strings past 2^53 and rejects negative or overflowed strings", async () => {
+  it("accepts u64 strings only past 2^53 and rejects negative, overflowed or small strings", async () => {
     const request = {
       registry: REGISTRY,
       members: [new Uint8Array(32).fill(5) as Bytes32],
@@ -141,7 +141,8 @@ describe("ring member registry wire", () => {
     expect(decodedOpening.record.mintPolicy.threshold).toBe(BigInt(pastSafe));
     expect(decodedOpening.record.mintPolicy.limits.senderCap).toBe(BigInt(u64Max));
 
-    for (const bad of ["-1", "-0", "01", "+1", "18446744073709551616"]) {
+    // The transport quotes an integer only past the safe range, a quoted smaller one has a second spelling.
+    for (const bad of ["-1", "-0", "01", "+1", "18446744073709551616", "5", "9007199254740991"]) {
       await expect(
         indexerFor({
           result: { ...openings, root: { ...root, revision: bad } },

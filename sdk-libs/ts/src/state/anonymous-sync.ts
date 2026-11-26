@@ -666,7 +666,6 @@ class Scan {
       return false;
     });
     return {
-      version: 1,
       ...input,
       ring: input.ring ?? null,
       rescan: this.#sync.fullRescan,

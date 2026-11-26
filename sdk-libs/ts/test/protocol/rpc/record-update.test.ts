@@ -5,18 +5,13 @@ import { describe, expect, it } from "vitest";
 
 import type { Address, Bytes32, Bytes33 } from "@heliuslabs/spr/interface";
 import { addressBytes, indexerScalars } from "@heliuslabs/spr/internal";
-import { P256ReaderKey } from "../../../src/operations/management/reader-access.js";
 import {
-  AuthorityRecordUpdate,
-  WalletRecordUpdate,
-} from "../../../src/operations/management/record-updates.js";
+  P256ReaderKey,
+  readerKeyMember,
+} from "../../../src/operations/management/reader-access.js";
+import { WalletRecordUpdate } from "../../../src/operations/management/record-updates.js";
 import { listWrite } from "../../../src/operations/management/record-writes.js";
-import {
-  ListId,
-  memberOfTag,
-  ownerRecordKey,
-  recordBit,
-} from "../../../src/protocol/membership/policy.js";
+import { ListId, memberOfTag, recordBit } from "../../../src/protocol/membership/policy.js";
 import {
   committedRingListKey,
   privateListKey,
@@ -27,8 +22,11 @@ import {
 import {
   recordUpdateMessage,
   recordUpdateStatementHash,
+  signRecordUpdate,
   verifyRecordUpdate,
+  type UnsignedRecordUpdate,
 } from "../../../src/protocol/ring-rpc/record-update.js";
+import type { RecordUpdateEntry } from "../../../src/protocol/ring-rpc/ring-rpc-types.js";
 import { encodeSubmitRecordUpdateRequest } from "../../../src/protocol/ring-rpc/ring-rpc-codec.js";
 
 const base58 = getBase58Decoder();
@@ -40,6 +38,31 @@ function filled(byte: number): Address {
   return base58.decode(new Uint8Array(32).fill(byte)) as Address;
 }
 
+/** The wallet's `ringViewing` write, then `entries`. */
+function update(
+  wallet: Address,
+  entries: readonly RecordUpdateEntry[],
+  awaitedLists = 0n,
+): UnsignedRecordUpdate {
+  const lists = new WalletRecordUpdate({
+    genesisHash: new Uint8Array(32).fill(3) as Bytes32,
+    ringProgramId: filled(1),
+    registry: filled(2),
+    wallet,
+    validUntilSlot: 4242n,
+  }).withLists(listWrite({ set: [ListId.ringViewing] }));
+  return {
+    registry: filled(2),
+    update: {
+      genesisHash: indexerScalars.hash(new Uint8Array(32).fill(3) as Bytes32),
+      ring: filled(1),
+      entries: [...lists.entries(), ...entries],
+      validUntilSlot: 4242n,
+      awaitedLists,
+    },
+  };
+}
+
 describe("submitRecordUpdate", () => {
   it("signs a wallet update byte for byte as the Rust vector and verifies it", async () => {
     const vector = JSON.parse(
@@ -49,26 +72,22 @@ describe("submitRecordUpdate", () => {
       ),
     ) as RecordUpdateVector;
     const wallet = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(7));
-    const signed = await new WalletRecordUpdate({
-      genesisHash: new Uint8Array(32).fill(3) as Bytes32,
-      ringProgramId: filled(1),
-      registry: filled(2),
-      wallet: wallet.address,
-      validUntilSlot: 4242n,
-    })
-      .withLists(listWrite({ set: [ListId.ringViewing] }))
-      .withWalletGrant(
-        P256ReaderKey.fromBytes(
-          Uint8Array.from(
-            Buffer.from(
-              "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
-              "hex",
-            ),
-          ) as Bytes33,
-        ),
-        "granted",
-      )
-      .sign(wallet);
+    const reader = P256ReaderKey.fromBytes(
+      Uint8Array.from(
+        Buffer.from("036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", "hex"),
+      ) as Bytes33,
+    );
+    const signed = await signRecordUpdate(
+      update(wallet.address, [
+        {
+          kind: "walletGrant",
+          wallet: indexerScalars.hash(memberOfTag(addressBytes(wallet.address, "wallet"))),
+          reader: indexerScalars.hash(readerKeyMember(reader)),
+          access: "granted",
+        },
+      ]),
+      wallet,
+    );
     expect(decoder.decode(recordUpdateMessage(signed, signed.signer))).toBe(vector.message);
     expect(JSON.stringify(encodeSubmitRecordUpdateRequest(signed))).toBe(vector.wire);
     // The unsigned hint keeps the update id.
@@ -107,16 +126,10 @@ describe("list approval", () => {
       ),
     ) as RecordUpdateVector;
     const wallet = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(7));
-    const signed = await new WalletRecordUpdate({
-      genesisHash: new Uint8Array(32).fill(3) as Bytes32,
-      ringProgramId: filled(1),
-      registry: filled(2),
-      wallet: wallet.address,
-      validUntilSlot: 4242n,
-    })
-      .withLists(listWrite({ set: [ListId.ringViewing] }))
-      .awaitingListApproval([ListId.allow])
-      .sign(wallet);
+    const signed = await signRecordUpdate(
+      update(wallet.address, [], recordBit(ListId.allow)),
+      wallet,
+    );
     expect(decoder.decode(recordUpdateMessage(signed, signed.signer))).toBe(vector.message);
     expect(JSON.stringify(encodeSubmitRecordUpdateRequest(signed))).toBe(vector.wire);
     expect(verifyRecordUpdate(signed)).toEqual(
@@ -194,100 +207,5 @@ describe("owner private-list revocation", () => {
         invalidLength,
       );
     }
-  });
-
-  it("clears both keys and propagates unregisteredOwners in AuthorityRecordUpdate", async () => {
-    const authority = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(9));
-    const target = {
-      genesisHash: new Uint8Array(32).fill(3) as Bytes32,
-      ringProgramId: filled(1),
-      registry: filled(2),
-      authority: authority.address,
-      validUntilSlot: 4242n,
-    };
-    const ownerPkHash = memberOfTag(addressBytes(owner, "owner"));
-    const expectedOwner = indexerScalars.hash(privateListKey(ownerPkHash, listSalt));
-    const expectedRing = indexerScalars.hash(ringListKey(ownerPkHash, ringSalt));
-    const lists = [ListId.privateAllow, ListId.privateBlock] as const;
-    const expectedMask = recordBit(ListId.privateAllow) | recordBit(ListId.privateBlock);
-
-    const both = await new AuthorityRecordUpdate(target)
-      .withOwnerPrivateClear({ owner, salts: { listSalt, ringSalt }, lists })
-      .sign(authority);
-    verifyRecordUpdate(both);
-    expect(both.unregisteredOwners).toEqual([owner]);
-    expect(encodeSubmitRecordUpdateRequest(both).unregisteredOwners).toEqual([owner]);
-    expect(both.update.entries).toEqual([
-      { kind: "write", mintPolicy: null, member: expectedOwner, mask: expectedMask, value: 0n },
-      { kind: "write", mintPolicy: null, member: expectedRing, mask: expectedMask, value: 0n },
-    ]);
-
-    const ringOnly = await new AuthorityRecordUpdate(target)
-      .withOwnerPrivateClear({ owner, salts: { ringSalt }, lists: [ListId.privateFrozen] })
-      .withWrite(ownerRecordKey(addressBytes(owner, "owner")), listWrite({ clear: [ListId.allow] }))
-      .sign(authority);
-    verifyRecordUpdate(ringOnly);
-    expect(ringOnly.unregisteredOwners).toEqual([owner]);
-    expect(ringOnly.update.entries).toHaveLength(2);
-
-    const ownerOnly = await new AuthorityRecordUpdate(target)
-      .withOwnerPrivateClear({ owner, salts: { listSalt }, lists: [ListId.privateAllow] })
-      .sign(authority);
-    verifyRecordUpdate(ownerOnly);
-    expect(ownerOnly.unregisteredOwners).toBeUndefined();
-    expect(ownerOnly.update.entries).toHaveLength(1);
-
-    const repeated = await new AuthorityRecordUpdate(target)
-      .withOwnerPrivateClear({
-        owner,
-        salts: { listSalt, ringSalt },
-        lists: [ListId.privateAllow],
-      })
-      .withOwnerPrivateClear({
-        owner,
-        salts: { listSalt, ringSalt },
-        lists: [ListId.privateBlock],
-      })
-      .sign(authority);
-    expect(repeated.unregisteredOwners).toEqual([owner]);
-
-    const base = new AuthorityRecordUpdate(target);
-    expect(() =>
-      base.withOwnerPrivateClear({ owner, salts: { listSalt, ringSalt }, lists: [] }),
-    ).toThrowError(expect.objectContaining({ code: "RING_LIST_WRITE_INVALID" }));
-    expect(() =>
-      base.withOwnerPrivateClear({
-        owner,
-        salts: { listSalt, ringSalt },
-        lists: [ListId.ringViewing],
-      }),
-    ).toThrowError(expect.objectContaining({ code: "RING_LIST_WRITER_UNAUTHORIZED" }));
-    for (const nonPrivate of [
-      ListId.allow,
-      ListId.block,
-      ListId.frozen,
-      ListId.reader,
-      ListId.approval,
-    ]) {
-      expect(() =>
-        base.withOwnerPrivateClear({
-          owner,
-          salts: { listSalt, ringSalt },
-          lists: [nonPrivate],
-        }),
-      ).toThrowError(
-        expect.objectContaining({
-          code: "RING_RECORD_UPDATE_INVALID",
-          details: { reason: "NonPrivateList" },
-        }),
-      );
-    }
-    expect(() =>
-      base.withOwnerPrivateClear({
-        owner,
-        salts: {},
-        lists: [ListId.privateAllow],
-      }),
-    ).toThrowError(expect.objectContaining({ code: "RING_ENTRY_INVALID" }));
   });
 });

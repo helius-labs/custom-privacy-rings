@@ -14,7 +14,6 @@ import {
   mergePublicInputElements,
   mergePublicInputHash,
   openMergeRecord,
-  openOwnMergeRecord,
   sealMergeRecordWith,
   type MergePublicInput,
 } from "../../src/crypto/audit/merge-disclosure.js";
@@ -148,11 +147,10 @@ describe("the merge record seal", () => {
 
   it("opens for the auditor through the envelope and for the owner under its viewing key", async () => {
     await initializePoseidon();
-    const { auditor, owner, record } = sealed();
+    const { auditor, record } = sealed();
     expect(record.envelope).toHaveLength(MERGE_ENVELOPE_LEN);
     expect(record.record).toHaveLength(MERGE_RECORD_LEN);
     expect(openMergeRecord(auditor, record, firstNullifier)).toEqual(merge);
-    expect(openOwnMergeRecord(owner, record, firstNullifier)).toEqual(merge);
   });
 
   it("refuses an envelope sealing another ephemeral than the published one", async () => {

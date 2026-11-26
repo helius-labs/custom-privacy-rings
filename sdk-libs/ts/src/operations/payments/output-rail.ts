@@ -49,7 +49,7 @@ import { sealOutputSlot } from "../../crypto/audit/ring-disclosure.js";
 import {
   anonymousSlotTag,
   bundleTag,
-  confidentialSlotTag,
+  slotTag,
   txKeySlotSecret,
 } from "../../crypto/derivation/ring-stream.js";
 import { randomTagPreimage } from "../../crypto/derivation/dummy-tag.js";
@@ -610,7 +610,7 @@ export class RingOutputRail {
         return Object.freeze({
           output,
           recipientKey,
-          tag: confidentialSlotTag(recipientKey.u()),
+          tag: slotTag(recipientKey.u()),
         });
       }
       if (output.ringProgramId === undefined)
@@ -618,7 +618,7 @@ export class RingOutputRail {
       return Object.freeze({
         output,
         recipientKey: owner.viewingPublicKey,
-        tag: confidentialSlotTag(owner.viewingPublicKey.u()),
+        tag: slotTag(owner.viewingPublicKey.u()),
       });
     });
   }

@@ -575,8 +575,6 @@ interface FrameHeader {
   readonly flags: FrameFlags;
 }
 
-/** A storage revision, little endian u64. */
-export const REVISION_LENGTH = 8;
 /** `a ‖ b ‖ c` with `b` compressed, Rust `PlainGroth16Proof::SIZE`. */
 export const PLAIN_GROTH16_PROOF_LENGTH = 128;
 const VIEWING_PUBKEY_TAG = 4;

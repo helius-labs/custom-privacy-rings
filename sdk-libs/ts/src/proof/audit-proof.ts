@@ -14,7 +14,7 @@ import {
   ZERO_NULLIFIER_PK,
 } from "@heliuslabs/spr/internal";
 import { equalBytes } from "@heliuslabs/spr/internal";
-import type { Address, Bytes32, MessageData } from "@heliuslabs/spr/interface";
+import type { Address, Bytes32 } from "@heliuslabs/spr/interface";
 import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
 import type { ProofInputUtxo, ProofOutputUtxo, TreeId } from "@heliuslabs/spr/transaction";
 import type {
@@ -37,7 +37,6 @@ import {
 } from "../protocol/codec/ring-disclosure-layout.js";
 import { compareField } from "../protocol/membership/owner-debits.js";
 import { RingError } from "../protocol/error.js";
-import { auditorMessageData } from "../crypto/audit/audit.js";
 import { sealRingDisclosure, type RingDisclosure } from "../crypto/audit/ring-disclosure.js";
 
 import type { PublishedSlot, RingOutputRail } from "../operations/payments/output-rail.js";
@@ -101,11 +100,6 @@ export function sealAudit(
   } finally {
     txViewingSecret.fill(0);
   }
-}
-
-/** The message the program expands under the auditor's view tag, Rust `SealedAudit::message`. */
-export function sealedAuditMessage(sealed: SealedAudit, auditor: X25519PublicKey): MessageData {
-  return auditorMessageData(sealed, auditor);
 }
 
 /** Every plaintext of one transfer's stream, pure over its values. */

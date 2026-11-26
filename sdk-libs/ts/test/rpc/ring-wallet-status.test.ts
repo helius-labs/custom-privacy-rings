@@ -150,7 +150,7 @@ describe("getWalletStatus", () => {
         target: TARGET,
         signer: reader,
         wallet: WALLET,
-        cursor: new Uint8Array(129).fill(2),
+        cursor: new Uint8Array(128).fill(2),
       }),
     ).rejects.toMatchObject({
       code: "RING_RPC_REFUSED",
@@ -286,8 +286,8 @@ describe("getSpendCoverage", () => {
 });
 
 function snapshotCursor(position: number): Uint8Array {
-  const cursor = new Uint8Array(129).fill(2);
-  cursor.fill(position, 97);
+  const cursor = new Uint8Array(128).fill(2);
+  cursor.fill(position, 96);
   return cursor;
 }
 

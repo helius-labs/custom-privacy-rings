@@ -23,7 +23,7 @@ import { listSaltOf } from "../crypto/keys/list-salt.js";
 import {
   anonymousSlotTag,
   bundleTag,
-  confidentialSlotTag,
+  slotTag,
   deliveredSlotSecret,
 } from "../crypto/derivation/ring-stream.js";
 
@@ -369,7 +369,7 @@ function publishedTag(
 ): Bytes32 {
   switch (kind) {
     case "confidential":
-      return confidentialSlotTag(viewingPublicKey.u());
+      return slotTag(viewingPublicKey.u());
     case "recipient":
       return anonymousSlotTag(secret);
     case "senderBundle":

@@ -37,7 +37,7 @@ import { anonymousPartyIdentities } from "../../src/protocol/membership/parties.
 import { ANONYMOUS_PARTIES } from "../../src/protocol/transaction/transact.js";
 import { ringCoSignerAccount } from "../helpers/ring-accounts.js";
 import { listTagOf } from "../../src/crypto/keys/list-salt.js";
-import { selectTransferKey } from "../../src/proof/transfer-proof.js";
+import { checkOwnerSignerBound, transferKeyCircuit } from "../../src/proof/transfer-proof.js";
 import {
   RING_COSIGN_APPROVE_OUTFLOW,
   RING_COSIGN_APPROVE_WITHDRAWAL,
@@ -46,7 +46,7 @@ import {
 } from "../../src/protocol/codec/ring-codecs.js";
 import { RingError } from "../../src/protocol/error.js";
 import { RING_KEYS, ringProvingKey } from "../../src/protocol/proof/proving-keys.js";
-import { ownerSignerCapacity } from "../../src/protocol/proof/transfer-shapes.js";
+import { fittedSpend, ownerSignerCapacity } from "../../src/protocol/proof/transfer-shapes.js";
 import { ApprovalMask } from "../../src/protocol/transaction/transact.js";
 import { RING_SOURCE_SLOTS } from "../../src/rpc/prover/types.js";
 import { canopyLevels, QUAD_ARITY } from "../../src/protocol/membership/member-registry.js";
@@ -90,7 +90,20 @@ const SPEND = {
 } as const;
 const ADDRESSES = { nInputs: 2, coSigners: 0, legs: 0 };
 
-describe("selectTransferKey", () => {
+/** The bound check and the key choice in the order the pipeline runs them. */
+function selectTransferKey(
+  input: Readonly<{
+    spend: Parameters<typeof fittedSpend>[0];
+    addresses: Parameters<typeof checkOwnerSignerBound>[0];
+    ownerSigners: number;
+  }>,
+) {
+  checkOwnerSignerBound(input.addresses, input.ownerSigners);
+  const fitted = fittedSpend(input.spend);
+  return { circuit: transferKeyCircuit(fitted), wideOwners: fitted.wide };
+}
+
+describe("transfer key selection", () => {
   it("takes the narrowest rows and the wide key past them", () => {
     const small = selectTransferKey({ spend: SPEND, addresses: ADDRESSES, ownerSigners: 2 });
     expect(small.circuit.owners).toBe(4);

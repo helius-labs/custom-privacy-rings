@@ -24,7 +24,6 @@ export {
 export type { RingKeyCircuit } from "../protocol/proof/proving-keys.js";
 export type { TransferKeyCircuit } from "../protocol/proof/transfer-shapes.js";
 export { RING_RULE_SLOTS, RING_SOURCE_SLOTS } from "../rpc/prover/types.js";
-export type { PresentRecordOpening } from "../rpc/prover/types.js";
 export type {
   ApplyEnrollmentsProofRequest,
   ApplyRecordsProofRequest,
@@ -58,7 +57,6 @@ export type {
   RingSealedKey,
   RingServedRecord,
   RingSealedNullifierKey,
-  RingSecretProver,
   RingSubmissionPending,
   RingSubmissionStatus,
   RingSubmissionTransport,

@@ -4,16 +4,9 @@ import { InterfaceError } from "@heliuslabs/spr/interface";
 import { RingError } from "../error.js";
 import { RING_PROVING_KEY_SHA256S } from "./ring-proving-keys.js";
 import { APPLY_BATCH } from "../membership/member-registry.js";
-import {
-  transferCircuitType,
-  transferKeys,
-  transferPoolCapacity,
-  type PolicyPoolCapacity,
-  type TransferKeyCircuit,
-} from "./transfer-shapes.js";
+import { transferCircuitType, transferKeys, type TransferKeyCircuit } from "./transfer-shapes.js";
 
 export { RING_PROVING_KEY_SHA256S };
-export { transferPoolCapacity as policyPoolCapacity, type PolicyPoolCapacity };
 
 /** A ring circuit by the shape its key serves, Rust `RingCircuit`. */
 export type RingKeyCircuit =

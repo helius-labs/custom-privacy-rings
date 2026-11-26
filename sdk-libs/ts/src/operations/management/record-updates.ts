@@ -6,26 +6,12 @@ import { addressBytes, copyBytes, indexerScalars } from "@heliuslabs/spr/interna
 import { RingError } from "../../protocol/error.js";
 import { mintPolicyField, type MintPolicy } from "../../protocol/membership/mint-policy.js";
 import { checkMember } from "../../protocol/membership/member-opening.js";
-import {
-  isPrivateList,
-  memberOfTag,
-  publicMember,
-  recordBit,
-  walletGrantMember,
-  type ListId,
-  type Member,
-} from "../../protocol/membership/policy.js";
-import {
-  privateRevocationKeys,
-  type OwnerListSalts,
-} from "../../protocol/membership/private-list.js";
-import { AWAITABLE_LISTS, signRecordUpdate } from "../../protocol/ring-rpc/record-update.js";
+import { memberOfTag, publicMember, type Member } from "../../protocol/membership/policy.js";
+import { signRecordUpdate } from "../../protocol/ring-rpc/record-update.js";
 import type {
-  ReaderAccess,
   RecordUpdateEntry,
   SubmitRecordUpdateRequest,
 } from "../../protocol/ring-rpc/ring-rpc-types.js";
-import { checkedReaderKey, readerKeyMember, type ReaderKey } from "./reader-access.js";
 import { checkWriter, listBits, listMask, listWrite, type ListWrite } from "./record-writes.js";
 
 /** The writer refuses the update after `validUntilSlot`. */
@@ -44,7 +30,6 @@ export class WalletRecordUpdate {
   readonly #wallet: Address;
   readonly #member: Member;
   #entries: readonly RecordUpdateEntry[] = Object.freeze([]);
-  #awaitedLists = 0n;
 
   constructor(input: RecordUpdateTarget & Readonly<{ wallet: Address }>) {
     this.#target = input;
@@ -64,44 +49,18 @@ export class WalletRecordUpdate {
     });
   }
 
-  /** Sets or clears the `reader` list of the record `walletGrantMember(wallet, readerKeyMember(reader))` keys. */
-  withWalletGrant(reader: ReaderKey, access: ReaderAccess): WalletRecordUpdate {
-    const member = readerKeyMember(checkedReaderKey(reader));
-    walletGrantMember(this.#member, member);
-    return this.#with({
-      kind: "walletGrant",
-      wallet: indexerScalars.hash(this.#member),
-      reader: indexerScalars.hash(member),
-      access,
-    });
-  }
-
-  /** Rust `WalletRecordUpdate::awaiting_list_approval`, held until the policy authority sets every list. */
-  awaitingListApproval(lists: readonly ListId[]): WalletRecordUpdate {
-    if (lists.length === 0 || lists.some((list) => !AWAITABLE_LISTS.includes(list)))
-      throw invalid("AwaitedLists");
-    const next = this.#copy(this.#entries);
-    next.#awaitedLists = lists.reduce((bits, list) => bits | recordBit(list), 0n);
-    return next;
-  }
-
   entries(): readonly RecordUpdateEntry[] {
     return this.#entries;
   }
 
   async sign(wallet: MessagePartialSigner): Promise<SubmitRecordUpdateRequest> {
     if (wallet.address !== this.#wallet) throw invalid("Signer");
-    return signEntries(this.#target, this.#entries, wallet, this.#awaitedLists);
+    return signEntries(this.#target, this.#entries, wallet);
   }
 
   #with(entry: RecordUpdateEntry): WalletRecordUpdate {
-    return this.#copy([...this.#entries, Object.freeze(entry)]);
-  }
-
-  #copy(entries: readonly RecordUpdateEntry[]): WalletRecordUpdate {
     const next = new WalletRecordUpdate({ ...this.#target, wallet: this.#wallet });
-    next.#entries = Object.freeze(entries);
-    next.#awaitedLists = this.#awaitedLists;
+    next.#entries = Object.freeze([...this.#entries, Object.freeze(entry)]);
     return next;
   }
 }
@@ -111,7 +70,6 @@ export class AuthorityRecordUpdate {
   readonly #target: RecordUpdateTarget;
   readonly #authority: Address;
   #entries: readonly RecordUpdateEntry[] = Object.freeze([]);
-  #unregisteredOwners: readonly Address[] = Object.freeze([]);
 
   constructor(input: RecordUpdateTarget & Readonly<{ authority: Address }>) {
     this.#target = input;
@@ -129,32 +87,6 @@ export class AuthorityRecordUpdate {
       mask: listMask(lists),
       value: listBits(lists.set),
     });
-  }
-
-  withOwnerPrivateClear(
-    input: Readonly<{ owner: Address; salts: OwnerListSalts; lists: readonly ListId[] }>,
-  ): AuthorityRecordUpdate {
-    const write = listWrite({ clear: input.lists });
-    checkWriter(write, "authority");
-    if (write.clear.some((id) => !isPrivateList(id))) throw invalid("NonPrivateList");
-    const ownerPkHash = memberOfTag(addressBytes(input.owner, "owner"));
-    const targets = privateRevocationKeys(ownerPkHash, input.salts);
-    const mask = listMask(write);
-    const entries = targets.map((target) =>
-      Object.freeze<RecordUpdateEntry>({
-        kind: "write",
-        mintPolicy: null,
-        member: indexerScalars.hash(checkMember(target.member)),
-        mask,
-        value: 0n,
-      }),
-    );
-    const unregisteredOwners =
-      targets.some((target) => target.kind === "ring") &&
-      !this.#unregisteredOwners.includes(input.owner)
-        ? [...this.#unregisteredOwners, input.owner]
-        : this.#unregisteredOwners;
-    return this.#copy([...this.#entries, ...entries], unregisteredOwners);
   }
 
   /** Replaces all mint settings, zero values clear them. */
@@ -176,23 +108,12 @@ export class AuthorityRecordUpdate {
   /** The writer refuses a signer other than the policy authority. */
   async sign(authority: MessagePartialSigner): Promise<SubmitRecordUpdateRequest> {
     if (authority.address !== this.#authority) throw invalid("Signer");
-    const signed = await signEntries(this.#target, this.#entries, authority);
-    return this.#unregisteredOwners.length === 0
-      ? signed
-      : Object.freeze({ ...signed, unregisteredOwners: this.#unregisteredOwners });
+    return signEntries(this.#target, this.#entries, authority);
   }
 
   #with(entry: RecordUpdateEntry): AuthorityRecordUpdate {
-    return this.#copy([...this.#entries, Object.freeze(entry)], this.#unregisteredOwners);
-  }
-
-  #copy(
-    entries: readonly RecordUpdateEntry[],
-    unregisteredOwners: readonly Address[],
-  ): AuthorityRecordUpdate {
     const next = new AuthorityRecordUpdate({ ...this.#target, authority: this.#authority });
-    next.#entries = Object.freeze(entries);
-    next.#unregisteredOwners = Object.freeze(unregisteredOwners);
+    next.#entries = Object.freeze([...this.#entries, Object.freeze(entry)]);
     return next;
   }
 }
@@ -201,7 +122,6 @@ function signEntries(
   target: RecordUpdateTarget,
   entries: readonly RecordUpdateEntry[],
   signer: MessagePartialSigner,
-  awaitedLists = 0n,
 ): Promise<SubmitRecordUpdateRequest> {
   if (entries.length === 0) throw invalid("Empty");
   return signRecordUpdate(
@@ -214,7 +134,7 @@ function signEntries(
         ring: target.ringProgramId,
         entries,
         validUntilSlot: target.validUntilSlot,
-        ...(awaitedLists === 0n ? {} : { awaitedLists }),
+        awaitedLists: 0n,
       }),
     },
     signer,

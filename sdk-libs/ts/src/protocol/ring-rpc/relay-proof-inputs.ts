@@ -10,15 +10,12 @@ import {
   addressBytes,
   byteVector,
   concatBytes,
-  copyBytes,
   encodeBase58,
   encodeData,
   equalBytes,
   isZero,
   readData,
   splInterfaceWithBump,
-  unsigned,
-  unsignedBigint,
   writeTransactOutput,
   sha256,
 } from "@heliuslabs/spr/internal";
@@ -108,15 +105,7 @@ export interface RelayProofInputs {
   readonly approvalBlinder?: Bytes32;
 }
 
-export interface RelayListSaltSink {
-  u8(value: number, name: string): this;
-  bytes(value: Uint8Array, length?: number, name?: string): this;
-}
-
-export function writeRelayListSalts<W extends RelayListSaltSink>(
-  writer: W,
-  salts: readonly RingListSalt[],
-): W {
+export function writeRelayListSalts(writer: Writer, salts: readonly RingListSalt[]): Writer {
   const sent = salts.filter(({ salt }) => !isZero(salt));
   writer.u8(sent.length, "listSalts.length");
   for (const { owner, salt } of sent)
@@ -124,119 +113,51 @@ export function writeRelayListSalts<W extends RelayListSaltSink>(
   return writer;
 }
 
-class SecretWriter {
-  readonly #chunks: Uint8Array[] = [];
-  #length = 0;
-
-  bytes(value: Uint8Array, length?: number, name?: string): this {
-    return this.#push(copyBytes(value, length, name));
-  }
-
-  u8(value: number, name: string): this {
-    return this.#push(Uint8Array.of(unsigned(value, 0xff, name)));
-  }
-
-  bool(value: boolean, name: string): this {
-    if (typeof value !== "boolean") throw refused(name);
-    return this.#push(Uint8Array.of(value ? 1 : 0));
-  }
-
-  u16(value: number, name: string): this {
-    const checked = unsigned(value, 0xffff, name);
-    return this.#push(Uint8Array.of(checked & 0xff, checked >>> 8));
-  }
-
-  u64(value: bigint, name: string): this {
-    return this.#integer(unsignedBigint(value, (1n << 64n) - 1n, name), 8);
-  }
-
-  option<T>(value: T | undefined, write: (writer: SecretWriter, value: T) => void): this {
-    this.bool(value !== undefined, "option");
-    if (value !== undefined) write(this, value);
-    return this;
-  }
-
-  finish(): Uint8Array {
-    const output = new Uint8Array(this.#length);
-    let offset = 0;
-    for (const chunk of this.#chunks) {
-      output.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return output;
-  }
-
-  wipe(): void {
-    for (const chunk of this.#chunks) chunk.fill(0);
-    this.#chunks.length = 0;
-    this.#length = 0;
-  }
-
-  #push(chunk: Uint8Array): this {
-    this.#chunks.push(chunk);
-    this.#length += chunk.length;
-    return this;
-  }
-
-  #integer(value: bigint, length: number): this {
-    const bytes = new Uint8Array(length);
-    for (let index = 0; index < length; index += 1) {
-      bytes[index] = Number((value >> BigInt(index * 8)) & 255n);
-    }
-    return this.#push(bytes);
-  }
-}
-
 /** The caller wipes the returned bytes, they hold every secret of the transfer. */
 export function encodeRelayProofInputs(value: RelayProofInputs): Uint8Array {
-  const writer = new SecretWriter();
+  const writer = new Writer();
+  writeRail(writer, value.rail);
+  const nullifierSecret = value.nullifierKey.secretBytes();
+  const txViewingSecret = value.txViewingKey.secretBytes();
   try {
-    writeRail(writer, value.rail);
-    const nullifierSecret = value.nullifierKey.secretBytes();
-    let txViewingSecret: Uint8Array | undefined;
-    try {
-      txViewingSecret = value.txViewingKey.secretBytes();
-      if (!equalBytes(value.nullifierKey.publicKey(), value.sender.nullifierPublicKey))
-        throw refused("nullifierKey");
-      writer
-        .bytes(addressBytes(value.ringProgramId), 32, "ringProgramId")
-        .bytes(value.sender.toBytes(), undefined, "sender")
-        .bytes(nullifierSecret, BLINDING_LENGTH, "nullifierSecret")
-        .bytes(txViewingSecret, 32, "txViewingSecret");
-    } finally {
-      nullifierSecret.fill(0);
-      txViewingSecret?.fill(0);
-    }
-    writer.u8(value.inputs.length, "inputs.length");
-    // 1. Each spend matches its owner by address and nullifier key, the co-owner secrets below follow the match.
-    const spending = new Set(
-      value.inputs.map((input, index) => writeInput(writer, { input, index, value })),
-    );
-    writer.u8(value.outputs.length, "outputs.length");
-    value.outputs.forEach((output, index) => writeOutput(writer, output, index, value.assets));
-    writeExternalData(writer, value.externalData, value.interfaceTransferAccounts);
-    writer.bytes(value.blindingSeed, 32, "blindingSeed").u16(value.outputTreeId, "outputTreeId");
-    // 2. A held co-owner no spend names keeps its nullifier secret from the relayer.
-    const disclosed = value.coOwners.filter((coOwner) => spending.has(coOwner));
-    writeRelayListSalts(writer, value.listSalts)
-      .u8(value.wideOwners ? 1 : 0, "wideOwners")
-      .u8(disclosed.length, "coOwners.length");
-    for (const { owner, nullifierKey } of disclosed) {
-      const secret = nullifierKey.secretBytes();
-      try {
-        writer
-          .bytes(addressBytes(owner), 32, "coOwner.owner")
-          .bytes(secret, BLINDING_LENGTH, "coOwner.nullifierSecret");
-      } finally {
-        secret.fill(0);
-      }
-    }
-    if (value.approvalBlinder === undefined) writer.u8(0, "approvalBlinder");
-    else writer.u8(1, "approvalBlinder").bytes(value.approvalBlinder, 32, "approvalBlinder");
-    return writer.finish();
+    if (!equalBytes(value.nullifierKey.publicKey(), value.sender.nullifierPublicKey))
+      throw refused("nullifierKey");
+    writer
+      .bytes(addressBytes(value.ringProgramId), 32, "ringProgramId")
+      .bytes(value.sender.toBytes(), undefined, "sender")
+      .bytes(nullifierSecret, BLINDING_LENGTH, "nullifierSecret")
+      .bytes(txViewingSecret, 32, "txViewingSecret");
   } finally {
-    writer.wipe();
+    nullifierSecret.fill(0);
+    txViewingSecret.fill(0);
   }
+  writer.u8(value.inputs.length, "inputs.length");
+  // 1. Each spend matches its owner by address and nullifier key, the co-owner secrets below follow the match.
+  const spending = new Set(
+    value.inputs.map((input, index) => writeInput(writer, { input, index, value })),
+  );
+  writer.u8(value.outputs.length, "outputs.length");
+  value.outputs.forEach((output, index) => writeOutput(writer, output, index, value.assets));
+  writeExternalData(writer, value.externalData, value.interfaceTransferAccounts);
+  writer.bytes(value.blindingSeed, 32, "blindingSeed").u16(value.outputTreeId, "outputTreeId");
+  // 2. A held co-owner no spend names keeps its nullifier secret from the relayer.
+  const disclosed = value.coOwners.filter((coOwner) => spending.has(coOwner));
+  writeRelayListSalts(writer, value.listSalts)
+    .u8(value.wideOwners ? 1 : 0, "wideOwners")
+    .u8(disclosed.length, "coOwners.length");
+  for (const { owner, nullifierKey } of disclosed) {
+    const secret = nullifierKey.secretBytes();
+    try {
+      writer
+        .bytes(addressBytes(owner), 32, "coOwner.owner")
+        .bytes(secret, BLINDING_LENGTH, "coOwner.nullifierSecret");
+    } finally {
+      secret.fill(0);
+    }
+  }
+  if (value.approvalBlinder === undefined) writer.u8(0, "approvalBlinder");
+  else writer.u8(1, "approvalBlinder").bytes(value.approvalBlinder, 32, "approvalBlinder");
+  return writer.finish();
 }
 
 /** Rust `RelayMergeInputs`, Ring RPC derives the merged note from the nullifier key. */
@@ -285,36 +206,31 @@ export function mergeRequestDigest(encoded: Uint8Array): Bytes32 {
 
 /** The caller wipes the returned bytes, they hold the nullifier secret. */
 export function encodeRelayMergeInputs(value: RelayMergeInputs): Uint8Array {
-  const writer = new SecretWriter();
+  if (equalBytes(value.sender.nullifierPublicKey, ZERO_NULLIFIER_PK)) throw refused("nullifierKey");
+  const writer = new Writer();
+  const nullifierSecret = value.nullifierKey.secretBytes();
   try {
-    if (equalBytes(value.sender.nullifierPublicKey, ZERO_NULLIFIER_PK))
+    if (!equalBytes(value.nullifierKey.publicKey(), value.sender.nullifierPublicKey))
       throw refused("nullifierKey");
-    const nullifierSecret = value.nullifierKey.secretBytes();
-    try {
-      if (!equalBytes(value.nullifierKey.publicKey(), value.sender.nullifierPublicKey))
-        throw refused("nullifierKey");
-      writer
-        .bytes(addressBytes(value.ringProgramId), 32, "ringProgramId")
-        .bytes(value.sender.toBytes(), undefined, "sender")
-        .bytes(nullifierSecret, BLINDING_LENGTH, "nullifierSecret");
-    } finally {
-      nullifierSecret.fill(0);
-    }
-    writer.u8(value.inputs.length, "inputs.length");
-    value.inputs.forEach((input, index) =>
-      writeSpend(writer, {
-        input,
-        index,
-        leafIndex: value.leafIndexes[index],
-        sender: value.sender,
-        coOwners: [],
-        assets: value.assets,
-      }),
-    );
-    return writer.finish();
+    writer
+      .bytes(addressBytes(value.ringProgramId), 32, "ringProgramId")
+      .bytes(value.sender.toBytes(), undefined, "sender")
+      .bytes(nullifierSecret, BLINDING_LENGTH, "nullifierSecret");
   } finally {
-    writer.wipe();
+    nullifierSecret.fill(0);
   }
+  writer.u8(value.inputs.length, "inputs.length");
+  value.inputs.forEach((input, index) =>
+    writeSpend(writer, {
+      input,
+      index,
+      leafIndex: value.leafIndexes[index],
+      sender: value.sender,
+      coOwners: [],
+      assets: value.assets,
+    }),
+  );
+  return writer.finish();
 }
 
 /** Rust `RelayProofInputs::decode`, every input hash and nullifier derived again from its opening. */
@@ -402,7 +318,7 @@ function readApprovalBlinder(reader: WireReader): Bytes32 | undefined {
   return tag === 1 ? reader.hash("approvalBlinder") : undefined;
 }
 
-function writeRail(writer: SecretWriter, rail: RelayRail): void {
+function writeRail(writer: Writer, rail: RelayRail): void {
   switch (rail.kind) {
     case "anonymous": {
       writer.u8(0, "rail");
@@ -426,7 +342,7 @@ function writeRail(writer: SecretWriter, rail: RelayRail): void {
   }
 }
 
-function writePlan(writer: SecretWriter, plan: AnonymousPlan): void {
+function writePlan(writer: Writer, plan: AnonymousPlan): void {
   writer.u8(plan.payments.length, "plan.payments.length");
   for (const payment of plan.payments)
     writer.bytes(payment.recipient.toBytes(), X25519_PUBLIC_KEY_LENGTH, "plan.payment.recipient");
@@ -435,7 +351,7 @@ function writePlan(writer: SecretWriter, plan: AnonymousPlan): void {
 
 /** A spend of the sender or a held co-owner, a dummy or compact padding, the service derives hash and nullifier. */
 function writeInput(
-  writer: SecretWriter,
+  writer: Writer,
   slot: Readonly<{ input: ProofInputUtxo; index: number; value: RelayProofInputs }>,
 ): CoOwner | undefined {
   const { input, index, value } = slot;
@@ -462,7 +378,7 @@ function writeInput(
 
 /** Rust `SpendWire`, refused unless the sender or a held co-owner spends it at a named leaf. */
 function writeSpend(
-  writer: SecretWriter,
+  writer: Writer,
   spend: Readonly<{
     input: ProofInputUtxo;
     index: number;
@@ -508,7 +424,7 @@ function writeSpend(
 }
 
 function writeOutput(
-  writer: SecretWriter,
+  writer: Writer,
   output: ProofOutputUtxo,
   index: number,
   assets: AssetRegistry,
@@ -528,7 +444,7 @@ function writeOutput(
 }
 
 function writeExternalData(
-  writer: SecretWriter,
+  writer: Writer,
   external: ExternalData,
   accounts: readonly RelayLegAccounts[],
 ): void {
@@ -547,25 +463,19 @@ function writeExternalData(
     .bytes(external.txViewingPublicKey.toBytes(), X25519_PUBLIC_KEY_LENGTH, "txViewingPk")
     .bytes(external.salt, SALT_LENGTH, "salt")
     .u8(external.outputs.length, "outputs.length");
-  for (const output of external.outputs) {
-    const encoded = new Writer();
-    writeTransactOutput(encoded, output);
-    writer.bytes(encoded.finish());
-  }
+  for (const output of external.outputs) writeTransactOutput(writer, output);
   writer.u8(external.resolvedOwnerTags.length, "resolvedOwnerTags.length");
   for (const tag of external.resolvedOwnerTags) writer.bytes(tag, 32, "resolvedOwnerTag");
   writer.u8(external.messages.length, "messages.length");
   for (const message of external.messages) {
     writer.bytes(message.viewTag, 32, "message.viewTag");
-    const encoded = new Writer();
-    byteVector(encoded, message.data, "message.data");
-    writer.bytes(encoded.finish());
+    byteVector(writer, message.data, "message.data");
   }
 }
 
 /** Each leg carries the accounts the decoder derives again, Rust `legs`. */
 function writeLeg(
-  writer: SecretWriter,
+  writer: Writer,
   leg: Readonly<{
     transfer: SettlementTransfer;
     index: number;
@@ -612,11 +522,11 @@ function writeLeg(
     .bytes(addressBytes(accounts.tokenProgram), 32, "leg.tokenProgram");
 }
 
-function optionalHash(writer: SecretWriter, hash: Bytes32 | undefined, name: string): void {
+function optionalHash(writer: Writer, hash: Bytes32 | undefined, name: string): void {
   writer.option(hash, (out, value) => out.bytes(value, 32, name));
 }
 
-function optionalAddress(writer: SecretWriter, address: Address | undefined, name: string): void {
+function optionalAddress(writer: Writer, address: Address | undefined, name: string): void {
   writer.option(address, (out, value) => out.bytes(addressBytes(value), 32, name));
 }
 

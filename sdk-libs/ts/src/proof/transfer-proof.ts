@@ -7,7 +7,6 @@ import type { ProofInputUtxo, SppProofInputs } from "@heliuslabs/spr/transaction
 import type { TransferProofRequest, VoucherProofInput } from "../rpc/prover/ring.js";
 import type { RingOutputRail } from "../operations/payments/output-rail.js";
 import {
-  fittedSpend,
   frameKeyShape,
   ownerSignerCapacity,
   ringTransferCircuit,
@@ -32,27 +31,6 @@ import {
   type PolicyProving,
 } from "./policy-proof.js";
 import { approvalOpeningOf, type ApprovalOpening } from "../protocol/membership/approval-totals.js";
-
-/** The key a transfer proves under, `wideOwners` the frame flag naming its rows. */
-export interface TransferKeySelection {
-  readonly circuit: TransferKeyCircuit;
-  readonly wideOwners: boolean;
-}
-
-/** Refuses a transaction past the account bound before proving, picks the narrowest rows holding every owner. */
-export function selectTransferKey(
-  input: Readonly<{
-    spend: TransferSpend;
-    addresses: TransferAddresses;
-    /** The published owner signers, hidden and in-proof owners take no address. */
-    ownerSigners: number;
-  }>,
-): TransferKeySelection {
-  const { spend, addresses, ownerSigners } = input;
-  checkOwnerSignerBound(addresses, ownerSigners);
-  const fitted = fittedSpend(spend);
-  return Object.freeze({ circuit: transferKeyCircuit(fitted), wideOwners: fitted.wide });
-}
 
 /** Refuses a transaction past the account bound, the published owner signers alone take addresses. */
 export function checkOwnerSignerBound(addresses: TransferAddresses, ownerSigners: number): void {

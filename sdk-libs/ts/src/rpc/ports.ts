@@ -5,7 +5,6 @@ import type {
   BlockhashProvider,
   ChainReader,
   MergeAssembler,
-  Proof,
   ProvenRingTransact,
   Prover,
   TreeContext,
@@ -18,7 +17,6 @@ import type {
   RecordOpening,
 } from "../protocol/membership/member-registry.js";
 import type { RingTransactInstructionData } from "../protocol/proof/circuit.js";
-import type { RingMergeDisclosureRequest } from "../crypto/audit/merge-disclosure.js";
 import type {
   TrackingOpenings,
   TrackingOpeningsRequest,
@@ -169,11 +167,3 @@ export type ProvenAnonymousRingTransact = Omit<ProvenRingTransact, "data"> &
 
 /** A confidential ring's in-proof owner also proves on it. */
 export type AnonymousRingTransactProver = Pick<Prover, "proveAnonymousRingTransact">;
-
-/** The anonymous merge disclosure proof only the nullifier key holder makes. */
-export interface RingSecretProver {
-  proveRingWithSecret(
-    request: RingMergeDisclosureRequest,
-    context?: RequestContext,
-  ): Promise<Proof>;
-}

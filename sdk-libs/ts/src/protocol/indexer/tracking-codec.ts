@@ -18,9 +18,10 @@ import {
   type TrackingRecord,
 } from "../membership/tracking.js";
 import { MAX_RING_MEMBER_BATCH } from "./indexer-limits.js";
-import { unboundedU64 } from "./indexer-codec.js";
+import { schemaWire } from "../wire-primitives.js";
 
 const { array, context, object, wireInteger } = indexerCodec;
+const { u64 } = schemaWire;
 const { checkedAddress, checkedBase64, checkedHash, hash, hashBytes, schemaFailure } =
   indexerScalars;
 
@@ -218,8 +219,4 @@ function bytes(value: unknown, path: string): Uint8Array {
 
 function field(value: unknown, path: string): Bytes32 {
   return hashBytes(checkedHash(value, path));
-}
-
-function u64(value: unknown, path: string): bigint {
-  return unboundedU64(value, path);
 }

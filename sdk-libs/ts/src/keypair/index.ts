@@ -1,9 +1,4 @@
-export {
-  auditorMessageData,
-  auditorViewTag,
-  openTransactionViewingSecret,
-  parseAuditorMessage,
-} from "../crypto/audit/audit.js";
+export { auditorMessageData, auditorViewTag, parseAuditorMessage } from "../crypto/audit/audit.js";
 export type { AuditorEnvelope, AuditorMessage } from "../crypto/audit/audit.js";
 export {
   RING_KEY_ERROR_RUST_VARIANT,

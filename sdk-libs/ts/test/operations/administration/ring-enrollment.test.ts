@@ -11,7 +11,6 @@ import {
   ZERO_NULLIFIER_PK,
   addressBytes,
   bigIntBytes,
-  bytesToBigInt,
   encodeBase58,
   hashBytes,
 } from "@heliuslabs/spr/internal";
@@ -231,55 +230,17 @@ describe("tracking openings", () => {
       verifyTrackingOpening({ kind: "present", record, path }, root, field(0x06)),
     ).toThrow("RING_TRACKING_INVALID");
   });
-  it("refuses out-of-range members and non-canonical field elements in tracking openings", () => {
-    const low = { ...TRACKING_SENTINEL, next: field(0x04) };
-    const { root, path } = single(low);
-    const wrappedNext = bigIntBytes(bytesToBigInt(low.next) + BN254_SCALAR_ORDER) as Bytes32;
-    expect(() =>
-      verifyTrackingOpening(
-        { kind: "absent", low: { ...low, next: wrappedNext }, path },
-        root,
-        field(0x05),
-      ),
-    ).toThrow(
-      expect.objectContaining({
-        code: "RING_TRACKING_INVALID",
-        details: { reason: "NonCanonicalField" },
-      }),
-    );
-    const nonCanonical = bigIntBytes(BN254_SCALAR_ORDER) as Bytes32;
-    for (const member of [ZERO_32, bigIntBytes(BN254_SCALAR_ORDER - 1n) as Bytes32, nonCanonical]) {
+  it("refuses a member outside the range the sentinel brackets", () => {
+    const { root, path } = single(TRACKING_SENTINEL);
+    for (const member of [
+      ZERO_32,
+      bigIntBytes(BN254_SCALAR_ORDER - 1n) as Bytes32,
+      bigIntBytes(BN254_SCALAR_ORDER) as Bytes32,
+    ]) {
       expect(() =>
         verifyTrackingOpening({ kind: "absent", low: TRACKING_SENTINEL, path }, root, member),
       ).toThrow("RING_MEMBER_REGISTRY_INVALID");
     }
-    for (const tampered of [
-      { ...low, nullifierPk: nonCanonical },
-      { ...low, ctHash: nonCanonical },
-      { ...low, listTag: nonCanonical },
-      { ...low, viewingHash: nonCanonical },
-    ]) {
-      expect(() =>
-        verifyTrackingOpening({ kind: "absent", low: tampered, path }, root, field(0x02)),
-      ).toThrow(
-        expect.objectContaining({
-          code: "RING_TRACKING_INVALID",
-          details: { reason: "NonCanonicalField" },
-        }),
-      );
-    }
-    const badPath = {
-      ...path,
-      siblings: [[nonCanonical, ZERO_32, ZERO_32], ...path.siblings.slice(1)],
-    };
-    expect(() =>
-      verifyTrackingOpening({ kind: "absent", low, path: badPath }, root, field(0x02)),
-    ).toThrow(
-      expect.objectContaining({
-        code: "RING_TRACKING_INVALID",
-        details: { reason: "NonCanonicalField" },
-      }),
-    );
   });
 });
 

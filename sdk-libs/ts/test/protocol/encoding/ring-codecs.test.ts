@@ -31,7 +31,6 @@ import {
   encodeSetMergeSettingsRequest,
 } from "../../../src/protocol/ring-rpc/ring-rpc-codec.js";
 import {
-  RING_AUTHORITY_MAX_INPUTS,
   RING_AUTHORITY_SHAPES,
   isRingAuthorityShape,
 } from "../../../src/protocol/transaction/spp.js";
@@ -281,6 +280,7 @@ describe("ring rpc gateway", () => {
           ? {
               mode: "derived",
               servicePubkey: addressOf(22),
+              enrollmentWriterPubkey: null,
               relay: false,
               recordWriter: false,
               enrollmentWrites: false,
@@ -1373,7 +1373,10 @@ describe("ring read request", () => {
 
   it("names the voucher of a vouched transfer and none otherwise", async () => {
     expect((await readItem(decryptedItem())).vouchedBy).toBeUndefined();
-    expect((await readItem(decryptedItem({ vouchedBy: null }))).vouchedBy).toBeUndefined();
+    await expect(readItem(decryptedItem({ vouchedBy: null }))).rejects.toMatchObject({
+      code: "RING_RPC",
+      details: { path: "vouchedBy" },
+    });
     expect((await readItem(decryptedItem({ vouchedBy: addressOf(21) }))).vouchedBy).toBe(
       addressOf(21),
     );
@@ -1489,7 +1492,7 @@ describe("ring read request", () => {
   it("reads a kept record beside the payload error of its slot", async () => {
     const item = await readItem(
       erroredItem([
-        { slotIndex: 1, kind: "payload" },
+        { slotIndex: 1, kind: "commitment" },
         { slotIndex: 2, kind: "disclosure" },
         { slotIndex: 5, kind: "commitment" },
       ]),
@@ -1516,6 +1519,7 @@ describe("ring read request", () => {
         { slotIndex: 5, kind: "commitment" },
       ],
     ],
+    ["the removed payload kind", [{ slotIndex: 1, kind: "payload" }]],
     [
       "a slot past the published ones",
       [
@@ -1923,6 +1927,11 @@ describe("isRingAuthorityShape", () => {
     const [shape] = RING_AUTHORITY_SHAPES;
     if (shape === undefined) throw new Error("no authority shape");
     expect(isRingAuthorityShape(shape)).toBe(true);
-    expect(isRingAuthorityShape({ ...shape, inputs: RING_AUTHORITY_MAX_INPUTS + 1 })).toBe(false);
+    expect(
+      isRingAuthorityShape({
+        ...shape,
+        inputs: Math.max(...RING_AUTHORITY_SHAPES.map((shape) => shape.inputs)) + 1,
+      }),
+    ).toBe(false);
   });
 });

@@ -88,11 +88,10 @@ export function recordUpdateWrite(entry: RecordUpdateEntry): RecordWrite {
 
 /**
  * Mirrored by `RecordUpdateStatement::hash` in `sdk-libs/client/src/rpc/record_update.rs`.
- *   `Poseidon(CRRU, hash_bytes(genesis_hash), hash_bytes(ring), hash_bytes(registry), entries_hash, valid_until_slot[, awaited_lists])`
+ *   `Poseidon(CRRU, hash_bytes(genesis_hash), hash_bytes(ring), hash_bytes(registry), entries_hash, valid_until_slot, awaited_lists)`
  */
 export function recordUpdateStatementHash(input: UnsignedRecordUpdate): Bytes32 {
-  const { genesisHash, ring, entries, validUntilSlot } = input.update;
-  const awaitedLists = input.update.awaitedLists ?? 0n;
+  const { genesisHash, ring, entries, validUntilSlot, awaitedLists } = input.update;
   if (validUntilSlot < 0n || validUntilSlot > U64_MAX) throw invalid("ValidUntilSlot");
   if (awaitedLists < 0n || awaitedLists > U64_MAX) throw invalid("AwaitedLists");
   return poseidon([
@@ -102,8 +101,8 @@ export function recordUpdateStatementHash(input: UnsignedRecordUpdate): Bytes32 
     hashBytes(addressBytes(input.registry, "registry")) as Bytes32,
     entries.map(recordUpdateWrite).reduce(writeChain, ZERO_32),
     bigIntBytes(validUntilSlot) as Bytes32,
-    // The width binds the wait to the signature, a pending update never verifies as a plain one.
-    ...(awaitedLists === 0n ? [] : [bigIntBytes(awaitedLists) as Bytes32]),
+    // The signature binds the wait, a pending update never verifies as a plain one.
+    bigIntBytes(awaitedLists) as Bytes32,
   ]);
 }
 

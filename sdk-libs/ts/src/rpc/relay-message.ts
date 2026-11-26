@@ -6,7 +6,6 @@ import {
   address,
   decompileTransactionMessage,
   getBase58Decoder,
-  getBase58Encoder,
   getCompiledTransactionMessageDecoder,
   getCompiledTransactionMessageEncoder,
   type Instruction,
@@ -31,14 +30,13 @@ import type {
   InterfaceTransfer,
   Signature,
 } from "@heliuslabs/spr/interface";
-import { confidentialSlotTag } from "../crypto/derivation/ring-stream.js";
+import { slotTag } from "../crypto/derivation/ring-stream.js";
 import {
   addressBytes,
   encodeBase58,
   equalBytes,
   isCanonicalField,
   isZero,
-  U64_MAX,
   LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
   splInterfaceWithBump,
   ZERO_32,
@@ -54,6 +52,7 @@ import { ProofInputUtxo, Utxo, SOL_MINT, type WalletUtxo } from "@heliuslabs/spr
 
 import { ringComputeUnitLimit } from "../operations/management/admin.js";
 import { RingError } from "../protocol/error.js";
+import { wirePrimitives } from "../protocol/wire-primitives.js";
 import {
   openingTotals,
   type ApprovalOpening,
@@ -509,12 +508,13 @@ export function encodeRelayTransferTerms(terms: RelayTransferTerms): string {
   });
 }
 
-/** An amount past the safe integers stays exact, Serde refuses `7.0` and `-0` for an integer. */
+/** An integer past the safe range keeps its digits, Serde refuses `7.0` and `-0` for an integer. */
 function parseWire(json: string): unknown {
-  return JSON.parse(json, (key: string, value: unknown, context?: { source?: string }) => {
+  return JSON.parse(json, (_key: string, value: unknown, context?: { source?: string }) => {
     if (typeof value !== "number") return value;
-    if (!/^(0|[1-9][0-9]*)$/.test(context?.source ?? "")) throw mismatch("Undecodable");
-    return key === "amount" ? BigInt(context?.source ?? "") : value;
+    const source = context?.source ?? "";
+    if (!/^(0|[1-9][0-9]*)$/.test(source)) throw mismatch("Undecodable");
+    return Number.isSafeInteger(value) ? value : source;
   }) as unknown;
 }
 
@@ -536,7 +536,9 @@ export function decodeRelayTransferTerms(json: string): RelayTransferTerms {
       feePayer: address(row["feePayer"] as string),
       signer: address(row["signer"] as string),
       slots: (row["slots"] as readonly unknown[]).map(decodeSlotOpening),
-      nullifiers: (row["nullifiers"] as readonly unknown[]).map(hash32),
+      nullifiers: (row["nullifiers"] as readonly unknown[]).map((nullifier) =>
+        scalar.hash(nullifier, "nullifiers"),
+      ),
       setup: (row["setup"] as readonly unknown[]).map(decodeTokenAccountCreate),
     });
   });
@@ -576,7 +578,7 @@ function decodeFundedLeg(entry: unknown): FundedLeg {
   const mint = leg["mint"] ?? undefined;
   return Object.freeze({
     ...(mint === undefined ? {} : { mint: address(mint as string) }),
-    amount: u64Amount(leg["amount"]),
+    amount: scalar.u64(leg["amount"], "amount"),
   });
 }
 
@@ -593,15 +595,15 @@ function decodeSlotOpening(value: unknown): SlotOpening {
     "ringDataHash",
   ]);
   return Object.freeze({
-    slot: integer(row["slot"], 0xffff_ffff),
+    slot: scalar.count(row["slot"], "slot", 0xffff_ffff),
     owner: address(row["owner"] as string),
-    nullifierPk: hash32(row["nullifierPk"]),
+    nullifierPk: scalar.hash(row["nullifierPk"], "nullifierPk"),
     mint: address(row["mint"] as string),
-    amount: u64Amount(row["amount"]),
-    blinding: hash32(row["blinding"]),
-    treeId: integer(row["treeId"], 0xffff),
-    dataHash: hash32(row["dataHash"]),
-    ringDataHash: hash32(row["ringDataHash"]),
+    amount: scalar.u64(row["amount"], "amount"),
+    blinding: scalar.hash(row["blinding"], "blinding"),
+    treeId: scalar.count(row["treeId"], "treeId", 0xffff),
+    dataHash: scalar.hash(row["dataHash"], "dataHash"),
+    ringDataHash: scalar.hash(row["ringDataHash"], "ringDataHash"),
   });
 }
 
@@ -614,22 +616,9 @@ function fields(value: unknown, names: readonly string[]): Readonly<Record<strin
   return value as Readonly<Record<string, unknown>>;
 }
 
-function hash32(value: unknown): Bytes32 {
-  const bytes = new Uint8Array(getBase58Encoder().encode(value as string));
-  if (bytes.length !== 32) throw mismatch("Undecodable");
-  return bytes as Bytes32;
-}
-
-function integer(value: unknown, limit: number): number {
-  if (!Number.isInteger(value) || (value as number) < 0 || (value as number) > limit)
-    throw mismatch("Undecodable");
-  return value as number;
-}
-
-function u64Amount(value: unknown): bigint {
-  if (typeof value !== "bigint" || value < 0n || value > U64_MAX) throw mismatch("Undecodable");
-  return value;
-}
+const scalar = wirePrimitives(() => {
+  throw mismatch("Undecodable");
+});
 
 /** Rust serde JSON byte for byte, `RelayTransferTerms` hands nothing of it over. */
 export function encodeApprovalOpening(opening: ApprovalOpening): string {
@@ -657,14 +646,14 @@ export function decodeApprovalOpening(json: string): ApprovalOpening {
 function decodedApprovalOpening(wire: unknown): ApprovalOpening {
   const row = fields(wire, ["blinder", "outputs", "public"]);
   return Object.freeze({
-    blinder: hash32(row["blinder"]),
+    blinder: scalar.hash(row["blinder"], "blinder"),
     outputs: Object.freeze(
       (row["outputs"] as readonly unknown[]).map((entry): OutputTotalsOpening => {
         const slot = fields(entry, ["asset", "peak", "chargedOutflow"]);
         return Object.freeze({
-          asset: hash32(slot["asset"]),
-          peak: text(slot["peak"]),
-          chargedOutflow: text(slot["chargedOutflow"]),
+          asset: scalar.hash(slot["asset"], "asset"),
+          peak: scalar.text(slot["peak"], "peak"),
+          chargedOutflow: scalar.text(slot["chargedOutflow"], "chargedOutflow"),
         });
       }),
     ),
@@ -672,19 +661,14 @@ function decodedApprovalOpening(wire: unknown): ApprovalOpening {
       (row["public"] as readonly unknown[]).map((entry): PublicTotalsOpening => {
         const slot = fields(entry, ["asset", "peak", "outflow", "gross"]);
         return Object.freeze({
-          asset: hash32(slot["asset"]),
-          peak: text(slot["peak"]),
-          outflow: text(slot["outflow"]),
-          gross: text(slot["gross"]),
+          asset: scalar.hash(slot["asset"], "asset"),
+          peak: scalar.text(slot["peak"], "peak"),
+          outflow: scalar.text(slot["outflow"], "outflow"),
+          gross: scalar.text(slot["gross"], "gross"),
         });
       }),
     ),
   });
-}
-
-function text(value: unknown): string {
-  if (typeof value !== "string") throw mismatch("Undecodable");
-  return value;
 }
 
 /** The ring account and the creates a relay puts ahead of the ring instruction. */
@@ -998,7 +982,7 @@ function checkMoved(
       record.kind === RecordKind.exit
         ? owner.ownerKey
         : !isAnonymousFrame(frame.rail)
-          ? confidentialSlotTag(owner.viewingU)
+          ? slotTag(owner.viewingU)
           : undefined;
     if (expectedTag !== undefined && (tag === undefined || !equalBytes(tag, expectedTag)))
       throw mismatch("Recipients");

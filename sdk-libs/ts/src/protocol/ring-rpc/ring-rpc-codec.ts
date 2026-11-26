@@ -3,11 +3,12 @@ import type { Bytes32 } from "@heliuslabs/spr/interface";
 import { RingError } from "../error.js";
 import { getBase58Decoder } from "@solana/kit";
 
-import { U64_MAX, indexerCodec, indexerScalars } from "@heliuslabs/spr/internal";
+import { indexerCodec, indexerScalars } from "@heliuslabs/spr/internal";
 import type { indexerTypes } from "@heliuslabs/spr/internal";
 import type { ShieldedAddress } from "@heliuslabs/spr/keypair";
 
-import { encodeMintPolicy, unboundedU64 } from "../indexer/indexer-codec.js";
+import { encodeMintPolicy } from "../indexer/indexer-codec.js";
+import { schemaWire, toU64 } from "../wire-primitives.js";
 import type {
   AuthorityTransfer,
   AuthorityPayment,
@@ -66,19 +67,7 @@ const CO_SIGN_SUBJECT_KINDS = [
 ] as const satisfies readonly CoSignSubjectKind[];
 const CO_SIGN_LIST_EDITS = ["set", "remove"] as const satisfies readonly CoSignListEdit[];
 
-function toU64(value: bigint, path: string): number {
-  return toWireInteger(value, path, 0n, U64_MAX);
-}
-
-function u64(value: unknown, path: string): bigint {
-  return unboundedU64(value, path);
-}
-
-function text(value: unknown, path: string): string {
-  if (typeof value !== "string")
-    return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", path, "a string", value);
-  return value;
-}
+const { text, u64 } = schemaWire;
 
 /** Rust `GetRelayQuoteRequest`. */
 export function encodeRelayQuoteRequest(value: RelayQuoteRequest): WireObject {
@@ -239,9 +228,7 @@ export function encodeSubmitRecordUpdateRequest(value: SubmitRecordUpdateRequest
         encodeRecordUpdateEntry(entry, `update.entries[${String(index)}]`),
       ),
       validUntilSlot: toU64(value.update.validUntilSlot, "update.validUntilSlot"),
-      ...((value.update.awaitedLists ?? 0n) === 0n
-        ? {}
-        : { awaitedLists: toU64(value.update.awaitedLists ?? 0n, "update.awaitedLists") }),
+      awaitedLists: toU64(value.update.awaitedLists, "update.awaitedLists"),
     },
     signer: checkedAddress(value.signer, "signer"),
     signature: checkedSignature(value.signature, "signature"),

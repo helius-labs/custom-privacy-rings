@@ -15,7 +15,7 @@ import {
   type CheckpointStream,
   type SyncCheckpointAdvances,
 } from "@heliuslabs/spr/internal";
-import { confidentialSlotTag } from "../crypto/derivation/ring-stream.js";
+import { slotTag } from "../crypto/derivation/ring-stream.js";
 import type { Address, Bytes32, RequestContext } from "@heliuslabs/spr/interface";
 import type { ShieldedAddress, X25519PublicKey } from "@heliuslabs/spr/keypair";
 import {
@@ -89,7 +89,7 @@ function claimingCodec(input: RingNoteCodecInput, claims: SenderClaim[]): RingCo
       const frames: RingTagFrame[] = input.keys
         .viewingPublicKeys()
         .map((viewingPublicKey): RingTagFrame => {
-          const confidential = confidentialSlotTag(viewingPublicKey.u());
+          const confidential = slotTag(viewingPublicKey.u());
           const probes: RingTagProbe[] = tagged.map((site) => ({
             kind: equalBytes(site.slot.viewTag, confidential) ? "confidential" : "recipient",
             outputIndex: site.slotIndex,
@@ -482,7 +482,7 @@ class RingReads {
     const rows: IndexedShieldedTransaction[] = [];
     let covered: bigint | undefined;
     for (const [position, members] of ordered) {
-      const slotTags = members.map((key) => confidentialSlotTag(key.u()));
+      const slotTags = members.map((key) => slotTag(key.u()));
       const reached = [
         await this.#read("transactions", slotTags, position, rows),
         await this.#read(

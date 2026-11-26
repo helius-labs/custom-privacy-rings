@@ -865,12 +865,12 @@ describe("co-sign", () => {
 });
 
 describe("ring rpc refusals", () => {
-  it("names -32167 to -32169, -32174 and -32175 as the co-sign list refusals", () => {
+  it("names -32167 to -32169 and -32175 as the co-sign list refusals and leaves -32174 unnamed", () => {
     expect([-32167, -32168, -32169, -32174, -32175].map(ringRpcRefusalName)).toEqual([
       "frozen",
       "blocked",
       "notAllowed",
-      "customRefused",
+      undefined,
       "listSubject",
     ]);
   });
@@ -890,40 +890,6 @@ describe("ring rpc refusals", () => {
 
   it("names -32216 as a relayed message past one transaction", () => {
     expect(ringRpcRefusalName(-32216)).toBe("oversized");
-  });
-
-  it("names -32261 as records creation limit refusal without colliding with -32260", async () => {
-    expect(ringRpcRefusalName(-32260)).toBe("recordsNotCreated");
-    expect(ringRpcRefusalName(-32261)).toBe("recordsCreationLimit");
-    const authority = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(8));
-    const request = await signCreateRecordsRegistryRequest(
-      {
-        cluster: new Uint8Array(32).fill(1) as Bytes32,
-        service: filled(2, 32) as Address,
-        ringProgramId: filled(3, 32) as Address,
-      },
-      authority,
-    );
-    const rpc = new RingRpc("http://ring.example", {
-      allowInsecureHttp: true,
-      fetch: (async () =>
-        new Response(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            error: { code: -32261, message: "records registry creation limit is reached" },
-          }),
-          { headers: { "content-type": "application/json" } },
-        )) as typeof globalThis.fetch,
-    });
-    await expect(rpc.createRecordsRegistry(request)).rejects.toMatchObject({
-      code: "RING_RPC_REFUSED",
-      details: {
-        method: "createRecordsRegistry",
-        refusal: "recordsCreationLimit",
-        rpcCode: -32261,
-      },
-    });
   });
 
   it("names -32180 to -32187 as the enrollment refusals and frees the relayed enrollment codes", () => {

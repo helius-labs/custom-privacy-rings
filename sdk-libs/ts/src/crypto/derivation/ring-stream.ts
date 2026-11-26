@@ -79,14 +79,6 @@ export function unframedSlotTag(framed: Uint8Array): Bytes32 {
 }
 
 /**
- * A confidential output's tag, stable per recipient key, since the confidential rail hides
- * amounts and leaves the recipient linkable to anyone who holds its address.
- */
-export function confidentialSlotTag(viewingU: Bytes32): Bytes32 {
-  return slotTag(viewingU);
-}
-
-/**
  * An anonymous payment's tag, fresh per transaction and slot, since a tag stable per recipient
  * would link every payment to one recipient in public.
  */

@@ -136,8 +136,8 @@ export interface RecordUpdate {
   readonly ring: Address;
   readonly entries: readonly RecordUpdateEntry[];
   readonly validUntilSlot: bigint;
-  /** Record bits of the authority lists the update waits for, absent or zero for none. */
-  readonly awaitedLists?: bigint;
+  /** Record bits of the authority lists the update waits for, zero for none. */
+  readonly awaitedLists: bigint;
 }
 
 /** Rust `SubmitRecordUpdateRequest`, the signature covers `RecordUpdateStatement::hash`. */

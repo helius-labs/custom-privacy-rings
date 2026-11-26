@@ -6,14 +6,8 @@ import {
   type Bytes33,
   type Instruction,
 } from "@heliuslabs/spr/interface";
-import {
-  equalBytes,
-  isZero,
-  nullifierPdaAddress,
-  ZERO_NULLIFIER_PK,
-} from "@heliuslabs/spr/internal";
+import { equalBytes, isZero, ZERO_NULLIFIER_PK } from "@heliuslabs/spr/internal";
 import type { ShieldedPublicKey } from "@heliuslabs/spr/keypair";
-import type { ProofInputUtxo } from "@heliuslabs/spr/transaction";
 
 import { RingError } from "../../protocol/error.js";
 import { RingInstructionTag } from "../../protocol/transaction/instruction-tag.js";
@@ -95,19 +89,6 @@ export type CeilingDecision =
       groups: readonly MergeGroup[];
       addresses: number;
     }>;
-
-export async function spentInputOf(input: ProofInputUtxo, tree: Address): Promise<SpentInput> {
-  const { utxo } = input;
-  return Object.freeze({
-    owner: utxo.owner,
-    asset: utxo.asset,
-    nullifierPublicKey: input.nullifierPublicKey,
-    ...(input.dataHash === undefined ? {} : { dataHash: input.dataHash }),
-    ...(utxo.ringProgramId === undefined ? {} : { ringProgramId: utxo.ringProgramId }),
-    treeId: input.treeId,
-    nullifierPda: await nullifierPdaAddress(tree, input.nullifier()),
-  });
-}
 
 /** Rust `TransactionFit`, the one acceptance rule of a final transaction, refusing CPI bytes, then signatures, instructions, bytes, addresses. */
 export const TransactionFit = Object.freeze({

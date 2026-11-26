@@ -9,7 +9,6 @@ import {
   encodeBase58,
   equalBytes,
   hashBytes,
-  isCanonicalField,
   U64_MAX,
   poseidon,
   Reader,
@@ -195,7 +194,7 @@ export function trackingRecordHash(record: TrackingRecord): Bytes32 {
   return poseidon([
     domainField(RingDomain.trackingLeaf),
     member as Bytes32,
-    checkCanonicalField(record.next, "next"),
+    checkedBytes<Bytes32>(record.next, 32, "next"),
     ...keys,
   ]) as Bytes32;
 }
@@ -208,13 +207,17 @@ export function verifyTrackingOpening(
 ): TrackingRecord | undefined {
   checkMember(member);
   const leaf = opening.kind === "present" ? opening.record : opening.low;
-  const leafHash = trackingRecordHash(leaf);
   const held =
     opening.kind === "present"
       ? equalBytes(leaf.member, member)
       : fieldBelow(leaf.member, member) && fieldBelow(member, leaf.next);
   if (!held) throw invalid("NotBracketed");
-  if (!equalBytes(foldQuadPath(opening.path, leafHash, refuse, TRACKING_QUAD_HEIGHT), root))
+  if (
+    !equalBytes(
+      foldQuadPath(opening.path, trackingRecordHash(leaf), refuse, TRACKING_QUAD_HEIGHT),
+      root,
+    )
+  )
     throw invalid("RootMismatch");
   return opening.kind === "present" ? opening.record : undefined;
 }
@@ -329,19 +332,13 @@ function cyclic<T>(values: readonly T[], length: number): readonly T[] {
   return Array.from({ length }, (_, index) => values[index % values.length] as T);
 }
 
-function checkCanonicalField(value: Bytes32, name: string): Bytes32 {
-  const checked = checkedBytes<Bytes32>(value, 32, name);
-  if (!isCanonicalField(checked)) throw invalid("NonCanonicalField");
-  return checked;
-}
-
 function trackingFields(fields: TrackingFields): readonly Bytes32[] {
   return [
-    checkCanonicalField(fields.member, "member"),
-    checkCanonicalField(fields.nullifierPk, "nullifier pk"),
-    checkCanonicalField(fields.ctHash, "ct hash"),
-    checkCanonicalField(fields.listTag, "list tag"),
-    checkCanonicalField(fields.viewingHash, "viewing hash"),
+    checkedBytes<Bytes32>(fields.member, 32, "member"),
+    checkedBytes<Bytes32>(fields.nullifierPk, 32, "nullifier pk"),
+    checkedBytes<Bytes32>(fields.ctHash, 32, "ct hash"),
+    checkedBytes<Bytes32>(fields.listTag, 32, "list tag"),
+    checkedBytes<Bytes32>(fields.viewingHash, 32, "viewing hash"),
   ];
 }
 

@@ -1,6 +1,6 @@
 import { ASSET_LIMIT_KEYS, type MintPolicy } from "../membership/mint-policy.js";
 import type { indexerTypes } from "@heliuslabs/spr/internal";
-import { U64_MAX, indexerCodec, indexerScalars } from "@heliuslabs/spr/internal";
+import { indexerCodec, indexerScalars } from "@heliuslabs/spr/internal";
 
 import {
   QUAD_CAPACITY,
@@ -8,6 +8,7 @@ import {
   QUAD_HEIGHT,
   canopyLevels,
 } from "../membership/member-registry.js";
+import { schemaWire, toU64 } from "../wire-primitives.js";
 import { MAX_RING_MEMBER_BATCH } from "./indexer-limits.js";
 import type {
   RingMemberOpeningView,
@@ -31,33 +32,13 @@ const { checkedAddress, checkedHash, schemaFailure } = indexerScalars;
 type WireObject = Record<string, unknown>;
 type Hash = indexerTypes.Hash;
 
-const UNSIGNED_DECIMAL_INTEGER = /^(?:0|[1-9][0-9]*)$/;
+const { u64 } = schemaWire;
 
 function boolean(value: unknown, path: string): boolean {
   if (typeof value !== "boolean") {
     return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", path, "a boolean", value);
   }
   return value;
-}
-
-export function unboundedU64(value: unknown, path: string): bigint {
-  if (typeof value !== "string") return wireInteger(value, path, 0n, U64_MAX);
-  if (!UNSIGNED_DECIMAL_INTEGER.test(value)) {
-    return schemaFailure("INDEXER_SCHEMA_INVALID_INTEGER", path, "a decimal integer string", value);
-  }
-  const integer = BigInt(value);
-  if (integer > U64_MAX) {
-    return schemaFailure("INDEXER_SCHEMA_INVALID_INTEGER", path, "a u64", value);
-  }
-  return integer;
-}
-
-function u64(value: unknown, path: string): bigint {
-  return unboundedU64(value, path);
-}
-
-function toU64(value: bigint, path: string): number {
-  return toWireInteger(value, path, 0n, U64_MAX);
 }
 
 /** Rust `GetStorageMemberRecordsRequest`. */
@@ -75,7 +56,7 @@ function memberRecord(value: unknown, path: string): RingMemberRecordView {
   return {
     member: checkedHash(record["member"], `${path}.member`),
     next: checkedHash(record["next"], `${path}.next`),
-    lists: unboundedU64(record["lists"], `${path}.lists`),
+    lists: u64(record["lists"], `${path}.lists`),
     mintPolicy: decodeMintPolicy(record["mintPolicy"]),
   };
 }
@@ -106,7 +87,7 @@ function storageRoot(value: unknown, path: string): StorageRootView {
   const row = object(value, path, ["root", "revision", "nextIndex"]);
   return {
     root: checkedHash(row["root"], `${path}.root`),
-    revision: unboundedU64(row["revision"], `${path}.revision`),
+    revision: u64(row["revision"], `${path}.revision`),
     nextIndex: wireInteger(row["nextIndex"], `${path}.nextIndex`, 1n, QUAD_CAPACITY),
   };
 }
@@ -286,7 +267,7 @@ export function encodeMintPolicy(policy: MintPolicy | null): WireObject | null {
 /** Rust `GetStorageApplyProofInputsResponse`. */
 export function decodeStorageApplyProofInputs(value: unknown): StorageApplyProofInputsResponse {
   const row = object(value, "$", ["revision", ...APPLY_FIELDS]);
-  return { ...applyProofInputs(row), revision: unboundedU64(row["revision"], "revision") };
+  return { ...applyProofInputs(row), revision: u64(row["revision"], "revision") };
 }
 
 const APPLY_FIELDS = [
@@ -334,7 +315,7 @@ function recordWrite(entry: unknown, path: string): RingRecordWriteView {
     mintPolicy: item["mintPolicy"] == null ? null : decodeMintPolicy(item["mintPolicy"]),
     exists: boolean(item["exists"], `${path}.exists`),
     oldNext: checkedHash(item["oldNext"], `${path}.oldNext`),
-    oldLists: unboundedU64(item["oldLists"], `${path}.oldLists`),
+    oldLists: u64(item["oldLists"], `${path}.oldLists`),
     oldMintPolicy: decodeMintPolicy(item["oldMintPolicy"]),
     slot: recordPath(item["slot"], `${path}.slot`),
     low: memberRecord(item["low"], `${path}.low`),
@@ -350,8 +331,7 @@ function decodeMintPolicy(value: unknown): MintPolicy {
     "withdrawalThreshold",
     "limits",
   ]);
-  const amount = (from: WireObject, key: string): bigint =>
-    unboundedU64(from[key], `mintPolicy.${key}`);
+  const amount = (from: WireObject, key: string): bigint => u64(from[key], `mintPolicy.${key}`);
   const limits = object(row["limits"], "mintPolicy.limits", ASSET_LIMIT_KEYS);
   return Object.freeze({
     threshold: amount(row, "threshold"),

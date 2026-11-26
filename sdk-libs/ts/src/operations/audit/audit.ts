@@ -43,7 +43,6 @@ import {
 import {
   saltedAuditorSchedule,
   auditorViewTag,
-  openTransactionViewingSecret,
   parseAuditorMessage,
   type AuditorMessage,
 } from "../../crypto/audit/audit.js";
@@ -119,11 +118,8 @@ export interface AuditedRingOutput {
   readonly opening: OutputOpening;
 }
 
-/**
- * Rust `OutputPayloadErrorKind`. `disclosure` and `commitment` leave the slot unopened, `payload`
- * keeps the record in `outputs` without its data hashes.
- */
-export type OutputPayloadErrorKind = "disclosure" | "commitment" | "payload";
+/** Rust `OutputPayloadErrorKind`, a slot also in `outputs` keeps its proven record without its data hashes. */
+export type OutputPayloadErrorKind = "disclosure" | "commitment";
 
 export interface OutputPayloadError {
   readonly slotIndex: number;
@@ -332,15 +328,6 @@ export function auditorMessage(
       details: { reason: "missing" },
     });
   return message.data;
-}
-
-/** The envelope's key alone, a full audit reads it from `openAuditEnvelope`. */
-export function recoverTransactionViewingKey(
-  auditor: X25519Keypair,
-  message: AuditorMessage,
-  salt: Bytes16,
-): ViewingKey {
-  return canonicalViewingKey(openTransactionViewingSecret(auditor, message, salt));
 }
 
 export interface TransactionAuditInput {
@@ -634,16 +621,6 @@ export function knownUtxoOwnerHash(
     case "unresolved":
       return undefined;
   }
-}
-
-/** Rust `AuditedTransaction::has_unknown_assets`, a registry refresh may name the mint, a delivered slot opens only after it. */
-export function hasUnknownAssets(transaction: AuditedRingTransaction): boolean {
-  return (
-    auditedUtxos(transaction).some(({ utxo }) => utxo.mint === undefined) ||
-    transaction.inputs.some(
-      (input) => input.opening.kind === "opened" && input.opening.mint === undefined,
-    )
-  );
 }
 
 /** Mirrors Rust `RingScan::audit`, each tagged event attributed through its confirmed call stack. */
