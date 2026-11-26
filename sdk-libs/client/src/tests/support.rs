@@ -95,7 +95,6 @@ pub(crate) fn keypair(seed: u8) -> ShieldedKeypair {
     ShieldedKeypair::from_keypair(SigningKey::from_ed25519_bytes(&[seed; 32])).unwrap()
 }
 
-/// The sender tag a wallet with no history selects.
 pub(crate) fn fresh_wallet_tags(sender: &ShieldedKeypair) -> TransferTags {
     ViewingHistory::new(sender.viewing_pubkey(), 0)
         .select(sender)

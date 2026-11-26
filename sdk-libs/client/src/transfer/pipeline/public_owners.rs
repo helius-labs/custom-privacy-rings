@@ -80,7 +80,7 @@ impl RingTransfer<PublicOwners<'_>> {
         Ok(self)
     }
 
-    /// The wallet's selection for the payments in declared order.
+    /// The wallet's sender tag, a spend of no ring note is refused without it.
     #[must_use = "use the updated transfer"]
     pub fn with_tags(mut self, tags: TransferTags) -> Self {
         self.rail.tags = Some(tags);

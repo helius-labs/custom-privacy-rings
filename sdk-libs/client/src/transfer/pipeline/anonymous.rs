@@ -157,7 +157,6 @@ impl RingPayment {
         }
     }
 
-    /// A move pays every payee in one asset.
     pub fn in_asset(&self, asset: Mint) -> AnonymousPayment {
         AnonymousPayment {
             to: self.to.clone(),
@@ -185,7 +184,7 @@ pub struct AnonymousMove<'a> {
     pub entry: EntrySpend,
     /// Read only when the ring demands a co-signer.
     pub co_signer: Option<Address>,
-    /// The wallet's sender tag, an entry spend proves with no other.
+    /// The wallet's sender tag, an entry spend is refused without it.
     pub tags: Option<&'a TransferTags>,
 }
 
@@ -315,7 +314,7 @@ impl<'a> RingTransfer<Anonymous<'a>> {
         Ok(self)
     }
 
-    /// The wallet's selection for the payments in declared order.
+    /// The wallet's sender tag, a spend of no ring note is refused without it.
     #[must_use = "use the updated transfer"]
     pub fn with_tags(mut self, tags: TransferTags) -> Self {
         self.rail.tags = Some(tags);
@@ -622,7 +621,6 @@ pub(super) fn payment_salts(
         .collect()
 }
 
-/// One spend's payments with the wallet's tag selection.
 pub(super) struct TaggedPayments<'a> {
     pub transaction: &'a ConfidentialTransaction,
     pub sender: &'a ShieldedAddress,
@@ -639,7 +637,7 @@ impl TaggedPayments<'_> {
             payments,
             tags,
         } = self;
-        // 1. No nullifier of the wallet finds a spend of no ring note, its slots need the sender tag.
+        // 1. A spend of no ring note publishes no nullifier the tag sync follows, its slots need the sender tag.
         let spends_ring_note = transaction
             .inputs()
             .iter()
@@ -648,7 +646,7 @@ impl TaggedPayments<'_> {
             return Err(RingError::SenderTagRequired);
         }
         // 2. Change takes the sender tag only under the key the tags derive from, a deposit's
-        // fresh sender holds another key and its change a random tag.
+        // fresh sender holds another key and its change takes a random tag.
         let plan = match tags.filter(|tags| tags.viewing_pubkey() == sender.viewing_pubkey) {
             Some(tags) => AnonymousPlan::new().with_sender_tag(tags.sender()),
             None => AnonymousPlan::new(),

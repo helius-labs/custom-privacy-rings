@@ -45,7 +45,6 @@ pub struct RingWalletSync<'a, K: ?Sized> {
     recovery: bool,
 }
 
-/// What one pass reads.
 #[derive(Clone, Copy)]
 enum Rail<'a> {
     /// The wallet's listed tags and the spends of its notes.
@@ -73,7 +72,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingWalletSync<'a, K> {
         }
     }
 
-    /// Opens every body of each watched ring's history ahead of the tag read, a note no listed tag names is found here alone.
+    /// Opens every body of each watched ring's history ahead of the tag read, a note the tag read misses is found here alone.
     pub fn with_recovery_scan(mut self) -> Self {
         self.recovery = true;
         self

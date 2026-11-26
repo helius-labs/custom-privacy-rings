@@ -91,7 +91,7 @@ pub struct RingDeposit<'a> {
     pub cosigner: Option<&'a (dyn Signer + Sync)>,
     /// A salted list refuses an enrolled recipient with none.
     pub list_salt: Option<[u8; 32]>,
-    /// The depositor wallet's sender tag, an anonymous deposit proves with no other.
+    /// The depositor wallet's sender tag, an anonymous deposit is refused without it.
     pub tags: Option<&'a TransferTags>,
 }
 
@@ -105,7 +105,7 @@ pub struct RingDepositBatch<'a> {
     pub outputs: Vec<DepositOutput<'a>>,
     /// Signs when a record covers deposits, the record must be its own.
     pub cosigner: Option<&'a (dyn Signer + Sync)>,
-    /// The depositor wallet's sender tag, an anonymous deposit proves with no other.
+    /// The depositor wallet's sender tag, an anonymous deposit is refused without it.
     pub tags: Option<&'a TransferTags>,
 }
 

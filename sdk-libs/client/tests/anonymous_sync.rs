@@ -724,7 +724,6 @@ fn after_slot(history: &ViewingHistory) -> Option<u64> {
     history.current().ring_positions()[&RING]
 }
 
-/// One tag sync of `wallet` stored by its one absorb.
 async fn tag_sync(indexer: &Indexer, keys: &ShieldedKeypair, wallet: &mut AnonymousWallet) {
     let commit = RingConfidentialScan::new(keys, &assets())
         .sync(indexer, wallet, &[])
@@ -770,7 +769,7 @@ async fn one_tag_sync_finds_a_bootstrap_payment_a_request_payment_and_the_change
     assert_eq!(indexer.take_ring_pages(), 0);
 }
 
-/// A seed holds no request counter, a restore lists 64 requests past the last one it found.
+/// A seed holds no request counter, a restore lists `TAG_WINDOW` requests past the last one it found.
 #[tokio::test]
 async fn a_stored_request_counter_finds_a_late_payment_and_a_seed_only_restore_stops_at_64_unpaid_requests_in_a_row(
 ) {
@@ -1248,7 +1247,6 @@ async fn a_wiped_sender_restores_its_change_chain_and_payment_rows_from_the_seed
     assert_eq!(unspent(&keys, &positioned), [output(&second, 0)]);
 }
 
-/// The merge spends a change and a received note.
 #[tokio::test]
 async fn a_wiped_wallet_restores_a_merge_of_its_change_and_a_payment_from_the_seed() {
     let indexer = Indexer::default();
@@ -1830,7 +1828,6 @@ async fn a_merge_of_the_wallets_notes_is_found_by_recovery_and_marks_them_spent(
     assert_eq!(unspent, [merged_hash]);
 }
 
-/// A claim stays one until the wallet confirms it, confirming clears it and reads nothing else.
 #[tokio::test]
 async fn a_reply_stays_an_unverified_claim_until_the_wallet_confirms_it() {
     let indexer = Indexer::default();

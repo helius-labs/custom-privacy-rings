@@ -374,7 +374,7 @@ fn payment_at(
     open_recipient_body(body, &slot_secret(staged, reader, position), form).unwrap()
 }
 
-/// One change slot leads under the sender tag, a payment under its request tag or its recipient's bootstrap tag, each slot opens under its party's key.
+/// One change slot leads under the sender tag, a payment takes its request tag or its recipient's bootstrap tag, each slot opens under its party's key.
 #[tokio::test]
 async fn an_anonymous_transfer_publishes_each_slot_under_its_tag() {
     use crate::tests::support::keypair;

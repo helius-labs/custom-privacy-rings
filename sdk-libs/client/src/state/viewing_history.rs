@@ -83,7 +83,6 @@ impl StreamCounter {
         }
     }
 
-    /// The index a request takes, the counter moves past it.
     fn mint(&mut self) -> Result<u64, AnonymousError> {
         let index = self.next;
         self.next = index
@@ -142,7 +141,6 @@ impl ViewingKeyEntry {
         self.request.next
     }
 
-    /// Every stream a sync reads under this key, the bootstrap tag aside.
     pub(crate) fn streams(&self) -> [(ViewTagStream, StreamCounter); 2] {
         [
             (ViewTagStream::Sender, self.tx),
@@ -150,7 +148,6 @@ impl ViewingKeyEntry {
         ]
     }
 
-    /// A tag found at `index` moves its stream's counter past it.
     pub(crate) fn found(&mut self, stream: ViewTagStream, index: u64) {
         match stream {
             ViewTagStream::Sender => self.tx.found(index),

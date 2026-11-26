@@ -53,14 +53,12 @@ pub struct RingConfidentialScan<'a, K: ?Sized> {
     config: Option<IndexerRpcConfig>,
 }
 
-/// What one listed tag names, the held key by its history index.
 #[derive(Clone, Copy)]
 struct Listed {
     entry: usize,
     stream: Option<(ViewTagStream, u64)>,
 }
 
-/// Every tag a sync listed so far, and how far each stream went.
 #[derive(Default)]
 struct Listing {
     tags: HashMap<ViewTag, Listed>,
@@ -135,7 +133,8 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
     ) -> Result<ScanCommit, AnonymousError> {
         let mut reads = IndexerReads::configured(indexer, self.config);
         let mut history = wallet.history().clone();
-        // 1. Only rows above the committed positions come back, the ledger holds what earlier rows opened.
+        // 1. A tag read before returns only rows above its key's position and a tag never read
+        // returns all its rows, the ledger holds what earlier rows opened.
         let tagged = self.read_tags(&mut reads, &mut history).await?;
         // 2. Every event read so far opens once, later rounds follow only spends.
         let rows = union_events(transactions, tagged.rows);
@@ -189,7 +188,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
         })
     }
 
-    /// Lists every stream of each held key and reads the tags no earlier read covered, until a round lists none.
+    /// Lists every stream of each held key and reads the tags no earlier round listed, until a round lists none.
     async fn read_tags<I: AsyncRpc + ?Sized>(
         &self,
         reads: &mut IndexerReads<'_, I>,
@@ -208,7 +207,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
         let mut seen = HashSet::new();
         let mut covered: Option<u64> = None;
         loop {
-            // 1. Keys at one position share a read, a moved counter or a new sender lists more next round.
+            // 1. Keys at one position share a read, a moved counter lists more next round.
             let groups = self.list(history, &entries, &mut listing)?;
             if groups.is_empty() {
                 break;
@@ -231,7 +230,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
                 }
             }
         }
-        // 3. One shared position keeps the next sync at one read.
+        // 3. One shared position lets the held keys share one read in the next sync.
         if let Some(slot) = covered {
             for index in entries {
                 history.entries_mut()[index].set_tag_position(slot);
@@ -241,7 +240,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
     }
 
     /// The tags not listed before, grouped by the slot their read starts after.
-    /// An index within the window of a found one was read through its key's position, any other tag was never read.
+    /// An index within the window of a found one was read through its key's position, the stored state shows no read of any other.
     fn list(
         &self,
         history: &ViewingHistory,
@@ -270,7 +269,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
                 let bound = listing.bounds.entry((index, stream)).or_default();
                 let fresh = *bound..counter.listed().end;
                 *bound = fresh.end;
-                // A later round lists only tags no sync read.
+                // A later round lists only tags no stored sync read.
                 let read_before = match first {
                     true => counter.read_before().end,
                     false => 0,
@@ -311,7 +310,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
         Ok(groups)
     }
 
-    /// Moves each stream past its tags in `row`, then keeps the reply of each body a held key rebuilds.
+    /// A reply is kept only on a body a held key rebuilds.
     fn count(
         &self,
         row: &ShieldedTransaction,

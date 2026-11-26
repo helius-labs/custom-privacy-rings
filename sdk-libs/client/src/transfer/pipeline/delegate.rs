@@ -664,7 +664,7 @@ impl Delegated<'_> {
         let delivery = match ring_rail.anonymous_frame() {
             true => RingDelivery::Anonymous(Box::new(
                 // An output back to the source reads as change and takes no payment slot, a
-                // payment among them still publishes its tag there.
+                // payment to the source still publishes its tag on a change slot.
                 self.outputs
                     .iter()
                     .fold(AnonymousPlan::new(), |plan, output| {

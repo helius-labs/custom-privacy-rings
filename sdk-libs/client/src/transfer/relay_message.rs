@@ -148,7 +148,7 @@ pub enum LegDirection {
     Withdrawal,
 }
 
-/// The preimage of one published output's `utxo_hash`.
+/// The preimage of one published output's `utxo_hash`, and the tag its slot publishes.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SlotOpening {
@@ -863,7 +863,7 @@ impl ExpectedDelegate {
                     record.kind == RecordKind::Ring && source.owns(&record) && sealed_to(source)
                 })
                 .ok_or(MessageMismatch::Recipients)?;
-            // An anonymous source finds its change by the note it spent.
+            // An anonymous source's change publishes no tag of its own, a note that source spent finds it.
             if anonymous {
                 continue;
             }

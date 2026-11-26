@@ -228,7 +228,7 @@ impl AnonymousScan {
     }
 }
 
-/// Reads every ring stream of each held viewing key, each tag answered by `keys`.
+/// Reads a ring's whole history and opens each body under the held viewing keys, no tag selects a body.
 #[must_use]
 pub struct AnonymousSync<'a, K: ?Sized> {
     keys: &'a K,
@@ -266,7 +266,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
         self
     }
 
-    /// Every stream and ring from its start, for a wallet that keeps no notes between syncs.
+    /// Every ring from its start, for a wallet that keeps no notes between syncs.
     pub fn with_full_rescan(mut self) -> Self {
         self.from = ScanFrom::Start;
         self
@@ -388,7 +388,6 @@ struct Scan<'s, 'a, 'r, I: ?Sized, K: ?Sized> {
     sender_claims: Vec<SenderClaim>,
 }
 
-/// A ring body the entry's key may open.
 struct Body<'t> {
     tx: &'t ShieldedTransaction,
     position: usize,
@@ -397,7 +396,6 @@ struct Body<'t> {
 }
 
 impl<'t> Body<'t> {
-    /// `None` off a ring body.
     fn of(tx: &'t ShieldedTransaction, position: usize, found: AnonymousStream) -> Option<Self> {
         ring_body_output(&tx.output_slots.get(position)?.payload)?;
         Some(Self {
@@ -408,7 +406,6 @@ impl<'t> Body<'t> {
         })
     }
 
-    /// Every ring body of `tx`, none selected by its tag.
     fn every(tx: &'t ShieldedTransaction) -> Vec<Self> {
         (0..tx.output_slots.len())
             .filter_map(|position| Self::of(tx, position, AnonymousStream::FullScan))
@@ -483,7 +480,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
             .collect()
     }
 
-    /// The transaction key the entry's key derives for `context`, `None` when another key sent it.
+    /// `None` when another key sent the transaction.
     fn own_transaction_key(
         &self,
         viewing_pubkey: X25519Pubkey,
@@ -586,7 +583,6 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
         Ok(())
     }
 
-    /// `None` on a dummy and on a body the recipient's key does not open.
     fn sent_payment(
         &self,
         body: &Body<'_>,
