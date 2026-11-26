@@ -4,6 +4,7 @@ The `ci` workflow runs on pushes to `main`, pull request changes and manual disp
 Draft pull requests run the Zolana pin check and skip the test jobs.
 
 Manual dispatch defaults to `validation=full` and runs the complete localnet matrix and TypeScript live tests.
+Only a manual dispatch runs the widest frame and full capacity sweeps, a pull request and a push to `main` leave those eight jobs out.
 Set `validation=sanity` to run `just test-custom-ring-sanity` as the localnet suite.
 That mode omits TypeScript live tests and keeps the build, lint, unit, package and documentation checks.
 It reports `ci sanity result`, which does not replace the required `ci result` check.
@@ -16,8 +17,8 @@ The `keys` job downloads every ring proving key and the SPP ring transfer keys o
 The localnet and e2e jobs restore that entry and download only a key it lacks.
 A pull request that changes a lockfile saves its own entry, the jobs of that pull request read it.
 
-The localnet matrix runs each shape and full capacity sweep of `program-tests/custom-ring/tests/ring_shapes.rs` as its own job.
-Those sweeps prove every catalog key.
+The localnet matrix runs each sweep of `program-tests/custom-ring/tests/ring_shapes.rs` as its own job.
+The sweeps of a full dispatch prove every catalog key.
 The ring localnet ports of `tools/test-ring-controls.sh` stay below 32768, the start of the Linux ephemeral range, so the kernel gives none of them to a client socket.
 The lifecycle slices run `program_owner` with `enrollment_vault.so` from the `ring_program` artifact.
 The `program update` job runs `just test-custom-ring-program-update`, the two `program_update` tests of a Xark program on a ring, with real proofs.
