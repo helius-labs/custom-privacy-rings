@@ -292,6 +292,8 @@ pub struct RingConfiguration {
     pub delegate: Option<Address>,
     /// Zero commits no ring salt.
     pub ring_list_tag: [u8; 32],
+    /// The account the fields above decode from, its registries size a transfer's prefix.
+    pub policy: RingPolicy,
 }
 
 #[must_use]
@@ -822,6 +824,7 @@ impl CanonicalAccount<'_> {
             mode: config.mode().map_err(|_| invalid())?,
             delegate: config.delegate().copied(),
             ring_list_tag: config.ring_list_tag,
+            policy: config,
         })
     }
 }

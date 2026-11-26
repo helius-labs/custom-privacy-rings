@@ -130,6 +130,7 @@ impl TransactionSource for RingSource {
             mode: custom_ring_interface::RingMode::Confidential,
             delegate: Some(ring_delegate().pubkey()),
             ring_list_tag: [0; 32],
+            policy: bytemuck::Zeroable::zeroed(),
         }))
     }
 

@@ -43,7 +43,7 @@ pub trait TransferPrefix {
 }
 
 /// Indices into the whole list, the ring account at [`TransferLayout::RING`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TransferLayout {
     pub registries: Range<usize>,
     /// `[record, signer]` pairs.
@@ -80,7 +80,8 @@ impl TransferLayout {
         prefix: &mut P,
     ) -> Result<Self, P::Error> {
         let delegate_rail = frame.rail.is_delegate();
-        let registries = 1..1 + registry_count(ring, delegate_rail);
+        let read = RootRead::transfer(ring, delegate_rail);
+        let registries = 1..1 + ring.root_registries(read).count();
         let pairs = prefix.co_signer_pairs(registries.end, frame.co_sign_requirement(ring))?;
         let co_signers = registries.end..registries.end + 2 * pairs;
         let delegate = delegate_rail.then_some(co_signers.end);
@@ -89,40 +90,46 @@ impl TransferLayout {
             _ => None,
         };
         let spp = co_signers.end + usize::from(delegate.is_some()) + usize::from(mint.is_some());
-        let trees = spp + RING_TRANSACT_ACCOUNT_PREFIX_LEN;
-        let trees = trees..trees + frame.input_trees.count();
-        let nullifiers = trees.end..trees.end + frame.nullifiers.len();
-        // The cached selector's accounts follow the settlement groups, a run read through them would
-        // take a cache as an unsigned owner and every cached frame would refuse.
-        let settlement_len = frame
-            .interface_transfers
-            .iter()
-            .map(|transfer| transfer.settlement_account_count())
-            .sum::<usize>();
-        let cache = accounts.checked_sub(frame.cache_accounts());
-        let settlement = cache.and_then(|cache| cache.checked_sub(settlement_len));
-        let (Some(cache), Some(settlement)) = (cache, settlement) else {
-            return Err(CustomRingError::InvalidSettlementAccounts.into());
-        };
-        if settlement < nullifiers.end {
-            return Err(CustomRingError::InvalidSettlementAccounts.into());
-        }
         Ok(Self {
             registries,
             co_signers,
             delegate,
             mint,
-            spp,
+            ..Self::pool(frame, spp..accounts)?
+        })
+    }
+
+    /// SPP's windows alone, `list` spans the accounts it receives.
+    pub fn pool(frame: &RingTransactData<'_>, list: Range<usize>) -> Result<Self, CustomRingError> {
+        let trees = list.start + RING_TRANSACT_ACCOUNT_PREFIX_LEN;
+        let trees = trees..trees + frame.input_trees.count();
+        let nullifiers = trees.end..trees.end + frame.nullifiers.len();
+        // The cached selector's accounts follow the settlement groups, a run read through them would
+        // take a cache as an unsigned owner and every cached frame would refuse.
+        let legs = frame.interface_transfers.iter();
+        let settlement_len: usize = legs.map(|leg| leg.settlement_account_count()).sum();
+        let (cache, settlement) = usize::checked_sub(list.end, frame.cache_accounts())
+            .and_then(|cache| Some((cache, cache.checked_sub(settlement_len)?)))
+            .filter(|(_, settlement)| *settlement >= nullifiers.end)
+            .ok_or(CustomRingError::InvalidSettlementAccounts)?;
+        Ok(Self {
+            spp: list.start,
             owners: nullifiers.end..settlement,
             trees,
             nullifiers,
             settlement: settlement..cache,
-            cache: cache..accounts,
+            cache: cache..list.end,
+            ..Self::default()
         })
     }
 
     pub const fn payer(&self) -> usize {
         self.spp + TRANSACT_PAYER_INDEX
+    }
+
+    /// SPP reads its output tree after the payer.
+    pub const fn output_tree(&self) -> usize {
+        self.payer() + 1
     }
 
     /// The one slot of the ring auth PDA.
@@ -146,9 +153,4 @@ impl TransferLayout {
             }
         })
     }
-}
-
-fn registry_count(ring: &RingPolicy, delegate: bool) -> usize {
-    ring.root_registries(RootRead::transfer(ring, delegate))
-        .count()
 }

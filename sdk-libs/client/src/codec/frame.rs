@@ -3,7 +3,6 @@
 use custom_ring_interface::{
     extension_flag, key_catalog::TransferShape, stream::framed_slot_tag, CustomRingError,
     FrameExtensions, FrameHeader, InputTrees, RingOutput, RingPolicy, RingTransactData, SlotBody,
-    RING_TRANSACT_ACCOUNT_PREFIX_LEN,
 };
 use spr_interface::instruction::{
     instruction_data::transact::CacheAccess, ExternalDataPreimage, InterfaceTransfer,
@@ -154,13 +153,6 @@ pub trait SppExpansion {
         ring: &RingPolicy,
         proof: TransactProof,
     ) -> Result<TransactIxData, CustomRingError>;
-
-    /// The run SPP reads as owner signers, between the nullifier PDAs and the settlement groups.
-    fn owner_signers<'s, T>(
-        &self,
-        spp: &'s [T],
-        settlements: usize,
-    ) -> Result<&'s [T], CustomRingError>;
 }
 
 impl SppExpansion for RingTransactData<'_> {
@@ -210,20 +202,6 @@ impl SppExpansion for RingTransactData<'_> {
     ) -> Result<TransactIxData, CustomRingError> {
         self.validate_under(self.audit_stream()?)?;
         self.transact_ix_data_validated(ring, proof)
-    }
-
-    fn owner_signers<'s, T>(
-        &self,
-        spp: &'s [T],
-        settlements: usize,
-    ) -> Result<&'s [T], CustomRingError> {
-        let start =
-            RING_TRANSACT_ACCOUNT_PREFIX_LEN + self.input_trees.count() + self.nullifiers.len();
-        settlements
-            .checked_add(self.cache_accounts())
-            .and_then(|tail| spp.len().checked_sub(tail))
-            .and_then(|end| spp.get(start..end))
-            .ok_or(CustomRingError::InvalidSettlementAccounts)
     }
 }
 

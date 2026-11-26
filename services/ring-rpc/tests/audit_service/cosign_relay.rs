@@ -55,11 +55,16 @@ fn sender_fields(amount: u64) -> UtxoFields {
 }
 
 impl FramedProver {
-    /// `[record, signer]` per co-signer, then SPP's transact list, `spp[1]` the output tree and the ring auth at 4.
+    /// The ring account and its tracking registry, `[record, signer]` per co-signer, then SPP's transact list.
     fn accounts(ring: Address, fee_payer: Address, named: &[Address]) -> Vec<AccountMeta> {
-        named
+        let prefix = [CustomRing::new(ring).policy_pda(), Address::default()]
+            .map(|account| AccountMeta::new_readonly(account, false));
+        let pairs = named
             .iter()
-            .flat_map(|signer| CustomRing::new(ring).co_signer_metas(*signer))
+            .flat_map(|signer| CustomRing::new(ring).co_signer_metas(*signer));
+        prefix
+            .into_iter()
+            .chain(pairs)
             .chain([
                 AccountMeta::new(fee_payer, true),
                 AccountMeta::new(spr_interface::pda::tree(TREE_ID), false),

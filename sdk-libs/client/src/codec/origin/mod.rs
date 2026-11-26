@@ -1,6 +1,5 @@
 //! The indexer matches tags without knowing rings, the confirmed call stack names the ring.
 
-use crate::SppExpansion;
 use core::future::Future;
 
 use solana_address::Address;
@@ -19,6 +18,7 @@ use crate::AuditError;
 use custom_ring_interface::{
     tag as ring_tag, transact_flag, AuditStreamLayout, CheckedAuthorization, CustomRingError,
     CustomRingMergeIxDataRef, InstructionTag, ParsedTransact, RingMode, RingRail, RingTransactData,
+    TransferLayout,
 };
 
 /// What a confirmed transaction says about its ring, its signers and the value it settled out.
@@ -152,11 +152,10 @@ impl RingOrigin {
             }
             CheckedAuthorization::ConfidentialSigner => {
                 let accounts = &self.pool_accounts;
-                let window =
-                    settlement_accounts(&data.interface_transfers, data.circuit(), accounts)
-                        .ok_or(AuditError::SettlementAccounts)?;
-                data.owner_signers(accounts, window.len())
-                    .map_err(|error| AuditError::InvalidTransactData(error.to_string()))?
+                TransferLayout::pool(data, 0..accounts.len())
+                    .ok()
+                    .and_then(|layout| accounts.get(layout.owners))
+                    .ok_or(AuditError::SettlementAccounts)?
             }
             CheckedAuthorization::AnonymousHidden(_)
             | CheckedAuthorization::AnonymousPublic

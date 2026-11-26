@@ -1119,16 +1119,17 @@ fn a_cached_frames_owner_run_stops_short_of_its_cache_account() {
     };
     let start =
         custom_ring_interface::RING_TRANSACT_ACCOUNT_PREFIX_LEN + trees + data.nullifiers.len();
-    let spp: Vec<usize> = (0..start + 3).collect();
-    assert_eq!(
-        data.owner_signers(&spp, 0).unwrap(),
-        [start, start + 1, start + 2]
-    );
+    let owners = |data: &RingTransactData<'_>| {
+        custom_ring_interface::TransferLayout::pool(data, 0..start + 3)
+            .unwrap()
+            .owners
+    };
+    assert_eq!(owners(&data), start..start + 3);
     data.extensions.cache = Some(CacheAccess {
         read_bitmap: 0b1,
         write_slots: CacheAccess::NO_WRITES,
     });
-    assert_eq!(data.owner_signers(&spp, 0).unwrap(), [start, start + 1]);
+    assert_eq!(owners(&data), start..start + 2);
 }
 
 /// A public-owner frame carries no hidden owner's proof data and settles on SPP's confidential rail.

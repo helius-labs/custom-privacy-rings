@@ -3,7 +3,7 @@
 use custom_ring_interface::{
     anonymous_exit::TokenAccountControl, cosign::CoSignRequirement, source_map_of, tag,
     transfer_layout::TransferPrefix, CustomRingError, PolicyWithdrawal, RingPolicy,
-    RingTransactData, RootRead, TransferApproval, TransferLayout,
+    RingTransactData, RootRead, TransferApproval, TransferLayout, RING_TRANSACT_RING_CONFIG_INDEX,
 };
 use solana_address::Address;
 use spr_hasher::{
@@ -46,6 +46,27 @@ impl KnownPrefix {
             delegate_mint,
         })
     }
+}
+
+/// The layout of a list its one `ring_auth` slot locates, a second copy or an odd prefix refuses.
+pub fn located_layout<'a>(
+    frame: &RingTransactData<'_>,
+    ring: &RingPolicy,
+    ring_auth: &Address,
+    accounts: impl ExactSizeIterator<Item = &'a Address>,
+) -> Result<TransferLayout, CustomRingError> {
+    let len = accounts.len();
+    let mut copies = accounts
+        .enumerate()
+        .filter(|(_, account)| *account == ring_auth);
+    let (Some((slot, _)), None) = (copies.next(), copies.next()) else {
+        return Err(CustomRingError::RingAuthOutOfSlot);
+    };
+    let spp = slot
+        .checked_sub(RING_TRANSACT_RING_CONFIG_INDEX)
+        .ok_or(CustomRingError::RingAuthOutOfSlot)?;
+    let mut prefix = KnownPrefix::ending_at(frame, ring, spp)?;
+    TransferLayout::new(frame, ring, len, &mut prefix)
 }
 
 impl TransferPrefix for KnownPrefix {

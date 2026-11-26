@@ -1,12 +1,10 @@
 //! Each owner's outflow of the transfer a co-signer signs, read from the frame and the note index.
 
-use std::collections::HashMap;
-use zolana_ring_client::SppExpansion;
+use std::{collections::HashMap, ops::Range};
 
 use custom_ring_interface::{
-    funder_account_position, settlement_mints, tag, InstructionTag, ParsedTransact, PublicLeg,
-    PublicSlotError, PublicSlots, RingRail, RingTransactData, TransferApproval,
-    RING_TRANSACT_RING_CONFIG_INDEX,
+    settlement_mints, tag, InstructionTag, PublicLeg, PublicSlotError, PublicSlots, RingPolicy,
+    RingRail, RingTransactData, TransferApproval, TransferLayout,
 };
 use custom_ring_sdk::CustomRing;
 use solana_address::Address;
@@ -14,12 +12,11 @@ use solana_message::VersionedMessage;
 use solana_sdk_ids::sysvar;
 use spr_hasher::primitives::hash_bytes;
 use spr_interface::SOL_ASSET_FIELD;
-use spr_interface::{
-    instruction::{instruction_data::settlement_accounts, InterfaceTransfer},
-    pda, PROGRAM_ID_PUBKEY,
-};
+use spr_interface::{instruction::InterfaceTransfer, pda, PROGRAM_ID_PUBKEY};
 use spr_transaction::{instructions::transact::SettlementTransfer, SOL_MINT};
-use zolana_ring_client::{AuditedTransaction, FramedRow, OutputOpening, TransactionAudit};
+use zolana_ring_client::{
+    located_layout, AuditedTransaction, CoSignerPairs, FramedRow, OutputOpening, TransactionAudit,
+};
 use zolana_ring_policy::{
     owner_debits, DebitInput, DebitOutput, DebitTransfer, Member, PublicGross,
 };
@@ -34,9 +31,6 @@ use crate::{
     upstream::TransactionSource,
     utxos::{AuditStore, StoredUtxo},
 };
-
-/// The output tree's position in SPP's transact account list.
-const TRANSACT_OUTPUT_TREE_INDEX: usize = 1;
 
 /// A ring whose auditor key the service does not hold refuses the limited co-signer.
 #[must_use]
@@ -173,7 +167,6 @@ const fn scope() -> RingRpcError {
 impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
     pub async fn flows(self) -> Result<FrameRead, RingRpcError> {
         let frame = RingFrame::of(self.source, self.ring)?;
-        let co_signers = frame.co_signers(self.ring);
         let Some(opened) = self.open(&frame).await? else {
             return Ok(FrameRead::Delegate);
         };
@@ -188,7 +181,7 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
         }
         .read(opened.approval_bits)?;
         Ok(FrameRead::Transfer(TransferRead {
-            co_signers,
+            co_signers: opened.co_signers,
             nullifiers: opened.audited.nullifiers,
             ..read
         }))
@@ -252,9 +245,11 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
             .and_then(|tag| RingRail::of(tag, config.mode))
             .map_err(|_| unavailable())?;
         let parsed = RingTransactData::parse(frame.data, rail).map_err(|_| unavailable())?;
-        let spp = frame.spp_accounts(self.ring)?;
-        let tree = *spp
-            .get(TRANSACT_OUTPUT_TREE_INDEX)
+        let data = parsed.data();
+        let layout = frame.layout(self.ring, &config.policy, data)?;
+        let tree = *frame
+            .accounts
+            .get(layout.output_tree())
             .ok_or_else(unavailable)?;
         let output_tree_id = self
             .shared
@@ -273,29 +268,24 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
         let audited = TransactionAudit::new(&row, parsed.audit_stream())
             .run(service.auditor_keypair())
             .map_err(|_| unavailable())?;
-        let public = public_flows(&parsed, spp)?;
-        let window = settlement_accounts(
-            &parsed.data().interface_transfers,
-            parsed.data().circuit(),
-            spp,
-        )
-        .ok_or_else(unavailable)?;
-        let owner_signers = parsed
-            .data()
-            .owner_signers(spp, window.len())
-            .map_err(|_| unavailable())?
-            .iter()
-            .map(|owner| identity(owner.as_array()))
+        let transfers = &data.interface_transfers;
+        let mints = settlement_mints(transfers, frame.window(layout.settlement.clone())?)
+            .map(|mint| mint.map(|mint| mint.copied()).map_err(|_| unavailable()))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Some(OpenedFrame {
             audited,
-            owner_signers,
-            withdrawal_accounts: withdrawal_accounts(&parsed.data().interface_transfers, window)?,
-            public,
-            approval_bits: parsed.data().approval.bits(),
+            co_signers: frame.co_signers(self.ring, &layout)?,
+            owner_signers: frame
+                .window(layout.owners.clone())?
+                .iter()
+                .map(|owner| identity(owner.as_array()))
+                .collect::<Result<_, _>>()?,
+            withdrawal_accounts: frame.withdrawal_accounts(&layout, transfers)?,
+            public: fold_public_flows(transfers.iter().copied().zip(mints))?,
+            approval_bits: data.approval.bits(),
             hidden_sender: rail != RingRail::Confidential
-                || parsed.data().in_proof_owner.is_some()
-                || parsed.data().anonymous.is_some(),
+                || data.in_proof_owner.is_some()
+                || data.anonymous.is_some(),
         }))
     }
 }
@@ -303,9 +293,10 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
 /// A frame the auditor key opened, before any input note is read.
 struct OpenedFrame {
     audited: AuditedTransaction,
+    /// In pair order.
+    co_signers: Vec<Address>,
     owner_signers: Vec<[u8; 32]>,
     public: Vec<PublicFlow>,
-    /// The settlement group of each withdrawing leg.
     withdrawal_accounts: Vec<Address>,
     approval_bits: u8,
     /// An input owner signs inside the proof or stays hidden.
@@ -351,70 +342,61 @@ impl<'m> RingFrame<'m> {
         }
     }
 
-    /// In account order, a `[record, signer]` pair or the approver of a `[record, sysvar]` pair.
-    fn co_signers(&self, ring: Address) -> Vec<Address> {
+    /// The one layout the program reads the list with, a second ring auth or a stray prefix slot refuses.
+    fn layout(
+        &self,
+        ring: Address,
+        policy: &RingPolicy,
+        data: &RingTransactData<'_>,
+    ) -> Result<TransferLayout, RingRpcError> {
+        located_layout(data, policy, &pda::ring_auth(&ring).0, self.accounts.iter())
+            .map_err(|_| unavailable())
+    }
+
+    fn window(&self, window: Range<usize>) -> Result<&[Address], RingRpcError> {
+        self.accounts.get(window).ok_or_else(unavailable)
+    }
+
+    /// In pair order, the signer of a `[record, signer]` pair or the approver of a `[record, sysvar]` pair.
+    fn co_signers(
+        &self,
+        ring: Address,
+        layout: &TransferLayout,
+    ) -> Result<Vec<Address>, RingRpcError> {
         let ring = CustomRing::new(ring);
-        self.accounts
-            .windows(2)
-            .filter_map(|pair| {
-                let signer = match pair[1] == sysvar::instructions::ID {
-                    true => {
-                        self.approvers
-                            .iter()
-                            .find(|approver| approver.record == pair[0])?
-                            .signer
-                    }
-                    false => pair[1],
+        layout
+            .co_signer_pairs()
+            .map(|(record, signer)| {
+                let [record, signer] = *self.window(record..signer + 1)? else {
+                    return Err(unavailable());
                 };
-                (pair[0] == ring.co_signer_pda(&signer)).then_some(signer)
+                let signer = match signer == sysvar::instructions::ID {
+                    true => self
+                        .approvers
+                        .iter()
+                        .find(|approver| approver.record == record)
+                        .map(|approver| approver.signer),
+                    false => Some(signer),
+                };
+                signer
+                    .filter(|signer| record == ring.co_signer_pda(signer))
+                    .ok_or_else(unavailable)
             })
             .collect()
     }
 
-    /// The ring's signed config opens SPP's list past the ring's own accounts.
-    fn spp_accounts(&self, ring: Address) -> Result<&[Address], RingRpcError> {
-        let ring_auth = pda::ring_auth(&ring).0;
-        self.accounts
-            .iter()
-            .position(|account| *account == ring_auth)
-            .and_then(|position| position.checked_sub(RING_TRANSACT_RING_CONFIG_INDEX))
-            .and_then(|start| self.accounts.get(start..))
-            .ok_or_else(unavailable)
-    }
-}
-
-fn public_flows(
-    parsed: &ParsedTransact<'_>,
-    spp: &[Address],
-) -> Result<Vec<PublicFlow>, RingRpcError> {
-    let data = parsed.data();
-    let window = settlement_accounts(&data.interface_transfers, data.circuit(), spp)
-        .ok_or_else(unavailable)?;
-    let named = settlement_mints(&data.interface_transfers, window)
-        .map(|mint| {
-            mint.map(Option::<&Address>::copied)
-                .map_err(|_| unavailable())
-        })
-        .collect::<Result<Vec<_>, RingRpcError>>()?;
-    fold_public_flows(data.interface_transfers.iter().copied().zip(named))
-}
-
-fn withdrawal_accounts(
-    transfers: &[InterfaceTransfer],
-    window: &[Address],
-) -> Result<Vec<Address>, RingRpcError> {
-    let mut rest = window;
-    let mut accounts = Vec::new();
-    for transfer in transfers {
-        let (group, later) = rest
-            .split_at_checked(transfer.settlement_account_count())
-            .ok_or_else(unavailable)?;
-        rest = later;
-        if funder_account_position(transfer).is_none() {
-            accounts.extend_from_slice(group);
+    /// The settlement group of each withdrawing leg.
+    fn withdrawal_accounts(
+        &self,
+        layout: &TransferLayout,
+        transfers: &[InterfaceTransfer],
+    ) -> Result<Vec<Address>, RingRpcError> {
+        let mut accounts = Vec::new();
+        for leg in layout.legs(transfers).filter(|leg| leg.funder.is_none()) {
+            accounts.extend_from_slice(self.window(leg.accounts)?);
         }
+        Ok(accounts)
     }
-    Ok(accounts)
 }
 
 /// The rows of a relayed deposit, the frame the relay proves from these legs carries the same.
@@ -906,22 +888,179 @@ mod tests {
         assert_eq!(built, pinned);
     }
 
+    const LAYOUT_VECTOR: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../test-vectors/proof/transfer-layout.json"
+    );
+
+    /// One case of the shared vector, its ring program is `RING`.
+    struct LayoutCase {
+        name: String,
+        data: Vec<u8>,
+        policy: RingPolicy,
+        accounts: Vec<Address>,
+        windows: serde_json::Value,
+    }
+
+    fn layout_cases() -> Vec<LayoutCase> {
+        let vector: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(LAYOUT_VECTOR).expect("vector"))
+                .expect("json");
+        let bytes = |value: &serde_json::Value| hex::decode(value.as_str().expect("hex")).unwrap();
+        vector["cases"]
+            .as_array()
+            .expect("cases")
+            .iter()
+            .map(|case| LayoutCase {
+                name: case["name"].as_str().expect("name").to_owned(),
+                data: bytes(&case["data"]),
+                policy: bytemuck::pod_read_unaligned(&bytes(&case["ring_policy"])),
+                accounts: case["accounts"]
+                    .as_array()
+                    .expect("accounts")
+                    .iter()
+                    .map(|account| account["address"].as_str().unwrap().parse().unwrap())
+                    .collect(),
+                windows: case["windows"].clone(),
+            })
+            .collect()
+    }
+
+    fn range(span: &serde_json::Value) -> Range<usize> {
+        let bound = |index: usize| span[index].as_u64().expect("bound") as usize;
+        bound(0)..bound(1)
+    }
+
+    impl LayoutCase {
+        fn named(name: &str) -> Self {
+            layout_cases()
+                .into_iter()
+                .find(|case| case.name == name)
+                .expect("case")
+        }
+
+        fn frame(&self, accounts: Vec<Address>) -> RingFrame<'_> {
+            RingFrame {
+                tag: self.data[0],
+                data: &self.data[1..],
+                accounts,
+                approvers: Vec::new(),
+            }
+        }
+
+        fn parsed(&self) -> custom_ring_interface::ParsedTransact<'_> {
+            let rail = InstructionTag::try_from(self.data[0])
+                .and_then(|tag| RingRail::of(tag, self.policy.mode()?))
+                .expect("rail");
+            RingTransactData::parse(&self.data[1..], rail).expect("frame")
+        }
+
+        fn layout(&self, accounts: Vec<Address>) -> Result<TransferLayout, RingRpcError> {
+            self.frame(accounts)
+                .layout(RING, &self.policy, self.parsed().data())
+        }
+    }
+
     #[test]
-    fn a_deposit_leg_names_no_withdrawal_account() {
-        let deposit = InterfaceTransfer::SolDeposit { amount: 1 };
-        let withdrawal = InterfaceTransfer::SolWithdrawal { amount: 1 };
-        let legs = [deposit, withdrawal, deposit];
-        let window: Vec<Address> = (1u8..)
-            .map(|seed| Address::new_from_array([seed; 32]))
-            .take(legs.iter().map(|leg| leg.settlement_account_count()).sum())
-            .collect();
-        let deposited = deposit.settlement_account_count();
-        let withdrawn = withdrawal.settlement_account_count();
+    fn the_frame_reader_cuts_the_windows_of_the_shared_layout_vector() {
+        for case in layout_cases() {
+            let frame = case.frame(case.accounts.clone());
+            let parsed = case.parsed();
+            let transfers = &parsed.data().interface_transfers;
+            let layout = frame
+                .layout(RING, &case.policy, parsed.data())
+                .expect(&case.name);
+            let windows = &case.windows;
+            assert_eq!(
+                layout.co_signers,
+                range(&windows["co_signers"]),
+                "{}",
+                case.name
+            );
+            assert_eq!(layout.owners, range(&windows["owners"]), "{}", case.name);
+            let pinned = windows["legs"].as_array().expect("legs");
+            let legs: Vec<_> = layout.legs(transfers).collect();
+            assert_eq!(legs.len(), pinned.len(), "{}", case.name);
+            let mut withdrawn = Vec::new();
+            for (leg, pinned) in legs.iter().zip(pinned) {
+                let funder = pinned["funder"].as_u64().map(|funder| funder as usize);
+                assert_eq!(leg.accounts, range(&pinned["accounts"]), "{}", case.name);
+                assert_eq!(leg.funder, funder, "{}", case.name);
+                if funder.is_none() {
+                    withdrawn.extend_from_slice(&case.accounts[range(&pinned["accounts"])]);
+                }
+            }
+            assert_eq!(
+                frame
+                    .withdrawal_accounts(&layout, transfers)
+                    .expect("groups"),
+                withdrawn,
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_second_ring_auth_or_a_stray_prefix_account_refuses_the_layout() {
+        let stray = Address::new_from_array([0x77; 32]);
+        for case in layout_cases() {
+            let spp = case.windows["spp"].as_u64().expect("spp") as usize;
+            let ring_auth = case.accounts[case.windows["ring_config"].as_u64().unwrap() as usize];
+            let refused = |accounts: Vec<Address>| {
+                matches!(
+                    case.layout(accounts),
+                    Err(RingRpcError::CoSign(CoSignError::LimitsUnavailable))
+                )
+            };
+            assert!(!refused(case.accounts.clone()), "{}", case.name);
+            for copy in [TransferLayout::RING + 1, case.accounts.len()] {
+                let mut twice = case.accounts.clone();
+                twice.insert(copy, ring_auth);
+                assert!(refused(twice), "{}", case.name);
+            }
+            let mut missing = case.accounts.clone();
+            missing.retain(|account| *account != ring_auth);
+            assert!(refused(missing), "{}", case.name);
+            // A delegate frame reads one more slot as the mint of a permanent delegate.
+            if case.data[0] == tag::TRANSFER {
+                let mut odd = case.accounts.clone();
+                odd.insert(spp, stray);
+                assert!(refused(odd), "{}", case.name);
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_pair_of_the_co_signer_window_names_a_co_signer() {
+        let case = LayoutCase::named("confidential signer with a co-signer");
+        let layout = case.layout(case.accounts.clone()).expect("layout");
+        let ring = CustomRing::new(RING);
+        let record = ring.co_signer_pda(&CO_SIGNER);
+        let mut accounts = case.accounts.clone();
+        accounts[layout.co_signers.start] = record;
+        accounts[layout.co_signers.start + 1] = CO_SIGNER;
+        // A matching pair in the owner run is no co-signer of the frame.
+        accounts[layout.owners.start] = ring.co_signer_pda(&OTHER_PROGRAM);
+        accounts[layout.owners.start + 1] = OTHER_PROGRAM;
+        let signed = case.frame(accounts.clone());
+        assert_eq!(signed.co_signers(RING, &layout).expect("pair"), [CO_SIGNER]);
+
+        accounts[layout.co_signers.start + 1] = sysvar::instructions::ID;
+        let mut called = case.frame(accounts);
+        assert!(called.co_signers(RING, &layout).is_err());
+        called.approvers.push(Approver {
+            record,
+            signer: CO_SIGNER,
+        });
         assert_eq!(
-            withdrawal_accounts(&legs, &window).expect("groups"),
-            window[deposited..deposited + withdrawn]
+            called.co_signers(RING, &layout).expect("approver"),
+            [CO_SIGNER]
         );
-        assert!(withdrawal_accounts(&legs, &window[1..]).is_err());
+
+        // The vector's record is no PDA of its signer.
+        let foreign = case.frame(case.accounts.clone());
+        assert!(foreign.co_signers(RING, &layout).is_err());
     }
 
     #[test]
@@ -1036,8 +1175,12 @@ mod tests {
             (direct_frame.tag, direct_frame.data)
         );
         assert_eq!(frame.accounts[..2], direct_frame.accounts[..2]);
-        assert_eq!(frame.co_signers(RING), [CO_SIGNER]);
-        assert_eq!(direct_frame.co_signers(RING), [CO_SIGNER]);
+        let approver = || Approver {
+            record: record().pubkey,
+            signer: CO_SIGNER,
+        };
+        assert_eq!(frame.approvers, [approver(), approver()]);
+        assert!(direct_frame.approvers.is_empty());
     }
 
     #[test]

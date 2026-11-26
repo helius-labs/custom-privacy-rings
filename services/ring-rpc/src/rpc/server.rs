@@ -949,6 +949,7 @@ mod tests {
             mode: custom_ring_interface::RingMode::Confidential,
             delegate: None,
             ring_list_tag: [0; 32],
+            policy: bytemuck::Zeroable::zeroed(),
         });
         Arc::new(
             Hub::builder(source, identity(TEST_GENESIS))

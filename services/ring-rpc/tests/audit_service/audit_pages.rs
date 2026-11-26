@@ -408,6 +408,7 @@ async fn two_rings_read_only_their_own_transactions() {
                 mode: RingMode::Confidential,
                 delegate: None,
                 ring_list_tag: [0; 32],
+                policy: bytemuck::Zeroable::zeroed(),
             },
         ),
         (
@@ -421,6 +422,7 @@ async fn two_rings_read_only_their_own_transactions() {
                 mode: RingMode::Confidential,
                 delegate: None,
                 ring_list_tag: [0; 32],
+                policy: bytemuck::Zeroable::zeroed(),
             },
         ),
     ]);
