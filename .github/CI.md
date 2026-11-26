@@ -8,6 +8,9 @@ Only a manual dispatch runs the widest frame and full capacity sweeps, a pull re
 Set `validation=sanity` to run `just test-custom-ring-sanity` as the localnet suite.
 That mode omits TypeScript live tests and keeps the build, lint, unit, package and documentation checks.
 It reports `ci sanity result`, which does not replace the required `ci result` check.
+Set `validation=sweeps` to run those eight sweeps alone as the localnet suite, `gh workflow run ci --ref <branch> -f validation=sweeps`.
+Add `-f sweeps="widest frames"` or `-f sweeps="full capacity"` to run one group of four.
+That mode omits TypeScript live tests too and reports `ci sweeps result`.
 
 The TypeScript suites seed `crypto.getRandomValues` from `ZOLANA_RANDOM_SEED`, fixed in the workflow env, and a Rust test that seeds its draws reads it through `spr_test_utils::seed::random_seed`.
 Dispatch with `random_seed` to run them under another seed.
