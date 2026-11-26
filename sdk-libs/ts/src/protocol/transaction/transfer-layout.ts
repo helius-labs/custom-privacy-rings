@@ -31,7 +31,7 @@ export interface KnownPrefix {
   readonly delegateMint: boolean;
 }
 
-/** One leg's settlement group, Rust `SettlementLeg`. */
+/** Rust `SettlementLeg`. */
 export interface SettlementLeg {
   readonly transfer: InterfaceTransfer;
   readonly accounts: AccountWindow;
@@ -53,7 +53,6 @@ export interface TransferLayout {
   readonly ringConfig: number;
   readonly trees: AccountWindow;
   readonly nullifiers: AccountWindow;
-  /** SPP's owner signer run. */
   readonly owners: AccountWindow;
   readonly settlement: AccountWindow;
   readonly cache: AccountWindow;

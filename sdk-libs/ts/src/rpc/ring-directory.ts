@@ -26,12 +26,7 @@ export interface RegisteredRing {
   readonly ringAuthorityTransactIsEnabled: boolean;
   /** Every operational ring instruction is refused while this is set. */
   readonly paused: boolean;
-  /**
-   * Set at creation on a pool with permissionless activation, by governance on
-   * any other pool. An unactivated ring refuses every operational instruction,
-   * so a caller choosing a deposit target should filter on this as deliberately
-   * as on `paused`.
-   */
+  /** Set at creation on a pool with permissionless activation, by governance on any other pool, an unactivated ring refuses every operational instruction. */
   readonly activated: boolean;
 }
 

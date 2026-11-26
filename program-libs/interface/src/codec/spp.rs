@@ -1,4 +1,4 @@
-//! What the ring reads of the pinned SPP account lists and public legs, pinned by `tests/spp.rs`.
+//! What the ring reads of the pinned SPP account lists and public legs, pinned by `sdk-libs/client/tests/spp.rs`.
 //!
 //! SPP reads its lists by position and folds its legs in one order. A wrong index or stride here
 //! would verify the ring proof against accounts SPP does not settle.

@@ -168,7 +168,6 @@ export type PublicOwnersRail = Readonly<{
   payments: readonly AnonymousPayment[];
 }>;
 
-/** What differs per rail while a transfer stages, proves or relays. */
 type OwnerRail = ConfidentialRail | AnonymousRail | PublicOwnersRail;
 
 export type RailTransfer<Rail extends OwnerRail = OwnerRail> = Readonly<{
@@ -557,7 +556,6 @@ type RelayWire = Pick<
   "rail" | "leafIndexes" | "interfaceTransferAccounts" | "coOwners" | "approvalBlinder"
 >;
 
-/** What one relayed frame names on the wire and returns from its payload. */
 type RelayDelivery<Relayed> = Readonly<{
   wire: RelayWire;
   /** `payload` is wiped once it returns. */

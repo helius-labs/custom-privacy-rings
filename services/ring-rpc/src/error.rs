@@ -1,5 +1,5 @@
 use jsonrpsee::types::ErrorObjectOwned;
-pub use thiserror::Error;
+use thiserror::Error;
 
 pub use ring_audit::error::{GrantRefusal, RingAuditError};
 pub use ring_cosigner::RingCosignerError;

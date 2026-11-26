@@ -254,14 +254,13 @@ export interface ExactApproval {
   readonly seenBlinders: readonly Bytes32[];
 }
 
-/**
- * `peak` bounds one owner's outflow, `outflow` the sum over owners, `gross` each public row's
- * withdrawals with no deposit subtracted.
- */
 export interface ApprovalLimit {
   readonly mint: Address;
+  /** Bounds one owner's outflow. */
   readonly peak: bigint;
+  /** Bounds the sum over owners. */
   readonly outflow: bigint;
+  /** Bounds each public row's withdrawals with no deposit subtracted. */
   readonly gross: bigint;
 }
 

@@ -407,7 +407,6 @@ const ringSend = (spend: SendParams) => sendStrategy(spend, "ring");
 
 const defaultSend = (spend: SendParams) => sendStrategy(spend, "default");
 
-/** One build of an operation on the rail its caller names. */
 function buildDirectSpend<Spend extends RingSpendParams, Resolved>(
   input: Readonly<{
     params: Spend;

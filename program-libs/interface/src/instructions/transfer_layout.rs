@@ -4,13 +4,13 @@
 //! SPP reads its list by position, and the ring program prepends its own slots. A reader that cut a
 //! window at another index would check or sign accounts the program does not read there.
 //!
-//! The list in order:
+//! The list in order.
 //!
 //! 1. The ring account.
 //! 2. The registries `RootRead` names, own then curator then tracking.
 //! 3. One `[record, signer]` or `[record, instructions_sysvar]` pair per co-signer the demand needs, SPP does not receive them.
 //! 4. The delegate's signer on the authority rails, then the mint when its permanent delegate signs, SPP receives neither.
-//! 5. SPP's list, forwarded whole. Payer and `ring_config` in its prefix, input trees, nullifier PDAs, owner run, settlement groups, cache accounts.
+//! 5. SPP's list forwarded whole, payer and `ring_config` in its prefix, then input trees, nullifier PDAs, owner run, settlement groups, cache accounts.
 //!
 //! `test-vectors/proof/transfer-layout.json` pins the windows, `sdk-libs/client/tests/transfer_layout.rs` writes it.
 //!
@@ -54,13 +54,11 @@ pub struct TransferLayout {
     pub spp: usize,
     pub trees: Range<usize>,
     pub nullifiers: Range<usize>,
-    /// SPP's owner signer run.
     pub owners: Range<usize>,
     pub settlement: Range<usize>,
     pub cache: Range<usize>,
 }
 
-/// One leg's settlement group.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettlementLeg {
     pub transfer: InterfaceTransfer,

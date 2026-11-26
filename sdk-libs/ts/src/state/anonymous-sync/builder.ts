@@ -5,7 +5,7 @@ import type { ShieldedAddress } from "@heliuslabs/spr/keypair";
 import type { AssetRegistry, ShieldedKeys, WalletUtxo } from "@heliuslabs/spr/transaction";
 import { scanLimits } from "../../rpc/history.js";
 import type { AnonymousWallet } from "../anonymous-wallet.js";
-import { isZeroKeyNote as isExposedNote } from "../exposed-notes.js";
+import { isZeroKeyNote } from "../exposed-notes.js";
 import type { RingKeys } from "../ring-keys.js";
 import { RingError } from "../../protocol/error.js";
 import { ViewingHistory } from "../viewing-history.js";
@@ -219,9 +219,9 @@ export async function ringFullScan(
   const scan = await (
     input.config === undefined ? sync : sync.withIndexerConfig(input.config)
   ).fullScan(input.client, history, input.ring, context);
-  const zeroKey = scan.utxos.filter(isExposedNote);
+  const zeroKey = scan.utxos.filter(isZeroKeyNote);
   return Object.freeze({
-    utxos: Object.freeze(scan.utxos.filter((note) => !isExposedNote(note))),
+    utxos: Object.freeze(scan.utxos.filter((note) => !isZeroKeyNote(note))),
     exposedIfSpent: Object.freeze(zeroKey.filter((note) => !note.spent)),
     spentExposed: Object.freeze(zeroKey.filter((note) => note.spent).map((note) => note.nullifier)),
     pending: scan.pendingOpenings,

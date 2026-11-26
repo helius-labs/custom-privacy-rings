@@ -8,7 +8,6 @@ use zolana_ring_client::{
 
 use crate::{authorize::Unauthorized, redact::redacted};
 
-/// The faults every service area raises.
 #[derive(Debug, Error)]
 pub enum ServiceError {
     #[error("operator signing failed")]

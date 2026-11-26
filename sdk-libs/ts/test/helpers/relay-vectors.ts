@@ -1,4 +1,3 @@
-/** What every shared relay message vector carries besides its cases. */
 import { decodeRingPolicy, type RingPolicy } from "../../src/protocol/codec/ring-codecs.js";
 import type { RelayMessageMismatch } from "../../src/rpc/relay-message.js";
 

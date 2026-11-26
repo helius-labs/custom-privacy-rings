@@ -6,9 +6,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-# Without a feature the crate holds the codecs, the audit crypto and the reader side.
-# `rpc` adds the Ring RPC messages, `solana-rpc` the confirmed origin reads,
-# `operations` the builders, the prover client and submission, `proofs` their real proofs.
 [features]
 default = []
 solana-rpc = [

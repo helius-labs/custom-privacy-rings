@@ -242,7 +242,7 @@ export class PendingRelaySignature {
     Object.freeze(this);
   }
 
-  /** The message Ring RPC returned, a copy, which a sealed frame's funder checks with `FunderApproval`. */
+  /** A copy of the message Ring RPC returned, a sealed frame's funder checks it with `FunderApproval`. */
   message(): Uint8Array {
     return this.#message.slice();
   }
