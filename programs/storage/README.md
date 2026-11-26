@@ -79,7 +79,7 @@ The manager signs the transaction after the SDK prepares the proof. Ring RPC add
 
 ## Limits
 
-An enrollment is public, anyone can see a wallet enrolled on a ring. Accounts created here are never closed, which is what prices a flood of first enrollments. The program verifies no policy. A consumer reads a root and authenticates the registry, the rules and the action before it acts.
+An enrollment is public, anyone can see a wallet enrolled on a ring. The program verifies no policy. A consumer reads a root and authenticates the registry, the rules and the action before it acts.
 
 ## Tests
 

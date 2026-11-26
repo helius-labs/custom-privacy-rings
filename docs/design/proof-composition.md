@@ -203,11 +203,11 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 
 ### An enrollment binds its owner and its seal
 
-- The Storage program computes the member from the signer. It takes the ring id and the auditor key from the tracking registry the ring created.
+- The Storage program computes the member from the owner each write names, and holds that owner to its Ed25519 signature or its CPI signature. It takes the ring id and the auditor key from the tracking registry the ring created.
 - The circuit holds the nullifier key and the list tag to nonzero secrets, and seals both secrets under `CRING/nfk`, in `RegisterKeyCircuit`.
-- The program computes each applied entry from its account and refuses an account already applied. `ApplyEnrollmentsCircuit` inserts each owner once at the next index and keeps the tree sorted, so no insert changes a leaf's member, nullifier key, ciphertext hash or list tag.
+- The program computes each applied entry from the write its owner signed, and marks it proven only when its `RegisterKey` proof verifies. `ApplyEnrollmentsCircuit` inserts a proven entry of an absent owner once at the next index and keeps the tree sorted. An entry of a present owner moves only its viewing key hash, so no write changes a leaf's member, nullifier key, ciphertext hash or list tag.
 - The proof does not show that the secret came from a particular derivation. A wallet that seals another secret harms itself alone.
-- The tests in `prover/circuits/registry` are `TestRegisterKeySealsTheEnrolledSecret`, `TestRegisterKeyRefusals`, `TestApplyEnrollmentsAppliesEntriesInNamedOrder`, `TestApplyEnrollmentsRefusals` and `TestApplyEnrollmentsAtCapacity`. The tests in `programs/storage/tests/lifecycle.rs` are `a_first_enrollment_needs_the_owner_and_a_proof_the_pairing_accepts`, `a_rotation_moves_the_viewing_key_with_no_proof` and `anyone_applies_named_enrollments_with_no_authority_signature`. `a_pda_enrolls_and_applies_its_key_on_the_validator` in `program-tests/custom-ring/tests/ring/sanity.rs` runs both steps on the validator.
+- The tests in `prover/circuits/registry` are `TestRegisterKeySealsTheEnrolledSecret`, `TestRegisterKeyRefusals`, `TestApplyEnrollmentsAppliesEntriesInNamedOrder`, `TestApplyEnrollmentsUpdatesPresentOwnersAndSkipsUnprovenAbsentOnes`, `TestApplyEnrollmentsRefusals` and `TestApplyEnrollmentsAtCapacity`. The tests in `programs/storage/tests/lifecycle.rs` are `a_batch_applies_only_what_each_owner_signed_over_its_registry`, `an_apply_needs_the_registry_authority_and_the_storage_program`, `an_apply_refuses_a_write_no_proof_or_signature_binds` and `signed_rotations_reach_the_apply_proof_under_the_registry_authority`. The tests in `programs/custom-ring/tests/rules/operator_rules.rs` are `only_the_enrollment_writer_reaches_storage_through_the_ring_pda` and `pda_enrollment_requires_one_owner_signature_per_invocation`.
 
 ### A private owner write proves its owner's row and raises the floor
 

@@ -145,7 +145,7 @@ viewing_u || owner_key || nullifier_pk || wincode(Data), zero padded to reply_le
 
 ## Sender bundle
 
-Scheme 9 is the first SPP message of an anonymous frame, under `CRING/snd` and the slot secret at `i = m` of the sender's viewing key:
+Scheme 9 is `RING_SENDER_BUNDLE_SCHEME_TAG`, the tag of the sender bundle alone, and no slot body takes it. It is the first SPP message of an anonymous frame, under `CRING/snd` and the slot secret at `i = m` of the sender's viewing key:
 
 ```text
 output_seed                                                                     32 bytes

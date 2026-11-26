@@ -6,7 +6,7 @@ A ring reads two kinds of tree, each in a Storage program account with its own r
 
 - A storage update names a revision, and a proof made against another revision fails. One tree would make enrollment and revocation race on that revision.
 - `ApplyEnrollments` touches only the tracking root, and an authority write touches only a policy root. Enrollment traffic therefore cannot fail or delay a restrictive update.
-- An authority cannot gate enrollment. Policy admission stays a separate list write.
+- The policy authority cannot gate enrollment, and the enrollment writer decides only when a write lands. Policy admission stays a separate list write.
 
 ## Records
 
@@ -40,7 +40,8 @@ A ring reads two kinds of tree, each in a Storage program account with its own r
 - A public and a private block are two rules. One rule over both would admit a publicly blocked owner with no private entry.
 - The wallet derives its salt per ring from its viewing key, so an auditor that holds the nullifier secret cannot derive another ring's salt.
 - Private lists serve one ring. A source of a salted list must pin the ring's tracking registry, so a curator that serves several rings keeps one registry per ring.
-- A list writer reads an enrolled owner's salt through `getListSalt`, which checks the salt against the row's tag and never returns the nullifier secret. For an owner with no row it returns the ring salt, which Ring RPC derives per ring and cluster from its auditor secret, and refuses a ring whose policy commits no tag of that salt.
+- A list writer reads an enrolled owner's salt through `getListSalt`, which checks the salt against the row's tag and never returns the nullifier secret. On a ring whose policy commits `ring_list_tag` it also returns the ring salt, which Ring RPC derives per ring and cluster from its auditor secret, and for an owner with no row it refuses a ring whose policy commits no tag of that salt.
+- A clear of a private entry writes every key the subject reads, the key under the owner's salt and, on a ring that commits `ring_list_tag`, the key under the ring salt. The SDKs open each salt against its on-chain tag and refuse the clear when one is missing, since a clear of one key leaves an entry under the other in force.
 - A private write under an owner's salt proves the owner's enrolled row under the tracking root, and the row's tag fixes the salt and so the key.
 - A private write under the ring domain proves the owner's row or its absence under the tracking root and takes any salt. The proof checks no ring tag, so the SDKs and Ring RPC refuse a ring salt that does not open `ring_list_tag`. An entry under any other salt is one no proof reads.
 - A write under the ring domain sets or clears an enrolled owner's entry there as well.
@@ -49,24 +50,23 @@ A ring reads two kinds of tree, each in a Storage program account with its own r
 
 ## Tracking
 
-- A tracking leaf binds its member, successor, nullifier key, ciphertext hash and list tag. Only its successor changes when a new member follows it.
-- The tree has 16 levels of four, taller than a policy tree. Anyone can pay to fill it, and no tree replaces a full one. Its next index is a `u64`, and an apply past `TRACKING_CAPACITY` leaves fails.
-- `Enroll` needs the owner's signature, and a program signs its PDA through CPI. Any payer may fund it, and Ring RPC can relay it for a wallet with no SOL.
+- A tracking leaf binds its member, successor, nullifier key, ciphertext hash, list tag and viewing key hash. A new member that follows it changes its successor, and a rotation changes its viewing key hash.
+- The tree has 16 levels of four, taller than a policy tree. No tree replaces a full one. Its next index is a `u64`, and an apply past `TRACKING_CAPACITY` leaves fails.
+- An owner signs each write off chain, and a program signs its PDA's one write through CPI. The enrollment writer sends the batch and pays for it.
 - A first enrollment carries a proof. It shows the ciphertext seals the secret of that nullifier key and the salt of that tag to the auditor key.
-- The program supplies the ring id, the member and the auditor key from the signer and the registry. A proof for another ring, member or auditor fails.
+- The program supplies the ring id, the member and the auditor key from the owner the write names and the registry. A proof for another ring, member or auditor fails.
 - The program verifies that proof in the same instruction, and refuses the zero nullifier key.
-- `Enroll` only reads the registry, so enrollment traffic takes no write lock on it.
-- `ApplyEnrollments` is permissionless. An applier names the authorization accounts in any order, and the program computes each entry from the account, so no applier can alter one. An applied account refuses a second apply.
-- An enrollment is complete only when its leaf sits under an accepted tracking root. A pending account grants nothing, because every check reads the root. The owner's notes under its key spend from that root on.
-- Ring RPC applies the pending enrollments of the rings its operator names. Any other party can apply the same accounts.
-- A full tree leaves a first enrollment pending.
+- `ApplyEnrollments` takes the signature of the registry's authority alone. A ring's registry has the ring PDA as that authority, and the ring signs only for its `EnrollmentWriter`. The program computes each entry from the write its owner signed, so the writer cannot alter one.
+- An enrollment is complete only when its leaf sits under an accepted tracking root. A held write grants nothing, because every check reads the root. The owner's notes under its key spend from that root on.
+- Ring RPC sends the batches of each ring whose `EnrollmentWriter` role names its signer.
+- A full tree takes no first enrollment and still applies a rotation.
 - A ring creates its tracking registry at `Initialize` and pins its address. A forged registry with a matching ring id fails that address check.
 
 ## Viewing keys
 
-- The owner's authorization account holds its current viewing key for one ring. No other ring reads it, and no tracking leaf holds it.
-- A rotation is a later `Enroll` with no proof. It moves only the viewing key in the account. The nullifier key, the list tag and the ciphertext are final. A rotation moves no root, marks nothing pending and leaves no tracking work.
-- A sender's SDK proves presence, nullifier key and list tag through the verified tracking row, then reads the viewing key from the authorization account at `confirmed`. It checks the account's program owner, registry and owner. An address that names an older viewing key resolves to the current one.
+- A tracking leaf holds the hash of the owner's current viewing key and its sequence number for one ring. The `EnrollmentsApplied` event carries the key, and the ring indexer serves it beside the leaf.
+- A rotation is a later write with no proof. It names the prior viewing key and its sequence number, and the apply moves only the leaf's viewing key hash. The nullifier key, the list tag and the ciphertext hash are final. A rotation moves the tracking root as an enrollment does.
+- A sender's SDK proves presence, nullifier key and list tag through the verified tracking row, then accepts a served viewing key only when it hashes to the row's viewing key hash. It refuses a recipient address whose viewing key the row does not hold.
 - A rotation that lands after the read leaves the payment sealed to the key read. No program check reads a viewing key.
 - A wallet keeps every replaced viewing key in its viewing history, so notes sealed to an older key still open.
 
@@ -87,7 +87,7 @@ The apply proof binds that restrictive bit, reading an absent member's old field
 - A restrictive update retires every earlier root at once, and every proof under them fails and proves again.
 - Any other update keeps the outgoing root valid for the grace period, so a proof in flight under it still lands. Over a full history it evicts the oldest kept root, and that root's proofs prove again.
 - A kept root reads no policy field more permissively than the newest root. Rules are monotone in those fields, so a kept root admits no transfer the newest refuses.
-- A tracking apply retires the outgoing root under a program constant, and every retired tracking root serves its whole grace. An apply that would evict an unexpired root fails with `RootHistoryRetained`, and its accounts stay pending until the oldest root expires.
+- A tracking apply retires the outgoing root under a program constant, and every retired tracking root serves its whole grace. An apply that would evict an unexpired root fails with `RootHistoryRetained`, and its writes wait until the oldest root expires.
 - The limit is enrollment availability. New owners can fill the kept roots, and a one entry apply spends a root as a full batch does, so enrollment waits under sustained load while enrolled owners keep their tracking witnesses.
 
 ## Tracking floor

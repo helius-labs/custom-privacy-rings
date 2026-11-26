@@ -7,8 +7,8 @@ Every ring proof has one public input. It is the fold of a statement its verifie
 | Transfer | `HashChain4` | 44 | `Transfer`, `AuthorityTransfer` |
 | Apply records | `HashChain4` | 9, or 11 on a private key | Storage `Update` |
 | Apply enrollments | `HashChain4` | 8 | Storage `ApplyEnrollments` |
-| Register key | `HashChain4` | 10 | Storage `Enroll`, first enrollment |
-| Merge | `HashChain` | 13 | `Merge` |
+| Register key | `HashChain4` | 10 | Storage `ApplyEnrollments`, each first enrollment |
+| Merge | `HashChain` | 16 | `Merge` |
 
 ## Transfer
 
@@ -98,7 +98,7 @@ The Storage program supplies `old_root` as the registry's newest root and `old_n
   chain_start, chain_end, right_align(count) ]
 ```
 
-The Storage program supplies `old_root` as the tracking registry's newest root, `old_next_index` and `chain_start = HashChain4([CRTA, hash_bytes(registry), right_align(revision)])`. It supplies `count` as the number of authorization accounts named. It computes each [tracking entry](hashing.md#tracking-tree) from its account and folds `chain = Poseidon(chain, entry)` from `chain_start` to `chain_end`. The applier chooses which accounts to name and never an entry's content. The program refuses a `revision` other than the registry's own. Of the roots and indices, only `new_root` and `new_next_index` come from the instruction data. Both indices are `u64`, and the program refuses a `new_next_index` past `TRACKING_CAPACITY = 2^32`.
+The Storage program supplies `old_root` as the tracking registry's newest root, `old_next_index` and `chain_start = HashChain4([CRTA, hash_bytes(registry), right_align(revision)])`. It supplies `count` as the number of writes in the batch. It computes each [tracking entry](hashing.md#tracking-tree) from its owner-signed write and folds `chain = Poseidon(chain, entry)` from `chain_start` to `chain_end`. The writer chooses which writes to send and never an entry's content. The program refuses a `revision` other than the registry's own. Of the roots and indices, only `new_root` and `new_next_index` come from the instruction data. Both indices are `u64`, and the program refuses a `new_next_index` past `TRACKING_CAPACITY = 2^32`.
 
 ## Register key
 
@@ -107,14 +107,15 @@ The Storage program supplies `old_root` as the tracking registry's newest root, 
   pack_be(auditor_pubkey), pack_be(0x04 || eph_u), hash_bytes(ciphertext) ]
 ```
 
-The statement has 10 elements and no registry root. The Storage program takes `ring_id` and `auditor_pubkey` from the tracking registry, which pins both at creation, and computes `member = solana_owner_identity(owner)` from the signing owner. A proof for another ring, auditor or member fails. `nullifier_pk`, `list_tag`, `eph_u` and the 64-byte `ciphertext` come from the instruction data. The proof shows the ciphertext seals the nullifier secret behind `nullifier_pk` and the list salt behind `list_tag` to the auditor key. The program refuses `nullifier_pk = Poseidon(0)` ahead of the proof. A rotation carries no proof and no statement.
+The statement has 10 elements and no registry root. The Storage program takes `ring_id` and `auditor_pubkey` from the tracking registry, which pins both at creation, and computes `member = solana_owner_identity(owner)` from the owner the write names. A proof for another ring, auditor or member fails. `nullifier_pk`, `list_tag`, `eph_u` and the 64-byte `ciphertext` come from the instruction data. The proof shows the ciphertext seals the nullifier secret behind `nullifier_pk` and the list salt behind `list_tag` to the auditor key. The program refuses `nullifier_pk = Poseidon(0)` ahead of the proof. A rotation carries no proof and no statement.
 
 ## Merge
 
 ```text
 [ CRMG, output_utxo_hash, n0, ring_id,
   pack_be(auditor_pubkey), pack_be(eph_pk), hash_bytes(envelope_ct), hash_bytes(record_ct),
-  payer, published_owner, tracking_root ]
+  payer, tracking_root,
+  right_align(output_salt), amount_ct, mint_ct_0, mint_ct_1 ]
 ```
 
-`output_utxo_hash` and `n0` come from the SPP merge data the program forwards. `envelope_ct` is the 64-byte [merge envelope](disclosure.md#merges) and `record_ct` the 169-byte merge record. `payer` is `solana_owner_identity` of the SPP payer. No constraint holds the payer apart from the owner, and a payer that is the owner names it to every chain reader. Under a nonzero nullifier key, `published_owner` is `0` and `tracking_root` is the tracking root at the merge's `tracking_revision`, and the proof opens the owner's row. Under the zero key, `published_owner` is `solana_owner_identity` of the owner account SPP makes sign, and `tracking_root` is `0`. The statement holds no input. SPP's merge proof ties every input to the output's owner, asset and sum.
+`output_utxo_hash` and `n0` come from the SPP merge data the program forwards. `envelope_ct` is the 64-byte [merge envelope](disclosure.md#merges) and `record_ct` the 169-byte merge record. `payer` is `solana_owner_identity` of the SPP payer. No constraint holds the payer apart from the owner, and a payer that is the owner names it to every chain reader. `tracking_root` is the tracking root at the merge's `tracking_revision`. The proof opens the owner's row under it as present and holds the owner's nullifier key to the row's. No owner enrolls the zero key, so no zero-key merge proves. `output_salt` and the three ciphertext elements are SPP's merge output encryption, and the proof holds them to the seed, the amount and the mint. The statement holds no input. SPP's merge proof ties every input to the output's owner, asset and sum.
