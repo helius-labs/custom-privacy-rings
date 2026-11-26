@@ -1624,8 +1624,12 @@ mod tests {
         let served = async {
             loop {
                 let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
-                stream.write_all(GET_HEALTH).await.expect("request");
-                if response(&mut stream).await.starts_with("http/1.1 200") {
+                // A connection past the refusal slots is dropped unanswered.
+                let mut status = [0; 12];
+                if stream.write_all(GET_HEALTH).await.is_ok()
+                    && stream.read_exact(&mut status).await.is_ok()
+                    && status.eq_ignore_ascii_case(b"HTTP/1.1 200")
+                {
                     return;
                 }
                 tokio::task::yield_now().await;
