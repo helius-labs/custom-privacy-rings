@@ -91,7 +91,7 @@ pub struct RingDeposit<'a> {
     pub cosigner: Option<&'a (dyn Signer + Sync)>,
     /// A salted list refuses an enrolled recipient with none.
     pub list_salt: Option<[u8; 32]>,
-    /// The depositor wallet's sender tag, an anonymous deposit is refused without it.
+    /// The depositor wallet's sender tag, a deposit to its own address with no request is refused without it.
     pub tags: Option<&'a TransferTags>,
 }
 
@@ -105,7 +105,7 @@ pub struct RingDepositBatch<'a> {
     pub outputs: Vec<DepositOutput<'a>>,
     /// Signs when a record covers deposits, the record must be its own.
     pub cosigner: Option<&'a (dyn Signer + Sync)>,
-    /// The depositor wallet's sender tag, an anonymous deposit is refused without it.
+    /// The depositor wallet's sender tag, a deposit to its own address with no request is refused without it.
     pub tags: Option<&'a TransferTags>,
 }
 
@@ -600,11 +600,9 @@ impl PreparedRingDeposit {
         for payment in payments {
             // A deposit publishes its funder, a bootstrap tag beside it would name the recipient.
             let bootstrap = bootstrap_slot_tag(payment.to.recipient.viewing_pubkey.u());
-            let named = terms.tags.as_ref().is_some_and(|tags| {
-                payment
-                    .tag(Some(tags))
-                    .is_none_or(|tag| slot_tag(tag) == bootstrap)
-            });
+            let named = payment
+                .tag(terms.tags.as_ref())
+                .is_none_or(|tag| slot_tag(tag) == bootstrap);
             if named {
                 return Err(RingError::DepositBootstrapTag);
             }

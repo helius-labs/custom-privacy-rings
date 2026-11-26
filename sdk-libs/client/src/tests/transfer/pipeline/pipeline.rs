@@ -562,7 +562,7 @@ fn default_ring_utxo(owner: &ShieldedKeypair, amount: u64, leaf: u64) -> WalletU
 }
 
 #[tokio::test]
-async fn an_entry_without_the_wallets_tags_is_refused() {
+async fn an_entry_without_the_sender_tag_is_refused() {
     use crate::tests::support::{keypair, payer};
     let sender = &keypair(1);
     let payee = keypair(2);
@@ -583,7 +583,9 @@ async fn an_entry_without_the_wallets_tags_is_refused() {
     let tags = fresh_wallet_tags(sender);
     let tagged = entry().with_tags(tags.clone());
     let staged = stage_anonymous(&tagged, &chain).await.unwrap();
-    assert_eq!(published(&staged)[0].0, tags.sender());
+    let slots = published(&staged);
+    assert_eq!(slots[0].0, tags.sender());
+    assert_eq!(slots[1].0, bootstrap_slot_tag(payee.viewing_pubkey().u()));
 
     let owner = MoveSender {
         sender,

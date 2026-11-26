@@ -94,11 +94,12 @@ History-only calls do not preserve a wallet recovery session. A paused Rust `fet
 
 ### Tags on a transfer
 
-- A wallet's history gives one anonymous transfer its sender tag, in Rust with `ViewingHistory::select`. The tag takes the index `tx.next` of the current viewing key.
+- A wallet's history gives one anonymous transfer its sender tag, in Rust with `ViewingHistory::select`. The tag takes the index `tx.next` of the current viewing key, and the selection returns the history with the counter past that index. The wallet stores that history before it builds the transfer, so two transfers never take one index from one store.
 - Each payment takes its request's tag, or with no request its recipient's bootstrap tag. A payment to the wallet's current viewing key takes the sender tag. The SDKs publish each tag of an anonymous frame once, see [Discovery](../spec/crypto/disclosure.md#discovery).
-- The `tx` counter moves past the sender tag's index only when the confirmed frame carries that tag. A transfer with no slot of the wallet's own takes no index.
-- On an anonymous ring the SDKs refuse a transfer that spends no ring note and has no sender tag. No spent ring note then leads the wallet to its outputs. A deposit and a spend of default-ring notes alone spend no ring note.
-- A spend of ring notes builds without the sender tag. Each payment takes its request's tag, or with no request its recipient's bootstrap tag. Each change slot takes random bytes, and the spent note leads the wallet to the change.
+- A selection whose transfer never lands leaves its index unused. A sync still reads every index, since it lists each stream from index 0 to a window past its counter.
+- A spend of ring notes builds without the sender tag. Each payment takes its request's tag, or with no request its recipient's bootstrap tag. Each change slot takes random bytes, and the ring sync follows the spent ring note by its nullifier to the change.
+- An entry spend, default-ring notes and no ring note, is refused without the sender tag. A core sync that reads the spend of a default-ring note ahead of the ring sync hands that transaction to no later sync, so the sender tag is the one lead to the change short of a recovery scan.
+- A deposit to another member's request builds without the sender tag, it returns no change. A deposit to the depositor's own address with no request is refused without it, its note would publish the depositor's bootstrap tag beside the funder.
 - A recipient mints a request tag at its `request.next` and stores the moved counter. The wallet refuses a mint only at the `u64` limit and while it is in a recovery scan. No count of unpaid requests refuses one. The CLI mints one with `address`, and `address --bootstrap` prints the bare address with no tag.
 
 ### Limits of the tag read

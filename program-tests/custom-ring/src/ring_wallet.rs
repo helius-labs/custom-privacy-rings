@@ -61,5 +61,7 @@ impl<'a> RingWallet<'a> {
 }
 
 pub fn fresh_wallet_tags(sender: &ShieldedKeypair) -> Result<TransferTags> {
-    Ok(ViewingHistory::new(sender.viewing_pubkey(), 0).select(sender)?)
+    Ok(ViewingHistory::new(sender.viewing_pubkey(), 0)
+        .select(sender)?
+        .tag)
 }

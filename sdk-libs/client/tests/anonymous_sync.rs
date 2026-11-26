@@ -747,8 +747,9 @@ async fn one_tag_sync_finds_a_bootstrap_payment_a_request_payment_and_the_change
     let mut stored = AnonymousWallet::new(ViewingHistory::new(bob.keys.viewing_pubkey(), 0));
     let request = stored.history().request_tag(&bob.keys).unwrap();
     stored.update_history(request.history).unwrap();
-    let tags = stored.history().select(&bob.keys).unwrap();
-    bob.sender_tag = Some(tags.sender());
+    let selected = stored.history().select(&bob.keys).unwrap();
+    stored.update_history(selected.history).unwrap();
+    bob.sender_tag = Some(selected.tag.sender());
     let sent = bob.pay(&indexer, &[pay(&carol.address(), 20)]);
     let to_bootstrap = alice.pay(&indexer, &[pay(&bob.address(), 30)]);
     let to_request = Pay {
@@ -767,6 +768,24 @@ async fn one_tag_sync_finds_a_bootstrap_payment_a_request_payment_and_the_change
         ]
     );
     assert_eq!(indexer.take_ring_pages(), 0);
+}
+
+/// The ring sync opens every body of a row its caller hands it, no tag selects one.
+#[tokio::test]
+async fn change_under_no_tag_is_found_from_the_row_of_its_own_transaction() {
+    let indexer = Indexer::default();
+    let mut bob = Wallet::new(2);
+    let carol = Wallet::new(3);
+    let mut stored = AnonymousWallet::new(ViewingHistory::new(bob.keys.viewing_pubkey(), 0));
+    let sent = bob.pay(&indexer, &[pay(&carol.address(), 20)]);
+    tag_sync(&indexer, &bob.keys, &mut stored).await;
+    assert!(held(&stored).is_empty(), "no listed tag names the frame");
+    let commit = RingConfidentialScan::new(&bob.keys, &assets())
+        .sync(&indexer, &stored, core::slice::from_ref(&sent))
+        .await
+        .unwrap();
+    stored.absorb(commit).unwrap();
+    assert_eq!(held(&stored), [output(&sent, 0)]);
 }
 
 /// A seed holds no request counter, a restore lists `TAG_WINDOW` requests past the last one it found.

@@ -184,7 +184,7 @@ pub struct AnonymousMove<'a> {
     pub entry: EntrySpend,
     /// Read only when the ring demands a co-signer.
     pub co_signer: Option<Address>,
-    /// The wallet's sender tag, an entry spend is refused without it.
+    /// The wallet's sender tag. Change takes random bytes without it, and an entry spend is refused.
     pub tags: Option<&'a TransferTags>,
 }
 
@@ -314,7 +314,7 @@ impl<'a> RingTransfer<Anonymous<'a>> {
         Ok(self)
     }
 
-    /// The wallet's sender tag, a spend of no ring note is refused without it.
+    /// The wallet's sender tag, the first slot sealed to its key publishes it.
     #[must_use = "use the updated transfer"]
     pub fn with_tags(mut self, tags: TransferTags) -> Self {
         self.rail.tags = Some(tags);
@@ -629,7 +629,8 @@ pub(super) struct TaggedPayments<'a> {
 }
 
 impl TaggedPayments<'_> {
-    /// Without the wallet's sender tag change takes random bytes, the note the wallet spends finds it.
+    /// Without the wallet's sender tag change takes random bytes, the ring note the wallet spends
+    /// leads its ring sync to the change.
     pub fn plan(self) -> Result<AnonymousPlan, RingError> {
         let Self {
             transaction,
@@ -637,12 +638,17 @@ impl TaggedPayments<'_> {
             payments,
             tags,
         } = self;
-        // 1. A spend of no ring note publishes no nullifier the tag sync follows, its slots need the sender tag.
-        let spends_ring_note = transaction
+        // 1. An entry spends default-ring notes alone. A core scan that reads their spend ahead of
+        // the ring sync hands the transaction to no later sync, so only the sender tag finds the
+        // change. A deposit spends a dummy and returns no change.
+        let mut notes = transaction
             .inputs()
             .iter()
-            .any(|input| input.utxo.ring_program_id.is_some());
-        if tags.is_none() && !spends_ring_note {
+            .filter(|input| input.is_note())
+            .peekable();
+        let entry =
+            notes.peek().is_some() && notes.all(|input| input.utxo.ring_program_id.is_none());
+        if tags.is_none() && entry {
             return Err(RingError::SenderTagRequired);
         }
         // 2. Change takes the sender tag only under the key the tags derive from, a deposit's

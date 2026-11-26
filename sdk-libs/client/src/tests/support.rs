@@ -99,6 +99,7 @@ pub(crate) fn fresh_wallet_tags(sender: &ShieldedKeypair) -> TransferTags {
     ViewingHistory::new(sender.viewing_pubkey(), 0)
         .select(sender)
         .unwrap()
+        .tag
 }
 
 pub(crate) fn owner_identity(owner: &ShieldedKeypair) -> Member {

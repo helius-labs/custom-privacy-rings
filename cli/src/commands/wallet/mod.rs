@@ -11,7 +11,7 @@ use std::{
 use anyhow::{ensure, Context as _, Result};
 use solana_address::Address;
 use spr_client::{BlockingIndexer, BlockingRpc, IndexerRpcConfig, Rpc};
-use spr_keypair::{viewing_key::ViewTag, X25519Pubkey};
+use spr_keypair::X25519Pubkey;
 use spr_transaction::SpendableDecryptionResult;
 use zolana_ring_client::{
     AnonymousError, AnonymousWallet, RecoveryStatus, RingWalletNotes, RingWalletSync,
@@ -36,12 +36,6 @@ pub struct AnonymousWalletStore {
 pub struct StoreLocation<'a> {
     pub dir: &'a Path,
     pub viewing_pubkey: X25519Pubkey,
-}
-
-#[must_use]
-pub struct SelectedTags {
-    store: AnonymousWalletStore,
-    tags: TransferTags,
 }
 
 #[must_use]
@@ -113,16 +107,18 @@ impl AnonymousWalletStore {
         Ok(outcome)
     }
 
-    /// The wallet's sender tag for one transfer, nothing is stored until [`SelectedTags::confirm`].
-    pub fn select(self, keys: &RotatingRingKeys) -> Result<SelectedTags> {
-        let wallet = self.load()?;
-        // A history in recovery takes no counter, refused ahead of the transfer.
-        ensure!(
-            matches!(wallet.recovery_status(), RecoveryStatus::Complete),
-            "the wallet is in a recovery scan, finish it before a send"
-        );
-        let tags = wallet.history().select(keys)?;
-        Ok(SelectedTags { store: self, tags })
+    /// The wallet's sender tag for one transfer, the same write moves the stored counter past it.
+    pub fn select(&self, keys: &RotatingRingKeys) -> Result<TransferTags> {
+        self.update(|wallet| {
+            // A history in recovery takes no counter, refused ahead of the transfer.
+            ensure!(
+                matches!(wallet.recovery_status(), RecoveryStatus::Complete),
+                "the wallet is in a recovery scan, finish it before a send"
+            );
+            let selected = wallet.history().select(keys)?;
+            wallet.update_history(selected.history)?;
+            Ok(selected.tag)
+        })
     }
 
     fn lock(&self) -> Result<StoreLock> {
@@ -139,23 +135,6 @@ impl AnonymousWalletStore {
         lock.lock()
             .with_context(|| format!("cannot lock {}", path.display()))?;
         Ok(StoreLock { _file: lock })
-    }
-}
-
-impl SelectedTags {
-    pub fn tags(&self) -> &TransferTags {
-        &self.tags
-    }
-
-    /// The stored counter moves only when `published`, the confirmed frame's slot tags, holds the sender tag.
-    pub fn confirm(&self, published: &[ViewTag]) -> Result<()> {
-        self.store.update(|wallet| {
-            let advanced = wallet
-                .history()
-                .clone()
-                .with_published(&self.tags, published);
-            Ok(wallet.update_history(advanced)?)
-        })
     }
 }
 
@@ -299,6 +278,9 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use spr_keypair::viewing_key::ViewTag;
     use zolana_ring_client::AnonymousError;
 
     use super::{
@@ -337,20 +319,23 @@ mod tests {
     }
 
     #[test]
-    fn only_a_frame_that_carried_the_sender_tag_moves_the_stored_counter() {
-        let member = Member::new(1, "confirm");
-        let keys = RotatingRingKeys::new(&member.keys).unwrap();
-        let store = AnonymousWalletStore {
-            path: member.state_file(),
-            viewing_pubkey: member.keys.viewing_pubkey(),
-        };
-        let selected = store.select(&keys).unwrap();
-        let tx_count = || member.store.load().unwrap().history().current().tx_count();
-        selected.confirm(&[]).unwrap();
-        selected.confirm(&[[9; 32]]).unwrap();
-        assert_eq!(tx_count(), 0, "no tag of the selection");
-        selected.confirm(&[selected.tags().sender()]).unwrap();
-        assert_eq!(tx_count(), 1);
+    fn concurrent_selections_take_distinct_sender_indices() {
+        let member = Member::new(1, "select");
+        let (store, member_keys) = (&member.store, &member.keys);
+        let selected: BTreeSet<ViewTag> = std::thread::scope(|scope| {
+            let sends: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(move || {
+                        let keys = RotatingRingKeys::new(member_keys).unwrap();
+                        store.select(&keys).unwrap().sender()
+                    })
+                })
+                .collect();
+            sends.into_iter().map(|send| send.join().unwrap()).collect()
+        });
+        assert_eq!(selected.len(), 16);
+        let stored = store.load().unwrap();
+        assert_eq!(stored.history().current().tx_count(), 16);
     }
 
     #[test]

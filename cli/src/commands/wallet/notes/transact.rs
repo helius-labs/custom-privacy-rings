@@ -45,7 +45,7 @@ use crate::{
     policy, records,
     submission::MemberSigners,
     ui::{self, icon},
-    wallet::{SelectedTags, WalletScan},
+    wallet::WalletScan,
     BalanceArgs, Context, CosignerArg, DepositArgs, Target, TransactArgs, TransferArgs,
     DEFAULT_TRANSACT_AMOUNT, SENDER_KEYPAIR_FILE,
 };
@@ -990,7 +990,7 @@ impl Deposit<'_> {
                 .as_ref()
                 .map(|key| key as &(dyn Signer + Sync)),
             list_salt: Some(self.sender.list_salt(&ctx.ring.program_id())?),
-            tags: selected.as_ref().map(SelectedTags::tags),
+            tags: selected.as_ref(),
         };
         let prepared = ctx.block(deposit.prepare(ctx.chain()))?;
         let mut submission = RingSubmission::new(prepared);
@@ -1002,9 +1002,6 @@ impl Deposit<'_> {
             cosigner: self.cosigner,
         }
         .settle(ctx, &mut submission)?;
-        if let Some(selected) = &selected {
-            selected.confirm(submission.confirmed_slot_tags())?;
-        }
         let Some([utxo]) = submission.deposit_utxos() else {
             bail!("the deposit has no confirmed output")
         };
@@ -1207,19 +1204,6 @@ impl Transfer<'_> {
                 let selected = ctx
                     .anonymous_wallet_store(self.held.identity_viewing_pubkey())
                     .select(self.held)?;
-                let settle = |operation: RingOperation<'_>,
-                              signers: &[&(dyn Signer + Sync)]|
-                 -> Result<Signature> {
-                    let mut submission = RingSubmission::new(operation);
-                    let signature = self
-                        .signers(LocalSigners {
-                            payer: self.payer,
-                            signers,
-                        })
-                        .settle(ctx, &mut submission)?;
-                    selected.confirm(submission.confirmed_slot_tags())?;
-                    Ok(signature)
-                };
                 if let Some(wallet) = self.spend_public {
                     let mut transaction = transaction(inputs.clone(), self.payer.pubkey())?;
                     for payment in default_ring {
@@ -1247,10 +1231,12 @@ impl Transfer<'_> {
                         Some(cosigner) => transfer.with_co_signer(cosigner),
                         None => transfer,
                     };
-                    return settle(
-                        transfer.with_tags(selected.tags().clone()).into(),
-                        &[self.sender],
-                    );
+                    return self
+                        .signers(LocalSigners {
+                            payer: self.payer,
+                            signers: &[self.sender],
+                        })
+                        .submit(ctx, transfer.with_tags(selected));
                 }
                 // The hidden owner never signs in public, the payer funds its spend.
                 let transfer = match self.payments.sdk_selects() {
@@ -1266,7 +1252,7 @@ impl Transfer<'_> {
                             payments: payees.clone(),
                             entry: *entry,
                             co_signer: self.cosigner,
-                            tags: Some(selected.tags()),
+                            tags: Some(&selected),
                         };
                         ctx.block(select.select(ctx.ring_client()))?
                     }
@@ -1301,10 +1287,14 @@ impl Transfer<'_> {
                             Some(cosigner) => transfer.with_co_signer(cosigner),
                             None => transfer,
                         };
-                        transfer.with_tags(selected.tags().clone())
+                        transfer.with_tags(selected.clone())
                     }
                 };
-                settle(transfer.into(), &[])
+                self.signers(LocalSigners {
+                    payer: self.payer,
+                    signers: &[],
+                })
+                .submit(ctx, transfer)
             }
         }
     }

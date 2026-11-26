@@ -282,7 +282,9 @@ pub enum AnonymousError {
     UnknownSenderClaim,
     #[error("a history page is out of order or repeats a row")]
     InvalidHistoryPage,
-    #[error("a counter update may not move a stored scan position or watermark")]
+    #[error(
+        "a history update may not lower a counter or move a stored scan position or watermark"
+    )]
     ScanProgressMoved,
     #[error("wallet history changed during the scan")]
     ScanHistoryChanged,

@@ -111,39 +111,33 @@ async fn an_anonymous_deposit_publishes_no_bootstrap_tag_of_its_recipient() {
         request_tag,
     };
     let requested = [0x5a; 32];
-    let untagged = deposit(&payer, target(Some(requested)))
-        .prepare(&chain)
-        .await
-        .unwrap();
-    assert!(matches!(
-        assemble(&untagged, &chain).await,
-        Err(RingError::SenderTagRequired)
-    ));
     let tags = fresh_wallet_tags(&wallet);
-    for request in [None, Some(recipient.viewing_pubkey.u()), Some(requested)] {
-        let prepared = RingDeposit {
-            tags: Some(&tags),
-            ..deposit(&payer, target(request))
-        }
-        .prepare(&chain)
-        .await
-        .unwrap();
-        let assembled = assemble(&prepared, &chain).await;
-        if request != Some(requested) {
-            assert!(matches!(assembled, Err(RingError::DepositBootstrapTag)));
-            continue;
-        }
-        let assembled = assembled.unwrap();
-        let slot = assembled
-            .proof_inputs()
-            .output_utxos
-            .iter()
-            .position(|output| output.owner_address == Some(recipient))
+    for sender_tag in [None, Some(&tags)] {
+        for request in [None, Some(recipient.viewing_pubkey.u()), Some(requested)] {
+            let prepared = RingDeposit {
+                tags: sender_tag,
+                ..deposit(&payer, target(request))
+            }
+            .prepare(&chain)
+            .await
             .unwrap();
-        assert_eq!(
-            assembled.parts().outputs[slot].owner_tag,
-            slot_tag(requested)
-        );
+            let assembled = assemble(&prepared, &chain).await;
+            if request != Some(requested) {
+                assert!(matches!(assembled, Err(RingError::DepositBootstrapTag)));
+                continue;
+            }
+            let assembled = assembled.unwrap();
+            let slot = assembled
+                .proof_inputs()
+                .output_utxos
+                .iter()
+                .position(|output| output.owner_address == Some(recipient))
+                .unwrap();
+            assert_eq!(
+                assembled.parts().outputs[slot].owner_tag,
+                slot_tag(requested)
+            );
+        }
     }
 }
 

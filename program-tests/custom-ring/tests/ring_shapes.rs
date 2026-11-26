@@ -1476,7 +1476,6 @@ impl ShapeRing<'_> {
                     env,
                 }
                 .send()?;
-                // A spend of no ring note refuses to build without the sender tag.
                 let tags = fresh_wallet_tags(sender)?;
                 // The recipients' apply moves the tracking root, the indexer serves it a projection later.
                 wait_for("the ring indexer to serve the applied roots", || {

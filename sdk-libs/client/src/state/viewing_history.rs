@@ -38,13 +38,7 @@ pub struct ViewingKeyEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TransferTags {
     viewing_pubkey: X25519Pubkey,
-    sender: IndexedTag,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct IndexedTag {
-    index: u64,
-    tag: ViewTag,
+    sender: ViewTag,
 }
 
 /// Every retained viewing key, oldest first, the last one current.
@@ -91,10 +85,6 @@ impl StreamCounter {
         Ok(index)
     }
 
-    fn taken(&mut self, index: u64) {
-        self.next = self.next.max(index.saturating_add(1));
-    }
-
     fn found(&mut self, index: u64) {
         self.scanned = self.scanned.max(index.saturating_add(1));
         self.next = self.next.max(self.scanned);
@@ -109,7 +99,7 @@ impl TransferTags {
 
     /// On the first slot of a frame sealed to the wallet's own key.
     pub fn sender(&self) -> ViewTag {
-        self.sender.tag
+        self.sender
     }
 }
 
@@ -173,8 +163,11 @@ impl ViewingKeyEntry {
         self.tag_position = Some(after_slot);
     }
 
+    /// A stale history lowers no counter, its next selection would take a published index again.
     fn progress_matches(&self, stored: &Self) -> bool {
-        self.tx.scanned == stored.tx.scanned
+        self.tx.next >= stored.tx.next
+            && self.request.next >= stored.request.next
+            && self.tx.scanned == stored.tx.scanned
             && self.request.scanned == stored.request.scanned
             && self.tag_position == stored.tag_position
             && stored
@@ -281,36 +274,24 @@ impl ViewingHistory {
         &mut self.entries
     }
 
-    /// The sender tag of one transfer under the current key, [`Self::with_published`] takes its index.
-    pub fn select<K: RingKeys + ?Sized>(&self, keys: &K) -> Result<TransferTags, AnonymousError> {
-        let entry = self.current();
-        let viewing_pubkey = entry.viewing_pubkey;
-        let index = entry.tx.next;
-        let derived = exactly_one(keys.view_tags(&[ViewTagRequest {
-            viewing_pubkey,
-            stream: ViewTagStream::Sender,
-            indices: index..index.saturating_add(1),
-        }])?)?;
-        Ok(TransferTags {
-            viewing_pubkey,
-            sender: IndexedTag {
-                index,
-                tag: exactly_one(derived)?,
+    /// The sender tag of one transfer under the current key. A caller stores the returned
+    /// history before it builds the transfer, two transfers under one index would publish one tag.
+    pub fn select<K: RingKeys + ?Sized>(
+        &self,
+        keys: &K,
+    ) -> Result<AdvancedTag<TransferTags>, AnonymousError> {
+        let viewing_pubkey = self.current().viewing_pubkey;
+        let AdvancedTag {
+            tag: sender,
+            history,
+        } = self.minted(keys, ViewTagStream::Sender)?;
+        Ok(AdvancedTag {
+            tag: TransferTags {
+                viewing_pubkey,
+                sender,
             },
+            history,
         })
-    }
-
-    /// The history once `tags`' transfer confirmed, past the sender index when `published` carries its tag.
-    #[must_use]
-    pub fn with_published(mut self, tags: &TransferTags, published: &[ViewTag]) -> Self {
-        let entry = self
-            .entries
-            .iter_mut()
-            .find(|entry| entry.viewing_pubkey == tags.viewing_pubkey);
-        if let Some(entry) = entry.filter(|_| published.contains(&tags.sender.tag)) {
-            entry.tx.taken(tags.sender.index);
-        }
-        self
     }
 
     /// The tag of the current key's next payment request.
@@ -318,12 +299,25 @@ impl ViewingHistory {
         &self,
         keys: &K,
     ) -> Result<AdvancedTag<ViewTag>, AnonymousError> {
+        self.minted(keys, ViewTagStream::Request)
+    }
+
+    fn minted<K: RingKeys + ?Sized>(
+        &self,
+        keys: &K,
+        stream: ViewTagStream,
+    ) -> Result<AdvancedTag<ViewTag>, AnonymousError> {
         let mut history = self.clone();
         let current = history.current_mut();
-        let index = current.request.mint()?;
+        let viewing_pubkey = current.viewing_pubkey;
+        let counter = match stream {
+            ViewTagStream::Sender => &mut current.tx,
+            ViewTagStream::Request => &mut current.request,
+        };
+        let index = counter.mint()?;
         let tags = exactly_one(keys.view_tags(&[ViewTagRequest {
-            viewing_pubkey: current.viewing_pubkey,
-            stream: ViewTagStream::Request,
+            viewing_pubkey,
+            stream,
             indices: index..index.saturating_add(1),
         }])?)?;
         Ok(AdvancedTag {
@@ -528,35 +522,38 @@ mod tests {
 
     use custom_ring_interface::stream::slot_tag;
     use spr_keypair::{ShieldedKeypair, ViewingKey};
-    use zolana_ring_keys::bootstrap_slot_tag;
 
     use super::*;
 
     #[test]
-    fn a_sender_index_is_taken_only_when_a_confirmed_frame_carried_its_tag() {
+    fn each_selection_takes_the_next_sender_index() {
         let wallet = ShieldedKeypair::new_ed25519().unwrap();
         let fresh = ViewingHistory::new(wallet.viewing_pubkey(), 0);
         let first = fresh.select(&wallet).unwrap();
-        assert_eq!(
-            first.sender(),
-            slot_tag(wallet.get_sender_view_tag(0).unwrap())
-        );
-        let payment = bootstrap_slot_tag(ViewingKey::new().pubkey().u());
-        for published in [&[][..], &[payment][..]] {
-            assert_eq!(fresh.clone().with_published(&first, published), fresh);
+        let second = first.history.select(&wallet).unwrap();
+        for (index, selected) in [&first, &second].into_iter().enumerate() {
+            assert_eq!(
+                selected.tag.sender(),
+                slot_tag(wallet.get_sender_view_tag(index as u64).unwrap())
+            );
+            assert_eq!(selected.history.current().tx_count(), index as u64 + 1);
         }
-        let taken = fresh
-            .clone()
-            .with_published(&first, &[payment, first.sender()]);
-        assert_eq!(taken.current().tx_count(), 1);
-        let second = taken.select(&wallet).unwrap();
         assert_eq!(
-            second.sender(),
-            slot_tag(wallet.get_sender_view_tag(1).unwrap())
+            fresh.current().tx_count(),
+            0,
+            "a selection moves no stored counter"
         );
-        let both = taken.with_published(&second, &[second.sender()]);
-        assert_eq!(both.current().tx_count(), 2);
-        assert_eq!(both.clone().with_published(&first, &[first.sender()]), both);
+    }
+
+    #[test]
+    fn a_stale_history_lowers_no_counter() {
+        let wallet = ShieldedKeypair::new_ed25519().unwrap();
+        let fresh = ViewingHistory::new(wallet.viewing_pubkey(), 0);
+        let selected = fresh.select(&wallet).unwrap().history;
+        assert!(selected.progress_matches(&fresh));
+        assert!(!fresh.progress_matches(&selected));
+        let minted_from_stale = fresh.request_tag(&wallet).unwrap().history;
+        assert!(!minted_from_stale.progress_matches(&selected));
     }
 
     #[test]

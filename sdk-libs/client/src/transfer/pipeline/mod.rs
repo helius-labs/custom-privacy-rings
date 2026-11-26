@@ -40,9 +40,8 @@ use spr_hasher::primitives::solana_owner_identity;
 use spr_interface::instruction::instruction_data::transact::CacheAccess;
 use spr_interface::{instruction::TreeContext, N_PUBLIC_SLOTS};
 use spr_keypair::{
-    random_salt,
-    viewing_key::{Salt, ViewTag},
-    NullifierKey, PublicKey, ShieldedAddress, SigningKey, ViewingKey, X25519Pubkey,
+    random_salt, viewing_key::Salt, NullifierKey, PublicKey, ShieldedAddress, SigningKey,
+    ViewingKey, X25519Pubkey,
 };
 use spr_program::instruction::TransactInterfaceTransferAccounts;
 use spr_transaction::{
@@ -1416,15 +1415,6 @@ impl ProvenRingTransfer {
     /// The `approved_transfer` of the co-sign request for the call `instruction` returns.
     pub fn approved_transfer(&self) -> Result<ApprovedTransfer, RingError> {
         self.accounts.approved_transfer(&self.instruction()?)
-    }
-
-    /// Each non-exit slot's tag in slot order.
-    pub fn slot_tags(&self) -> impl Iterator<Item = ViewTag> + '_ {
-        self.parts
-            .outputs
-            .iter()
-            .filter(|output| !output.is_exit())
-            .map(|output| output.owner_tag)
     }
 
     /// The owners who sign the transaction in public, none on the anonymous and in-proof owner rails.
