@@ -708,6 +708,9 @@ impl ExpectedDelegate {
                 allowed.check_sources(transfer.sources.iter().map(|source| &source.0))?;
             }
             DelegateRequester::Mint(mint) => {
+                if config.delegate == Some(request.delegate.0) {
+                    return Err(RingError::RingDelegateAsMintRequester);
+                }
                 if sole_mint(transfer.mints()) != Some(*mint) {
                     return Err(CustomRingError::UnauthorizedDelegate.into());
                 }

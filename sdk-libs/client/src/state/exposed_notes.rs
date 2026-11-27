@@ -26,7 +26,7 @@ pub struct MintBalance {
 }
 
 /// What a wallet owns on a ring, `owned` is the part any automatic path reads.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct RingOwnedUtxos {
     pub owned: OwnedUtxos,
     /// Unspent zero-key notes in publication order.
@@ -34,6 +34,10 @@ pub struct RingOwnedUtxos {
     /// The nullifiers of the spent zero-key notes.
     pub spent_exposed: HashSet<[u8; 32]>,
 }
+
+zolana_ring_keys::redacted_debug!(RingOwnedUtxos {
+    hidden: [owned, exposed_if_spent, spent_exposed],
+});
 
 pub fn is_zero_key(note: &WalletUtxo) -> bool {
     note.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY

@@ -32,7 +32,7 @@ impl WalletRevision {
 }
 
 /// Notes stay listed once spent, their nullifiers mark them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AnonymousWallet {
     revision: WalletRevision,
     recovery: Option<RecoverySession>,
@@ -44,6 +44,12 @@ pub struct AnonymousWallet {
     /// Spent by a merge whose output named an unregistered mint, each confidential sync reads the spend again.
     merge_retries: BTreeSet<[u8; 32]>,
 }
+
+zolana_ring_keys::redacted_debug!(AnonymousWallet {
+    shown: [revision, history],
+    present: [recovery],
+    hidden: [notes, spent_nullifiers, pending, claims, merge_retries],
+});
 
 /// One sync, stored whole by [`AnonymousWallet::absorb`] or not at all.
 pub struct ScanCommit {
@@ -132,9 +138,15 @@ mod sealed {
 }
 
 /// Rebuilt under a mint the registry does not name, only [`AnonymousWallet::resolve_pending`] makes it spendable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PendingNote(WalletUtxo);
+
+impl core::fmt::Debug for PendingNote {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("PendingNote(..)")
+    }
+}
 
 impl PendingNote {
     pub(crate) const fn new(note: WalletUtxo) -> Self {

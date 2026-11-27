@@ -30,20 +30,29 @@ use crate::{
     AnonymousError,
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct RingConfidentialNotes {
     pub owned: OwnedUtxos,
     /// Unspent zero-key notes, outside `owned` and every automatic path.
     pub exposed_if_spent: Vec<WalletUtxo>,
 }
 
+zolana_ring_keys::redacted_debug!(RingConfidentialNotes {
+    hidden: [owned, exposed_if_spent],
+});
+
 /// What a read of the whole ring opened with no tag read.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RingFullScan {
     pub owned: RingOwnedUtxos,
     pub pending: Vec<PendingNote>,
     pub auditor_recovery: AuditorRecovery,
 }
+
+// The ring's bodies minus the unopened ones show the wallet's notes.
+zolana_ring_keys::redacted_debug!(RingFullScan {
+    hidden: [owned, pending, auditor_recovery],
+});
 
 /// Reads the spends of the notes it opens and the ring merges among them, the scanned transactions alone miss a spend without change.
 #[must_use]

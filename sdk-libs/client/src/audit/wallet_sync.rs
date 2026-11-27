@@ -21,11 +21,15 @@ use crate::{
 };
 
 /// Zero-key notes stay apart, no automatic path selects them.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct RingWalletNotes {
     pub spendable: SpendableDecryptionResult,
     pub exposed_if_spent: Vec<WalletUtxo>,
 }
+
+zolana_ring_keys::redacted_debug!(RingWalletNotes {
+    hidden: [spendable, exposed_if_spent],
+});
 
 #[must_use]
 #[derive(Clone, Debug, PartialEq, Eq)]

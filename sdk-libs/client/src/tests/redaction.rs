@@ -1,18 +1,22 @@
-use std::fmt::Debug;
+use std::{collections::BTreeSet, fmt::Debug};
 
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_indexer_api::Hash;
 use spr_keypair::ViewingKey;
+use spr_transaction::{DecryptionResult, Mint, OwnedUtxos, SpendableDecryptionResult};
 use zeroize::Zeroizing;
 
 use crate::{
+    anonymous::RecoveryUpdate,
     rpc::{
         DecryptedKnownUtxo, DecryptedUtxo, ProofInputBytes, TxViewingSecret, WalletNote,
         WalletNoteStatus,
     },
-    tests::support::redacts,
-    AuditedMergeOutput, AuditedUtxo, KnownUtxo, MergeRecordOutput, SlotOpening, UtxoOwner,
+    tests::support::{keypair, redacts, ring_utxo},
+    AnonymousWallet, AuditedMergeOutput, AuditedUtxo, AuditorRecovery, KnownUtxo,
+    MergeRecordOutput, PendingNote, RingConfidentialNotes, RingFullScan, RingOwnedUtxos,
+    RingWalletNotes, RingWalletSynced, ScanCommit, SlotOpening, UtxoOwner, ViewingHistory,
 };
 
 const SECRET: [u8; 32] = [0xab; 32];
@@ -162,4 +166,72 @@ fn a_viewing_secret_and_proof_input_bytes_print_no_byte() {
         ),
         "ProofInputBytes(..)"
     );
+}
+
+#[test]
+fn wallet_note_holders_print_no_blinding() {
+    let owner = keypair(1);
+    let note = ring_utxo(&owner, Mint::SOL, 7, 0);
+    let blinding = format!("{:?}", note.utxo.blinding);
+    let notes = vec![note.clone()];
+    let owned = OwnedUtxos {
+        utxos: notes.clone(),
+        ..OwnedUtxos::default()
+    };
+    let ring_owned = RingOwnedUtxos {
+        owned: owned.clone(),
+        exposed_if_spent: notes.clone(),
+        spent_exposed: [note.nullifier].into(),
+    };
+    let history = ViewingHistory::new(owner.viewing_pubkey(), 0);
+    let mut wallet = AnonymousWallet::new(history.clone());
+    wallet
+        .absorb(ScanCommit {
+            recovery: RecoveryUpdate::Keep,
+            starting_history: history.clone(),
+            history,
+            decrypted: DecryptionResult {
+                utxos: notes.clone(),
+                ..DecryptionResult::default()
+            },
+            pending: Vec::new(),
+            claims: Vec::new(),
+            retried: BTreeSet::new(),
+            unresolved: BTreeSet::new(),
+        })
+        .unwrap();
+    assert_eq!(wallet.notes(), notes.as_slice());
+    let printed = [
+        format!("{:?}", PendingNote::new(note)),
+        format!("{wallet:?}"),
+        format!("{ring_owned:?}"),
+        format!(
+            "{:?}",
+            RingFullScan {
+                owned: ring_owned,
+                pending: Vec::new(),
+                auditor_recovery: AuditorRecovery::default(),
+            }
+        ),
+        format!(
+            "{:?}",
+            RingConfidentialNotes {
+                owned,
+                exposed_if_spent: notes.clone(),
+            }
+        ),
+        format!(
+            "{:?}",
+            RingWalletSynced::Notes(RingWalletNotes {
+                spendable: SpendableDecryptionResult {
+                    utxos_with_data: notes.clone(),
+                    ..SpendableDecryptionResult::default()
+                },
+                exposed_if_spent: notes,
+            })
+        ),
+    ];
+    for printed in printed {
+        assert!(!printed.contains(&blinding), "{printed}");
+    }
 }

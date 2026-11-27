@@ -95,6 +95,8 @@ pub enum RingError {
     RingPaused,
     #[error("the ring has no delegate")]
     MissingDelegate,
+    #[error("the ring's delegate cannot request as a mint delegate")]
+    RingDelegateAsMintRequester,
     #[error("asset registry is required")]
     MissingAssetRegistry,
     #[error("the compiled table differs from the stored rows")]

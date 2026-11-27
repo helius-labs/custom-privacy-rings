@@ -22,11 +22,16 @@ pub(super) struct Funding<'u> {
     pub max_inputs: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(super) struct Candidate {
     pub utxos: Vec<WalletUtxo>,
     pub change: bool,
 }
+
+zolana_ring_keys::redacted_debug!(Candidate {
+    shown: [change],
+    hidden: [utxos],
+});
 
 /// The payments' total, refused when zero or past a u64.
 pub(super) fn payment_total(amounts: impl IntoIterator<Item = u64>) -> Result<u64, RingError> {

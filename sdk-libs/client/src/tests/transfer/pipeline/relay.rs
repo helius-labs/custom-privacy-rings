@@ -1845,6 +1845,7 @@ mod delegate_message {
                 config,
             })
         };
+        config.delegate = Some(Address::new_from_array([8; 32]));
         let records_only = expected(&config, DelegateRequester::Mint(Mint::SOL.asset)).unwrap();
         assert!(records_only.check(&message.0).is_ok());
         assert!(matches!(
@@ -1854,7 +1855,6 @@ mod delegate_message {
             ),
             Err(RingError::Program(CustomRingError::UnauthorizedDelegate))
         ));
-        config.delegate = Some(Address::new_from_array([8; 32]));
         assert!(matches!(
             expected(&config, DelegateRequester::Ring(allowed.clone())),
             Err(RingError::Program(CustomRingError::UnauthorizedDelegate))
@@ -1863,6 +1863,24 @@ mod delegate_message {
         assert!(matches!(
             expected(&config, DelegateRequester::Ring(allowed)),
             Err(RingError::MissingDelegate)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_rings_own_delegate_is_refused_as_a_mint_requester() {
+        let delegate = keypair(7);
+        let relay = DelegateRelay::new(Answer::Honest, delegate.pubkey());
+        let config = ring().require_config(relay.client.zolana()).await.unwrap();
+        let refused = ExpectedDelegate::new(&RequestedAuthorityTransfer {
+            requester: DelegateRequester::Mint(Mint::SOL.asset),
+            request: request(delegate.pubkey()),
+            quote: &quote(),
+            output_tree_id: crate::tests::support::TREE_ID,
+            config: &config,
+        });
+        assert!(matches!(
+            refused,
+            Err(RingError::RingDelegateAsMintRequester)
         ));
     }
 
