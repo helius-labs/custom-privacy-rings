@@ -30,7 +30,10 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use ring_service_core::{database::is_memory_url, kms::KmsArgs};
+use ring_service_core::{
+    database::is_memory_url,
+    kms::{KmsArgs, KmsNetwork},
+};
 use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection};
 use sea_orm_migration::MigratorTrait;
 use solana_address::Address;
@@ -114,12 +117,41 @@ pub async fn run(args: Args) -> Result<()> {
     if is_memory_url(&args.db_url) {
         bail!("the database URL names an in-memory SQLite database");
     }
+    let rpc =
+        Arc::new(SolanaRpc::new(args.rpc_url.clone()).with_block_headers(block_headers(&args)?));
+    let announcement = if let (Some(registry), Some(url), Some(key_arn), Some(service_address)) = (
+        args.photon_registry_url,
+        args.public_url,
+        args.service_key_arn,
+        args.service_address,
+    ) {
+        let endpoint = args.kms.endpoint()?;
+        let network = KmsNetwork {
+            bind: args.bind,
+            rpc_url: &args.rpc_url,
+        };
+        network.check(&endpoint)?;
+        let genesis = rpc.genesis_hash().await?;
+        let kms = endpoint.connect(&genesis).await?;
+        let pin = SignerRef {
+            key_arn,
+            address: service_address,
+        };
+        let service = kms.signer(&pin).await?;
+        let announcer = Announcer {
+            registry,
+            url,
+            methods: RING_METHODS.map(str::to_owned).into(),
+            pubkey: service.address(),
+        };
+        Some((announcer, service))
+    } else {
+        None
+    };
     let db = Arc::new(connect(&args.db_url, args.max_db_connections).await?);
     Migrator::up(db.as_ref(), None)
         .await
         .context("ring indexer migrations failed")?;
-    let rpc =
-        Arc::new(SolanaRpc::new(args.rpc_url.clone()).with_block_headers(block_headers(&args)?));
     let readiness = Readiness::default();
     let indexer = Indexer {
         db: db.clone(),
@@ -130,10 +162,9 @@ pub async fn run(args: Args) -> Result<()> {
     };
     // An empty index without a start slot or a foreign start fails here, not in the loop.
     indexer.cursor().await?;
-    let indexing = indexer.spawn();
     let (address, server) = Server {
         db,
-        rpc: rpc.clone(),
+        rpc,
         photon: args.photon_url,
         readiness,
         max_connections: args.max_connections,
@@ -141,26 +172,9 @@ pub async fn run(args: Args) -> Result<()> {
     .start(SocketAddr::new(args.bind, args.port))
     .await?;
     log::info!("ring indexer listens on {address}");
-    if let (Some(registry), Some(url), Some(key_arn), Some(service_address)) = (
-        args.photon_registry_url,
-        args.public_url,
-        args.service_key_arn,
-        args.service_address,
-    ) {
-        let genesis = rpc.genesis_hash().await?;
-        let kms = args.kms.endpoint()?.connect(&genesis).await?;
-        let pin = SignerRef {
-            key_arn,
-            address: service_address,
-        };
-        let service = kms.signer(&pin).await?;
-        Announcer {
-            registry,
-            url,
-            methods: RING_METHODS.map(str::to_owned).into(),
-            pubkey: service.address(),
-        }
-        .spawn_with(move |message| {
+    let indexing = indexer.spawn();
+    if let Some((announcer, service)) = announcement {
+        announcer.spawn_with(move |message| {
             let service = service.clone();
             async move { service.sign(&message).await }
         });
@@ -202,15 +216,7 @@ fn surfpool_fixture(_rpc_url: &str) -> Result<BlockHeaders> {
 
 #[cfg(feature = "surfpool-fixture")]
 fn surfpool_fixture(rpc_url: &str) -> Result<BlockHeaders> {
-    let loopback = reqwest::Url::parse(rpc_url).ok().is_some_and(|url| {
-        url.host_str().is_some_and(|host| {
-            host == "localhost"
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        })
-    });
-    if !loopback {
+    if !ring_service_core::origins::loopback_url(rpc_url) {
         bail!("the Surfpool fixture accepts loopback RPC only");
     }
     Ok(BlockHeaders::SurfpoolFixture)

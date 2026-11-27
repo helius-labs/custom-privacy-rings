@@ -1,5 +1,11 @@
 import { ClientError, type RequestContext } from "@heliuslabs/spr";
-import { ApiError, equalBytes, wrapIndexer, type SprApi } from "@heliuslabs/spr/internal";
+import {
+  ApiError,
+  equalBytes,
+  wrapIndexer,
+  type MethodDescriptor,
+  type SprApi,
+} from "@heliuslabs/spr/internal";
 
 import {
   getStorageMemberOpeningsMethod,
@@ -13,8 +19,9 @@ import {
   type TrackingOpenings,
   type TrackingOpeningsRequest,
   type TrackingRecordPoolRequest,
+  type TrackingRecordPool,
 } from "../protocol/indexer/tracking-codec.js";
-import type { ServedTrackingPool } from "../protocol/membership/tracking.js";
+import { TRACKING_QUAD_HEIGHT, type ServedTrackingPool } from "../protocol/membership/tracking.js";
 import type {
   RingRecordReader,
   TrackingReader,
@@ -81,12 +88,7 @@ export class RingIndexer implements RingRecordReader, TrackingReader {
     request: TrackingRecordPoolRequest,
     context?: RequestContext,
   ): Promise<ServedTrackingPool> {
-    const method = "getTrackingRecordPool";
-    try {
-      return await this.#api.call(getTrackingRecordPoolMethod, request, context);
-    } catch (cause) {
-      throw ringIndexerError(cause, method);
-    }
+    return this.#recordPool(getTrackingRecordPoolMethod, request, TRACKING_QUAD_HEIGHT, context);
   }
 
   async getStorageMemberRecords(
@@ -110,20 +112,33 @@ export class RingIndexer implements RingRecordReader, TrackingReader {
     request: StorageRecordPoolRequest,
     context?: RequestContext,
   ): Promise<StorageRecordPool> {
-    const method = "getStorageRecordPool";
+    return this.#recordPool(getStorageRecordPoolMethod, request, QUAD_HEIGHT, context);
+  }
+
+  async #recordPool<T extends StorageRecordPool | TrackingRecordPool>(
+    method: MethodDescriptor<StorageRecordPoolRequest, T>,
+    request: StorageRecordPoolRequest,
+    height: number,
+    context: RequestContext | undefined,
+  ): Promise<T> {
     try {
-      const response = await this.#api.call(getStorageRecordPoolMethod, request, context);
+      const response = await this.#api.call(method, request, context);
+      const levels = canopyLevels(request.openings, height);
       if (
         !equalBytes(response.root.root, request.expectedRoot) ||
         response.records.length < 1 ||
         response.records.length > request.openings ||
-        response.canopy.length !== QUAD_ARITY ** canopyLevels(request.openings, QUAD_HEIGHT) ||
-        response.subjects.length !== request.members.length
+        response.canopy.length !== QUAD_ARITY ** levels ||
+        response.subjects.length !== request.members.length ||
+        response.subjects.some((index) => index >= response.records.length) ||
+        response.records.some(({ path }) => path.siblings.length !== height - levels)
       )
-        throw new ClientError("CLIENT_INVALID_RPC_RESPONSE", { details: { method, path: "$" } });
+        throw new ClientError("CLIENT_INVALID_RPC_RESPONSE", {
+          details: { method: method.name, path: "$" },
+        });
       return response;
     } catch (cause) {
-      throw ringIndexerError(cause, method);
+      throw ringIndexerError(cause, method.name);
     }
   }
 }

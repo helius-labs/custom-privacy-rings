@@ -84,6 +84,8 @@ import {
   ZERO_ADDRESS,
 } from "./expected.js";
 
+import { mintInputSpends } from "./mint-inputs.js";
+
 const base58 = getBase58Decoder();
 const VERIFIED = Symbol("verified relay message");
 
@@ -287,7 +289,8 @@ function checkFrame(
   const { layout } = decoded;
   switch (expected.kind) {
     case "funder":
-      return checkFunder(expected, frame, envelope, decoded);
+      checkFunder(expected, frame, envelope, decoded);
+      break;
     case "delegate":
       checkMoved(expected, frame, decoded);
       return checkSoleSigner(
@@ -299,13 +302,24 @@ function checkFrame(
       return checkCoSigner(expected, frame, envelope, decoded);
     case "publicOwner": {
       checkOpenings(expected, frame, decoded);
-      return checkSoleSigner(
-        envelope,
-        decoded,
-        slotsNaming(decoded, envelope.signer, layout.owners),
-      );
+      checkSoleSigner(envelope, decoded, slotsNaming(decoded, envelope.signer, layout.owners));
+      break;
     }
   }
+  const settlements = decoded.legs.map(({ transfer, accounts: { start } }) => {
+    const asset = accounts[start + (mintAccountPosition(transfer) ?? 0)]?.address;
+    const user = accounts[start + (isSolLeg(transfer) ? 1 : 3)]?.address;
+    if (asset === undefined || user === undefined) throw mismatch("Accounts");
+    return { asset, user };
+  });
+  const hash = withMismatch("Data", () =>
+    RingTransactData.externalDataHash(
+      frame,
+      { auditorPubkey: expected.ringPolicy.auditorPublicKey.toBytes() },
+      settlements,
+    ),
+  );
+  if (!equalBytes(expected.terms.externalDataHash, hash)) throw mismatch("Data");
 }
 
 /** The proof binds each record to its slot under the key the frame publishes. */
@@ -320,8 +334,16 @@ function checkMoved(
   if (frame.hasData || frame.ringData) throw mismatch("Data");
   checkLegs(expected.withdrawals, decoded.legs, decoded.accounts);
   // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
-  const spends = expected.allowed?.checkSpends(envelope.realInputs, frame.nullifiers);
+  const allowedSpends = expected.allowed?.checkSpends(envelope.realInputs, frame.nullifiers);
   const records = frameRecords(expected.txViewingKey, frame, recipientKeys);
+  if (
+    (decoded.layout.mint === undefined
+      ? undefined
+      : decoded.accounts[decoded.layout.mint]?.address) !== expected.mint
+  )
+    throw mismatch("Accounts");
+  const spends =
+    allowedSpends ?? mintInputSpends({ expected, frame, records, realInputs: envelope.realInputs });
   // 3. Each live record pays one requested payment or returns change to a requested source,
   // sealed to that owner's viewing key so the owner can open it. A ring output's record names no
   // nonzero key, the rebuilt commitment alone binds the output to the owner's nullifier key.
@@ -345,6 +367,7 @@ function checkMoved(
   const unpaid = [...expected.payments];
   records.forEach((record, slot) => {
     if (record.kind === RecordKind.dummy) return;
+    if (expected.mint !== undefined && record.mint !== expected.mint) throw mismatch("Recipients");
     const output = frame.outputs[slot];
     const sealedTo = (owner: ExpectedOwner): boolean =>
       (record.kind === RecordKind.exit ||
@@ -370,7 +393,7 @@ function checkMoved(
         ? expected.sources.find((owner) => owns(owner, record) && sealedTo(owner))
         : undefined;
     if (source === undefined) throw mismatch("Recipients");
-    spends?.debit(source, record.mint, record.amount);
+    spends.debit(source, record.mint, record.amount);
     // An anonymous source finds its change by the note it spent.
     if (anonymous) return;
     // A confidential source finds its change by the tag.
@@ -378,8 +401,7 @@ function checkMoved(
       throw mismatch("Recipients");
   });
   if (unpaid.length !== 0) throw mismatch("Recipients");
-  // 4. A mint's permanent delegate holds no notes to weigh the change against.
-  spends?.checkChange();
+  spends.checkChange();
 }
 
 /** Rust `swap_remove`, the order decides the equal payment a later record takes. */

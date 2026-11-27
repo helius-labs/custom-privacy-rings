@@ -10780,6 +10780,7 @@ dependencies = [
  "solana-keypair",
  "solana-message",
  "solana-program-error",
+ "solana-rpc-client",
  "solana-rpc-client-api",
  "solana-sdk-ids",
  "solana-signature",

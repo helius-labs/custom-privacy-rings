@@ -3,7 +3,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use sea_orm::{ConnectionTrait, DatabaseTransaction, DbErr, QueryResult, Value};
 use solana_address::Address;
 
-use crate::cosign::{AssetFlow, CoSignSettlement, OwnerFlow, Ticket};
+use crate::{
+    cosign::{AssetFlow, CoSignError, CoSignSettlement, OwnerFlow, Ticket},
+    error::RingCosignerError,
+};
 use ring_service_core::sql::{self, placeholders, read_address, read_bytes, read_integer};
 
 #[path = "cosign_window_index.rs"]
@@ -83,12 +86,17 @@ pub(crate) struct WalletSend {
     pub expired_slot: Option<u64>,
 }
 
-/// One row per nullifier, a second live reservation of a spent input cannot commit.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct WalletInputs {
+    pub nullifiers: Vec<[u8; 32]>,
+    pub funding_accounts: BTreeSet<Address>,
+}
+
 pub(crate) struct TrackSend<'a> {
     pub ticket: &'a Ticket,
     pub ring: &'a Address,
     pub last_valid_block_height: u64,
-    pub nullifiers: &'a [[u8; 32]],
+    pub inputs: &'a WalletInputs,
 }
 
 struct Reservation {
@@ -285,6 +293,21 @@ impl<C: ConnectionTrait> UsageLedger<'_, C> {
         .collect()
     }
 
+    pub(crate) async fn funding_accounts(
+        &self,
+        ticket: &Ticket,
+    ) -> Result<BTreeSet<Address>, DbErr> {
+        sql::Query::new(
+            "SELECT account FROM cosign_wallet_funding_accounts WHERE ticket=$1",
+            vec![ticket_value(ticket)],
+        )
+        .all(self.conn)
+        .await?
+        .iter()
+        .map(|row| read_address(row, "account"))
+        .collect()
+    }
+
     /// Keeps the first slot it reads, a later tick never moves the proof of expiry.
     pub(crate) async fn mark_expired(&self, ticket: &Ticket, slot: u64) -> Result<(), DbErr> {
         sql::Query::new("UPDATE cosign_wallet_sends SET expired_slot=$2 WHERE ticket=$1 AND expired_slot IS NULL", vec![ticket_value(ticket), sql::integer(slot)?]).execute(self.conn)
@@ -370,7 +393,7 @@ impl UsageLedger<'_, DatabaseTransaction> {
         Ok(())
     }
 
-    pub async fn track(&self, send: TrackSend<'_>) -> Result<(), DbErr> {
+    pub async fn track(&self, send: TrackSend<'_>) -> Result<(), RingCosignerError> {
         sql::Query::new(
             "INSERT INTO cosign_wallet_sends(ticket,ring,last_valid_block_height) VALUES($1,$2,$3)",
             vec![
@@ -381,7 +404,18 @@ impl UsageLedger<'_, DatabaseTransaction> {
         )
         .execute(self.conn)
         .await?;
-        for nullifier in send.nullifiers {
+        for account in &send.inputs.funding_accounts {
+            let claimed = sql::Query::new(
+                "INSERT INTO cosign_wallet_funding_accounts(ring,account,ticket) VALUES($1,$2,$3) ON CONFLICT(ring,account) DO NOTHING",
+                vec![address_value(send.ring), address_value(account), ticket_value(send.ticket)],
+            )
+            .execute(self.conn)
+            .await?;
+            if claimed == 0 {
+                return Err(CoSignError::InputReserved.into());
+            }
+        }
+        for nullifier in &send.inputs.nullifiers {
             sql::Query::new(
                 "INSERT INTO cosign_wallet_inputs(ring,nullifier,ticket) VALUES($1,$2,$3)",
                 vec![

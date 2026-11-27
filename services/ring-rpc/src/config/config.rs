@@ -26,8 +26,8 @@ use ring_service_core::{
     database::is_memory_url,
     keys::KeySource,
     keys::{GrantRowsSecret, RootSecret},
-    kms::{KmsArgs, MissingRegion},
-    origins::{loopback_url, OriginTransport},
+    kms::{KmsArgs, KmsNetwork, MissingRegion, RemoteCluster},
+    origins::OriginTransport,
 };
 use ring_writer::record_update::ReaderGrantStore;
 
@@ -235,8 +235,8 @@ pub enum CustodyConfigError {
     MissingRegion(#[from] MissingRegion),
     #[error("only a single ring auditor requires a ring program ID")]
     AuditorRing,
-    #[error("local KMS requires a loopback bind address and Solana RPC URL")]
-    RemoteCluster,
+    #[error(transparent)]
+    RemoteCluster(#[from] RemoteCluster),
     #[error("the store URL names an in-memory SQLite database")]
     MemoryStore,
     #[error("the store and its storage authority must be configured together")]
@@ -400,11 +400,11 @@ impl ServeArgs {
         json: &str,
         endpoint: &KmsEndpoint,
     ) -> Result<RpcCustody, CustodyConfigError> {
-        if matches!(endpoint, KmsEndpoint::Localnet(_))
-            && !(self.bind.is_loopback() && loopback_url(&self.rpc_url))
-        {
-            return Err(CustodyConfigError::RemoteCluster);
-        }
+        let network = KmsNetwork {
+            bind: self.bind,
+            rpc_url: &self.rpc_url,
+        };
+        network.check(endpoint)?;
         let manifest: RpcCustody = serde_json::from_str(json)?;
         self.validate(&manifest)?;
         Ok(manifest)
@@ -818,7 +818,7 @@ mod tests {
                 drop(checked.expect("a loopback deployment"));
             } else {
                 assert!(
-                    matches!(checked, Err(CustodyConfigError::RemoteCluster)),
+                    matches!(checked, Err(CustodyConfigError::RemoteCluster(_))),
                     "{flags:?}"
                 );
             }

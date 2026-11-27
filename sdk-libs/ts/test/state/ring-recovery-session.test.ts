@@ -169,9 +169,12 @@ describe("durable recovery", () => {
     const document = held.toJson();
     await expect(held.takeRequestTag(bob.keys)).rejects.toThrow("RING_SCAN_HISTORY_CHANGED");
     await expect(held.takeTransferTags(bob.keys)).rejects.toThrow("RING_SCAN_HISTORY_CHANGED");
-    expect(() => held.updateHistory(held.history().withRequestCount(5n))).toThrow(
-      "RING_SCAN_HISTORY_CHANGED",
-    );
+    expect(() =>
+      held.updateHistory({
+        expected: held.history(),
+        updated: held.history().withRequestCount(5n),
+      }),
+    ).toThrow("RING_SCAN_HISTORY_CHANGED");
     expect(held.toJson()).toBe(document);
     const restored = await complete(sync, source, held);
     await restored.takeRequestTag(bob.keys);

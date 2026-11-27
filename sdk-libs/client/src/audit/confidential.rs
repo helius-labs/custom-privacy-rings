@@ -8,7 +8,7 @@ use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{AsyncRpc, IndexerRpcConfig, OutputSlot};
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
-use spr_keypair::viewing_key::ViewTag;
+use spr_keypair::{viewing_key::ViewTag, X25519Pubkey};
 use spr_transaction::{
     verify_owned, DecryptionResult, OwnedUtxos, ShieldedKeys, ShieldedTransaction, WalletUtxo,
 };
@@ -27,7 +27,7 @@ use crate::{
     merge_audit::RingMergeBody,
     tags::IndexerReads,
     viewing_history::ViewingHistory,
-    AnonymousError,
+    AnonymousError, FinalizedTransactionOrigin, RingWalletSources,
 };
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -65,12 +65,14 @@ pub struct RingConfidentialScan<'a, K: ?Sized> {
 #[derive(Clone, Copy)]
 struct Listed {
     entry: usize,
-    stream: Option<(ViewTagStream, u64)>,
+    stream: ViewTagStream,
+    index: u64,
 }
 
 #[derive(Default)]
 struct Listing {
-    tags: HashMap<ViewTag, Listed>,
+    tags: HashMap<(X25519Pubkey, ViewTag), Listed>,
+    opened: HashSet<(X25519Pubkey, ViewTag)>,
     bounds: HashMap<(usize, ViewTagStream), u64>,
 }
 
@@ -112,13 +114,13 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
     }
 
     /// A sync from no stored state, for a caller that keeps no ledger between reads.
-    pub async fn fetch<I: AsyncRpc + ?Sized>(
+    pub async fn fetch<I: AsyncRpc + ?Sized, O: FinalizedTransactionOrigin + ?Sized>(
         &self,
-        indexer: &I,
+        sources: &RingWalletSources<'_, I, O>,
         transactions: &[ShieldedTransaction],
     ) -> Result<RingConfidentialNotes, AnonymousError> {
         let mut wallet = AnonymousWallet::new(self.unread_history()?);
-        let scan = self.sync(indexer, &wallet, transactions).await?;
+        let scan = self.sync(sources, &wallet, transactions).await?;
         let unknown_mints = scan.decrypted().unknown_mints.clone();
         wallet.absorb(scan)?;
         let RingOwnedUtxos {
@@ -134,19 +136,21 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
     }
 
     /// Reads from `wallet`'s committed tag positions, `transactions` open again on every call.
-    pub async fn sync<I: AsyncRpc + ?Sized>(
+    pub async fn sync<I: AsyncRpc + ?Sized, O: FinalizedTransactionOrigin + ?Sized>(
         &self,
-        indexer: &I,
+        sources: &RingWalletSources<'_, I, O>,
         wallet: &AnonymousWallet,
         transactions: &[ShieldedTransaction],
     ) -> Result<ScanCommit, AnonymousError> {
-        let mut reads = IndexerReads::configured(indexer, self.config);
+        let mut reads = IndexerReads::configured(sources.indexer, self.config);
         let mut history = wallet.history().clone();
         // 1. A tag read before returns only rows above its key's position and a tag never read
         // returns all its rows, the ledger holds what earlier rows opened.
-        let tagged = self.read_tags(&mut reads, &mut history).await?;
+        let tagged = self
+            .read_tags(&mut reads, sources.origin, &mut history, transactions)
+            .await?;
         // 2. Every event read so far opens here, later rounds follow only spends.
-        let rows = union_events(transactions, tagged.rows);
+        let rows = tagged.rows;
         let opened = self.open_rows(&rows)?;
         let mut found = Found {
             notes: opened
@@ -198,10 +202,12 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
     }
 
     /// Lists every stream of each held key and reads the tags no earlier round listed, until a round lists none.
-    async fn read_tags<I: AsyncRpc + ?Sized>(
+    async fn read_tags<I: AsyncRpc + ?Sized, O: FinalizedTransactionOrigin + ?Sized>(
         &self,
         reads: &mut IndexerReads<'_, I>,
+        origin: &O,
         history: &mut ViewingHistory,
+        transactions: &[ShieldedTransaction],
     ) -> Result<TagRead, AnonymousError> {
         let held = self.keys.viewing_public_keys();
         // A held key with no entry would read nothing and report nothing missed.
@@ -211,6 +217,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
         let entries: Vec<usize> = (0..history.entries().len())
             .filter(|index| held.contains(&history.entries()[*index].viewing_pubkey()))
             .collect();
+        let mut supplied = Some(transactions);
         let mut listing = Listing::default();
         let mut read = TagRead::default();
         let mut seen = HashSet::new();
@@ -231,10 +238,12 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
                     covered = Some(covered.map_or(slot, |lowest| lowest.min(slot)));
                 }
             }
-            // 2. A tag proves no ownership, a row that opens nothing moves no counter and still joins the rows `sync` opens.
-            for row in rows {
-                if seen.insert(event_identity(&row)) {
-                    self.count(&row, history, &listing, &mut read)?;
+            for mut row in union_events(supplied.take().unwrap_or_default(), rows) {
+                if seen.insert(event_identity(&row))
+                    && self
+                        .count(&mut row, origin, history, &mut listing, &mut read)
+                        .await?
+                {
                     read.rows.push(row);
                 }
             }
@@ -249,14 +258,13 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
     }
 
     /// The tags not listed before, grouped by the slot their read starts after.
-    /// An index within the window of a found one was read through its key's position, the stored state shows no read of any other.
     fn list(
         &self,
-        history: &ViewingHistory,
+        history: &mut ViewingHistory,
         entries: &[usize],
         listing: &mut Listing,
     ) -> Result<BTreeMap<Option<u64>, Vec<ViewTag>>, AnonymousError> {
-        let first = listing.tags.is_empty();
+        let first = listing.bounds.is_empty();
         let mut groups: BTreeMap<Option<u64>, Vec<ViewTag>> = BTreeMap::new();
         let mut requests = Vec::new();
         let mut asked = Vec::new();
@@ -265,13 +273,6 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
             let viewing_pubkey = entry.viewing_pubkey();
             if first {
                 let tag = bootstrap_slot_tag(viewing_pubkey.u());
-                listing.tags.insert(
-                    tag,
-                    Listed {
-                        entry: index,
-                        stream: None,
-                    },
-                );
                 groups.entry(entry.tag_position()).or_default().push(tag);
             }
             for (stream, counter) in entry.streams() {
@@ -303,13 +304,20 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
             let want = usize::try_from(indices.end - indices.start)
                 .map_err(|_| AnonymousError::CounterOverflow)?;
             for (index, tag) in indices.zip(exactly_one_each(tags, want)?) {
-                listing.tags.insert(
-                    tag,
-                    Listed {
-                        entry,
-                        stream: Some((stream, index)),
-                    },
-                );
+                let owner = &mut history.entries_mut()[entry];
+                let key = (owner.viewing_pubkey(), tag);
+                if listing.opened.remove(&key) {
+                    owner.found(stream, index);
+                } else {
+                    listing.tags.insert(
+                        key,
+                        Listed {
+                            entry,
+                            stream,
+                            index,
+                        },
+                    );
+                }
                 groups.entry(position).or_default().push(tag);
             }
         }
@@ -317,47 +325,41 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
     }
 
     /// A counter moves only on a body its tag's listed key rebuilds, a reply is kept only on a body a held key rebuilds.
-    fn count(
+    async fn count<O: FinalizedTransactionOrigin + ?Sized>(
         &self,
-        row: &ShieldedTransaction,
+        row: &mut ShieldedTransaction,
+        origin: &O,
         history: &mut ViewingHistory,
-        listing: &Listing,
+        listing: &mut Listing,
         read: &mut TagRead,
-    ) -> Result<(), AnonymousError> {
-        let streamed = |slot: &OutputSlot| {
-            listing
-                .tags
-                .get(&slot.view_tag)
-                .filter(|listed| listed.stream.is_some())
-        };
-        let opens = row
-            .output_slots
-            .iter()
-            .any(|slot| streamed(slot).is_some() || reply_of(slot).is_some());
-        let Some(ring) = row.ring_program_id.filter(|_| opens) else {
-            return Ok(());
+    ) -> Result<bool, AnonymousError> {
+        let Some(ring) = row.ring_program_id else {
+            return Ok(false);
         };
         let codec = RingNoteCodec {
             ring,
             keys: self.keys,
             assets: self.assets,
         };
-        for opened in codec.opened(row, &self.keys.viewing_public_keys())? {
+        let openings = codec.opened(row, &self.keys.viewing_public_keys())?;
+        if openings.is_empty() {
+            return Ok(false);
+        }
+        crate::origin::verify_finalized_transfer(origin, row)
+            .await
+            .map_err(|error| AnonymousError::WalletOrigin(Box::new(error)))?;
+        for opened in openings {
             let Some(slot) = usize::try_from(opened.slot_index)
                 .ok()
                 .and_then(|position| row.output_slots.get(position))
             else {
                 continue;
             };
-            if let Some(&Listed {
-                entry,
-                stream: Some((stream, index)),
-            }) = streamed(slot)
-            {
-                let entry = &mut history.entries_mut()[entry];
-                if entry.viewing_pubkey() == opened.viewing_pubkey {
-                    entry.found(stream, index);
-                }
+            let key = (opened.viewing_pubkey, slot.view_tag);
+            if let Some(listed) = listing.tags.remove(&key) {
+                history.entries_mut()[listed.entry].found(listed.stream, listed.index);
+            } else {
+                listing.opened.insert(key);
             }
             let Some(sealed) = reply_of(slot) else {
                 continue;
@@ -370,7 +372,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
                 }));
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Rounds of nullifier reads until no unread nullifier of an unspent note remains.
@@ -609,6 +611,10 @@ impl RingMerges {
 }
 
 #[cfg(test)]
+#[path = "../../tests/common/wallet_origin.rs"]
+mod wallet_origin;
+
+#[cfg(test)]
 mod tests {
     use async_trait::async_trait;
     use custom_ring_interface::{RecordForm, RecordKind};
@@ -636,11 +642,8 @@ mod tests {
 
     use spr_transaction::Utxo;
 
-    use super::*;
-    use crate::{
-        viewing_history::{StreamCounter, TAG_WINDOW},
-        NoteState,
-    };
+    use super::{wallet_origin::WalletChain, *};
+    use crate::{viewing_history::TAG_WINDOW, NoteState};
 
     const NOT_IN_FIELD: [u8; 32] = [0xff; 32];
     const RING: Address = Address::new_from_array([0x90; 32]);
@@ -1074,12 +1077,17 @@ mod tests {
     }
 
     /// Stores one sync and returns the unregistered mints it met.
-    async fn absorb_sync<I: AsyncRpc>(
+    async fn absorb_sync(
         scan: &RingConfidentialScan<'_, ShieldedKeypair>,
-        indexer: &I,
+        indexer: &Rows,
         ledger: &mut AnonymousWallet,
     ) -> BTreeSet<Address> {
-        let commit = scan.sync(indexer, ledger, &[]).await.unwrap();
+        let chain = WalletChain(indexer.rows.clone());
+        let sources = RingWalletSources {
+            indexer,
+            origin: &chain,
+        };
+        let commit = scan.sync(&sources, ledger, &[]).await.unwrap();
         let unknown = commit.decrypted().unknown_mints.clone();
         ledger.absorb(commit).unwrap();
         unknown
@@ -1255,8 +1263,26 @@ mod tests {
         let indexer = Rows::of(vec![payment_event(&owner, 0)]);
         let mut stored = ledger(&owner);
         let (first, stale) = (
-            scan.sync(&indexer, &stored, &[]).await.unwrap(),
-            scan.sync(&indexer, &stored, &[]).await.unwrap(),
+            scan.sync(
+                &RingWalletSources {
+                    indexer: &indexer,
+                    origin: &WalletChain(indexer.rows.clone()),
+                },
+                &stored,
+                &[],
+            )
+            .await
+            .unwrap(),
+            scan.sync(
+                &RingWalletSources {
+                    indexer: &indexer,
+                    origin: &WalletChain(indexer.rows.clone()),
+                },
+                &stored,
+                &[],
+            )
+            .await
+            .unwrap(),
         );
         stored.absorb(first).unwrap();
         let committed = stored.clone();
@@ -1272,9 +1298,49 @@ mod tests {
         let (owner, other) = (wallet(7), wallet(8));
         let assets = assets();
         let refused = RingConfidentialScan::new(&owner, &assets)
-            .sync(&Rows::default(), &ledger(&other), &[])
+            .sync(
+                &RingWalletSources {
+                    indexer: &Rows::default(),
+                    origin: &WalletChain(vec![]),
+                },
+                &ledger(&other),
+                &[],
+            )
             .await;
         assert!(matches!(refused, Err(AnonymousError::HeldKeyNotInHistory)));
+    }
+
+    #[tokio::test]
+    async fn a_relabelled_opening_cannot_commit_a_note_or_advance_a_tag() {
+        let owner = wallet(7);
+        let assets = assets();
+        let stored = ledger(&owner);
+        let scan = RingConfidentialScan::new(&owner, &assets);
+        let genuine = payment_event(&owner, 0);
+        let origin = WalletChain(vec![genuine.clone()]);
+        let mut relabelled = genuine.clone();
+        relabelled.output_slots[0].view_tag = owner
+            .view_tags(&[ViewTagRequest {
+                viewing_pubkey: owner.viewing_pubkey(),
+                stream: ViewTagStream::Request,
+                indices: TAG_WINDOW - 1..TAG_WINDOW,
+            }])
+            .unwrap()[0][0];
+        let wrong_index = ShieldedTransaction {
+            event_index: Some(1),
+            ..genuine.clone()
+        };
+        let wrong_signature = ShieldedTransaction {
+            tx_signature: Signature::from([99; 64]),
+            ..genuine
+        };
+        for row in [relabelled, wrong_index, wrong_signature] {
+            let indexer = Rows::of(vec![row]);
+            assert!(matches!(
+                scan.sync(&RingWalletSources { indexer: &indexer, origin: &origin }, &stored, &[]).await,
+                Err(AnonymousError::WalletOrigin(error)) if matches!(*error, crate::AuditError::ConfirmedEventMismatch)
+            ));
+        }
     }
 
     #[tokio::test]
@@ -1286,18 +1352,16 @@ mod tests {
             read: Mutex::default(),
         };
         let mut stored = ledger(&owner);
-        absorb_sync(
-            &RingConfidentialScan::new(&owner, &assets),
-            &indexer,
-            &mut stored,
-        )
-        .await;
-        let counters = stored
-            .history()
-            .current()
-            .streams()
-            .map(|(_, counter)| counter);
-        assert_eq!(counters, [StreamCounter::default(); 2]);
+        let scan = RingConfidentialScan::new(&owner, &assets);
+        let sources = RingWalletSources {
+            indexer: &indexer,
+            origin: &WalletChain(vec![]),
+        };
+        let commit = scan.sync(&sources, &stored, &[]).await.unwrap();
+        stored.absorb(commit).unwrap();
+        let entry = stored.history().current();
+        assert_eq!(entry.tx_count(), 0);
+        assert_eq!(entry.request_count(), 0);
         let highest = owner
             .view_tags(&[ViewTagRequest {
                 viewing_pubkey: owner.viewing_pubkey(),
@@ -1363,10 +1427,16 @@ mod tests {
             )
         };
         assert!(refused(
-            scan.fetch(&indexer, core::slice::from_ref(&payment))
-                .await
-                .err()
-                .unwrap()
+            scan.fetch(
+                &RingWalletSources {
+                    indexer: &indexer,
+                    origin: &WalletChain(indexer.rows.clone())
+                },
+                core::slice::from_ref(&payment)
+            )
+            .await
+            .err()
+            .unwrap()
         ));
         assert!(refused(scan.full_scan(&indexer, RING).await.err().unwrap()));
     }
@@ -1407,7 +1477,10 @@ mod tests {
         let assets = assets();
         let notes = RingConfidentialScan::new(&owner, &assets)
             .fetch(
-                &Rows::of(vec![first.clone(), second]),
+                &RingWalletSources {
+                    indexer: &Rows::of(vec![first.clone(), second.clone()]),
+                    origin: &WalletChain(vec![first.clone(), second]),
+                },
                 core::slice::from_ref(&first),
             )
             .await

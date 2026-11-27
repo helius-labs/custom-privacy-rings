@@ -151,7 +151,7 @@ fn bring_up_workspace(
     for url in services {
         ensure!(
             Urls::is_local(url),
-            "workspace services require a loopback URL, found {url}"
+            "workspace services require a loopback URL"
         );
     }
     let ports = ports(urls)?;

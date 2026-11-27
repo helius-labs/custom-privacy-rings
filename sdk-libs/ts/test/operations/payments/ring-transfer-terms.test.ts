@@ -37,7 +37,7 @@ import {
 import { publishedOutputs } from "../../../src/operations/payments/output-rail.js";
 import { SIZE_PROBE_LIFETIME } from "../../../src/operations/workflow/compile.js";
 import {
-  sealedTransferTerms,
+  sealedRelayTerms,
   stagedLegs,
   type SealedTransfer,
 } from "../../../src/operations/workflow/pipeline.js";
@@ -253,7 +253,7 @@ function termsOfCall(fixture: Fixture, signer: Address): readonly RelayTransferT
   const call = fixture.sppCalls.at(-1);
   if (call === undefined) throw new Error("a frame proved");
   const { proofInputs } = call;
-  return sealedTransferTerms({
+  return sealedRelayTerms({
     ringProgramId: fixture.ringProgramId,
     feePayer: fixture.authority,
     sealed: {
@@ -262,7 +262,7 @@ function termsOfCall(fixture: Fixture, signer: Address): readonly RelayTransferT
     } as unknown as SealedTransfer,
     staged: { ownerSigners: [signer] },
     setup: [],
-  });
+  }).terms;
 }
 
 describe("relay transfer terms", () => {
@@ -477,6 +477,79 @@ describe("relay transfer terms", () => {
     },
   );
 
+  it.each(["confidential", "anonymous"] as const)(
+    "carries a %s spend's deposit and its funder through relay preparation",
+    async (mode) => {
+      const fixture = await ringFixture({ mode });
+      const signing = SigningKey.generate();
+      const sender = ShieldedKeypair.fromKeypair(signing);
+      const payee = ShieldedKeypair.generate();
+      fixture.enroll(sender.shieldedAddress());
+      fixture.enroll(payee.shieldedAddress());
+      const note = noteInput(sender, 10n, fixture.ringProgramId);
+      const build = (funder: Address) => {
+        const transfer = ringSpendTransfer({
+          owner: sender.shieldedAddress(),
+          inputs: [note],
+          feePayer: fixture.authority,
+        });
+        const deposit = { kind: "sol", funder } as const;
+        transfer.deposit(SOL_MINT, 3n, deposit);
+        const ring = CustomRingTransfer.new({
+          ringProgramId: fixture.ringProgramId,
+          keys: walletKeys(sender),
+          transfer,
+          assets,
+          deposits: [deposit],
+        });
+        const relay = {
+          quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+          nullifierKey: sender.nullifierKey(),
+          notes: [noteOf(note, 0)],
+        };
+        if (mode === "anonymous")
+          return signed(
+            ring
+              .withAnonymousSigner(signingKeySpendSigner(signing))
+              .withPayment({
+                to: addressOf(fixture, payee),
+                asset: SOL_MINT,
+                amount: 4n,
+                reply: null,
+              })
+              .prepareRelay(fixture.client, relay),
+          );
+        transfer.send(payee.shieldedAddress(), SOL_MINT, 4n);
+        return ring
+          .withInProofOwner(signingKeySpendSigner(signing))
+          .prepareRelay(fixture.client, relay)
+          .then((request) => request.sign());
+      };
+      const funder = randomAddress();
+      const prepared = await build(funder);
+      const { intent } = prepared.request;
+      if (intent.operation !== mode) throw new Error("unexpected relay rail");
+      const decoded = await decodeRelayProofInputs(
+        new Uint8Array(getBase64Encoder().encode(intent.proofInputs)),
+        assets,
+      );
+      try {
+        expect(decoded.interfaceTransferAccounts).toEqual([{ kind: "sol", recipient: funder }]);
+        const terms = (await pendingOf(prepared)).funderTerms(funder);
+        expect(terms?.externalDataHash).toEqual(decoded.externalData.hash());
+        expect(terms?.legs).toEqual([
+          { direction: "deposit", mint: null, amount: 3n, accounts: [SOL_INTERFACE, funder] },
+        ]);
+      } finally {
+        decoded.txViewingKey.destroy();
+        decoded.nullifierKey.destroy();
+      }
+      await expect(build(fixture.authority)).rejects.toMatchObject({
+        code: "RING_RELAY_FEE_PAYER_FUNDS_DEPOSIT",
+      });
+    },
+  );
+
   it("carries a public co-owner's key across the wire and opens its notes to it", async () => {
     const fixture = await ringFixture({ mode: "anonymous" });
     const signing = SigningKey.generate();
@@ -675,6 +748,7 @@ describe("relay transfer terms", () => {
       {
         leg: { direction: "deposit", mint: null, amount: 5n, accounts: [SOL_INTERFACE, funder] },
         funder,
+        settlement: { kind: "sol", recipient: funder },
       },
       {
         leg: {
@@ -684,6 +758,14 @@ describe("relay transfer terms", () => {
           accounts: [mint, vault, funder, source, program],
         },
         funder,
+        settlement: {
+          kind: "splDeposit",
+          mint,
+          splTokenInterface: vault,
+          tokenAuthority: funder,
+          userTokenAccount: source,
+          tokenProgram: program,
+        },
       },
       {
         leg: {
@@ -692,6 +774,7 @@ describe("relay transfer terms", () => {
           amount: 7n,
           accounts: [SHIELDED_POOL_CPI_AUTHORITY, mint, vault, account, program],
         },
+        settlement: withdrawal,
       },
     ]);
     expect(
@@ -708,6 +791,7 @@ describe("relay transfer terms", () => {
           amount: 7n,
           accounts: [SOL_INTERFACE, recipient],
         },
+        settlement: { kind: "sol", recipient },
       },
     ]);
     for (const staged of [

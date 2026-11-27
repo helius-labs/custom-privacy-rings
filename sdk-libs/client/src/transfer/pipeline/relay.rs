@@ -164,8 +164,9 @@ impl<'t, R: Rail> WalletRelay<'t, R> {
                 .relay_proof_inputs(RelayRail::Confidential, nullifier_key.clone())
                 .token_account_setup(payer, &token_account_setup)?
         };
-        let terms = sealed.transfer_terms(payer, &setup)?;
-        let funders = sealed.funder_terms(payer, &setup)?;
+        let signed = sealed.signer_frame(payer, &setup)?;
+        let terms = sealed.transfer_terms(&signed);
+        let funders = sealed.funder_terms(&signed)?;
         let approval = sealed
             .pipeline
             .approval_blinder
@@ -239,7 +240,7 @@ impl<R: Rail> RingTransfer<R> {
             .ok_or(RingError::NullifierKeyMismatch)?;
         let terms = SealedTerms {
             owners: Vec::new(),
-            funders: sealed.funder_terms(inputs.payer, &[])?,
+            funders: sealed.funder_terms(&sealed.signer_frame(inputs.payer, &[])?)?,
             approval: None,
             charged_outflows: charged_outflows_of(inputs)?,
         };
@@ -313,12 +314,22 @@ impl<P: Planned> Sealed<'_, P> {
             .collect()
     }
 
-    /// One per key funding a deposit leg, a leg the fee payer or a signing owner funds is refused.
-    fn funder_terms(
+    fn signer_frame(
         &self,
         fee_payer: Address,
         setup: &[CreateAssociatedTokenAccount],
-    ) -> Result<Vec<RelayFunderTerms>, RingError> {
+    ) -> Result<SignerFrame, RingError> {
+        Ok(SignerFrame {
+            fee_payer,
+            external_data_hash: Hash(self.pipeline.staged.proof_inputs.external_data.hash()?),
+            slots: self.sealed_slots()?,
+            legs: self.public_legs()?,
+            setup: token_account_creates(setup),
+        })
+    }
+
+    /// One per key funding a deposit leg, a leg the fee payer or a signing owner funds is refused.
+    fn funder_terms(&self, frame: &SignerFrame) -> Result<Vec<RelayFunderTerms>, RingError> {
         let staged = &self.pipeline.staged;
         let transfers = &staged.proof_inputs.external_data.interface_transfers;
         let mut funders: Vec<Address> = Vec::new();
@@ -326,7 +337,7 @@ impl<P: Planned> Sealed<'_, P> {
             let Some(funder) = deposit_funder(&transfer.interface_transfer(), accounts) else {
                 continue;
             };
-            if funder == fee_payer || staged.owner_signers.contains(&funder) {
+            if funder == frame.fee_payer || staged.owner_signers.contains(&funder) {
                 return Err(RingError::RelayFeePayerFundsDeposit);
             }
             if !funders.contains(&funder) {
@@ -334,63 +345,55 @@ impl<P: Planned> Sealed<'_, P> {
             }
         }
         let ring = self.pipeline.ring.program_id();
-        let slots: Vec<SlotCommitment> = self
-            .sealed_slots()?
-            .into_iter()
-            .map(|slot| slot.published)
-            .collect();
-        let legs = self.public_legs()?;
-        let setup = token_account_creates(setup);
         Ok(funders
             .into_iter()
             .map(|funder| RelayFunderTerms {
                 ring: SerializablePubkey(ring),
-                fee_payer: SerializablePubkey(fee_payer),
+                fee_payer: SerializablePubkey(frame.fee_payer),
                 signer: SerializablePubkey(funder),
-                slots: slots.clone(),
-                legs: legs.clone(),
-                setup: setup.clone(),
+                external_data_hash: frame.external_data_hash.clone(),
+                slots: frame
+                    .slots
+                    .iter()
+                    .map(|slot| slot.published.clone())
+                    .collect(),
+                legs: frame.legs.clone(),
+                setup: frame.setup.clone(),
             })
             .collect())
     }
 
     /// One per public owner, every published slot and its own notes.
-    fn transfer_terms(
-        &self,
-        fee_payer: Address,
-        setup: &[CreateAssociatedTokenAccount],
-    ) -> Result<Vec<RelayTransferTerms>, RingError> {
+    fn transfer_terms(&self, frame: &SignerFrame) -> Vec<RelayTransferTerms> {
         let staged = &self.pipeline.staged;
         let inputs = &staged.proof_inputs;
         let ring = self.pipeline.ring.program_id();
-        let setup = token_account_creates(setup);
-        let legs = self.public_legs()?;
-        let slots: Vec<SlotOpening> = self
-            .sealed_slots()?
-            .into_iter()
-            .map(|slot| slot.opening)
-            .collect();
-        Ok(staged
+        staged
             .owner_signers
             .iter()
             .map(|signer| {
                 let key = PublicKey::from_ed25519(signer.as_array());
                 RelayTransferTerms {
                     ring: SerializablePubkey(ring),
-                    fee_payer: SerializablePubkey(fee_payer),
+                    fee_payer: SerializablePubkey(frame.fee_payer),
                     signer: SerializablePubkey(*signer),
-                    slots: slots.clone(),
+                    external_data_hash: frame.external_data_hash.clone(),
+                    slots: frame
+                        .slots
+                        .iter()
+                        .map(|slot| slot.opening.clone())
+                        .collect(),
                     nullifiers: inputs
                         .input_utxos
                         .iter()
                         .filter(|input| input.is_note() && input.utxo.owner == key)
                         .map(|input| Hash(input.nullifier()))
                         .collect(),
-                    legs: legs.clone(),
-                    setup: setup.clone(),
+                    legs: frame.legs.clone(),
+                    setup: frame.setup.clone(),
                 }
             })
-            .collect())
+            .collect()
     }
 
     fn relay_proof_inputs(&self, rail: RelayRail, nullifier_key: NullifierKey) -> RelayProofInputs {
@@ -422,6 +425,14 @@ impl<P: Planned> Sealed<'_, P> {
             approval_blinder: self.pipeline.approval_blinder,
         }
     }
+}
+
+struct SignerFrame {
+    fee_payer: Address,
+    external_data_hash: Hash,
+    slots: Vec<SealedSlot>,
+    legs: Vec<PublicLeg>,
+    setup: Vec<TokenAccountCreate>,
 }
 
 struct SealedSlot {

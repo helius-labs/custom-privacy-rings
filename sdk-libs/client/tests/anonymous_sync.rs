@@ -1,5 +1,8 @@
 //! `AnonymousSync` and the tag sync against an in-memory indexer, every transfer sealed by the anonymous rail.
 
+#[path = "common/wallet_origin.rs"]
+mod wallet_origin;
+
 #[path = "common/history_page.rs"]
 pub mod history_page;
 #[path = "common/page_window.rs"]
@@ -712,8 +715,16 @@ fn after_slot(history: &ViewingHistory) -> Option<u64> {
 }
 
 async fn tag_sync(indexer: &Indexer, keys: &ShieldedKeypair, wallet: &mut AnonymousWallet) {
+    let origin = wallet_origin::WalletChain(indexer.transactions.lock().unwrap().clone());
     let commit = RingConfidentialScan::new(keys, &assets())
-        .sync(indexer, wallet, &[])
+        .sync(
+            &zolana_ring_client::RingWalletSources {
+                indexer,
+                origin: &origin,
+            },
+            wallet,
+            &[],
+        )
         .await
         .unwrap();
     wallet.absorb(commit).unwrap();
@@ -733,9 +744,13 @@ async fn one_tag_sync_finds_a_bootstrap_payment_a_request_payment_and_the_change
     let carol = Wallet::new(3);
     let mut stored = AnonymousWallet::new(ViewingHistory::new(bob.keys.viewing_pubkey(), 0));
     let request = stored.history().request_tag(&bob.keys).unwrap();
-    stored.update_history(request.history).unwrap();
+    stored
+        .update_history(stored.history().advance_to(request.history))
+        .unwrap();
     let selected = stored.history().select(&bob.keys).unwrap();
-    stored.update_history(selected.history).unwrap();
+    stored
+        .update_history(stored.history().advance_to(selected.history))
+        .unwrap();
     bob.sender_tag = Some(selected.tag.sender());
     let sent = bob.pay(&indexer, &[pay(&carol.address(), 20)]);
     let to_bootstrap = alice.pay(&indexer, &[pay(&bob.address(), 30)]);
@@ -800,12 +815,45 @@ async fn change_under_no_tag_is_found_from_the_row_of_its_own_transaction() {
     let sent = bob.pay(&indexer, &[pay(&carol.address(), 20)]);
     tag_sync(&indexer, &bob.keys, &mut stored).await;
     assert!(held(&stored).is_empty(), "no listed tag names the frame");
+    let origin = wallet_origin::WalletChain(indexer.transactions.lock().unwrap().clone());
     let commit = RingConfidentialScan::new(&bob.keys, &assets())
-        .sync(&indexer, &stored, core::slice::from_ref(&sent))
+        .sync(
+            &zolana_ring_client::RingWalletSources {
+                indexer: &indexer,
+                origin: &origin,
+            },
+            &stored,
+            core::slice::from_ref(&sent),
+        )
         .await
         .unwrap();
     stored.absorb(commit).unwrap();
     assert_eq!(held(&stored), [output(&sent, 0)]);
+}
+
+#[tokio::test]
+async fn a_later_window_recognizes_another_opened_slot_of_the_same_event() {
+    let indexer = Indexer::default();
+    let mut sender = Wallet::new(1);
+    let recipient = Wallet::new(2);
+    let address = recipient.address();
+    let payment = |index| Pay {
+        to: &address,
+        amount: 10,
+        tag: Some(
+            recipient
+                .keys
+                .get_recipient_request_view_tag(index)
+                .unwrap(),
+        ),
+    };
+    sender.pay(&indexer, &[payment(63), payment(127)]);
+    sender.pay(&indexer, &[payment(191)]);
+    let mut restored =
+        AnonymousWallet::new(ViewingHistory::new(recipient.keys.viewing_pubkey(), 0));
+    tag_sync(&indexer, &recipient.keys, &mut restored).await;
+    assert_eq!(restored.history().current().request_count(), 192);
+    assert_eq!(held(&restored).len(), 3);
 }
 
 /// A seed holds no request counter, a restore lists `TAG_WINDOW` requests past the last one it found.
@@ -820,7 +868,9 @@ async fn a_stored_request_counter_finds_a_late_payment_and_a_seed_only_restore_s
     let mut requests = Vec::new();
     for _ in 0..200 {
         let minted = stored.history().request_tag(&bob.keys).unwrap();
-        stored.update_history(minted.history).unwrap();
+        stored
+            .update_history(stored.history().advance_to(minted.history))
+            .unwrap();
         requests.push(minted.tag);
     }
     let to_request = Pay {
@@ -836,7 +886,9 @@ async fn a_stored_request_counter_finds_a_late_payment_and_a_seed_only_restore_s
     tag_sync(&indexer, &bob.keys, &mut restored).await;
     assert!(held(&restored).is_empty());
     let counted = restored.history().clone().with_request_count(200);
-    restored.update_history(counted).unwrap();
+    restored
+        .update_history(restored.history().advance_to(counted))
+        .unwrap();
     tag_sync(&indexer, &bob.keys, &mut restored).await;
     assert_eq!(held(&restored), [output(&paid, 1)]);
     assert_eq!(indexer.take_ring_pages(), 0);
@@ -888,7 +940,9 @@ async fn a_rotated_wallet_finds_notes_under_both_keys_through_a_restart_and_a_re
         .clone()
         .with_rotated_key(new_address.viewing_pubkey, 1)
         .unwrap();
-    wallet.update_history(rotated).unwrap();
+    wallet
+        .update_history(wallet.history().advance_to(rotated))
+        .unwrap();
     let to_new = alice.pay(&indexer, &[pay(&new_address, 10)]);
     let to_old_again = alice.pay(&indexer, &[pay(&old_address, 7)]);
 
@@ -1067,7 +1121,7 @@ async fn a_crash_on_either_side_of_the_one_write_skips_no_funds() {
 
     // The position alone is refused, its notes unwritten.
     assert!(matches!(
-        wallet.update_history(scan.history().clone()),
+        wallet.update_history(wallet.history().advance_to(scan.history().clone())),
         Err(AnonymousError::ScanProgressMoved)
     ));
 
@@ -1115,7 +1169,9 @@ async fn a_scan_cannot_overwrite_a_later_tag_or_key() {
     for updated in updates {
         let mut wallet = AnonymousWallet::new(history.clone());
         let scan = bob.scan_from(&indexer, wallet.history()).await;
-        wallet.update_history(updated).unwrap();
+        wallet
+            .update_history(wallet.history().advance_to(updated))
+            .unwrap();
         let before = wallet.clone();
         assert!(matches!(
             wallet.absorb(scan),
@@ -1125,12 +1181,32 @@ async fn a_scan_cannot_overwrite_a_later_tag_or_key() {
     }
 }
 
+#[test]
+fn only_one_tag_reservation_can_commit_from_a_shared_snapshot() {
+    let bob = Wallet::new(2);
+    let mut wallet = AnonymousWallet::new(fresh(&bob));
+    let base = wallet.history().clone();
+    let first = base.request_tag(&bob.keys).unwrap();
+    let second = base.request_tag(&bob.keys).unwrap();
+    assert_eq!(first.tag, second.tag);
+    wallet
+        .update_history(base.advance_to(first.history))
+        .unwrap();
+    assert!(matches!(
+        wallet.update_history(base.advance_to(second.history)),
+        Err(AnonymousError::ScanProgressMoved)
+    ));
+    assert_eq!(wallet.history().current().request_count(), 1);
+}
+
 #[tokio::test]
 async fn a_tag_counter_update_keeps_the_stored_progress() {
     let bob = Wallet::new(2);
     let mut wallet = AnonymousWallet::new(fresh(&bob));
     let advanced = wallet.history().request_tag(&bob.keys).unwrap().history;
-    wallet.update_history(advanced.clone()).unwrap();
+    wallet
+        .update_history(wallet.history().advance_to(advanced.clone()))
+        .unwrap();
     assert_eq!(*wallet.history(), advanced);
     assert_eq!(wallet.history().current().request_count(), 1);
 }
@@ -2647,7 +2723,9 @@ async fn canonical_scan_refuses_a_stale_wallet_revision() {
         .unwrap();
     let before = wallet.to_json();
     wallet.resolve_pending(&assets());
-    wallet.update_history(wallet.history().clone()).unwrap();
+    wallet
+        .update_history(wallet.history().advance_to(wallet.history().clone()))
+        .unwrap();
     assert_eq!(wallet.to_json(), before);
     let history = wallet.history().clone();
     wallet.resolve_pending(&RingAssets::new([unknown]).unwrap());

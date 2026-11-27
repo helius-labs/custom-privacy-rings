@@ -37,7 +37,7 @@ pub fn run(ctx: &Context, args: AddressArgs) -> Result<()> {
                     tag = Some(minted.tag);
                     history = minted.history;
                 }
-                wallet.update_history(history)?;
+                wallet.update_history(wallet.history().advance_to(history))?;
                 Ok(tag)
             })?
     };

@@ -203,6 +203,23 @@ pub trait TransactionOrigin: Sync {
     ) -> impl Future<Output = Result<RingOrigin, AuditError>> + Send;
 }
 
+pub trait FinalizedTransactionOrigin: TransactionOrigin {}
+
+pub(crate) async fn verify_finalized_transfer(
+    source: &(impl FinalizedTransactionOrigin + ?Sized),
+    row: &mut ShieldedTransaction,
+) -> Result<(), AuditError> {
+    let ring = row
+        .ring_program_id
+        .ok_or(AuditError::ConfirmedEventMismatch)?;
+    let index = row.event_index.ok_or(AuditError::MissingEventIndex)?;
+    let origin = source.origin(row.tx_signature, index, ring).await?;
+    if origin.event.kind() != ConfirmedEventKind::Transfer {
+        return Err(AuditError::ConfirmedEventMismatch);
+    }
+    origin.bind_transaction(row, ring)
+}
+
 /// The trusted event at `event_index` must come from a pool instruction `ring` called directly.
 pub fn ring_event_origin_in(
     groups: &[InstructionGroup],
@@ -475,7 +492,7 @@ fn ring_withdrawals_of(
 #[cfg(all(test, feature = "solana-rpc"))]
 use rpc::{confirmed_origin, confirmed_origin_for};
 #[cfg(feature = "solana-rpc")]
-pub use rpc::{ConfirmedRingOrigins, ORIGIN_TRANSACTION_CONFIG};
+pub use rpc::{ConfirmedRingOrigins, FinalizedRpcOrigin, ORIGIN_TRANSACTION_CONFIG};
 
 #[cfg(feature = "solana-rpc")]
 mod rpc {
@@ -483,6 +500,7 @@ mod rpc {
 
     use solana_address::Address;
     use solana_commitment_config::CommitmentConfig;
+    use solana_rpc_client::nonblocking::rpc_client::RpcClient;
     use solana_rpc_client_api::config::RpcTransactionConfig;
     use solana_signature::Signature;
     use solana_transaction::versioned::TransactionVersion;
@@ -631,6 +649,76 @@ mod rpc {
         AuditError::Unavailable {
             signature,
             message: error.to_string(),
+        }
+    }
+
+    struct CachedOrigins {
+        signature: Signature,
+        ring: Address,
+        events: BTreeMap<u16, RingOrigin>,
+    }
+
+    pub struct FinalizedRpcOrigin<'a> {
+        client: &'a RpcClient,
+        cached: tokio::sync::Mutex<Option<CachedOrigins>>,
+    }
+
+    impl<'a> FinalizedRpcOrigin<'a> {
+        pub fn new(client: &'a RpcClient) -> Self {
+            Self {
+                client,
+                cached: Default::default(),
+            }
+        }
+    }
+
+    impl super::FinalizedTransactionOrigin for FinalizedRpcOrigin<'_> {}
+
+    impl TransactionOrigin for FinalizedRpcOrigin<'_> {
+        async fn origin(
+            &self,
+            signature: Signature,
+            event_index: u16,
+            ring: Address,
+        ) -> Result<RingOrigin, AuditError> {
+            if let Some(cached) = self
+                .cached
+                .lock()
+                .await
+                .as_ref()
+                .filter(|cached| cached.signature == signature && cached.ring == ring)
+            {
+                return cached
+                    .events
+                    .get(&event_index)
+                    .cloned()
+                    .ok_or(AuditError::ConfirmedEventMismatch);
+            }
+            let config = RpcTransactionConfig {
+                commitment: Some(CommitmentConfig::finalized()),
+                ..ORIGIN_TRANSACTION_CONFIG
+            };
+            let transaction = self
+                .client
+                .get_transaction_with_config(&signature, config)
+                .await
+                .map_err(|error| unavailable(signature, error))?;
+            let events = ConfirmedRingOrigins {
+                signature,
+                transaction,
+                ring,
+            }
+            .read()?;
+            let event = events
+                .get(&event_index)
+                .cloned()
+                .ok_or(AuditError::ConfirmedEventMismatch)?;
+            *self.cached.lock().await = Some(CachedOrigins {
+                signature,
+                ring,
+                events,
+            });
+            Ok(event)
         }
     }
 

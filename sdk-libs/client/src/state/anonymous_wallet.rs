@@ -399,7 +399,11 @@ impl AnonymousWallet {
     }
 
     /// A tag counter or an added key, a stored position or watermark never moves here.
-    pub fn update_history(&mut self, updated: ViewingHistory) -> Result<(), AnonymousError> {
+    pub fn update_history(&mut self, update: crate::HistoryUpdate) -> Result<(), AnonymousError> {
+        let crate::HistoryUpdate { expected, updated } = update;
+        if expected != self.history {
+            return Err(AnonymousError::ScanProgressMoved);
+        }
         if self.recovery.is_some() && updated != self.history {
             return Err(AnonymousError::RecoveryScopeChanged);
         }

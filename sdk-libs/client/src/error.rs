@@ -292,6 +292,8 @@ pub enum AnonymousError {
     WalletDocument(String),
     #[error("a view tag counter passed u64")]
     CounterOverflow,
+    #[error("wallet event verification failed")]
+    WalletOrigin(#[source] Box<AuditError>),
     #[error("the sender's auditor stream is unavailable")]
     SenderAudit(#[source] Box<AuditError>),
 }

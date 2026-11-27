@@ -8,6 +8,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
         "slots": [
           {
             "slot": 0,
@@ -43,11 +44,53 @@
       "verdict": "Accepted"
     },
     {
+      "name": "changedDeliveryKey",
+      "terms": {
+        "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
+        "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
+        "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
+        "slots": [
+          {
+            "slot": 0,
+            "owner": "AKnL4NNf3DGWZJS6cPknBuEGnVsV4A4m5tgebLHaRSZ9",
+            "nullifierPk": "UYQgm5Z4yJm8BzdUCwRgUMxmSuqrZCqSFWThaiJpjLa",
+            "mint": "11111111111111111111111111111111",
+            "amount": 6,
+            "blinding": "3vmcXdy18DRPY127skpRd8rqDKHPa1mstTHKwz82FvwC",
+            "treeId": 0,
+            "dataHash": "11111111111111111111111111111111",
+            "ringDataHash": "11111111111111111111111111111111",
+            "tag": "111111111111111111111111A65YtL99uES"
+          },
+          {
+            "slot": 1,
+            "owner": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+            "nullifierPk": "ysVXv42W9QAT8MkDV4u9wJQEFVK8MxCi6cea427o3sn",
+            "mint": "11111111111111111111111111111111",
+            "amount": 4,
+            "blinding": "3YwPoJWMNuJs9UcgKtRfcbNFNGy2wwuNH1AwLHkGsyWB",
+            "treeId": 0,
+            "dataHash": "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq",
+            "ringDataHash": "11111111111111111111111111111111",
+            "tag": "1111111111111111111111112xNkqmFirqy"
+          }
+        ],
+        "nullifiers": [],
+        "legs": [],
+        "setup": []
+      },
+      "knownNullifiers": [],
+      "message": "gQIBBwwAAAB7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7e3t7ewELRERERERERERERERERERERERERERERERERERERERERESBOXcOqH0XX1ajVGbDTH7My42KkbTuN6Jd9g9bj8mzlFq3UymuRbG4540ai4ly+DzymrYTo/MPR0tiB2TBjfdxhMjrT3prS/LCe6qS1ICz82tcE2zyvRJbtuJ0/2cfYYQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAy8tXiuYSWBMu6vasEhwKQriKLoT7Eefi1boK/RJzFjKioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKipaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWltbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW1tbW8c1VzBaGinrDypc6yxrfhnYrT/qW5in/447MTAUyD3uaF55Qg2jZ2hcnduRF+sj8ULZyvGJzS9VsGOUghOk/8BcFQAAAAAEBgvhAwoHCAACBQQJAgMBNxEAQQIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAABAAAAAAAAAP/////W9OdhQd4SN/at94h1UhDgloMcua1pIb07rngJH7+Icmi2uDN/5bP4IjxesKTIM28AAAUAG9gGpEJKty0apbKGIoXY5oX5ZRjMSSM6XDVTfgS6mpk2VLpLiizRO23zfDQprVvJp5aF6GF1RO6FHVmy3BS6y911NEnFaks1vyvWcm+DilRN0avxDWi0jIhkfb72VuIUqY58frbgzZSqCYizM6v+enJJy1D9RkaeddsDAau9RZk/v1rNThcBTELDFpwXhXe+otxfmaRdVFd6f3ISrXkAdHXKFKkp+PrcKOaef7jIL5V/iwdHOSUFAAK7TU1jhj2VVpQchPO/1OntJrc7QeaIH3+gCR88p3ELC6/IAP/MLETueeObwqpbDnS78QRq4k5hnHNHpxH6IaGZjAfi0X8PkfTkX0dUl8Y2JRUbsFyfYmH0e1vno4+YURxHESXnlTHnk+Oupc/pv5Z26tXBp2vJtJTjrznmuWyNkqownnoCdmLZ2S1srT82/UcmFzgDmCCzzhLBJSBVMfAHGRZ+H25FurASYD6XIXW1b56XQCZPs89NB95IXIJY94YVDJ0gYXV6HNHuzAd5ULQu4FVaMH1+3PpDP7LqBM4FKYMfIuS+dQZY3mrN7Xst+LTH1aaTj7FQ6cOVTibPhWQ8uINsRNZxJe71ErxceqDn1M2MWEc+VBSy/pqlLJQ+r6OFyC6Exd5X8Y8BGobcBHrNfyEQCn/3AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD6WVMItqJNBTO1SdxqYf8wBoxvc5PknXY74houtSWocAAAAA",
+      "verdict": "Data"
+    },
+    {
       "name": "thief",
       "terms": {
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
         "slots": [
           {
             "slot": 0,
@@ -88,6 +131,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
         "slots": [
           {
             "slot": 0,
@@ -128,6 +172,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse",
+        "externalDataHash": "12XfnmkiS62N5SCMDLtvyMjbdctVzsF3Ema88otcs79w",
         "slots": [
           {
             "slot": 0,
@@ -173,6 +218,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse",
+        "externalDataHash": "12XfnmkiS62N5SCMDLtvyMjbdctVzsF3Ema88otcs79w",
         "slots": [
           {
             "slot": 0,
@@ -218,6 +264,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse",
+        "externalDataHash": "12XfnmkiS62N5SCMDLtvyMjbdctVzsF3Ema88otcs79w",
         "slots": [
           {
             "slot": 0,
@@ -260,6 +307,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "135kzfiDMrYkqudwLdY56q96chX3sR1isDBTy8rLo8Hw",
         "slots": [
           {
             "slot": 0,
@@ -304,6 +352,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "135kzfiDMrYkqudwLdY56q96chX3sR1isDBTy8rLo8Hw",
         "slots": [],
         "nullifiers": [
           "22kBZjo4UUy5NbcXHTw69r1NRpT2gdTFky7qgty5VhRW"
@@ -323,6 +372,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse",
+        "externalDataHash": "14CydtuJkzerLDtkg7ixEh2yjwNPeT61rkzcsRNLmy6N",
         "slots": [
           {
             "slot": 0,
@@ -391,6 +441,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
         "slots": [
           {
             "slot": 0,
@@ -431,6 +482,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
         "slots": [
           {
             "slot": 0,
@@ -471,6 +523,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
         "slots": [
           {
             "slot": 0,
@@ -511,6 +564,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
         "slots": [
           {
             "slot": 0,
@@ -551,6 +605,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
         "slots": [
           {
             "slot": 0,
@@ -591,6 +646,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
         "slots": [
           {
             "slot": 0,
@@ -644,6 +700,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1e8L1MBb2unaFPu6A4Kwtkhk9jgfPo5pjLc2jkk4V4v",
         "slots": [
           {
             "slot": 0,
@@ -697,6 +754,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1384JQT743kpojgwWTPFqA9hNngAdweAKBafVdyrZxdL",
         "slots": [
           {
             "slot": 0,
@@ -747,6 +805,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "1384JQT743kpojgwWTPFqA9hNngAdweAKBafVdyrZxdL",
         "slots": [
           {
             "slot": 0,
@@ -797,6 +856,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "14CefhNFg2UhnvdrW3Sk1CFz1WhS2QvVS38zwNjUcz6y",
         "slots": [
           {
             "slot": 0,
@@ -889,6 +949,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "14CefhNFg2UhnvdrW3Sk1CFz1WhS2QvVS38zwNjUcz6y",
         "slots": [
           {
             "slot": 0,
@@ -981,6 +1042,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "14CefhNFg2UhnvdrW3Sk1CFz1WhS2QvVS38zwNjUcz6y",
         "slots": [
           {
             "slot": 0,
@@ -1073,6 +1135,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "14CefhNFg2UhnvdrW3Sk1CFz1WhS2QvVS38zwNjUcz6y",
         "slots": [
           {
             "slot": 0,
@@ -1165,6 +1228,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "14CefhNFg2UhnvdrW3Sk1CFz1WhS2QvVS38zwNjUcz6y",
         "slots": [
           {
             "slot": 0,
@@ -1257,6 +1321,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "14CefhNFg2UhnvdrW3Sk1CFz1WhS2QvVS38zwNjUcz6y",
         "slots": [
           {
             "slot": 0,
@@ -1349,6 +1414,7 @@
         "ring": "3qbR1eZRqXUWroWKKYhbDmR3FfqTHfqSU8zZSxtANzYh",
         "feePayer": "5bV6jUfhDHCQVA1WfKBUnXUsboJgoKgkzkKcxr3joew5",
         "signer": "9hSR6S7WPtxmTojgo6GG3k4yDPecgJY292j7xrsUGWBu",
+        "externalDataHash": "14CefhNFg2UhnvdrW3Sk1CFz1WhS2QvVS38zwNjUcz6y",
         "slots": [
           {
             "slot": 0,

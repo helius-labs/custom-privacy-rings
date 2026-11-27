@@ -296,7 +296,12 @@ impl<'a> DemoRing<'a> {
                 RingConfidentialScan::new(&sender, &assets)
                     .with_indexer_config(config)
                     .fetch(
-                        self.env.client.as_async().indexer(),
+                        &zolana_ring_client::RingWalletSources {
+                            indexer: self.env.client.as_async().indexer(),
+                            origin: &zolana_ring_client::FinalizedRpcOrigin::new(
+                                self.env.client.rpc().client().get_inner_client(),
+                            ),
+                        },
                         &scan.history.transactions,
                     )
                     .await

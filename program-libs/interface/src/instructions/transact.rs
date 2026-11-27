@@ -535,7 +535,7 @@ impl<'a> Replies<'a> {
     }
 
     fn checked(self, bodies: usize) -> Result<Self, CustomRingError> {
-        if usize::from(self.len).checked_mul(bodies) == Some(self.region.len()) {
+        if bodies != 0 && usize::from(self.len).checked_mul(bodies) == Some(self.region.len()) {
             Ok(self)
         } else {
             Err(CustomRingError::ReplyLength)
@@ -1111,7 +1111,7 @@ impl<'a> FrameExtensions<'a> {
 
     fn read(bytes: &mut Bytes<'a>) -> Result<Self, CustomRingError> {
         let flags = bytes.byte()?;
-        if flags & !extension_flag::KNOWN != 0 {
+        if flags == 0 || flags & !extension_flag::KNOWN != 0 {
             return Err(CustomRingError::FlagNotAllowed);
         }
         let has = |bit: u8| flags & bit != 0;
@@ -1123,6 +1123,9 @@ impl<'a> FrameExtensions<'a> {
             .transpose()?;
         let messages = if has(extension_flag::MESSAGES) {
             let count = usize::from(bytes.byte()?);
+            if count == 0 {
+                return Err(CustomRingError::FlagNotAllowed);
+            }
             check_message_count(count)?;
             // The bump allocator keeps every growth step, so the list takes its exact size once.
             let mut messages = Vec::with_capacity(count);

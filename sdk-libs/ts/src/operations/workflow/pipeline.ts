@@ -41,7 +41,7 @@ import type {
 } from "@heliuslabs/spr/interface";
 import type { RingTransactInstructionData } from "../../protocol/proof/circuit.js";
 import type { ProvenAnonymousRingTransact } from "../../rpc/ports.js";
-import type { ShieldedAddress, ShieldedPublicKey } from "@heliuslabs/spr/keypair";
+import type { ShieldedAddress } from "@heliuslabs/spr/keypair";
 import {
   withdrawalLeg,
   ZERO_ADDRESS,
@@ -152,6 +152,7 @@ import {
   type SealRow,
 } from "./transfer-plan.js";
 import { defined } from "../../protocol/defined.js";
+import type { RelayLegAccounts } from "../../protocol/ring-rpc/relay-proof-inputs.js";
 
 /** The client a ring transfer reads the ring and proves with, every rail adds its SPP prover. */
 export type RingProvingClient = TreeContext &
@@ -395,7 +396,7 @@ export interface SealedTransfer {
   readonly proofInputs: SppProofInputs;
 }
 
-export function sealedTransferTerms(
+export function sealedRelayTerms(
   input: Readonly<{
     ringProgramId: Address;
     feePayer: Address;
@@ -403,65 +404,55 @@ export function sealedTransferTerms(
     staged: Pick<StagedTransfer, "ownerSigners" | "deposits" | "withdrawal">;
     setup: readonly TokenAccountCreate[];
   }>,
-): readonly RelayTransferTerms[] {
-  const { sealed, staged, ringProgramId } = input;
+): Readonly<{
+  terms: readonly RelayTransferTerms[];
+  funders: readonly RelayFunderTerms[];
+  interfaceTransferAccounts: readonly RelayLegAccounts[];
+}> {
+  const { sealed, staged } = input;
   const { proofInputs } = sealed;
-  const legs = Object.freeze(
-    stagedLegs({
-      transfers: proofInputs.externalData.interfaceTransfers,
-      deposits: staged.deposits ?? [],
-      withdrawal: staged.withdrawal,
-    }).map(({ leg }) => leg),
-  );
-  const slots = Object.freeze(sealedSlots(sealed).map(({ opening }) => opening));
-  return staged.ownerSigners.map((signer) => {
-    // A Solana address names a wallet or a PDA alike, a key rebuilt as Ed25519 never equals a PDA owner.
-    const ownedBy = (owner: ShieldedPublicKey): boolean =>
-      equalBytes(owner.confidentialViewTag(), addressBytes(signer));
-    return Object.freeze({
-      ring: ringProgramId,
-      feePayer: input.feePayer,
-      signer,
-      slots,
-      nullifiers: Object.freeze(
-        proofInputs.inputUtxos
-          .filter((spent) => !spent.isDummy() && ownedBy(spent.utxo.owner))
-          .map((spent) => spent.nullifier()),
-      ),
-      legs,
-      setup: input.setup,
-    });
-  });
-}
-
-/** One term per funding key, each naming every published slot and every leg of the frame. */
-export function sealedFunderTerms(
-  input: Readonly<{
-    ringProgramId: Address;
-    feePayer: Address;
-    sealed: SealedTransfer;
-    deposits: readonly TransactDeposit[];
-  }>,
-): readonly RelayFunderTerms[] {
-  const { sealed } = input;
   const run = stagedLegs({
-    transfers: sealed.proofInputs.externalData.interfaceTransfers,
-    deposits: input.deposits,
-    withdrawal: undefined,
+    transfers: proofInputs.externalData.interfaceTransfers,
+    deposits: staged.deposits ?? [],
+    withdrawal: staged.withdrawal,
   });
-  const legs = Object.freeze(run.map(({ leg }) => leg));
-  const slots = Object.freeze(sealedSlots(sealed).map(({ published }) => published));
-  const funders = new Set(run.flatMap(({ funder }) => (funder === undefined ? [] : [funder])));
-  return [...funders].map((signer) =>
-    Object.freeze({
-      ring: input.ringProgramId,
-      feePayer: input.feePayer,
-      signer,
-      slots,
-      legs,
-      setup: [],
-    }),
-  );
+  const fundingKeys = new Set(run.flatMap(({ funder }) => (funder === undefined ? [] : [funder])));
+  if (fundingKeys.has(input.feePayer) || staged.ownerSigners.some((key) => fundingKeys.has(key)))
+    throw new RingError("RING_RELAY_FEE_PAYER_FUNDS_DEPOSIT");
+  const common = {
+    ring: input.ringProgramId,
+    feePayer: input.feePayer,
+    externalDataHash: proofInputs.externalData.hash(),
+    legs: Object.freeze(run.map(({ leg }) => leg)),
+    setup: input.setup,
+  };
+  const slots = sealedSlots(sealed);
+  const openings = Object.freeze(slots.map(({ opening }) => opening));
+  const commitments = Object.freeze(slots.map(({ published }) => published));
+  return {
+    terms: Object.freeze(
+      staged.ownerSigners.map((signer) =>
+        Object.freeze({
+          ...common,
+          signer,
+          slots: openings,
+          nullifiers: Object.freeze(
+            proofInputs.inputUtxos
+              .filter(
+                (input) =>
+                  !input.isDummy() &&
+                  equalBytes(input.utxo.owner.confidentialViewTag(), addressBytes(signer)),
+              )
+              .map((input) => input.nullifier()),
+          ),
+        }),
+      ),
+    ),
+    funders: Object.freeze(
+      [...fundingKeys].map((signer) => Object.freeze({ ...common, signer, slots: commitments })),
+    ),
+    interfaceTransferAccounts: run.map(({ settlement }) => settlement),
+  };
 }
 
 function sealedSlots(sealed: SealedTransfer): readonly Readonly<{
@@ -517,15 +508,30 @@ export function stagedLegs(
     deposits: readonly TransactDeposit[];
     withdrawal: TransactWithdrawal | undefined;
   }>,
-): readonly Readonly<{ leg: PublicLeg; funder?: Address }>[] {
+): readonly Readonly<{ leg: PublicLeg; settlement: RelayLegAccounts; funder?: Address }>[] {
   const deposits = input.deposits[Symbol.iterator]();
   const legs = input.transfers.map((transfer) => {
     if (!transfer.isDeposit) {
       if (input.withdrawal === undefined) throw new RingError("RING_SETTLEMENT_ACCOUNTS_INVALID");
-      return { leg: withdrawalLeg(input.withdrawal, transfer.amount) };
+      return {
+        leg: withdrawalLeg(input.withdrawal, transfer.amount),
+        settlement: input.withdrawal,
+      };
     }
     const { value: deposit } = deposits.next() as IteratorResult<TransactDeposit, undefined>;
     if (deposit === undefined) throw new RingError("RING_SETTLEMENT_ACCOUNTS_INVALID");
+    const funder = signerAddress(deposit.funder);
+    const settlement: RelayLegAccounts =
+      deposit.kind === "sol"
+        ? { kind: "sol", recipient: funder }
+        : {
+            kind: "splDeposit",
+            mint: deposit.mint,
+            splTokenInterface: deposit.splTokenInterface,
+            tokenAuthority: funder,
+            userTokenAccount: deposit.sourceTokenAccount,
+            tokenProgram: deposit.tokenProgram,
+          };
     return {
       leg: Object.freeze({
         direction: "deposit" as const,
@@ -533,7 +539,8 @@ export function stagedLegs(
         amount: transfer.amount,
         accounts: Object.freeze(depositSettlementAccounts(deposit).map((meta) => meta.address)),
       }),
-      funder: signerAddress(deposit.funder),
+      funder,
+      settlement,
     };
   });
   if (deposits.next().done !== true) throw new RingError("RING_SETTLEMENT_ACCOUNTS_INVALID");

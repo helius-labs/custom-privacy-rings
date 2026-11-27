@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Bytes32 } from "@heliuslabs/spr";
 import { SprApi, indexerScalars } from "@heliuslabs/spr/internal";
 
+import { TRACKING_QUAD_HEIGHT } from "../../src/protocol/membership/tracking.js";
 import { QUAD_HEIGHT } from "../../src/protocol/membership/member-registry.js";
 import { RingIndexer } from "../../src/rpc/indexer.js";
 
@@ -52,6 +53,34 @@ describe("ring member registry wire", () => {
       }),
     );
   const zero = new Uint8Array(32) as Bytes32;
+
+  it("checks the tracking pool against the requested root, capacity and members", async () => {
+    const request = { registry: REGISTRY, expectedRoot: zero, members: [zero], openings: 1 };
+    const record = {
+      member: TAG,
+      next: TAG,
+      nullifierPk: TAG,
+      listTag: TAG,
+      viewingHash: TAG,
+      ctHash: TAG,
+    };
+    const entry = { record, path: quadPath(0, TRACKING_QUAD_HEIGHT) };
+    const pool = { root, context: CONTEXT, canopy: [TAG], subjects: [0], records: [entry] };
+    const read = (result: typeof pool) => indexerFor({ result }).getTrackingRecordPool(request);
+    expect((await read(pool)).records).toHaveLength(1);
+    for (const changed of [
+      { root: { ...root, root: OTHER } },
+      { records: [] },
+      { records: [entry, entry] },
+      { records: [{ record, path: quadPath(0, TRACKING_QUAD_HEIGHT - 1) }] },
+      { canopy: [] },
+      { subjects: [] },
+      { subjects: [1] },
+    ])
+      await expect(read({ ...pool, ...changed })).rejects.toMatchObject({
+        code: "CLIENT_INVALID_RPC_RESPONSE",
+      });
+  });
 
   it("refuses an opening under another root or with a field a record no longer holds", async () => {
     const request = {

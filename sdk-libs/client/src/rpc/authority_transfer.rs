@@ -49,6 +49,28 @@ pub struct AuthorityTransfer {
     pub withdrawals: Vec<AuthorityWithdrawal>,
 }
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct MintInputOpening {
+    pub source_index: u16,
+    pub tree_id: u16,
+    pub amount: u64,
+    pub blinding: Hash,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ring_data_hash: Option<Hash>,
+}
+
+zolana_ring_keys::redacted_debug!(MintInputOpening {
+    shown: [source_index, tree_id],
+    hidden: [amount, blinding, ring_data_hash],
+});
+
+impl Drop for MintInputOpening {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.blinding.0);
+    }
+}
+
 impl AuthorityTransfer {
     pub fn mints(&self) -> impl Iterator<Item = Address> + '_ {
         self.payments
@@ -63,7 +85,6 @@ impl AuthorityTransfer {
 #[derive(Clone, PartialEq, Eq)]
 pub struct TxViewingSecret(Zeroizing<[u8; 32]>);
 
-/// `prepareAuthorityTransfer` answers with a `RelayStep::SignMessage` until the delegate signs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PrepareAuthorityTransferRequest {

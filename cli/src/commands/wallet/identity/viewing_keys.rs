@@ -60,7 +60,7 @@ pub fn rotate(ctx: &Context) -> Result<()> {
                 history: wallet.history().clone(),
             }
             .rotate(next, unix_now()?)?;
-            wallet.update_history(rotation.history.clone())?;
+            wallet.update_history(wallet.history().advance_to(rotation.history.clone()))?;
             Ok(rotation)
         })?
     } else {
@@ -73,7 +73,7 @@ pub fn rotate(ctx: &Context) -> Result<()> {
                     .history()
                     .clone()
                     .with_rotated_key(current, unix_now()?)?;
-                wallet.update_history(caught_up)?;
+                wallet.update_history(wallet.history().advance_to(caught_up))?;
             }
             Ok(ViewingRotation {
                 keys,

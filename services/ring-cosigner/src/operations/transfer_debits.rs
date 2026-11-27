@@ -1,7 +1,7 @@
 //! Each owner's outflow of the transfer a co-signer signs, read from the frame and the note index.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ops::Range,
 };
 
@@ -35,6 +35,7 @@ use ring_audit::{
 use crate::{
     cosign::{AssetFlow, CoSignError, FrameSource, OwnerFlow},
     cosign_limits::{FrameRead, TransferRead},
+    cosign_usage::WalletInputs,
     cosigner::{FrameParties, Parties},
     error::RingCosignerError,
 };
@@ -189,7 +190,10 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
         .read(opened.approval_bits)?;
         Ok(FrameRead::Transfer(TransferRead {
             co_signers: opened.co_signers,
-            nullifiers: opened.audited.nullifiers,
+            inputs: WalletInputs {
+                nullifiers: opened.audited.nullifiers,
+                funding_accounts: opened.settlements.funding_accounts,
+            },
             ..read
         }))
     }
@@ -236,7 +240,7 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
                 .iter()
                 .map(|output| member(output.owner))
                 .collect::<Result<_, _>>()?,
-            destinations: opened.withdrawal_accounts,
+            destinations: opened.settlements.withdrawals,
             assets: moved,
         }))
     }
@@ -287,7 +291,7 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
                 .iter()
                 .map(|owner| identity(owner.as_array()))
                 .collect::<Result<_, _>>()?,
-            withdrawal_accounts: frame.withdrawal_accounts(&layout, transfers)?,
+            settlements: frame.settlements(&layout, transfers)?,
             public: fold_public_flows(transfers.iter().copied().zip(mints))?,
             approval_bits: data.approval.bits(),
             hidden_sender: data.authorization != RailAuthorization::ConfidentialSigner,
@@ -302,10 +306,16 @@ struct OpenedFrame {
     co_signers: Vec<Address>,
     owner_signers: Vec<[u8; 32]>,
     public: Vec<PublicFlow>,
-    withdrawal_accounts: Vec<Address>,
+    settlements: PublicAccounts,
     approval_bits: u8,
     /// An input owner signs inside the proof or stays hidden.
     hidden_sender: bool,
+}
+
+#[derive(Default)]
+struct PublicAccounts {
+    funding_accounts: BTreeSet<Address>,
+    withdrawals: Vec<Address>,
 }
 
 impl<'m> RingFrame<'m> {
@@ -390,15 +400,23 @@ impl<'m> RingFrame<'m> {
             .collect()
     }
 
-    /// The settlement group of each withdrawing leg.
-    fn withdrawal_accounts(
+    fn settlements(
         &self,
         layout: &TransferLayout,
         transfers: &[InterfaceTransfer],
-    ) -> Result<Vec<Address>, RingCosignerError> {
-        let mut accounts = Vec::new();
-        for leg in layout.legs(transfers).filter(|leg| leg.funder.is_none()) {
-            accounts.extend_from_slice(self.window(leg.accounts)?);
+    ) -> Result<PublicAccounts, RingCosignerError> {
+        let mut accounts = PublicAccounts::default();
+        for leg in layout.legs(transfers) {
+            match leg.funder {
+                Some(index) => {
+                    let signer = self.accounts.get(index).ok_or_else(unavailable)?;
+                    let [_, source] = leg.asset_and_user(&self.accounts).ok_or_else(unavailable)?;
+                    accounts.funding_accounts.extend([*signer, *source]);
+                }
+                None => accounts
+                    .withdrawals
+                    .extend_from_slice(self.window(leg.accounts)?),
+            }
         }
         Ok(accounts)
     }
@@ -634,7 +652,7 @@ impl FrameFlows<'_> {
             spends_note: !inputs.is_empty(),
             approval_bits: Some(approval_bits),
             co_signers: Vec::new(),
-            nullifiers: Vec::new(),
+            inputs: WalletInputs::default(),
         })
     }
 
@@ -1019,22 +1037,25 @@ mod tests {
             let legs: Vec<_> = layout.legs(transfers).collect();
             assert_eq!(legs.len(), pinned.len(), "{}", case.name);
             let mut withdrawn = Vec::new();
+            let mut funding_accounts = BTreeSet::new();
             for (leg, pinned) in legs.iter().zip(pinned) {
                 let funder = pinned["funder"].as_u64().map(|funder| funder as usize);
                 assert_eq!(leg.accounts, range(&pinned["accounts"]), "{}", case.name);
                 assert_eq!(leg.funder, funder, "{}", case.name);
-                if funder.is_none() {
-                    withdrawn.extend_from_slice(&case.accounts[range(&pinned["accounts"])]);
+                match funder {
+                    Some(index) => {
+                        let user = range(&pinned["accounts"]).start
+                            + if leg.transfer.is_spl() { 3 } else { 1 };
+                        funding_accounts.extend([case.accounts[index], case.accounts[user]]);
+                    }
+                    None => withdrawn.extend_from_slice(&case.accounts[range(&pinned["accounts"])]),
                 }
             }
-            assert_eq!(
-                frame
-                    .withdrawal_accounts(&layout, transfers)
-                    .expect("groups"),
-                withdrawn,
-                "{}",
-                case.name
-            );
+            let accounts = frame
+                .settlements(&layout, transfers)
+                .expect("settlement accounts");
+            assert_eq!(accounts.funding_accounts, funding_accounts, "{}", case.name);
+            assert_eq!(accounts.withdrawals, withdrawn, "{}", case.name);
         }
     }
 

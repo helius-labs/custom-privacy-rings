@@ -832,6 +832,7 @@ mod delegate_message {
         delegate: Address,
         answer: Answer,
         honest: Mutex<Option<Instruction>>,
+        mint_openings: Option<Vec<crate::rpc::MintInputOpening>>,
         submitted: Mutex<Vec<SubmitRelayRequest>>,
     }
 
@@ -863,6 +864,7 @@ mod delegate_message {
                 delegate,
                 answer,
                 honest: Mutex::new(None),
+                mint_openings: None,
                 submitted: Mutex::new(Vec::new()),
             }
         }
@@ -1114,9 +1116,14 @@ mod delegate_message {
                 .await?;
             let message = self.answer.message(&honest, self.delegate);
             *self.honest.lock().unwrap() = Some(honest);
-            Ok(RelayStep::SignMessage {
-                relay_id: request.relay_id()?,
-                message,
+            let relay_id = request.relay_id()?;
+            Ok(match &self.mint_openings {
+                Some(openings) => RelayStep::SignMintTransfer {
+                    relay_id,
+                    message,
+                    input_openings: openings.clone(),
+                },
+                None => RelayStep::SignMessage { relay_id, message },
             })
         }
 
@@ -1847,7 +1854,10 @@ mod delegate_message {
         };
         config.delegate = Some(Address::new_from_array([8; 32]));
         let records_only = expected(&config, DelegateRequester::Mint(Mint::SOL.asset)).unwrap();
-        assert!(records_only.check(&message.0).is_ok());
+        assert_eq!(
+            records_only.check(&message.0).map(drop),
+            Err(MessageMismatch::Accounts)
+        );
         assert!(matches!(
             expected(
                 &config,
@@ -1864,6 +1874,164 @@ mod delegate_message {
             expected(&config, DelegateRequester::Ring(allowed)),
             Err(RingError::MissingDelegate)
         ));
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct MintMessageVector {
+        ring_policy: String,
+        request: DelegateRequest,
+        step: RelayStep,
+    }
+
+    #[tokio::test]
+    async fn a_mint_delegate_signs_only_the_selected_sources_openings() {
+        use zolana_ring_transaction::ClassifiedInput;
+        let issuer = keypair(7);
+        let source = keypair(1);
+        let other = keypair(3);
+        let mut relay = DelegateRelay::new(Answer::Honest, issuer.pubkey());
+        let chain = Chain::ring(RingSettings {
+            has_policy: true,
+            ..RingSettings::new(RingMode::Confidential)
+        })
+        .with_registry(
+            Registry::new(&[(&source, 1), (&keypair(2), 1), (&other, 1)])
+                .with_mint(USDC.asset, Default::default()),
+            &pipeline_rules(),
+        )
+        .with(
+            USDC.asset,
+            crate::tests::support::permanent_delegate_mint(issuer.pubkey()),
+        );
+        relay.client = chain.client();
+        let mut tagged = ring_utxo(&source, USDC, 4, 1);
+        let ring_data_hash = [7; 32];
+        tagged.utxo_hash = tagged
+            .utxo
+            .hash(
+                &tagged.nullifier_pubkey,
+                &[0; 32],
+                &ring_data_hash,
+                tagged.tree_id,
+            )
+            .unwrap();
+        tagged.nullifier = source
+            .nullifier_key
+            .nullifier(&tagged.utxo_hash, &tagged.utxo.blinding)
+            .unwrap();
+        tagged.ring_data_hash = Some(ring_data_hash);
+        let notes = [ring_utxo(&source, USDC, 3, 0), tagged];
+        relay.members = vec![(source.clone(), notes.to_vec()), (other.clone(), vec![])];
+        let mut asked = request(issuer.pubkey());
+        asked.transfer.sources.push(SerializableShieldedAddress(
+            other.shielded_address().unwrap(),
+        ));
+        asked.transfer.payments[0].mint = USDC.asset.into();
+        asked.transfer.payments[0].amount = 6;
+        let config = ring().require_config(relay.client.zolana()).await.unwrap();
+        let proof_inputs = relay
+            .seal(&asked.transfer, &asked.tx_viewing_key)
+            .await
+            .unwrap();
+        let openings: Vec<_> = proof_inputs
+            .inputs
+            .iter()
+            .filter(|input| input.is_note())
+            .map(|input| {
+                let note = notes
+                    .iter()
+                    .find(|note| note.nullifier == input.nullifier())
+                    .unwrap();
+                crate::rpc::MintInputOpening {
+                    source_index: 0,
+                    tree_id: note.tree_id,
+                    amount: note.utxo.amount,
+                    blinding: spr_indexer_api::Hash(note.utxo.blinding),
+                    ring_data_hash: note.ring_data_hash.map(spr_indexer_api::Hash),
+                }
+            })
+            .collect();
+        let prepare = || {
+            RequestedAuthorityTransfer {
+                requester: DelegateRequester::Mint(USDC.asset),
+                request: asked.clone(),
+                quote: &quote(),
+                output_tree_id: crate::tests::support::TREE_ID,
+                config: &config,
+            }
+            .prepare()
+            .unwrap()
+        };
+        relay.mint_openings = Some(openings.clone());
+        let RelaySent::SignMessage(pending) = prepare().send(&relay).await.unwrap() else {
+            panic!("mint signature")
+        };
+        pending.sign(&relay, &issuer).await.unwrap();
+        let vector = pinned_vector(
+            "relay_mint_message.json",
+            MintMessageVector {
+                ring_policy: crate::tests::support::policy_hex(&config),
+                request: DelegateRequest {
+                    prepare: asked.clone(),
+                    fee_payer: FEE_PAYER.into(),
+                    auditor: Base64String(config.auditor_pubkey.as_bytes().to_vec()),
+                },
+                step: RelayStep::SignMintTransfer {
+                    relay_id: asked.relay_id().unwrap(),
+                    message: Base64String(pending.message().to_vec()),
+                    input_openings: openings.clone(),
+                },
+            },
+        );
+        let RelayStep::SignMintTransfer {
+            message,
+            input_openings,
+            ..
+        } = vector.step
+        else {
+            panic!("mint openings")
+        };
+        let mut expected = ExpectedDelegate::new(&RequestedAuthorityTransfer {
+            requester: DelegateRequester::Mint(USDC.asset),
+            request: vector.request.prepare,
+            quote: &quote(),
+            output_tree_id: crate::tests::support::TREE_ID,
+            config: &config,
+        })
+        .unwrap();
+        expected.input_openings = input_openings;
+        assert_eq!(expected.check(&message.0).map(drop), Ok(()));
+        let mut wrong_source = openings.clone();
+        wrong_source[0].source_index = 1;
+        let mut wrong_tree = openings.clone();
+        wrong_tree[0].tree_id += 1;
+        let mut dropped_hash = openings.clone();
+        for opening in &mut dropped_hash {
+            opening.ring_data_hash = None;
+        }
+        let mut reordered = openings.clone();
+        reordered.reverse();
+        for refused in [
+            None,
+            Some(Vec::new()),
+            Some(wrong_source),
+            Some(wrong_tree),
+            Some(dropped_hash),
+            Some(reordered),
+        ] {
+            relay.mint_openings = refused;
+            let RelaySent::SignMessage(pending) = prepare().send(&relay).await.unwrap() else {
+                panic!("mint signature")
+            };
+            assert!(matches!(
+                pending.sign(&relay, &issuer).await,
+                Err(RingError::RelayMessage(
+                    MessageMismatch::SpendsUnrequestedNote
+                ))
+            ));
+        }
+        assert_eq!(relay.submitted.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -2435,6 +2603,19 @@ mod public_signers {
             known_notes,
         }
         .pending()
+    }
+
+    fn changed_delivery_key(frame: &Instruction) -> Instruction {
+        let mut data = RingTransactData::parse(&frame.data[1..], RingRail::Anonymous)
+            .unwrap()
+            .into_data();
+        let mut keys = data.recipient_keys.to_vec();
+        keys[0] ^= 1;
+        data.recipient_keys = &keys;
+        Instruction {
+            data: [vec![tag::TRANSFER], data.encode().unwrap()].concat(),
+            ..frame.clone()
+        }
     }
 
     async fn signs(pending: &PendingSignature, signer: &ShieldedKeypair) {
@@ -3504,6 +3685,13 @@ mod public_signers {
                 .to_owned(),
             cases: vec![
                 owner_case("recipientHonest", &terms, &[], &message, "Accepted"),
+                owner_case(
+                    "changedDeliveryKey",
+                    &terms,
+                    &[],
+                    &relay_message(&FEE_PAYER, &[changed_delivery_key(&honest_frame)], UNITS).0,
+                    "Data",
+                ),
                 owner_case("thief", &terms, &[], &forged_message, "Recipients"),
                 owner_case("falseOpening", &false_opening, &[], &message, "Recipients"),
                 owner_case("coOwnerHonest", &co_terms, &known, &co_message, "Accepted"),
@@ -4082,6 +4270,9 @@ mod public_signers {
             &funder,
             MessageMismatch::Accounts,
         );
+
+        let changed = relay_message(&FEE_PAYER, &[changed_delivery_key(&built)], UNITS).0;
+        refused(&check_funder(changed), &funder, MessageMismatch::Data);
 
         let mut in_prefix = built.clone();
         in_prefix.accounts.splice(

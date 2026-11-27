@@ -10,6 +10,7 @@ repository.workspace = true
 default = []
 solana-rpc = [
     "spr-client/solana-rpc",
+    "dep:solana-rpc-client",
     "dep:solana-commitment-config",
     "dep:solana-transaction",
     "dep:solana-transaction-status-client-types",
@@ -60,6 +61,7 @@ solana-commitment-config = { workspace = true, optional = true }
 solana-instruction = { workspace = true, optional = true }
 solana-instruction-error = { workspace = true, optional = true }
 solana-message = { workspace = true, features = ["wincode"], optional = true }
+solana-rpc-client = { workspace = true, optional = true }
 solana-rpc-client-api = { workspace = true }
 solana-sdk-ids = { workspace = true, optional = true }
 solana-signature = { workspace = true }

@@ -17,7 +17,7 @@ use crate::{
     anonymous_wallet::{AnonymousWallet, PendingNote},
     confidential::RingConfidentialScan,
     exposed_notes::verify_ring_owned,
-    AnonymousError,
+    AnonymousError, FinalizedTransactionOrigin,
 };
 
 /// Zero-key notes stay apart, no automatic path selects them.
@@ -59,9 +59,14 @@ enum Rail<'a> {
 
 type ChainAssets<'a> = dyn Fn() -> Result<RingAssets, ClientError> + Sync + 'a;
 
-struct Syncing<'s, 'a, K: ?Sized, I> {
+pub struct RingWalletSources<'a, I: ?Sized, O: ?Sized> {
+    pub indexer: &'a I,
+    pub origin: &'a O,
+}
+
+struct Syncing<'s, 'a, K: ?Sized, I, O: ?Sized> {
     sync: &'s RingWalletSync<'a, K>,
-    indexer: &'s Blocking<I>,
+    sources: RingWalletSources<'s, Blocking<I>, O>,
     wallet: &'s mut AnonymousWallet,
 }
 
@@ -112,15 +117,15 @@ pub struct RingWalletScanned<'a, K: ?Sized> {
 }
 
 impl<K: ShieldedKeys + RingKeys + ?Sized> RingWalletScanned<'_, K> {
-    pub async fn sync<I: BlockingRpc>(
+    pub async fn sync<I: BlockingRpc, O: FinalizedTransactionOrigin + ?Sized>(
         self,
-        indexer: &Blocking<I>,
+        sources: RingWalletSources<'_, Blocking<I>, O>,
         wallet: &mut AnonymousWallet,
     ) -> Result<RingWalletSynced, AnonymousError> {
         let Self { sync, core } = self;
         let mut syncing = Syncing {
             sync: &sync,
-            indexer,
+            sources,
             wallet,
         };
         let mut unknown_mints = BTreeSet::new();
@@ -165,7 +170,12 @@ impl<K: ShieldedKeys + RingKeys + ?Sized> RingWalletScanned<'_, K> {
     }
 }
 
-impl<K: ShieldedKeys + RingKeys + ?Sized, I: BlockingRpc> Syncing<'_, '_, K, I> {
+impl<
+        K: ShieldedKeys + RingKeys + ?Sized,
+        I: BlockingRpc,
+        O: FinalizedTransactionOrigin + ?Sized,
+    > Syncing<'_, '_, K, I, O>
+{
     /// A mint registered after the registry read opens its notes under the chain's assets.
     async fn synced(&mut self, rail: Rail<'_>) -> Result<BTreeSet<Address>, AnonymousError> {
         let unknown_mints = self.absorb(rail, self.sync.assets).await?;
@@ -194,7 +204,7 @@ impl<K: ShieldedKeys + RingKeys + ?Sized, I: BlockingRpc> Syncing<'_, '_, K, I> 
             Rail::Tags(transactions) => {
                 let scan = RingConfidentialScan::new(keys, assets)
                     .with_indexer_config(self.sync.config)
-                    .sync(self.indexer, self.wallet, transactions)
+                    .sync(&self.sources, self.wallet, transactions)
                     .await?;
                 let unknown_mints = scan.decrypted().unknown_mints.clone();
                 self.wallet.absorb(scan)?;
@@ -203,7 +213,7 @@ impl<K: ShieldedKeys + RingKeys + ?Sized, I: BlockingRpc> Syncing<'_, '_, K, I> 
             Rail::History => {
                 let scan = AnonymousSync::new(keys, assets)
                     .with_indexer_config(self.sync.config)
-                    .fetch_wallet(self.indexer, self.wallet)
+                    .fetch_wallet(self.sources.indexer, self.wallet)
                     .await?;
                 let unknown_mints = scan.decrypted().unknown_mints.clone();
                 self.wallet.absorb(scan)?;

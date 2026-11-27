@@ -19,13 +19,14 @@ use zolana_operator_custody::{presigned_transaction, CollectedSignature};
 #[derive(Default)]
 pub(super) struct VaultAttempts {
     blocks: HashMap<Hash, u64>,
-    submissions: HashMap<Signature, u64>,
+    submissions: HashMap<Signature, Attempt>,
 }
 
 impl VaultAttempts {
     fn expire(&mut self, height: u64) {
         self.blocks.retain(|_, expiry| *expiry >= height);
-        self.submissions.retain(|_, expiry| *expiry >= height);
+        self.submissions
+            .retain(|_, attempt| attempt.last_valid_block_height >= height);
     }
 }
 
@@ -105,10 +106,10 @@ impl EnrollmentApplier {
         }
         let state = self.ring_state(ring);
         let mut state = state.lock().await;
+        let height = self.chain.submit().block_height().await?;
         let RingState {
             vault, in_flight, ..
         } = &mut *state;
-        let height = self.chain.submit().block_height().await?;
         vault.expire(height);
         let expiry = signed.block.last_valid_block_height;
         if vault
@@ -118,53 +119,63 @@ impl EnrollmentApplier {
         {
             return Err(EnrollmentRefusal::InvalidWrite.into());
         }
-        let writer_signature = self.payer.sign(&bytes).await?;
-        let transaction = presigned_transaction(
-            &message,
-            &[
-                CollectedSignature {
-                    signer: self.payer(),
-                    signature: writer_signature,
-                },
-                CollectedSignature {
-                    signer: request.manager.0,
-                    signature,
-                },
-            ],
-        )?;
-        if vault.submissions.contains_key(&writer_signature) {
+        let transaction = |writer_signature| {
+            presigned_transaction(
+                &message,
+                &[
+                    CollectedSignature {
+                        signer: self.payer(),
+                        signature: writer_signature,
+                    },
+                    CollectedSignature {
+                        signer: request.manager.0,
+                        signature,
+                    },
+                ],
+            )
+        };
+        if let Some(prior) = vault.submissions.get(&signature).copied() {
+            drop(state);
             if self
                 .chain
                 .submit()
-                .outcome(writer_signature)
+                .outcome(prior.signature)
                 .await?
                 .is_none()
             {
-                self.chain.submit().send(&transaction).await?;
+                self.chain
+                    .submit()
+                    .send(&transaction(prior.signature)?)
+                    .await?;
             }
-            return Ok(writer_signature.into());
+            return Ok(prior.signature.into());
         }
-        // A second proof from the same root could not land.
         if in_flight.is_some() {
             return Err(EnrollmentRefusal::InFlight.into());
         }
+        let fee = self
+            .budget
+            .reserve(ring, EnrollmentBudget::vault_fee())
+            .ok_or(EnrollmentRefusal::Budget)?;
         if !matches!(
             self.chain.submit().simulate(&message).await?,
             Simulation::Passed { .. }
         ) {
             return Err(EnrollmentRefusal::InvalidWrite.into());
         }
-        if !self.budget.charge(ring, EnrollmentBudget::vault_fee()) {
-            return Err(EnrollmentRefusal::Budget.into());
-        }
-        vault.submissions.insert(writer_signature, expiry);
+        let writer_signature = self.payer.sign(&bytes).await?;
+        let transaction = transaction(writer_signature)?;
+        let attempt = Attempt {
+            signature: writer_signature,
+            last_valid_block_height: expiry,
+        };
+        vault.submissions.insert(signature, attempt);
         *in_flight = Some(InFlight {
-            attempt: Attempt {
-                signature: writer_signature,
-                last_valid_block_height: expiry,
-            },
+            attempt,
             writes: Vec::new(),
         });
+        fee.commit();
+        drop(state);
         self.chain.submit().send(&transaction).await?;
         Ok(writer_signature.into())
     }

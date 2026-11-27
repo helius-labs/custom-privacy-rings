@@ -92,6 +92,7 @@ function transaction(
   return {
     slot: 1n,
     txSignature: "1".repeat(64) as Signature,
+    eventIndex: 0,
     txViewingPublicKey: txKey.publicKey(),
     salt: SALT,
     outputSlots: [
@@ -155,6 +156,7 @@ describe("ringNoteCodec", () => {
 function syncClient(
   transactions: readonly IndexedShieldedTransaction[],
   spends: readonly IndexedShieldedTransaction[] = [],
+  finalized?: readonly IndexedShieldedTransaction[],
 ) {
   const rows = [...transactions];
   const spent = [...spends];
@@ -164,7 +166,20 @@ function syncClient(
     data,
     paginationToken: null,
   });
+  const verifyFinalizedTransfer: NonNullable<RingSyncClient["verifyFinalizedTransfer"]> = async (
+    indexed,
+    ring,
+  ) => {
+    const confirmed = (finalized ?? rows).find(
+      (row) =>
+        row.txSignature === indexed.txSignature &&
+        row.eventIndex === indexed.eventIndex &&
+        row.ringProgramId === ring,
+    );
+    expect(indexed).toEqual(confirmed);
+  };
   return {
+    verifyFinalizedTransfer,
     rows,
     spent,
     tip,
@@ -416,7 +431,7 @@ describe("syncRingWallet", () => {
     expect(wallet.utxos().map((entry) => entry.utxo.amount)).toEqual([AMOUNT]);
   });
 
-  it("counts ring notes, then reads the bootstrap tag above its position and the stream tags no sync found from the first block", async () => {
+  it("resumes every previously listed tag above the saved position on a quiet stream", async () => {
     const recipient = ShieldedKeypair.generate();
     const keys = LocalRingKeys.fromKeypair(recipient);
     const ring = ringWallet(recipient);
@@ -473,10 +488,7 @@ describe("syncRingWallet", () => {
     const above = { slot: { gt: 20n } };
     const [core, ...streams] = client.getShieldedTransactionsByTags.mock.calls.slice(tagged);
     expect(core?.[0].filters).toEqual(above);
-    expect(streams.map(([request]) => [request.filters, request.tags])).toEqual([
-      [undefined, listed.slice(1)],
-      [above, [listed[0]]],
-    ]);
+    expect(streams.map(([request]) => [request.filters, request.tags])).toEqual([[above, listed]]);
     expect(
       client.getEncryptedUtxosByTags.mock.calls.slice(deposits).map(([request]) => request.filters),
     ).toEqual([above, above]);
@@ -493,6 +505,7 @@ describe("syncRingWallet", () => {
     if (first === undefined) throw new Error("no note");
     const later = {
       ...ringBody(recipient, note(recipient, SOL_MINT, 2).hash, SOL_MINT, 2),
+      txSignature: signature(25n),
       slot: 25n,
     };
     client.rows.push(later);
@@ -792,10 +805,53 @@ describe("syncRingWallet", () => {
 });
 
 describe("tag streams", () => {
+  it("matches another finalized slot of the same event when its tag enters a later window", async () => {
+    const sender = new ScanWallet(1);
+    const recipient = new ScanWallet(2);
+    const indexer = new ScanIndexer();
+    const payment = (index: number) => ({
+      to: recipient.address,
+      amount: 10n,
+      tag: streamTags(recipient.keypair, "request", index, index + 1)[0]!,
+    });
+    const client = syncClient([
+      sender.seal(indexer, [payment(63), payment(127)]),
+      sender.seal(indexer, [payment(191)]),
+    ]);
+    const checked = vi.spyOn(client, "verifyFinalizedTransfer");
+    const wallet = AnonymousWallet.create(
+      new Wallet({ identity: recipient.address }),
+      recipient.fresh(),
+    );
+    await syncRingWallet({ wallet, keys: recipient.keys, client });
+    expect(wallet.history().current().requestCount).toBe(192n);
+    expect(wallet.notes()).toHaveLength(3);
+    expect(checked).toHaveBeenCalledTimes(2);
+  });
+
   const fresh = () => {
     const recipient = ShieldedKeypair.generate();
     return { recipient, keys: LocalRingKeys.fromKeypair(recipient), ring: ringWallet(recipient) };
   };
+  it("commits neither credit nor tag progress when a finalized opening was relabelled", async () => {
+    const { recipient, keys, ring } = fresh();
+    const genuine = ringBody(recipient);
+    const slot = genuine.outputSlots[0]!;
+    const tag = streamTags(recipient, "request", 63, 64)[0]!;
+    const relabelled = { ...genuine, outputSlots: [{ ...slot, viewTag: tag }] };
+    for (const row of [
+      relabelled,
+      { ...genuine, eventIndex: 1 },
+      { ...genuine, txSignature: signature(90n) },
+    ]) {
+      const client = syncClient([row], [], [genuine]);
+      await expect(syncRingWallet({ wallet: ring, keys, client })).rejects.toThrow();
+      expect(ring.history().current().request.next).toBe(0n);
+      expect(ring.history().current().tagPosition).toBeNull();
+      expect(ring.wallet.utxos()).toHaveLength(0);
+      expect(ring.pendingClaims()).toHaveLength(0);
+    }
+  });
   /** The tags of each ring read after the core read at `from`, with the slot the read starts after. */
   const ringReads = (client: ReturnType<typeof syncClient>, from = 0) =>
     client.getShieldedTransactionsByTags.mock.calls
@@ -823,7 +879,9 @@ describe("tag streams", () => {
     expect([tx.next, tx.scanned]).toEqual([1n, 1n]);
     expect([request.next, request.scanned]).toEqual([4n, 4n]);
     expect(tagPosition).toBe(20n);
-    expect(ring.toJson()).toContain('"tx":{"next":1,"scanned":1},"request":{"next":4,"scanned":4}');
+    expect(ring.toJson()).toContain(
+      '"tx":{"next":1,"scanned":1,"readEnd":65},"request":{"next":4,"scanned":4,"readEnd":68}',
+    );
   });
 
   it("moves no counter on a row under the highest listed tag that opens under no held key, the sync reads one round", async () => {
@@ -886,7 +944,10 @@ describe("tag streams", () => {
     expect(restored.history().current().request.scanned).toBe(0n);
 
     const counted = ringWallet(recipient);
-    counted.updateHistory(counted.history().withRequestCount(1n));
+    counted.updateHistory({
+      expected: counted.history(),
+      updated: counted.history().withRequestCount(1n),
+    });
     expect((await syncRingWallet({ wallet: counted, keys, client })).storedUtxos).toBe(1);
     expect(counted.history().current().request.scanned).toBe(65n);
   });
@@ -901,7 +962,10 @@ describe("tag streams", () => {
     expect(ring.history().current().request.scanned).toBe(4n);
 
     // The wallet minted requests no sync listed, a row past the stored position pays a request in the new window.
-    ring.updateHistory(ring.history().withRequestCount(100n));
+    ring.updateHistory({
+      expected: ring.history(),
+      updated: ring.history().withRequestCount(100n),
+    });
     client.rows.push(taggedBody(recipient, later, 4, 25n));
     client.tip.slot = 30n;
     const before = client.getShieldedTransactionsByTags.mock.calls.length;
@@ -913,12 +977,16 @@ describe("tag streams", () => {
     expect(ringReads(client, before)).toEqual([
       {
         after: undefined,
+        tags: streamTags(recipient, "request", 68, 164),
+      },
+      {
+        after: 20n,
         tags: [
+          bootstrap,
           ...streamTags(recipient, "sender", 0, 64),
-          ...streamTags(recipient, "request", 68, 164),
+          ...streamTags(recipient, "request", 0, 68),
         ],
       },
-      { after: 20n, tags: [bootstrap, ...streamTags(recipient, "request", 0, 68)] },
       // A later round lists only tags no sync read.
       { after: undefined, tags: streamTags(recipient, "request", 164, 215) },
     ]);

@@ -1,10 +1,9 @@
 use hkdf::hmac::{Hmac, Mac};
-use sea_orm::Value;
+use sea_orm::{ConnectionTrait, DatabaseBackend, DatabaseTransaction, TransactionTrait};
 use sha2::Sha256;
-use solana_address::Address;
 use spr_keypair::KeypairError;
 use zeroize::Zeroizing;
-use zolana_ring_client::{rpc::ReaderGrantAction, ReaderKey};
+use zolana_ring_client::rpc::ReaderGrantAction;
 
 use ring_service_core::{database::Store, keys::GRANT_ROW_KEY_INFO, sql};
 
@@ -22,20 +21,16 @@ pub(crate) struct GrantRowKey {
     lookup: Zeroizing<[u8; 32]>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct GrantPair {
-    pub ring: Address,
-    /// `None` for a ring-wide grant.
-    pub wallet: Option<Address>,
-    pub reader: ReaderKey,
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+pub(crate) struct GrantRow {
+    pub action: ReaderGrantAction,
+    pub timestamp: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct GrantRow {
-    pub pair: GrantPair,
-    pub action: ReaderGrantAction,
-    /// The signed Unix seconds, the newest row of a pair holds.
-    pub timestamp: u64,
+struct ScopedGrant {
+    scope: [u8; 32],
+    row: GrantRow,
 }
 
 impl GrantRowKey {
@@ -52,134 +47,184 @@ impl GrantRowKey {
         })
     }
 
-    /// The only plaintext a row stores beside its insert id.
-    fn lookup(&self, reader: &ReaderKey) -> Result<[u8; 32], RingAuditError> {
+    fn tag(&self, fields: &[&[u8]]) -> Result<[u8; 32], RingAuditError> {
         let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(self.lookup.as_slice())
             .map_err(|_| KeypairError::Hkdf)?;
-        mac.update(&reader.to_bytes());
+        for field in fields {
+            mac.update(field);
+        }
         Ok(mac.finalize().into_bytes().into())
+    }
+
+    fn scope(&self, query: GrantQuery) -> Result<[u8; 32], RingAuditError> {
+        let reader = self.tag(&[&query.reader.to_bytes()])?;
+        self.tag(&[
+            &reader,
+            query.ring.as_ref(),
+            query.wallet.as_ref().map_or(&[], AsRef::as_ref),
+        ])
+    }
+
+    fn open(&self, scope: &[u8; 32], sealed: &[u8]) -> Result<GrantRow, RingAuditError> {
+        let bytes = self
+            .cipher
+            .open(scope, sealed)
+            .map_err(|_| RingAuditError::InvalidGrantRow)?;
+        GrantRow::decode(&bytes)
     }
 }
 
 impl GrantRow {
-    /// A ring-wide row leaves the wallet out.
-    fn body(&self) -> Vec<u8> {
-        let action = match self.action {
-            ReaderGrantAction::Grant => 1,
-            ReaderGrantAction::Revoke => 0,
-        };
-        [
-            self.pair.ring.as_ref(),
-            self.pair.wallet.as_ref().map_or(&[][..], AsRef::as_ref),
-            &[action],
-            &self.timestamp.to_le_bytes(),
-        ]
-        .concat()
+    fn encode(self) -> [u8; ACTION_AND_TIMESTAMP_LEN] {
+        let mut bytes = [0; ACTION_AND_TIMESTAMP_LEN];
+        bytes[0] = u8::from(self.action == ReaderGrantAction::Grant);
+        bytes[1..].copy_from_slice(&self.timestamp.to_le_bytes());
+        bytes
     }
 
-    fn from_body(reader: ReaderKey, body: &[u8]) -> Result<Self, RingAuditError> {
-        let invalid = || RingAuditError::InvalidGrantRow;
-        let (ring, rest) = body.split_first_chunk::<32>().ok_or_else(invalid)?;
-        let (wallet, tail) = rest
-            .split_last_chunk::<ACTION_AND_TIMESTAMP_LEN>()
-            .ok_or_else(invalid)?;
-        let wallet = match wallet {
-            [] => None,
-            wallet => Some(Address::new_from_array(
-                wallet.try_into().map_err(|_| invalid())?,
-            )),
+    fn decode(bytes: &[u8]) -> Result<Self, RingAuditError> {
+        let (action, timestamp) = bytes.split_first().ok_or(RingAuditError::InvalidGrantRow)?;
+        let action = match action {
+            0 => ReaderGrantAction::Revoke,
+            1 => ReaderGrantAction::Grant,
+            _ => return Err(RingAuditError::InvalidGrantRow),
         };
-        let (action, timestamp) = tail.split_first().ok_or_else(invalid)?;
         Ok(Self {
-            pair: GrantPair {
-                ring: Address::new_from_array(*ring),
-                wallet,
-                reader,
-            },
-            action: match action {
-                1 => ReaderGrantAction::Grant,
-                0 => ReaderGrantAction::Revoke,
-                _ => return Err(invalid()),
-            },
-            timestamp: u64::from_le_bytes(timestamp.try_into().map_err(|_| invalid())?),
+            action,
+            timestamp: u64::from_le_bytes(
+                timestamp
+                    .try_into()
+                    .map_err(|_| RingAuditError::InvalidGrantRow)?,
+            ),
         })
     }
 }
 
 impl GrantRows {
-    pub(crate) fn new(store: Store, key: GrantRowKey) -> Self {
-        Self { store, key }
+    pub(crate) async fn open(store: Store, key: GrantRowKey) -> Result<Self, RingAuditError> {
+        let rows = Self { store, key };
+        while rows.import_batch().await? {}
+        Ok(rows)
     }
 
-    /// Appends the row, a stale signature leaves the newer action in force.
-    pub(crate) async fn write(&self, row: GrantRow) -> Result<ReaderGrantAction, RingAuditError> {
-        let lookup = self.key.lookup(&row.pair.reader)?;
-        // The lookup is the associated data, a row moved to another reader fails to open.
-        let sealed = self
-            .key
-            .cipher
-            .seal(&lookup, &row.body())
-            .map_err(|_| RingAuditError::InvalidGrantRow)?;
-        let db = self.store.connection();
-        sql::Query::new(
-            "INSERT INTO grants (reader, sealed) VALUES ($1, $2)",
-            vec![sql::bytes(&lookup), Value::from(sealed)],
-        )
-        .execute(db)
-        .await?;
-        let rows = self.rows(row.pair.reader).await?;
-        Ok(newest(&rows, row.pair).map_or(row.action, |newest| newest.action))
+    pub(crate) async fn write(
+        &self,
+        query: GrantQuery,
+        row: GrantRow,
+    ) -> Result<ReaderGrantAction, RingAuditError> {
+        let transaction = self.store.connection().begin().await?;
+        let grant = ScopedGrant {
+            scope: self.key.scope(query)?,
+            row,
+        };
+        let action = self.replace(&transaction, grant).await?;
+        transaction.commit().await?;
+        Ok(action)
     }
 
     pub(crate) async fn grants(&self, query: GrantQuery) -> Result<bool, RingAuditError> {
-        let rows = self.rows(query.reader).await?;
-        let granted = |wallet| {
-            let pair = GrantPair {
-                ring: query.ring,
-                wallet,
-                reader: query.reader,
-            };
-            newest(&rows, pair).is_some_and(|row| row.action == ReaderGrantAction::Grant)
+        let scope = self.key.scope(query)?;
+        let ring = match query.wallet {
+            Some(_) => self.key.scope(GrantQuery {
+                wallet: None,
+                ..query
+            })?,
+            None => scope,
         };
-        Ok(granted(None) || query.wallet.is_some_and(|wallet| granted(Some(wallet))))
-    }
-
-    /// In insert order.
-    async fn rows(&self, reader: ReaderKey) -> Result<Vec<GrantRow>, RingAuditError> {
-        let lookup = self.key.lookup(&reader)?;
-        let db = self.store.connection();
         let rows = sql::Query::new(
-            "SELECT sealed FROM grants WHERE reader = $1 ORDER BY id",
-            vec![sql::bytes(&lookup)],
+            "SELECT scope, sealed FROM grants WHERE scope IN ($1, $2)",
+            vec![sql::bytes(&scope), sql::bytes(&ring)],
         )
-        .all(db)
+        .all(self.store.connection())
         .await?;
-        rows.iter()
-            .map(|row| {
-                let sealed: Vec<u8> = row.try_get("", "sealed")?;
-                let body = self
-                    .key
-                    .cipher
-                    .open(&lookup, &sealed)
-                    .map_err(|_| RingAuditError::InvalidGrantRow)?;
-                GrantRow::from_body(reader, &body)
-            })
-            .collect()
+        let mut granted = false;
+        for row in rows {
+            let scope = sql::read_bytes(&row, "scope")?;
+            let sealed: Vec<u8> = row.try_get("", "sealed")?;
+            granted |= self.key.open(&scope, &sealed)?.action == ReaderGrantAction::Grant;
+        }
+        Ok(granted)
     }
-}
 
-/// The pair's row with the latest timestamp, the later insert on a tie.
-fn newest(rows: &[GrantRow], pair: GrantPair) -> Option<GrantRow> {
-    rows.iter()
-        .filter(|row| row.pair == pair)
-        .max_by_key(|row| row.timestamp)
-        .copied()
+    async fn replace(
+        &self,
+        tx: &DatabaseTransaction,
+        grant: ScopedGrant,
+    ) -> Result<ReaderGrantAction, RingAuditError> {
+        let ScopedGrant { scope, row } = grant;
+        let sealed = self
+            .key
+            .cipher
+            .seal(&scope, &row.encode())
+            .map_err(|_| RingAuditError::InvalidGrantRow)?;
+        // The scope lock orders writes with equal signed timestamps.
+        let held = sql::Query::new(
+            "INSERT INTO grants(scope, sealed) VALUES($1, $2) ON CONFLICT(scope) DO UPDATE SET sealed=grants.sealed RETURNING sealed",
+            vec![sql::bytes(&scope), sql::bytes(&sealed)],
+        ).one(tx).await?.ok_or(RingAuditError::InvalidGrantRow)?;
+        let current = self
+            .key
+            .open(&scope, &held.try_get::<Vec<u8>>("", "sealed")?)?;
+        if current.timestamp > row.timestamp || current == row {
+            return Ok(current.action);
+        }
+        sql::Query::new(
+            "UPDATE grants SET sealed=$1 WHERE scope=$2",
+            vec![sealed.into(), sql::bytes(&scope)],
+        )
+        .execute(tx)
+        .await?;
+        Ok(row.action)
+    }
+
+    async fn import_batch(&self) -> Result<bool, RingAuditError> {
+        let tx = self.store.connection().begin().await?;
+        if tx.get_database_backend() == DatabaseBackend::Postgres {
+            tx.execute_unprepared("LOCK TABLE legacy_grants IN EXCLUSIVE MODE")
+                .await?;
+        }
+        let batch = sql::Query::new(
+            "DELETE FROM legacy_grants WHERE id IN (SELECT id FROM legacy_grants ORDER BY id LIMIT $1) RETURNING id, reader, sealed",
+            vec![sql::count(sql::KEYS_PER_STATEMENT)?],
+        ).all(&tx).await?;
+        let more = batch.len() == sql::KEYS_PER_STATEMENT;
+        let mut latest = std::collections::BTreeMap::new();
+        for row in batch {
+            let id = sql::read_integer(&row, "id")?;
+            let reader = sql::read_bytes::<32>(&row, "reader")?;
+            let sealed: Vec<u8> = row.try_get("", "sealed")?;
+            let body = self
+                .key
+                .cipher
+                .open(&reader, &sealed)
+                .map_err(|_| RingAuditError::InvalidGrantRow)?;
+            let (scope, value) = body
+                .split_last_chunk::<ACTION_AND_TIMESTAMP_LEN>()
+                .ok_or(RingAuditError::InvalidGrantRow)?;
+            if !matches!(scope.len(), 32 | 64) {
+                return Err(RingAuditError::InvalidGrantRow);
+            }
+            let scope = self.key.tag(&[&reader, scope])?;
+            let grant = GrantRow::decode(value)?;
+            let entry = latest.entry(scope).or_insert((grant, id));
+            if (grant.timestamp, id) > (entry.0.timestamp, entry.1) {
+                *entry = (grant, id);
+            }
+        }
+        for (scope, (row, _)) in latest {
+            self.replace(&tx, ScopedGrant { scope, row }).await?;
+        }
+        tx.commit().await?;
+        Ok(more)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use solana_address::Address;
     use solana_signer::Signer;
     use spr_keypair::X25519Keypair;
+    use zolana_ring_client::ReaderKey;
 
     use super::*;
     use crate::spent_index::NoteSeal;
@@ -199,48 +244,206 @@ mod tests {
             .expect("reader")
     }
 
-    async fn store_row(rows: &GrantRows, reader: ReaderKey, sealed: &[u8]) {
-        let db = rows.store.connection();
+    fn query() -> GrantQuery {
+        GrantQuery {
+            ring: RING,
+            reader: reader(1),
+            wallet: None,
+        }
+    }
+
+    const fn grant(timestamp: u64) -> GrantRow {
+        GrantRow {
+            action: ReaderGrantAction::Grant,
+            timestamp,
+        }
+    }
+
+    const fn revoke(timestamp: u64) -> GrantRow {
+        GrantRow {
+            action: ReaderGrantAction::Revoke,
+            timestamp,
+        }
+    }
+
+    async fn legacy(store: &Store, tag: [u8; 32], sealed: &[u8]) {
         sql::Query::new(
-            "INSERT INTO grants (reader, sealed) VALUES ($1, $2)",
-            vec![
-                sql::bytes(&rows.key.lookup(&reader).expect("lookup")),
-                sealed.to_vec().into(),
-            ],
+            "INSERT INTO legacy_grants(reader, sealed) VALUES ($1, $2)",
+            vec![sql::bytes(&tag), sql::bytes(sealed)],
         )
-        .execute(db)
+        .execute(store.connection())
         .await
-        .expect("insert");
+        .expect("legacy row");
+    }
+
+    fn key() -> GrantRowKey {
+        GrantRowKey::derive(&SECRET).expect("key")
     }
 
     #[tokio::test]
-    async fn a_stored_grant_row_opens_only_under_its_readers_lookup() {
-        let rows = GrantRows::new(
-            Store::open("sqlite::memory:", 1).await.expect("store"),
-            GrantRowKey::derive(&SECRET).expect("key"),
-        );
-        store_row(&rows, reader(1), &SEALED_GRANT).await;
-        store_row(&rows, reader(2), &SEALED_GRANT).await;
-        store_row(&rows, reader(3), &SEALED_GRANT[..11]).await;
-
-        let opened = rows.rows(reader(1)).await.expect("opens");
-        assert_eq!(
-            opened,
-            [GrantRow {
-                pair: GrantPair {
-                    ring: RING,
-                    wallet: None,
-                    reader: reader(1),
-                },
-                action: ReaderGrantAction::Grant,
-                timestamp: 7,
-            }]
-        );
-        for moved in [reader(2), reader(3)] {
+    async fn a_corrupt_legacy_batch_refuses_startup_and_keeps_its_rows() {
+        let store = Store::in_memory().await.expect("store");
+        let tag = key().tag(&[&reader(1).to_bytes()]).expect("tag");
+        legacy(&store, tag, &SEALED_GRANT).await;
+        for corrupt in [&SEALED_GRANT[..], &SEALED_GRANT[..11]] {
+            let other = key().tag(&[&reader(2).to_bytes()]).expect("other reader");
+            legacy(&store, other, corrupt).await;
             assert!(matches!(
-                rows.rows(moved).await,
+                GrantRows::open(store.clone(), key()).await,
                 Err(RingAuditError::InvalidGrantRow)
             ));
+            assert_eq!(count(&store, "legacy_grants").await, 2);
+            assert_eq!(count(&store, "grants").await, 0);
+            sql::Query::new(
+                "DELETE FROM legacy_grants WHERE reader=$1",
+                vec![sql::bytes(&other)],
+            )
+            .execute(store.connection())
+            .await
+            .expect("repair");
+        }
+        let rows = GrantRows::open(store.clone(), key()).await.expect("reopen");
+        assert!(rows.grants(query()).await.expect("original grant"));
+        assert_eq!(count(&store, "legacy_grants").await, 0);
+        assert_eq!(count(&store, "grants").await, 1);
+    }
+
+    async fn count(store: &Store, table: &str) -> i64 {
+        sql::Query::new(format!("SELECT COUNT(*) AS n FROM {table}"), vec![])
+            .one(store.connection())
+            .await
+            .expect("query")
+            .expect("row")
+            .try_get("", "n")
+            .expect("count")
+    }
+
+    async fn concurrent_grants(url: &str) {
+        let first = Store::open(url, 2).await.expect("first store");
+        let second = Store::open(url, 2).await.expect("second store");
+        let tag = key().tag(&[&reader(1).to_bytes()]).expect("tag");
+        let wallet = GrantQuery {
+            wallet: Some(Address::new_from_array([22; 32])),
+            ..query()
+        };
+        let other = GrantQuery {
+            ring: Address::new_from_array([4; 32]),
+            ..wallet
+        };
+        let wallet_body = [
+            RING.as_ref(),
+            wallet.wallet.as_ref().expect("wallet").as_ref(),
+            &grant(8).encode(),
+        ]
+        .concat();
+        let wallet_sealed = key()
+            .cipher
+            .seal(&tag, &wallet_body)
+            .expect("legacy wallet");
+        let page = first.connection().begin().await.expect("transaction");
+        for _ in 0..sql::KEYS_PER_STATEMENT {
+            sql::Query::new(
+                "INSERT INTO legacy_grants(reader, sealed) VALUES($1, $2)",
+                vec![sql::bytes(&tag), sql::bytes(&SEALED_GRANT)],
+            )
+            .execute(&page)
+            .await
+            .expect("old ring grants");
+        }
+        page.commit().await.expect("commit");
+        let later = [RING.as_ref(), &revoke(7).encode()].concat();
+        legacy(
+            &first,
+            tag,
+            &key().cipher.seal(&tag, &later).expect("same timestamp"),
+        )
+        .await;
+        legacy(&first, tag, &wallet_sealed).await;
+        let (a, b) = tokio::join!(
+            GrantRows::open(first.clone(), key()),
+            GrantRows::open(second, key())
+        );
+        let (a, b) = (a.expect("first boot"), b.expect("concurrent boot"));
+        assert_eq!(count(&first, "legacy_grants").await, 0);
+        assert_eq!(count(&first, "grants").await, 2);
+        assert!(!a.grants(query()).await.expect("later revoke wins"));
+        assert!(b.grants(wallet).await.expect("own wallet"));
+        assert!(!b.grants(other).await.expect("other ring"));
+        let (older, newer) = tokio::join!(a.write(wallet, grant(20)), b.write(wallet, revoke(21)));
+        older.expect("older");
+        assert_eq!(newer.expect("newer"), ReaderGrantAction::Revoke);
+        assert!(!a.grants(wallet).await.expect("newest"));
+        assert_eq!(
+            a.write(wallet, grant(19)).await.expect("stale"),
+            ReaderGrantAction::Revoke
+        );
+        assert_eq!(
+            a.write(wallet, grant(21)).await.expect("tie"),
+            ReaderGrantAction::Grant
+        );
+        assert!(b.grants(wallet).await.expect("later tie wins"));
+        a.write(query(), grant(30)).await.expect("ring grant");
+        b.write(wallet, revoke(40)).await.expect("wallet revoke");
+        assert!(a.grants(wallet).await.expect("ring wide"));
+        assert_eq!(count(&first, "grants").await, 2);
+        b.write(other, grant(10)).await.expect("other ring");
+        let columns = sql::Query::new("SELECT * FROM grants LIMIT 1", vec![])
+            .one(first.connection())
+            .await
+            .expect("query")
+            .expect("grant")
+            .column_names();
+        assert_eq!(columns, ["scope", "sealed"]);
+        sql::Query::new(
+            "UPDATE grants SET sealed=(SELECT sealed FROM grants WHERE scope=$1) WHERE scope=$2",
+            vec![
+                sql::bytes(&key().scope(wallet).expect("wallet scope")),
+                sql::bytes(&key().scope(other).expect("other scope")),
+            ],
+        )
+        .execute(first.connection())
+        .await
+        .expect("corrupt unrelated scope");
+        assert!(matches!(
+            b.grants(other).await,
+            Err(RingAuditError::InvalidGrantRow)
+        ));
+        assert!(a
+            .grants(wallet)
+            .await
+            .expect("unrelated ciphertext stays unopened"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn encrypted_grants_compact_across_replicas_on_sqlite() {
+        let path = ring_service_core::database::fixture::StoreDirectory::new("grant-scopes");
+        concurrent_grants(&path.url()).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "needs RING_RPC_TEST_POSTGRES_URL"]
+    async fn encrypted_grants_compact_across_replicas_on_postgres() {
+        let url = std::env::var("RING_RPC_TEST_POSTGRES_URL").expect("postgres url");
+        let store = Store::open(&url, 1).await.expect("postgres");
+        for table in ["grants", "legacy_grants"] {
+            sql::Query::new(format!("DELETE FROM {table}"), vec![])
+                .execute(store.connection())
+                .await
+                .expect("clear");
+        }
+        concurrent_grants(&url).await;
+    }
+
+    #[test]
+    fn grant_actions_and_timestamps_have_one_encoding() {
+        for state in [grant(0), revoke(u64::MAX)] {
+            let bytes = state.encode();
+            assert_eq!(GrantRow::decode(&bytes).expect("valid"), state);
+            assert!(GrantRow::decode(&bytes[1..]).is_err());
+            assert!(GrantRow::decode(&[bytes.as_slice(), &[0]].concat()).is_err());
+            let mut invalid = bytes;
+            invalid[0] = 2;
+            assert!(GrantRow::decode(&invalid).is_err());
         }
     }
 

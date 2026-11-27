@@ -3,6 +3,9 @@
 //! Feature `operations` adds the instruction builders, proofs and submission, a blocking caller
 //! wraps an operation in `zolana.block_on(op.prove(zolana.as_async()))`.
 
+#[cfg(test)]
+extern crate self as zolana_ring_client;
+
 #[cfg(feature = "operations")]
 #[path = "state/ring_accounts.rs"]
 mod account;
@@ -174,7 +177,7 @@ pub use crate::key_catalog::{
 };
 pub use crate::merge_data::{CustomRingMergeIxData, SealedMergeRecord};
 #[cfg(feature = "solana-rpc")]
-pub use crate::origin::{ConfirmedRingOrigins, ORIGIN_TRANSACTION_CONFIG};
+pub use crate::origin::{ConfirmedRingOrigins, FinalizedRpcOrigin, ORIGIN_TRANSACTION_CONFIG};
 pub use crate::owner_signature::{OwnerSignature, SignatureInstruction};
 pub use crate::storage_accounts::{OwnerGrantHost, StorageRegistryAddress, TrackingRegistryHost};
 pub use crate::storage_data::{
@@ -186,7 +189,7 @@ pub use crate::transfer_accounts::{
     KnownPrefix, ListRegistry, PolicySources, WithdrawalLeg, SYSTEM_PROGRAM_ID,
 };
 pub use crate::viewing_history::{
-    AdvancedTag, TransferTags, ViewingHistory, ViewingKeyEntry, TAG_WINDOW,
+    AdvancedTag, HistoryUpdate, TransferTags, ViewingHistory, ViewingKeyEntry, TAG_WINDOW,
 };
 pub use crate::vouch::VouchMessage;
 pub use crate::{
@@ -206,7 +209,7 @@ pub use crate::{
     merge_ledger::{AuditedMergeOutput, ConfirmedMerge, MergeLedger, MergeRecordOutput},
     origin::{
         ring_event_origin_in, ConfirmedEvent, ConfirmedEventKind, ConfirmedMergeDisclosure,
-        RingOrigin, RingWithdrawal, TransactionOrigin,
+        FinalizedTransactionOrigin, RingOrigin, RingWithdrawal, TransactionOrigin,
     },
     reader::{Ed25519ReaderKey, P256ReaderKey, ReaderKey, ReaderKeyError},
     records::{
@@ -225,7 +228,9 @@ pub use crate::{
 };
 pub use program_data::{program_data, ProgramData};
 pub use viewing_rotation::ViewingRotation;
-pub use wallet_sync::{RingWalletNotes, RingWalletScanned, RingWalletSync, RingWalletSynced};
+pub use wallet_sync::{
+    RingWalletNotes, RingWalletScanned, RingWalletSources, RingWalletSync, RingWalletSynced,
+};
 pub use zolana_ring_indexer::rpc::RingRpcError;
 
 #[cfg(feature = "operations")]

@@ -1611,11 +1611,19 @@ describe("anonymous ring signer", () => {
     const coSigned = await anonymousRing({
       coSigner: { signer: hidden, scope: RING_COSIGN_TRANSFERS },
     });
+    const hiddenCoSigner = () =>
+      rail({ fixture: coSigned, sender, transfer: spend(coSigned, sender) }).withOwnerExposure(
+        "accepted",
+      );
+    const refusal = ringError("RING_CO_SIGNER_INVALID", { reason: "CoSignerIsOwner" });
+    await expect(hiddenCoSigner().prove(coSigned.client)).rejects.toThrow(refusal);
     await expect(
-      rail({ fixture: coSigned, sender, transfer: spend(coSigned, sender) })
-        .withOwnerExposure("accepted")
-        .prove(coSigned.client),
-    ).rejects.toThrow(ringError("RING_CO_SIGNER_INVALID", { reason: "CoSignerIsOwner" }));
+      hiddenCoSigner().prepareRelay(coSigned.client, {
+        quote: { feePayer: coSigned.authority, validUntilSlot: 100n },
+        nullifierKey: sender.keypair.nullifierKey(),
+        notes: [],
+      }),
+    ).rejects.toThrow(refusal);
     noProofs(coSigned);
   });
 

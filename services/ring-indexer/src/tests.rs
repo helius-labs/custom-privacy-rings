@@ -213,8 +213,8 @@ fn start_slots_parse_a_slot_or_latest() {
     assert!("soon".parse::<StartSlot>().is_err());
 }
 
-#[test]
-fn the_announcement_signs_with_a_pinned_kms_key_alone() {
+#[tokio::test]
+async fn the_announcement_signs_with_a_pinned_kms_key_alone() {
     use clap::{error::ErrorKind, CommandFactory, FromArgMatches};
     use zolana_operator_custody::{KeyArn, KmsEndpoint};
 
@@ -246,7 +246,7 @@ fn the_announcement_signs_with_a_pinned_kms_key_alone() {
     let unpinned = parse(&["--service-key-arn", KEY_ARN]).unwrap_err();
     assert_eq!(unpinned.kind(), ErrorKind::MissingRequiredArgument);
 
-    let pinned = parse(&[
+    let mut pinned = parse(&[
         "--service-key-arn",
         KEY_ARN,
         "--service-address",
@@ -264,6 +264,10 @@ fn the_announcement_signs_with_a_pinned_kms_key_alone() {
         pinned.kms.endpoint(),
         Ok(KmsEndpoint::Localnet("127.0.0.1:4566".parse().unwrap()))
     );
+    pinned.bind = "0.0.0.0".parse().unwrap();
+    pinned.db_url = "invalid-store".to_owned();
+    let error = crate::run(pinned).await.unwrap_err();
+    assert!(error.is::<ring_service_core::kms::RemoteCluster>());
 }
 
 #[tokio::test]

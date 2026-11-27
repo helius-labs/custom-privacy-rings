@@ -58,7 +58,7 @@ export const getStorageMemberOpeningsMethod: MethodDescriptor<
     const row = object(value, "$", ["context", "root", "openings"]);
     return Object.freeze({
       context: context(row["context"], "context"),
-      root: storageRoot(row["root"], "root"),
+      root: registryRoot(row["root"], "root"),
       openings: Object.freeze(array(row["openings"], "openings", memberOpening)),
     });
   },
@@ -78,7 +78,7 @@ export const getStorageMemberRecordsMethod: MethodDescriptor<
   }),
   decodeResponse: (value) => {
     const row = object(value, "$", ["context", "root", "records", "nextLeafIndex"]);
-    const root = storageRoot(row["root"], "root");
+    const root = registryRoot(row["root"], "root");
     const records = servedRecords(row["records"], QUAD_HEIGHT);
     const nextLeafIndex = row["nextLeafIndex"];
     return Object.freeze({
@@ -125,7 +125,7 @@ export const getStorageRecordPoolMethod: MethodDescriptor<
     const records = servedRecords(row["records"], QUAD_HEIGHT - levels);
     return Object.freeze({
       context: context(row["context"], "context"),
-      root: storageRoot(row["root"], "root"),
+      root: registryRoot(row["root"], "root"),
       records,
       canopy: Object.freeze(canopy),
       subjects: Object.freeze(
@@ -185,12 +185,12 @@ function recordPath(value: unknown, path: string, levels = QUAD_HEIGHT): QuadPat
   });
 }
 
-function storageRoot(value: unknown, path: string): StorageRoot {
+export function registryRoot(value: unknown, path: string, capacity = QUAD_CAPACITY): StorageRoot {
   const row = object(value, path, ["root", "revision", "nextIndex"]);
   return Object.freeze({
     root: field(row["root"], `${path}.root`),
     revision: u64(row["revision"], `${path}.revision`),
-    nextIndex: wireInteger(row["nextIndex"], `${path}.nextIndex`, 1n, QUAD_CAPACITY),
+    nextIndex: wireInteger(row["nextIndex"], `${path}.nextIndex`, 1n, capacity),
   });
 }
 

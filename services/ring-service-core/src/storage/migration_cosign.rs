@@ -1,3 +1,36 @@
+use sea_orm::DatabaseBackend;
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub(super) struct WalletFunders;
+
+#[async_trait::async_trait]
+impl MigrationTrait for WalletFunders {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        let blob = match manager.get_database_backend() {
+            DatabaseBackend::Postgres => "BYTEA",
+            _ => "BLOB",
+        };
+        let db = manager.get_connection();
+        db.execute_unprepared(&format!(
+            "CREATE TABLE IF NOT EXISTS cosign_wallet_funding_accounts (ring {blob} NOT NULL, account {blob} NOT NULL, ticket {blob} NOT NULL REFERENCES cosign_wallet_sends(ticket) ON DELETE CASCADE, PRIMARY KEY(ring, account))"
+        )).await?;
+        db.execute_unprepared(
+            "CREATE INDEX IF NOT EXISTS cosign_wallet_funding_accounts_ticket ON cosign_wallet_funding_accounts(ticket)",
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .get_connection()
+            .execute_unprepared("DROP TABLE cosign_wallet_funding_accounts")
+            .await?;
+        Ok(())
+    }
+}
+
 pub(super) fn statements(blob: &str) -> [String; 6] {
     [
         format!("CREATE TABLE cosign_admission (ring {blob} NOT NULL, asset {blob} NOT NULL, last_slot BIGINT NOT NULL DEFAULT 0, PRIMARY KEY(ring, asset))"),

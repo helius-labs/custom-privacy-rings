@@ -39,9 +39,16 @@ impl<'a> RingWallet<'a> {
             .with_indexer_config(config)
             .scan(env.client.indexer())?;
         let indexer = env.client.as_async().indexer();
+        let origin = zolana_ring_client::FinalizedRpcOrigin::new(
+            env.client.rpc().client().get_inner_client(),
+        );
+        let sources = zolana_ring_client::RingWalletSources {
+            indexer,
+            origin: &origin,
+        };
         let synced = env
             .client
-            .block_on(async { anyhow::Ok(scanned.sync(indexer, &mut self.wallet).await?) })?;
+            .block_on(async { anyhow::Ok(scanned.sync(sources, &mut self.wallet).await?) })?;
         match synced {
             RingWalletSynced::Notes(notes) => {
                 self.spendable = notes.spendable;

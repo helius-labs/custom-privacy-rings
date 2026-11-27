@@ -176,7 +176,7 @@ fn viewing_key_rotation_survives_restart_and_a_wallet_wipe() -> Result<()> {
                 .history()
                 .clone()
                 .with_rotated_key(rotated.viewing_pubkey(), 1)?;
-            wallet.update_history(history)?;
+            wallet.update_history(wallet.history().advance_to(history))?;
         }
         let payment = AnonymousPayment {
             ring,

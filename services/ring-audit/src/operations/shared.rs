@@ -78,21 +78,24 @@ enum RefreshState {
 }
 
 impl<S> SharedInit<S> {
-    pub fn build(self) -> Result<Shared<S>, RingAuditError> {
+    pub async fn build(self) -> Result<Shared<S>, RingAuditError> {
         let grants = match self.reader_grants {
             ReaderGrantStore::Tree => Grants::Tree,
-            ReaderGrantStore::Database => Grants::Database(Box::new(GrantRows::new(
-                self.store
-                    .durable()
-                    .cloned()
-                    .ok_or(RingAuditError::GrantStoreMissing)?,
-                GrantRowKey::derive(
-                    self.grant_rows
-                        .as_ref()
-                        .ok_or(RingAuditError::GrantRowsKeyMissing)?
-                        .as_bytes(),
-                )?,
-            ))),
+            ReaderGrantStore::Database => Grants::Database(Box::new(
+                GrantRows::open(
+                    self.store
+                        .durable()
+                        .cloned()
+                        .ok_or(RingAuditError::GrantStoreMissing)?,
+                    GrantRowKey::derive(
+                        self.grant_rows
+                            .as_ref()
+                            .ok_or(RingAuditError::GrantRowsKeyMissing)?
+                            .as_bytes(),
+                    )?,
+                )
+                .await?,
+            )),
         };
         let assets = match self.assets {
             Some(assets) => assets,
@@ -335,6 +338,7 @@ mod tests {
             grant_rows: None,
         }
         .build()
+        .await
         .expect("shared")
     }
 

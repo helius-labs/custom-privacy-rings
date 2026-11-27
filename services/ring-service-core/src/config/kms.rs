@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use clap::Args;
 use thiserror::Error;
@@ -16,6 +16,26 @@ pub struct KmsArgs {
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("missing AWS region")]
 pub struct MissingRegion;
+
+pub struct KmsNetwork<'a> {
+    pub bind: IpAddr,
+    pub rpc_url: &'a str,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("local KMS requires a loopback bind address and Solana RPC URL")]
+pub struct RemoteCluster;
+
+impl KmsNetwork<'_> {
+    pub fn check(self, endpoint: &KmsEndpoint) -> Result<(), RemoteCluster> {
+        if matches!(endpoint, KmsEndpoint::Localnet(_))
+            && !(self.bind.is_loopback() && crate::origins::loopback_url(self.rpc_url))
+        {
+            return Err(RemoteCluster);
+        }
+        Ok(())
+    }
+}
 
 impl KmsArgs {
     pub fn endpoint(&self) -> Result<KmsEndpoint, MissingRegion> {

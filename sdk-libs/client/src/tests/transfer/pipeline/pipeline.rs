@@ -1544,26 +1544,10 @@ async fn stage_delegate(case: DelegateCase<'_>) -> Result<Option<DelegateMint>, 
 
 #[tokio::test]
 async fn a_permanent_delegate_moves_only_the_mint_it_holds() {
-    use spl_token_2022_interface::{
-        extension::{
-            permanent_delegate::PermanentDelegate, BaseStateWithExtensionsMut, ExtensionType,
-            PodStateWithExtensionsMut,
-        },
-        pod::PodMint,
-    };
     let member = &crate::tests::support::keypair(1);
     let issuer = Address::new_from_array([0x46; 32]);
     let mint = Mint::new(Address::new_from_array([0x47; 32]), 2);
-    let extensions = [ExtensionType::PermanentDelegate];
-    let mut data =
-        vec![0; ExtensionType::try_calculate_account_len::<PodMint>(&extensions).unwrap()];
-    let mut state = PodStateWithExtensionsMut::<PodMint>::unpack_uninitialized(&mut data).unwrap();
-    state
-        .init_extension::<PermanentDelegate>(false)
-        .unwrap()
-        .delegate = Some(issuer.to_bytes().into()).try_into().unwrap();
-    state.base.is_initialized = true.into();
-    state.init_account_type().unwrap();
+    let account = crate::tests::support::permanent_delegate_mint(issuer);
     let stage_on = |settings, delegate, inputs| {
         stage_delegate(DelegateCase {
             settings,
@@ -1571,11 +1555,7 @@ async fn a_permanent_delegate_moves_only_the_mint_it_holds() {
             member,
             key: member.nullifier_key.clone(),
             inputs,
-            mint: Some(solana_account::Account {
-                owner: Address::new_from_array(spr_interface::SPL_TOKEN_2022_PROGRAM_ID),
-                data: data.clone(),
-                ..Default::default()
-            }),
+            mint: Some(account.clone()),
         })
     };
     let undelegated = RingSettings::new(RingMode::Confidential);

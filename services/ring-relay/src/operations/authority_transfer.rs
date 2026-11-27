@@ -1,7 +1,10 @@
 use std::collections::HashSet;
 
 use async_trait::async_trait;
+use custom_ring_interface::{InstructionTag, RingRail, RingTransactData};
 use jsonrpsee::types::ErrorObjectOwned;
+use solana_address::Address;
+use solana_message::VersionedMessage;
 use spr_indexer_api::Hash;
 use spr_keypair::{NullifierKey, PublicKey, ShieldedAddress};
 use spr_transaction::{Mint, WalletUtxo};
@@ -10,7 +13,7 @@ use zolana_ring_client::{
     rpc::{
         Attestation, AuthorityTransferAttestation, DelegateNotesAttestation,
         DelegateSnapshotReleaseAttestation, GetDelegateNotesRequest, GetDelegateNotesResponse,
-        GetListSaltRequest, GetListSaltResponse, ListSaltAttestation,
+        GetListSaltRequest, GetListSaltResponse, ListSaltAttestation, MintInputOpening,
         PrepareAuthorityTransferRequest, RelayStep,
     },
     sole_mint, AllowedNullifiers, DelegateFunding, DelegatePayment, DelegateSourceError,
@@ -347,9 +350,7 @@ pub async fn prepare_authority_transfer<S: TransactionSource>(
     let relay_id = request
         .relay_id()
         .map_err(|_| RingRelayError::Service(ServiceError::StateUnavailable))?;
-    if let Some(step) = relay.stored(&relay_id).await? {
-        return Ok(step);
-    }
+    let stored = relay.stored(&relay_id).await?;
     // 2. The config names the key its delegate and the auditor key held here, any other key is
     //    the live permanent delegate of the one mint every leg names.
     let pending = PendingNonce {
@@ -363,22 +364,36 @@ pub async fn prepare_authority_transfer<S: TransactionSource>(
             .ring_config(ring)
             .await?
             .ok_or(AuthorityTransferError::NotDelegate)?;
-        if config.delegate() != Some(delegate) {
+        let mint = if config.delegate() == Some(delegate) {
+            None
+        } else {
             let mint = sole_mint(transfer.mints()).ok_or(AuthorityTransferError::NotDelegate)?;
             if !shared.source.is_mint_delegate(mint, delegate).await? {
                 return Err(AuthorityTransferError::NotDelegate.into());
             }
-        }
+            Some(mint)
+        };
         if config.auditor_pubkey != service.auditor_pubkey() {
             return Err(AuthorityTransferError::ForeignAuditor.into());
         }
-        Ok::<_, RingRelayError>(())
+        Ok::<_, RingRelayError>(mint.map(|mint| MintSourceRecords {
+            request,
+            mint,
+            mode: config.mode,
+        }))
     };
     // A held relay retries under the nonce its first request spent.
-    if relay.holds(&relay_id).await? {
-        authorize.await?;
+    let mint_records = if stored.is_some() || relay.holds(&relay_id).await? {
+        authorize.await?
     } else {
-        shared.replay.authorize_once(pending, authorize).await?;
+        shared.replay.authorize_once(pending, authorize).await?
+    };
+    let disclose = async |step| match &mint_records {
+        Some(records) => records.for_step(step, shared.store(ring).as_ref()).await,
+        None => Ok(step),
+    };
+    if let Some(step) = stored {
+        return disclose(step).await;
     }
     // 3. The backfill reads only rings a read opened, so a first request projects the history
     //    its notes come from.
@@ -471,7 +486,7 @@ pub async fn prepare_authority_transfer<S: TransactionSource>(
     if !selected.is_empty() {
         return Err(AuthorityTransferError::SourceNote.into());
     }
-    relay
+    let step = relay
         .prepare_delegated(
             relay_id,
             DelegateSeal {
@@ -486,7 +501,95 @@ pub async fn prepare_authority_transfer<S: TransactionSource>(
                 assets: assets.registry(),
             },
         )
-        .await
+        .await?;
+    disclose(step).await
+}
+
+struct MintSourceRecords<'a> {
+    request: &'a PrepareAuthorityTransferRequest,
+    mint: Address,
+    mode: custom_ring_interface::RingMode,
+}
+
+impl MintSourceRecords<'_> {
+    async fn for_step(
+        &self,
+        step: RelayStep,
+        store: &ring_audit::utxos::AuditStore,
+    ) -> Result<RelayStep, RingRelayError> {
+        let RelayStep::SignMessage { relay_id, message } = step else {
+            return Ok(step);
+        };
+        let refused = AuthorityTransferError::UnrequestedInput;
+        let decoded: VersionedMessage =
+            wincode::deserialize_exact(&message.0).map_err(|_| refused)?;
+        let instruction = decoded
+            .instructions()
+            .iter()
+            .find(|instruction| {
+                decoded
+                    .static_account_keys()
+                    .get(usize::from(instruction.program_id_index))
+                    == Some(&self.request.ring.0)
+            })
+            .ok_or(refused)?;
+        let (tag, bytes) = instruction.data.split_first().ok_or(refused)?;
+        if *tag != InstructionTag::AuthorityTransfer as u8 {
+            return Err(refused.into());
+        }
+        let rail =
+            RingRail::of(InstructionTag::AuthorityTransfer, self.mode).map_err(|_| refused)?;
+        let parsed = RingTransactData::parse(bytes, rail).map_err(|_| refused)?;
+        let nullifiers = parsed.data().nullifiers;
+        let notes = store.notes_of_nullifiers(nullifiers).await?;
+        let input_openings = nullifiers
+            .iter()
+            .filter_map(|nullifier| notes.get(nullifier))
+            .map(|(_, note)| self.opening(&note.utxo))
+            .collect::<Result<Vec<_>, _>>()?;
+        if input_openings.is_empty() {
+            return Err(refused.into());
+        }
+        Ok(RelayStep::SignMintTransfer {
+            relay_id,
+            message,
+            input_openings,
+        })
+    }
+
+    fn opening(
+        &self,
+        note: &zolana_ring_client::KnownUtxo,
+    ) -> Result<MintInputOpening, AuthorityTransferError> {
+        let refused = AuthorityTransferError::SourceNote;
+        let zolana_ring_client::UtxoOwner::Keyed { nullifier_pk } = note.owner else {
+            return Err(refused);
+        };
+        let source_index = self
+            .request
+            .transfer
+            .sources
+            .iter()
+            .position(|source| {
+                source.0.nullifier_pubkey == nullifier_pk
+                    && source
+                        .0
+                        .solana_address()
+                        .is_ok_and(|owner| owner.to_bytes() == note.owner_key)
+            })
+            .ok_or(refused)?;
+        if note.mint != Some(self.mint) || note.data_hash != Some([0; 32]) {
+            return Err(refused);
+        }
+        let ring_data_hash = note.ring_data_hash.ok_or(refused)?;
+        Ok(MintInputOpening {
+            source_index: u16::try_from(source_index).map_err(|_| refused)?,
+            tree_id: note.tree_id,
+            amount: note.amount,
+            blinding: Hash(note.blinding),
+            ring_data_hash: (ring_data_hash != [0; 32]).then_some(Hash(ring_data_hash)),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -540,6 +643,37 @@ mod tests {
         withdrawals: Vec<DelegateWithdrawal>,
     }
 
+    fn mint_frame(inputs: &RelayProofInputs) -> Vec<u8> {
+        use zolana_ring_client::FrameEncode;
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../test-vectors/proof/ring-transact-expansion.json"
+        ))
+        .unwrap();
+        let encoded = vectors["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["name"] == "delegate_move")
+            .unwrap()["compact"]
+            .as_str()
+            .unwrap();
+        let bytes: Vec<_> = (0..encoded.len())
+            .step_by(2)
+            .map(|start| u8::from_str_radix(&encoded[start..start + 2], 16).unwrap())
+            .collect();
+        let mut frame = RingTransactData::parse(&bytes, RingRail::Delegate)
+            .unwrap()
+            .into_data();
+        let mut nullifiers = frame.nullifiers.to_vec();
+        for (slot, input) in nullifiers.iter_mut().zip(&inputs.inputs) {
+            *slot = input.nullifier();
+        }
+        frame.nullifiers = &nullifiers;
+        let mut tagged = vec![InstructionTag::AuthorityTransfer as u8];
+        tagged.extend(frame.encode().unwrap());
+        tagged
+    }
+
     #[async_trait]
     impl RelayProver for SealingProver {
         async fn prove(
@@ -568,7 +702,13 @@ mod tests {
                         .lock()
                         .expect("frame")
                         .clone()
-                        .unwrap_or_else(|| vec![21]),
+                        .unwrap_or_else(|| {
+                            if delegate == mint_delegate().pubkey() {
+                                mint_frame(proof_inputs)
+                            } else {
+                                vec![21]
+                            }
+                        }),
                 },
                 budget: ComputeBudgetConfig::new(400_000),
                 co_signers: Vec::new(),
@@ -1017,9 +1157,28 @@ mod tests {
             .expect_err("a secret links every mint of the owner"),
         );
         assert!(prover.sealed.lock().unwrap().is_empty());
-        prepare_authority_transfer(&fixture.shared, fixture.relay.as_ref(), &own)
+        let step = prepare_authority_transfer(&fixture.shared, fixture.relay.as_ref(), &own)
             .await
-            .expect("the mint delegate's move");
+            .unwrap();
+        let RelayStep::SignMintTransfer { input_openings, .. } = &step else {
+            panic!("mint openings")
+        };
+        assert_eq!(input_openings.len(), 2);
+        assert!(input_openings
+            .iter()
+            .all(|opening| opening.source_index == 0));
+        assert_eq!(
+            prepare_authority_transfer(&fixture.shared, fixture.relay.as_ref(), &own)
+                .await
+                .unwrap(),
+            step
+        );
+        *fixture.shared.source.mint_delegate.lock().unwrap() = None;
+        refused(
+            prepare_authority_transfer(&fixture.shared, fixture.relay.as_ref(), &own)
+                .await
+                .expect_err("revoked mint delegate"),
+        );
         assert_eq!(prover.sealed.lock().unwrap()[0].delegate, issuer.pubkey());
     }
 

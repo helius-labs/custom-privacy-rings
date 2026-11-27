@@ -17,7 +17,12 @@ import {
   type TrackingOpening,
   type TrackingRecord,
 } from "../membership/tracking.js";
-import { MAX_RING_MEMBER_BATCH } from "./indexer-codec.js";
+import {
+  getStorageRecordPoolMethod,
+  MAX_RING_MEMBER_BATCH,
+  registryRoot,
+} from "./indexer-codec.js";
+import type { StorageRecordPool } from "./indexer-types.js";
 import { schemaWire } from "../wire-primitives.js";
 import { defined } from "../defined.js";
 
@@ -80,11 +85,11 @@ export const getTrackingOpeningsMethod: MethodDescriptor<
   },
   decodeResponse: (value) => {
     const row = object(value, "$", ["context", "root", "openings"]);
-    const root = object(row["root"], "root", ["root", "revision", "nextIndex"]);
+    const root = registryRoot(row["root"], "root", TRACKING_CAPACITY);
     return Object.freeze({
       slot: context(row["context"], "context").slot,
-      root: hashBytes(checkedHash(root["root"], "root.root")),
-      revision: u64(root["revision"], "root.revision"),
+      root: root.root,
+      revision: root.revision,
       openings: Object.freeze(array(row["openings"], "openings", opening)),
     });
   },
@@ -94,18 +99,19 @@ export interface TrackingRecordPoolRequest extends TrackingOpeningsRequest {
   readonly openings: number;
 }
 
+export type TrackingRecordPool = ServedTrackingPool & Pick<StorageRecordPool, "context" | "root">;
+
 export const getTrackingRecordPoolMethod: MethodDescriptor<
   TrackingRecordPoolRequest,
-  ServedTrackingPool
+  TrackingRecordPool
 > = {
   name: "getTrackingRecordPool",
-  encodeRequest: (request) => ({
-    ...getTrackingOpeningsMethod.encodeRequest(request),
-    openings: request.openings,
-  }),
+  encodeRequest: getStorageRecordPoolMethod.encodeRequest,
   decodeResponse: (value) => {
     const row = object(value, "$", ["context", "root", "records", "canopy", "subjects"]);
     return Object.freeze({
+      context: context(row["context"], "context"),
+      root: registryRoot(row["root"], "root", TRACKING_CAPACITY),
       records: Object.freeze(
         array(row["records"], "records", (entry, path) => {
           const served = object(entry, path, ["record", "path"]);
