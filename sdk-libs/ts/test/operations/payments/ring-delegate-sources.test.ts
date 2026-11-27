@@ -239,6 +239,12 @@ describe("delegate sources", () => {
         expectedDelegate({ ...asked, mint: USDC }),
       ])
         await expect(refused).rejects.toMatchObject({ code: "RING_DELEGATE_INVALID" });
+      await expect(
+        expectedDelegate({ ...asked, config: { ...asked.config, delegate }, mint: SOL_MINT }),
+      ).rejects.toMatchObject({
+        code: "RING_DELEGATE_INVALID",
+        details: { reason: "ringDelegateAsMintRequester" },
+      });
       const recordsOnly = await expectedDelegate({ ...asked, mint: SOL_MINT });
       const message = messageOf(fixture, instruction);
       expect(checkRelayMessage(recordsOnly, message, delegate as never).signer).toBe(delegate);

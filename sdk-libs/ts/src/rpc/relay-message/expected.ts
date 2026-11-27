@@ -374,9 +374,11 @@ export function openedSources({
   mint,
 }: RequestedAuthorityTransfer): AllowedNullifiers | undefined {
   const { transfer } = request;
-  const refused = (reason: "missing" | "unauthorized") =>
+  const refused = (reason: "missing" | "unauthorized" | "ringDelegateAsMintRequester") =>
     new RingError("RING_DELEGATE_INVALID", { details: { reason } });
   if (allowed === undefined) {
+    // The program binds no mint when the ring's own delegate signs.
+    if (config.delegate === request.delegate) throw refused("ringDelegateAsMintRequester");
     const legs = [...transfer.payments, ...transfer.exits, ...transfer.withdrawals];
     if (legs.length === 0 || legs.some((leg) => leg.mint !== mint)) throw refused("unauthorized");
     return undefined;
