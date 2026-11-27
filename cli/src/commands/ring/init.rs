@@ -286,6 +286,7 @@ impl RecordsRegistry<'_> {
         if ctx.rpc().get_account(registry)?.is_some() {
             return Ok(registry);
         }
+        ctx.fund(creation.payer, fund::MIN_AUTHORITY_BALANCE)?;
         let (blockhash, _) = ctx.rpc().get_latest_blockhash()?;
         let message = creation.message(blockhash)?;
         let payer = ctx.request_signer(self.authority);
