@@ -65,7 +65,7 @@ pub const UTXO_BACKFILL_INTERVAL: Duration = Duration::from_secs(30);
 /// Pages one backfill run reads, the next run resumes from its position.
 pub(crate) const MAX_BACKFILL_PAGES: usize = 64;
 
-/// Entries the mirror keeps of each history map, the rest read from storage.
+/// Per map of the mirror.
 pub(crate) const MAX_CACHED_ENTRIES: usize = 65_536;
 
 /// The guards are never held across an await, a commit writes the mirror after its transaction.
@@ -107,7 +107,6 @@ pub(crate) struct Backfill {
     pub writer: Option<ProjectionLease>,
 }
 
-/// Bounded caches, storage answers every miss.
 struct SpendBook {
     notes: BoundedMap<[u8; 32], StoredUtxo>,
     /// The note index, a late secret fills it for that owner's notes.
@@ -493,7 +492,6 @@ impl AuditStore {
         }
     }
 
-    /// Takes one snapshot's resume state, a cache of another revision empties.
     pub(crate) fn refresh(&self, loaded: LoadedSpends, revision: i64) {
         let LoadedSpends {
             checkpoint,
@@ -674,7 +672,6 @@ impl AuditStore {
         self.snapshots(release.ring)?.release(release).await
     }
 
-    /// The snapshots of this store's ring, a cursor of another ring reads none.
     fn snapshots(&self, ring: Address) -> Result<WalletSnapshots<'_>, RingAuditError> {
         let reads = self.reads()?;
         if ring != reads.ring {
@@ -1081,7 +1078,6 @@ impl AuditStore {
         self.commit_fixture(delta).await;
     }
 
-    /// A store over its own internal database.
     pub async fn on_internal_database(ring: Address, auditor: &spr_keypair::X25519Keypair) -> Self {
         Self::new(
             ring,
@@ -1094,7 +1090,6 @@ impl AuditStore {
         )
     }
 
-    /// The writer of the one replica a fixture store has.
     pub(crate) async fn fixture_writer(&self) -> crate::spent_index::ProjectionWriter<'_> {
         let Backing::Database {
             store, ring, seal, ..

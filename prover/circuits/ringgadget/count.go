@@ -105,7 +105,7 @@ func IsAny(api frontend.API, bits ...frontend.Variable) frontend.Variable {
 	return result
 }
 
-// The caller holds flag boolean, any other flag scales the values.
+// Masked leaves flag unconstrained, a flag other than 0 or 1 scales the values.
 func Masked(api frontend.API, flag frontend.Variable, values []frontend.Variable) []frontend.Variable {
 	masked := make([]frontend.Variable, len(values))
 	for i, value := range values {

@@ -139,7 +139,7 @@ impl StorageRegistry {
         [Self::SEED, creator.as_ref(), &registry_id.0]
     }
 
-    /// Host only, the program writes the fields into the account data with `init`.
+    /// The program writes the fields in place with `init`.
     #[cfg(not(target_os = "solana"))]
     pub fn new(authority: Address, ix: &InitializeIxData) -> Self {
         let mut registry = Self::zeroed();

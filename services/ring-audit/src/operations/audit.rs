@@ -751,7 +751,6 @@ impl<S: TransactionSource> AuditService<S> {
         })
     }
 
-    /// `None` without a held lease.
     fn writer<'a>(
         &'a self,
         lease: Option<ProjectionLease>,

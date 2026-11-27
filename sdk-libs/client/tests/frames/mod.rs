@@ -79,7 +79,6 @@ impl Fixture {
         }
     }
 
-    /// The hidden owner's proof sections, the anonymous base frame's.
     pub fn hidden(&self, default_owner_tag: Option<[u8; 32]>) -> RailAuthorization {
         RailAuthorization::AnonymousHidden(AnonymousProofData {
             commitment: self.bytes[20],

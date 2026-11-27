@@ -100,7 +100,6 @@ impl Amounts {
         }
     }
 
-    /// An owner window reads its owner's outflow and exits alone.
     pub(super) fn owner(self) -> Self {
         Self {
             outflow: self.outflow,
@@ -127,7 +126,6 @@ impl Amounts {
         self.combine(other, u128::checked_sub).ok_or_else(underflow)
     }
 
-    /// `None` when `step` refuses any one measure.
     fn combine(self, other: Self, step: impl Fn(u128, u128) -> Option<u128>) -> Option<Self> {
         Some(Self {
             outflow: step(self.outflow, other.outflow)?,

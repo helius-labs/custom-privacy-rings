@@ -1,5 +1,3 @@
-//! The shared frame vectors through `parse` and `roots`.
-
 use bytemuck::Zeroable;
 use custom_ring_interface::{
     storage::Revision, tracking::TrackingRegistry, CustomRingError, LiveRoots, ParsedTransact,
@@ -23,7 +21,6 @@ fn vector(name: &str) -> Value {
     serde_json::from_str(&std::fs::read_to_string(file).expect("vector file")).expect("json")
 }
 
-/// The compact frame of `name` in the expansion vector and the rail it parses under.
 fn expansion_case(name: &str) -> (RingRail, Vec<u8>) {
     let expansion = vector("ring-transact-expansion.json");
     let case = expansion["cases"]
@@ -57,7 +54,6 @@ fn frames() -> Vec<Vec<u8>> {
     compact.chain(with_totals).collect()
 }
 
-/// Both outcomes, where `parse` alone and `parse` then `ParsedTransact::new` differ in value or refusal.
 fn disagreement(frame: &[u8], rail: RingRail) -> Option<String> {
     let parsed = RingTransactData::parse(frame, rail);
     let revalidated = parsed
@@ -139,7 +135,6 @@ fn policy_ring(curator: Option<Address>) -> RingPolicy {
     ring
 }
 
-/// The first refusal of `roots` over registries that serve no root.
 fn roots_refusal(frame: &[u8], rail: RingRail, ring: &RingPolicy) -> CustomRingError {
     let parsed = RingTransactData::parse(frame, rail).expect("the frame parses");
     let tracking = TrackingRegistry::zeroed();
@@ -181,7 +176,7 @@ fn a_curator_revision_names_the_ring_s_curator_exactly() {
 
 #[test]
 fn a_delegate_frame_carries_no_approval_bit() {
-    /// Byte 4, past the flags and the header.
+    /// Past the flag byte and the header.
     const APPROVAL_BYTE: usize = 4;
     let (rail, mut frame) = expansion_case("delegate_move");
     let ring = policy_ring(None);

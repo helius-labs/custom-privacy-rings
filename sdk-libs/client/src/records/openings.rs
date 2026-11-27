@@ -188,7 +188,6 @@ pub(crate) struct ServedPool<'a, R> {
 }
 
 impl<R> ServedPool<'_, R> {
-    /// The response names `root`, takes the canopy width and one subject per member.
     pub fn verify<L: IndexedLeaf + Default + Clone>(
         self,
         leaf: impl Fn(&R) -> L,

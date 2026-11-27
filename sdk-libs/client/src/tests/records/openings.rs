@@ -54,7 +54,6 @@ fn cut_level(path: &mut RingRecordPathView) {
     path.siblings.pop();
 }
 
-/// Serves the tracking answers a test forged.
 #[derive(Default)]
 struct Served {
     pool: Option<GetTrackingRecordPoolResponse>,

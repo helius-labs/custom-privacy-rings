@@ -1716,7 +1716,6 @@ mod tests {
         assert!(cut_within(idle, 1).await);
     }
 
-    /// A hub that registers every method, the relay ones included.
     async fn every_method() -> RpcModule<Arc<Hub<TestSource>>> {
         let relay = ring_relay::relay::RelayParts {
             store: ring_service_core::database::Store::in_memory()

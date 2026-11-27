@@ -30,7 +30,6 @@ use crate::error::WriterError;
 
 #[async_trait]
 pub trait StorageChain: Send + Sync {
-    /// The chain the writer sends and lands its transactions on.
     fn submit(&self) -> &dyn ChainSubmit;
 
     async fn account(&self, address: Address) -> Result<Option<Account>, WriterError>;
@@ -111,7 +110,6 @@ impl LiveStorageChain {
         })
     }
 
-    /// Proves the salted owner writes the record writer serves.
     pub fn client(&self) -> &RingClient<AsyncSolanaRpc, AsyncSprIndexer> {
         &self.client
     }

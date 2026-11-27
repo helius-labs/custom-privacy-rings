@@ -32,7 +32,6 @@ pub struct Store {
     holder: LeaseHolder,
 }
 
-/// Where the service keeps its rows, fixed at startup.
 #[derive(Clone)]
 pub enum ServiceStore {
     /// `--store-url`, the one store that turns on the parts it gates.
@@ -141,7 +140,6 @@ mod tests {
     use super::*;
     use crate::sql;
 
-    /// A row one acquisition writes, a later acquisition on another task reads.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_internal_store_keeps_one_database_across_acquisitions() {
         let store = Store::in_memory().await.expect("store");

@@ -1,5 +1,3 @@
-//! The JSON keys and their order of every storage and tracking registry envelope.
-
 use serde::Serialize;
 use spr_indexer_api::{Context, Hash, SerializablePubkey};
 use zolana_ring_indexer::{
@@ -19,7 +17,7 @@ use zolana_ring_indexer::{
 };
 use zolana_ring_policy::MintPolicy;
 
-/// The unchanged inner types, composites ahead of the parts they hold.
+/// Composites ahead of the parts they hold.
 const PARTS: [(&str, &str); 7] = [
     ("$CONTEXT", r#"{"blockTime":0,"slot":0}"#),
     ("$ROOT", r#"{"root":$HASH,"revision":0,"nextIndex":0}"#),

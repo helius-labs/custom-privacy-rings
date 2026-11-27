@@ -114,7 +114,7 @@ impl Keys {
     }
 }
 
-/// A store sealed under the auditor of `seal`, on its own internal database.
+/// Sealed under the auditor key of `seal`.
 async fn book() -> AuditStore {
     AuditStore::on_internal_database(RING, &spr_keypair::X25519Keypair::from_bytes(&[0x41; 32]))
         .await
@@ -691,7 +691,6 @@ async fn commit_page(
     Ok(())
 }
 
-/// A new replica of `store`, its mirror loaded as a restart loads it.
 async fn restart(store: &Store) -> AuditStore {
     let book = indexed_store(store);
     let loaded = LoadSpends {
@@ -705,7 +704,7 @@ async fn restart(store: &Store) -> AuditStore {
     book
 }
 
-/// Every stored row and the checkpoint of `RING`, the revision aside.
+/// Leaves out the revision.
 #[derive(Debug, PartialEq, Eq)]
 struct Stored {
     rows: StoredRows,
@@ -1420,7 +1419,6 @@ async fn wallet_snapshot_survives_a_same_slot_spend_and_change() {
     }
 }
 
-/// A cursor naming ring B with a snapshot of ring A reads no row of A.
 #[tokio::test]
 async fn a_snapshot_of_another_ring_continues_no_read() {
     let other_ring = Address::new_from_array([9; 32]);

@@ -64,7 +64,6 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         fee_payer,
         enrollment_applier,
     } = args.read_keys(&genesis_hash).await?;
-    // The role check, the enrollment writer, the record writer and its private writes share it.
     let chain = args
         .prover_url
         .as_deref()

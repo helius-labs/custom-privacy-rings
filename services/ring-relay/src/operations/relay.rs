@@ -1493,7 +1493,6 @@ struct StagedAttempt<'a> {
     relay_id: &'a RelayId,
     record: &'a RelayRecord,
     slot: u64,
-    /// A managed merge's inputs, held in the transaction that stores its record.
     hold: Option<HoldInputs<'a>>,
 }
 

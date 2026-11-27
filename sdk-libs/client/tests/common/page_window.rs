@@ -1,5 +1,3 @@
-//! An honest indexer's paging over a full answer.
-
 use spr_client::PaginationToken;
 use spr_indexer_api::{Page, Positioned};
 
@@ -8,7 +6,6 @@ pub struct MockPageWindow {
     pub limit: usize,
 }
 
-/// The transactions after `token`, at most `limit`, a token only ahead of more.
 pub fn page_window<T: Positioned>(mut page: Page<T>, window: MockPageWindow) -> Page<T> {
     page.data
         .retain(|row| window.token.is_none_or(|token| row.position() > token));

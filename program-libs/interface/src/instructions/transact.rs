@@ -278,7 +278,6 @@ pub struct RingTransactData<'a> {
     pub input_trees: InputTrees,
 }
 
-/// Who authorizes the frame, the rail and the proof sections it carries as one value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RailAuthorization {
     ConfidentialSigner,
@@ -301,8 +300,6 @@ impl RailAuthorization {
         }
     }
 
-    /// An in-proof owner settles on SPP's anonymous rail though its ring is confidential, public
-    /// owners on the confidential rail though their ring is anonymous.
     fn circuit(self, n_in: u8, n_out: u8) -> CircuitId {
         match self {
             Self::ConfidentialInProof(owner) => {

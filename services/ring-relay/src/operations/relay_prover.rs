@@ -90,7 +90,6 @@ pub mod fixture {
     use super::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver};
     use crate::error::RingRelayError;
 
-    /// A prover a test never reaches.
     pub struct UnusedProver;
 
     #[async_trait]

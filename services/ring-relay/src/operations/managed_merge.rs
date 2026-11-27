@@ -524,7 +524,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// Records each merge it proves, the instruction names the proof's turn so each message differs.
+    /// The instruction names the proof's turn so each message differs.
     #[derive(Default)]
     struct RecordingProver {
         owners: Mutex<Vec<(Address, usize)>>,

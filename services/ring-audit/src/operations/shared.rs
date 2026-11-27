@@ -137,7 +137,6 @@ impl<S> Shared<S> {
             .clone()
     }
 
-    /// The mirror is a bounded cache, storage answers what it evicted.
     fn backing(&self, ring: Address) -> Backing {
         let seal = self
             .auditor(Some(ring))
@@ -318,7 +317,6 @@ mod tests {
     use super::*;
     use crate::{error::ServiceError, utxos::WalletStatusQuery};
 
-    /// A store that cannot seal a ring's rows answers no read of it.
     #[tokio::test]
     async fn a_ring_whose_seal_does_not_derive_answers_state_unavailable() {
         let served = Address::new_from_array([8; 32]);

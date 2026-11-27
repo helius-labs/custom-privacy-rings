@@ -143,7 +143,6 @@ type Assembled struct {
 	delegate bool
 }
 
-// Built is a witness of either family with the fixtures it was derived from.
 type Built struct {
 	Assembled
 	Circuit *transfer.TransferCircuit
@@ -157,7 +156,7 @@ func (b Built) Refill(t testing.TB) {
 	b.Rehash(t)
 }
 
-// Rehash recomputes private_tx_hash from the fixture slots and inputs, then the public input.
+// Rehash recomputes private_tx_hash after a test edits the fixture slots or inputs.
 func (b Built) Rehash(t testing.TB) {
 	t.Helper()
 	b.World.rehash(t, &b.Circuit.Sections, b.Audit)

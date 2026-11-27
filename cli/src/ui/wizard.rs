@@ -232,7 +232,7 @@ impl Wizard<'_> {
                 "recipient blocklist" => {
                     Some(vec![forbid(SubjectName::OutputOwner, ListId::Block)?])
                 }
-                // One rule per list, one rule over both admits an owner off either.
+                // One rule per list refuses an owner on either list.
                 "recipient public and private blocklist" => Some(vec![
                     forbid(SubjectName::OutputOwner, ListId::Block)?,
                     forbid(SubjectName::OutputOwner, ListId::PrivateBlock)?,

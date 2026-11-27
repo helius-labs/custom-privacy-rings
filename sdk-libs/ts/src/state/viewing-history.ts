@@ -570,7 +570,6 @@ function storedCounter(value: unknown, name: string): StreamCounter {
   });
 }
 
-/** Integer literals parse to exact bigints. */
 export function parseExact(text: string): unknown {
   if (typeof text !== "string") throw invalid("is not JSON text");
   try {

@@ -435,7 +435,7 @@ struct StoredCoSign {
     flows: Option<Vec<StoredFlow>>,
 }
 
-/// Amounts as decimal strings, a `serde_json::Value` holds no integer past `u64`.
+/// A `serde_json::Value` holds no integer past `u64`.
 #[serde_as]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -46,7 +46,6 @@ fn flow(owner: u8, asset: Address, debit: u64) -> OwnerFlow {
     }
 }
 
-/// A row of SOL whose whole charge leaves the ring.
 fn exit(owner: u8, amount: u64) -> OwnerFlow {
     let mut moved = flow(owner, SOL, amount);
     moved.flow.exiting = amount.into();
@@ -185,7 +184,6 @@ impl Window {
         clear_usage(&self.store).await;
     }
 
-    /// The service caps each owner's exits of SOL, the record caps nothing.
     fn exits(mut self) -> Self {
         self.limit(AssetLimits::EMPTY);
         self.co_signer.rule.exit_caps.insert(SOL, EXIT_CAP);
@@ -1028,7 +1026,6 @@ async fn the_exit_window_slides_and_a_restart_keeps_its_total() {
     restarted.signed(3, vec![exit(7, CAP)]).await;
 }
 
-/// Two co-signers over one store grant one owner's exit allowance once.
 async fn assert_two_co_signers_share_one_exit_allowance(url: &str) {
     let windows = [
         Arc::new(Window::open(url).await.exits()),

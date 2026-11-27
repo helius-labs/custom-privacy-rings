@@ -91,8 +91,6 @@ pub enum OwnerEnrollment {
     Unknown,
 }
 
-/// A bounded cache of the stored rows, storage answers every miss.
-///
 /// On the lease holder a scan caches rows only after its page commits, so each is a stored row.
 pub(crate) struct HeldEnrollments {
     by_member: BoundedMap<[u8; 32], HeldEnrollment>,

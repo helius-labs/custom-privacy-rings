@@ -367,7 +367,6 @@ pub mod fixture {
     use super::{ChainOutcome, ChainSubmit, LatestBlockhash, Simulation};
     use crate::error::ServiceError;
 
-    /// A chain a test never reaches.
     pub struct UnusedChain;
 
     #[async_trait]

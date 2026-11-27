@@ -71,7 +71,6 @@ export abstract class AttestationRequest {
     return this;
   }
 
-  /** The time `at` set or the current second, and a fresh nonce. */
   protected stamp(): Readonly<{ timestamp: bigint; nonce: Bytes32 }> {
     return { timestamp: timestampOrNow(this.#timestamp), nonce: freshNonce() };
   }

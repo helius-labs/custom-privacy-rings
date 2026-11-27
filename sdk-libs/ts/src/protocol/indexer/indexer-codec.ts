@@ -206,7 +206,6 @@ function memberOpening(value: unknown, path: string): RingMemberOpening {
   );
 }
 
-/** At most `MAX_RING_MEMBER_BATCH` leaves, each path `levels` deep. */
 function servedRecords(value: unknown, levels: number): readonly RingServedRecord[] {
   const records = array(value, "records", (entry, path) => {
     const item = object(entry, path, ["record", "path"]);

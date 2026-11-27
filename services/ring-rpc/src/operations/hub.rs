@@ -223,7 +223,6 @@ impl<S: TransactionSource> Hub<S> {
         &self.shared
     }
 
-    /// Proves and pays through the relay, `None` without one.
     pub fn managed_merge(self: &Arc<Self>) -> Option<ManagedMerge<S>> {
         let relay = self.relay.as_ref()?;
         Some(
@@ -637,7 +636,6 @@ mod tests {
         RootSecret::from_bytes([7; 32]).expect("root")
     }
 
-    /// Only `--store-url` turns on the co-signer, database grants, the record writer and the relay.
     #[tokio::test]
     async fn a_hub_without_a_store_url_turns_on_no_store_gated_part() {
         let co_signer = builder()

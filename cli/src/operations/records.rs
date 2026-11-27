@@ -178,7 +178,6 @@ mod tests {
         }
     }
 
-    /// Serves `opening` for every member, under the root it opens to.
     struct Indexer {
         opening: RingMemberOpening,
         root: [u8; 32],

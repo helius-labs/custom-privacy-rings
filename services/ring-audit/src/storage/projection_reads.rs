@@ -199,7 +199,6 @@ impl<C: ConnectionTrait> ProjectionReads<'_, C> {
     }
 }
 
-/// Every stored history row of one ring, for a test that compares stored states.
 #[cfg(test)]
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct StoredRows {

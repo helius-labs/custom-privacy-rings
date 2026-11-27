@@ -48,7 +48,7 @@ impl ReplayGuard {
         Ok(value)
     }
 
-    /// The clock is read again, a timestamp that left the skew while the request ran is refused.
+    /// A timestamp that left the skew while the request ran is refused.
     pub async fn accept(&self, authorized: AuthorizedNonce) -> Result<(), ServiceError> {
         let check = authorized.into_check(self.clock.now()?);
         check.fresh()?;
@@ -72,7 +72,6 @@ impl ReplayCheck {
     }
 }
 
-/// One row per spent nonce of every ring.
 #[cfg(any(test, feature = "test-fixtures"))]
 pub async fn spent_nonces(store: &Store) -> Result<i64, sea_orm::DbErr> {
     crate::sql::Query::new("SELECT COUNT(*) AS rows FROM replay_nonces", Vec::new())

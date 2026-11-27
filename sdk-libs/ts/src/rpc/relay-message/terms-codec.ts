@@ -51,7 +51,6 @@ function encodeLeg(leg: PublicLeg): unknown {
   };
 }
 
-/** An integer past the safe range keeps its digits as the transport hands them over. */
 function parseWire(json: string): unknown {
   return parseExactJson(json, (digits) => {
     const value = Number(digits);

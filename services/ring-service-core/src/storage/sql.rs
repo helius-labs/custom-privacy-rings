@@ -6,7 +6,7 @@ use solana_address::Address;
 /// Keys bound into one statement, under every backend's parameter ceiling.
 pub const KEYS_PER_STATEMENT: usize = 256;
 
-/// One SQL text with its binds, built for the backend of the connection that runs it.
+/// Built for the backend of the connection that runs it.
 #[must_use]
 pub struct Query {
     sql: String,
@@ -21,7 +21,6 @@ impl Query {
         }
     }
 
-    /// The count of rows the statement changed.
     pub async fn execute(self, conn: &impl ConnectionTrait) -> Result<u64, DbErr> {
         Ok(conn.execute(self.statement(conn)).await?.rows_affected())
     }

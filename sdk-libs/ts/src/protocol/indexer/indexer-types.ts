@@ -11,7 +11,7 @@ import type { indexerTypes } from "@heliuslabs/spr/internal";
 type Hash = indexerTypes.Hash;
 type IndexerContext = indexerTypes.IndexerContext;
 
-/** A root a `StorageRegistry` history holds, named by the revision the ring program reads. */
+/** Rust `StorageRootView`. */
 export interface StorageRoot {
   readonly root: Bytes32;
   readonly revision: bigint;
@@ -36,7 +36,7 @@ export interface StorageMemberOpenings {
   readonly openings: readonly RingMemberOpening[];
 }
 
-/** Leaves of one `StorageRegistry` from `startIndex`, all under `expectedRoot`. */
+/** Rust `GetStorageMemberRecordsRequest`. */
 export interface StoragePageRequest {
   readonly registry: Address;
   readonly expectedRoot: Bytes32;
@@ -44,7 +44,6 @@ export interface StoragePageRequest {
   readonly limit: number;
 }
 
-/** Leaves from `startIndex` at one root, each with its path. */
 export interface StorageMemberPage {
   readonly context: IndexerContext;
   readonly root: StorageRoot;

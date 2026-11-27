@@ -39,7 +39,6 @@ pub enum ServiceError {
 
 const SEND_REFUSED: i32 = -32113;
 
-/// One JSON-RPC refusal code and the Rust name that raises it.
 #[cfg(any(test, feature = "test-fixtures"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RefusalCode {

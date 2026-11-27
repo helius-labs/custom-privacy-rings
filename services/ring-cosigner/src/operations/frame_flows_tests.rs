@@ -322,8 +322,6 @@ async fn what_leaves_is_each_exit_and_withdrawal_leg_and_never_a_deposit_or_a_ri
     assert_eq!(exiting(&stays, vec![public(0, 30)]).await, of_alice(0));
 }
 
-/// A deposit funds the exit of 15 and no note is spent, the rows ask the registry for no mint
-/// and no owner exits.
 #[tokio::test]
 async fn a_deposit_funded_exit_and_an_exit_of_nothing_need_no_registry_mint() {
     let no_mints = RingAssets::new([]).expect("assets");
@@ -555,7 +553,7 @@ fn the_reserved_figure_matches_the_circuit_quantities() {
     }
 }
 
-/// One frame's notes and legs, each owner's identity starts with its byte.
+/// Each owner's identity starts with its byte.
 struct Moved {
     inputs: Vec<DebitInput>,
     outputs: Vec<DebitOutput>,

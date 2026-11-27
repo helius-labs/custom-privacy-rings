@@ -117,7 +117,7 @@ pub struct CoSignPolicyInit<S> {
     pub exit_caps: Vec<ExitCap>,
 }
 
-/// What one owner moves out of the ring of `mint` within a window, a cap of this service alone.
+/// What one owner moves out of the ring of `mint` within a window, a cap of the service alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExitCap {
     pub mint: Address,
@@ -778,8 +778,7 @@ impl LimitDecision<'_> {
     }
 }
 
-/// The record's four caps and the service's exit cap, a zero window counts the checked
-/// transaction alone.
+/// A zero window counts the checked transaction alone.
 fn window_caps(check: &AssetCheck) -> impl Iterator<Item = WindowCap> {
     let limits = &check.policy.limits;
     let ring = |cap, window_slots, measure| WindowCap {

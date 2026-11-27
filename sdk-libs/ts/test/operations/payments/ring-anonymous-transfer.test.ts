@@ -239,7 +239,6 @@ function rail(
   return input.tags === undefined ? signed : signed.withTags(input.tags);
 }
 
-/** An anonymous ring, its sender and an enrolled recipient `bob` paid at `to`. */
 async function anonymousPayment() {
   const fixture = await anonymousRing();
   const sender = anonymousSender();
