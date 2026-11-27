@@ -18,9 +18,6 @@
 // resolves to one answer under one root. Capacity bounds what a key can prove and never what it checks.
 // A padded pool cycles real rows, see RecordPoolOf::padded in program-libs/member-registry/src/record_pool.rs.
 //
-// Read after registry/registry.go, registry/shared_path.go, registry/apply_records.go. Read before
-// policy/tracking.go, policy/subjects.go.
-//
 // Properties:
 // 1. Every record row of an active pool is a leaf under the pool's root.
 // 2. Every subject row of an active pool holds its member's columns, or zeros beside a link proving the member absent.
@@ -82,19 +79,23 @@ type pooledRecord struct {
 	mintPolicy, withdrawalThreshold frontend.Variable
 }
 
-// Lists lead, the leaf hash still covers the whole record.
-type recordColumns struct {
-	width   int
-	project func(record registry.Record) []frontend.Variable
+type poolLeaf interface {
+	Hash(api frontend.API) frontend.Variable
+}
+
+// A row leads with the record's Member and Next, the leaf hash still covers the whole record.
+type recordColumns[R poolLeaf] struct {
+	width int
+	row   func(record R) []frontend.Variable
 }
 
 var (
-	ownColumns = recordColumns{width: 3, project: func(record registry.Record) []frontend.Variable {
-		return []frontend.Variable{record.Lists, record.MintPolicy, record.WithdrawalThreshold}
+	ownColumns = recordColumns[registry.Record]{width: 3, row: func(record registry.Record) []frontend.Variable {
+		return []frontend.Variable{record.Member, record.Next, record.Lists, record.MintPolicy, record.WithdrawalThreshold}
 	}}
 	// A curator lookup reads list bits alone, every other field binds through the leaf hash only.
-	curatorColumns = recordColumns{width: 1, project: func(record registry.Record) []frontend.Variable {
-		return []frontend.Variable{record.Lists}
+	curatorColumns = recordColumns[registry.Record]{width: 1, row: func(record registry.Record) []frontend.Variable {
+		return []frontend.Variable{record.Member, record.Next, record.Lists}
 	}}
 )
 
@@ -110,20 +111,16 @@ type recordPool struct {
 
 type subjectPool struct{ pooledTable }
 
-func openRecordPool(api frontend.API, active, root frontend.Variable, records []registry.Record, proof registry.SharedQuadProof, columns recordColumns) recordPool {
+func openRecordPool[R poolLeaf](api frontend.API, active, root frontend.Variable, records []R, proof registry.SharedQuadProof, columns recordColumns[R]) recordPool {
 	api.AssertIsBoolean(active)
-	pool := newRecordPool(api, active, columns.width)
+	pool := recordPool{pooledTable{active: active, table: lookup.New(api, 2+columns.width)}, columns.width}
 	leaves := make([]frontend.Variable, len(records))
 	for i, record := range records {
 		leaves[i] = record.Hash(api)
-		pool.table.Insert(append([]frontend.Variable{record.Member, record.Next}, columns.project(record)...))
+		pool.table.Insert(columns.row(record))
 	}
 	proof.AssertLeavesWhen(api, active, root, leaves)
 	return pool
-}
-
-func newRecordPool(api frontend.API, active frontend.Variable, width int) recordPool {
-	return recordPool{pooledTable{active: active, table: lookup.New(api, 2+width)}, width}
 }
 
 // openSubjectPool resolves every subject row once against the records, a query then needs no ordering check of its own.
@@ -143,7 +140,7 @@ func (p recordPool) read(api frontend.API, query recordQuery) []frontend.Variabl
 	// The row's Member is the query's, or the query lies strictly inside the row's link. AssertOrderedWhen compares canonical field integers.
 	ringgadget.AssertOrderedWhen(api, api.Mul(query.active, api.Sub(1, present)), row[0], query.member, row[1])
 	// An absent member reads zeros whatever its predecessor holds.
-	return gated(api, api.Mul(query.active, present), row[2:])
+	return ringgadget.Masked(api, api.Mul(query.active, present), row[2:])
 }
 
 func (p subjectPool) resolve(api frontend.API, query recordQuery) []frontend.Variable {
@@ -154,7 +151,7 @@ func (p subjectPool) read(api frontend.API, query recordQuery) []frontend.Variab
 	row := p.lookup(api, query)
 	// A row of another member would answer for the query's.
 	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: query.active, A: row[0], B: query.member})
-	return gated(api, query.active, row[1:])
+	return ringgadget.Masked(api, query.active, row[1:])
 }
 
 func (p pooledTable) lookup(api frontend.API, query recordQuery) []frontend.Variable {
@@ -162,14 +159,6 @@ func (p pooledTable) lookup(api frontend.API, query recordQuery) []frontend.Vari
 	// The rows of an inactive pool fold under no root, an active query there would read prover chosen lists.
 	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: query.active, V: api.Sub(1, p.active)})
 	return p.table.Lookup(query.index)
-}
-
-func gated(api frontend.API, active frontend.Variable, columns []frontend.Variable) []frontend.Variable {
-	zeroed := make([]frontend.Variable, len(columns))
-	for i, column := range columns {
-		zeroed[i] = api.Mul(active, column)
-	}
-	return zeroed
 }
 
 func withLists(api frontend.API, columns []frontend.Variable) []frontend.Variable {

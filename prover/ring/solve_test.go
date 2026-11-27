@@ -6,9 +6,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark/test"
-
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/registry"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
@@ -42,17 +39,13 @@ func TestHostRequestsDecodeAndSolve(t *testing.T) {
 		t.Run(string(circuit), func(t *testing.T) {
 			payload := mustMarshal(t, hostRequest(t, keyOf(t, circuit)))
 			circuitOf := extensionOf(t, circuit).Circuit
-			if err := test.IsSolved(circuitOf(), decodePayload(t, circuit, payload), ecc.BN254.ScalarField()); err != nil {
-				t.Fatal(err)
-			}
+			ringtest.RequireSolved(t, circuitOf(), decodePayload(t, circuit, payload))
 			var raw map[string]any
 			if err := json.Unmarshal(payload, &raw); err != nil {
 				t.Fatal(err)
 			}
 			raw["publicInputHash"] = fi(1)
-			if test.IsSolved(circuitOf(), decodePayload(t, circuit, mustMarshal(t, raw)), ecc.BN254.ScalarField()) == nil {
-				t.Fatal("another public input solved")
-			}
+			ringtest.RequireUnsolved(t, circuitOf(), decodePayload(t, circuit, mustMarshal(t, raw)))
 		})
 	}
 }
@@ -191,16 +184,6 @@ func enrollmentsRequest(t testing.TB, circuit common.CircuitType, capacity int) 
 	return requestOf[ApplyEnrollmentsParams](t, circuit, assignment)
 }
 
-func flatPath(path ringregistry.Path) []Field {
-	var flat []Field
-	for _, row := range path.Siblings {
-		for _, sibling := range row {
-			flat = append(flat, fb(sibling))
-		}
-	}
-	return flat
-}
-
 func registerKeyRequest(t testing.TB, circuit common.CircuitType, member *big.Int) *RegisterKeyParams {
 	t.Helper()
 	keys := ringaudit.DefaultKeys(t)
@@ -228,22 +211,6 @@ func registerKeyRequest(t testing.TB, circuit common.CircuitType, member *big.In
 
 func fi(v int64) Field    { return Field{big.NewInt(v)} }
 func fb(v *big.Int) Field { return Field{new(big.Int).Set(v)} }
-
-// fz reads nil as zero, ringregistry leaves unset settings nil.
-func fz(v *big.Int) Field {
-	if v == nil {
-		return fi(0)
-	}
-	return fb(v)
-}
-
-func limitFields(limits ringregistry.Limits) []Field {
-	fields := make([]Field, len(limits))
-	for i, limit := range limits {
-		fields[i] = fz(limit)
-	}
-	return fields
-}
 
 func fieldsOf(values []*big.Int) []Field {
 	out := make([]Field, len(values))

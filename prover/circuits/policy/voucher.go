@@ -8,8 +8,6 @@
 // The signature covers shared.VouchDigest, the ring, the notes and the withdrawal legs of one transfer, so a
 // vouch for one transfer admits no other and no transfer of another ring. The voucher answers for the whole transfer, no wire names a covered subject.
 //
-// Read after policy/subjects.go, shared/derivation.go. Read before policy/rules.go, audit/audit.go.
-//
 // Properties:
 // 1. Key signs the vouch digest of the ring id and the transfer's private_tx_hash and withdrawal_hash on every proof, vouched or not.
 // 2. Identity is the Solana owner identity of Key, the member the voucher's records read at.

@@ -6,10 +6,10 @@ import (
 	"testing"
 
 	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark/test"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/registry"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/transfer"
+	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringtransfer"
 	"github.com/helius-labs/zolana/prover/server/prover/common"
 )
@@ -44,9 +44,7 @@ func TestTransferRequestsDecodeAndSolve(t *testing.T) {
 
 func requireRequestSolved(t *testing.T, key common.CircuitType, params any) {
 	t.Helper()
-	if err := test.IsSolved(extensionOf(t, key).Circuit(), decodeParams(t, key, params), ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, extensionOf(t, key).Circuit(), decodeParams(t, key, params))
 }
 
 func transferPayload(t testing.TB) []byte {

@@ -14,7 +14,6 @@ import (
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/constraint/solver"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/test"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
@@ -83,7 +82,7 @@ func TestPolicySections(t *testing.T) {
 				if r.witness != nil {
 					r.witness(t, b)
 				}
-				ringtest.RequireRefused(t, test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()), r.in)
+				ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment(), r.in)
 			})
 		}
 	}
@@ -413,9 +412,7 @@ func requireCompiledSolved(t *testing.T, cs constraint.ConstraintSystem, b ringp
 
 func requireSolved(t *testing.T, b ringpolicy.Witness) {
 	t.Helper()
-	if err := test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, b.Assignment(), b.Assignment())
 }
 
 var compiledKeys sync.Map
@@ -477,18 +474,14 @@ func TestMintThresholdsAndOutflowHaveNoEightRecordLimit(t *testing.T) {
 		w.Slots[0].Amount = 501
 		w.Approval = policy.ApprovalOutflow
 		b := w.Build(t)
-		if test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()) == nil {
-			t.Fatal("unlisted recipient above threshold admitted")
-		}
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment())
 	})
 	t.Run("public-only mint cannot omit its cap", func(t *testing.T) {
 		w := world()
 		w.Public = []ringpolicy.PublicSlot{{Asset: 3011, Amount: -1001}}
 		w.Approval = policy.ApprovalOutflow
 		b := w.Build(t)
-		if test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()) == nil {
-			t.Fatal("twelfth mint's cap ignored")
-		}
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment())
 	})
 	t.Run("public-only mint requires co-sign approval", func(t *testing.T) {
 		w := world()
@@ -497,15 +490,11 @@ func TestMintThresholdsAndOutflowHaveNoEightRecordLimit(t *testing.T) {
 		requireSolved(t, w.Build(t))
 		w.Approval = 0
 		b := w.Build(t)
-		if test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()) == nil {
-			t.Fatal("twelfth mint's co-sign threshold ignored")
-		}
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment())
 	})
 	t.Run("settings cannot be forged", func(t *testing.T) {
 		b := world().Build(t)
 		b.OwnRecord(b.Circuit.AssetEntries[0]).MintPolicy = 0
-		if test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()) == nil {
-			t.Fatal("forged settings admitted")
-		}
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment())
 	})
 }

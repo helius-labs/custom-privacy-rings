@@ -36,17 +36,25 @@ func RegisteredHint(t testing.TB, suffix string) solver.Hint {
 	return nil
 }
 
-// RequirePublicInputBound solves assignment, then requires a refusal once its PublicInputHash moves by one.
-func RequirePublicInputBound(t testing.TB, circuit, assignment frontend.Circuit) {
+func RequireSolved(t testing.TB, circuit, assignment frontend.Circuit) {
 	t.Helper()
 	if err := test.IsSolved(circuit, assignment, ecc.BN254.ScalarField()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func RequireUnsolved(t testing.TB, circuit, assignment frontend.Circuit, frames ...string) {
+	t.Helper()
+	RequireRefused(t, test.IsSolved(circuit, assignment, ecc.BN254.ScalarField()), frames...)
+}
+
+// RequirePublicInputBound solves assignment, then requires a refusal once its PublicInputHash moves by one.
+func RequirePublicInputBound(t testing.TB, circuit, assignment frontend.Circuit) {
+	t.Helper()
+	RequireSolved(t, circuit, assignment)
 	moved := reflect.New(reflect.TypeOf(assignment).Elem())
 	moved.Elem().Set(reflect.ValueOf(assignment).Elem())
 	hash := moved.Elem().FieldByName("PublicInputHash")
 	hash.Set(reflect.ValueOf(frontend.Variable(new(big.Int).Add(AsBigInt(hash.Interface()), big.NewInt(1)))))
-	if test.IsSolved(circuit, moved.Interface().(frontend.Circuit), ecc.BN254.ScalarField()) == nil {
-		t.Fatal("solved under another public input")
-	}
+	RequireUnsolved(t, circuit, moved.Interface().(frontend.Circuit))
 }

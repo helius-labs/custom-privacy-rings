@@ -7,8 +7,7 @@
 // slots, the rows and the statement's gross. Without the section a ring's caps and approval bits would
 // bind nothing on a private transfer.
 //
-// Read after policy/screen.go, policy/subjects.go, policy/comparator.go, transfer/owners.go. Read before
-// program-libs/policy/src/quantities.rs, its mirror.
+// Mirrored by program-libs/policy/src/quantities.rs.
 //
 // The quantities, per row and asset unless named per asset.
 //   held             the row's live inputs, a default-ring note included. Rows key on owner identity,

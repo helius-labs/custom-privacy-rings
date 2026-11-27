@@ -143,6 +143,46 @@ type Assembled struct {
 	delegate bool
 }
 
+// Built is a witness of either family with the fixtures it was derived from.
+type Built struct {
+	Assembled
+	Circuit *transfer.TransferCircuit
+	World   World
+}
+
+// Refill reopens the policy and tracking pools after a test edits the rows.
+func (b Built) Refill(t testing.TB) {
+	t.Helper()
+	b.World.reopen(t, &b.Circuit.Sections, b.Assembled)
+	b.Rehash(t)
+}
+
+// Rehash recomputes private_tx_hash from the fixture slots and inputs, then the public input.
+func (b Built) Rehash(t testing.TB) {
+	t.Helper()
+	b.World.rehash(t, &b.Circuit.Sections, b.Audit)
+	b.Rebind(t)
+}
+
+// Rebind recomputes the public input after a statement value changes.
+func (b Built) Rebind(t testing.TB) {
+	t.Helper()
+	b.Circuit.WithdrawalHash = withdrawalHash(t, &b.Circuit.Policy)
+	b.Circuit.Voucher = b.Audit.VoucherWires(t, ringtest.AsBigInt(b.Circuit.PrivateTxHash), ringtest.AsBigInt(b.Circuit.WithdrawalHash))
+	b.Circuit.PublicInputHash = spptest.MustHashChain4(t, b.Statement(t))
+}
+
+func (b Built) Statement(t testing.TB) []*big.Int {
+	t.Helper()
+	return b.Values(t).Elements(t)
+}
+
+// Values is what the program holds for the statement.
+func (b Built) Values(t testing.TB) Statement {
+	t.Helper()
+	return railValues(t, b.Circuit, b.Assembled)
+}
+
 // spend fills the fixture's inputs, half and half across the sender's two notes.
 func (w World) spend(t testing.TB, a *ringaudit.Audit) {
 	t.Helper()

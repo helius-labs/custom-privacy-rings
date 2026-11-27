@@ -9,9 +9,6 @@
 // record links to the next member in sort order, so a member is absent exactly when it
 // falls strictly inside one link. Unlike an SPP nullifier leaf, a record holds data
 // and a later write can change it.
-//
-// Read after ringgadget/canonical.go. Read before registry/shared_path.go,
-// registry/apply_records.go, registry/tracking.go.
 
 // Package registry proves a ring's member registry, a 4-ary Poseidon tree whose records form one list sorted by member, and the writes a storage `Update` carries to it.
 package registry

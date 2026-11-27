@@ -27,8 +27,6 @@
 // reads both ciphertexts from the ring instruction that called SPP in the confirmed transaction, and
 // the statement alone binds those bytes. The record's label CRING/mro keeps a merge record apart from a
 // transfer record under one key pair.
-//
-// Read after shared/envelope.go, audit/record.go, registry/tracking.go. Read before ../ring/ring.go.
 
 package circuits
 

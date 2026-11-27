@@ -6,6 +6,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/test"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
+	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringpolicy"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringregistry"
 	"math"
@@ -88,9 +89,7 @@ func TestPolicyWithdrawalBindingAndPadding(t *testing.T) {
 	} {
 		b := withdrawalWorld().Build(t)
 		mutate(b)
-		if test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()) == nil {
-			t.Fatal("tampered withdrawal solved")
-		}
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment())
 	}
 }
 func TestCuratorWithdrawalLists(t *testing.T) {
@@ -125,8 +124,6 @@ func TestWithdrawalCapacitiesBindEveryLeg(t *testing.T) {
 			t.Fatalf("capacity %d: %v", capacity, err)
 		}
 		b.Policy().WithdrawalCount = capacity + 1
-		if test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()) == nil {
-			t.Fatal("count exceeded capacity")
-		}
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment())
 	}
 }

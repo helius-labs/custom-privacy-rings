@@ -29,23 +29,23 @@ func init() {
 func (k Key) extension() common.ExtensionCircuit {
 	switch k.Family {
 	case Transfer:
-		return bindPolicy[TransferParams](k, transfer.NewTransferCircuit, k.transferShape())
+		return bind(k, transfer.NewTransferCircuit, k.transferShape(), k.Pools.validate)
 	case ApplyRecords:
 		if k.Private {
-			return bind[PrivateApplyRecordsParams](k, registry.NewPrivateApplyRecordsCircuit, k.Inputs)
+			return bind[PrivateApplyRecordsParams](k, registry.NewPrivateApplyRecordsCircuit, k.Inputs, nil)
 		}
-		return bind[ApplyRecordsParams](k, registry.NewApplyRecordsCircuit, k.Inputs)
+		return bind[ApplyRecordsParams](k, registry.NewApplyRecordsCircuit, k.Inputs, nil)
 	case ApplyEnrollments:
-		return bind[ApplyEnrollmentsParams](k, registry.NewApplyEnrollmentsCircuit, k.Inputs)
+		return bind[ApplyEnrollmentsParams](k, registry.NewApplyEnrollmentsCircuit, k.Inputs, nil)
 	case RegisterKey:
-		return bind[RegisterKeyParams](k, unsized[registry.RegisterKeyCircuit], struct{}{})
+		return bind[RegisterKeyParams](k, unsized[registry.RegisterKeyCircuit], struct{}{}, nil)
 	case Merge:
-		return bind[MergeParams](k, unsized[circuits.MergeCircuit], struct{}{})
+		return bind[MergeParams](k, unsized[circuits.MergeCircuit], struct{}{}, nil)
 	}
 	panic(fmt.Sprintf("ring: no circuit for ring family %d", k.Family))
 }
 
-func bind[P headed, S any, C frontend.Circuit](k Key, constructor func(S) (C, error), shape S) common.ExtensionCircuit {
+func bind[P headed, S any, C frontend.Circuit](k Key, constructor func(S) (C, error), shape S, check func(*P) error) common.ExtensionCircuit {
 	build := func() (frontend.Circuit, error) { return constructor(shape) }
 	return common.ExtensionCircuit{
 		Type:    k.Circuit,
@@ -58,40 +58,8 @@ func bind[P headed, S any, C frontend.Circuit](k Key, constructor func(S) (C, er
 			}
 			return circuit
 		},
-		Request: func() common.ExtensionRequest { return &request[P]{circuit: k.Circuit, build: build} },
+		Request: func() common.ExtensionRequest { return &request[P]{circuit: k.Circuit, build: build, check: check} },
 	}
-}
-
-type pooledCircuit interface {
-	frontend.Circuit
-	RecordPools() policy.RecordPoolShape
-	TrackingPoolSize() int
-}
-
-type pooledParams interface {
-	headed
-	pooled() PolicyParams
-	tracking() TrackingParams
-}
-
-// bindPolicy refuses a pool index outside the key's pools before assignment.
-func bindPolicy[P pooledParams, S any, C pooledCircuit](k Key, constructor func(S) (C, error), shape S) common.ExtensionCircuit {
-	extension := bind[P](k, constructor, shape)
-	var pools policy.RecordPoolShape
-	var trackingPool int
-	if k.Pools != nil {
-		pools = k.Pools.RecordPoolShape
-		trackingPool = k.Pools.Tracking
-	} else {
-		circuit := extension.Circuit().(C)
-		pools = circuit.RecordPools()
-		trackingPool = circuit.TrackingPoolSize()
-	}
-	plain := extension.Request
-	extension.Request = func() common.ExtensionRequest {
-		return &policyRequest[P]{request: plain().(*request[P]), pools: pools, trackingPool: trackingPool}
-	}
-	return extension
 }
 
 func unsized[C any](struct{}) (*C, error) {
@@ -102,6 +70,7 @@ func unsized[C any](struct{}) (*C, error) {
 type request[P headed] struct {
 	circuit common.CircuitType
 	build   func() (frontend.Circuit, error)
+	check   func(*P) error
 	params  P
 }
 
@@ -115,25 +84,12 @@ func (r *request[P]) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type policyRequest[P pooledParams] struct {
-	*request[P]
-	pools        policy.RecordPoolShape
-	trackingPool int
-}
-
-func (r *policyRequest[P]) Assignment() (frontend.Circuit, error) {
-	if err := r.params.pooled().validateIndices(r.pools, r.trackingPool); err != nil {
-		return nil, err
+func (pools PoolCapacity) validate(params *TransferParams) error {
+	if err := params.PolicyParams.validateIndices(pools.RecordPoolShape, pools.Tracking); err != nil {
+		return err
 	}
-	if err := r.params.tracking().validateIndices(r.trackingPool); err != nil {
-		return nil, err
-	}
-	return r.request.Assignment()
+	return params.TrackingParams.validateIndices(pools.Tracking)
 }
-
-func (p PolicyParams) pooled() PolicyParams { return p }
-
-func (p TransferParams) tracking() TrackingParams { return p.TrackingParams }
 
 func (p PolicyParams) validateIndices(pools policy.RecordPoolShape, trackingPool int) error {
 	if err := validatePoolIndices(p.OwnSubjects, p.OwnProof, pools.Own); err != nil {
@@ -235,6 +191,11 @@ func poolIndex(name string, index uint32, size int) error {
 
 // Assignment fails for a request that leaves a circuit value unset or sizes a slice off the key's shape.
 func (r *request[P]) Assignment() (frontend.Circuit, error) {
+	if r.check != nil {
+		if err := r.check(&r.params); err != nil {
+			return nil, err
+		}
+	}
 	assignment, err := r.build()
 	if err != nil {
 		return nil, err

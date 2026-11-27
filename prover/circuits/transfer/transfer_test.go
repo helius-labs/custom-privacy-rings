@@ -6,9 +6,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/test"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/audit"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
@@ -36,14 +34,12 @@ var (
 
 func requireSolved(t *testing.T, circuit frontend.Circuit) {
 	t.Helper()
-	if err := test.IsSolved(circuit, circuit, ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, circuit, circuit)
 }
 
 func refused(t *testing.T, circuit frontend.Circuit, frames ...string) {
 	t.Helper()
-	ringtest.RequireRefused(t, test.IsSolved(circuit, circuit, ecc.BN254.ScalarField()), frames...)
+	ringtest.RequireUnsolved(t, circuit, circuit, frames...)
 }
 
 func onRail(shape transfer.Shape, rail ringtransfer.Rail) ringtransfer.Confidential {

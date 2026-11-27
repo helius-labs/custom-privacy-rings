@@ -67,3 +67,64 @@ func (q quadTree) siblings(index uint64) [][registry.Arity - 1]*big.Int {
 	}
 	return rows
 }
+
+type sortedRecord interface {
+	member() *big.Int
+	Hash(t testing.TB) *big.Int
+}
+
+// sortedTree keeps the sentinel at index 0 and appends every insert.
+type sortedTree[R sortedRecord] struct {
+	records []R
+	tree    quadTree
+}
+
+func (s *sortedTree[R]) Root() *big.Int {
+	return s.tree.root()
+}
+
+func (s *sortedTree[R]) NextIndex() uint64 {
+	return uint64(len(s.records))
+}
+
+// find returns member's index, or the index of the record with the largest member below it.
+func (s *sortedTree[R]) find(member *big.Int) (uint64, bool) {
+	low := uint64(0)
+	for i, record := range s.records {
+		switch record.member().Cmp(member) {
+		case 0:
+			return uint64(i), true
+		case -1:
+			if record.member().Cmp(s.records[low].member()) > 0 {
+				low = uint64(i)
+			}
+		}
+	}
+	return low, false
+}
+
+func (s *sortedTree[R]) set(t testing.TB, index uint64, record R) {
+	t.Helper()
+	if index == uint64(len(s.records)) {
+		s.records = append(s.records, record)
+	} else {
+		s.records[index] = record
+	}
+	s.tree.setLeaf(t, index, record.Hash(t))
+}
+
+func (s *sortedTree[R]) sharedProof(newProof func(openings int) (registry.SharedQuadProof, error), leaves []uint64) (registry.SharedQuadProof, error) {
+	proof, err := newProof(len(leaves))
+	if err != nil {
+		return registry.SharedQuadProof{}, err
+	}
+	depth := len(proof.Paths[0].Siblings)
+	for i := range proof.Canopy {
+		proof.Canopy[i] = new(big.Int).Set(s.tree.node(depth, uint64(i)))
+	}
+	for i, leaf := range leaves {
+		proof.Paths[i].Index = leaf
+		wireSiblings(proof.Paths[i].Siblings, s.tree.siblings(leaf)[:depth])
+	}
+	return proof, nil
+}

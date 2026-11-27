@@ -4,11 +4,10 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/test"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
+	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 )
 
 type packDisclosureCircuit struct {
@@ -33,11 +32,7 @@ func TestPackDisclosureLeftAlignsTheTail(t *testing.T) {
 	}
 	witness.Fields[0] = new(big.Int).SetBytes(raw[:31])
 	witness.Fields[1] = new(big.Int).Lsh(new(big.Int).SetBytes(raw[31:]), 8*22)
-	if err := test.IsSolved(&packDisclosureCircuit{}, witness, ecc.BN254.ScalarField()); err != nil {
-		t.Fatalf("left-aligned tail refused: %v", err)
-	}
+	ringtest.RequireSolved(t, &packDisclosureCircuit{}, witness)
 	witness.Fields[1] = new(big.Int).SetBytes(raw[31:])
-	if test.IsSolved(&packDisclosureCircuit{}, witness, ecc.BN254.ScalarField()) == nil {
-		t.Fatal("right-aligned tail accepted")
-	}
+	ringtest.RequireUnsolved(t, &packDisclosureCircuit{}, witness)
 }

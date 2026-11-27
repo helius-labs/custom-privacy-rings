@@ -219,7 +219,7 @@ func TestRowsAscend(t *testing.T) {
 		b := twoOwners().Build(t)
 		mutate(b)
 		b.Rebind(t)
-		ringtest.RequireRefused(t, test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()), ascending)
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment(), ascending)
 	}
 	swapRows := func(b ringpolicy.Witness, i, j int) {
 		b.Circuit.Senders[i], b.Circuit.Senders[j] = b.Circuit.Senders[j], b.Circuit.Senders[i]
@@ -513,9 +513,7 @@ func TestQuantitiesVector(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.Name, func(t *testing.T) {
 			c := tc.circuit(t)
-			if err := test.IsSolved(c, c, ecc.BN254.ScalarField()); err != nil {
-				t.Fatal(err)
-			}
+			ringtest.RequireSolved(t, c, c)
 			w := tc.world()
 			requireSolved(t, w.Build(t))
 			if tc.Mask != 0 {

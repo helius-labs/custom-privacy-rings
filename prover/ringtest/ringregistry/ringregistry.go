@@ -48,6 +48,10 @@ func (r Record) Hash(t testing.TB) *big.Int {
 	return ringtest.MustPoseidonHash(t, fields...)
 }
 
+func (r Record) member() *big.Int {
+	return r.Member
+}
+
 func (r Record) Wires() registry.Record {
 	return registry.Record{Member: copied(r.Member), RecordBody: r.BodyWires()}
 }
@@ -167,25 +171,15 @@ type Write struct {
 	LowPath                                                  Path
 }
 
-// Registry keeps the sentinel at index 0 and appends every insert.
 type Registry struct {
-	records []Record
-	tree    quadTree
+	sortedTree[Record]
 }
 
 func New(t testing.TB) *Registry {
 	t.Helper()
-	r := &Registry{tree: newQuadTree(t, registry.Height)}
+	r := &Registry{sortedTree[Record]{tree: newQuadTree(t, registry.Height)}}
 	r.set(t, 0, Record{Member: big.NewInt(0), Next: fieldMax, Lists: big.NewInt(0)})
 	return r
-}
-
-func (r *Registry) Root() *big.Int {
-	return r.tree.root()
-}
-
-func (r *Registry) NextIndex() uint64 {
-	return uint64(len(r.records))
 }
 
 func (r *Registry) Opening(member *big.Int) Opening {
@@ -232,22 +226,6 @@ func (r *Registry) Insert(t testing.TB, e Entry) Write {
 	return w
 }
 
-// find returns member's index, or the index of the record with the largest member below it.
-func (r *Registry) find(member *big.Int) (uint64, bool) {
-	low := uint64(0)
-	for i, record := range r.records {
-		switch record.Member.Cmp(member) {
-		case 0:
-			return uint64(i), true
-		case -1:
-			if record.Member.Cmp(r.records[low].Member) > 0 {
-				low = uint64(i)
-			}
-		}
-	}
-	return low, false
-}
-
 // Path opens the leaf at index, an empty leaf past the next index included.
 func (r *Registry) Path(index uint64) Path {
 	p := Path{Index: index}
@@ -273,20 +251,6 @@ func zeroSiblings(siblings [][registry.Arity - 1]*big.Int) {
 			siblings[level][k] = big.NewInt(0)
 		}
 	}
-}
-
-func (r *Registry) node(level int, index uint64) *big.Int {
-	return r.tree.node(level, index)
-}
-
-func (r *Registry) set(t testing.TB, index uint64, record Record) {
-	t.Helper()
-	if index == uint64(len(r.records)) {
-		r.records = append(r.records, record)
-	} else {
-		r.records[index] = record
-	}
-	r.tree.setLeaf(t, index, record.Hash(t))
 }
 
 func masked(lists *big.Int, e Entry) *big.Int {

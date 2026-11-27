@@ -141,13 +141,9 @@ func TestPolicyTableMatchesRustVectors(t *testing.T) {
 			if host := ringpolicy.TableHash(t, table); host.Cmp(hash) != 0 {
 				t.Fatalf("host hash %x, the vector has %x", host, hash)
 			}
-			if err := test.IsSolved(&tableCircuit{}, &tableCircuit{Table: table, PolicyHash: hash}, ecc.BN254.ScalarField()); err != nil {
-				t.Fatal(err)
-			}
+			ringtest.RequireSolved(t, &tableCircuit{}, &tableCircuit{Table: table, PolicyHash: hash})
 			other := new(big.Int).Add(hash, big.NewInt(1))
-			if test.IsSolved(&tableCircuit{}, &tableCircuit{Table: table, PolicyHash: other}, ecc.BN254.ScalarField()) == nil {
-				t.Fatal("a table opened under another policy_hash")
-			}
+			ringtest.RequireUnsolved(t, &tableCircuit{}, &tableCircuit{Table: table, PolicyHash: other})
 		})
 	}
 }

@@ -7,9 +7,6 @@
 // a key anyone derives from the owner. A private list reads at the owner's enrolled salt, a key the chain
 // cannot tie to the owner. An asset reads at its own field.
 //
-// Read after policy/table.go, policy/record_pool.go, policy/tracking.go. Read before policy/rules.go,
-// policy/outflow.go.
-//
 // Properties:
 // 1. The gates follow from statement values alone, no prover bit clears a section. Screened is a nonzero policy_hash off the authority rail. Outflow is a nonzero own root.
 // 2. Each read goes through a pool under the bound root of its source, own or curator per list, present or proven absent.

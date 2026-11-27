@@ -15,6 +15,7 @@ import (
 	"github.com/helius-labs/zolana/prover/server/circuits/crypto/lookup"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/registry"
+	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringregistry"
 )
 
@@ -84,16 +85,12 @@ func TestRecordPoolBindsEveryActiveQuery(t *testing.T) {
 		{"fractional active query", func(c *recordPoolCircuit) { c.Queries[1].Active = 2 }},
 		{"inactive pool active query", func(c *recordPoolCircuit) { c.Active = 0 }},
 	}
-	if err := test.IsSolved(poolFixture(t), poolFixture(t), ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, poolFixture(t), poolFixture(t))
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			circuit := poolFixture(t)
 			tc.mutate(circuit)
-			if test.IsSolved(circuit, circuit, ecc.BN254.ScalarField()) == nil {
-				t.Fatal("forged pool query solved")
-			}
+			ringtest.RequireUnsolved(t, circuit, circuit)
 		})
 	}
 }
@@ -224,9 +221,7 @@ func curatorPoolFixture(t testing.TB) *curatorPoolCircuit {
 }
 
 func TestCuratorPoolReadsNonMembershipThroughAnotherRecord(t *testing.T) {
-	if err := test.IsSolved(curatorPoolFixture(t), curatorPoolFixture(t), ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, curatorPoolFixture(t), curatorPoolFixture(t))
 	cases := []struct {
 		name   string
 		mutate func(*curatorPoolCircuit)
@@ -241,9 +236,7 @@ func TestCuratorPoolReadsNonMembershipThroughAnotherRecord(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			circuit := curatorPoolFixture(t)
 			tc.mutate(circuit)
-			if test.IsSolved(circuit, circuit, ecc.BN254.ScalarField()) == nil {
-				t.Fatal("forged curator query solved")
-			}
+			ringtest.RequireUnsolved(t, circuit, circuit)
 		})
 	}
 }
@@ -251,9 +244,7 @@ func TestCuratorPoolReadsNonMembershipThroughAnotherRecord(t *testing.T) {
 // The leaf hash binds every field the curator projection leaves unread.
 func TestCuratorPoolKeepsFieldsThePolicyDoesNotRead(t *testing.T) {
 	fixture := curatorPoolFixture(t)
-	if err := test.IsSolved(fixture, fixture, ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, fixture, fixture)
 	unreadFields := []func(*registry.Record){
 		func(r *registry.Record) { r.Next = 12 },
 		func(r *registry.Record) { r.MintPolicy = 0 },
@@ -269,13 +260,9 @@ func TestCuratorPoolKeepsFieldsThePolicyDoesNotRead(t *testing.T) {
 	}
 	// An own pool reader decodes the same record and refuses it, a query that reads zeros does not.
 	unread := &recordPoolCircuit{Root: fixture.Root, Active: 1, Records: fixture.Records, Proof: fixture.Proof, Queries: []poolQueryWires{{Member: 41, Index: 0, Active: 0, Lists: 0, MintPolicy: 0}}}
-	if err := test.IsSolved(unread, unread, ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, unread, unread)
 	read := &recordPoolCircuit{Root: fixture.Root, Active: 1, Records: fixture.Records, Proof: fixture.Proof, Queries: []poolQueryWires{{Member: 11, Index: 0, Active: 1, Lists: 3, MintPolicy: 0}}}
-	if test.IsSolved(read, read, ecc.BN254.ScalarField()) == nil {
-		t.Fatal("own pool decoded a mint policy past its limbs")
-	}
+	ringtest.RequireUnsolved(t, read, read)
 }
 
 func TestCuratorPoolBindsEveryLookupColumn(t *testing.T) {
@@ -303,13 +290,9 @@ func (c *sourceListsCircuit) Define(api frontend.API) error {
 func TestSourceListsSplitsOneWay(t *testing.T) {
 	field := ecc.BN254.ScalarField()
 	honest := &sourceListsCircuit{Lists: new(big.Int).Add(new(big.Int).Lsh(big.NewInt(1), registry.ListBits-1), big.NewInt(5)), Bits: [NSources]frontend.Variable{1, 0, 1, 0, 0, 0, 0, 0, 0}}
-	if err := test.IsSolved(honest, honest, field); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, honest, honest)
 	past := &sourceListsCircuit{Lists: new(big.Int).Lsh(big.NewInt(1), registry.ListBits), Bits: [NSources]frontend.Variable{0, 0, 0, 0, 0, 0, 0, 0, 0}}
-	if test.IsSolved(past, past, field) == nil {
-		t.Fatal("lists past their width accepted")
-	}
+	ringtest.RequireUnsolved(t, past, past)
 	cs, err := frontend.Compile(field, r1cs.NewBuilder, &sourceListsCircuit{})
 	if err != nil {
 		t.Fatal(err)
@@ -345,9 +328,7 @@ func (c *peakCircuit) Define(api frontend.API) error {
 func TestPeakIsTheLargestValue(t *testing.T) {
 	field := ecc.BN254.ScalarField()
 	honest := &peakCircuit{Values: [3]frontend.Variable{3, 7, 5}, Peak: 7}
-	if err := test.IsSolved(honest, honest, field); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, honest, honest)
 	cs, err := frontend.Compile(field, r1cs.NewBuilder, &peakCircuit{})
 	if err != nil {
 		t.Fatal(err)

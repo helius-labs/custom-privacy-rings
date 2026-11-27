@@ -10,8 +10,6 @@
 //
 // No ring slot opens an address. SPP chains its addresses apart from its notes, and the ring takes that
 // chain as a private witness of private_tx_hash.
-//
-// Read after transfer/transfer.go. Read before audit/audit.go, audit/record.go, transfer/input.go.
 
 package shared
 

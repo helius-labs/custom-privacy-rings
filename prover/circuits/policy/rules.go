@@ -9,9 +9,6 @@
 // out, a sender paying itself receives nothing. Funds entering from the default ring stay a receipt, and an
 // exit or a withdrawal stays gross. The totals mirror GuardScope in program-libs/policy/src/quantities.rs.
 //
-// Read after policy/subjects.go, policy/table.go, policy/withdrawals.go. Read before policy/comparator.go,
-// policy/outflow.go.
-//
 // Properties:
 // 1. Every live row meets every sender rule, a sender rule takes no guard.
 // 2. Every live payment's nonzero owner meets every owner rule, and its asset every asset rule, unless the rule's guard exempts its total.

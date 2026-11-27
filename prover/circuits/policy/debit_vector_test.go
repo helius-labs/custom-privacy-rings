@@ -5,9 +5,6 @@ package policy_test
 import (
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark/test"
-
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringpolicy"
 )
@@ -65,7 +62,7 @@ func TestDebitVector(t *testing.T) {
 			}
 			requireSolved(t, tc.world(largest).Build(t))
 			b := tc.world(largest - 1).Build(t)
-			ringtest.RequireRefused(t, test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()), outflow)
+			ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment(), outflow)
 		})
 	}
 	ringtest.PinVector(t, "policy/debit.json", map[string]any{

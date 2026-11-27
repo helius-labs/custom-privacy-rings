@@ -4,9 +4,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/test"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
@@ -84,11 +82,7 @@ func TestRingSecretsMatchRustVectors(t *testing.T) {
 		})
 	}
 	circuit := &ringSecretsCircuit{OutputIndexes: witness.OutputIndexes, Outputs: make([]ringSecretWires, len(witness.Outputs))}
-	if err := test.IsSolved(circuit, witness, ecc.BN254.ScalarField()); err != nil {
-		t.Fatalf("ring secret vector rejected, %v", err)
-	}
+	ringtest.RequireSolved(t, circuit, witness)
 	witness.Outputs[0].Blinding = new(big.Int).Add(ringtest.VectorField(t, vectors.Outputs[0].Blinding), big.NewInt(1))
-	if err := test.IsSolved(circuit, witness, ecc.BN254.ScalarField()); err == nil {
-		t.Fatal("output blinding accepted off the TXOB derivation")
-	}
+	ringtest.RequireUnsolved(t, circuit, witness)
 }

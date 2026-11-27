@@ -7,11 +7,6 @@
 // predicates over those openings. The program verifies it, then calls SPP on the same frame, in
 // programs/custom-ring/src/instructions/transfer/processor.rs.
 //
-// Read after zolana/prover/server/circuits/spp_transaction/shared/transaction.go, the statement
-// the ring extends. Read before, in the order Define calls them, shared/utxo.go, audit/audit.go,
-// policy/voucher.go, transfer/input.go, policy/record_pool.go, policy/tracking.go,
-// transfer/owners.go, policy/policy.go. Then prover/ring/ring.go, outside Define.
-//
 // Both proofs reopen private_tx_hash over the note, output and address chains and the transaction blinding.
 // The ring derives that blinding from the sealed key and the statement's first nullifier, and SPP derives
 // it and every output blinding from one seed and its own first nullifier, so the shared hash holds SPP's

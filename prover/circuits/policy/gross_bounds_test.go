@@ -5,9 +5,7 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/test"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
@@ -48,7 +46,7 @@ func TestGrossAboveU64SetsWithdrawalApproval(t *testing.T) {
 			}
 			requireSolved(t, build(policy.ApprovalWithdrawal))
 			unapproved := build(0)
-			ringtest.RequireRefused(t, test.IsSolved(unapproved.Assignment(), unapproved.Assignment(), ecc.BN254.ScalarField()), sectionDefine)
+			ringtest.RequireUnsolved(t, unapproved.Assignment(), unapproved.Assignment(), sectionDefine)
 		})
 	}
 }
@@ -75,5 +73,5 @@ func TestWithdrawalLegBindsTheSettledAmount(t *testing.T) {
 	forged := build(forgedAmount)
 	forged.Policy().WithdrawalHash = settledHash
 	forged.Circuit.PublicInputHash = spptest.MustHashChain4(t, ringtest.ToBigInts(forged.Circuit.Statement()))
-	ringtest.RequireRefused(t, test.IsSolved(forged.Assignment(), forged.Assignment(), ecc.BN254.ScalarField()), "openWithdrawals")
+	ringtest.RequireUnsolved(t, forged.Assignment(), forged.Assignment(), "openWithdrawals")
 }

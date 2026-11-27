@@ -139,9 +139,8 @@ func (v quadPath) flat() []Field {
 }
 
 func (v enrollmentView) request() any {
-	e := v.Entry
 	return TrackingWrite{
-		Member: e.Member, NullifierPk: e.NullifierPk, CtHash: e.CtHash, ListTag: e.ListTag, ViewingHash: e.ViewingHash, PriorViewingHash: e.PriorViewingHash, Proven: e.Proven, Present: v.Present,
+		TrackingEntry: v.Entry, Present: v.Present,
 		Index: v.Slot.Index, Path: v.Slot.flat(), LowRecord: v.Low, LowIndex: v.LowSlot.Index, LowPath: v.LowSlot.flat(),
 	}
 }

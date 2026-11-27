@@ -3,8 +3,6 @@
 //
 // Each hash starts with its own tag, a value made for one purpose cannot pass as another. Ring tags
 // open with CR and no SPP tag does, a ring hash never answers an SPP derivation.
-//
-// Read first. Read before shared/disclosure.go, shared/envelope.go, audit/audit.go.
 
 // Package shared holds the ring derivations, the auditor envelope and the SPP openings two or more ring circuits share.
 package shared

@@ -9,9 +9,9 @@ import (
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
-	"github.com/consensys/gnark/test"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/registry"
+	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringregistry"
 )
 
@@ -22,7 +22,7 @@ type sharedPathCircuit struct {
 }
 
 func (c *sharedPathCircuit) Define(api frontend.API) error {
-	c.Proof.AssertLeaves(api, c.Root, c.Leaves)
+	c.Proof.AssertLeavesWhen(api, 1, c.Root, c.Leaves)
 	return nil
 }
 
@@ -79,9 +79,7 @@ func TestSharedQuadProofAcceptsEveryTopology(t *testing.T) {
 						indices[i] = uint64(i) * registry.Capacity / uint64(count)
 					}
 				}
-				if err := test.IsSolved(sharedCircuit(t, count), sharedAssignment(t, members, indices), ecc.BN254.ScalarField()); err != nil {
-					t.Fatal(err)
-				}
+				ringtest.RequireSolved(t, sharedCircuit(t, count), sharedAssignment(t, members, indices))
 			})
 		}
 	}
@@ -104,9 +102,7 @@ func TestSharedQuadProofRejectsUnboundPaths(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			assignment := sharedAssignment(t, members, indices)
 			tamper(assignment)
-			if err := test.IsSolved(sharedCircuit(t, len(indices)), assignment, ecc.BN254.ScalarField()); err == nil {
-				t.Fatal("invalid shared proof accepted")
-			}
+			ringtest.RequireUnsolved(t, sharedCircuit(t, len(indices)), assignment)
 		})
 	}
 }
@@ -258,19 +254,13 @@ func TestSharedQuadProofConditionalRoot(t *testing.T) {
 		circuit := &conditionalSharedCircuit{Active: 0, Path: *sharedAssignment(t, members, indices)}
 		circuit.Path.Root = 0
 		shape := &conditionalSharedCircuit{Path: *sharedCircuit(t, count)}
-		if err := test.IsSolved(shape, circuit, ecc.BN254.ScalarField()); err != nil {
-			t.Fatal(err)
-		}
+		ringtest.RequireSolved(t, shape, circuit)
 		for _, active := range []int{1, 2} {
 			circuit.Active = active
-			if err := test.IsSolved(shape, circuit, ecc.BN254.ScalarField()); err == nil {
-				t.Fatal("invalid active root accepted")
-			}
+			ringtest.RequireUnsolved(t, shape, circuit)
 		}
 		circuit.Active = 0
 		circuit.Path.Leaves[0] = 0
-		if err := test.IsSolved(shape, circuit, ecc.BN254.ScalarField()); err == nil {
-			t.Fatal("invalid inactive path accepted")
-		}
+		ringtest.RequireUnsolved(t, shape, circuit)
 	}
 }

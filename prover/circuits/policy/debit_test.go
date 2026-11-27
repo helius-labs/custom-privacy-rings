@@ -5,9 +5,6 @@ package policy_test
 import (
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark/test"
-
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringpolicy"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringregistry"
@@ -18,7 +15,7 @@ const outflow = "policy.(*PolicyInputs).constrainOutflow"
 func requireRefusedIn(t *testing.T, w ringpolicy.World, frame string) {
 	t.Helper()
 	b := w.Build(t)
-	ringtest.RequireRefused(t, test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()), frame)
+	ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment(), frame)
 }
 
 // capped is a ring whose AssetA cap is 100 with no co-sign bound, each owner holds its own budget.
@@ -97,7 +94,7 @@ func TestDebitKeepsOwnersApart(t *testing.T) {
 		w.Slots = []ringpolicy.Slot{{Owner: ringpolicy.Alice, Asset: ringpolicy.AssetA, Amount: 160}}
 		b := w.Build(t)
 		b.Circuit.Inputs[1].NullifierPk = 0x6e6c
-		ringtest.RequireRefused(t, test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()), outflow)
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment(), outflow)
 	})
 }
 

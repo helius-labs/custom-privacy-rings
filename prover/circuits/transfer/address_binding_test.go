@@ -1,6 +1,4 @@
 // SPP's address chain enters the ring as a private witness, private_tx_hash alone checks it.
-//
-// Read after transfer/input.go and transfer/transfer.go. Read before audit/input_map_test.go.
 package transfer_test
 
 import (

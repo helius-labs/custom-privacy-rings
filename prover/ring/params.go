@@ -242,7 +242,7 @@ type RecordWriteProofInput struct {
 	LowPath  []Field `json:"lowPath"`
 }
 
-type ApplyRecordsParams struct {
+type ApplyParams[W any] struct {
 	RequestHead
 	OldRoot      Field  `json:"oldRoot"`
 	NewRoot      Field  `json:"newRoot"`
@@ -252,11 +252,15 @@ type ApplyRecordsParams struct {
 	ChainEnd     Field  `json:"chainEnd"`
 	Count        uint8  `json:"count"`
 	// A nil write past Count assigns zeros.
-	Writes []*RecordWriteProofInput `json:"writes"`
+	Writes []*W `json:"writes"`
 }
 
-// TrackingWrite is the witness of one applied entry in write order.
-type TrackingWrite struct {
+type ApplyRecordsParams = ApplyParams[RecordWriteProofInput]
+
+type ApplyEnrollmentsParams = ApplyParams[TrackingWrite]
+
+// TrackingEntry mirrors registry.TrackingEntry field for field.
+type TrackingEntry struct {
 	Member      Field `json:"member"`
 	NullifierPk Field `json:"nullifierPk"`
 	CtHash      Field `json:"ctHash"`
@@ -265,7 +269,12 @@ type TrackingWrite struct {
 	// The leaf's viewing hash the owner signed against, zero on a first enrollment.
 	PriorViewingHash Field `json:"priorViewingHash"`
 	Proven           bool  `json:"proven"`
-	Present          bool  `json:"present"`
+}
+
+// TrackingWrite is the witness of one applied entry in write order.
+type TrackingWrite struct {
+	TrackingEntry
+	Present bool `json:"present"`
 	// The inserted leaf's index and path, zero on any other write.
 	Index uint64  `json:"index"`
 	Path  []Field `json:"path"`
@@ -293,19 +302,6 @@ type PrivateOwnerParams struct {
 	Record TrackingRecordParams `json:"record"`
 	Index  uint64               `json:"index"`
 	Path   []Field              `json:"path"`
-}
-
-type ApplyEnrollmentsParams struct {
-	RequestHead
-	OldRoot      Field  `json:"oldRoot"`
-	NewRoot      Field  `json:"newRoot"`
-	OldNextIndex uint64 `json:"oldNextIndex"`
-	NewNextIndex uint64 `json:"newNextIndex"`
-	ChainStart   Field  `json:"chainStart"`
-	ChainEnd     Field  `json:"chainEnd"`
-	Count        uint8  `json:"count"`
-	// A nil write past Count assigns zeros.
-	Writes []*TrackingWrite `json:"writes"`
 }
 
 type RegisterKeyParams struct {

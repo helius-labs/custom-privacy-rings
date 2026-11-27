@@ -4,9 +4,6 @@
 // The program demands a co-signer per mask bit and derives no threshold itself, so a wrong mask would
 // silently drop an approval.
 //
-// Read after policy/policy.go, transfer/owners.go. Read before policy/withdrawals.go, policy/table.go,
-// policy/subjects.go, policy/rules.go, policy/outflow.go.
-//
 // Properties:
 // 1. Withdrawal legs join the payments only once WithdrawalHash binds them.
 // 2. The rule sections run over one payment list.

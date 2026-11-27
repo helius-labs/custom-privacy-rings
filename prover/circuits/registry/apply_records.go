@@ -16,10 +16,6 @@
 // the older roots served after a batch that tightens nothing. A proof under an older
 // root then reads, per record, values no more permissive than the newest, and every
 // rule is monotone in them, so a kept root admits no transfer the newest refuses.
-//
-// Read after registry/registry.go, ringgadget/canonical.go, ringgadget/count.go,
-// shared/width.go, registry/tracking.go. Read before policy/record_pool.go,
-// prover/ring/ring.go.
 
 package registry
 

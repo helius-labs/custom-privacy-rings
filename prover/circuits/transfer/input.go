@@ -10,8 +10,6 @@
 // order with every other input skipped, so the ring's input wires hold those notes in that order and
 // dummies after them. The address chain is a private witness the shared hash alone checks.
 //
-// Read after transfer/transfer.go, shared/utxo.go. Read before transfer/owners.go, policy/screen.go.
-//
 // Properties established for the transfer statement.
 // 1. Every slot is a note or a dummy, dummies last, no note at or past InputCount.
 // 2. A note belongs to the bound ring, a default-ring note passes only on an entry key.

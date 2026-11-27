@@ -2,8 +2,6 @@
 // paths share the top of the tree. SPP opens one path per input, a ring proof reads a
 // pool of records per registry and would otherwise pay for the same top levels on every
 // record. Each record still proves its full path to the root.
-//
-// Read after registry/registry.go. Read before policy/record_pool.go, policy/tracking.go.
 
 package registry
 
@@ -80,10 +78,6 @@ func canopyShape(openings int) (width, levels int) {
 		levels++
 	}
 	return width, levels
-}
-
-func (p SharedQuadProof) AssertLeaves(api frontend.API, root frontend.Variable, leaves []frontend.Variable) {
-	p.AssertLeavesWhen(api, 1, root, leaves)
 }
 
 // AssertLeavesWhen panics on a shape Validate refuses.

@@ -50,9 +50,6 @@
 // data hash binds those bytes alone.
 //
 // It proves nothing about the freshness of tx_viewing_sk or the salt, see shared.Envelope.
-//
-// Read after transfer/transfer.go, shared/envelope.go, shared/derivation.go, shared/utxo.go,
-// audit/layout.go. Read before audit/record.go, transfer/input.go.
 package audit
 
 import (
@@ -207,7 +204,7 @@ func (w AuditWires) SealStream(api frontend.API, rc frontend.Rangechecker, e Env
 		plaintext = append(plaintext, key[:]...)
 	}
 	// 3. The voucher's key takes the blocks past the last slot, zeros off a vouched transfer. The caller passes the wires its signature check read, the auditor then opens the key that signed and no other.
-	plaintext = append(plaintext, masked(api, w.Vouched, w.Voucher[:])...)
+	plaintext = append(plaintext, ringgadget.Masked(api, w.Vouched, w.Voucher[:])...)
 	// A plaintext off its ranges moves every key off the counters the readers use.
 	if len(plaintext) != ranges.CapacityBlocks()*streamBlockLen {
 		panic("audit: the stream plaintext differs from its ranges")
@@ -236,7 +233,7 @@ func countedDigest(api frontend.API, ciphertext []frontend.Variable, head, entry
 	// 1. An entry at or past the count packs as zero, the chunk the cut falls in then equals pack_left31 of the transmitted bytes.
 	for i, active := range count.Active {
 		offset := head + i*entry
-		copy(transmitted[offset:], masked(api, active, transmitted[offset:offset+entry]))
+		copy(transmitted[offset:], ringgadget.Masked(api, active, transmitted[offset:offset+entry]))
 	}
 	fields := shared.PackDisclosure(api, transmitted)
 	// 2. SelectCount sets exactly one candidate, its flag falls on the last chunk of that count's bytes and HashPrefix4 ends the chain there.
@@ -250,14 +247,6 @@ func countedDigest(api frontend.API, ciphertext []frontend.Variable, head, entry
 	}
 	// 3. The tag is the selected count's transmitted length, two counts whose chains agree over trailing zero bytes hash apart.
 	return gadget.PoseidonHash(api, []frontend.Variable{length, ringgadget.HashPrefix4(api, fields, ends)})
-}
-
-func masked(api frontend.API, flag frontend.Variable, bytes []frontend.Variable) []frontend.Variable {
-	out := make([]frontend.Variable, len(bytes))
-	for i, b := range bytes {
-		out[i] = api.Mul(flag, b)
-	}
-	return out
 }
 
 // Head opens every audit statement under domain, mirrored by AuditHead in program-libs/interface/src/proof/statement.rs. The stream's ephemeral key is tx_u, txPk already binds it.

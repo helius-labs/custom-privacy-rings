@@ -118,10 +118,6 @@ func (a Audit) Spending(t testing.TB, n int) Audit {
 	return a
 }
 
-func (a Audit) DefaultBits() uint64 {
-	return a.defaultBits()
-}
-
 // Plaintexts are the sealed regions of a transfer, a test edits them to claim what the circuit refuses.
 type Plaintexts struct {
 	Envelope []byte

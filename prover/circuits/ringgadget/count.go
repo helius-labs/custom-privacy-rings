@@ -2,9 +2,6 @@
 // reads a dummy off each slot. A ring statement also names how many slots it used, so
 // the count must be in range, the used slots come first, and only the used slots
 // enter the hash the program rebuilds.
-//
-// Read first. Read before audit/audit.go, policy/table.go, registry/apply_records.go,
-// transfer/input.go.
 
 package ringgadget
 
@@ -106,4 +103,13 @@ func IsAny(api frontend.API, bits ...frontend.Variable) frontend.Variable {
 		result = api.Or(result, bit)
 	}
 	return result
+}
+
+// The caller holds flag boolean, any other flag scales the values.
+func Masked(api frontend.API, flag frontend.Variable, values []frontend.Variable) []frontend.Variable {
+	masked := make([]frontend.Variable, len(values))
+	for i, value := range values {
+		masked[i] = api.Mul(flag, value)
+	}
+	return masked
 }

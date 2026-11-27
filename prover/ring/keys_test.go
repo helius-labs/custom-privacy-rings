@@ -93,27 +93,6 @@ func TestTransferKeysPrecomputePoolCapacities(t *testing.T) {
 			t.Fatalf("%s FrameWide = %v, want %v", key.Circuit, key.FrameWide, wantFrameWide)
 		}
 	}
-	var builds int
-	counting := func(shape transfer.Shape) (*transfer.TransferCircuit, error) {
-		builds++
-		return transfer.NewTransferCircuit(shape)
-	}
-	key := keyOf(t, transferKey)
-	ext := bindPolicy[TransferParams](key, counting, key.transferShape())
-	for range 3 {
-		_ = ext.Request()
-	}
-	if builds != 0 {
-		t.Fatalf("bindPolicy built %d circuits with precomputed Pools, want 0", builds)
-	}
-	key.Pools = nil
-	ext = bindPolicy[TransferParams](key, counting, key.transferShape())
-	for range 3 {
-		_ = ext.Request()
-	}
-	if builds != 1 {
-		t.Fatalf("bindPolicy built %d circuits without precomputed Pools, want 1", builds)
-	}
 }
 
 // WRITE_RING_PINS=1 rewrites the measured counts, a count moves only with a circuit change.
