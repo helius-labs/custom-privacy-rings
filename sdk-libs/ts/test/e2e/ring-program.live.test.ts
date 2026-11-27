@@ -3,7 +3,7 @@ import { X25519Keypair } from "@heliuslabs/spr/keypair";
 // and initializes its ring account. Reads RING_PROGRAM_SO and USER_REGISTRY_PROGRAM_SO.
 import { readFile } from "node:fs/promises";
 
-import { generateKeyPairSigner } from "@solana/kit";
+import { generateKeyPairSigner, lamports } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -25,7 +25,7 @@ describe("ring program", () => {
     const operator = await generateKeyPairSigner();
     const program = await generateKeyPairSigner();
 
-    for (const _ of [1, 2, 3]) await airdrop(client, operator.address);
+    await airdrop(client, operator.address, lamports(15_000_000_000n));
     const deployed = await deployRingProgram({
       client,
       ringProgramId: program.address,
@@ -48,7 +48,7 @@ describe("ring program", () => {
 
     expect(ring.bytes.length).toBeGreaterThan(deployed.programData.capacity);
     const upgradePayer = await generateKeyPairSigner();
-    for (const _ of [1, 2, 3]) await airdrop(client, upgradePayer.address);
+    await airdrop(client, upgradePayer.address, lamports(15_000_000_000n));
     const upgraded = await deployRingProgram({
       client,
       ringProgramId: program.address,

@@ -19,6 +19,7 @@ import {
   auditedRingAmounts,
   enroll,
   freshActor,
+  poll,
   readableRing,
   ringHoldings,
   ringKeys,
@@ -168,14 +169,14 @@ async function confirmedRelay(
   ring: AnonymousRing,
   relayId: Parameters<AnonymousRing["ringRpc"]["getRelayStatus"]>[0],
 ): Promise<string> {
-  const deadline = Date.now() + 180_000;
-  for (;;) {
-    const status = await ring.ringRpc.getRelayStatus(relayId);
-    if (status.status === "confirmed") return status.signature;
-    if (status.status === "failed") throw new Error(`relay failed, ${status.reason}`);
-    if (Date.now() > deadline) throw new Error("relay unresolved");
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
+  return poll(
+    async () => {
+      const status = await ring.ringRpc.getRelayStatus(relayId);
+      if (status.status === "failed") throw new Error(`relay failed, ${status.reason}`);
+      return status.status === "confirmed" ? status.signature : undefined;
+    },
+    { timeoutMs: 180_000, intervalMs: 250, timedOut: "relay unresolved" },
+  );
 }
 
 describe("anonymous ring", () => {
