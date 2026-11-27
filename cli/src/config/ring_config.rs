@@ -401,9 +401,9 @@ impl RingConfig {
 }
 
 fn edit(path: &Path, change: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Result<()> {
-    let mut document: DocumentMut = file::read(path)?
-        .parse()
-        .with_context(|| format!("cannot parse {}", path.display()))?;
+    let mut document = file::read(path)?
+        .parse::<DocumentMut>()
+        .map_err(|error| invalid_toml(path, error.span()))?;
     change(&mut document)?;
     file::write(path, document.to_string())
 }
@@ -430,7 +430,14 @@ pub(crate) fn expand_tilde(path: &Path) -> Result<PathBuf> {
 
 pub(crate) fn parse_ring_toml<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let text = file::read(path)?;
-    toml::from_str(&text).with_context(|| format!("cannot parse {}", path.display()))
+    toml::from_str(&text).map_err(|error| invalid_toml(path, error.span()))
+}
+
+fn invalid_toml(path: &Path, span: Option<std::ops::Range<usize>>) -> anyhow::Error {
+    match span {
+        Some(range) => anyhow!("invalid TOML in {} at byte {}", path.display(), range.start),
+        None => anyhow!("invalid TOML in {}", path.display()),
+    }
 }
 
 pub(crate) fn parse_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
@@ -444,13 +451,13 @@ fn load_dotenv(path: &Path) -> Result<HashMap<String, String>> {
     if !path.exists() {
         return Ok(values);
     }
-    for line in file::read(path)?.lines().map(str::trim) {
+    for (index, line) in file::read(path)?.lines().map(str::trim).enumerate() {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let (key, value) = line
             .split_once('=')
-            .with_context(|| format!("{} line is not KEY=VALUE, {line}", path.display()))?;
+            .with_context(|| format!("{} line {} requires KEY=VALUE", path.display(), index + 1))?;
         let key = key.trim().strip_prefix("export ").unwrap_or(key.trim());
         values
             .entry(key.to_owned())
@@ -468,8 +475,13 @@ fn expand_env(text: &str, dotenv: &HashMap<String, String>) -> Result<String> {
         let after = &rest[start + 2..];
         let end = after
             .find('}')
-            .ok_or_else(|| anyhow!("unclosed placeholder in {text}"))?;
+            .ok_or_else(|| anyhow!("unclosed placeholder in service URL"))?;
         let name = &after[..end];
+        ensure!(
+            name.starts_with(|c: char| c == '_' || c.is_ascii_alphabetic())
+                && name.bytes().all(|c| c == b'_' || c.is_ascii_alphanumeric()),
+            "invalid environment variable name in service URL"
+        );
         let value = std::env::var(name)
             .ok()
             .or_else(|| dotenv.get(name).cloned())
@@ -808,6 +820,26 @@ ring_rpc = "http://127.0.0.1:8785"
     }
 
     #[test]
+    fn config_errors_report_the_location_without_url_credentials() {
+        let dir = scratch_dir("config-errors");
+        let path = dir.join("ring.toml");
+        std::fs::write(
+            &path,
+            "[devnet]\nrpc = \"https://provider/private-credential",
+        )
+        .unwrap();
+        for error in [
+            RingConfig::load(&path).unwrap_err(),
+            RingConfig::set_target(&path, Target::Devnet).unwrap_err(),
+        ] {
+            let message = format!("{error:#}");
+            assert!(message.contains("at byte"));
+            assert!(!message.contains("private-credential"));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn a_dotenv_key_fills_its_placeholder_and_stays_out_of_the_environment() {
         let dir = scratch_dir("dotenv");
         let path = dir.join("ring.toml");
@@ -825,6 +857,10 @@ ring_rpc = "http://127.0.0.1:8785"
         let config = RingConfig::load(&path).expect("load");
         assert_eq!(config.devnet.rpc, "https://rpc.example/?api-key=k2");
         assert_eq!(std::env::var_os("RING_TEST_DOTENV_KEY"), None);
+        std::fs::write(dir.join(".env"), "\nprivate-value").unwrap();
+        let error = load_dotenv(&dir.join(".env")).unwrap_err().to_string();
+        assert!(error.ends_with("line 2 requires KEY=VALUE"));
+        assert!(!error.contains("private-value"));
         std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
