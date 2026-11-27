@@ -6,7 +6,6 @@ use super::*;
 use crate::operator::Custody;
 
 pub struct Context {
-    pub config_path: PathBuf,
     /// The directory of ring.toml, relative key paths resolve against it.
     pub root: PathBuf,
     pub config: RingConfig,
@@ -60,7 +59,6 @@ impl ContextSetup {
         .connect();
         Ok(Context {
             ring: CustomRing::new(config.program_id.0),
-            config_path,
             root,
             config,
             zolana,

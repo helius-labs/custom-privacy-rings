@@ -3,7 +3,6 @@
 use std::{io::Write, time::Duration};
 
 use anyhow::{Context as _, Result};
-use spr_client::prover::redact_api_key;
 
 use crate::config::{redact_url, RingConfig};
 
@@ -14,7 +13,7 @@ pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(30);
 pub fn run_devnet(config: &RingConfig) -> Result<()> {
     print_urls(config);
     println!();
-    let http = http(CONNECT_TIMEOUT, TOTAL_TIMEOUT);
+    let http = http(CONNECT_TIMEOUT, TOTAL_TIMEOUT)?;
     let urls = config.urls();
     for (service, base, path) in [
         ("indexer", &urls.indexer, "/readiness"),
@@ -23,7 +22,7 @@ pub fn run_devnet(config: &RingConfig) -> Result<()> {
         crate::ring_rpc::check_service_url(base)
             .with_context(|| format!("devnet {service} URL is invalid"))?;
         let full = service_url(base, path);
-        let url = redact_api_key(&full);
+        let url = redact_url(&full);
         print!("probing {service:<8} {url} ... ");
         let _ = std::io::stdout().flush();
         let probed = check(&http, &full);
@@ -50,14 +49,13 @@ pub fn print_urls(config: &RingConfig) {
     println!("  ring rpc  {}  {served}", redact_url(&urls.ring_rpc));
 }
 
-/// Panics only where `reqwest::blocking::Client::new` panics, a broken TLS backend.
-pub fn http(connect: Duration, total: Duration) -> reqwest::blocking::Client {
+pub fn http(connect: Duration, total: Duration) -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(connect)
         .timeout(total)
         .build()
-        .expect("reqwest client")
+        .context("cannot build the HTTP client")
 }
 
 pub fn check(http: &reqwest::blocking::Client, url: &str) -> Result<()> {

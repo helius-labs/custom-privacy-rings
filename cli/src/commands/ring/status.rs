@@ -5,9 +5,10 @@ use custom_ring_interface::{RingPolicy, RingRoles};
 use solana_address::Address;
 use spr_client::Rpc;
 use zolana_ring_client::{live_registry, RingError, RingMode};
+use zolana_ring_indexer::redact::redacted;
 
 use crate::{
-    config::{redact_text, redact_url, RingConfig, RoleName, Target},
+    config::{redact_url, RingConfig, RoleName, Target},
     controls, deploy, line,
     policy::{print_pinned, Pinned},
     release::RingProgram,
@@ -49,7 +50,7 @@ pub fn run(ctx: &Context) -> Result<()> {
         Err(error) => line("release", error),
     }
     if let Err(error) = print_chain(ctx) {
-        let (rpc, error) = (redact_url(&urls.rpc), redact_text(&error.to_string()));
+        let (rpc, error) = (redact_url(&urls.rpc), redacted(&error));
         line("chain", format_args!("unreachable at {rpc} ({error})"));
     }
     Ok(())

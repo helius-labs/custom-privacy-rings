@@ -93,10 +93,12 @@ fn register(ctx: &Context, member: &ShieldedKeypair) -> Result<()> {
 }
 
 fn plan(registered: bool, confirm: impl FnOnce() -> Result<bool>) -> Result<Plan> {
-    Ok(match registered {
-        true => Plan::AlreadyRegistered,
-        false if confirm()? => Plan::Enroll,
-        false => Plan::Declined,
+    Ok(if registered {
+        Plan::AlreadyRegistered
+    } else if confirm()? {
+        Plan::Enroll
+    } else {
+        Plan::Declined
     })
 }
 

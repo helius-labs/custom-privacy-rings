@@ -7,24 +7,13 @@ randomness is persisted. Run the key-loaded checks before exporting/publishing.
 """
 import argparse
 import concurrent.futures
-import hashlib
 import json
 import os
 import pathlib
 import subprocess
 import time
 import urllib.request
-
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-
-
-def digest(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def filename_of(key):
-    return key["Circuit"].replace("-", "_") + ".key"
+from ring_key_layout import LOCK, ROOT, catalog, digest, key_file
 
 
 def main():
@@ -35,16 +24,16 @@ def main():
     args = parser.parse_args()
     args.keys_dir = args.keys_dir.resolve()
     args.keys_dir.mkdir(parents=True, exist_ok=True)
-    catalog = json.loads(subprocess.check_output(["go", "run", "./cmd/catalog"], cwd=ROOT / "prover"))
-    lock = json.loads((ROOT / "prover/ring/proving-keys.lock").read_text())
+    keys = catalog()
+    lock = json.loads(LOCK.read_text())
     downloads = {} if args.fresh else lock["keys"]
 
     def existing(key):
-        path = args.keys_dir / filename_of(key)
+        path = args.keys_dir / key_file(key)
         return path.name, digest(path) if path.exists() else None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        found = {name: sha256 for name, sha256 in pool.map(existing, catalog) if sha256 is not None}
+        found = {name: sha256 for name, sha256 in pool.map(existing, keys) if sha256 is not None}
 
     def record(name):
         return args.keys_dir / (name + ".sha256")
@@ -58,12 +47,12 @@ def main():
     unknown = sorted(name for name, sha256 in found.items() if not known(name, sha256))
     if unknown:
         raise SystemExit("Existing keys match no lock pin or setup record, remove them: " + ", ".join(unknown))
-    if any(filename_of(key) not in found and filename_of(key) not in downloads for key in catalog):
+    if any(key_file(key) not in found and key_file(key) not in downloads for key in keys):
         subprocess.run(["just", "build-prover-server"], cwd=ROOT, check=True)
 
     def prepare(key):
         name = key["Circuit"]
-        filename = filename_of(key)
+        filename = key_file(key)
         path = args.keys_dir / filename
         pinned = downloads.get(filename)
         start = time.monotonic()
@@ -97,7 +86,7 @@ def main():
         return filename, {"sha256": sha256, "size": size, "source": "release"}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        entries = dict(pool.map(prepare, catalog))
+        entries = dict(pool.map(prepare, keys))
     manifest = {"keys": dict(sorted(entries.items()))}
     (args.keys_dir / "prepared-keys.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print("Local keys prepared. Nothing published.", flush=True)

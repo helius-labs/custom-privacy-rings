@@ -460,8 +460,7 @@ pub struct MergeArgs {
 }
 
 /// The arguments a command defaults to, what the pipeline runs each step with.
-pub fn defaults<T: Args + FromArgMatches>() -> T {
+pub fn defaults<T: Args + FromArgMatches>() -> Result<T, clap::Error> {
     let command = T::augment_args(clap::Command::new("defaults"));
-    T::from_arg_matches(&command.get_matches_from(["defaults"]))
-        .expect("every argument has a default")
+    T::from_arg_matches(&command.try_get_matches_from(["defaults"])?)
 }

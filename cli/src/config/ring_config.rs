@@ -10,6 +10,7 @@ use std::{
 use anyhow::{anyhow, ensure, Context as _, Result};
 use custom_ring_interface::{RingMode, RingRole};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_with::{DeserializeFromStr, SerializeDisplay};
 use solana_address::{error::ParseAddressError, Address};
 use spr_client::{prover::tee::TeePolicy, AsyncProverClient};
 use spr_transaction::SOL_MINT;
@@ -20,15 +21,15 @@ pub use crate::operator_manifest::OperatorManifest;
 use crate::{
     context::expanded,
     file,
-    macros::{named_enum, serde_via_str},
+    macros::named_enum,
     policy::{render, PolicySpec},
 };
 
-pub const RING_TOML: &str = "ring.toml";
+pub(crate) const RING_TOML: &str = "ring.toml";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct RingConfig {
+pub(crate) struct RingConfig {
     pub name: String,
     /// `--target` overrides it for one command.
     pub target: Target,
@@ -50,7 +51,7 @@ pub struct RingConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub struct CoSignerSpec {
+pub(crate) struct CoSignerSpec {
     pub key: Base58Address,
     pub scope: Vec<CoSignClass>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -58,19 +59,19 @@ pub struct CoSignerSpec {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-pub struct ThresholdSpec {
+pub(crate) struct ThresholdSpec {
     pub mint: Base58Address,
     pub above: u64,
 }
 
 /// `sol` in any case names the native token, base58 any other mint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Mint(pub Address);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, SerializeDisplay, DeserializeFromStr)]
+pub(crate) struct Mint(pub Address);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Base58Address(pub Address);
-
-serde_via_str!(Mint, Base58Address);
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, SerializeDisplay, DeserializeFromStr,
+)]
+pub(crate) struct Base58Address(pub Address);
 
 named_enum! {
     pub enum Target("target") {
@@ -89,7 +90,7 @@ named_enum! {
 }
 
 named_enum! {
-    pub enum CoSignClass("operation class") {
+    pub(crate) enum CoSignClass("operation class") {
         Transfers = "transfers",
         Deposits = "deposits",
         Withdrawals = "withdrawals",
@@ -97,7 +98,7 @@ named_enum! {
 }
 
 named_enum! {
-    pub enum RoleName("ring role") {
+    pub(crate) enum RoleName("ring role") {
         Admin = "admin",
         Policy = "policy",
         Pauser = "pauser",
@@ -107,7 +108,7 @@ named_enum! {
 }
 
 named_enum! {
-    pub enum Service("service") {
+    pub(crate) enum Service("service") {
         Rpc = "rpc",
         Indexer = "indexer",
         Prover = "prover",
@@ -124,16 +125,16 @@ named_enum! {
         deserialize = "T: Deserialize<'de> + Default"
     )
 )]
-pub struct PerCluster<T> {
+pub(crate) struct PerCluster<T> {
     #[serde(default, skip_serializing_if = "is_default")]
     pub localnet: T,
     #[serde(default, skip_serializing_if = "is_default")]
     pub devnet: T,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Urls {
+pub(crate) struct Urls {
     pub rpc: String,
     pub indexer: String,
     pub prover: String,
@@ -145,6 +146,12 @@ pub struct Urls {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ring_rpc_pubkey: Option<String>,
 }
+
+// A service URL may carry an API key in its userinfo, path or query.
+zolana_ring_keys::redacted_debug!(Urls {
+    shown: [prover_tee_policy, ring_rpc_pubkey],
+    hidden: [rpc, indexer, prover, ring_rpc],
+});
 
 impl ModeName {
     pub const fn of(mode: RingMode) -> Self {
@@ -213,9 +220,10 @@ impl FromStr for Mint {
 
 impl fmt::Display for Mint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 == SOL_MINT {
-            true => f.write_str("sol"),
-            false => fmt::Display::fmt(&self.0, f),
+        if self.0 == SOL_MINT {
+            f.write_str("sol")
+        } else {
+            fmt::Display::fmt(&self.0, f)
         }
     }
 }
@@ -400,36 +408,19 @@ fn edit(path: &Path, change: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Res
     file::write(path, document.to_string())
 }
 
-pub fn redact_url(url: &str) -> String {
+pub(crate) fn redact_url(url: &str) -> String {
     reqwest::Url::parse(url)
         .map(|url| url.origin().ascii_serialization())
         .unwrap_or_else(|_| "invalid URL".to_owned())
 }
 
-pub fn redact_text(text: &str) -> String {
-    const KEY: &str = "api-key=";
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find(KEY) {
-        let after = start + KEY.len();
-        out.push_str(&rest[..after]);
-        out.push('…');
-        let value_end = rest[after..]
-            .find(|c: char| c == '&' || c == ')' || c == '"' || c.is_whitespace())
-            .map_or(rest.len(), |end| after + end);
-        rest = &rest[value_end..];
-    }
-    out.push_str(rest);
-    out
-}
-
-pub fn read_tee_policy(path: &Path) -> Result<TeePolicy> {
+pub(crate) fn read_tee_policy(path: &Path) -> Result<TeePolicy> {
     let json = file::read(path)?;
     TeePolicy::from_file_json(&json)
         .with_context(|| format!("cannot parse the TEE policy {}", path.display()))
 }
 
-pub fn expand_tilde(path: &Path) -> Result<PathBuf> {
+pub(crate) fn expand_tilde(path: &Path) -> Result<PathBuf> {
     let Ok(rest) = path.strip_prefix("~") else {
         return Ok(path.to_path_buf());
     };
@@ -713,18 +704,60 @@ ring_rpc = "http://127.0.0.1:8785"
     }
 
     #[test]
+    fn ring_toml_spells_each_value_as_the_command_line_does() {
+        #[derive(Debug, PartialEq, Deserialize, Serialize)]
+        struct Spelled {
+            target: Target,
+            sol: Mint,
+            mint: Mint,
+            address: Base58Address,
+            list: crate::ListName,
+        }
+        let mint = Address::new_from_array([7; 32]);
+        let text = format!(
+            "target = \"devnet\"\nsol = \"sol\"\nmint = \"{mint}\"\naddress = \"{mint}\"\nlist = \"private-block\"\n"
+        );
+        let spelled: Spelled = toml::from_str(&text).unwrap();
+        assert_eq!(toml::to_string(&spelled).unwrap(), text);
+        assert_eq!(
+            spelled.sol,
+            toml::from_str::<Spelled>(&text.replace("\"sol\"", "\"SOL\""))
+                .unwrap()
+                .sol
+        );
+        let refused = toml::from_str::<Spelled>(&text.replace("private-block", "pending"));
+        assert!(refused.unwrap_err().to_string().contains("pending"));
+    }
+
+    #[test]
     fn redaction_masks_query_strings_and_api_keys() {
         assert_eq!(
             redact_url("https://devnet.helius-rpc.com/?api-key=secret"),
             "https://devnet.helius-rpc.com"
         );
         assert_eq!(redact_url("http://127.0.0.1:8899"), "http://127.0.0.1:8899");
+        let redacted = |text: &str| zolana_ring_indexer::redact::redacted(&text);
         assert_eq!(
-            redact_text("error sending request for url (https://x/?api-key=abc&x=1): timeout"),
-            "error sending request for url (https://x/?api-key=…&x=1): timeout"
+            redacted("error sending request for url (https://x/?api-key=abc&x=1): timeout"),
+            "error sending request for url (https://x/?api-key=redacted&x=1): timeout"
         );
-        assert_eq!(redact_text("api-key=abc"), "api-key=…");
-        assert_eq!(redact_text("no key here"), "no key here");
+        assert_eq!(redacted("no key here"), "no key here");
+    }
+
+    #[test]
+    fn urls_debug_prints_no_service_url() {
+        let secret = "https://user:pass@rpc.example.com/v2/path-token?api-key=query-key";
+        let urls = Urls {
+            rpc: secret.to_owned(),
+            indexer: secret.to_owned(),
+            prover: secret.to_owned(),
+            ring_rpc: secret.to_owned(),
+            ..prover_urls(secret)
+        };
+        let printed = format!("{urls:?}");
+        for part in ["pass", "path-token", "query-key"] {
+            assert!(!printed.contains(part), "{printed}");
+        }
     }
 
     #[test]

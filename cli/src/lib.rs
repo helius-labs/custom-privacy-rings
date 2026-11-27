@@ -4,7 +4,7 @@ mod macros;
 
 #[path = "config/arguments.rs"]
 mod arguments;
-pub use arguments::*;
+use arguments::*;
 
 #[path = "runtime/context.rs"]
 mod context;
@@ -16,77 +16,77 @@ mod operator_manifest;
 mod submission;
 #[cfg(test)]
 use context::resolve;
-pub use context::*;
+pub use context::Probe;
+use context::*;
 pub use submission::Landing;
 
 #[path = "runtime/chain.rs"]
 mod chain;
 
 #[path = "commands/wallet/identity/address.rs"]
-pub mod address;
+mod address;
 #[path = "commands/wallet/assets.rs"]
-pub mod assets;
+mod assets;
 #[path = "commands/wallet/notes/audit.rs"]
-pub mod audit;
+mod audit;
 #[path = "commands/ring/authority.rs"]
-pub mod authority;
+mod authority;
 #[path = "config/catalogue.rs"]
-pub mod catalogue;
+mod catalogue;
 #[path = "config/ring_config.rs"]
 pub mod config;
 #[path = "commands/ring/controls.rs"]
-pub mod controls;
+mod controls;
 #[path = "commands/membership/delegate.rs"]
-pub mod delegate;
+mod delegate;
 #[path = "commands/ring/deploy.rs"]
-pub mod deploy;
+mod deploy;
 #[path = "runtime/file.rs"]
-pub mod file;
+mod file;
 #[path = "commands/wallet/notes/fund.rs"]
-pub mod fund;
+mod fund;
 #[path = "commands/ring/init.rs"]
-pub mod init;
+mod init;
 #[path = "commands/wallet/notes/list.rs"]
-pub mod list;
+mod list;
 #[path = "commands/membership/list_approval.rs"]
-pub mod list_approval;
+mod list_approval;
 #[path = "commands/ring/localnet.rs"]
 pub mod localnet;
 #[path = "commands/membership/member.rs"]
-pub mod member;
+mod member;
 #[path = "commands/wallet/notes/merge.rs"]
-pub mod merge;
+mod merge;
 #[path = "commands/ring/new.rs"]
-pub mod new;
+mod new;
 #[path = "operations/pipeline.rs"]
-pub mod pipeline;
+mod pipeline;
 #[path = "commands/policy/mod.rs"]
-pub mod policy;
+mod policy;
 #[path = "runtime/probe.rs"]
-pub mod probe;
+mod probe;
 #[path = "operations/records.rs"]
 mod records;
-#[path = "commands/wallet/identity/reply_claims.rs"]
-pub mod reply_claims;
-pub use records::patiently;
 #[path = "commands/ring/release.rs"]
-pub mod release;
+mod release;
+#[path = "commands/wallet/identity/reply_claims.rs"]
+mod reply_claims;
 #[path = "runtime/ring_rpc.rs"]
-pub mod ring_rpc;
+mod ring_rpc;
 #[path = "commands/ring/status.rs"]
-pub mod status;
+mod status;
 #[path = "runtime/tool.rs"]
-pub mod tool;
+mod tool;
 #[path = "commands/wallet/notes/transact.rs"]
-pub mod transact;
+mod transact;
 #[path = "ui/terminal.rs"]
-pub mod ui;
+mod ui;
 #[path = "commands/wallet/identity/viewing_keys.rs"]
-pub mod viewing_keys;
+mod viewing_keys;
 #[path = "commands/wallet/mod.rs"]
-pub mod wallet;
+mod wallet;
 #[path = "ui/wizard.rs"]
-pub mod wizard;
+mod wizard;
 #[path = "runtime/workspace.rs"]
 mod workspace;
 
@@ -119,22 +119,24 @@ use zolana_ring_client::{
     RingOperation, RingSubmission, SettledSubmission, MERGE_DEFAULT_INPUT_COUNT,
 };
 
-pub use crate::{
-    chain::{transaction_error, Chain, Zolana, ZolanaServices},
-    config::{
-        CoSignClass, Mint, ModeName, RingConfig, RoleName, Service, Target, ThresholdSpec,
-        RING_TOML,
-    },
+use crate::{
+    chain::{transaction_error, Chain},
+    config::{CoSignClass, Mint, RingConfig, RoleName, Service, Target, ThresholdSpec, RING_TOML},
     list::{MemberArgs, MemberList},
-    policy::ListName,
-    ring_rpc::{RingRpcClient, Trust},
-    transact::{AllowListing, EntrySpendName, Funding, OwnerRail, Recipient},
+    ring_rpc::Trust,
+    transact::{EntrySpendName, Funding, OwnerRail, Recipient},
     ui::{line, Ask},
 };
+pub use crate::{
+    chain::{Zolana, ZolanaServices},
+    config::ModeName,
+    policy::ListName,
+    ring_rpc::RingRpcClient,
+};
 
-pub const AUDITOR_PUBKEY_FILE: &str = "keys/auditor.key.pub";
+const AUDITOR_PUBKEY_FILE: &str = "keys/auditor.key.pub";
 pub const SENDER_KEYPAIR_FILE: &str = "keys/sender-keypair.json";
-pub const DEFAULT_TRANSACT_AMOUNT: u64 = 100_000_000;
+const DEFAULT_TRANSACT_AMOUNT: u64 = 100_000_000;
 /// What localnet tops an account up to.
 const LOCALNET_BALANCE: u64 = 100_000_000_000;
 const MAX_COMPUTE_UNITS: u32 = 1_400_000;
@@ -202,7 +204,7 @@ pub fn parse_and_run() -> Result<()> {
 }
 
 /// `New` runs before any ring.toml exists, `Target` and `Url` before any RPC client.
-pub fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli) -> Result<()> {
     let silent = matches!(&cli.command, Command::New(args) if args.silent);
     let mut ask = ui::ask_for(silent);
     if let Command::New(args) = cli.command {
@@ -294,6 +296,7 @@ mod tests {
     use zolana_ring_policy::{ListId, Writer};
 
     use super::*;
+    use crate::transact::AllowListing;
 
     #[test]
     fn the_list_arg_names_every_authority_written_list() {
@@ -488,7 +491,7 @@ mod tests {
 
     #[test]
     fn the_pipeline_runs_init_with_the_command_defaults() {
-        let pipeline: InitArgs = defaults();
+        let pipeline: InitArgs = defaults().unwrap();
         let Command::Init(command) = Cli::try_parse_from(["zolana-ring", "init"])
             .expect("parses")
             .command
@@ -501,7 +504,7 @@ mod tests {
             resolve(Path::new("ring"), &pipeline.auditor_pubkey_file),
             Path::new("ring/keys/auditor.key.pub")
         );
-        let transact: TransactArgs = defaults();
+        let transact: TransactArgs = defaults().unwrap();
         assert_eq!(transact.amount, DEFAULT_TRANSACT_AMOUNT);
         assert!(transact.cosigner.cosigner.is_none());
     }
@@ -564,9 +567,10 @@ mod tests {
                 _config: Option<IndexerRpcConfig>,
             ) -> Result<GetShieldedTransactionsBySignatureResponse, ClientError> {
                 if self.calls.fetch_add(1, Ordering::Relaxed) == 0 {
-                    return Err(match self.transient {
-                        true => ClientError::IndexerUnavailable("restarting".to_owned()),
-                        false => ClientError::Rpc("refused".to_owned()),
+                    return Err(if self.transient {
+                        ClientError::IndexerUnavailable("restarting".to_owned())
+                    } else {
+                        ClientError::Rpc("refused".to_owned())
                     });
                 }
                 Ok(GetShieldedTransactionsBySignatureResponse {

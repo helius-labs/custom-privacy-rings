@@ -5,7 +5,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let chain = format!("{error:?}");
-            eprintln!("Error: {}", custom_ring_cli::config::redact_text(&chain));
+            eprintln!("Error: {}", zolana_ring_indexer::redact::redacted(&chain));
             ExitCode::FAILURE
         }
     }

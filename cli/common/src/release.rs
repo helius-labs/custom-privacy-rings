@@ -48,7 +48,7 @@ pub fn host_platform() -> Result<(&'static str, &'static str)> {
     Ok((os, arch))
 }
 
-pub fn check_path_segment(value: &str, kind: &str) -> Result<()> {
+fn check_path_segment(value: &str, kind: &str) -> Result<()> {
     ensure!(
         !value.is_empty()
             && value != "."
@@ -59,7 +59,7 @@ pub fn check_path_segment(value: &str, kind: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn cache_dir(tag: &str) -> PathBuf {
+fn cache_dir(tag: &str) -> PathBuf {
     config_dir().join("cache").join(tag)
 }
 

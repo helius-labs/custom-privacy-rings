@@ -79,9 +79,12 @@ fn reach(frame: FrameRail, shape: Shape, legs: usize, salted: bool) -> Result<Op
         owners: 0,
         legs,
     };
-    let rows = |run: usize| match frame.has_owner_run() {
-        true => (run + frame.unsigned_rows()).min(shape.n_inputs()),
-        false => shape.n_inputs(),
+    let rows = |run: usize| {
+        if frame.has_owner_run() {
+            (run + frame.unsigned_rows()).min(shape.n_inputs())
+        } else {
+            shape.n_inputs()
+        }
     };
     Ok(transfer.widest_settled_run()?.map(|(run, _)| Reach {
         frame,
@@ -134,15 +137,14 @@ pub(super) struct KeyReach {
 /// A key of fixed width holds a spend within its legs at no more than its rows, the wide key of the
 /// same frame takes every other spend.
 fn holds(shape: TransferShape, reach: Reach) -> Option<Reach> {
-    match fixed_width(shape) {
-        false => (reach.frame_key(true).shape() == Some(shape)).then_some(reach),
-        true => (reach.frame_key(false).shape() == Some(shape)
-            && reach.legs <= usize::from(shape.withdrawals))
+    if !fixed_width(shape) {
+        return (reach.frame_key(true).shape() == Some(shape)).then_some(reach);
+    }
+    (reach.frame_key(false).shape() == Some(shape) && reach.legs <= usize::from(shape.withdrawals))
         .then_some(Reach {
             rows: reach.rows.min(usize::from(shape.owners)),
             ..reach
-        }),
-    }
+        })
 }
 
 /// Narrow and small entry keys keep their widths, a spend past them moves to a wide key.
@@ -175,13 +177,19 @@ pub(super) fn key_reaches(reaches: &[Reach]) -> Result<Vec<(RingKey, Option<KeyR
         }
         // A narrow key's salted spends move to the wide key of their frame, a frame with no wide key reads them on the narrow one.
         let salted = |reach: &Reach| shape.wide || reach.frame_key(true).shape().is_none();
-        let subjects = |reach: &Reach| match salted(reach) {
-            false => reach.rows + reach.outputs,
-            true => reach.subjects(),
+        let subjects = |reach: &Reach| {
+            if salted(reach) {
+                reach.subjects()
+            } else {
+                reach.rows + reach.outputs
+            }
         };
-        let records = |reach: &Reach| match salted(reach) {
-            false => reach.rows + 2 * reach.outputs + reach.leg_owners() + reach.inputs,
-            true => 2 * reach.subjects() + reach.outputs + reach.inputs,
+        let records = |reach: &Reach| {
+            if salted(reach) {
+                2 * reach.subjects() + reach.outputs + reach.inputs
+            } else {
+                reach.rows + 2 * reach.outputs + reach.leg_owners() + reach.inputs
+            }
         };
         let most = |value: &dyn Fn(&Reach) -> usize| held.iter().map(value).max().unwrap_or(0);
         keyed.push((
