@@ -17,4 +17,6 @@ mod server;
 pub use client_rate::{BucketRate, ClientLimitArgs, ClientLimits, ClientRates};
 pub use config::{Cli, Command, CustodyConfigError, ServeArgs, ServeKeys};
 pub use hub::{Hub, HubBuilder, NotReady, ServiceIdentity};
-pub use server::{rpc_module, run_server, Announce, BindPolicy, ServerError, ServerOptions};
+pub use server::{
+    rpc_module, run_server, Announce, BindPolicy, ServedRpc, ServerError, ServerOptions,
+};

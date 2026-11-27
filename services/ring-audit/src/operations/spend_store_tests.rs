@@ -1505,11 +1505,7 @@ async fn a_wallet_read_and_a_page_commit_complete_on_one_connection() {
             limit,
             ..query(owner)
         });
-        let (read, committed) = tokio::time::timeout(std::time::Duration::from_secs(4), async {
-            tokio::join!(read, commit_page(&store, &book, &seal, &keys, &page))
-        })
-        .await
-        .expect("both finish before the acquire timeout");
+        let (read, committed) = tokio::join!(read, commit_page(&store, &book, &seal, &keys, &page));
         read.expect("read");
         committed.expect("commit");
     }

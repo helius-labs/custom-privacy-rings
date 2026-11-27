@@ -135,6 +135,38 @@ impl ServiceStore {
     }
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod fixture {
+    use std::path::PathBuf;
+
+    /// One directory per store, a removal takes the WAL files with the database.
+    pub struct StoreDirectory(PathBuf);
+
+    impl StoreDirectory {
+        /// `name` is unique among the stores of one test process.
+        pub fn new(name: &str) -> Self {
+            let directory =
+                std::env::temp_dir().join(format!("ring-store-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&directory);
+            std::fs::create_dir_all(&directory).expect("store directory");
+            Self(directory)
+        }
+
+        pub fn url(&self) -> String {
+            format!(
+                "sqlite://{}?mode=rwc",
+                self.0.join("store.sqlite").display()
+            )
+        }
+    }
+
+    impl Drop for StoreDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,14 +204,14 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fresh_file_migrates_through_a_pool_and_reopens() {
-        let directory = std::env::temp_dir().join(format!("store-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).expect("directory");
         for attempt in 0..32 {
-            let path = directory.join(format!("{attempt}.sqlite"));
-            let url = format!("sqlite://{}?mode=rwc", path.display());
-            Store::open(&url, STORE_CONNECTIONS).await.expect("fresh");
-            Store::open(&url, STORE_CONNECTIONS).await.expect("restart");
+            let directory = fixture::StoreDirectory::new(&format!("fresh-{attempt}"));
+            Store::open(&directory.url(), STORE_CONNECTIONS)
+                .await
+                .expect("fresh");
+            Store::open(&directory.url(), STORE_CONNECTIONS)
+                .await
+                .expect("restart");
         }
-        let _ = std::fs::remove_dir_all(&directory);
     }
 }

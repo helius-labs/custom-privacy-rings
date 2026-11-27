@@ -12,7 +12,8 @@ use zolana_ring_client::rpc::RelayId;
 
 use super::*;
 
-const PROGRESS: Duration = Duration::from_secs(5);
+/// Bounds a hang only, the gates decide each outcome.
+const PROGRESS: Duration = Duration::from_secs(60);
 
 /// Parks the first call after `arm` until `release`.
 #[derive(Default)]

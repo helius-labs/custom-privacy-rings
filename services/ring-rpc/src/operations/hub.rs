@@ -57,7 +57,7 @@ use ring_relay::{
 };
 use ring_service_core::ServiceError;
 
-const READINESS_CACHE_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const READINESS_CACHE_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Hub<S> {
     signer: SigningIdentity,
@@ -129,7 +129,7 @@ pub struct HubBuilder<S> {
 }
 
 struct ReadinessCache {
-    checked_at: Option<Instant>,
+    checked_at: Option<tokio::time::Instant>,
     status: ReadinessStatus,
     in_flight: Option<watch::Receiver<Option<ReadinessStatus>>>,
 }
@@ -344,7 +344,7 @@ impl<S: TransactionSource> Hub<S> {
                             }
                         };
                         *hub.readiness.lock().await = ReadinessCache {
-                            checked_at: Some(Instant::now()),
+                            checked_at: Some(tokio::time::Instant::now()),
                             status,
                             in_flight: None,
                         };

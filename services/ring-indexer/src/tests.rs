@@ -215,7 +215,7 @@ fn start_slots_parse_a_slot_or_latest() {
 
 #[test]
 fn the_announcement_signs_with_a_pinned_kms_key_alone() {
-    use clap::{error::ErrorKind, Parser};
+    use clap::{error::ErrorKind, CommandFactory, FromArgMatches};
     use zolana_operator_custody::{KeyArn, KmsEndpoint};
 
     const KEY_ARN: &str =
@@ -234,7 +234,11 @@ fn the_announcement_signs_with_a_pinned_kms_key_alone() {
             "--public-url",
             "http://127.0.0.1:8786",
         ];
-        crate::Args::try_parse_from(base.iter().chain(flags))
+        // No ambient variable reaches the parse.
+        let matches = crate::Args::command()
+            .mut_args(|arg| arg.env(None::<&str>))
+            .try_get_matches_from(base.iter().chain(flags))?;
+        crate::Args::from_arg_matches(&matches)
     };
 
     let seed = parse(&["--service-key-file", "service.seed"]).unwrap_err();

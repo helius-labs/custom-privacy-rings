@@ -55,7 +55,7 @@ use ring_service_core::ServiceError;
 /// Past it the bucket nearest to full is dropped.
 const MAX_BUCKETS: usize = 65_536;
 /// An IPv6 /48 spends the rates of this many /64 clients.
-pub(crate) const NETWORK_CLIENTS: NonZeroU32 = NonZeroU32::new(16).unwrap();
+const NETWORK_CLIENTS: NonZeroU32 = NonZeroU32::new(16).unwrap();
 const UNKNOWN_API_KEY: i32 = -32254;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -715,4 +715,40 @@ fn unknown_api_key() -> HttpResponse {
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_64s_of_one_ipv6_48_share_its_signed_write_rate() {
+        let limiter = ClientRateLimiter::new(ClientRates {
+            signed_writes: BucketRate::new(1, 2),
+            ..ClientRates::default()
+        });
+        let now = Instant::now();
+        let write = RatedCall::SignedWrite { signer: None };
+        let admit = |address: &str| {
+            let client = ClientIdentity::Address(address.parse().expect("IPv6 client"));
+            limiter.admit(client, write, now)
+        };
+
+        for subnet in 0..NETWORK_CLIENTS.get() {
+            for _ in 0..2 {
+                assert!(
+                    admit(&format!("2001:db8:0:{subnet:x}::")).is_ok(),
+                    "{subnet}"
+                );
+            }
+        }
+        assert!(matches!(
+            admit("2001:db8:0:ffff::"),
+            Err(Admission::Limited(RateLimited {
+                limit: RateLimit::SignedWrites,
+                ..
+            }))
+        ));
+        assert!(admit("2001:db8:1::").is_ok());
+    }
 }

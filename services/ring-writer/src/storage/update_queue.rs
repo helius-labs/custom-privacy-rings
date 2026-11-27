@@ -1361,7 +1361,7 @@ mod tests {
             // Each update writes one record, an applied update keeps no member row.
             let queued = 2 * UPDATES as usize - (flush + 1) * APPLY_BATCH;
             assert_eq!(
-                member_rows(&queue).await,
+                registry_member_rows(&queue, REGISTRY).await,
                 i64::try_from(queued).expect("count")
             );
         }

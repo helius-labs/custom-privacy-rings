@@ -356,14 +356,8 @@ async fn assert_concurrent_messages_of_one_transfer_hold_one_reservation(url: &s
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_messages_of_one_transfer_hold_one_reservation_on_sqlite() {
-    let path = std::env::temp_dir().join(format!("cosign-sends-{}.sqlite", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    assert_concurrent_messages_of_one_transfer_hold_one_reservation(&format!(
-        "sqlite://{}?mode=rwc",
-        path.display()
-    ))
-    .await;
-    let _ = std::fs::remove_file(&path);
+    let directory = ring_service_core::database::fixture::StoreDirectory::new("wallet-sends");
+    assert_concurrent_messages_of_one_transfer_hold_one_reservation(&directory.url()).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -124,6 +124,12 @@ pub struct Announce {
     pub url: UpstreamUrl,
 }
 
+/// `address` stays bound until `handle` stops the server.
+pub struct ServedRpc {
+    pub address: SocketAddr,
+    pub handle: ServerHandle,
+}
+
 #[derive(Debug, Error)]
 pub enum ServerError {
     #[error("ring RPC must bind to a loopback address")]
@@ -141,7 +147,7 @@ pub enum ServerError {
 pub async fn run_server<S: TransactionSource + 'static>(
     hub: Arc<Hub<S>>,
     options: ServerOptions,
-) -> Result<ServerHandle, ServerError> {
+) -> Result<ServedRpc, ServerError> {
     run_server_with_idle_timeouts(hub, options, IDLE_TIMEOUTS).await
 }
 
@@ -149,11 +155,12 @@ async fn run_server_with_idle_timeouts<S: TransactionSource + 'static>(
     hub: Arc<Hub<S>>,
     options: ServerOptions,
     idle_timeouts: IdleTimeouts,
-) -> Result<ServerHandle, ServerError> {
+) -> Result<ServedRpc, ServerError> {
     if options.bind_policy == BindPolicy::LoopbackOnly && !options.bind.is_loopback() {
         return Err(ServerError::PublicBind);
     }
     let listener = TcpListener::bind(SocketAddr::from((options.bind, options.port))).await?;
+    let address = listener.local_addr()?;
     let limiter = Arc::new(ClientRateLimiter::new(options.client_limits.rates));
     let middleware = tower::ServiceBuilder::new()
         .layer(cors(hub.origins())?)
@@ -265,7 +272,7 @@ async fn run_server_with_idle_timeouts<S: TransactionSource + 'static>(
             });
         }
     });
-    Ok(handle)
+    Ok(ServedRpc { address, handle })
 }
 
 fn cors(origins: &Origins) -> Result<CorsLayer, OriginError> {
@@ -784,8 +791,8 @@ mod tests {
     use ring_writer::record_update::RecordUpdateRefusal;
 
     use crate::{
-        client_rate::{BucketRate, ClientRates, RateLimit, NETWORK_CLIENTS},
-        hub::ServiceIdentity,
+        client_rate::{BucketRate, ClientRates, RateLimit},
+        hub::{ServiceIdentity, READINESS_CACHE_INTERVAL},
     };
 
     use super::*;
@@ -917,11 +924,6 @@ mod tests {
         }
     }
 
-    fn port() -> u16 {
-        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("listener");
-        listener.local_addr().expect("address").port()
-    }
-
     async fn hub(mut source: TestSource, origins: Origins) -> Arc<Hub<TestSource>> {
         let auditor = X25519Keypair::new();
         source.config = Some(RingConfiguration {
@@ -977,13 +979,14 @@ mod tests {
         map
     }
 
-    fn options(port: u16, timeout: Duration) -> ServerOptions {
+    /// The request timeout bounds only a hang.
+    fn options() -> ServerOptions {
         ServerOptions {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             bind_policy: BindPolicy::LoopbackOnly,
-            port,
+            port: 0,
             max_connections: 8,
-            request_timeout: timeout,
+            request_timeout: Duration::from_secs(60),
             client_limits: ClientLimits::default(),
             announce: None,
         }
@@ -1011,14 +1014,14 @@ mod tests {
 
         let hub = hub(source(), Origins::default()).await;
         let served = rpc_module(hub.clone()).expect("module");
-        let handle = run_server(
+        let ServedRpc { handle, .. } = run_server(
             hub.clone(),
             ServerOptions {
                 announce: Some(Announce {
                     registry: registry_url.parse().expect("registry URL"),
                     url: "http://ring:8785".parse().expect("public URL"),
                 }),
-                ..options(port(), Duration::from_secs(1))
+                ..options()
             },
         )
         .await
@@ -1047,9 +1050,8 @@ mod tests {
     }
 
     /// A server granting each client a burst of two signed writes.
-    async fn write_limited_server(identity: ClientIdentityPolicy) -> (ServerHandle, String) {
-        let server_port = port();
-        let handle = run_server(
+    async fn write_limited_server(identity: ClientIdentityPolicy) -> ServedRpc {
+        run_server(
             hub(source(), Origins::default()).await,
             ServerOptions {
                 client_limits: ClientLimits {
@@ -1059,12 +1061,11 @@ mod tests {
                     },
                     identity,
                 },
-                ..options(server_port, Duration::from_secs(1))
+                ..options()
             },
         )
         .await
-        .expect("server");
-        (handle, format!("http://127.0.0.1:{server_port}"))
+        .expect("server")
     }
 
     async fn submit_as(url: &str, client: &str) -> reqwest::Response {
@@ -1103,9 +1104,10 @@ mod tests {
     #[tokio::test]
     async fn a_client_past_its_signed_write_rate_waits_while_another_submits() {
         let proxy = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let (handle, url) =
+        let ServedRpc { address, handle } =
             write_limited_server(ClientIdentityPolicy::default().with_trusted_proxies([proxy]))
                 .await;
+        let url = format!("http://{address}");
         let served = RecordUpdateRefusal::Disabled.code();
 
         for _ in 0..2 {
@@ -1142,34 +1144,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_64s_of_one_ipv6_48_share_its_signed_write_rate() {
-        let proxy = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let (handle, url) =
-            write_limited_server(ClientIdentityPolicy::default().with_trusted_proxies([proxy]))
-                .await;
-        let served = RecordUpdateRefusal::Disabled.code();
-
-        for subnet in 0..NETWORK_CLIENTS.get() {
-            for _ in 0..2 {
-                let client = format!("2001:db8:0:{subnet:x}::1");
-                assert_eq!(error_code(submit_as(&url, &client).await).await, served);
-            }
-        }
-        assert_eq!(
-            error_code(submit_as(&url, "2001:db8:0:ffff::1").await).await,
-            RateLimit::SignedWrites.code()
-        );
-        assert_eq!(
-            error_code(submit_as(&url, "2001:db8:1::1").await).await,
-            served
-        );
-        handle.stop().expect("stop");
-        handle.stopped().await;
-    }
-
-    #[tokio::test]
     async fn a_forwarded_header_from_an_untrusted_peer_keeps_the_peer_identity() {
-        let (handle, url) = write_limited_server(ClientIdentityPolicy::default()).await;
+        let ServedRpc { address, handle } =
+            write_limited_server(ClientIdentityPolicy::default()).await;
+        let url = format!("http://{address}");
 
         for _ in 0..2 {
             submit_as(&url, "198.51.100.1").await;
@@ -1188,14 +1166,10 @@ mod tests {
             .with_relying_party_id("localhost".to_owned())
             .build()
             .expect("origins");
-        let server_port = port();
-        let handle = run_server(
-            hub(source(), origins).await,
-            options(server_port, Duration::from_secs(1)),
-        )
-        .await
-        .expect("server");
-        let url = format!("http://127.0.0.1:{server_port}");
+        let ServedRpc { address, handle } = run_server(hub(source(), origins).await, options())
+            .await
+            .expect("server");
+        let url = format!("http://{address}");
         let client = reqwest::Client::new();
 
         let allowed = client
@@ -1246,13 +1220,23 @@ mod tests {
         let batch_body: serde_json::Value = batch.json().await.expect("batch body");
         assert_eq!(batch_body["error"]["code"], -32005);
 
-        let oversized = client
-            .post(&url)
-            .body("a".repeat(MAX_REQUEST_BODY_SIZE as usize + 1))
-            .send()
+        // Headers only, the server closes over an unread body and the reset can drop the 413.
+        let mut oversized = tokio::net::TcpStream::connect(address)
             .await
-            .expect("oversized request");
-        assert!(!oversized.status().is_success());
+            .expect("connect");
+        let head = format!(
+            "POST / HTTP/1.1\r\nHost: localhost\r\ncontent-type: application/json\r\n\
+             content-length: {}\r\n\r\n",
+            MAX_REQUEST_BODY_SIZE + 1
+        );
+        oversized
+            .write_all(head.as_bytes())
+            .await
+            .expect("request head");
+        assert!(response(&mut oversized)
+            .await
+            .expect("refusal")
+            .starts_with("http/1.1 413"));
 
         let ready = client
             .get(format!("{url}/ready"))
@@ -1266,14 +1250,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_path_runs_only_the_method_it_names() {
-        let server_port = port();
-        let handle = run_server(
-            hub(source(), Origins::default()).await,
-            options(server_port, Duration::from_secs(1)),
-        )
-        .await
-        .expect("server");
-        let url = format!("http://127.0.0.1:{server_port}");
+        let ServedRpc { address, handle } =
+            run_server(hub(source(), Origins::default()).await, options())
+                .await
+                .expect("server");
+        let url = format!("http://{address}");
         let client = reqwest::Client::new();
         let call = |path: &str, body: serde_json::Value| {
             let request = client.post(format!("{url}{path}")).json(&body);
@@ -1338,15 +1319,12 @@ mod tests {
 
     #[tokio::test]
     async fn server_refuses_a_websocket_upgrade() {
-        let server_port = port();
-        let handle = run_server(
-            hub(source(), Origins::default()).await,
-            options(server_port, Duration::from_secs(1)),
-        )
-        .await
-        .expect("server");
+        let ServedRpc { address, handle } =
+            run_server(hub(source(), Origins::default()).await, options())
+                .await
+                .expect("server");
         let upgrade = reqwest::Client::new()
-            .get(format!("http://127.0.0.1:{server_port}/"))
+            .get(format!("http://{address}/"))
             .header("connection", "upgrade")
             .header("upgrade", "websocket")
             .header("sec-websocket-version", "13")
@@ -1389,10 +1367,9 @@ mod tests {
         )
         .await
         .expect("public bind under the insecure policy");
-        insecure.stop().expect("stop");
+        insecure.handle.stop().expect("stop");
 
-        let failed_port = port();
-        let handle = run_server(
+        let ServedRpc { address, handle } = run_server(
             hub(
                 TestSource {
                     healthy: false,
@@ -1401,36 +1378,37 @@ mod tests {
                 Origins::default(),
             )
             .await,
-            options(failed_port, Duration::from_secs(1)),
+            options(),
         )
         .await
         .expect("server");
-        let response = reqwest::get(format!("http://127.0.0.1:{failed_port}/ready"))
+        let response = reqwest::get(format!("http://{address}/ready"))
             .await
             .expect("ready response");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         handle.stop().expect("stop");
         handle.stopped().await;
 
-        let timeout_port = port();
-        let handle = run_server(
+        let ServedRpc { address, handle } = run_server(
             hub(
                 TestSource {
-                    delay: Duration::from_millis(50),
+                    // Outlasts the test, only the request timeout answers.
+                    delay: Duration::from_secs(3_600),
                     ..source()
                 },
                 Origins::default(),
             )
             .await,
-            options(timeout_port, Duration::from_millis(5)),
+            ServerOptions {
+                request_timeout: Duration::from_millis(5),
+                ..options()
+            },
         )
         .await
         .expect("server");
-        assert!(
-            reqwest::get(format!("http://127.0.0.1:{timeout_port}/ready"))
-                .await
-                .is_err()
-        );
+        assert!(reqwest::get(format!("http://{address}/ready"))
+            .await
+            .is_err());
         handle.stop().expect("stop");
         handle.stopped().await;
     }
@@ -1457,10 +1435,16 @@ mod tests {
         let source = source();
         let calls = source.health_calls.clone();
         let hub = hub(source, Origins::default()).await;
+        // Paused after the store opens, sqlx waits on the real clock.
+        tokio::time::pause();
 
         assert_eq!(hub.readiness().await, ReadinessStatus::Ready);
+        tokio::time::advance(READINESS_CACHE_INTERVAL - Duration::from_millis(1)).await;
         assert_eq!(hub.readiness().await, ReadinessStatus::Ready);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(hub.readiness().await, ReadinessStatus::Ready);
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]
@@ -1471,6 +1455,7 @@ mod tests {
         };
         let calls = source.health_calls.clone();
         let hub = hub(source, Origins::default()).await;
+        tokio::time::pause();
         let waiter = tokio::spawn({
             let hub = hub.clone();
             async move { hub.readiness().await }
@@ -1536,28 +1521,22 @@ mod tests {
     /// another cluster orphans every ring already registered.
     #[tokio::test]
     async fn derived_readiness_checks_the_cluster() {
-        let matching = port();
-        let handle = run_server(
-            derived_hub(source(), TEST_GENESIS).await,
-            options(matching, Duration::from_secs(1)),
-        )
-        .await
-        .expect("server");
-        let ready = reqwest::get(format!("http://127.0.0.1:{matching}/ready"))
+        let ServedRpc { address, handle } =
+            run_server(derived_hub(source(), TEST_GENESIS).await, options())
+                .await
+                .expect("server");
+        let ready = reqwest::get(format!("http://{address}/ready"))
             .await
             .expect("ready");
         assert_eq!(ready.status(), StatusCode::OK);
         handle.stop().expect("stop");
         handle.stopped().await;
 
-        let repointed = port();
-        let handle = run_server(
-            derived_hub(source(), [1; 32]).await,
-            options(repointed, Duration::from_secs(1)),
-        )
-        .await
-        .expect("server");
-        let response = reqwest::get(format!("http://127.0.0.1:{repointed}/ready"))
+        let ServedRpc { address, handle } =
+            run_server(derived_hub(source(), [1; 32]).await, options())
+                .await
+                .expect("server");
+        let response = reqwest::get(format!("http://{address}/ready"))
             .await
             .expect("ready");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1621,13 +1600,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_full_server_answers_503_and_serves_again_once_a_slot_frees() {
-        let listen_port = port();
-        let mut opts = options(listen_port, Duration::from_secs(2));
+        let mut opts = options();
         opts.max_connections = 1;
-        let handle = run_server(hub(source(), Origins::default()).await, opts)
+        let ServedRpc {
+            address: addr,
+            handle,
+        } = run_server(hub(source(), Origins::default()).await, opts)
             .await
             .expect("server");
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
 
         let mut held = tokio::net::TcpStream::connect(addr).await.expect("connect");
         held.write_all(GET_HEALTH).await.expect("request");
@@ -1654,18 +1634,18 @@ mod tests {
     /// The silent socket is the clock, its cut proves the first-request timeout passed.
     #[tokio::test]
     async fn a_silent_socket_is_cut_and_an_idle_keep_alive_connection_is_not() {
-        let listen_port = port();
-        let mut opts = options(listen_port, Duration::from_secs(2));
+        let mut opts = options();
         opts.max_connections = 2;
         let timeouts = IdleTimeouts {
             first_request: Duration::from_millis(50),
             keep_alive: Duration::from_secs(3_600),
         };
-        let handle =
-            run_server_with_idle_timeouts(hub(source(), Origins::default()).await, opts, timeouts)
-                .await
-                .expect("server");
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
+        let ServedRpc {
+            address: addr,
+            handle,
+        } = run_server_with_idle_timeouts(hub(source(), Origins::default()).await, opts, timeouts)
+            .await
+            .expect("server");
 
         let mut keep_alive = tokio::net::TcpStream::connect(addr).await.expect("connect");
         keep_alive.write_all(GET_HEALTH).await.expect("request");

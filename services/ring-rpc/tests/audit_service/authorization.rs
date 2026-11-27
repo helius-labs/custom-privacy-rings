@@ -197,11 +197,8 @@ async fn assert_a_replay_to_a_second_hub_is_refused(url: &str) {
 
 #[tokio::test]
 async fn a_request_replayed_to_a_second_hub_over_one_sqlite_file_is_refused() {
-    let path = std::env::temp_dir().join(format!("replay-{}.sqlite", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    assert_a_replay_to_a_second_hub_is_refused(&format!("sqlite://{}?mode=rwc", path.display()))
-        .await;
-    let _ = std::fs::remove_file(&path);
+    let directory = ring_service_core::database::fixture::StoreDirectory::new("replay");
+    assert_a_replay_to_a_second_hub_is_refused(&directory.url()).await;
 }
 
 #[tokio::test]

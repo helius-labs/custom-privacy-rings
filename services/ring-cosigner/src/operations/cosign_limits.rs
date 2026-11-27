@@ -1689,11 +1689,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn two_co_signers_over_one_sqlite_file_grant_the_allowance_once() {
-        let path = std::env::temp_dir().join(format!("cosign-{}.sqlite", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        assert_two_co_signers_share_one_allowance(&format!("sqlite://{}?mode=rwc", path.display()))
-            .await;
-        let _ = std::fs::remove_file(&path);
+        let directory =
+            ring_service_core::database::fixture::StoreDirectory::new("shared-allowance");
+        assert_two_co_signers_share_one_allowance(&directory.url()).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

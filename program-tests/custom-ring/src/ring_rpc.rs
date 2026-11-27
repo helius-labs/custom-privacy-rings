@@ -1,10 +1,6 @@
 //! The ring rpc a test serves in process for the operator cli and the relay wallet.
 
-use std::{
-    net::{Ipv4Addr, TcpListener},
-    sync::Arc,
-    time::Duration,
-};
+use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -40,12 +36,16 @@ use zolana_ring_client::{
     },
     RingError, RingRelay,
 };
-use zolana_ring_rpc::{run_server, BindPolicy, ClientLimits, Hub, ServerOptions, ServiceIdentity};
+use zolana_ring_rpc::{
+    run_server, BindPolicy, ClientLimits, Hub, ServedRpc, ServerOptions, ServiceIdentity,
+};
 
 use crate::shared::{prover_url, TestEnv, ACTOR_AIRDROP};
 
 pub const RELAY_BUDGET_LAMPORTS: u64 = 1_000_000_000;
 pub const RELAY_SIGNER_BUDGET_LAMPORTS: u64 = 200_000_000;
+/// The server cuts a call at this age, the relay client waits no longer.
+const RING_RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RelayBudgetUse {
@@ -159,7 +159,7 @@ impl RingRpcSpec<'_> {
         });
         let served = self.start(server)?.rpc;
         Ok(CoSigningRingRpc {
-            relay: RingRpcRelay::new(&served.url),
+            relay: RingRpcRelay::new(&served.url)?,
             served,
             co_signer: address,
         })
@@ -186,7 +186,7 @@ impl RingRpcSpec<'_> {
             .managed_merge()
             .context("relay services run the managed merge")?;
         Ok(RelayedRingRpc {
-            relay: RingRpcRelay::new(&rpc.url),
+            relay: RingRpcRelay::new(&rpc.url)?,
             served: rpc,
             store,
             fee_payer: fee_payer_address,
@@ -281,18 +281,15 @@ impl RingRpcSpec<'_> {
         );
         let writer = hub.record_writer().map_err(|e| anyhow!("writer {e:?}"))?;
         self.env.fund(writer.authority(), ACTOR_AIRDROP)?;
-        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?
-            .local_addr()?
-            .port();
-        let server = runtime
+        let ServedRpc { address, handle } = runtime
             .block_on(run_server(
                 hub.clone(),
                 ServerOptions {
                     bind: Ipv4Addr::LOCALHOST.into(),
                     bind_policy: BindPolicy::LoopbackOnly,
-                    port,
+                    port: 0,
                     max_connections: 16,
-                    request_timeout: Duration::from_secs(30),
+                    request_timeout: RING_RPC_REQUEST_TIMEOUT,
                     client_limits: ClientLimits::default(),
                     announce: None,
                 },
@@ -301,7 +298,7 @@ impl RingRpcSpec<'_> {
         // The server stops with its last handle, the task holds one until the
         // runtime goes.
         runtime.spawn(async move {
-            let _server = server;
+            let _server = handle;
             std::future::pending::<()>().await;
         });
         {
@@ -311,7 +308,7 @@ impl RingRpcSpec<'_> {
         Ok(Served {
             rpc: LocalRingRpc {
                 service: hub.service_pubkey(),
-                url: format!("http://127.0.0.1:{port}"),
+                url: format!("http://{address}"),
                 runtime,
             },
             hub,
@@ -402,11 +399,13 @@ impl CoSigningRingRpc {
 }
 
 impl RingRpcRelay {
-    fn new(url: &str) -> Self {
-        Self {
+    fn new(url: &str) -> Result<Self> {
+        Ok(Self {
             url: url.to_owned(),
-            http: reqwest::Client::new(),
-        }
+            http: reqwest::Client::builder()
+                .timeout(RING_RPC_REQUEST_TIMEOUT)
+                .build()?,
+        })
     }
 
     pub async fn set_merge_settings(

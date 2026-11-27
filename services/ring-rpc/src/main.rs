@@ -225,7 +225,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         hub.serve_private_writes(chain)?;
     }
     hub.spawn_workers();
-    let handle = run_server(hub, options).await?;
+    let handle = run_server(hub, options).await?.handle;
     tokio::signal::ctrl_c().await?;
     info!("stopping");
     handle.stop()?;

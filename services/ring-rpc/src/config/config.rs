@@ -517,6 +517,17 @@ mod tests {
         manifest.to_string()
     }
 
+    /// No ambient variable reaches the parse.
+    fn parse_arguments<T: Into<std::ffi::OsString> + Clone>(
+        arguments: impl IntoIterator<Item = T>,
+    ) -> Result<Cli, clap::Error> {
+        use clap::{CommandFactory, FromArgMatches};
+        let matches = Cli::command()
+            .mut_subcommands(|command| command.mut_args(|arg| arg.env(None::<&str>)))
+            .try_get_matches_from(arguments)?;
+        Cli::from_arg_matches(&matches)
+    }
+
     fn serve(flags: &[&str], custody: &str) -> Result<ServeArgs, clap::Error> {
         let fixed = [
             "ring-rpc",
@@ -526,7 +537,7 @@ mod tests {
             "--custody-json",
             custody,
         ];
-        match Cli::try_parse_from(fixed.iter().chain(flags))?.command {
+        match parse_arguments(fixed.iter().chain(flags))?.command {
             Command::Serve(args) => Ok(*args),
             _ => panic!("serve parses as another command"),
         }
@@ -826,7 +837,7 @@ mod tests {
     fn a_manifest_comes_from_one_flag_and_a_missing_file_is_a_file_error() {
         let parse = |flags: &[&str]| {
             let fixed = ["ring-rpc", "serve", "--deployment", "test"];
-            Cli::try_parse_from(fixed.iter().chain(&AWS_KMS).chain(flags))
+            parse_arguments(fixed.iter().chain(&AWS_KMS).chain(flags))
         };
         assert!(parse(&[]).is_err());
         assert!(parse(&["--custody", "/custody.json", "--custody-json", "{}"]).is_err());
@@ -854,7 +865,7 @@ mod tests {
             "--genesis-hash",
             &genesis,
         ];
-        match Cli::try_parse_from(fixed.iter().chain(&AWS_KMS).chain(flags))?.command {
+        match parse_arguments(fixed.iter().chain(&AWS_KMS).chain(flags))?.command {
             Command::Provision(args) => Ok(args),
             _ => panic!("provision parses as another command"),
         }
