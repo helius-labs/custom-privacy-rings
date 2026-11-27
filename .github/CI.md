@@ -44,7 +44,11 @@ The exit trap of `tools/test-ring-controls.sh` prints the end of each service lo
 CI omits prover logs from failure reports because proof errors can contain private witness values.
 
 Dispatch the final pushed branch after the Zolana pin passes its release source check and the pinned proving keys are public.
+The `ring rpc postgres` job runs `just test-ring-rpc-postgres`, the store tests of Ring RPC and its service crates, on a `postgres:16` service.
+The recipe fails when `RING_RPC_TEST_POSTGRES_URL` is unset.
 The `prover` and `ring-indexer` workflows have separate manual dispatches.
+The `ring-indexer` workflow runs the indexer tests on SQLite and on a `postgres:16` service.
+Its path filter names `services/**`, `program-libs/**` and `sdk-libs/**` without `sdk-libs/ts/**`, the trees of the crates the indexer links.
 The prover workflow runs `go test -p 1 -count=1` on three runners, `circuits/transfer`, `circuits/policy` and every other package of `prover/`.
 The Go test cache does not see the vectors and goldens the tests read outside the module, `-count=1` runs them every time.
 Its `committed verifiers` job runs `just check-custom-ring-keys` and its `installed keys` job proves with the pinned keys.

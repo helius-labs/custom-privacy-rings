@@ -253,6 +253,37 @@ jobs:
           token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
       - run: just test-sdk-libs
 
+  test-postgres:
+    name: tests / ring rpc postgres
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      RING_RPC_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: true
+      - uses: ./.github/actions/setup
+        with:
+          rust: "true"
+          rust-cache: postgres
+          token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
+      - run: just test-ring-rpc-postgres
+
   test-program:
     name: tests / custom-ring program
     needs: [changes, programs]
@@ -656,6 +687,7 @@ jobs:
       - clippy
       - check
       - test-sdk-libs
+      - test-postgres
       - test-program
       - programs
       - keys

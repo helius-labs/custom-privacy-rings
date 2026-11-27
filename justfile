@@ -162,7 +162,13 @@ test-postgres:
     done
     export RING_INDEXER_TEST_POSTGRES_URL="postgres://postgres@127.0.0.1:$port/ring_indexer"
     cargo test --locked -p ring-indexer --lib --features surfpool-fixture -- --ignored
-    export RING_RPC_TEST_POSTGRES_URL="postgres://postgres@127.0.0.1:$port/ring_rpc"
+    RING_RPC_TEST_POSTGRES_URL="postgres://postgres@127.0.0.1:$port/ring_rpc" {{just_executable()}} test-ring-rpc-postgres
+
+# The Ring RPC store tests on the Postgres database RING_RPC_TEST_POSTGRES_URL names.
+test-ring-rpc-postgres:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${RING_RPC_TEST_POSTGRES_URL:?}"
     # One store, one test at a time.
     cargo test --locked -p ring-writer -p ring-audit -p ring-cosigner -p ring-relay --lib -- --test-threads=1 --include-ignored postgres relay_reservations
     cargo test --locked -p zolana-ring-rpc --test relay_service -- --test-threads=1
