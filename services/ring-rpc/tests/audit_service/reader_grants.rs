@@ -42,10 +42,11 @@ async fn database_hub(fixture: &Fixture, source: StaticSource) -> Arc<Hub<Static
     Arc::new(
         Hub::builder(source, identity(GENESIS))
             .with_origins(origins())
-            .with_store(store)
+            .with_store(ServiceStore::Durable(store))
             .with_reader_grants(ReaderGrantStore::Database)
             .with_grant_rows_key(grant_rows_key())
             .local(RING, fixture.auditor.clone())
+            .await
             .expect("hub"),
     )
 }
@@ -112,7 +113,7 @@ async fn a_wallet_scoped_reader_sees_only_its_wallet_rows() {
     )
     .expect("grant member");
     source.records.list_reader(grant, true);
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
 
     assert_eq!(
         signatures(&activity(wallet_read(&service, &reader, wallet).await)),
@@ -150,7 +151,7 @@ async fn a_revoked_grant_stops_reads() {
     .delivered();
     let source = fixture.source().with_transactions(vec![owned.clone()]);
     let records = source.records.clone();
-    let tree = fixture.hub(source).service(None).expect("service");
+    let tree = fixture.hub(source).await.service(None).expect("service");
     assert_eq!(
         granted(ring_read(&tree, &delegate()).await),
         [owned.tx_signature]
@@ -248,7 +249,7 @@ async fn a_signer_wallet_scope_sees_nothing() {
         .source()
         .with_transactions(vec![fixture.audited.clone()]);
     let reader = wallet_reader(&source, SENDER);
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     // The fixture lists SENDER as the transaction's only signer.
     assert!(activity(wallet_read(&service, &reader, SENDER).await).is_empty());
 }
@@ -287,7 +288,7 @@ async fn a_recipient_sees_only_its_own_output_of_an_anonymous_transfer() {
     let source = anonymous_transfer(&fixture);
     let wallet = Address::new_from_array([0xb5; 32]);
     let reader = wallet_reader(&source, wallet);
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     let [item] = activity(wallet_read(&service, &reader, wallet).await)
         .try_into()
         .expect("the recipient's transfer");
@@ -367,7 +368,7 @@ async fn wallet_activity(
     wallet: Address,
 ) -> Vec<WalletActivity> {
     let reader = wallet_reader(&source, wallet);
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     activity(wallet_read(&service, &reader, wallet).await)
 }
 
@@ -445,7 +446,7 @@ fn sender_amounts(items: Vec<WalletActivity>) -> Vec<u64> {
 /// The amounts of the wallet's spend, after the note it received.
 async fn spent_amounts(source: StaticSource, fixture: &Fixture) -> Vec<u64> {
     let reader = wallet_reader(&source, OWNER);
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("backfill");
     sender_amounts(activity(wallet_read(&service, &reader, OWNER).await))
 }
@@ -588,7 +589,7 @@ async fn a_wallet_read_is_byte_equal_with_another_owners_unresolved_spend_presen
             // The history ends at these rows, the default cursor names its own page.
             source.next_cursor = None;
             let reader = wallet_reader(&source, wallet);
-            let hub = Arc::new(fixture.hub(source));
+            let hub = Arc::new(fixture.hub(source).await);
             let service = hub.service(None).expect("service");
             service.backfill_utxos().await.expect("backfill");
             let request = WalletStatusRequest::new(target(RING), wallet)
@@ -642,7 +643,7 @@ async fn a_wallet_read_is_byte_equal_with_another_owners_unresolved_spend_presen
 async fn a_wallet_reads_its_own_notes_with_its_own_signature() {
     let fixture = Fixture::new();
     let source = fixture.source().with_transactions(Vec::new());
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     let owner = Keypair::new_from_array([0x61; 32]);
     let own = WalletStatusRequest::new(target(RING), owner.pubkey())
         .sign(&owner)
@@ -756,7 +757,7 @@ async fn a_data_bearing_output_resolves_its_spend_from_its_record() {
     source
         .tracking
         .enroll(OWNER.as_array(), &key, &fixture.auditor.pubkey());
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("backfill");
     let coverage = service
         .spend_coverage(&coverage_failures::coverage_request(&authority()))
@@ -774,7 +775,7 @@ async fn an_anonymous_spend_resolves_its_own_input_and_leaves_the_rest_unclassif
     let fixture = Fixture::new();
     let source = anonymous_spend(&fixture, &[(field(0x71), true), (field(0x72), false)]);
     let reader = wallet_reader(&source, OWNER);
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("backfill");
 
     let coverage = service
@@ -816,7 +817,7 @@ async fn padding_beside_a_resolved_anonymous_input_leaves_a_sole_owner() {
     let fixture = Fixture::new();
     let source = anonymous_spend(&fixture, &[(field(0x72), false)]);
     let reader = wallet_reader(&source, OWNER);
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("backfill");
     let items = activity(wallet_read(&service, &reader, OWNER).await);
     assert_eq!(sender_amounts(items), [500, 7]);
@@ -831,10 +832,11 @@ async fn set_reader_grant_for_unserved_ring_writes_no_grant_or_nonce() {
     let hub = Arc::new(
         Hub::builder(fixture.source(), identity(GENESIS))
             .with_origins(origins())
-            .with_store(store.clone())
+            .with_store(ServiceStore::Durable(store.clone()))
             .with_reader_grants(ReaderGrantStore::Database)
             .with_grant_rows_key(grant_rows_key())
             .local(RING, X25519Keypair::new())
+            .await
             .expect("hub"),
     );
     let module = rpc_module(hub).expect("module");

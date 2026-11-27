@@ -106,7 +106,8 @@ async fn co_sign_lists_of<S: TransactionSource, A: PolicyAuthorityAction>(
 ) -> Result<StoredLists, RingCosignerError> {
     let store = shared
         .database
-        .clone()
+        .durable()
+        .cloned()
         .ok_or(RingCosignerError::CoSignerStoreMissing)?;
     let service = shared.service(Some(ring))?;
     PolicyAction {

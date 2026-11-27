@@ -3,6 +3,42 @@
 use sea_orm::{ConnectionTrait, DbErr, QueryResult, Statement, Value};
 use solana_address::Address;
 
+/// Keys bound into one statement, under every backend's parameter ceiling.
+pub const KEYS_PER_STATEMENT: usize = 256;
+
+/// One SQL text with its binds, built for the backend of the connection that runs it.
+#[must_use]
+pub struct Query {
+    sql: String,
+    values: Vec<Value>,
+}
+
+impl Query {
+    pub fn new(sql: impl Into<String>, values: Vec<Value>) -> Self {
+        Self {
+            sql: sql.into(),
+            values,
+        }
+    }
+
+    /// The count of rows the statement changed.
+    pub async fn execute(self, conn: &impl ConnectionTrait) -> Result<u64, DbErr> {
+        Ok(conn.execute(self.statement(conn)).await?.rows_affected())
+    }
+
+    pub async fn one(self, conn: &impl ConnectionTrait) -> Result<Option<QueryResult>, DbErr> {
+        conn.query_one(self.statement(conn)).await
+    }
+
+    pub async fn all(self, conn: &impl ConnectionTrait) -> Result<Vec<QueryResult>, DbErr> {
+        conn.query_all(self.statement(conn)).await
+    }
+
+    fn statement(self, conn: &impl ConnectionTrait) -> Statement {
+        statement(conn, self.sql, self.values)
+    }
+}
+
 pub fn statement<C: ConnectionTrait>(
     conn: &C,
     sql: impl Into<String>,

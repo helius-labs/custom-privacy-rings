@@ -8,7 +8,9 @@ use anyhow::Result;
 use custom_ring_interface::REGISTER_KEY_CIPHERTEXT_LEN;
 use sea_orm::{ConnectionTrait, QueryResult};
 
-use super::{bytes, field, int, uint, TrackingStore};
+use ring_service_core::sql::{bytes, integer, read_bytes, read_integer};
+
+use super::TrackingStore;
 
 /// The owner and the sealed secrets of the write that inserted a leaf.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,7 +54,7 @@ impl<C: ConnectionTrait> TrackingStore<'_, C> {
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!("UPDATE tracking_records SET {carried} WHERE program=$1 AND applied=$2");
-        self.tree.exec(&sql, vec![int(revision)?]).await?;
+        self.tree.exec(&sql, vec![integer(revision)?]).await?;
         for stamp in stamps {
             let (sql, mut values) = match &stamp.seal {
                 Some(seal) => (
@@ -73,10 +75,10 @@ impl<C: ConnectionTrait> TrackingStore<'_, C> {
             values.splice(
                 0..0,
                 [
-                    int(revision)?,
+                    integer(revision)?,
                     bytes(&stamp.member),
                     bytes(&stamp.viewing_u),
-                    int(stamp.seq)?,
+                    integer(stamp.seq)?,
                 ],
             );
             self.tree.exec(sql, values).await?;
@@ -90,7 +92,7 @@ impl<C: ConnectionTrait> TrackingStore<'_, C> {
                    WHERE program=$1 AND member=$2 AND applied<=$3 ORDER BY applied DESC LIMIT 1";
         let row = self
             .tree
-            .query_one(sql, vec![bytes(member), int(version)?])
+            .query_one(sql, vec![bytes(member), integer(version)?])
             .await?;
         row.as_ref().map(leaf_key).transpose()
     }
@@ -98,12 +100,12 @@ impl<C: ConnectionTrait> TrackingStore<'_, C> {
 
 fn leaf_key(row: &QueryResult) -> Result<LeafKey> {
     Ok(LeafKey {
-        viewing_u: field(row, "viewing_u")?,
-        seq: uint(row, "seq")?,
+        viewing_u: read_bytes(row, "viewing_u")?,
+        seq: read_integer(row, "seq")?,
         seal: LeafSeal {
-            owner: field(row, "owner")?,
-            eph_u: field(row, "eph_u")?,
-            ciphertext: field(row, "ciphertext")?,
+            owner: read_bytes(row, "owner")?,
+            eph_u: read_bytes(row, "eph_u")?,
+            ciphertext: read_bytes(row, "ciphertext")?,
         },
     })
 }

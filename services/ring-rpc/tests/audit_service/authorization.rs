@@ -6,6 +6,7 @@ async fn only_granted_readers_with_the_configured_auditor_key_can_read() {
     let page = page();
     let service = fixture
         .hub(fixture.source())
+        .await
         .service(None)
         .expect("service");
     for signer in [&delegate() as &dyn ReadSigner, &Passkey::new(46)] {
@@ -53,7 +54,7 @@ async fn only_granted_readers_with_the_configured_auditor_key_can_read() {
             },
         },
     );
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     let request = auth(&delegate());
     assert!(matches!(
         service
@@ -75,7 +76,7 @@ async fn auditor_keys_are_released_to_the_ring_authorities_only() {
     let fixture = Fixture::new();
     let mut source = fixture.source();
     source.configs.clear();
-    let hub = Arc::new(fixture.hub(source));
+    let hub = Arc::new(fixture.hub(source).await);
     let module = rpc_module(hub.clone()).expect("module");
     let request = signed_by(&deployer());
     let created: CreateAuditorKeyResponse = module
@@ -91,7 +92,7 @@ async fn auditor_keys_are_released_to_the_ring_authorities_only() {
         Unauthorized::NotRingAuthority
     ));
 
-    let hub = fixture.hub(fixture.source());
+    let hub = fixture.hub(fixture.source()).await;
     authorize(&hub, &signed_by(&authority()))
         .await
         .expect("policy authority");
@@ -105,7 +106,7 @@ async fn auditor_keys_are_released_to_the_ring_authorities_only() {
     let mut immutable = fixture.source();
     immutable.configs.clear();
     immutable.upgrade_authorities.clear();
-    let hub = fixture.hub(immutable);
+    let hub = fixture.hub(immutable).await;
     assert!(refused(
         authorize(&hub, &signed_by(&deployer())).await,
         Unauthorized::NotRingAuthority
@@ -115,7 +116,7 @@ async fn auditor_keys_are_released_to_the_ring_authorities_only() {
 #[tokio::test]
 async fn an_unsigned_auditor_key_request_is_refused() {
     let fixture = Fixture::new();
-    let hub = fixture.hub(fixture.source());
+    let hub = fixture.hub(fixture.source()).await;
     let mut blank = signed_by(&authority());
     blank.auth.signature = vec![0; 64].into();
     assert!(refused(
@@ -127,7 +128,7 @@ async fn an_unsigned_auditor_key_request_is_refused() {
 #[tokio::test]
 async fn auditor_key_requests_bind_cluster_ring_time_and_nonce() {
     let fixture = Fixture::new();
-    let hub = fixture.hub(fixture.source());
+    let hub = fixture.hub(fixture.source()).await;
 
     let other_cluster = CreateAuditorKeyRequest::for_ring(RING, [10; 32])
         .sign(&authority())
@@ -178,8 +179,11 @@ async fn assert_a_replay_to_a_second_hub_is_refused(url: &str) {
     let fixture = Fixture::new();
     let hub = || async {
         Hub::builder(fixture.source(), identity(GENESIS))
-            .with_store(Store::open(url, 1).await.expect("store"))
+            .with_store(ServiceStore::Durable(
+                Store::open(url, 1).await.expect("store"),
+            ))
             .local(RING, fixture.auditor.clone())
+            .await
             .expect("hub")
     };
     let (first, second) = (hub().await, hub().await);
@@ -211,7 +215,7 @@ async fn a_request_replayed_to_a_second_hub_over_one_postgres_store_is_refused()
 async fn auditor_key_requests_are_accepted_exactly_within_the_skew_window() {
     let fixture = Fixture::new();
     let now = 1_000_000_000;
-    let hub = fixture.hub_at(fixture.source(), now);
+    let hub = fixture.hub_at(fixture.source(), now).await;
 
     for timestamp in [now - AUTH_SKEW.as_secs() - 1, now + AUTH_SKEW.as_secs() + 1] {
         let outside = CreateAuditorKeyRequest::for_ring(RING, GENESIS)
@@ -236,7 +240,7 @@ async fn auditor_key_requests_are_accepted_exactly_within_the_skew_window() {
 #[tokio::test]
 async fn invalid_audit_requests_do_not_consume_valid_capacity() {
     let fixture = Fixture::new();
-    let module = rpc_module(Arc::new(fixture.hub(fixture.source()))).expect("module");
+    let module = rpc_module(Arc::new(fixture.hub(fixture.source()).await)).expect("module");
 
     let mut request = signed_request(&delegate(), target(RING), unix_now().expect("clock"));
     request.auth.timestamp += 1;
@@ -284,6 +288,7 @@ async fn a_ring_registered_with_another_auditor_stays_closed() {
     let hub = Hub::builder(source, identity(GENESIS))
         .with_origins(origins())
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .await
         .expect("hub");
     let service = hub.service(Some(ring)).expect("service");
     assert_ne!(service.auditor_pubkey(), fixture.auditor.pubkey());
@@ -333,11 +338,13 @@ async fn derived_keys_are_ring_and_cluster_specific() {
         .insert(ring_a, deployer().pubkey());
     let hub = Hub::builder(source, identity(genesis_hash))
         .derived(root)
+        .await
         .expect("hub");
     let key_a = hub.service(Some(ring_a)).expect("ring a").auditor_pubkey();
     let key_b = hub.service(Some(ring_b)).expect("ring b").auditor_pubkey();
     let other_genesis = Hub::builder(fixture.source(), identity([10; 32]))
         .derived(RootSecret::from_bytes(root_bytes).expect("root"))
+        .await
         .expect("hub");
     assert_ne!(
         other_genesis
@@ -353,6 +360,7 @@ async fn derived_keys_are_ring_and_cluster_specific() {
     assert_ne!(key_a, key_b);
     let second = Hub::builder(fixture.source(), identity(genesis_hash))
         .derived(derivation_root)
+        .await
         .expect("hub");
     assert_eq!(
         second
@@ -388,6 +396,7 @@ async fn a_read_signed_for_another_method_cluster_or_service_is_refused() {
     let fixture = Fixture::new();
     let service = fixture
         .hub(fixture.source())
+        .await
         .service(None)
         .expect("service");
     let page = page();

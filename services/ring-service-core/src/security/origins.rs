@@ -109,11 +109,11 @@ impl Origins {
         self.any
     }
 
-    pub fn allows(&self, origin: &str) -> bool {
+    pub(crate) fn allows(&self, origin: &str) -> bool {
         self.allowed.iter().any(|allowed| allowed == origin)
     }
 
-    pub fn relying_party_id(&self) -> Option<&str> {
+    pub(crate) fn relying_party_id(&self) -> Option<&str> {
         self.relying_party_id.as_deref()
     }
 

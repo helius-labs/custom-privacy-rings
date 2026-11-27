@@ -32,6 +32,15 @@ pub struct Store {
     holder: LeaseHolder,
 }
 
+/// Where the service keeps its rows, fixed at startup.
+#[derive(Clone)]
+pub enum ServiceStore {
+    /// `--store-url`, the one store that turns on the parts it gates.
+    Durable(Store),
+    /// Lost at exit, it turns on nothing.
+    Internal(Store),
+}
+
 impl Store {
     /// `url` is a `postgres://` or `sqlite://` URL.
     pub async fn open(url: &str, max_connections: u32) -> Result<Self, ServiceError> {
@@ -60,6 +69,28 @@ impl Store {
             )
             .await?
         };
+        Self::migrated(db).await
+    }
+
+    pub async fn in_memory() -> Result<Self, ServiceError> {
+        let options = "sqlite::memory:"
+            .parse::<SqliteConnectOptions>()
+            .map_err(|error| DbErr::Conn(RuntimeErr::SqlxError(error)))?
+            .disable_statement_logging();
+        // One connection for the process life, each connection to the URL opens another empty database.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
+            .connect_with(options)
+            .await
+            .map_err(|error| DbErr::Conn(RuntimeErr::SqlxError(error)))?;
+        Self::migrated(SqlxSqliteConnector::from_sqlx_sqlite_pool(pool)).await
+    }
+
+    async fn migrated(db: DatabaseConnection) -> Result<Self, ServiceError> {
         Migrator::up(&db, None).await?;
         Ok(Self {
             db,
@@ -86,9 +117,60 @@ impl Store {
     }
 }
 
+impl ServiceStore {
+    pub async fn internal() -> Result<Self, ServiceError> {
+        Store::in_memory().await.map(Self::Internal)
+    }
+
+    pub const fn store(&self) -> &Store {
+        match self {
+            Self::Durable(store) | Self::Internal(store) => store,
+        }
+    }
+
+    pub const fn durable(&self) -> Option<&Store> {
+        match self {
+            Self::Durable(store) => Some(store),
+            Self::Internal(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sql;
+
+    /// A row one acquisition writes, a later acquisition on another task reads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_internal_store_keeps_one_database_across_acquisitions() {
+        let store = Store::in_memory().await.expect("store");
+        let writer = store.clone();
+        tokio::spawn(async move {
+            sql::Query::new(
+                "INSERT INTO replay_nonces(ring,nonce,signed_at) VALUES($1,$2,$3)",
+                vec![sql::bytes(&[1; 32]), sql::bytes(&[2; 32]), 3_i64.into()],
+            )
+            .execute(writer.connection())
+            .await
+            .expect("insert");
+        })
+        .await
+        .expect("writer task");
+
+        let count = tokio::spawn(async move {
+            sql::Query::new("SELECT COUNT(*) AS rows FROM replay_nonces", Vec::new())
+                .one(store.connection())
+                .await
+                .expect("select")
+                .expect("row")
+                .try_get::<i64>("", "rows")
+                .expect("count")
+        })
+        .await
+        .expect("reader task");
+        assert_eq!(count, 1);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fresh_file_migrates_through_a_pool_and_reopens() {

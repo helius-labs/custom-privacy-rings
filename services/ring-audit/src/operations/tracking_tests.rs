@@ -11,7 +11,7 @@ use ring_service_core::{clock::Clock, database::Store};
 use crate::{
     projection_lease::LeaseClaim,
     projection_reads::EnrollmentKey,
-    spent_index::{HistoryScope, LoadSpends, NoteSeal, ProjectionWriter},
+    spent_index::{LoadSpends, NoteSeal, ProjectionWriter},
     utxos::{Backing, PageWork, MAX_CACHED_ENTRIES, MAX_LATE_OWNERS},
 };
 
@@ -86,7 +86,7 @@ async fn scan(
         auditor,
         source: served,
         store,
-        durable: None,
+        writer: &store.fixture_writer().await,
     }
     .run(cursor)
     .await
@@ -103,7 +103,7 @@ async fn enrollment(store: &AuditStore, member: &[u8; 32]) -> Option<HeldEnrollm
 async fn a_scan_holds_every_enrolled_owner_and_completes_at_the_next_index() {
     let auditor = X25519Keypair::new();
     let (served, held) = served(&auditor, &[1, 2, 3]);
-    let store = AuditStore::default();
+    let store = AuditStore::on_internal_database(RING, &auditor).await;
     let mut cursor = TrackingCursor::default();
     let end = scan(&served, &auditor, &store, &mut cursor)
         .await
@@ -121,53 +121,13 @@ async fn a_scan_holds_every_enrolled_owner_and_completes_at_the_next_index() {
 }
 
 #[tokio::test]
-async fn a_full_memory_pending_set_keeps_the_page_until_derivation_frees_capacity() {
-    let auditor = X25519Keypair::new();
-    let (source, held) = served(&auditor, &[1, 2]);
-    let store = AuditStore::default();
-    store.queue_late_owners((0..MAX_CACHED_ENTRIES).map(|index| {
-        let mut owner = [0xa5; 32];
-        owner[..8].copy_from_slice(&(index as u64).to_le_bytes());
-        owner
-    }));
-    let mut cursor = TrackingCursor::default();
-    assert_eq!(
-        scan(&source, &auditor, &store, &mut cursor)
-            .await
-            .expect("full scan"),
-        ScanEnd::Partial
-    );
-    assert_eq!(cursor, TrackingCursor::default());
-    for row in &held {
-        assert_eq!(enrollment(&store, &row.member).await, None);
-    }
-
-    let opener = |_: &HeldEnrollment| None;
-    let mut work = PageWork::new(&store, &opener);
-    work.late_keys();
-    let delta = work.finish().await.expect("derive");
-    assert_eq!(delta.derived_owners().len(), MAX_LATE_OWNERS);
-    store.commit(delta);
-    assert_eq!(
-        scan(&source, &auditor, &store, &mut cursor)
-            .await
-            .expect("resumed scan"),
-        ScanEnd::Complete
-    );
-    assert_eq!(cursor.next_leaf(), 3);
-    for row in held {
-        assert_eq!(enrollment(&store, &row.member).await, Some(row));
-    }
-}
-
-#[tokio::test]
 async fn a_page_skipping_a_leaf_holds_nothing_and_keeps_the_cursor() {
     let auditor = X25519Keypair::new();
     let (served, held) = served(&auditor, &[1, 2]);
     *served.tamper.lock().expect("tamper") = Some(|page| {
         page.records.remove(1);
     });
-    let store = AuditStore::default();
+    let store = AuditStore::on_internal_database(RING, &auditor).await;
     let mut cursor = TrackingCursor::default();
     let refused = scan(&served, &auditor, &store, &mut cursor).await;
     assert!(matches!(
@@ -182,7 +142,7 @@ async fn a_page_skipping_a_leaf_holds_nothing_and_keeps_the_cursor() {
 async fn a_row_sealed_to_another_auditor_is_refused() {
     let auditor = X25519Keypair::new();
     let (served, _) = served(&X25519Keypair::new(), &[1]);
-    let store = AuditStore::default();
+    let store = AuditStore::on_internal_database(RING, &auditor).await;
     let mut cursor = TrackingCursor::default();
     let refused = scan(&served, &auditor, &store, &mut cursor).await;
     assert!(matches!(
@@ -250,7 +210,7 @@ async fn a_bounded_enrollment_cache_holds_its_bound_and_storage_answers_an_evict
             .commit_enrollments(admission.rows(), TrackingCursor::default())
             .await
             .expect("commit");
-        store.admit_enrollments(admission).expect("admitted");
+        store.admit_enrollments(admission);
     }
     assert!(store
         .cached_enrollments()
@@ -294,9 +254,6 @@ async fn cached_scan_rows_are_persisted_before_the_durable_cursor() {
             capacity: 4,
         },
     );
-    scan(&source, &auditor, &store, &mut TrackingCursor::default())
-        .await
-        .expect("temporary scan");
     let writer = ProjectionWriter {
         db: database.connection(),
         ring: RING,
@@ -319,7 +276,7 @@ async fn cached_scan_rows_are_persisted_before_the_durable_cursor() {
         auditor: &auditor,
         source: &source,
         store: &store,
-        durable: Some(&writer),
+        writer: &writer,
     }
     .run(&mut cursor)
     .await
@@ -337,17 +294,14 @@ async fn cached_scan_rows_are_persisted_before_the_durable_cursor() {
     for row in held {
         assert_eq!(enrollment(&restarted, &row.member).await, Some(row));
     }
-    let loaded = crate::spent_index::LoadSpends {
+    let loaded = LoadSpends {
         db: database.connection(),
         ring: RING,
-        seal: &seal,
-        scope: crate::spent_index::HistoryScope::Cold,
     }
     .load()
     .await
     .expect("reload");
     assert_eq!(loaded.tracking_cursor, cursor);
-    assert!(loaded.enrollments.is_empty());
     let pending = writer
         .pending_owners()
         .await
@@ -389,7 +343,7 @@ async fn durable_admission_keeps_the_backlog_outside_the_active_derivation_set()
             auditor: &auditor,
             source: &source,
             store: &store,
-            durable: Some(&writer),
+            writer: &writer,
         }
         .run(&mut cursor)
         .await
@@ -491,7 +445,7 @@ async fn a_forked_enrollment_never_enters_the_store_and_the_canonical_one_surviv
         auditor: &auditor,
         source: &source,
         store,
-        durable: Some(&writer),
+        writer: &writer,
     };
 
     // 1. A confirmed only on the fork, the pass reads the finalized root and holds nothing.
@@ -512,8 +466,6 @@ async fn a_forked_enrollment_never_enters_the_store_and_the_canonical_one_surviv
     let mut cursor = LoadSpends {
         db: database.connection(),
         ring: RING,
-        seal: &seal,
-        scope: HistoryScope::Cold,
     }
     .load()
     .await

@@ -127,13 +127,13 @@ impl<S: TransactionSource> ManagedMerge<S> {
     }
 
     async fn due_rings(&self) -> Result<Vec<Address>, RingRelayError> {
-        MergeSettingsBook::open(self.shared.database.as_ref())?
+        MergeSettingsBook::open(self.shared.database.durable())?
             .rings()
             .await
     }
 
     async fn merge_ring_logged(&self, ring: Address) -> Vec<RelayId> {
-        let merged = match MergeSettingsBook::open(self.shared.database.as_ref()) {
+        let merged = match MergeSettingsBook::open(self.shared.database.durable()) {
             Ok(book) => self.merge_ring(&book, ring).await,
             Err(error) => Err(error),
         };
@@ -306,7 +306,7 @@ pub async fn set_merge_settings<S: TransactionSource>(
     shared: &Arc<Shared<S>>,
     request: &SetMergeSettingsRequest,
 ) -> Result<SetMergeSettingsResponse, RingRelayError> {
-    let book = MergeSettingsBook::open(shared.database.as_ref())?;
+    let book = MergeSettingsBook::open(shared.database.durable())?;
     let ring = request.ring.0;
     let owner = request.owner.0;
     let service = shared.service(Some(ring))?;
@@ -387,7 +387,7 @@ pub(crate) mod tests {
     };
     use ring_service_core::{
         clock::Clock,
-        database::Store,
+        database::{ServiceStore, Store},
         keys::KeySource,
         landing::{signature_fees, ChainOutcome, ChainSubmit, LatestBlockhash},
         origins::Origins,
@@ -720,7 +720,7 @@ pub(crate) mod tests {
             clock: Clock::System,
             assets: None,
             origins: Origins::default(),
-            store: Some(store),
+            store: ServiceStore::Durable(store),
             snapshot_limits: WalletSnapshotLimits::default(),
             reader_grants: ReaderGrantStore::Tree,
             grant_rows: None,
@@ -851,7 +851,7 @@ pub(crate) mod tests {
                     .enrollment_admission(vec![held])
                     .await
                     .expect("held enrollment");
-                store.admit_enrollments(admission).expect("admitted");
+                store.admit_enrollments(admission);
                 self.record_notes(
                     wallet,
                     Holding {

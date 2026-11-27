@@ -4,9 +4,7 @@ use sea_orm::{ConnectionTrait, DbErr, QueryResult, TransactionTrait, Value};
 use solana_address::Address;
 use zolana_ring_client::rpc::RelayId;
 
-use ring_service_core::sql::{
-    bytes as value, integer as lamports_value, read_address, read_bytes, read_integer, statement,
-};
+use ring_service_core::sql::{self, read_address, read_bytes, read_integer};
 
 const TOTAL_SCOPE: [u8; 32] = [0; 32];
 
@@ -162,7 +160,7 @@ fn first_generation() -> u64 {
 }
 
 fn lease_until(slot: u64) -> Result<Value, DbErr> {
-    lamports_value(slot.saturating_add(LEASE_SLOTS))
+    sql::integer(slot.saturating_add(LEASE_SLOTS))
 }
 
 fn read_reservation(row: &QueryResult) -> Result<Reservation, DbErr> {
@@ -191,7 +189,7 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
     }
 
     /// The durable admission of a signed request, taken before any proof or payment.
-    pub async fn admit(&self, admit: Admit<'_>) -> Result<Admission, DbErr> {
+    pub(crate) async fn admit(&self, admit: Admit<'_>) -> Result<Admission, DbErr> {
         let Admit {
             key,
             relay_id,
@@ -200,45 +198,39 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
         } = admit;
         // 1. The insert is the first caller's claim, the key's uniqueness makes it exclusive across
         // processes.
-        let inserted = self
-            .db
-            .execute(statement(
-                self.db,
-                "INSERT INTO relay_reservations(key,relay_id,signer,lamports,fee_allowance,\
-                 landing_rent,spent,phase,generation,lease_until_slot,touched_slot) \
-                 VALUES($1,$2,$3,0,0,0,0,$4,$7,$5,$6) ON CONFLICT(key) DO NOTHING",
-                vec![
-                    value(&key),
-                    value(&relay_id.0 .0),
-                    value(signer.as_ref()),
-                    PHASE_OPEN.into(),
-                    lease_until(slot)?,
-                    lamports_value(slot)?,
-                    lamports_value(first_generation())?,
-                ],
-            ))
-            .await?
-            .rows_affected();
+        let inserted = sql::Query::new(
+            "INSERT INTO relay_reservations(key,relay_id,signer,lamports,fee_allowance,\
+             landing_rent,spent,phase,generation,lease_until_slot,touched_slot) \
+             VALUES($1,$2,$3,0,0,0,0,$4,$7,$5,$6) ON CONFLICT(key) DO NOTHING",
+            vec![
+                sql::bytes(&key),
+                sql::bytes(&relay_id.0 .0),
+                sql::bytes(signer.as_ref()),
+                PHASE_OPEN.into(),
+                lease_until(slot)?,
+                sql::integer(slot)?,
+                sql::integer(first_generation())?,
+            ],
+        )
+        .execute(self.db)
+        .await?;
         // 2. An open row with a lapsed lease passes on under a raised generation, its relay id moves only
         // here where no message exists.
         let claimed = inserted != 0
-            || self
-                .db
-                .execute(statement(
-                    self.db,
-                    "UPDATE relay_reservations SET generation=generation+1, relay_id=$2, \
-                     lease_until_slot=$3, touched_slot=$4 \
-                     WHERE key=$1 AND phase=$5 AND lease_until_slot < $4",
-                    vec![
-                        value(&key),
-                        value(&relay_id.0 .0),
-                        lease_until(slot)?,
-                        lamports_value(slot)?,
-                        PHASE_OPEN.into(),
-                    ],
-                ))
-                .await?
-                .rows_affected()
+            || sql::Query::new(
+                "UPDATE relay_reservations SET generation=generation+1, relay_id=$2, \
+                 lease_until_slot=$3, touched_slot=$4 \
+                 WHERE key=$1 AND phase=$5 AND lease_until_slot < $4",
+                vec![
+                    sql::bytes(&key),
+                    sql::bytes(&relay_id.0 .0),
+                    lease_until(slot)?,
+                    sql::integer(slot)?,
+                    PHASE_OPEN.into(),
+                ],
+            )
+            .execute(self.db)
+            .await?
                 != 0;
         let Some(held) = self.get(&key).await? else {
             return Ok(Admission::Busy);
@@ -260,57 +252,51 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
     }
 
     pub(crate) async fn by_relay(&self, relay_id: &RelayId) -> Result<Option<Reservation>, DbErr> {
-        let row = self
-            .db
-            .query_one(statement(
-                self.db,
-                format!("SELECT {COLUMNS} FROM relay_reservations WHERE relay_id=$1"),
-                vec![value(&relay_id.0 .0)],
-            ))
-            .await?;
+        let row = sql::Query::new(
+            format!("SELECT {COLUMNS} FROM relay_reservations WHERE relay_id=$1"),
+            vec![sql::bytes(&relay_id.0 .0)],
+        )
+        .one(self.db)
+        .await?;
         row.as_ref().map(read_reservation).transpose()
     }
 
     /// Runs in the transaction that stores the relay, an unfunded row or a holder that lost the
     /// lease stores no message.
-    pub async fn bind(&self, bind: Bind<'_>) -> Result<SpendCheck, DbErr> {
+    pub(crate) async fn bind(&self, bind: Bind<'_>) -> Result<SpendCheck, DbErr> {
         let Bind {
             lease,
             relay_id,
             fee,
             slot,
         } = bind;
-        let updated = self
-            .db
-            .execute(statement(
-                self.db,
-                "UPDATE relay_reservations SET phase=$3, relay_id=$4, lease_until_slot=0, \
-                 touched_slot=$5 WHERE key=$1 AND generation=$2 AND phase=$6 \
-                 AND lamports<>0 AND spent+$7 <= fee_allowance",
-                vec![
-                    value(&lease.key),
-                    lamports_value(lease.generation)?,
-                    PHASE_BOUND.into(),
-                    value(&relay_id.0 .0),
-                    lamports_value(slot)?,
-                    PHASE_OPEN.into(),
-                    lamports_value(fee)?,
-                ],
-            ))
-            .await?
-            .rows_affected();
+        let updated = sql::Query::new(
+            "UPDATE relay_reservations SET phase=$3, relay_id=$4, lease_until_slot=0, \
+             touched_slot=$5 WHERE key=$1 AND generation=$2 AND phase=$6 \
+             AND lamports<>0 AND spent+$7 <= fee_allowance",
+            vec![
+                sql::bytes(&lease.key),
+                sql::integer(lease.generation)?,
+                PHASE_BOUND.into(),
+                sql::bytes(&relay_id.0 .0),
+                sql::integer(slot)?,
+                PHASE_OPEN.into(),
+                sql::integer(fee)?,
+            ],
+        )
+        .execute(self.db)
+        .await?;
         self.spend_check(&lease, updated).await
     }
 
     /// Runs in the transaction that stores the landed failure.
     pub(crate) async fn charge_landed(&self, relay_id: &RelayId, fee: u64) -> Result<(), DbErr> {
-        self.db
-            .execute(statement(
-                self.db,
-                "UPDATE relay_reservations SET spent=spent+$2 WHERE relay_id=$1",
-                vec![value(&relay_id.0 .0), lamports_value(fee)?],
-            ))
-            .await?;
+        sql::Query::new(
+            "UPDATE relay_reservations SET spent=spent+$2 WHERE relay_id=$1",
+            vec![sql::bytes(&relay_id.0 .0), sql::integer(fee)?],
+        )
+        .execute(self.db)
+        .await?;
         Ok(())
     }
 
@@ -321,23 +307,22 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
         slot: u64,
         limit: u64,
     ) -> Result<Vec<Reservation>, DbErr> {
-        self.db
-            .query_all(statement(
-                self.db,
-                format!(
-                    "SELECT {COLUMNS} FROM relay_reservations WHERE touched_slot < $1 \
-                     AND lease_until_slot < $2 ORDER BY touched_slot LIMIT $3"
-                ),
-                vec![
-                    lamports_value(before_slot)?,
-                    lamports_value(slot)?,
-                    lamports_value(limit)?,
-                ],
-            ))
-            .await?
-            .iter()
-            .map(read_reservation)
-            .collect()
+        sql::Query::new(
+            format!(
+                "SELECT {COLUMNS} FROM relay_reservations WHERE touched_slot < $1 \
+                 AND lease_until_slot < $2 ORDER BY touched_slot LIMIT $3"
+            ),
+            vec![
+                sql::integer(before_slot)?,
+                sql::integer(slot)?,
+                sql::integer(limit)?,
+            ],
+        )
+        .all(self.db)
+        .await?
+        .iter()
+        .map(read_reservation)
+        .collect()
     }
 
     /// The one compare and update between a retry and cleanup, a resumed retry refuses a stale selection.
@@ -350,26 +335,23 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
             slot,
             abandoned_before,
         } = claim;
-        let updated = self
-            .db
-            .execute(statement(
-                self.db,
-                "UPDATE relay_reservations SET phase=$3, generation=generation+1, \
-                 lease_until_slot=$4 WHERE key=$1 AND generation=$2 AND relay_id=$8 \
-                 AND lease_until_slot < $5 AND (phase<>$6 OR touched_slot < $7)",
-                vec![
-                    value(&held.key),
-                    lamports_value(held.generation)?,
-                    PHASE_CLOSING.into(),
-                    lease_until(slot)?,
-                    lamports_value(slot)?,
-                    PHASE_OPEN.into(),
-                    lamports_value(abandoned_before)?,
-                    value(&held.relay_id.0 .0),
-                ],
-            ))
-            .await?
-            .rows_affected();
+        let updated = sql::Query::new(
+            "UPDATE relay_reservations SET phase=$3, generation=generation+1, \
+             lease_until_slot=$4 WHERE key=$1 AND generation=$2 AND relay_id=$8 \
+             AND lease_until_slot < $5 AND (phase<>$6 OR touched_slot < $7)",
+            vec![
+                sql::bytes(&held.key),
+                sql::integer(held.generation)?,
+                PHASE_CLOSING.into(),
+                lease_until(slot)?,
+                sql::integer(slot)?,
+                PHASE_OPEN.into(),
+                sql::integer(abandoned_before)?,
+                sql::bytes(&held.relay_id.0 .0),
+            ],
+        )
+        .execute(self.db)
+        .await?;
         if updated == 0 {
             return Ok(None);
         }
@@ -384,42 +366,36 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
 
     /// Deletes an unfunded open row, any other row stays for a retry or the sweep.
     pub(crate) async fn yield_lease(&self, lease: &Lease) -> Result<(), DbErr> {
-        let deleted = self
-            .db
-            .execute(statement(
-                self.db,
-                "DELETE FROM relay_reservations WHERE key=$1 AND generation=$2 AND phase=$3 \
-                 AND lamports=0",
-                vec![
-                    value(&lease.key),
-                    lamports_value(lease.generation)?,
-                    PHASE_OPEN.into(),
-                ],
-            ))
-            .await?
-            .rows_affected();
+        let deleted = sql::Query::new(
+            "DELETE FROM relay_reservations WHERE key=$1 AND generation=$2 AND phase=$3 \
+             AND lamports=0",
+            vec![
+                sql::bytes(&lease.key),
+                sql::integer(lease.generation)?,
+                PHASE_OPEN.into(),
+            ],
+        )
+        .execute(self.db)
+        .await?;
         if deleted == 0 {
-            self.db
-                .execute(statement(
-                    self.db,
-                    "UPDATE relay_reservations SET lease_until_slot=0 \
-                     WHERE key=$1 AND generation=$2",
-                    vec![value(&lease.key), lamports_value(lease.generation)?],
-                ))
-                .await?;
+            sql::Query::new(
+                "UPDATE relay_reservations SET lease_until_slot=0 \
+                 WHERE key=$1 AND generation=$2",
+                vec![sql::bytes(&lease.key), sql::integer(lease.generation)?],
+            )
+            .execute(self.db)
+            .await?;
         }
         Ok(())
     }
 
-    pub async fn get(&self, key: &[u8; 32]) -> Result<Option<Reservation>, DbErr> {
-        let row = self
-            .db
-            .query_one(statement(
-                self.db,
-                format!("SELECT {COLUMNS} FROM relay_reservations WHERE key=$1"),
-                vec![value(key)],
-            ))
-            .await?;
+    pub(crate) async fn get(&self, key: &[u8; 32]) -> Result<Option<Reservation>, DbErr> {
+        let row = sql::Query::new(
+            format!("SELECT {COLUMNS} FROM relay_reservations WHERE key=$1"),
+            vec![sql::bytes(key)],
+        )
+        .one(self.db)
+        .await?;
         row.as_ref().map(read_reservation).transpose()
     }
 
@@ -438,7 +414,7 @@ impl<'a, C: ConnectionTrait> RelayReservations<'a, C> {
 
 impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
     /// The counters and the row commit together, a row an earlier holder funded keeps its charge.
-    pub async fn fund(&self, fund: Fund) -> Result<FundOutcome, DbErr> {
+    pub(crate) async fn fund(&self, fund: Fund) -> Result<FundOutcome, DbErr> {
         let Fund {
             lease,
             lamports,
@@ -447,21 +423,19 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
             budget,
         } = fund;
         let transaction = self.db.begin().await?;
-        let updated = transaction
-            .execute(statement(
-                &transaction,
-                "UPDATE relay_reservations SET lamports=$3, fee_allowance=$4, landing_rent=$5 \
-                 WHERE key=$1 AND generation=$2 AND lamports=0",
-                vec![
-                    value(&lease.key),
-                    lamports_value(lease.generation)?,
-                    lamports_value(lamports)?,
-                    lamports_value(fee_allowance)?,
-                    lamports_value(landing_rent)?,
-                ],
-            ))
-            .await?
-            .rows_affected();
+        let updated = sql::Query::new(
+            "UPDATE relay_reservations SET lamports=$3, fee_allowance=$4, landing_rent=$5 \
+             WHERE key=$1 AND generation=$2 AND lamports=0",
+            vec![
+                sql::bytes(&lease.key),
+                sql::integer(lease.generation)?,
+                sql::integer(lamports)?,
+                sql::integer(fee_allowance)?,
+                sql::integer(landing_rent)?,
+            ],
+        )
+        .execute(&transaction)
+        .await?;
         if updated == 0 {
             transaction.rollback().await?;
             return Ok(match self.get(&lease.key).await? {
@@ -471,41 +445,37 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
                 _ => FundOutcome::LeaseLost,
             });
         }
-        let signer = transaction
-            .query_one(statement(
-                &transaction,
-                "SELECT signer FROM relay_reservations WHERE key=$1",
-                vec![value(&lease.key)],
-            ))
-            .await?
-            .ok_or_else(|| DbErr::Custom("a reservation vanished".into()))?
-            .try_get::<Vec<u8>>("", "signer")?;
+        let signer = sql::Query::new(
+            "SELECT signer FROM relay_reservations WHERE key=$1",
+            vec![sql::bytes(&lease.key)],
+        )
+        .one(&transaction)
+        .await?
+        .ok_or_else(|| DbErr::Custom("a reservation vanished".into()))?
+        .try_get::<Vec<u8>>("", "signer")?;
         let raise = |scope: &[u8], bound: u64| -> Result<_, DbErr> {
-            Ok(statement(
-                &transaction,
+            Ok(sql::Query::new(
                 "INSERT INTO relay_reserved(scope,committed) SELECT $1,$2 WHERE $2 <= $3 \
                  ON CONFLICT(scope) DO UPDATE SET committed = relay_reserved.committed + $2 \
                  WHERE relay_reserved.committed + $2 <= $3",
                 vec![
-                    value(scope),
-                    lamports_value(lamports)?,
-                    lamports_value(bound)?,
+                    sql::bytes(scope),
+                    sql::integer(lamports)?,
+                    sql::integer(bound)?,
                 ],
             ))
         };
-        if transaction
-            .execute(raise(&TOTAL_SCOPE, budget.total_lamports)?)
+        if raise(&TOTAL_SCOPE, budget.total_lamports)?
+            .execute(&transaction)
             .await?
-            .rows_affected()
             == 0
         {
             transaction.rollback().await?;
             return Ok(FundOutcome::OverTotal);
         }
-        if transaction
-            .execute(raise(&signer, budget.signer_lamports)?)
+        if raise(&signer, budget.signer_lamports)?
+            .execute(&transaction)
             .await?
-            .rows_affected()
             == 0
         {
             transaction.rollback().await?;
@@ -519,17 +489,16 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
     }
 
     /// The delete reads what it removes in one statement, a concurrent charge cannot slip past it.
-    pub async fn release(&self, release: Release<'_>) -> Result<(), DbErr> {
+    pub(crate) async fn release(&self, release: Release<'_>) -> Result<(), DbErr> {
         let Release { key, relay_id, end } = release;
         let transaction = self.db.begin().await?;
-        let row = transaction
-            .query_one(statement(
-                &transaction,
-                "DELETE FROM relay_reservations WHERE key=$1 AND relay_id=$2 \
-                 RETURNING lamports,spent,signer",
-                vec![value(key), value(&relay_id.0 .0)],
-            ))
-            .await?;
+        let row = sql::Query::new(
+            "DELETE FROM relay_reservations WHERE key=$1 AND relay_id=$2 \
+             RETURNING lamports,spent,signer",
+            vec![sql::bytes(key), sql::bytes(&relay_id.0 .0)],
+        )
+        .one(&transaction)
+        .await?;
         let Some(row) = row else {
             return transaction.commit().await;
         };
@@ -555,26 +524,24 @@ impl<C: ConnectionTrait + TransactionTrait> RelayReservations<'_, C> {
                 .map_err(|_| DbErr::Custom("returned lamports out of range".into()))
         };
         let lower = |scope: &[u8], lamports: i64| {
-            statement(
-                &transaction,
+            sql::Query::new(
                 "UPDATE relay_reserved SET committed = committed - $2 WHERE scope=$1",
-                vec![value(scope), lamports.into()],
+                vec![sql::bytes(scope), lamports.into()],
             )
         };
-        transaction
-            .execute(lower(&TOTAL_SCOPE, returned(to_total)?))
+        lower(&TOTAL_SCOPE, returned(to_total)?)
+            .execute(&transaction)
             .await?;
-        transaction
-            .execute(lower(&signer, returned(to_signer)?))
+        lower(&signer, returned(to_signer)?)
+            .execute(&transaction)
             .await?;
         // Fresh keys leave no counter row behind.
-        transaction
-            .execute(statement(
-                &transaction,
-                "DELETE FROM relay_reserved WHERE scope=$1 AND committed=0",
-                vec![value(&signer)],
-            ))
-            .await?;
+        sql::Query::new(
+            "DELETE FROM relay_reserved WHERE scope=$1 AND committed=0",
+            vec![sql::bytes(&signer)],
+        )
+        .execute(&transaction)
+        .await?;
         transaction.commit().await
     }
 }

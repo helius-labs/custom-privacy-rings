@@ -3,6 +3,7 @@
 
 use sea_orm::{ConnectionTrait, DbErr, QueryResult, Value};
 use serde::{Deserialize, Serialize};
+use serde_with::{serde_as, DisplayFromStr};
 use solana_address::Address;
 use solana_message::VersionedMessage;
 use solana_signature::Signature;
@@ -178,7 +179,7 @@ impl RelayRevision {
 
 impl RelayRecord {
     /// `None` until the co-signer signed, bound to the required signer the co-signature verifies under.
-    pub fn ticket(&self) -> Option<Ticket> {
+    pub(crate) fn ticket(&self) -> Option<Ticket> {
         let co_signature = self.state.co_signature()?;
         let bytes = self.message.serialize();
         let required = usize::from(self.message.header().num_required_signatures);
@@ -202,7 +203,7 @@ impl RelayState {
     }
 
     /// A terminal state holds every later event.
-    pub fn apply(&self, event: RelayEvent) -> Result<Transition, TransitionError> {
+    pub(crate) fn apply(&self, event: RelayEvent) -> Result<Transition, TransitionError> {
         let next = match (self, event) {
             (Self::Confirmed { .. } | Self::Failed { .. }, _) => return Ok(Transition::Unchanged),
             (Self::AwaitingSignature(awaiting), RelayEvent::Signed { signature, closing }) => {
@@ -242,7 +243,7 @@ impl RelayState {
         Ok(Transition::Next(next))
     }
 
-    pub fn co_signature(&self) -> Option<Signature> {
+    pub(crate) fn co_signature(&self) -> Option<Signature> {
         match self {
             Self::AwaitingSignature(_) => None,
             Self::Sent(SentAttempt { co_signature, .. })
@@ -262,7 +263,7 @@ impl RelayState {
 }
 
 impl Awaiting {
-    pub fn admit(&self, signer: Address) -> Result<SignerAdmission, TransitionError> {
+    pub(crate) fn admit(&self, signer: Address) -> Result<SignerAdmission, TransitionError> {
         if self
             .signatures
             .iter()
@@ -270,12 +271,12 @@ impl Awaiting {
         {
             return Ok(SignerAdmission::Collected);
         }
-        match self.awaiting.contains(&signer) {
-            true => Ok(SignerAdmission::Awaited {
-                last: self.awaiting.len() == 1,
-            }),
-            false => Err(TransitionError::UnexpectedSigner),
+        if !self.awaiting.contains(&signer) {
+            return Err(TransitionError::UnexpectedSigner);
         }
+        Ok(SignerAdmission::Awaited {
+            last: self.awaiting.len() == 1,
+        })
     }
 
     fn close(self, closing: Closing) -> SentAttempt {
@@ -312,32 +313,27 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
         Self { db }
     }
 
-    pub async fn get(&self, id: &RelayId) -> Result<Option<RelayRow>, DbErr> {
-        let select = "SELECT state, revision FROM relay_relays WHERE relay_id=$1";
-        let statement = sql::statement(self.db, select, vec![sql::bytes(&id.0 .0)]);
-        self.db
-            .query_one(statement)
+    pub(crate) async fn get(&self, id: &RelayId) -> Result<Option<RelayRow>, DbErr> {
+        let select = "SELECT status, state, revision FROM relay_relays WHERE relay_id=$1";
+        sql::Query::new(select, vec![sql::bytes(&id.0 .0)])
+            .one(self.db)
             .await?
             .map(|row| relay_row(&row))
             .transpose()
     }
 
     /// `false` when the relay is stored already, the first record stays.
-    pub async fn insert(&self, id: &RelayId, record: &RelayRecord) -> Result<bool, DbErr> {
+    pub(crate) async fn insert(&self, id: &RelayId, record: &RelayRecord) -> Result<bool, DbErr> {
         let insert =
             "INSERT INTO relay_relays(relay_id,status,state,revision) VALUES($1,$2,$3,$4) \
-                      ON CONFLICT(relay_id) DO NOTHING";
+             ON CONFLICT(relay_id) DO NOTHING";
         let values = vec![
             sql::bytes(&id.0 .0),
             record.state.status().into(),
             state(record)?,
             sql::integer(RelayRevision::FIRST.0)?,
         ];
-        let result = self
-            .db
-            .execute(sql::statement(self.db, insert, values))
-            .await?;
-        Ok(result.rows_affected() == 1)
+        Ok(sql::Query::new(insert, values).execute(self.db).await? == 1)
     }
 
     /// A stale `expected` writes nothing, the caller then acts on the stored relay.
@@ -357,14 +353,12 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
             sql::integer(next.0)?,
             sql::integer(expected.0)?,
         ];
-        let result = self
-            .db
-            .execute(sql::statement(self.db, update, values))
-            .await?;
-        Ok(match result.rows_affected() {
-            1 => Committed::Written(next),
-            _ => Committed::Stale,
-        })
+        Ok(
+            match sql::Query::new(update, values).execute(self.db).await? {
+                1 => Committed::Written(next),
+                _ => Committed::Stale,
+            },
+        )
     }
 
     pub(crate) async fn pending_page(
@@ -388,8 +382,8 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
                 ],
             ),
         };
-        self.db
-            .query_all(sql::statement(self.db, select, values))
+        sql::Query::new(select, values)
+            .all(self.db)
             .await?
             .iter()
             .map(|row| sql::read_bytes::<32>(row, "relay_id").map(|id| RelayId(id.into())))
@@ -402,15 +396,13 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
 struct StoredRelay {
     message: Base64String,
     last_valid_block_height: u64,
-    state: StoredState,
+    /// The fields of the phase the `status` column names.
+    state: serde_json::Value,
 }
 
+/// Each variant name is the `status` value of its phase.
 #[derive(Serialize, Deserialize)]
-#[serde(
-    tag = "status",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 enum StoredState {
     AwaitingSignature {
         signatures: Vec<StoredSignature>,
@@ -442,39 +434,21 @@ struct StoredCoSign {
     flows: Option<Vec<StoredFlow>>,
 }
 
-/// Amounts as decimal strings, the internally tagged state buffers numbers and refuses a `u128`.
+/// Amounts as decimal strings, a `serde_json::Value` holds no integer past `u64`.
+#[serde_as]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct StoredFlow {
     owner: Hash,
     asset: SerializablePubkey,
-    #[serde(with = "decimal")]
+    #[serde_as(as = "DisplayFromStr")]
     debit: u128,
-    #[serde(with = "decimal")]
+    #[serde_as(as = "DisplayFromStr")]
     charged_outflow: u128,
-    #[serde(with = "decimal")]
+    #[serde_as(as = "DisplayFromStr")]
     deposited: u128,
-    #[serde(with = "decimal")]
+    #[serde_as(as = "DisplayFromStr")]
     withdrawn: u128,
-}
-
-mod decimal {
-    use serde::{de::Error, Deserialize, Deserializer, Serializer};
-
-    pub(crate) fn serialize<S: Serializer>(
-        amount: &u128,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(amount)
-    }
-
-    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<u128, D::Error> {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(D::Error::custom)
-    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -484,41 +458,47 @@ struct StoredSignature {
 }
 
 fn state(record: &RelayRecord) -> Result<Value, DbErr> {
+    let encode = |error: serde_json::Error| DbErr::Custom(error.to_string());
+    let mut tagged = serde_json::to_value(match &record.state {
+        RelayState::AwaitingSignature(awaiting) => StoredState::AwaitingSignature {
+            signatures: stored_signatures(&awaiting.signatures),
+            awaiting: awaiting.awaiting.iter().copied().map(Into::into).collect(),
+            co_sign: awaiting.co_sign.as_ref().map(stored_co_sign),
+        },
+        RelayState::Sent(sent) => StoredState::Sent {
+            signature: sent.signature.into(),
+            signatures: stored_signatures(&sent.signatures),
+            co_signature: sent.co_signature.map(Into::into),
+        },
+        RelayState::Confirmed {
+            signature,
+            slot,
+            co_signature,
+        } => StoredState::Confirmed {
+            signature: (*signature).into(),
+            slot: *slot,
+            co_signature: co_signature.map(Into::into),
+        },
+        RelayState::Failed {
+            reason,
+            co_signature,
+        } => StoredState::Failed {
+            reason: reason.clone(),
+            co_signature: co_signature.map(Into::into),
+        },
+    })
+    .map_err(encode)?;
     let stored = StoredRelay {
         message: record.message.serialize().into(),
         last_valid_block_height: record.last_valid_block_height,
-        state: match &record.state {
-            RelayState::AwaitingSignature(awaiting) => StoredState::AwaitingSignature {
-                signatures: stored_signatures(&awaiting.signatures),
-                awaiting: awaiting.awaiting.iter().copied().map(Into::into).collect(),
-                co_sign: awaiting.co_sign.as_ref().map(stored_co_sign),
-            },
-            RelayState::Sent(sent) => StoredState::Sent {
-                signature: sent.signature.into(),
-                signatures: stored_signatures(&sent.signatures),
-                co_signature: sent.co_signature.map(Into::into),
-            },
-            RelayState::Confirmed {
-                signature,
-                slot,
-                co_signature,
-            } => StoredState::Confirmed {
-                signature: (*signature).into(),
-                slot: *slot,
-                co_signature: co_signature.map(Into::into),
-            },
-            RelayState::Failed {
-                reason,
-                co_signature,
-            } => StoredState::Failed {
-                reason: reason.clone(),
-                co_signature: co_signature.map(Into::into),
-            },
-        },
+        state: tagged
+            .as_object_mut()
+            .and_then(|tagged| tagged.remove(record.state.status()))
+            .ok_or_else(|| corrupt("state"))?,
     };
     serde_json::to_string(&stored)
         .map(Value::from)
-        .map_err(|error| DbErr::Custom(error.to_string()))
+        .map_err(encode)
 }
 
 fn stored_signatures(signatures: &[CollectedSignature]) -> Vec<StoredSignature> {
@@ -555,14 +535,17 @@ fn stored_co_sign(pending: &PendingCoSign) -> StoredCoSign {
 }
 
 fn relay_row(row: &QueryResult) -> Result<RelayRow, DbErr> {
+    let status: String = row.try_get("", "status")?;
     let state: String = row.try_get("", "state")?;
     let stored: StoredRelay = serde_json::from_str(&state).map_err(|_| corrupt("state"))?;
+    let tagged = serde_json::Value::Object([(status, stored.state)].into_iter().collect());
+    let phase = serde_json::from_value(tagged).map_err(|_| corrupt("state"))?;
     Ok(RelayRow {
         revision: RelayRevision(sql::read_integer(row, "revision")?),
         record: RelayRecord {
             message: wincode::deserialize(&stored.message.0).map_err(|_| corrupt("message"))?,
             last_valid_block_height: stored.last_valid_block_height,
-            state: relay_state(stored.state)?,
+            state: relay_state(phase)?,
         },
     })
 }
@@ -868,6 +851,140 @@ mod tests {
 
         let stored = relays.get(&id).await.expect("read").expect("row");
         assert_eq!(stored.record.state, state);
+    }
+
+    fn co_signed(owner: Member) -> RelayState {
+        RelayState::AwaitingSignature(Awaiting {
+            signatures: Vec::new(),
+            awaiting: vec![SIGNER],
+            co_sign: Some(PendingCoSign {
+                signer: SIGNER,
+                ring: FEE_PAYER,
+                flows: CoSignFlows::Published(vec![OwnerFlow {
+                    owner,
+                    flow: AssetFlow {
+                        asset: FEE_PAYER,
+                        debit: 1,
+                        charged_outflow: 1,
+                        deposited: 0,
+                        withdrawn: 0,
+                    },
+                }]),
+            }),
+        })
+    }
+
+    #[tokio::test]
+    async fn a_stored_relay_awaiting_nobody_or_naming_a_zero_owner_reads_as_corrupt() {
+        let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let relays = RelayStore::new(store.connection());
+        let message = compile_message(
+            &FEE_PAYER,
+            &[],
+            Default::default(),
+            ComputeBudgetConfig::new(1),
+        )
+        .expect("message");
+        let record = |state| RelayRecord {
+            message: message.clone(),
+            last_valid_block_height: 1,
+            state,
+        };
+        let [nobody, zero_owner] = [RelayId([7; 32].into()), RelayId([8; 32].into())];
+        assert!(relays
+            .insert(&nobody, &record(awaiting(&[])))
+            .await
+            .expect("insert"));
+        let owner = Member::from_bytes([7; 32]).expect("member");
+        assert!(relays
+            .insert(&zero_owner, &record(co_signed(owner)))
+            .await
+            .expect("insert"));
+        let db = store.connection();
+        let stored: String = sql::Query::new(
+            "SELECT state FROM relay_relays WHERE relay_id=$1",
+            vec![sql::bytes(&zero_owner.0 .0)],
+        )
+        .one(db)
+        .await
+        .expect("select")
+        .expect("row")
+        .try_get("", "state")
+        .expect("state");
+        let encoded = |owner| serde_json::to_string(&Hash(owner)).expect("hash");
+        let zeroed = stored.replace(&encoded([7; 32]), &encoded([0; 32]));
+        assert_ne!(zeroed, stored);
+        sql::Query::new(
+            "UPDATE relay_relays SET state=$2 WHERE relay_id=$1",
+            vec![sql::bytes(&zero_owner.0 .0), zeroed.into()],
+        )
+        .execute(db)
+        .await
+        .expect("update");
+
+        for (id, column) in [(nobody, "state"), (zero_owner, "co_sign")] {
+            let refusal = relays.get(&id).await.err().expect("refused");
+            assert_eq!(
+                refusal.to_string(),
+                format!("Custom Error: relay_relays {column} is corrupt")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_status_column_alone_names_the_stored_phase() {
+        let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let relays = RelayStore::new(store.connection());
+        let message = compile_message(
+            &FEE_PAYER,
+            &[],
+            Default::default(),
+            ComputeBudgetConfig::new(1),
+        )
+        .expect("message");
+        let signature = Signature::from([9; 64]);
+        let phases = [
+            awaiting(&[SIGNER]),
+            RelayState::Sent(SentAttempt {
+                signature,
+                signatures: vec![collected(FEE_PAYER, 9)],
+                co_signature: None,
+            }),
+            RelayState::Confirmed {
+                signature,
+                slot: 3,
+                co_signature: None,
+            },
+            RelayState::Failed {
+                reason: "expired".to_owned(),
+                co_signature: None,
+            },
+        ];
+        for (seed, state) in (10..).zip(phases) {
+            let id = RelayId([seed; 32].into());
+            let record = RelayRecord {
+                message: message.clone(),
+                last_valid_block_height: 1,
+                state: state.clone(),
+            };
+            assert!(relays.insert(&id, &record).await.expect("insert"));
+            let stored = relays.get(&id).await.expect("read").expect("row");
+            assert_eq!(stored.record.state, state);
+        }
+        let sent = RelayId([11; 32].into());
+        sql::Query::new(
+            "UPDATE relay_relays SET status=$2 WHERE relay_id=$1",
+            vec![sql::bytes(&sent.0 .0), CONFIRMED.into()],
+        )
+        .execute(store.connection())
+        .await
+        .expect("update");
+
+        let refusal = relays.get(&sent).await.err().expect("refused");
+        assert_eq!(
+            refusal.to_string(),
+            "Custom Error: relay_relays state is corrupt"
+        );
     }
 
     #[tokio::test]

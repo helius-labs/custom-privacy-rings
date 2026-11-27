@@ -5,9 +5,6 @@
 //! event counts only under a successful storage `ApplyEnrollments` parent naming the same registry.
 //! The writes it carries run through the member registry's apply rule, and the projection faults on
 //! any root other than the one the event records.
-//!
-//! Read after `program-libs/interface/src/accounts/tracking.rs`, `program-libs/member-registry/src/tracking.rs`.
-//! Read before `services/ring-indexer/src/rpc/tracking.rs`.
 
 use custom_ring_interface::{
     storage::StorageError,

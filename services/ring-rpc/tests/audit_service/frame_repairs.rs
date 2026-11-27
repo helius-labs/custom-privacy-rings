@@ -35,8 +35,9 @@ async fn sixteen_failing_frames_do_not_hold_back_a_seventeenth() {
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
     let service = Hub::builder(source, identity(GENESIS))
         .with_origins(origins())
-        .with_store(store.clone())
+        .with_store(ServiceStore::Durable(store.clone()))
         .local(RING, fixture.auditor.clone())
+        .await
         .expect("hub")
         .service(None)
         .expect("service");
@@ -86,7 +87,7 @@ async fn a_repair_reads_its_frame_by_signature_while_the_history_is_down() {
         .unwrap()
         .insert(fixture.audited.tx_signature);
     let (history_down, history_reads) = (source.history_down.clone(), source.history_reads.clone());
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("forward pass");
     assert_eq!(unread(&service).await, [fixture.audited.tx_signature]);
 

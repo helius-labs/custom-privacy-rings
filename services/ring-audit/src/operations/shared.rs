@@ -14,10 +14,10 @@ use zolana_ring_transaction::RingAssets;
 use ring_service_core::{
     authorize::Unauthorized,
     clock::Clock,
-    database::Store,
+    database::ServiceStore,
     keys::{AuditorKeyDerivation, GrantRowsSecret, KeySource},
     origins::Origins,
-    replay::{LocalNonces, ReplayGuard},
+    replay::ReplayGuard,
     upstream::TransactionSource,
 };
 use ring_writer::record_update::ReaderGrantStore;
@@ -27,10 +27,10 @@ use crate::{
     audit::{AuditService, AuditServiceInit, ASSET_REFRESH_INTERVAL},
     error::RingAuditError,
     grant_rows::{GrantRowKey, GrantRows},
-    grants::{GrantQuery, GrantSource, Grants, ReadScope, TreeGrants},
+    grants::{GrantQuery, Grants, ReadScope, TreeGrants},
     spent_index::NoteSeal,
     utxos::{AuditStore, Backing, MAX_CACHED_ENTRIES},
-    wallet_snapshots::{SharedWalletSnapshots, WalletSnapshotCleanup, WalletSnapshotLimits},
+    wallet_snapshots::{WalletSnapshotCleanup, WalletSnapshotLimits},
 };
 
 pub struct Shared<S> {
@@ -46,10 +46,9 @@ pub struct Shared<S> {
     pub(crate) active_readers: Mutex<HashSet<(Address, ReaderKey)>>,
     /// One per ring an authorized read or the backfill opened.
     stores: Mutex<HashMap<Address, Arc<AuditStore>>>,
-    wallet_snapshots: SharedWalletSnapshots,
     snapshot_limits: WalletSnapshotLimits,
     pub grants: Grants,
-    pub database: Option<Store>,
+    pub database: ServiceStore,
 }
 
 #[must_use]
@@ -61,7 +60,7 @@ pub struct SharedInit<S> {
     pub clock: Clock,
     pub assets: Option<RingAssets>,
     pub origins: Origins,
-    pub store: Option<Store>,
+    pub store: ServiceStore,
     pub snapshot_limits: WalletSnapshotLimits,
     pub reader_grants: ReaderGrantStore,
     pub grant_rows: Option<GrantRowsSecret>,
@@ -84,7 +83,8 @@ impl<S> SharedInit<S> {
             ReaderGrantStore::Tree => Grants::Tree,
             ReaderGrantStore::Database => Grants::Database(Box::new(GrantRows::new(
                 self.store
-                    .clone()
+                    .durable()
+                    .cloned()
                     .ok_or(RingAuditError::GrantStoreMissing)?,
                 GrantRowKey::derive(
                     self.grant_rows
@@ -109,13 +109,9 @@ impl<S> SharedInit<S> {
                 refresh: RefreshState::Never,
             }),
             origins: self.origins,
-            replay: match &self.store {
-                Some(store) => ReplayGuard::shared(store.clone()),
-                None => ReplayGuard::Local(LocalNonces::default()),
-            },
+            replay: ReplayGuard::new(self.store.store().clone()),
             active_readers: Mutex::new(HashSet::new()),
             stores: Mutex::new(HashMap::new()),
-            wallet_snapshots: SharedWalletSnapshots::default(),
             snapshot_limits: self.snapshot_limits,
             grants,
             database: self.store,
@@ -135,23 +131,20 @@ impl<S> Shared<S> {
             .or_insert_with(|| {
                 Arc::new(
                     AuditStore::new(ring, self.backing(ring))
-                        .with_wallet_snapshots(self.wallet_snapshots.clone(), self.snapshot_limits),
+                        .with_snapshot_limits(self.snapshot_limits),
                 )
             })
             .clone()
     }
 
-    /// Beside a database the mirror is a bounded cache, storage answers what it evicted.
+    /// The mirror is a bounded cache, storage answers what it evicted.
     fn backing(&self, ring: Address) -> Backing {
-        let Some(store) = &self.database else {
-            return Backing::Memory;
-        };
         let seal = self
             .auditor(Some(ring))
             .and_then(|(ring, auditor)| Ok(NoteSeal::derive(&auditor, ring)?));
         match seal {
             Ok(seal) => Backing::Database {
-                store: store.clone(),
+                store: self.database.store().clone(),
                 ring,
                 seal: Box::new(seal),
                 capacity: MAX_CACHED_ENTRIES,
@@ -217,19 +210,12 @@ impl<S> Shared<S> {
     }
 
     pub async fn cleanup_wallet_snapshots(&self) -> Result<(), RingAuditError> {
-        let now = self.clock.now()?;
-        self.wallet_snapshots
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .cleanup(now);
-        if let Some(store) = &self.database {
-            WalletSnapshotCleanup {
-                db: store.connection(),
-                now,
-            }
-            .run()
-            .await?;
+        WalletSnapshotCleanup {
+            db: self.database.store().connection(),
+            now: self.clock.now()?,
         }
+        .run()
+        .await?;
         Ok(())
     }
 }
@@ -273,6 +259,7 @@ impl<S: TransactionSource> Shared<S> {
                 return Ok(ReadScope::new(query.wallet));
             }
         }
+        // A ring-wide grant covers every query, a wallet grant only a query naming that wallet.
         let granted = match &self.grants {
             Grants::Tree => {
                 TreeGrants {
@@ -320,5 +307,57 @@ impl<S: TransactionSource> Shared<S> {
             return Err(ClientError::Rpc("asset registry is unavailable".to_owned()).into());
         }
         Ok(cache.registry.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use spr_keypair::X25519Keypair;
+    use zolana_ring_client::rpc::WalletEnrollment;
+
+    use super::*;
+    use crate::{error::ServiceError, utxos::WalletStatusQuery};
+
+    /// A store that cannot seal a ring's rows answers no read of it.
+    #[tokio::test]
+    async fn a_ring_whose_seal_does_not_derive_answers_state_unavailable() {
+        let served = Address::new_from_array([8; 32]);
+        let other = Address::new_from_array([9; 32]);
+        let shared = SharedInit {
+            source: (),
+            genesis_hash: [1; 32],
+            service: Address::default(),
+            keys: KeySource::Local {
+                ring: served,
+                auditor: X25519Keypair::from_bytes(&[0x41; 32]),
+            },
+            clock: Clock::Fixed(1_000),
+            assets: None,
+            origins: Origins::default(),
+            store: ServiceStore::internal().await.expect("store"),
+            snapshot_limits: WalletSnapshotLimits::default(),
+            reader_grants: ReaderGrantStore::Tree,
+            grant_rows: None,
+        }
+        .build()
+        .expect("shared");
+        let owner = Address::new_from_array([7; 32]);
+
+        let refusal = shared
+            .store(other)
+            .wallet_status(WalletStatusQuery {
+                principal: [1; 34],
+                now: 1_000,
+                enrollment: WalletEnrollment::NotEnrolled,
+                wallet: owner,
+                ring: other,
+                after: None,
+                limit: 10,
+            })
+            .await;
+        assert!(matches!(
+            refusal,
+            Err(RingAuditError::Service(ServiceError::StateUnavailable))
+        ));
     }
 }

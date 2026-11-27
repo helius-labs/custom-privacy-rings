@@ -47,7 +47,7 @@ use ring_audit::RingAuditError;
 use ring_cosigner::cosign::{ApproveClass, CoSignerApproval};
 use ring_service_core::authorize::{ReadCheck, Unauthorized, AUTH_SKEW};
 use ring_service_core::clock::Clock;
-use ring_service_core::database::Store;
+use ring_service_core::database::{ServiceStore, Store};
 use ring_service_core::error::CarriedFault;
 use ring_service_core::keys::{GrantRowsSecret, RootSecret};
 use ring_service_core::origins::{OriginPolicy, Origins};
@@ -529,9 +529,10 @@ impl StaticSource {
             .max(position.token().map(|token| token.slot()))
             .unwrap_or_default();
         // A retry keeps the slots the first read gave, a real history never moves a row.
-        let first_slot = match marker.is_none() && position.token().is_none() {
-            true => 1,
-            false => floor + 1,
+        let first_slot = if marker.is_none() && position.token().is_none() {
+            1
+        } else {
+            floor + 1
         };
         let data: Vec<_> = (first_slot..)
             .zip(paged.transactions)
@@ -679,10 +680,10 @@ impl TransactionSource for StaticSource {
             .push(self.marker(request.position));
         let response = self.page_at(request.position, request.limit, None);
         async move {
-            match capped || down {
-                true => Err(ClientError::Rpc("history read cap".to_owned())),
-                false => Ok(response),
+            if capped || down {
+                return Err(ClientError::Rpc("history read cap".to_owned()));
             }
+            Ok(response)
         }
     }
 
@@ -1137,18 +1138,20 @@ impl Fixture {
         ])
     }
 
-    fn hub(&self, source: StaticSource) -> Hub<StaticSource> {
+    async fn hub(&self, source: StaticSource) -> Hub<StaticSource> {
         Hub::builder(source, identity(GENESIS))
             .with_origins(origins())
             .local(RING, self.auditor.clone())
+            .await
             .expect("hub")
     }
 
-    fn hub_at(&self, source: StaticSource, now: u64) -> Hub<StaticSource> {
+    async fn hub_at(&self, source: StaticSource, now: u64) -> Hub<StaticSource> {
         Hub::builder(source, identity(GENESIS))
             .with_origins(origins())
             .with_clock(Clock::Fixed(now))
             .local(RING, self.auditor.clone())
+            .await
             .expect("hub")
     }
 }

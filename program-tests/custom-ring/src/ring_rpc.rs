@@ -13,7 +13,7 @@ use ring_cosigner::cosign::CoSignerApproval;
 use ring_relay::managed_merge::ManagedMerge;
 use ring_relay::relay_reservations::RelayBudget;
 use ring_relay::relay_services::{RelayServices, RelayServicesInit};
-use ring_service_core::database::{Store, STORE_CONNECTIONS};
+use ring_service_core::database::{ServiceStore, Store, STORE_CONNECTIONS};
 use ring_service_core::upstream::{ChainSource, TransactionSource, Upstreams};
 use ring_writer::enrollment_applier::EnrollmentApplierParts;
 use ring_writer::record_writer::RECORD_FLUSH_INTERVAL;
@@ -248,7 +248,9 @@ impl RingRpcSpec<'_> {
             budget_lamports: u64::MAX,
             ring_budget_lamports: u64::MAX,
             max_rings: 0,
-            store: None,
+            store: runtime
+                .block_on(Store::in_memory())
+                .map_err(|e| anyhow!("enrollment store {e:?}"))?,
         };
         let enrollments = Arc::new(
             runtime
@@ -258,7 +260,7 @@ impl RingRpcSpec<'_> {
         runtime.spawn(enrollments.clone().run(RECORD_FLUSH_INTERVAL));
         let mut builder = Hub::builder(source, identity)
             .with_enrollment_applier(enrollments)
-            .with_store(store)
+            .with_store(ServiceStore::Durable(store))
             .with_storage_chain(Arc::new(storage_chain), Arc::new(Keypair::new()));
         builder = match co_signer {
             Some(parts) => builder
@@ -275,8 +277,8 @@ impl RingRpcSpec<'_> {
                 });
         }
         let hub = Arc::new(
-            builder
-                .local(self.ring, self.auditor)
+            runtime
+                .block_on(builder.local(self.ring, self.auditor))
                 .map_err(|e| anyhow!("hub {e:?}"))?,
         );
         let writer = hub.record_writer().map_err(|e| anyhow!("writer {e:?}"))?;

@@ -947,7 +947,7 @@ mod tests {
         listener.local_addr().expect("address").port()
     }
 
-    fn hub(mut source: TestSource, origins: Origins) -> Arc<Hub<TestSource>> {
+    async fn hub(mut source: TestSource, origins: Origins) -> Arc<Hub<TestSource>> {
         let auditor = X25519Keypair::new();
         source.config = Some(RingConfiguration {
             auditor_pubkey: auditor.pubkey(),
@@ -964,14 +964,16 @@ mod tests {
             Hub::builder(source, identity(TEST_GENESIS))
                 .with_origins(origins)
                 .local(SERVED_RING, auditor)
+                .await
                 .expect("hub"),
         )
     }
 
-    fn derived_hub(source: TestSource, genesis: [u8; 32]) -> Arc<Hub<TestSource>> {
+    async fn derived_hub(source: TestSource, genesis: [u8; 32]) -> Arc<Hub<TestSource>> {
         Arc::new(
             Hub::builder(source, identity(genesis))
                 .derived(RootSecret::from_bytes([5; 32]).expect("root"))
+                .await
                 .expect("hub"),
         )
     }
@@ -1032,7 +1034,7 @@ mod tests {
         let registry_url = format!("http://{}", server.local_addr().expect("address"));
         let registry = server.start(registry);
 
-        let hub = hub(source(), Origins::default());
+        let hub = hub(source(), Origins::default()).await;
         let served = rpc_module(hub.clone()).expect("module");
         let handle = run_server(
             hub.clone(),
@@ -1073,7 +1075,7 @@ mod tests {
     async fn write_limited_server(identity: ClientIdentityPolicy) -> (ServerHandle, String) {
         let server_port = port();
         let handle = run_server(
-            hub(source(), Origins::default()),
+            hub(source(), Origins::default()).await,
             ServerOptions {
                 client_limits: ClientLimits {
                     rates: ClientRates {
@@ -1213,7 +1215,7 @@ mod tests {
             .expect("origins");
         let server_port = port();
         let handle = run_server(
-            hub(source(), origins),
+            hub(source(), origins).await,
             options(server_port, Duration::from_secs(1)),
         )
         .await
@@ -1291,7 +1293,7 @@ mod tests {
     async fn a_path_runs_only_the_method_it_names() {
         let server_port = port();
         let handle = run_server(
-            hub(source(), Origins::default()),
+            hub(source(), Origins::default()).await,
             options(server_port, Duration::from_secs(1)),
         )
         .await
@@ -1363,7 +1365,7 @@ mod tests {
     async fn server_refuses_a_websocket_upgrade() {
         let server_port = port();
         let handle = run_server(
-            hub(source(), Origins::default()),
+            hub(source(), Origins::default()).await,
             options(server_port, Duration::from_secs(1)),
         )
         .await
@@ -1385,7 +1387,7 @@ mod tests {
     #[tokio::test]
     async fn server_rejects_public_bind_and_failed_readiness() {
         let public = run_server(
-            hub(source(), Origins::default()),
+            hub(source(), Origins::default()).await,
             ServerOptions {
                 bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                 bind_policy: BindPolicy::LoopbackOnly,
@@ -1399,7 +1401,7 @@ mod tests {
         .await;
         assert!(matches!(public, Err(ServerError::PublicBind)));
         let insecure = run_server(
-            hub(source(), Origins::default()),
+            hub(source(), Origins::default()).await,
             ServerOptions {
                 bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                 bind_policy: BindPolicy::InsecurePublic,
@@ -1422,7 +1424,8 @@ mod tests {
                     ..source()
                 },
                 Origins::default(),
-            ),
+            )
+            .await,
             options(failed_port, Duration::from_secs(1)),
         )
         .await
@@ -1442,7 +1445,8 @@ mod tests {
                     ..source()
                 },
                 Origins::default(),
-            ),
+            )
+            .await,
             options(timeout_port, Duration::from_millis(5)),
         )
         .await
@@ -1458,7 +1462,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_and_status_answer_the_served_ring() {
-        let module = rpc_module(hub(source(), Origins::default())).expect("module");
+        let module = rpc_module(hub(source(), Origins::default()).await).expect("module");
         let health: HealthResponse = module.call(HEALTH, [(); 0]).await.expect("health");
         assert_eq!(health.mode, KeyMode::Local);
         let status: RingStatusResponse = module
@@ -1477,7 +1481,7 @@ mod tests {
     async fn readiness_probes_share_a_cached_result() {
         let source = source();
         let calls = source.health_calls.clone();
-        let hub = hub(source, Origins::default());
+        let hub = hub(source, Origins::default()).await;
 
         assert_eq!(hub.readiness().await, ReadinessStatus::Ready);
         assert_eq!(hub.readiness().await, ReadinessStatus::Ready);
@@ -1491,7 +1495,7 @@ mod tests {
             ..source()
         };
         let calls = source.health_calls.clone();
-        let hub = hub(source, Origins::default());
+        let hub = hub(source, Origins::default()).await;
         let waiter = tokio::spawn({
             let hub = hub.clone();
             async move { hub.readiness().await }
@@ -1507,9 +1511,9 @@ mod tests {
 
     /// A decrypting page holds its slot for the whole page, and the gate
     /// refuses the next reader rather than queueing it behind them.
-    #[test]
-    fn concurrent_reads_are_capped_and_refused_rather_than_queued() {
-        let hub = hub(source(), Origins::default());
+    #[tokio::test]
+    async fn concurrent_reads_are_capped_and_refused_rather_than_queued() {
+        let hub = hub(source(), Origins::default()).await;
         let held = (0..MAX_CONCURRENT_READS)
             .map(|_| hub.admit(Lane::Read).expect("read slot"))
             .collect::<Vec<_>>();
@@ -1522,9 +1526,9 @@ mod tests {
         let _reopened = hub.admit(Lane::Read).expect("released slot");
     }
 
-    #[test]
-    fn authentication_attempts_do_not_consume_audit_capacity() {
-        let hub = hub(source(), Origins::default());
+    #[tokio::test]
+    async fn authentication_attempts_do_not_consume_audit_capacity() {
+        let hub = hub(source(), Origins::default()).await;
         for _ in 0..MAX_REQUEST_UNITS_PER_SECOND {
             let _ = hub.admit(Lane::Authentication).expect("authentication");
         }
@@ -1535,9 +1539,9 @@ mod tests {
         let _ = hub.admit(Lane::Read).expect("audit capacity");
     }
 
-    #[test]
-    fn concurrent_authentication_attempts_are_capped() {
-        let hub = hub(source(), Origins::default());
+    #[tokio::test]
+    async fn concurrent_authentication_attempts_are_capped() {
+        let hub = hub(source(), Origins::default()).await;
         let held = (0..MAX_CONCURRENT_AUTHENTICATIONS)
             .map(|_| {
                 hub.admit(Lane::Authentication)
@@ -1559,7 +1563,7 @@ mod tests {
     async fn derived_readiness_checks_the_cluster() {
         let matching = port();
         let handle = run_server(
-            derived_hub(source(), TEST_GENESIS),
+            derived_hub(source(), TEST_GENESIS).await,
             options(matching, Duration::from_secs(1)),
         )
         .await
@@ -1573,7 +1577,7 @@ mod tests {
 
         let repointed = port();
         let handle = run_server(
-            derived_hub(source(), [1; 32]),
+            derived_hub(source(), [1; 32]).await,
             options(repointed, Duration::from_secs(1)),
         )
         .await
@@ -1641,7 +1645,7 @@ mod tests {
         let listen_port = port();
         let mut opts = options(listen_port, Duration::from_secs(2));
         opts.max_connections = 1;
-        let handle = run_server(hub(source(), Origins::default()), opts)
+        let handle = run_server(hub(source(), Origins::default()).await, opts)
             .await
             .expect("server");
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
@@ -1676,7 +1680,7 @@ mod tests {
             keep_alive: Duration::from_secs(3_600),
         };
         let handle =
-            run_server_with_idle_timeouts(hub(source(), Origins::default()), opts, timeouts)
+            run_server_with_idle_timeouts(hub(source(), Origins::default()).await, opts, timeouts)
                 .await
                 .expect("server");
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));

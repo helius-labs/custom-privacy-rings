@@ -310,11 +310,12 @@ impl RecordsSetup<'_> {
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
         let hub = Hub::builder(self.source, identity(GENESIS))
             .with_origins(origins())
-            .with_store(store)
+            .with_store(ServiceStore::Durable(store))
             .with_storage_chain(chain.clone(), Arc::new(storage_authority()))
             .with_reader_grants(self.reader_grants)
             .with_grant_rows_key(grant_rows_key())
             .local(RING, self.fixture.auditor.clone())
+            .await
             .expect("hub");
         let writer = hub.record_writer().expect("writer").clone();
         let registry = StorageRegistry::new(writer.authority(), &initialize_records());
@@ -1663,9 +1664,10 @@ async fn create_records_registry_signs_only_the_creation_it_builds_and_sends_not
     let signer = FaultySigner::new(storage_authority());
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
     let hub = Hub::builder(source, identity(GENESIS))
-        .with_store(store)
+        .with_store(ServiceStore::Durable(store))
         .with_storage_chain(chain.clone(), signer.clone())
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .await
         .expect("hub");
     let target = |ring| ReadTarget {
         cluster: GENESIS,

@@ -267,7 +267,7 @@ impl StorageChain for StubChain {
     }
 }
 
-fn parts(chain: &Arc<StubChain>) -> EnrollmentApplierParts {
+async fn parts(chain: &Arc<StubChain>) -> EnrollmentApplierParts {
     EnrollmentApplierParts {
         chain: chain.clone(),
         payer: Arc::new(payer()),
@@ -275,19 +275,19 @@ fn parts(chain: &Arc<StubChain>) -> EnrollmentApplierParts {
         budget_lamports: u64::MAX,
         ring_budget_lamports: u64::MAX,
         max_rings: 2,
-        store: None,
+        store: Store::in_memory().await.expect("store"),
     }
 }
 
 async fn applier(chain: &Arc<StubChain>) -> EnrollmentApplier {
-    parts(chain).applier().await.expect("applier")
+    parts(chain).await.applier().await.expect("applier")
 }
 
 async fn budgeted(chain: &Arc<StubChain>, budget_lamports: u64) -> EnrollmentApplier {
     EnrollmentApplierParts {
         budget_lamports,
         ring_budget_lamports: budget_lamports,
-        ..parts(chain)
+        ..parts(chain).await
     }
     .applier()
     .await

@@ -421,10 +421,6 @@ impl ChainSource {
         })
     }
 
-    pub fn rpc(&self) -> &AsyncSolanaRpc {
-        &self.rpc
-    }
-
     fn history(&self) -> HistorySource<'_> {
         HistorySource { source: self }
     }
@@ -723,9 +719,10 @@ impl TransactionSource for ChainSource {
         .verify()
         .map_err(AuditError::from)?
         .is_some();
-        Ok(match applied {
-            true => WalletEnrollment::Applied,
-            false => WalletEnrollment::NotEnrolled,
+        Ok(if applied {
+            WalletEnrollment::Applied
+        } else {
+            WalletEnrollment::NotEnrolled
         })
     }
 

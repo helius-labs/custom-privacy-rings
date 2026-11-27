@@ -17,6 +17,8 @@ pub mod policy_action;
 mod projection_lease;
 #[path = "storage/projection_reads.rs"]
 mod projection_reads;
+#[path = "storage/row_cipher.rs"]
+mod row_cipher;
 #[path = "operations/shared.rs"]
 pub mod shared;
 #[path = "operations/spend_coverage.rs"]

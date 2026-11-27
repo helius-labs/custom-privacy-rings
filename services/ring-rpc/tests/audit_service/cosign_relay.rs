@@ -187,10 +187,10 @@ impl OperatorSigner for FaultySigner {
 
     async fn sign(&self, message: &[u8]) -> Result<Signature, CustodyError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        match self.unavailable.load(Ordering::Relaxed) {
-            true => Err(CustodyError::Signature),
-            false => Ok(self.keypair.sign_message(message)),
+        if self.unavailable.load(Ordering::Relaxed) {
+            return Err(CustodyError::Signature);
         }
+        Ok(self.keypair.sign_message(message))
     }
 }
 
@@ -268,7 +268,7 @@ impl CappedRelay {
         let fee_payer_key = FaultySigner::new(Keypair::new_from_array([31; 32]));
         let hub = Hub::builder(source, identity(GENESIS))
             .with_origins(origins())
-            .with_store(store.clone())
+            .with_store(ServiceStore::Durable(store.clone()))
             .with_co_signer(co_signer_key.clone())
             .with_co_signer_approval(CoSignerApproval::new([
                 ApproveClass::Transfers,
@@ -293,6 +293,7 @@ impl CappedRelay {
                 chain: chain.clone(),
             })
             .local(RING, fixture.auditor.clone())
+            .await
             .expect("hub");
         if note == SenderNote::Ingested {
             hub.service(None)
@@ -973,7 +974,7 @@ async fn a_derived_relay_refuses_a_ring_whose_auditor_key_it_does_not_hold() {
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
     let hub = Hub::builder(fixture.source(), identity(GENESIS))
         .with_origins(origins())
-        .with_store(store.clone())
+        .with_store(ServiceStore::Durable(store.clone()))
         .with_relay(RelayParts {
             store,
             prover: prover.clone(),
@@ -981,6 +982,7 @@ async fn a_derived_relay_refuses_a_ring_whose_auditor_key_it_does_not_hold() {
             chain: chain.clone(),
         })
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .await
         .expect("hub");
     let module = rpc_module(Arc::new(hub)).expect("module");
     let quote_request = as_object(GetRelayQuoteRequest {
@@ -1536,8 +1538,9 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
         .auditor_pubkey = X25519Keypair::new().pubkey();
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
     let hub = Hub::builder(source, identity(GENESIS))
-        .with_store(store)
+        .with_store(ServiceStore::Durable(store))
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .await
         .expect("hub");
 
     let uninitialized_edit = EditCoSignListRequest::edit(

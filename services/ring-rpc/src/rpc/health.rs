@@ -36,7 +36,7 @@ mod tests {
 
     use super::*;
     use ring_service_core::{
-        database::Store,
+        database::{ServiceStore, Store},
         keys::{GrantRowsSecret, RootSecret},
         upstream::{ChainSource, Upstreams},
     };
@@ -82,7 +82,7 @@ mod tests {
                 budget_lamports,
                 ring_budget_lamports: budget_lamports,
                 max_rings: 1,
-                store: None,
+                store: Store::in_memory().await.expect("store"),
             }
             .applier()
             .await
@@ -90,9 +90,10 @@ mod tests {
         )
     }
 
-    fn body(builder: HubBuilder<ChainSource>) -> serde_json::Value {
+    async fn body(builder: HubBuilder<ChainSource>) -> serde_json::Value {
         let hub = builder
             .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+            .await
             .expect("hub");
         serde_json::to_value(health(&hub)).expect("health body")
     }
@@ -113,7 +114,7 @@ mod tests {
         .build()
         .expect("relay services");
         let full = builder()
-            .with_store(store)
+            .with_store(ServiceStore::Durable(store))
             .with_storage_chain(chain(), Arc::new(key(2)))
             .with_co_signer(Arc::new(key(3)))
             .with_reader_grants(ReaderGrantStore::Database)
@@ -121,7 +122,7 @@ mod tests {
             .with_relay_services(relay)
             .with_enrollment_applier(enrollment_writer(1).await);
         assert_eq!(
-            body(full),
+            body(full).await,
             json!({
                 "mode": "derived",
                 "servicePubkey": key(1).pubkey().to_string(),
@@ -136,7 +137,7 @@ mod tests {
             })
         );
 
-        let unfunded = body(builder().with_enrollment_applier(enrollment_writer(0).await));
+        let unfunded = body(builder().with_enrollment_applier(enrollment_writer(0).await)).await;
         assert_eq!(
             unfunded["enrollmentWriterPubkey"],
             json!(key(5).pubkey().to_string())
@@ -144,7 +145,7 @@ mod tests {
         assert_eq!(unfunded["enrollmentWrites"], json!(false));
 
         assert_eq!(
-            body(builder()),
+            body(builder()).await,
             json!({
                 "mode": "derived",
                 "servicePubkey": key(1).pubkey().to_string(),

@@ -26,30 +26,6 @@ pub(crate) struct RepairBook {
 }
 
 impl RepairBook {
-    /// At most `MAX_REPAIRED_FRAMES` unread frames whose backoff ended by `now`.
-    pub(crate) fn due(
-        &self,
-        unread: impl IntoIterator<Item = CreatedIn>,
-        now: u64,
-    ) -> Vec<CreatedIn> {
-        let mut due: Vec<(u64, CreatedIn)> = unread
-            .into_iter()
-            .map(|frame| {
-                let after = self
-                    .attempts
-                    .get(&frame)
-                    .map_or(0, |attempt| attempt.retry_after);
-                (after, frame)
-            })
-            .filter(|(after, _)| *after <= now)
-            .collect();
-        due.sort_unstable();
-        due.into_iter()
-            .take(MAX_REPAIRED_FRAMES)
-            .map(|(_, frame)| frame)
-            .collect()
-    }
-
     pub(crate) fn failed(&mut self, frame: CreatedIn, now: u64) -> RepairAttempt {
         let attempt = self.attempts.entry(frame).or_default();
         attempt.attempts = attempt.attempts.saturating_add(1);

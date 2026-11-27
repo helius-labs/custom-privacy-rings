@@ -9,7 +9,7 @@ use ring_relay::managed_merge::MANAGED_MERGE_INTERVAL;
 use ring_relay::relay_reservations::RelayBudget;
 use ring_relay::relay_services::RelayServicesInit;
 use ring_relay::role_pins::RolePins;
-use ring_service_core::database::{Store, STORE_CONNECTIONS};
+use ring_service_core::database::{ServiceStore, Store, STORE_CONNECTIONS};
 use ring_service_core::keys::KeySource;
 use ring_service_core::origins::OriginPolicy;
 use ring_service_core::upstream::{ChainSource, TransactionSource, Upstreams};
@@ -91,14 +91,16 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             let store = Store::open(url, STORE_CONNECTIONS)
                 .await
                 .context("opening the service store")?;
-            Some(match &args.replica_id {
+            ServiceStore::Durable(match &args.replica_id {
                 Some(name) => store.with_replica(name),
                 None => store,
             })
         }
-        None => None,
+        None => ServiceStore::internal()
+            .await
+            .context("opening the internal store")?,
     };
-    let relay_services = match (fee_payer, store.clone(), &args.prover_url) {
+    let relay_services = match (fee_payer, store.durable().cloned(), &args.prover_url) {
         (Some(fee_payer), Some(store), Some(prover_url)) => Some(
             RelayServicesInit {
                 fee_payer,
@@ -131,9 +133,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             principal_wallet: args.wallet_snapshots_per_principal,
         })
         .with_relay_budget(relay_budget);
-    if let Some(store) = store.clone() {
-        builder = builder.with_store(store);
-    }
+    builder = builder.with_store(store.clone());
     if let (Some(prover_url), Some(payer)) = (&args.prover_url, enrollment_applier) {
         let applier = Arc::new(
             EnrollmentApplierParts {
@@ -143,7 +143,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 budget_lamports: args.enrollment_budget_lamports,
                 ring_budget_lamports: enrollment_ring_budget,
                 max_rings: enrollment_max_rings,
-                store,
+                store: store.store().clone(),
             }
             .applier()
             .await
@@ -175,8 +175,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         builder = builder.with_relay_services(services);
     }
     let hub = Arc::new(match auditor {
-        KeySource::Local { ring, auditor } => builder.local(ring, auditor)?,
-        KeySource::Derived(root) => builder.derived(root)?,
+        KeySource::Local { ring, auditor } => builder.local(ring, auditor).await?,
+        KeySource::Derived(root) => builder.derived(root).await?,
     });
     info!("service pubkey {}", hub.service_pubkey());
     match hub.relay() {
@@ -185,14 +185,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
         Some(relay) => {
             info!("relay fee payer {}", relay.fee_payer());
-            match relay_budget.is_set() {
-                true => info!(
+            if relay_budget.is_set() {
+                info!(
                     "relay budget {} lamports, {} per signer",
                     relay_budget.total_lamports, relay_budget.signer_lamports
-                ),
-                false => warn!(
+                );
+            } else {
+                warn!(
                     "relay sends off, set --relay-budget-lamports and --relay-signer-budget-lamports and fund the fee payer to turn them on"
-                ),
+                );
             }
         }
     }

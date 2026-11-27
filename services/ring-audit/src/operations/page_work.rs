@@ -1,12 +1,9 @@
 //! Records one page's steps, then replays them once every key they read is at hand.
 //!
-//! Beside a database the mirror is a bounded cache of the projection. `PageWork::finish` replays the
+//! The mirror is a bounded cache of the projection. `PageWork::finish` replays the
 //! steps against the page's delta, the rows it loaded and the cache. A replay that meets a key the
 //! cache may have evicted loads it and replays again, so every decision reads the row storage
 //! holds. Only commits and reloads fill the cache, a replay never does.
-//!
-//! Read after `operations/spend_machine.rs`, each replayed step drives it. Read before
-//! `storage/spent_index.rs`, its page commit writes the delta `finish` returns.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -23,7 +20,6 @@ use super::{
     AuditStore, CreatedIn, IndexedNote, LateOwner, LateProgress, OwnerChange, OwnerPage,
     OwnerRange, PageDelta, StoredUtxo,
 };
-use ring_service_core::bounded_map::Cached;
 
 use crate::{
     error::{RingAuditError, ServiceError},
@@ -387,7 +383,7 @@ impl Replay<'_> {
         if let Some(note) = self.loaded.notes.get(commitment) {
             return *note;
         }
-        let cached = self.store.read_book().notes.cached(commitment);
+        let cached = self.store.read_book().notes.get(commitment).copied();
         self.answer(cached, |missed| missed.notes.insert(*commitment))
     }
 
@@ -398,7 +394,7 @@ impl Replay<'_> {
         if let Some(commitment) = self.loaded.by_nullifier.get(nullifier) {
             return *commitment;
         }
-        let cached = self.store.read_book().by_nullifier.cached(nullifier);
+        let cached = self.store.read_book().by_nullifier.get(nullifier).copied();
         self.answer(cached, |missed| missed.by_nullifier.insert(*nullifier))
     }
 
@@ -409,32 +405,24 @@ impl Replay<'_> {
         if let Some(row) = self.loaded.rows.get(nullifier) {
             return *row;
         }
-        let cached = self.store.read_book().rows.cached(nullifier);
+        let cached = self.store.read_book().rows.get(nullifier).copied();
         self.answer(cached, |missed| missed.rows.insert(*nullifier))
     }
 
+    /// A cache miss records the key, the replay asks storage.
     fn answer<V>(
         &mut self,
-        cached: Cached<V>,
+        cached: Option<V>,
         miss: impl FnOnce(&mut Missed) -> bool,
     ) -> Option<V> {
-        match cached {
-            Cached::Hit(value) => Some(value),
-            Cached::Absent => None,
-            Cached::Unknown => {
-                miss(&mut self.missed);
-                None
-            }
+        if cached.is_none() {
+            miss(&mut self.missed);
         }
+        cached
     }
 
-    /// A complete mirror keeps the owner index, a cache reads the range from storage.
+    /// Storage holds the owner index, a range not yet loaded records a miss.
     fn owner_page(&mut self, range: OwnerRange) -> Option<OwnerPage> {
-        let book = self.store.read_book();
-        if book.is_complete() {
-            return Some(book.owner_page(range));
-        }
-        drop(book);
         if let Some(page) = self.loaded.owners.get(&range) {
             return Some(page.clone());
         }

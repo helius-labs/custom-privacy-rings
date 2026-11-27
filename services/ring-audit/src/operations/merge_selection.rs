@@ -21,18 +21,6 @@ impl MergeTarget {
             min_average_amount: settings.min_average_amount,
         })
     }
-
-    pub fn plan(&self, notes: &[WalletUtxo]) -> Option<Vec<WalletUtxo>> {
-        let mut summary = MergeSummary::default();
-        for note in notes {
-            summary.record(note);
-        }
-        let mut selection = summary.select(*self)?;
-        for note in notes {
-            selection.record(note.clone());
-        }
-        selection.finish()
-    }
 }
 
 #[derive(Default)]
@@ -207,6 +195,15 @@ mod selection_tests {
         }
     }
 
+    fn plan(target: MergeTarget, notes: &[WalletUtxo]) -> Option<Vec<WalletUtxo>> {
+        let targets = [(Mint::SOL.asset, target)].into();
+        let mut totals = MergeTotals::new(&targets);
+        notes.iter().cloned().for_each(|note| totals.record(note));
+        let mut selected = totals.select();
+        notes.iter().cloned().for_each(|note| selected.record(note));
+        selected.finish().remove(&Mint::SOL.asset)
+    }
+
     #[test]
     fn singleton_trees_keep_no_candidate_notes() {
         let target = MergeTarget {
@@ -248,18 +245,18 @@ mod selection_tests {
             note_count: NonZeroU32::new(4).expect("target"),
             min_average_amount: 0,
         };
-        assert!(unchanged.plan(&notes).is_none());
+        assert!(plan(unchanged, &notes).is_none());
         let average = MergeTarget {
             min_average_amount: 30,
             ..unchanged
         };
-        let plan = average.plan(&notes).expect("average target");
-        assert_eq!(plan.len(), 2);
-        assert!(plan.iter().all(|note| note.tree_id() == 1));
+        let selected = plan(average, &notes).expect("average target");
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().all(|note| note.tree_id() == 1));
         let count = MergeTarget {
             note_count: NonZeroU32::new(3).expect("target"),
             ..unchanged
         };
-        assert_eq!(count.plan(&notes).expect("count target").len(), 2);
+        assert_eq!(plan(count, &notes).expect("count target").len(), 2);
     }
 }

@@ -24,7 +24,7 @@ pub(crate) struct HeldInput {
 }
 
 impl<C: ConnectionTrait> MergeInputs<'_, C> {
-    pub async fn hold(&self, hold: HoldInputs<'_>) -> Result<(), DbErr> {
+    pub(crate) async fn hold(&self, hold: HoldInputs<'_>) -> Result<(), DbErr> {
         let insert = "INSERT INTO merge_inputs(nullifier,ring,relay_id) VALUES($1,$2,$3)";
         for nullifier in hold.nullifiers {
             let values = vec![
@@ -32,9 +32,7 @@ impl<C: ConnectionTrait> MergeInputs<'_, C> {
                 sql::bytes(hold.ring.as_ref()),
                 sql::bytes(&hold.relay_id.0 .0),
             ];
-            self.conn
-                .execute(sql::statement(self.conn, insert, values))
-                .await?;
+            sql::Query::new(insert, values).execute(self.conn).await?;
         }
         Ok(())
     }
@@ -44,8 +42,8 @@ impl<C: ConnectionTrait> MergeInputs<'_, C> {
                       JOIN relay_relays ON relay_relays.relay_id = merge_inputs.relay_id \
                       WHERE merge_inputs.ring=$1";
         let values = vec![sql::bytes(ring.as_ref())];
-        self.conn
-            .query_all(sql::statement(self.conn, select, values))
+        sql::Query::new(select, values)
+            .all(self.conn)
             .await?
             .iter()
             .map(|row| {
@@ -58,13 +56,11 @@ impl<C: ConnectionTrait> MergeInputs<'_, C> {
             .collect()
     }
 
-    pub async fn release(&self, nullifiers: &[[u8; 32]]) -> Result<(), DbErr> {
+    pub(crate) async fn release(&self, nullifiers: &[[u8; 32]]) -> Result<(), DbErr> {
         let delete = "DELETE FROM merge_inputs WHERE nullifier=$1";
         for nullifier in nullifiers {
             let values = vec![sql::bytes(nullifier)];
-            self.conn
-                .execute(sql::statement(self.conn, delete, values))
-                .await?;
+            sql::Query::new(delete, values).execute(self.conn).await?;
         }
         Ok(())
     }

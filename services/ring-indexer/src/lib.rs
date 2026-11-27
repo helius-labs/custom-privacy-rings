@@ -37,10 +37,10 @@ use solana_address::Address;
 use spr_rpc_http::{announce::Announcer, forward::UpstreamUrl};
 use zolana_operator_custody::{KeyArn, SignerRef};
 
-pub use error::RingApiError;
-pub use indexer::{Readiness, StartSlot};
-pub use migration::Migrator;
-pub use server::RING_METHODS;
+use indexer::Readiness;
+pub use indexer::StartSlot;
+use migration::Migrator;
+use server::RING_METHODS;
 
 use indexer::Indexer;
 use rpc::{BlockHeaders, SolanaRpc};

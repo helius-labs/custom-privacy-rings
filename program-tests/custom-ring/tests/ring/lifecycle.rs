@@ -200,8 +200,8 @@ fn auditor_key_is_released_only_to_the_ring_authority() -> Result<()> {
         genesis_hash,
         service: std::sync::Arc::new(Keypair::new()),
     };
-    let hub = Hub::builder(source, identity)
-        .derived(RootSecret::from_bytes([7; 32])?)
+    let hub = runtime
+        .block_on(Hub::builder(source, identity).derived(RootSecret::from_bytes([7; 32])?))
         .map_err(|e| anyhow!("hub {e:?}"))?;
     let service = hub
         .service(Some(ring_program))

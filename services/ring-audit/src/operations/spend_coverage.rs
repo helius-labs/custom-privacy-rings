@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use bytemuck::{Pod, Zeroable};
-use sea_orm::{ConnectionTrait, DbErr, Value};
+use sea_orm::DbErr;
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_indexer_api::{Base64String, Hash};
@@ -239,18 +239,18 @@ impl ProjectionReads<'_> {
         cursor: CoverageCursor,
     ) -> Result<GetSpendCoverageResponse, DbErr> {
         let snapshot = read_snapshot(self.db).await?;
-        let query = |sql: &str, values: Vec<Value>| {
-            let mut bound = vec![Value::from(self.ring.as_ref().to_vec())];
-            bound.extend(values);
-            sql::statement(&snapshot, sql, bound)
-        };
         let mut response = GetSpendCoverageResponse::default();
         if cursor.is_first() {
             let mut totals = SpendCoverageTotals::default();
-            for row in snapshot.query_all(query(
-                "SELECT state,COUNT(*) AS rows FROM finalized_spent_nullifiers WHERE ring=$1 GROUP BY state",
-                Vec::new(),
-            )).await? {
+            for row in self
+                .ring_query(
+                    "SELECT state,COUNT(*) AS rows FROM finalized_spent_nullifiers WHERE ring=$1 \
+                     GROUP BY state",
+                    Vec::new(),
+                )
+                .all(&snapshot)
+                .await?
+            {
                 let count = sql::read_integer(&row, "rows")?;
                 match row.try_get::<String>("", "state")?.as_str() {
                     "observed" => totals.observed = count,
@@ -261,11 +261,12 @@ impl ProjectionReads<'_> {
             }
             response.totals = Some(totals);
         }
-        if let Some(row) = snapshot
-            .query_one(query(
+        if let Some(row) = self
+            .ring_query(
                 "SELECT after_slot,through_slot FROM spend_checkpoints WHERE ring=$1",
                 Vec::new(),
-            ))
+            )
+            .one(&snapshot)
             .await?
         {
             response.position_slot = sql::read_optional_integer(&row, "after_slot")?;
@@ -289,7 +290,7 @@ impl ProjectionReads<'_> {
             };
             values.push(limit.clone());
             let sql = format!("SELECT {ROW_COLUMNS} FROM finalized_spent_nullifiers WHERE ring=$1 AND state=$2{filter} ORDER BY nullifier LIMIT ${}", values.len() + 1);
-            let rows = snapshot.query_all(query(&sql, values)).await?;
+            let rows = self.ring_query(&sql, values).all(&snapshot).await?;
             details.unresolved(
                 rows.iter()
                     .map(|row| read_spend_row(row, self.seal))
@@ -310,7 +311,7 @@ impl ProjectionReads<'_> {
             };
             values.push(limit.clone());
             let sql = format!("SELECT slot,tx_signature,event_index FROM spend_unread_frames WHERE ring=$1{filter} ORDER BY slot,tx_signature,event_index LIMIT ${}", values.len() + 1);
-            let rows = snapshot.query_all(query(&sql, values)).await?;
+            let rows = self.ring_query(&sql, values).all(&snapshot).await?;
             details.unread(rows.iter().map(read_frame).collect::<Result<Vec<_>, _>>()?);
         }
         if !matches!(cursor.fault_position(), DetailPosition::Done) {
@@ -329,7 +330,7 @@ impl ProjectionReads<'_> {
             };
             values.push(limit);
             let sql = format!("SELECT nullifier,slot,tx_signature,event_index FROM spend_integrity_faults WHERE ring=$1{filter} ORDER BY nullifier,tx_signature,event_index LIMIT ${}", values.len() + 1);
-            let rows = snapshot.query_all(query(&sql, values)).await?;
+            let rows = self.ring_query(&sql, values).all(&snapshot).await?;
             details.faults(
                 rows.iter()
                     .map(|row| {

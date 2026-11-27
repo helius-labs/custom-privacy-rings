@@ -120,8 +120,9 @@ mod tests {
     use ring_service_core::{
         authorize::Unauthorized,
         clock::Clock,
+        database::Store,
         keys::RootSecret,
-        replay::ReplayGuard,
+        sql,
         upstream::{ChainSource, Upstreams},
     };
     use ring_writer::enrollment_applier::{EnrollmentApplier, EnrollmentApplierParts};
@@ -178,7 +179,7 @@ mod tests {
             budget_lamports: u64::MAX,
             ring_budget_lamports: u64::MAX,
             max_rings: 2,
-            store: None,
+            store: Store::in_memory().await.expect("store"),
         }
         .applier()
         .await
@@ -199,6 +200,7 @@ mod tests {
             .with_clock(Clock::Fixed(NOW))
             .with_enrollment_applier(Arc::new(applier().await))
             .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+            .await
             .expect("hub")
     }
 
@@ -263,9 +265,13 @@ mod tests {
         .expect("signed");
 
         assert!(hub.register_enrollment_ring(&request).await.is_err());
-        let ReplayGuard::Local(nonces) = &hub.shared().replay else {
-            panic!("expected local nonces");
-        };
-        assert_eq!(nonces.ring_count(), 0);
+        let nonces = sql::Query::new("SELECT COUNT(*) AS rows FROM replay_nonces", Vec::new())
+            .one(hub.shared().database.store().connection())
+            .await
+            .expect("count")
+            .expect("row")
+            .try_get::<i64>("", "rows")
+            .expect("rows");
+        assert_eq!(nonces, 0);
     }
 }

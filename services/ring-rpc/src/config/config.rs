@@ -457,7 +457,7 @@ mod tests {
 
     use super::*;
     use ring_service_core::{
-        database::Store,
+        database::{ServiceStore, Store},
         upstream::{ChainSource, Upstreams},
     };
 
@@ -723,12 +723,13 @@ mod tests {
         ];
         for (flags, accepted) in cases {
             let checked = checked(&[&LOCAL_KMS, flags].concat(), &custody(&[]));
-            match accepted {
-                true => drop(checked.expect("a loopback deployment")),
-                false => assert!(
+            if accepted {
+                drop(checked.expect("a loopback deployment"));
+            } else {
+                assert!(
                     matches!(checked, Err(CustodyConfigError::RemoteCluster)),
                     "{flags:?}"
-                ),
+                );
             }
         }
         let remote = ["--bind", "0.0.0.0", "--rpc-url", "https://rpc.example"];
@@ -867,10 +868,13 @@ mod tests {
             service: Arc::new(service),
         };
         let hub = Hub::builder(ChainSource::connect(upstreams).expect("source"), identity)
-            .with_store(Store::open("sqlite::memory:", 1).await.expect("store"))
+            .with_store(ServiceStore::Durable(
+                Store::open("sqlite::memory:", 1).await.expect("store"),
+            ))
             .with_storage_chain(Arc::new(chain), Arc::new(storage))
             .with_co_signer(Arc::new(co_signer))
             .derived(RootSecret::from_bytes([4; 32]).expect("root"))
+            .await
             .expect("hub");
 
         assert_eq!(

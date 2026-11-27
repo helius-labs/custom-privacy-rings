@@ -26,7 +26,7 @@ use zolana_ring_transaction::RingAssets;
 use ring_service_core::{
     authorize::Unauthorized,
     clock::Clock,
-    database::Store,
+    database::ServiceStore,
     error::CarriedFault,
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
     keys::{GrantRowsSecret, KeySource, RootSecret},
@@ -126,7 +126,7 @@ pub struct HubBuilder<S> {
     assets: Option<RingAssets>,
     origins: Origins,
     clock: Clock,
-    store: Option<Store>,
+    store: Option<ServiceStore>,
     snapshot_limits: WalletSnapshotLimits,
     storage: Option<(Arc<dyn StorageChain>, SigningIdentity)>,
     reader_grants: ReaderGrantStore,
@@ -513,8 +513,9 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
+    /// Without it the hub keeps its rows in an internal store.
     #[must_use = "use the updated builder"]
-    pub fn with_store(mut self, store: Store) -> Self {
+    pub fn with_store(mut self, store: ServiceStore) -> Self {
         self.store = Some(store);
         self
     }
@@ -524,7 +525,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
-    /// The record writer runs only beside a store.
+    /// The record writer runs only beside a durable store.
     #[must_use = "use the updated builder"]
     pub fn with_storage_chain(
         mut self,
@@ -535,7 +536,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
-    /// `Database` needs a store and a grant rows key.
+    /// `Database` needs a durable store and a grant rows key.
     #[must_use = "use the updated builder"]
     pub fn with_reader_grants(mut self, store: ReaderGrantStore) -> Self {
         self.reader_grants = store;
@@ -548,7 +549,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
-    /// The hub refuses to build without a store.
+    /// The hub refuses to build without a durable store.
     #[must_use = "use the updated builder"]
     pub fn with_co_signer(mut self, signer: SigningIdentity) -> Self {
         self.co_signer = Some(signer);
@@ -589,21 +590,29 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
-    pub fn local(self, ring: Address, auditor: X25519Keypair) -> Result<Hub<S>, RingRpcError> {
-        self.build(KeySource::Local { ring, auditor })
+    pub async fn local(
+        self,
+        ring: Address,
+        auditor: X25519Keypair,
+    ) -> Result<Hub<S>, RingRpcError> {
+        self.build(KeySource::Local { ring, auditor }).await
     }
 
-    pub fn derived(self, root: RootSecret) -> Result<Hub<S>, RingRpcError> {
-        self.build(KeySource::Derived(root))
+    pub async fn derived(self, root: RootSecret) -> Result<Hub<S>, RingRpcError> {
+        self.build(KeySource::Derived(root)).await
     }
 
-    fn build(self, keys: KeySource) -> Result<Hub<S>, RingRpcError> {
+    async fn build(self, keys: KeySource) -> Result<Hub<S>, RingRpcError> {
         let ServiceIdentity {
             genesis_hash,
             service: signer,
         } = self.identity;
-        let writer = self
-            .store
+        let store = match self.store {
+            Some(store) => store,
+            None => ServiceStore::internal().await?,
+        };
+        let durable = store.durable().cloned();
+        let writer = durable
             .clone()
             .zip(self.storage)
             .map(|(store, (chain, authority))| {
@@ -627,7 +636,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
             clock: self.clock,
             assets: self.assets,
             origins: self.origins,
-            store: self.store.clone(),
+            store,
             snapshot_limits: self.snapshot_limits,
             reader_grants: self.reader_grants,
             grant_rows: self.grant_rows,
@@ -637,7 +646,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         let co_signer = CoSignPolicyInit {
             signer: self.co_signer,
             shared: shared.clone(),
-            store: self.store,
+            store: durable,
             approval: self.co_signer_approval,
         }
         .build()?;
@@ -674,5 +683,66 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
                 in_flight: None,
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ring_cosigner::RingCosignerError;
+    use ring_relay::role_pins::fixture::RingAccounts;
+    use ring_service_core::upstream::{ChainSource, Upstreams};
+    use solana_keypair::Keypair;
+
+    use super::*;
+
+    fn builder() -> HubBuilder<ChainSource> {
+        let upstreams = Upstreams {
+            indexer_url: "http://127.0.0.1:1",
+            rpc_url: "http://127.0.0.1:1",
+            timeout: Duration::from_secs(1),
+        };
+        let identity = ServiceIdentity {
+            genesis_hash: [1; 32],
+            service: Arc::new(Keypair::new_from_array([12; 32])),
+        };
+        Hub::builder(ChainSource::connect(upstreams).expect("source"), identity)
+    }
+
+    fn root() -> RootSecret {
+        RootSecret::from_bytes([7; 32]).expect("root")
+    }
+
+    /// Only `--store-url` turns on the co-signer, database grants, the record writer and the relay.
+    #[tokio::test]
+    async fn a_hub_without_a_store_url_turns_on_no_store_gated_part() {
+        let co_signer = builder()
+            .with_co_signer(Arc::new(Keypair::new_from_array([3; 32])))
+            .derived(root())
+            .await;
+        assert!(matches!(
+            co_signer.err(),
+            Some(RingRpcError::Cosigner(
+                RingCosignerError::CoSignerStoreMissing
+            ))
+        ));
+        let grants = builder()
+            .with_reader_grants(ReaderGrantStore::Database)
+            .with_grant_rows_key(GrantRowsSecret::from_bytes([5; 32]))
+            .derived(root())
+            .await;
+        assert!(matches!(
+            grants.err(),
+            Some(RingRpcError::Audit(RingAuditError::GrantStoreMissing))
+        ));
+        let hub = builder()
+            .with_storage_chain(
+                Arc::new(RingAccounts(None)),
+                Arc::new(Keypair::new_from_array([4; 32])),
+            )
+            .derived(root())
+            .await
+            .expect("hub");
+        assert!(hub.record_writer().is_err());
+        assert!(hub.relay().is_none());
     }
 }

@@ -11,8 +11,9 @@ use ring_service_core::{clock::Clock, database::Store};
 use crate::{
     owner_notes::{OwnerNotesPage, OPENED_ROWS},
     projection_lease::LeaseClaim,
+    projection_reads::{ProjectionReads, StoredRows},
     spend_machine::{InputRead, Observation},
-    spent_index::{HistoryScope, LoadSpends, NoteSeal, ProjectionWriter},
+    spent_index::{LoadSpends, NoteSeal, ProjectionWriter},
     tracking::TrackingCursor,
 };
 
@@ -93,8 +94,8 @@ impl Keys {
             .map(|secret| NullifierKey::from_secret(*secret))
     }
 
-    /// Every granted owner's row, committed beside a database so an evicted row still reads.
-    async fn enroll(&self, store: &AuditStore, writer: Option<&ProjectionWriter<'_>>) {
+    /// Every granted owner's row, committed so an evicted row still reads.
+    async fn enroll(&self, store: &AuditStore, writer: &ProjectionWriter<'_>) {
         let rows: Vec<HeldEnrollment> = self
             .0
             .lock()
@@ -105,22 +106,29 @@ impl Keys {
             })
             .collect();
         let admission = store.enrollment_admission(rows).await.expect("admission");
-        if let Some(writer) = writer {
-            writer
-                .commit_enrollments(admission.rows(), TrackingCursor::default())
-                .await
-                .expect("enrollments");
-        }
-        store.admit_enrollments(admission).expect("admitted");
+        writer
+            .commit_enrollments(admission.rows(), TrackingCursor::default())
+            .await
+            .expect("enrollments");
+        store.admit_enrollments(admission);
     }
 }
 
-fn apply(store: &AuditStore, keys: &Keys, page: impl FnOnce(&mut PageWork<'_>)) {
-    block_on(keys.enroll(store, None));
+/// A store sealed under the auditor of `seal`, on its own internal database.
+async fn book() -> AuditStore {
+    AuditStore::on_internal_database(RING, &spr_keypair::X25519Keypair::from_bytes(&[0x41; 32]))
+        .await
+}
+
+async fn apply(store: &AuditStore, keys: &Keys, page: impl FnOnce(&mut PageWork<'_>)) {
+    let writer = store.fixture_writer().await;
+    keys.enroll(store, &writer).await;
     let opener = |held: &HeldEnrollment| keys.open(held);
     let mut work = PageWork::new(store, &opener);
     page(&mut work);
-    store.commit(block_on(work.finish()).expect("page"));
+    let delta = work.finish().await.expect("page");
+    let revision = writer.commit_page(&delta).await.expect("commit");
+    store.commit(delta.at_commit(revision));
 }
 
 fn real(nullifier: [u8; 32], at: CreatedIn, position: u16) -> Observation {
@@ -133,7 +141,7 @@ fn real(nullifier: [u8; 32], at: CreatedIn, position: u16) -> Observation {
     }
 }
 
-fn through(store: &AuditStore, keys: &Keys, slot: u64) {
+async fn through(store: &AuditStore, keys: &Keys, slot: u64) {
     apply(store, keys, |work| {
         work.checkpoint(
             HistoryPosition::after_slot(slot),
@@ -142,7 +150,8 @@ fn through(store: &AuditStore, keys: &Keys, slot: u64) {
                 block_time: 1,
             }),
         );
-    });
+    })
+    .await;
 }
 
 fn query(owner: Address) -> WalletStatusQuery {
@@ -157,8 +166,8 @@ fn query(owner: Address) -> WalletStatusQuery {
     }
 }
 
-fn status_of(store: &AuditStore, owner: Address) -> GetWalletStatusResponse {
-    block_on(store.wallet_status(query(owner))).expect("status")
+async fn status_of(store: &AuditStore, owner: Address) -> GetWalletStatusResponse {
+    store.wallet_status(query(owner)).await.expect("status")
 }
 
 fn balance(response: &GetWalletStatusResponse) -> u64 {
@@ -169,42 +178,43 @@ fn statuses(response: &GetWalletStatusResponse) -> Vec<WalletNoteStatus> {
     response.notes.iter().map(|note| note.status).collect()
 }
 
-#[test]
-fn a_note_reads_unspent_then_leaves_the_wallet_once_spent() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn a_note_reads_unspent_then_leaves_the_wallet_once_spent() {
+    let store = book().await;
     let owner = wallet(1);
     let keys = Keys::with(owner, 7);
     let created = note(owner, &secret(7), 0x10, 50);
-    apply(&store, &keys, |work| work.open(frame(5), [created]));
-    through(&store, &keys, 10);
-    let read = status_of(&store, owner);
+    apply(&store, &keys, |work| work.open(frame(5), [created])).await;
+    through(&store, &keys, 10).await;
+    let read = status_of(&store, owner).await;
     assert_eq!(statuses(&read), [WalletNoteStatus::Unspent]);
     assert_eq!(balance(&read), 50);
     apply(&store, &keys, |work| {
         work.observe(real(nullifier_of(&created, &secret(7)), frame(11), 0));
-    });
-    through(&store, &keys, 12);
-    let read = status_of(&store, owner);
+    })
+    .await;
+    through(&store, &keys, 12).await;
+    let read = status_of(&store, owner).await;
     assert!(read.notes.is_empty());
     assert_eq!(balance(&read), 0);
 }
 
-#[test]
-fn a_note_with_no_readable_secret_is_unknown_and_never_counts() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn a_note_with_no_readable_secret_is_unknown_and_never_counts() {
+    let store = book().await;
     let owner = wallet(1);
     let keys = Keys::none();
     let created = note(owner, &secret(7), 0x10, 50);
-    apply(&store, &keys, |work| work.open(frame(5), [created]));
-    through(&store, &keys, 10);
-    let read = status_of(&store, owner);
+    apply(&store, &keys, |work| work.open(frame(5), [created])).await;
+    through(&store, &keys, 10).await;
+    let read = status_of(&store, owner).await;
     assert_eq!(statuses(&read), [WalletNoteStatus::Unknown]);
     assert_eq!(balance(&read), 0);
 }
 
-#[test]
-fn a_late_key_recomputes_the_owners_notes_and_resolves_their_rows() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn a_late_key_recomputes_the_owners_notes_and_resolves_their_rows() {
+    let store = book().await;
     let owner = wallet(1);
     let keys = Keys::none();
     let created = note(owner, &secret(7), 0x10, 50);
@@ -212,14 +222,15 @@ fn a_late_key_recomputes_the_owners_notes_and_resolves_their_rows() {
     apply(&store, &keys, |work| {
         work.open(frame(5), [created]);
         work.observe(real(nullifier, frame(6), 0));
-    });
+    })
+    .await;
     assert!(matches!(
         store.row_state(&nullifier),
         Some(SpendState::Unclassified)
     ));
     keys.grant(owner, 7);
     store.queue_late_owners([owner.to_bytes()]);
-    apply(&store, &keys, |work| work.late_keys());
+    apply(&store, &keys, |work| work.late_keys()).await;
     assert_eq!(
         store.row_state(&nullifier),
         Some(SpendState::Resolved {
@@ -227,8 +238,8 @@ fn a_late_key_recomputes_the_owners_notes_and_resolves_their_rows() {
         })
     );
     assert!(store.late_owners.read().expect("late").is_empty());
-    through(&store, &keys, 10);
-    assert!(status_of(&store, owner).notes.is_empty());
+    through(&store, &keys, 10).await;
+    assert!(status_of(&store, owner).await.notes.is_empty());
 }
 
 /// `note` as a record without its key publishes it, under the record's `data_hash`.
@@ -257,25 +268,26 @@ fn rebuilt(owner: Address, key: &NullifierKey) -> CreatedUtxo {
 }
 
 /// The owner registers after the payment, its note keys once under the commitment and spends.
-#[test]
-fn an_unresolved_note_keys_once_when_its_owner_enrolls_late() {
-    let store = AuditStore::new(RING, Backing::Memory);
+#[tokio::test]
+async fn an_unresolved_note_keys_once_when_its_owner_enrolls_late() {
+    let store = book().await;
     let owner = wallet(1);
     let keys = Keys::none();
     let created = rebuilt(owner, &secret(7));
     apply(&store, &keys, |work| {
         work.open(frame(5), [unresolved(&created, [0; 32])]);
-    });
-    through(&store, &keys, 10);
-    let read = status_of(&store, owner);
+    })
+    .await;
+    through(&store, &keys, 10).await;
+    let read = status_of(&store, owner).await;
     assert_eq!(statuses(&read), [WalletNoteStatus::Unknown]);
     assert_eq!(read.notes[0].nullifier_pk, None);
 
     keys.grant(owner, 7);
     store.queue_late_owners([owner.to_bytes()]);
-    apply(&store, &keys, |work| work.late_keys());
-    through(&store, &keys, 11);
-    let read = status_of(&store, owner);
+    apply(&store, &keys, |work| work.late_keys()).await;
+    through(&store, &keys, 11).await;
+    let read = status_of(&store, owner).await;
     assert_eq!(statuses(&read), [WalletNoteStatus::Unspent]);
     assert_eq!(read.notes[0].utxo_hash, Hash(created.commitment));
     assert_eq!(
@@ -288,7 +300,8 @@ fn an_unresolved_note_keys_once_when_its_owner_enrolls_late() {
     let nullifier = nullifier_of(&created, &secret(7));
     apply(&store, &keys, |work| {
         work.observe(real(nullifier, frame(12), 0))
-    });
+    })
+    .await;
     assert_eq!(
         store.row_state(&nullifier),
         Some(SpendState::Resolved {
@@ -299,8 +312,8 @@ fn an_unresolved_note_keys_once_when_its_owner_enrolls_late() {
 
 /// A resolved key counts only when the commitment rebuilds, the proven record stays and never
 /// counts as spendable balance. The registered secret still traces the note's spend.
-#[test]
-fn an_unresolved_note_that_does_not_rebuild_under_the_registered_key_stays_unknown() {
+#[tokio::test]
+async fn an_unresolved_note_that_does_not_rebuild_under_the_registered_key_stays_unknown() {
     let owner = wallet(1);
     let keys = Keys::with(owner, 7);
     let under_another_key = rebuilt(owner, &secret(8));
@@ -322,10 +335,10 @@ fn an_unresolved_note_that_does_not_rebuild_under_the_registered_key_stays_unkno
         ),
     ];
     for (name, created, spend, traced) in cases {
-        let store = AuditStore::new(RING, Backing::Memory);
-        apply(&store, &keys, |work| work.open(frame(5), [created]));
-        through(&store, &keys, 10);
-        let read = status_of(&store, owner);
+        let store = book().await;
+        apply(&store, &keys, |work| work.open(frame(5), [created])).await;
+        through(&store, &keys, 10).await;
+        let read = status_of(&store, owner).await;
         assert_eq!(statuses(&read), [WalletNoteStatus::Unknown], "{name}");
         assert_eq!(read.notes[0].utxo_hash, Hash(created.commitment), "{name}");
         assert_eq!(read.notes[0].nullifier_pk, None, "{name}");
@@ -334,48 +347,56 @@ fn an_unresolved_note_that_does_not_rebuild_under_the_registered_key_stays_unkno
         // Only the registered secret's nullifier matches, a note under another key never resolves.
         apply(&store, &keys, |work| {
             work.observe(real(spend, frame(11), 0))
-        });
+        })
+        .await;
         assert_eq!(store.row_state(&spend), Some(traced), "{name}");
     }
 }
 
-#[test]
-fn a_spend_of_an_unknown_note_stays_unresolved_then_resolves_when_it_opens() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn a_spend_of_an_unknown_note_stays_unresolved_then_resolves_when_it_opens() {
+    let store = book().await;
     let owner = wallet(1);
     let keys = Keys::with(owner, 7);
     let created = note(owner, &secret(7), 0x10, 50);
     let nullifier = nullifier_of(&created, &secret(7));
     apply(&store, &keys, |work| {
         work.observe(real(nullifier, frame(6), 0));
-    });
-    let coverage = block_on(store.spend_coverage(CoverageCursor::new(RING))).expect("coverage");
+    })
+    .await;
+    let coverage = store
+        .spend_coverage(CoverageCursor::new(RING))
+        .await
+        .expect("coverage");
     assert_eq!(coverage.unclassified.len(), 1);
     assert_eq!(coverage.totals.expect("first page totals").padding, 0);
-    apply(&store, &keys, |work| work.open(frame(5), [created]));
+    apply(&store, &keys, |work| work.open(frame(5), [created])).await;
     assert_eq!(
         store.row_state(&nullifier),
         Some(SpendState::Resolved {
             note: created.commitment
         })
     );
-    let coverage = block_on(store.spend_coverage(CoverageCursor::new(RING))).expect("coverage");
+    let coverage = store
+        .spend_coverage(CoverageCursor::new(RING))
+        .await
+        .expect("coverage");
     assert!(coverage.unclassified.is_empty());
     assert_eq!(coverage.totals.expect("first page totals").resolved, 1);
 }
 
 /// Replays give the same state, and no step lists the spent inputs beside their merge.
-#[test]
-fn notes_merged_with_a_late_read_never_count_twice() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn notes_merged_with_a_late_read_never_count_twice() {
+    let store = book().await;
     let owner = wallet(1);
     let keys = Keys::with(owner, 7);
     let first = note(owner, &secret(7), 0x10, 50);
     let second = note(owner, &secret(7), 0x11, 50);
     let merged = note(owner, &secret(7), 0x12, 100);
-    apply(&store, &keys, |work| work.open(frame(2), [first, second]));
-    through(&store, &keys, 3);
-    assert_eq!(balance(&status_of(&store, owner)), 100);
+    apply(&store, &keys, |work| work.open(frame(2), [first, second])).await;
+    through(&store, &keys, 3).await;
+    assert_eq!(balance(&status_of(&store, owner).await), 100);
     // The merge at slot 4 is unreadable, its output has not opened.
     let merge_frame = frame(4);
     let spends = [
@@ -391,9 +412,9 @@ fn notes_merged_with_a_late_read_never_count_twice() {
         }
         work.mark_unread(merge_frame);
     };
-    apply(&store, &keys, unreadable);
-    through(&store, &keys, 9);
-    let held = status_of(&store, owner);
+    apply(&store, &keys, unreadable).await;
+    through(&store, &keys, 9).await;
+    let held = status_of(&store, owner).await;
     assert_eq!(held.history_through, 3);
     assert_eq!(balance(&held), 100, "as of the slot before the gap");
     let late_read = |work: &mut PageWork<'_>| {
@@ -403,98 +424,112 @@ fn notes_merged_with_a_late_read_never_count_twice() {
         }
         work.mark_read(merge_frame);
     };
-    apply(&store, &keys, late_read);
-    let read = status_of(&store, owner);
+    apply(&store, &keys, late_read).await;
+    let read = status_of(&store, owner).await;
     assert_eq!(read.history_through, 9);
     assert_eq!(balance(&read), 100);
     let dump = store.dump();
-    apply(&store, &keys, late_read);
+    apply(&store, &keys, late_read).await;
     assert_eq!(store.dump(), dump, "a replay changes nothing");
 }
 
-#[test]
-fn another_wallets_unresolved_spend_leaves_a_wallet_read_byte_equal() {
-    let read_with = |stranger_row: bool| {
-        let store = AuditStore::default();
+#[tokio::test]
+async fn another_wallets_unresolved_spend_leaves_a_wallet_read_byte_equal() {
+    let read_with = |stranger_row: bool| async move {
+        let store = book().await;
         let owner = wallet(1);
         let keys = Keys::with(owner, 7);
         let created = note(owner, &secret(7), 0x10, 50);
-        apply(&store, &keys, |work| work.open(frame(5), [created]));
+        apply(&store, &keys, |work| work.open(frame(5), [created])).await;
         if stranger_row {
             apply(&store, &keys, |work| {
                 work.observe(real([0xee; 32], frame(6), 0));
-            });
+            })
+            .await;
         }
-        through(&store, &keys, 10);
-        serde_json::to_vec(&status_of(&store, owner)).expect("json")
+        through(&store, &keys, 10).await;
+        serde_json::to_vec(&status_of(&store, owner).await).expect("json")
     };
-    assert_eq!(read_with(true), read_with(false));
+    assert_eq!(read_with(true).await, read_with(false).await);
 }
 
-#[test]
-fn only_an_unreadable_frame_holds_the_history_slot() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn only_an_unreadable_frame_holds_the_history_slot() {
+    let store = book().await;
     let keys = Keys::none();
-    through(&store, &keys, 100);
+    through(&store, &keys, 100).await;
     apply(&store, &keys, |work| {
         work.observe(real([1; 32], frame(50), 0));
-    });
+    })
+    .await;
     assert_eq!(
-        block_on(store.spend_coverage(CoverageCursor::new(RING)))
+        store
+            .spend_coverage(CoverageCursor::new(RING))
+            .await
             .expect("coverage")
             .history_through,
         100
     );
-    apply(&store, &keys, |work| work.mark_unread(frame(60)));
-    let coverage = block_on(store.spend_coverage(CoverageCursor::new(RING))).expect("coverage");
+    apply(&store, &keys, |work| work.mark_unread(frame(60))).await;
+    let coverage = store
+        .spend_coverage(CoverageCursor::new(RING))
+        .await
+        .expect("coverage");
     assert_eq!(coverage.history_through, 59);
     assert_eq!(coverage.unreadable.len(), 1);
-    apply(&store, &keys, |work| work.mark_read(frame(60)));
+    apply(&store, &keys, |work| work.mark_read(frame(60))).await;
     assert_eq!(
-        block_on(store.spend_coverage(CoverageCursor::new(RING)))
+        store
+            .spend_coverage(CoverageCursor::new(RING))
+            .await
             .expect("coverage")
             .history_through,
         100
     );
 }
 
-#[test]
-fn a_note_past_the_history_slot_stays_out_so_input_and_change_never_both_count() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn a_note_past_the_history_slot_stays_out_so_input_and_change_never_both_count() {
+    let store = book().await;
     let owner = wallet(1);
     let keys = Keys::with(owner, 7);
     let input = note(owner, &secret(7), 0x10, 50);
     let change = note(owner, &secret(7), 0x11, 50);
-    apply(&store, &keys, |work| work.open(frame(2), [input]));
-    through(&store, &keys, 3);
+    apply(&store, &keys, |work| work.open(frame(2), [input])).await;
+    through(&store, &keys, 3).await;
     apply(&store, &keys, |work| {
         work.open(frame(5), [change]);
         work.observe(real(nullifier_of(&input, &secret(7)), frame(5), 0));
-    });
-    let read = status_of(&store, owner);
+    })
+    .await;
+    let read = status_of(&store, owner).await;
     assert_eq!(read.history_through, 3);
     assert_eq!(statuses(&read), [WalletNoteStatus::Unspent]);
     assert_eq!(balance(&read), 50);
 }
 
-#[test]
-fn merge_padding_adds_no_unclassified_state() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn merge_padding_adds_no_unclassified_state() {
+    let store = book().await;
     let keys = Keys::none();
     apply(&store, &keys, |work| {
         work.observe(Observation {
             read: InputRead::Padding,
             ..real([1; 32], frame(5), 1)
         });
-    });
-    let coverage = block_on(store.spend_coverage(CoverageCursor::new(RING))).expect("coverage");
+    })
+    .await;
+    let coverage = store
+        .spend_coverage(CoverageCursor::new(RING))
+        .await
+        .expect("coverage");
     assert!(coverage.unclassified.is_empty());
     assert_eq!(coverage.totals.expect("first page totals").padding, 1);
 }
 
-#[test]
-fn a_duplicate_nullifier_is_surfaced_and_the_first_state_stays() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn a_duplicate_nullifier_is_surfaced_and_the_first_state_stays() {
+    let store = book().await;
     let owner = wallet(1);
     let keys = Keys::with(owner, 7);
     let created = note(owner, &secret(7), 0x10, 50);
@@ -502,22 +537,26 @@ fn a_duplicate_nullifier_is_surfaced_and_the_first_state_stays() {
     apply(&store, &keys, |work| {
         work.open(frame(2), [created]);
         work.observe(real(nullifier, frame(3), 0));
-    });
+    })
+    .await;
     let before = store.row_state(&nullifier);
     apply(&store, &keys, |work| {
         work.observe(real(nullifier, frame(4), 0));
-    });
+    })
+    .await;
     assert_eq!(store.row_state(&nullifier), before);
-    let faults = block_on(store.spend_coverage(CoverageCursor::new(RING)))
+    let faults = store
+        .spend_coverage(CoverageCursor::new(RING))
+        .await
         .expect("coverage")
         .integrity_faults;
     assert_eq!(faults.len(), 1);
     assert_eq!(faults[0].frame.slot, 4);
 }
 
-#[test]
-fn a_zero_key_note_of_a_wallet_is_exposed_and_a_pda_note_is_not() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn a_zero_key_note_of_a_wallet_is_exposed_and_a_pda_note_is_not() {
+    let store = book().await;
     let keys = Keys::none();
     let zero = NullifierKey::from_secret([0; 31]);
     assert_eq!(zero.pubkey().expect("zero"), ZERO_NULLIFIER_PUBKEY);
@@ -528,25 +567,27 @@ fn a_zero_key_note_of_a_wallet_is_exposed_and_a_pda_note_is_not() {
     let vault = note(program, &zero, 0x11, 70);
     apply(&store, &keys, |work| {
         work.open(frame(2), [exposed, vault]);
-    });
-    through(&store, &keys, 3);
-    let read = status_of(&store, owner);
+    })
+    .await;
+    through(&store, &keys, 3).await;
+    let read = status_of(&store, owner).await;
     assert_eq!(statuses(&read), [WalletNoteStatus::ExposedIfSpent]);
     assert_eq!(balance(&read), 0, "outside the balance");
-    let read = status_of(&store, program);
+    let read = status_of(&store, program).await;
     assert_eq!(statuses(&read), [WalletNoteStatus::Unspent]);
     assert_eq!(balance(&read), 70);
     // Spent takes precedence, the zero secret needs no credential.
     apply(&store, &keys, |work| {
         work.observe(real(nullifier_of(&exposed, &zero), frame(4), 0));
-    });
-    through(&store, &keys, 5);
-    assert!(status_of(&store, owner).notes.is_empty());
+    })
+    .await;
+    through(&store, &keys, 5).await;
+    assert!(status_of(&store, owner).await.notes.is_empty());
 }
 
-#[test]
-fn spendable_scan_skips_a_published_nullifier_and_ignores_an_unrelated_row() {
-    let store = AuditStore::default();
+#[tokio::test]
+async fn spendable_scan_skips_a_published_nullifier_and_ignores_an_unrelated_row() {
+    let store = book().await;
     let owner = wallet(1);
     let keys = Keys::with(owner, 7);
     let mint = Address::new_from_array([6; 32]);
@@ -560,20 +601,23 @@ fn spendable_scan_skips_a_published_nullifier_and_ignores_an_unrelated_row() {
         work.open(frame(2), [spent, kept]);
         work.observe(real(nullifier_of(&spent, &secret(7)), frame(3), 0));
         work.observe(real([0xee; 32], frame(3), 1));
-    });
+    })
+    .await;
     let key = secret(7);
     let mut hashes = Vec::new();
-    block_on(store.visit_spendable_notes(
-        SpendableNotes {
-            ring: RING,
-            owner_key: owner.to_bytes(),
-            nullifier_key: &key,
-            mints: &[Mint::new(mint, 6)],
-            held: &HashSet::new(),
-        },
-        |note| hashes.push(note.utxo_hash),
-    ))
-    .expect("selection");
+    store
+        .visit_spendable_notes(
+            SpendableNotes {
+                ring: RING,
+                owner_key: owner.to_bytes(),
+                nullifier_key: &key,
+                mints: &[Mint::new(mint, 6)],
+                held: &HashSet::new(),
+            },
+            |note| hashes.push(note.utxo_hash),
+        )
+        .await
+        .expect("selection");
     assert_eq!(hashes, [kept.commitment]);
 }
 
@@ -620,7 +664,7 @@ async fn commit_page(
     seal: &NoteSeal,
     keys: &Keys,
     page: &dyn Fn(&mut PageWork<'_>),
-) -> Result<(), sea_orm::DbErr> {
+) -> Result<(), RingAuditError> {
     let lease = LeaseClaim {
         db: store.connection(),
         ring: RING,
@@ -637,29 +681,57 @@ async fn commit_page(
         lease,
         clock: Clock::Fixed(NOW),
     };
-    keys.enroll(book, Some(&writer)).await;
+    keys.enroll(book, &writer).await;
     let opener = |held: &HeldEnrollment| keys.open(held);
     let mut work = PageWork::new(book, &opener);
     page(&mut work);
-    let delta = work.finish().await.expect("page");
+    let delta = work.finish().await?;
     let revision = writer.commit_page(&delta).await?;
     book.commit(delta.at_commit(revision));
     Ok(())
 }
 
-async fn restart(store: &Store, seal: &NoteSeal) -> AuditStore {
-    let book = AuditStore::default();
+/// A new replica of `store`, its mirror loaded as a restart loads it.
+async fn restart(store: &Store) -> AuditStore {
+    let book = indexed_store(store);
     let loaded = LoadSpends {
         db: store.connection(),
         ring: RING,
-        seal,
-        scope: HistoryScope::Everything,
     }
     .load()
     .await
     .expect("load");
     book.refresh(loaded.spends, loaded.revision);
     book
+}
+
+/// Every stored row and the checkpoint of `RING`, the revision aside.
+#[derive(Debug, PartialEq, Eq)]
+struct Stored {
+    rows: StoredRows,
+    checkpoint: Checkpoint,
+}
+
+async fn stored(store: &Store, seal: &NoteSeal) -> Stored {
+    let rows = ProjectionReads {
+        db: store.connection(),
+        ring: RING,
+        seal,
+    }
+    .everything()
+    .await
+    .expect("rows");
+    let loaded = LoadSpends {
+        db: store.connection(),
+        ring: RING,
+    }
+    .load()
+    .await
+    .expect("load");
+    Stored {
+        rows,
+        checkpoint: loaded.spends.checkpoint,
+    }
 }
 
 fn seal() -> NoteSeal {
@@ -676,14 +748,13 @@ async fn a_kill_at_any_checkpoint_step_replays_to_the_uninterrupted_state() {
     let seal = seal();
 
     let clean = Store::open("sqlite::memory:", 1).await.expect("store");
-    let uninterrupted = AuditStore::default();
+    let uninterrupted = indexed_store(&clean);
     for page in &pages {
         commit_page(&clean, &uninterrupted, &seal, &keys, page)
             .await
             .expect("page");
     }
-    let expected = uninterrupted.dump();
-    assert_eq!(restart(&clean, &seal).await.dump(), expected);
+    let expected = stored(&clean, &seal).await;
 
     for table in [
         "finalized_notes",
@@ -694,13 +765,14 @@ async fn a_kill_at_any_checkpoint_step_replays_to_the_uninterrupted_state() {
     ] {
         for failing in 0..pages.len() {
             let store = Store::open("sqlite::memory:", 1).await.expect("store");
-            let mut book = AuditStore::default();
+            let mut book = indexed_store(&store);
             for page in &pages[..failing] {
                 commit_page(&store, &book, &seal, &keys, page)
                     .await
                     .expect("page");
             }
-            let before = book.dump();
+            let before = stored(&store, &seal).await;
+            let mirror = book.dump();
             let rename = |from: &str, to: &str| format!("ALTER TABLE {from} RENAME TO {to}");
             store
                 .connection()
@@ -715,14 +787,14 @@ async fn a_kill_at_any_checkpoint_step_replays_to_the_uninterrupted_state() {
                 .expect("restore");
             // A table the page leaves alone does not fail the page.
             if refused.is_err() {
-                assert_eq!(book.dump(), before, "the mirror follows the commit");
+                assert_eq!(book.dump(), mirror, "the mirror follows the commit");
                 assert_eq!(
-                    restart(&store, &seal).await.dump(),
+                    stored(&store, &seal).await,
                     before,
                     "a failed page writes nothing"
                 );
             }
-            book = restart(&store, &seal).await;
+            book = restart(&store).await;
             // A restart replays the failed page and every later one.
             let start = if refused.is_err() {
                 failing
@@ -734,8 +806,7 @@ async fn a_kill_at_any_checkpoint_step_replays_to_the_uninterrupted_state() {
                     .await
                     .expect("replay");
             }
-            assert_eq!(book.dump(), expected);
-            assert_eq!(restart(&store, &seal).await.dump(), expected);
+            assert_eq!(stored(&store, &seal).await, expected);
         }
     }
 }
@@ -749,23 +820,20 @@ async fn a_replayed_page_changes_no_row() {
     let pages = script(&created, &key);
     let seal = seal();
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
-    let book = AuditStore::default();
+    let book = indexed_store(&store);
     for page in &pages {
         commit_page(&store, &book, &seal, &keys, page)
             .await
             .expect("page");
     }
-    let expected = book.dump();
-    let replayed = restart(&store, &seal).await;
+    let expected = stored(&store, &seal).await;
+    let replayed = restart(&store).await;
     for page in &pages {
         commit_page(&store, &replayed, &seal, &keys, page)
             .await
             .expect("replay");
     }
-    let mut dump = replayed.dump();
-    dump.position_slot = expected.position_slot;
-    dump.context = expected.context;
-    assert_eq!(dump, expected);
+    assert_eq!(stored(&store, &seal).await, expected);
 }
 
 #[tokio::test]
@@ -777,19 +845,18 @@ async fn a_note_row_opens_only_under_the_auditor_key_and_holds_no_plaintext() {
     let pages = script(&created, &key);
     let seal = seal();
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
-    let book = AuditStore::default();
+    let book = indexed_store(&store);
     commit_page(&store, &book, &seal, &keys, pages[0].as_ref())
         .await
         .expect("page");
     let other =
         NoteSeal::derive(&spr_keypair::X25519Keypair::from_bytes(&[0x42; 32]), RING).expect("seal");
-    assert!(LoadSpends {
+    assert!(ProjectionReads {
         db: store.connection(),
         ring: RING,
         seal: &other,
-        scope: HistoryScope::Everything,
     }
-    .load()
+    .everything()
     .await
     .is_err());
     let row = store
@@ -1060,21 +1127,14 @@ async fn a_follower_invalidates_changed_caches_without_loading_history() {
     let writer = cached_store(&store, MAX_CACHED_ENTRIES);
     let follower = cached_store(&store, MAX_CACHED_ENTRIES);
     let seal = seal();
-    let reload = |follower: &AuditStore| {
-        let scope = follower.history_scope();
-        let seal = &seal;
-        let store = &store;
-        async move {
-            LoadSpends {
-                db: store.connection(),
-                ring: RING,
-                seal,
-                scope,
-            }
-            .load()
-            .await
-            .expect("load")
+    let reload = || async {
+        LoadSpends {
+            db: store.connection(),
+            ring: RING,
         }
+        .load()
+        .await
+        .expect("load")
     };
     let created: Vec<CreatedUtxo> = (0..5)
         .map(|index| note(owner, &secret(7), 0x10 + index, 10))
@@ -1086,8 +1146,7 @@ async fn a_follower_invalidates_changed_caches_without_loading_history() {
     commit_page(&store, &writer, &seal, &keys, history.as_ref())
         .await
         .expect("history");
-    let cold = reload(&follower).await;
-    assert_eq!((cold.spends.notes.len(), cold.spends.rows.len()), (0, 0));
+    let cold = reload().await;
     follower.refresh(cold.spends, cold.revision);
     let retained = PageDelta {
         notes: [(
@@ -1106,10 +1165,14 @@ async fn a_follower_invalidates_changed_caches_without_loading_history() {
         ..PageDelta::default()
     };
     follower.commit(retained);
-    keys.enroll(&follower, None).await;
+    let admission = follower
+        .enrollment_admission(vec![HeldEnrollment::unsealed(owner.to_bytes(), &secret(7))])
+        .await
+        .expect("admission");
+    follower.admit_enrollments(admission);
     let before = follower.cached_entries();
     let before_enrollments = follower.cached_enrollments();
-    let idle = reload(&follower).await;
+    let idle = reload().await;
     follower.refresh(idle.spends, idle.revision);
     assert_eq!(follower.cached_entries(), before);
     assert_eq!(follower.cached_enrollments(), before_enrollments);
@@ -1127,11 +1190,7 @@ async fn a_follower_invalidates_changed_caches_without_loading_history() {
     commit_page(&store, &writer, &seal, &keys, next.as_ref())
         .await
         .expect("next");
-    let changed = reload(&follower).await;
-    assert_eq!(
-        (changed.spends.notes.len(), changed.spends.rows.len()),
-        (0, 0)
-    );
+    let changed = reload().await;
     follower.refresh(changed.spends, changed.revision);
     assert_eq!(follower.cached_entries(), [0; 3]);
     assert_eq!(follower.cached_enrollments(), [0; 2]);
@@ -1141,8 +1200,6 @@ async fn a_follower_invalidates_changed_caches_without_loading_history() {
         .expect("row")
         .contains_key(&spent));
     assert_eq!(follower.context().slot, 6);
-    let idle = reload(&follower).await;
-    assert_eq!((idle.spends.notes.len(), idle.spends.rows.len()), (0, 0));
 }
 
 #[tokio::test]
@@ -1193,18 +1250,20 @@ async fn a_restart_after_enrollment_resumes_old_note_derivation() {
     work.late_keys();
     let delta = work.finish().await.expect("derive");
     writer.commit_page(&delta).await.expect("derived page");
-    let loaded = LoadSpends {
+    let durable = ProjectionReads {
         db: database.connection(),
         ring: RING,
         seal: &seal,
-        scope: HistoryScope::Everything,
     }
-    .load()
+    .everything()
     .await
     .expect("durable result");
-    assert_eq!(loaded.spends.notes[0].1.nullifier, Some(nullifier));
     assert_eq!(
-        loaded.spends.rows[0].state,
+        durable.notes[&created.commitment].nullifier,
+        Some(nullifier)
+    );
+    assert_eq!(
+        durable.rows[&nullifier].state,
         SpendState::Resolved {
             note: created.commitment
         }
@@ -1251,13 +1310,9 @@ async fn wallet_pages_read_one_snapshot_on_postgres() {
 
 #[tokio::test]
 async fn wallet_snapshot_survives_a_same_slot_spend_and_change() {
-    for persistent in [false, true] {
+    {
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
-        let book = if persistent {
-            indexed_store(&store)
-        } else {
-            AuditStore::default()
-        };
+        let book = indexed_store(&store);
         let owner = wallet(1);
         let keys = Keys::with(owner, 7);
         let key = secret(7);
@@ -1318,9 +1373,7 @@ async fn wallet_snapshot_survives_a_same_slot_spend_and_change() {
             .find(|note| note.commitment == next.notes[0].utxo_hash.0)
             .expect("input");
         let change = indexed_note(owner, &key, 0, 9);
-        if !persistent {
-            assert!(change.commitment < cursor.after);
-        }
+
         let spend = |work: &mut PageWork<'_>| {
             work.open(frame(4), [change]);
             work.observe(real(nullifier_of(spent, &key), frame(4), 0));
@@ -1364,6 +1417,103 @@ async fn wallet_snapshot_survives_a_same_slot_spend_and_change() {
             .iter()
             .all(|note| note.utxo_hash.0 != spent.commitment
                 || note.status == WalletNoteStatus::Spent));
+    }
+}
+
+/// A cursor naming ring B with a snapshot of ring A reads no row of A.
+#[tokio::test]
+async fn a_snapshot_of_another_ring_continues_no_read() {
+    let other_ring = Address::new_from_array([9; 32]);
+    {
+        let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let other_seal = NoteSeal::derive(
+            &spr_keypair::X25519Keypair::from_bytes(&[0x41; 32]),
+            other_ring,
+        )
+        .expect("seal");
+        let book = indexed_store(&store);
+        let other = AuditStore::new(
+            other_ring,
+            Backing::Database {
+                store: store.clone(),
+                ring: other_ring,
+                seal: Box::new(other_seal),
+                capacity: MAX_CACHED_ENTRIES,
+            },
+        );
+        let owner = wallet(1);
+        let keys = Keys::with(owner, 7);
+        let key = secret(7);
+        let notes = [
+            indexed_note(owner, &key, 30, 10),
+            indexed_note(owner, &key, 40, 10),
+            indexed_note(owner, &key, 50, 10),
+        ];
+        let open = |work: &mut PageWork<'_>| {
+            work.open(frame(2), notes);
+            terminal(work, 5);
+        };
+        commit_page(&store, &book, &seal(), &keys, &open)
+            .await
+            .expect("open");
+        let first_query = WalletStatusQuery {
+            limit: 2,
+            ..query(owner)
+        };
+        let first = book.wallet_status(first_query).await.expect("first page");
+        let cursor = WalletCursor::decode(&first.cursor.expect("cursor").0).expect("cursor");
+        let foreign = WalletStatusQuery {
+            ring: other_ring,
+            after: Some(WalletCursor {
+                ring: other_ring.to_bytes(),
+                ..cursor
+            }),
+            ..first_query
+        };
+
+        let refusal = other.wallet_status(foreign).await;
+        assert!(matches!(
+            refusal,
+            Err(RingAuditError::WalletSnapshotExpired)
+        ));
+    }
+}
+
+/// On one connection a read and a commit wait for each other, neither waits out the pool.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wallet_read_and_a_page_commit_complete_on_one_connection() {
+    let store = Store::in_memory().await.expect("store");
+    let book = indexed_store(&store);
+    let owner = wallet(1);
+    let keys = Keys::with(owner, 7);
+    let key = secret(7);
+    let seal = seal();
+    let notes = [
+        indexed_note(owner, &key, 30, 10),
+        indexed_note(owner, &key, 40, 10),
+        indexed_note(owner, &key, 50, 10),
+    ];
+    let open = |work: &mut PageWork<'_>| {
+        work.open(frame(2), notes);
+        terminal(work, 5);
+    };
+    commit_page(&store, &book, &seal, &keys, &open)
+        .await
+        .expect("open");
+    for slot in 6..30 {
+        let page = |work: &mut PageWork<'_>| terminal(work, slot);
+        let limit = if slot == 6 { 2 } else { 100 };
+        let read = book.wallet_status(WalletStatusQuery {
+            limit,
+            ..query(owner)
+        });
+        let (read, committed) = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+            tokio::join!(read, commit_page(&store, &book, &seal, &keys, &page))
+        })
+        .await
+        .expect("both finish before the acquire timeout");
+        read.expect("read");
+        committed.expect("commit");
     }
 }
 
@@ -1552,20 +1702,12 @@ async fn a_late_owner_derives_in_bounded_steps_and_resumes_after_each_restart() 
 
 #[tokio::test]
 async fn wallet_snapshot_capacity_release_and_restart_preserve_sessions() {
-    for persistent in [false, true] {
+    {
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
-        let book = if persistent {
-            indexed_store(&store)
-        } else {
-            AuditStore::default()
-        }
-        .with_wallet_snapshots(
-            SharedWalletSnapshots::default(),
-            WalletSnapshotLimits {
-                store: std::num::NonZeroUsize::MIN,
-                principal_wallet: std::num::NonZeroUsize::MIN,
-            },
-        );
+        let book = indexed_store(&store).with_snapshot_limits(WalletSnapshotLimits {
+            store: std::num::NonZeroUsize::MIN,
+            principal_wallet: std::num::NonZeroUsize::MIN,
+        });
         let owner = wallet(1);
         let key = secret(7);
         let keys = Keys::with(owner, 7);
@@ -1605,16 +1747,14 @@ async fn wallet_snapshot_capacity_release_and_restart_preserve_sessions() {
             .wallet_status(continuation)
             .await
             .expect("retained page");
-        if persistent {
-            let reopened = indexed_store(&store);
-            assert_eq!(
-                reopened
-                    .wallet_status(continuation)
-                    .await
-                    .expect("restart page"),
-                next
-            );
-        }
+        let reopened = indexed_store(&store);
+        assert_eq!(
+            reopened
+                .wallet_status(continuation)
+                .await
+                .expect("restart page"),
+            next
+        );
         let release = || WalletSnapshotRelease {
             ring: RING,
             wallet: owner,
@@ -1655,20 +1795,13 @@ async fn wallet_snapshot_capacity_release_and_restart_preserve_sessions() {
             .await,
             Err(RingAuditError::WalletSnapshotCapacity)
         ));
-        if persistent {
-            crate::wallet_snapshots::WalletSnapshotCleanup {
-                db: store.connection(),
-                now: NOW + 301,
-            }
-            .run()
-            .await
-            .expect("cleanup");
-        } else {
-            book.wallet_snapshots
-                .lock()
-                .expect("snapshots")
-                .cleanup(NOW + 301);
+        crate::wallet_snapshots::WalletSnapshotCleanup {
+            db: store.connection(),
+            now: NOW + 301,
         }
+        .run()
+        .await
+        .expect("cleanup");
         book.wallet_status(WalletStatusQuery {
             now: NOW + 301,
             ..first_query
@@ -1680,20 +1813,12 @@ async fn wallet_snapshot_capacity_release_and_restart_preserve_sessions() {
 
 #[tokio::test]
 async fn wallet_snapshot_cleanup_keeps_capacity_until_all_rows_are_removed() {
-    for persistent in [false, true] {
+    {
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
-        let book = if persistent {
-            indexed_store(&store)
-        } else {
-            AuditStore::default()
-        }
-        .with_wallet_snapshots(
-            SharedWalletSnapshots::default(),
-            WalletSnapshotLimits {
-                store: std::num::NonZeroUsize::MIN,
-                principal_wallet: std::num::NonZeroUsize::MIN,
-            },
-        );
+        let book = indexed_store(&store).with_snapshot_limits(WalletSnapshotLimits {
+            store: std::num::NonZeroUsize::MIN,
+            principal_wallet: std::num::NonZeroUsize::MIN,
+        });
         let owner = wallet(1);
         let key = secret(7);
         let keys = Keys::with(owner, 7);
@@ -1723,20 +1848,13 @@ async fn wallet_snapshot_cleanup_keeps_capacity_until_all_rows_are_removed() {
             book.wallet_status(read).await,
             Err(RingAuditError::WalletSnapshotCapacity)
         ));
-        let remaining = if persistent {
-            crate::wallet_snapshots::WalletSnapshotCleanup {
-                db: store.connection(),
-                now: NOW,
-            }
-            .run()
-            .await
-            .expect("cleanup")
-        } else {
-            book.wallet_snapshots
-                .lock()
-                .expect("snapshots")
-                .cleanup(NOW)
-        };
+        let remaining = crate::wallet_snapshots::WalletSnapshotCleanup {
+            db: store.connection(),
+            now: NOW,
+        }
+        .run()
+        .await
+        .expect("cleanup");
         assert_eq!(remaining, 1);
         book.wallet_status(read).await.expect("capacity reclaimed");
     }
@@ -1826,8 +1944,7 @@ async fn overlapping_wallet_snapshots_preserve_both_quotas_on_postgres() {
         for (store, query) in stores.iter().cloned().zip([first, second]) {
             let start = start.clone();
             attempts.push(tokio::spawn(async move {
-                let book = indexed_store(&store)
-                    .with_wallet_snapshots(SharedWalletSnapshots::default(), limits);
+                let book = indexed_store(&store).with_snapshot_limits(limits);
                 start.wait().await;
                 (query, book.wallet_status(query).await)
             }));
@@ -1871,8 +1988,7 @@ async fn overlapping_wallet_snapshots_preserve_both_quotas_on_postgres() {
             count(&coordinator, "SELECT COUNT(*) FROM wallet_snapshots").await,
             baseline + 1
         );
-        let book = indexed_store(&coordinator)
-            .with_wallet_snapshots(SharedWalletSnapshots::default(), limits);
+        let book = indexed_store(&coordinator).with_snapshot_limits(limits);
         assert!(matches!(
             book.wallet_status(refused[0].0).await,
             Err(RingAuditError::WalletSnapshotCapacity)
@@ -1902,7 +2018,6 @@ async fn coverage_pages_visit_all_faults_without_retaining_database_history() {
     let database = Store::open("sqlite::memory:", 1).await.expect("store");
     let seal = seal();
     let keys = Keys::none();
-    let memory = AuditStore::default();
     let bounded = cached_store(&database, 4);
     let history = |work: &mut PageWork<'_>| {
         for index in 1..=205u64 {
@@ -1913,28 +2028,20 @@ async fn coverage_pages_visit_all_faults_without_retaining_database_history() {
         }
         terminal(work, 600);
     };
-    let opener = |held: &HeldEnrollment| keys.open(held);
-    let mut work = PageWork::new(&memory, &opener);
-    history(&mut work);
-    memory.commit(work.finish().await.expect("memory history"));
     commit_page(&database, &bounded, &seal, &keys, &history)
         .await
         .expect("history");
-    assert_eq!(bounded.read_book().unread.len(), 1);
-    assert!(bounded.read_book().faults.is_empty());
+    assert_eq!(bounded.read_book().first_unread, Some(frame(1)));
     let loaded = LoadSpends {
         db: database.connection(),
         ring: RING,
-        seal: &seal,
-        scope: bounded.history_scope(),
     }
     .load()
     .await
     .expect("load");
-    assert_eq!(loaded.spends.unread.len(), 1);
-    assert!(loaded.spends.faults.is_empty());
-    assert!(loaded.repairs.is_empty());
-    for store in [&memory, &bounded] {
+    assert_eq!(loaded.spends.first_unread, Some(frame(1)));
+    {
+        let store = &bounded;
         let mut cursor = CoverageCursor::new(RING);
         let mut totals = [0; 3];
         let mut seen = [BTreeSet::new(), BTreeSet::new(), BTreeSet::new()];
@@ -2029,7 +2136,10 @@ async fn coverage_continuation_does_not_read_lifetime_totals() {
         .spend_coverage(CoverageCursor::new(RING))
         .await
         .expect("first page");
-    assert_eq!(first.totals, Some(SpendCoverageTotals::default()));
+    assert_eq!(
+        first.totals,
+        Some(zolana_ring_client::rpc::SpendCoverageTotals::default())
+    );
     assert_eq!(first.unreadable.len(), 100);
     let cursor =
         CoverageCursor::decode(&first.cursor.expect("continuation").0, RING).expect("cursor");
