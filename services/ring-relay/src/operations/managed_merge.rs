@@ -53,7 +53,6 @@ pub struct ManagedMerge<S> {
     relay: Arc<Relay>,
 }
 
-/// Every mint one owner settled on the ring.
 struct OwnerSettings {
     owner: Address,
     settings: Vec<MergeSettings>,
@@ -146,7 +145,7 @@ impl<S: TransactionSource> ManagedMerge<S> {
             held: self.held_inputs(ring).await?,
         };
         let mut owners: BTreeMap<Address, Vec<MergeSettings>> = BTreeMap::new();
-        for wallet in book.active(ring).await? {
+        for wallet in book.next_page(ring).await? {
             owners
                 .entry(wallet.owner)
                 .or_default()

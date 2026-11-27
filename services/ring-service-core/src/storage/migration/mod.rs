@@ -4,6 +4,7 @@ use sea_orm_migration::prelude::*;
 #[path = "../migration_cosign.rs"]
 mod cosign;
 mod grant_scopes;
+mod merge_scan;
 mod wallet_snapshots;
 
 pub struct Migrator;
@@ -15,6 +16,7 @@ impl MigratorTrait for Migrator {
             Box::new(Schema),
             Box::new(cosign::WalletFunders),
             Box::new(grant_scopes::GrantScopes),
+            Box::new(merge_scan::MergeScan),
         ]
     }
 }
