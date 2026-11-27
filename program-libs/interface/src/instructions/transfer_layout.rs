@@ -64,6 +64,22 @@ pub struct SettlementLeg {
     pub funder: Option<usize>,
 }
 
+impl SettlementLeg {
+    pub fn asset_and_user<'a, T>(&self, frame_accounts: &'a [T]) -> Option<[&'a T; 2]> {
+        match (self.transfer, frame_accounts.get(self.accounts.clone())?) {
+            (
+                InterfaceTransfer::SolDeposit { .. } | InterfaceTransfer::SolWithdrawal { .. },
+                [asset, user],
+            )
+            | (InterfaceTransfer::SplDeposit { .. }, [asset, _, _, user, _])
+            | (InterfaceTransfer::SplWithdrawal { .. }, [_, asset, _, user, _]) => {
+                Some([asset, user])
+            }
+            _ => None,
+        }
+    }
+}
+
 impl TransferLayout {
     pub const RING: usize = 0;
 

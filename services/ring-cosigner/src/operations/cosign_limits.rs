@@ -33,8 +33,8 @@ use crate::{
         CoSignerApproval, FrameSource, OwnerFlow, RefusingCoSigner, Sender, Ticket,
     },
     cosign_usage::{
-        AssetScope, Measure, ReservationState, Reserve, TrackSend, UsageLedger, WalletSend,
-        WindowSum, MAX_USAGE_FLOWS,
+        AssetScope, Measure, ReservationState, Reserve, TrackSend, UsageLedger, WalletInputs,
+        WalletSend, WindowSum, MAX_USAGE_FLOWS,
     },
     cosigner::{CoSignRule, CoSigner, FrameParties, ListRule, PartySource, StoredLists, Verdict},
     error::RingCosignerError,
@@ -90,8 +90,7 @@ pub(crate) struct TransferRead {
     pub(crate) approval_bits: Option<u8>,
     /// In run order, each covers the classes the earlier ones left.
     pub(crate) co_signers: Vec<Address>,
-    /// As SPP publishes them, one landed frame spends each for good.
-    pub(crate) nullifiers: Vec<[u8; 32]>,
+    pub(crate) inputs: WalletInputs,
 }
 
 /// Reads each asset record under the newest root of the ring's records registry.
@@ -281,7 +280,7 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
         request: &crate::cosigner::Operation<'_>,
     ) -> Result<Verdict, RingCosignerError> {
         // 1. The frame names every transfer outflow, an owner and asset appears once.
-        let (flows, operation, run, nullifiers) = match request.flows {
+        let (flows, operation, run, inputs) = match request.flows {
             CoSignFlows::Frame => {
                 match self
                     .limits
@@ -297,13 +296,16 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
                             approval_bits: read.approval_bits,
                         },
                         read.co_signers,
-                        read.nullifiers,
+                        read.inputs,
                     ),
                 }
             }
-            CoSignFlows::Published(flows) => {
-                (flows.clone(), Operation::Published, Vec::new(), Vec::new())
-            }
+            CoSignFlows::Published(flows) => (
+                flows.clone(),
+                Operation::Published,
+                Vec::new(),
+                WalletInputs::default(),
+            ),
         };
         if flows.len() > MAX_USAGE_FLOWS {
             return Err(CoSignError::MessageScope.into());
@@ -387,9 +389,13 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
             Sender::Wallet { .. } | Sender::Relay => None,
         };
         if let Some(expiry) = expiry.as_mut() {
-            let spent: BTreeSet<_> = nullifiers.iter().copied().collect();
-            for earlier in ledger.input_holders(&request.ring, &nullifiers).await? {
+            let spent: BTreeSet<_> = inputs.nullifiers.iter().copied().collect();
+            for earlier in ledger
+                .input_holders(&request.ring, &inputs.nullifiers)
+                .await?
+            {
                 let same_transfer = ledger.send_nullifiers(&earlier.ticket).await? == spent
+                    && ledger.funding_accounts(&earlier.ticket).await? == inputs.funding_accounts
                     && ledger.holds(&earlier.ticket, &flows).await?;
                 if !same_transfer {
                     return Err(CoSignError::InputReserved.into());
@@ -436,7 +442,7 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
                     ticket: &ticket,
                     ring: &request.ring,
                     last_valid_block_height,
-                    nullifiers: &nullifiers,
+                    inputs: &inputs,
                 })
                 .await?;
         }
@@ -1161,7 +1167,7 @@ mod tests {
             spends_note: true,
             approval_bits: None,
             co_signers: Vec::new(),
-            nullifiers: Vec::new(),
+            inputs: WalletInputs::default(),
         })
     }
 
@@ -1273,7 +1279,7 @@ mod tests {
                 spends_note: true,
                 approval_bits: None,
                 co_signers: Vec::new(),
-                nullifiers: Vec::new(),
+                inputs: WalletInputs::default(),
             })
         };
         let over = MintPolicy {
@@ -1314,7 +1320,7 @@ mod tests {
                 spends_note: false,
                 approval_bits: None,
                 co_signers: Vec::new(),
-                nullifiers: Vec::new(),
+                inputs: WalletInputs::default(),
             })
         };
         let outflow = CoSignerApproval::new([ApproveClass::Outflow]);
@@ -1363,7 +1369,7 @@ mod tests {
                 spends_note: false,
                 approval_bits: None,
                 co_signers,
-                nullifiers: Vec::new(),
+                inputs: WalletInputs::default(),
             })
         };
         let decide = |co_signers| async {

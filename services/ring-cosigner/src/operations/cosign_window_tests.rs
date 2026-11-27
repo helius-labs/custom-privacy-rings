@@ -105,7 +105,7 @@ impl AssetLimitSource for Clocked {
             spends_note: true,
             approval_bits: None,
             co_signers: Vec::new(),
-            nullifiers: Vec::new(),
+            inputs: WalletInputs::default(),
         }))
     }
 

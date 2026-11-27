@@ -92,8 +92,23 @@ fn transfer(owner: u8, amount: u64, nullifiers: &[[u8; 32]]) -> TransferRead {
         spends_note: true,
         approval_bits: None,
         co_signers: Vec::new(),
-        nullifiers: nullifiers.to_vec(),
+        inputs: WalletInputs {
+            nullifiers: nullifiers.to_vec(),
+            ..WalletInputs::default()
+        },
     }
+}
+
+fn deposit(asset: Address, funders: &[Address], nullifier: [u8; 32]) -> TransferRead {
+    let mut frame = transfer(7, 0, &[nullifier]);
+    frame.flows[0].flow.asset = asset;
+    frame.flows[0].flow.deposited = 1;
+    frame.spends_note = false;
+    frame
+        .inputs
+        .funding_accounts
+        .extend(funders.iter().copied());
+    frame
 }
 
 const fn tip(slot: u64, block_height: u64) -> FinalizedTip {
@@ -116,7 +131,7 @@ impl Wallet {
                 cap: Mutex::new(CAP),
             },
             store: Arc::new(store.clone()),
-            approval: CoSignerApproval::new([ApproveClass::Transfers]),
+            approval: CoSignerApproval::new([ApproveClass::Transfers, ApproveClass::Deposits]),
             exit_caps: Vec::new(),
         }
         .build();
@@ -367,4 +382,67 @@ async fn concurrent_messages_of_one_transfer_hold_one_reservation_on_postgres() 
     let store = Store::open(&url, 1).await.expect("store");
     clear_usage(&store).await;
     assert_concurrent_messages_of_one_transfer_hold_one_reservation(&url).await;
+}
+
+async fn check_deposit_funder_reservations(url: &str) {
+    let funder = Address::new_from_array([0x70; 32]);
+    let other = Address::new_from_array([0x71; 32]);
+    let first = Wallet::open(url).await;
+    let second = Wallet::open(url).await;
+    first.carry(deposit(ASSET, &[funder, other], NOTE));
+    second.carry(deposit(Address::default(), &[other], OTHER_NOTE));
+    let (a, b) = tokio::join!(first.send(1, 500), second.send(2, 510));
+    let refused = |result: &Result<CoSignDecision, RingCosignerError>| {
+        matches!(
+            result,
+            Err(RingCosignerError::CoSign(CoSignError::InputReserved))
+        )
+    };
+    let (winning_hash, winning_asset, winning_funders, winning_note) = match (a, b) {
+        (Ok(CoSignDecision::Signed(_)), b) if refused(&b) => (1, ASSET, vec![funder, other], NOTE),
+        (a, Ok(CoSignDecision::Signed(_))) if refused(&a) => {
+            (2, Address::default(), vec![other], OTHER_NOTE)
+        }
+        result => panic!("concurrent funder reservations {result:?}"),
+    };
+    drop((first, second));
+    let wallet = Wallet::open(url).await;
+    wallet.carry(deposit(winning_asset, &winning_funders, winning_note));
+    wallet.signs(winning_hash, 510).await;
+    wallet.signs(3, 520).await;
+    let substitute = Address::new_from_array([0x72; 32]);
+    wallet.carry(deposit(winning_asset, &[substitute], winning_note));
+    assert!(refused(&wallet.send(4, 520).await));
+    let mut mixed = deposit(winning_asset, &[other, substitute], PADDING);
+    mixed.spends_note = true;
+    mixed.flows[0].flow.debit = 1;
+    mixed.flows[0].flow.charged_outflow = 1;
+    wallet.carry(mixed);
+    assert!(refused(&wallet.send(5, 520).await));
+    wallet.carry(deposit(winning_asset, &[substitute], PADDING));
+    wallet.signs(6, 520).await;
+    wallet.history(false, u64::MAX);
+    wallet.sweep(tip(530, 521)).await;
+    wallet.sweep(tip(531, 522)).await;
+    assert_eq!(wallet.count("cosign_wallet_funding_accounts").await, 0);
+    wallet.carry(deposit(winning_asset, &[other, substitute], NOTE));
+    wallet.signs(7, 600).await;
+    wallet.history(true, u64::MAX);
+    wallet.sweep(tip(540, 530)).await;
+    assert_eq!(wallet.count("cosign_wallet_funding_accounts").await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deposit_funders_share_one_wallet_reservation_on_sqlite() {
+    let directory = ring_service_core::database::fixture::StoreDirectory::new("deposit-funders");
+    check_deposit_funder_reservations(&directory.url()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs RING_RPC_TEST_POSTGRES_URL"]
+async fn deposit_funders_share_one_wallet_reservation_on_postgres() {
+    let url = std::env::var("RING_RPC_TEST_POSTGRES_URL").expect("postgres url");
+    let store = Store::open(&url, 1).await.expect("store");
+    clear_usage(&store).await;
+    check_deposit_funder_reservations(&url).await;
 }

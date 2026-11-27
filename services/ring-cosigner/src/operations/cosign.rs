@@ -130,7 +130,7 @@ ring_service_core::listed_refusals! {
         ApprovedCallNotOnce = -32176,
         #[error("the message names no blockhash the cluster holds")]
         StaleBlockhash = -32177,
-        #[error("another transfer of an input holds a reservation until it lands or expires")]
+        #[error("another transfer holds a funding account or note until it lands or expires")]
         InputReserved = -32178,
         #[error("a required signer other than the co-signer has not signed the transaction")]
         MissingSignature = -32179,
