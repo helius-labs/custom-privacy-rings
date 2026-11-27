@@ -43,6 +43,12 @@ fn print_json(value: &impl serde::Serialize) -> anyhow::Result<()> {
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    #[cfg(not(feature = "surfpool-fixture"))]
+    if std::env::var_os("ZOLANA_RING_SURFPOOL_FIXTURE").is_some() {
+        anyhow::bail!(
+            "ZOLANA_RING_SURFPOOL_FIXTURE needs a binary built with the surfpool-fixture feature"
+        );
+    }
     let enrollment_ring_budget = args.enrollment_ring_budget();
     let enrollment_max_rings = args.enrollment_max_rings();
     let upstreams = Upstreams {

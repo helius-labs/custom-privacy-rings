@@ -96,11 +96,12 @@ build-photon:
 
 # The fixture features only act under ZOLANA_RING_SURFPOOL_FIXTURE=1.
 # Surfpool reads `minContextSlot` as an entry slot floor.
+# Keep the feature bare, a `zolana-ring-rpc/` prefix names the crate's dev-dependency on itself.
 build-ring-tools:
     #!/usr/bin/env bash
     [[ -z "${ZOLANA_PREBUILT:-}" ]] || exit 0
     cargo build --locked -p ring-indexer -p custom-ring-cli -p zolana-ring-rpc \
-        --features ring-indexer/surfpool-fixture,zolana-ring-rpc/surfpool-fixture --target-dir target
+        --features surfpool-fixture --target-dir target
 
 build-zolana-tools: zolana::build-cli
     cargo build --manifest-path zolana/Cargo.toml -p xtask --target-dir zolana/target
