@@ -205,18 +205,43 @@ impl EnrollmentBudget {
         self.spent().after(ring, fee, self).is_some()
     }
 
-    fn charge(&self, ring: Address, fee: u64) -> bool {
+    fn reserve(&self, ring: Address, fee: u64) -> Option<EnrollmentFee<'_>> {
         let mut spent = self.spent();
-        let Some((total, ring_total)) = spent.after(ring, fee, self) else {
-            return false;
-        };
+        let (total, ring_total) = spent.after(ring, fee, self)?;
         spent.total = total;
         spent.rings.insert(ring, ring_total);
-        true
+        Some(EnrollmentFee {
+            budget: self,
+            ring,
+            fee,
+        })
     }
 
     fn spent(&self) -> MutexGuard<'_, SpentFees> {
         self.spent.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[must_use]
+struct EnrollmentFee<'a> {
+    budget: &'a EnrollmentBudget,
+    ring: Address,
+    fee: u64,
+}
+
+impl EnrollmentFee<'_> {
+    fn commit(mut self) {
+        self.fee = 0;
+    }
+}
+
+impl Drop for EnrollmentFee<'_> {
+    fn drop(&mut self) {
+        if self.fee != 0 {
+            let mut spent = self.budget.spent();
+            spent.total -= self.fee;
+            *spent.rings.entry(self.ring).or_default() -= self.fee;
+        }
     }
 }
 
@@ -520,6 +545,13 @@ impl RingPass<'_> {
         proven: ProvenEnrollBatch,
         writes: Vec<HeldWrite>,
     ) -> Result<(), WriterError> {
+        let Some(fee) = self.budget.reserve(
+            self.ring.program_id(),
+            EnrollmentBudget::batch_fee(writes.len()),
+        ) else {
+            self.requeue(writes);
+            return Err(EnrollmentRefusal::Budget.into());
+        };
         let SignedBatch {
             transaction,
             attempt,
@@ -530,13 +562,7 @@ impl RingPass<'_> {
                 return Err(error);
             }
         };
-        if !self.budget.charge(
-            self.ring.program_id(),
-            EnrollmentBudget::batch_fee(writes.len()),
-        ) {
-            self.requeue(writes);
-            return Err(EnrollmentRefusal::Budget.into());
-        }
+        fee.commit();
         // Held ahead of the send, a failed send can still land and the next pass reads its outcome.
         self.state.in_flight = Some(InFlight { attempt, writes });
         Ok(self.chain.submit().send(&transaction).await?)

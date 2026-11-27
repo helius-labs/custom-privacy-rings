@@ -709,7 +709,7 @@ async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
         refusal(service.prepare_vault(request.clone()).await),
         EnrollmentRefusal::NotServed
     );
-    let service = service.with_vault_programs([program]);
+    let mut service = service.with_vault_programs([program]);
     let block = service.prepare_vault(request.clone()).await.unwrap();
     let compile = |request: &VaultEnrollmentRequest, block: &VaultEnrollmentBlock| {
         VaultEnrollmentMessage {
@@ -751,6 +751,7 @@ async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
     assert!(chain.sent.lock().unwrap().is_empty());
     signed.signature = manager.sign_message(&bytes).into();
     let submitted = service.submit_vault(signed.clone()).await.unwrap();
+    service.payer = Arc::new(UnavailablePayer);
     let vault_rotation = VaultEnrollmentRequest {
         payload: spr_indexer_api::Base64String(
             hex::decode(vector["rotate"].as_str().unwrap()).unwrap(),
@@ -788,6 +789,19 @@ async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
         ),
         EnrollmentRefusal::Budget
     );
+    let state = service.ring_state(RING);
+    let held = state.lock().await;
+    let expiry = signed.block.last_valid_block_height;
+    let retry = service.submit_vault(signed);
+    tokio::pin!(retry);
+    tokio::select! {
+        biased;
+        _ = &mut retry => panic!("submission completed while the ring was locked"),
+        _ = std::future::ready(()) => {}
+    }
+    chain.height.store(expiry + 1, Ordering::Relaxed);
+    drop(held);
+    assert_eq!(refusal(retry.await), EnrollmentRefusal::InvalidWrite);
     let sent = chain.sent.lock().unwrap();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1], sent[0]);
