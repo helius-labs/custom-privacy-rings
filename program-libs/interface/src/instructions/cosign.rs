@@ -2,9 +2,6 @@
 //!
 //! The operation and the proven approval bits demand classes, and each signed record covers a new
 //! one. An optional class falls away with no record on the ring, an approval class never does.
-//!
-//! Read after `program-libs/interface/src/instructions/anonymous_exit.rs`. Read before
-//! `programs/custom-ring/src/instructions/configuration/access/set_cosigner.rs`, `programs/custom-ring/src/instructions/accounts/loader.rs`.
 
 use crate::{CoSignScope, CoSigner, CustomRingError, RingPolicy};
 use solana_address::Address;
@@ -12,9 +9,12 @@ pub use zolana_ring_policy::ApprovalMask;
 
 impl From<ApprovalMask> for CoSignScope {
     fn from(mask: ApprovalMask) -> Self {
-        let class = |bit: ApprovalMask, class: Self| match mask.contains(bit) {
-            true => class,
-            false => Self::NONE,
+        let class = |bit: ApprovalMask, class: Self| {
+            if mask.contains(bit) {
+                class
+            } else {
+                Self::NONE
+            }
         };
         class(ApprovalMask::OUTFLOW, Self::APPROVE_OUTFLOW)
             | class(ApprovalMask::WITHDRAWAL, Self::APPROVE_WITHDRAWAL)
@@ -36,34 +36,21 @@ pub struct CoSignOperation {
 }
 
 impl CoSignOperation {
-    pub fn demand(self) -> CoSignDemand {
-        let spend = match self.spends_note {
-            true => CoSignScope::TRANSFERS,
-            false => CoSignScope::NONE,
+    pub fn demand(self) -> CoSignScope {
+        let spend = if self.spends_note {
+            CoSignScope::TRANSFERS
+        } else {
+            CoSignScope::NONE
         };
-        CoSignDemand {
-            classes: spend | self.public_legs | self.approval.into(),
-        }
+        spend | self.public_legs | self.approval.into()
     }
 }
 
-#[must_use]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CoSignDemand {
-    pub classes: CoSignScope,
-}
-
-impl CoSignDemand {
-    pub const NONE: Self = Self {
-        classes: CoSignScope::NONE,
-    };
-
+impl CoSignScope {
     /// Approval classes never drop out.
     pub fn requirement(self, ring: &RingPolicy) -> Option<CoSignRequirement> {
-        let configured = ring.co_signers.covered().unwrap_or(CoSignScope::NONE);
-        let classes = self
-            .classes
-            .intersection(configured | CoSignScope::APPROVALS);
+        let configured = ring.co_signers.covered().unwrap_or(Self::NONE);
+        let classes = self.intersection(configured | Self::APPROVALS);
         (!classes.is_empty()).then_some(CoSignRequirement { uncovered: classes })
     }
 }
@@ -140,7 +127,7 @@ mod tests {
         }
     }
 
-    fn operation(spends_note: bool, public_legs: CoSignScope, bits: u8) -> CoSignDemand {
+    fn operation(spends_note: bool, public_legs: CoSignScope, bits: u8) -> CoSignScope {
         CoSignOperation {
             spends_note,
             public_legs,
@@ -246,7 +233,7 @@ mod tests {
     #[test]
     fn merge_and_delegate_demand_nothing() {
         assert_eq!(
-            CoSignDemand::NONE.requirement(&ring(&[CoSignScope::ALL])),
+            CoSignScope::NONE.requirement(&ring(&[CoSignScope::ALL])),
             None
         );
     }

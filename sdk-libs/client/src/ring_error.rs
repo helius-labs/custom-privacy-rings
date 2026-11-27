@@ -1,6 +1,6 @@
 use crate::{
     rpc::{EnrollmentRequestError, RecordUpdateError},
-    AnonymousError, RingIndexerError, RingRpcError,
+    AnonymousError, AnonymousExitRefusal, RingIndexerError, RingRpcError,
 };
 use custom_ring_interface::{
     key_catalog::RingCircuit, storage::StorageError, CustomRingError, PublicSlotError, RingRail,
@@ -290,12 +290,8 @@ pub enum RingError {
     AnonymousPublicSignerLinksOwner,
     #[error("withdrawal destination {0} names the hidden owner")]
     AnonymousExitLinksOwner(Address),
-    #[error("withdrawal token account {0} has a delegate or a close authority")]
-    AnonymousExitTokenAccountShared(Address),
-    #[error("withdrawal token account {0} is at a keypair address, SPP takes an ATA or a PDA")]
-    AnonymousExitTokenAccountOnCurve(Address),
-    #[error("withdrawal destination {0} is not a system account without data")]
-    AnonymousExitAccountHasData(Address),
+    #[error(transparent)]
+    AnonymousExit(#[from] AnonymousExitRefusal),
     #[error("withdrawal token account {0} is missing or not an initialized account of its mint")]
     AnonymousExitTokenAccountInvalid(Address),
     #[error(
@@ -305,11 +301,6 @@ pub enum RingError {
         token_account: Address,
         named: Address,
         owner: Address,
-    },
-    #[error("withdrawal destination {destination} is refused, {refusal}")]
-    AnonymousExitRefused {
-        destination: Address,
-        refusal: CustomRingError,
     },
     #[error("an exit token owner names no SPL withdrawal")]
     AnonymousExitTokenOwnerWithoutSplExit,

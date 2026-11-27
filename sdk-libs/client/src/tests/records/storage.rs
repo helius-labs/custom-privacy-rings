@@ -26,8 +26,8 @@ fn update(list: ListId, tracking_revision: Option<Revision>) -> Result<Instructi
         tracking_registry: TRACKING,
         data: StorageUpdateIxData {
             revision: Revision::from(1),
-            writes: vec![write_of(list)],
-            asset_writes: Vec::new(),
+            writes: &[write_of(list)],
+            asset_writes: &[],
             tracking_revision,
             apply: &apply,
         },

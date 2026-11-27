@@ -194,9 +194,10 @@ fn cases() -> Vec<Wide> {
 }
 
 fn frame<'a>(fixture: &'a Fixture, owners: &'a [[u8; 32]], case: Wide) -> RingTransactData<'a> {
-    let mut data = match case.in_proof {
-        true => fixture.in_proof_owner(&IN_PROOF_OWNER, case.inputs, case.outputs, case.policy),
-        false => fixture.transfer(case.rail, case.inputs, case.outputs, case.policy),
+    let mut data = if case.in_proof {
+        fixture.in_proof_owner(&IN_PROOF_OWNER, case.inputs, case.outputs, case.policy)
+    } else {
+        fixture.transfer(case.rail, case.inputs, case.outputs, case.policy)
     };
     data.entry = case.entry;
     data.wide_owners = case.wide;

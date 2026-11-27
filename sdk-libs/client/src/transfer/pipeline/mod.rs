@@ -23,12 +23,13 @@ mod voucher;
 pub use voucher::VouchSigner;
 
 use custom_ring_interface::{
-    cosign::{ApprovalMask, CoSignDemand, CoSignOperation},
+    anonymous_party_identities,
+    cosign::{ApprovalMask, CoSignOperation},
     key_catalog::{RecordPools, RingCircuit, TransferSpend},
-    AnonymousParties, CheckedAuthorization, CustomRingError, CustomRingProof, InputTrees,
-    InstructionTag, ParsedTransact, PlainGroth16Proof, PolicyProof, PublicLeg, PublicSlots,
-    RecordForm, RingPolicy, RingRail, RootRead, SignerSet, TransferBinding, ANONYMOUS_PARTIES,
-    TRANSFER_OUTPUT_CAPACITIES,
+    AnonymousProofData, CoSignScope, CustomRingError, CustomRingProof, InProofOwner, InputTrees,
+    InstructionTag, NamedRoots, ParsedTransact, PlainGroth16Proof, PublicLeg, PublicSlots,
+    RailAuthorization, RecordForm, RingPolicy, RingRail, RootRead, SignerSet, TransferBinding,
+    ANONYMOUS_PARTIES, TRANSFER_OUTPUT_CAPACITIES,
 };
 use solana_address::Address;
 use solana_instruction::Instruction;
@@ -85,8 +86,8 @@ use self::{
     anonymous::AnonymousSpend,
     audit::{AuditSeal, PresealedAudit, SealedAudit},
     compact::{
-        CoSignerForm, OwnedAppMessage, OwnedExtensions, OwnedInProofOwner, OwnedOutput,
-        TransactAccounts, TransactParts,
+        CoSignerForm, OwnedAppMessage, OwnedExtensions, OwnedOutput, TransactAccounts,
+        TransactParts,
     },
     plan::{PlannedTransfer, TransferPlanner},
     policy::{owner_rows, PolicyInputs, PolicyRead},
@@ -233,7 +234,7 @@ pub struct ProvenRingTransfer {
     /// Padding included.
     pub outputs: Vec<SppProofOutputUtxo>,
     pub co_signers: Vec<Address>,
-    pub co_sign_demand: CoSignDemand,
+    pub co_sign_demand: CoSignScope,
     /// For a co-signer that reads exact totals, never the transaction secret.
     pub approval_opening: Option<ApprovalOpening>,
     /// Per owner and asset, a composed payment can charge an owner whose funds return to it.
@@ -356,11 +357,12 @@ impl ProofAuthority for TransferAuthority<'_> {
             let zero_nullifier = zero_key.nullifier(&input.utxo.hash()?, &input.utxo.blinding)?;
             // One owner holds keyed and zero-key notes, each input's own nullifier picks its secret.
             let key: Option<&dyn ProofAuthority> =
-                match trailing_eq(&zero_nullifier, &input.nullifier.to_bytes_be()) {
-                    true => Some(&zero_key),
-                    false => co_owner
+                if trailing_eq(&zero_nullifier, &input.nullifier.to_bytes_be()) {
+                    Some(&zero_key)
+                } else {
+                    co_owner
                         .map(|co_owner| &co_owner.key as &dyn ProofAuthority)
-                        .or(self.owner.map(OwnerKey::authority)),
+                        .or(self.owner.map(OwnerKey::authority))
                 };
             if let Some(key) = key {
                 key.complete_inputs(core::slice::from_mut(input))?;
@@ -609,7 +611,7 @@ struct Frame {
     public_gross: [[u8; 32]; N_PUBLIC_SLOTS],
     parts: TransactParts,
     accounts: TransactAccounts,
-    co_sign_demand: CoSignDemand,
+    co_sign_demand: CoSignScope,
     approval_opening: Option<ApprovalOpening>,
 }
 
@@ -1041,14 +1043,15 @@ impl<'a> Sealed<'a> {
             .input_utxos
             .iter()
             .any(ClassifiedInput::is_note);
-        let demand = match ring_rail.is_delegate() {
-            true => CoSignDemand::NONE,
-            false => CoSignOperation {
+        let demand = if ring_rail.is_delegate() {
+            CoSignScope::NONE
+        } else {
+            CoSignOperation {
                 spends_note,
                 public_legs: public.classes(),
                 approval: policy.approval,
             }
-            .demand(),
+            .demand()
         };
         let co_signers = CoSignerChoice {
             ring,
@@ -1114,17 +1117,21 @@ impl<'a> Sealed<'a> {
             None => None,
         };
         parts.tracking_revision = policy.tracking.revision;
-        parts.own_revision = policy.own.map(|own| own.revision);
-        parts.policy = (policy.read == RootRead::Policy).then(|| PolicyProof {
-            curator_revision: policy.curator.map(|curator| curator.revision),
-        });
+        parts.named_roots = match (policy.read, &policy.own) {
+            (RootRead::Own, Some(own)) => NamedRoots::Own(own.revision),
+            (RootRead::Policy, Some(own)) => NamedRoots::Policy {
+                own: own.revision,
+                curator: policy.curator.as_ref().map(|curator| curator.revision),
+            },
+            _ => NamedRoots::TrackingOnly,
+        };
         parts.spl_withdrawal_owners = policy.spl_withdrawal_owners.clone();
         if anonymous.is_some() {
             // SPP publishes the hidden owner's key exactly when it spends its own default-ring note.
             let hidden_default = proof_inputs.input_utxos.iter().any(|input| {
                 audit::is_default_ring(input) && input.utxo.owner == sender.signing_pubkey
             });
-            parts.anonymous = Some(compact::OwnedAnonymousProofData {
+            parts.authorization = RailAuthorization::AnonymousHidden(AnonymousProofData {
                 commitment: [0; 32],
                 commitment_pok: [0; 32],
                 default_owner_tag: hidden_default
@@ -1185,9 +1192,10 @@ impl Unwitnessed<'_> {
     fn check_size(&self) -> Result<(), RingError> {
         let proof_inputs = &self.frame.proof_inputs;
         let budget = send_budget(
-            match self.spend.rail().is_delegate() {
-                true => InstructionTag::AuthorityTransfer,
-                false => InstructionTag::Transfer,
+            if self.spend.rail().is_delegate() {
+                InstructionTag::AuthorityTransfer
+            } else {
+                InstructionTag::Transfer
             },
             self.priority_fee,
         );
@@ -1228,12 +1236,10 @@ impl Unwitnessed<'_> {
         } = self;
         let spp_rail = spend.spp_rail(&frame.proof_inputs)?;
         let ring = frame.ring;
-        let party_identities = match frame.parts.rail.anonymous_frame() {
-            true => AnonymousParties {
-                co_signers: &frame.accounts.co_signers,
-            }
-            .identities()?,
-            false => [[0; 32]; ANONYMOUS_PARTIES],
+        let party_identities = if frame.parts.authorization.rail().anonymous_frame() {
+            anonymous_party_identities(&frame.accounts.co_signers)?
+        } else {
+            [[0; 32]; ANONYMOUS_PARTIES]
         };
         let spp = SppWitness {
             ring: ring.program_id(),
@@ -1264,13 +1270,13 @@ impl Unwitnessed<'_> {
         let auditor = config.auditor_pubkey;
         let parsed = ParsedTransact::new(frame.parts.data()?)?;
         // Only the in-proof owner is named, the signer set carries the signer rail's owners.
-        let sender = match parsed.authorization() {
-            CheckedAuthorization::ConfidentialInProof(_) => frame.sender_pk_hash,
-            CheckedAuthorization::ConfidentialSigner
-            | CheckedAuthorization::AnonymousHidden(_)
-            | CheckedAuthorization::AnonymousPublic
-            | CheckedAuthorization::Delegate
-            | CheckedAuthorization::AnonymousDelegate => [0; 32],
+        let sender = match parsed.data().authorization {
+            RailAuthorization::ConfidentialInProof(_) => frame.sender_pk_hash,
+            RailAuthorization::ConfidentialSigner
+            | RailAuthorization::AnonymousHidden(_)
+            | RailAuthorization::AnonymousPublic
+            | RailAuthorization::Delegate
+            | RailAuthorization::AnonymousDelegate => [0; 32],
         };
         let signers = SignerSet::new(
             frame.accounts.owner_signers.iter().map(Address::as_array),
@@ -1332,7 +1338,7 @@ impl Assembled {
         &self.frame.accounts
     }
 
-    pub(crate) fn co_sign_demand(&self) -> CoSignDemand {
+    pub(crate) fn co_sign_demand(&self) -> CoSignScope {
         self.frame.co_sign_demand
     }
 }
@@ -1366,18 +1372,24 @@ impl Assembled {
         parts.nullifiers = proven_spp.nullifiers;
         parts.input_trees = proven_spp.input_trees;
         let commitment = proven_spp.commitment;
-        if let Some(anonymous) = parts.anonymous.as_mut() {
-            let commitment = commitment.ok_or(RingError::IncompleteProofSet)?;
-            *anonymous = compact::OwnedAnonymousProofData {
-                commitment: commitment.commitment,
-                commitment_pok: commitment.commitment_pok,
-                default_owner_tag: proven_spp.default_owner_tag,
-            };
-        }
-        if let Some(owner) = parts.in_proof_owner.as_mut() {
-            let commitment = commitment.ok_or(RingError::IncompleteProofSet)?;
-            owner.commitment = commitment.commitment;
-            owner.commitment_pok = commitment.commitment_pok;
+        match &mut parts.authorization {
+            RailAuthorization::AnonymousHidden(hidden) => {
+                let commitment = commitment.ok_or(RingError::IncompleteProofSet)?;
+                *hidden = AnonymousProofData {
+                    commitment: commitment.commitment,
+                    commitment_pok: commitment.commitment_pok,
+                    default_owner_tag: proven_spp.default_owner_tag,
+                };
+            }
+            RailAuthorization::ConfidentialInProof(owner) => {
+                let commitment = commitment.ok_or(RingError::IncompleteProofSet)?;
+                owner.commitment = commitment.commitment;
+                owner.commitment_pok = commitment.commitment_pok;
+            }
+            RailAuthorization::ConfidentialSigner
+            | RailAuthorization::AnonymousPublic
+            | RailAuthorization::Delegate
+            | RailAuthorization::AnonymousDelegate => {}
         }
         let co_signers = accounts.co_signers.clone();
         Ok(ProvenRingTransfer {
@@ -1505,14 +1517,36 @@ fn preview_parts(parts: PreviewParts<'_>) -> TransactParts {
         utxo_tree_root_index: 0,
         nullifier_tree_root_index: 0,
     };
+    // The proof sections stay zero until both proofs exist.
+    let zero = [0; 32];
+    let authorization = match preview.rail {
+        RingRail::Confidential => {
+            preview
+                .in_proof_owner
+                .map_or(RailAuthorization::ConfidentialSigner, |owner| {
+                    RailAuthorization::ConfidentialInProof(InProofOwner {
+                        owner,
+                        commitment: zero,
+                        commitment_pok: zero,
+                    })
+                })
+        }
+        RingRail::Anonymous if preview.public_owners => RailAuthorization::AnonymousPublic,
+        RingRail::Anonymous => RailAuthorization::AnonymousHidden(AnonymousProofData {
+            commitment: zero,
+            commitment_pok: zero,
+            default_owner_tag: None,
+        }),
+        RingRail::Delegate => RailAuthorization::Delegate,
+        RingRail::AnonymousDelegate => RailAuthorization::AnonymousDelegate,
+    };
     TransactParts {
-        rail: preview.rail,
+        authorization,
         n_in: preview.n_in,
         n_out: preview.n_out,
         proof: zeroed_proof(),
         tracking_revision: Default::default(),
-        own_revision: None,
-        policy: None,
+        named_roots: NamedRoots::TrackingOnly,
         spl_withdrawal_owners: Vec::new(),
         approval: ApprovalMask::default(),
         // `R == 0`, an address spends no note and still needs SPP's authorization.
@@ -1521,7 +1555,6 @@ fn preview_parts(parts: PreviewParts<'_>) -> TransactParts {
             .input_utxos
             .iter()
             .any(ClassifiedInput::is_note),
-        public_owners: preview.public_owners,
         expiry_unix_ts: preview.expiry_unix_ts,
         tx_viewing_u: parts.tx_viewing_u,
         salt: external.salt,
@@ -1552,12 +1585,6 @@ fn preview_parts(parts: PreviewParts<'_>) -> TransactParts {
         envelope: Vec::new(),
         recipient_keys: Vec::new(),
         private_tx_hash: [0; 32],
-        anonymous: None,
-        in_proof_owner: preview.in_proof_owner.map(|owner| OwnedInProofOwner {
-            owner,
-            commitment: [0; 32],
-            commitment_pok: [0; 32],
-        }),
         spp_proof: PlainGroth16Proof {
             proof_a: [0; 32],
             proof_b: [0; 64],
@@ -1622,9 +1649,10 @@ struct DeliveredRail {
 
 impl DeliveredRail {
     fn delivery(self) -> Result<RingDelivery, RingError> {
-        match TRANSFER_OUTPUT_CAPACITIES.contains(&self.outputs) {
-            true => Ok(RingDelivery::Delivered),
-            false => Err(RingError::ShapeUnkeyed { rail: self.rail }),
+        if TRANSFER_OUTPUT_CAPACITIES.contains(&self.outputs) {
+            Ok(RingDelivery::Delivered)
+        } else {
+            Err(RingError::ShapeUnkeyed { rail: self.rail })
         }
     }
 }
@@ -1644,12 +1672,13 @@ pub(crate) fn check_owner_capacity(capacity: &OwnerCapacity) -> Result<(), RingE
         legs: capacity.legs,
     }
     .owner_rows(capacity.authorization);
-    match capacity.rows > limit {
-        true => Err(RingError::TooManyOwnerSigners {
+    if capacity.rows > limit {
+        Err(RingError::TooManyOwnerSigners {
             owners: capacity.rows,
             limit,
-        }),
-        false => Ok(()),
+        })
+    } else {
+        Ok(())
     }
 }
 

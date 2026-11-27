@@ -1,4 +1,6 @@
-use custom_ring_interface::{stream::slot_tag, CoSignScope, CustomRingError, RingMode, RingRail};
+use custom_ring_interface::{
+    stream::slot_tag, CoSignScope, CustomRingError, RailAuthorization, RingMode, RingRail,
+};
 use solana_address::Address;
 use solana_signer::Signer;
 use spr_indexer_api::SerializablePubkey;
@@ -83,11 +85,14 @@ async fn a_deposit_proves_a_transfer_frame_of_only_dummies() {
         assert!(inputs.input_utxos.iter().all(|input| input.is_dummy()));
         let parts = assembled.parts();
         assert!(parts.no_spend);
-        assert_eq!(parts.rail, rail);
-        assert_eq!(parts.public_owners, mode == RingMode::Anonymous);
+        assert_eq!(parts.authorization.rail(), rail);
+        assert_eq!(
+            parts.authorization == RailAuthorization::AnonymousPublic,
+            mode == RingMode::Anonymous
+        );
         assert!(assembled.accounts().owner_signers.is_empty());
         assert_eq!(assembled.co_sign_demand(), prepared.co_sign_demand());
-        assert_eq!(prepared.co_sign_demand().classes, CoSignScope::DEPOSITS);
+        assert_eq!(prepared.co_sign_demand(), CoSignScope::DEPOSITS);
         let [leg] = inputs.external_data.interface_transfers.as_slice() else {
             panic!("one deposit leg");
         };

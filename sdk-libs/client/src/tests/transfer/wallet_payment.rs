@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use custom_ring_interface::RingMode;
+use custom_ring_interface::{RailAuthorization, RingMode};
 use spr_client::{RingPayment, RingPaymentWallet};
 use spr_keypair::{random_blinding, ShieldedAddress, ShieldedKeypair};
 use spr_transaction::{
@@ -110,7 +110,10 @@ async fn the_anonymous_rail_proves_a_wallet_payment_only_under_cores_signature()
     };
 
     let assembled = pay(0).await.unwrap();
-    assert!(assembled.parts().anonymous.is_some());
+    assert!(matches!(
+        assembled.parts().authorization,
+        RailAuthorization::AnonymousHidden(_)
+    ));
     assert!(assembled.proof_inputs().output_utxos.iter().any(|output| {
         output.owner_address == Some(to.recipient)
             && output.amount == 30
@@ -152,7 +155,10 @@ async fn the_owner_rail_without_an_owner_refuses_a_payment_core_did_not_approve(
     };
 
     let assembled = pay(0).await.unwrap();
-    assert!(assembled.parts().in_proof_owner.is_none());
+    assert!(!matches!(
+        assembled.parts().authorization,
+        RailAuthorization::ConfidentialInProof(_)
+    ));
     assert!(matches!(
         pay(1).await,
         Err(RingError::Transaction(

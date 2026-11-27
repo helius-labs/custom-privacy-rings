@@ -10,9 +10,6 @@
 //! `prover/circuits/audit/audit.go`, and `statement` in each of `prover/circuits/registry/apply_records.go`,
 //! `apply_enrollments.go` and `register_key.go`. `program-libs/interface/tests/statements.rs` and
 //! `go_vectors.rs` pin them through `test-vectors/proof/ring-statements.json`.
-//!
-//! Read after `program-libs/interface/src/instructions/transact.rs`, `docs/design/proof-composition.md`.
-//! Read before `prover/circuits/transfer/transfer.go`, `programs/custom-ring/src/instructions/transfer/verify.rs`.
 
 use spr_hasher::{
     hash_chain::{create_hash_chain_4, create_hash_chain_4_from_slice},

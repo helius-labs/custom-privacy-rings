@@ -4,8 +4,9 @@ use custom_ring_interface::{
     tag,
     transfer_cpi::{TransferCpiAccount, TransferFrame, TransferSignerCheck},
     CoSignScope, CoSigner, CoSignerCounts, CustomRingError, CustomRingProof, FrameExtensions,
-    InputTrees, PlainGroth16Proof, RingOutput, RingPolicy, RingRail, RingTransactData, SlotBody,
-    CO_SIGNER, RING_POLICY, RING_RECORD_LEN, RING_TRANSACT_ACCOUNT_PREFIX_LEN,
+    InputTrees, NamedRoots, PlainGroth16Proof, RailAuthorization, RingOutput, RingPolicy,
+    RingTransactData, SlotBody, CO_SIGNER, RING_POLICY, RING_RECORD_LEN,
+    RING_TRANSACT_ACCOUNT_PREFIX_LEN,
 };
 use solana_address::Address;
 use solana_program_error::ProgramError;
@@ -95,17 +96,15 @@ fn transfer_cpi_elevates_only_authorized_owner_and_co_signer_slots() {
     let recipient_keys = [0x71; 64];
     let make_tx = || {
         let mut tx = RingTransactData {
-            rail: RingRail::Confidential,
+            authorization: RailAuthorization::ConfidentialSigner,
             n_in: 1,
             n_out: 2,
             proof: &proof,
             tracking_revision: Revision::from(9),
-            own_revision: None,
-            policy: None,
+            named_roots: NamedRoots::TrackingOnly,
             spl_withdrawal_owners: &[],
             approval: ApprovalMask::default(),
             no_spend: false,
-            public_owners: false,
             expiry_unix_ts: 1_800_000_000,
             tx_viewing_u: &tx_viewing_u,
             salt: &salt,
@@ -129,8 +128,6 @@ fn transfer_cpi_elevates_only_authorized_owner_and_co_signer_slots() {
             recipient_keys: &recipient_keys,
             vouched: false,
             private_tx_hash: &private_tx_hash,
-            anonymous: None,
-            in_proof_owner: None,
             spp_proof: &spp_proof,
             nullifiers: &nullifiers,
             input_trees: InputTrees::One(TreeContext {

@@ -25,7 +25,7 @@ use crate::{
     tests::support::{
         account, empty, fresh_wallet_tags, ring, ring_utxo, zero_key, Chain, RingSettings, TREE_ID,
     },
-    ApprovalEncode,
+    AnonymousExitRefusal, ApprovalEncode,
 };
 
 fn anonymous() -> RingSettings {
@@ -180,7 +180,7 @@ async fn an_anonymous_spl_exit_names_neither_the_hidden_owner_nor_a_second_key()
     ] {
         assert!(matches!(
             stage(destination, None, chain().with(destination, token_account(state))).await,
-            Err(RingError::AnonymousExitTokenAccountShared(exit)) if exit == destination
+            Err(RingError::AnonymousExit(AnonymousExitRefusal::TokenAccountShared(exit))) if exit == destination
         ));
     }
     let foreign_mint = chain().with(destination, token_account(token_state(stranger, stranger)));
@@ -193,7 +193,7 @@ async fn an_anonymous_spl_exit_names_neither_the_hidden_owner_nor_a_second_key()
     let on_curve = chain().with(keypair_address, token_account(token_state(mint, stranger)));
     assert!(matches!(
         stage(keypair_address, None, on_curve).await,
-        Err(RingError::AnonymousExitTokenAccountOnCurve(exit)) if exit == keypair_address
+        Err(RingError::AnonymousExit(AnonymousExitRefusal::TokenAccountOnCurve(exit))) if exit == keypair_address
     ));
     let existing = || chain().with(destination, token_account(token_state(mint, stranger)));
     for named in [None, Some(stranger)] {
@@ -291,7 +291,7 @@ async fn an_anonymous_sol_exit_leaves_to_a_wallet_other_than_the_hidden_owner() 
     for held in [empty(Address::new_from_array(SPL_TOKEN_PROGRAM_ID)), nonce] {
         assert!(matches!(
             stage(wallet, None, Chain::ring(anonymous()).with(wallet, held)).await,
-            Err(RingError::AnonymousExitAccountHasData(exit)) if exit == wallet
+            Err(RingError::AnonymousExit(AnonymousExitRefusal::AccountHasData(exit))) if exit == wallet
         ));
     }
     for chain in [
@@ -512,9 +512,12 @@ async fn a_default_ring_spend_previews_the_hidden_owners_published_key() {
         .unwrap();
     let instruction = unwitnessed.instruction().unwrap();
     let parsed = RingTransactData::parse(&instruction.data[1..], RingRail::Anonymous).unwrap();
+    let RailAuthorization::AnonymousHidden(hidden) = parsed.data().authorization else {
+        panic!("a hidden owner's frame");
+    };
     assert_eq!(
-        parsed.data().anonymous.unwrap().default_owner_tag,
-        Some(&sender.signing_pubkey().as_ed25519().unwrap())
+        hidden.default_owner_tag,
+        Some(sender.signing_pubkey().as_ed25519().unwrap())
     );
 }
 
@@ -4033,7 +4036,7 @@ async fn the_frame_carries_the_proven_mask_and_its_co_signers() {
     let at_threshold = withdrawing(100);
     let below = at_threshold.frame(&unconfigured).await.ok().unwrap().frame;
     assert!(below.parts.approval.is_empty());
-    assert!(below.parts.own_revision.is_some());
+    assert!(below.parts.named_roots.own().is_some());
     assert!(matches!(
         withdrawing(101).frame(&unconfigured).await.err(),
         Some(RingError::Program(CustomRingError::MissingCoSigner))
@@ -4093,8 +4096,8 @@ async fn a_delegate_exit_and_withdrawal_read_no_policy() {
         });
     let exit = moved.frame(&client).await.ok().unwrap();
     let frame = &exit.frame;
-    assert_eq!(frame.parts.rail, RingRail::Delegate);
-    assert!(frame.parts.own_revision.is_none() && frame.parts.policy.is_none());
+    assert_eq!(frame.parts.authorization, RailAuthorization::Delegate);
+    assert_eq!(frame.parts.named_roots, NamedRoots::TrackingOnly);
     assert!(frame.parts.approval.is_empty());
     assert!(matches!(
         frame.parts.data().unwrap().circuit(),
@@ -4134,8 +4137,7 @@ async fn a_delegate_frame_on_an_anonymous_ring_stays_anonymous() {
         .ok()
         .unwrap();
     let parts = &framed.frame.parts;
-    assert_eq!(parts.rail, RingRail::AnonymousDelegate);
-    assert!(parts.anonymous.is_none());
+    assert_eq!(parts.authorization, RailAuthorization::AnonymousDelegate);
 }
 
 /// The anonymous frame names no hidden sender, the wallet signs on SPP's confidential rail.
@@ -4158,7 +4160,7 @@ async fn a_public_spend_on_an_anonymous_ring_publishes_its_owners_alone() {
     let public = transfer();
     let framed = public.frame(&enrolled).await.ok().unwrap();
     let parts = &framed.frame.parts;
-    assert!(parts.public_owners && parts.anonymous.is_none());
+    assert_eq!(parts.authorization, RailAuthorization::AnonymousPublic);
     assert_eq!(framed.frame.accounts.owner_signers, [wallet]);
     assert!(matches!(
         parts.data().unwrap().circuit(),

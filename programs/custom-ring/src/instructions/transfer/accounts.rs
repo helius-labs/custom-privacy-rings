@@ -17,13 +17,11 @@
 //! the hidden owner apart from each nonzero party cell and from the owner run, so no hidden owner approves
 //! its own outflow. The payer, a funder or the exit may name the hidden owner, the wallet decides. SPP
 //! validates each settlement account.
-//!
-//! Read after `instructions/transfer/processor.rs`. Read before `instructions/transfer/verify.rs`.
 
 use custom_ring_interface::{
-    cosign::CoSignRequirement, AnonymousParties, CustomRingError, ParsedTransact, PublicSlots,
-    RingPolicy, RingRail, RootRead, SignerSet, TransferLayout, TransferPrefix, TransferRoots,
-    ANONYMOUS_PARTIES,
+    anonymous_party_identities, cosign::CoSignRequirement, CustomRingError, ParsedTransact,
+    PublicSlots, RailAuthorization, RingPolicy, RootRead, SignerSet, TransferLayout,
+    TransferPrefix, TransferRoots, ANONYMOUS_PARTIES,
 };
 use pinocchio::{error::ProgramError, AccountView, Address};
 use spr_hasher::primitives::solana_owner_identity;
@@ -126,7 +124,7 @@ impl TransactCheck<'_> {
     #[inline(never)]
     pub fn validate(self, accounts: &[AccountView]) -> Result<TransactAccounts, ProgramError> {
         let (ring, data) = (self.ring, self.transfer.data());
-        let delegate_rail = data.rail.is_delegate();
+        let delegate_rail = data.rail().is_delegate();
         // 1. The frame names only revisions, the registries the ring pins serve each root. A delegate
         // reads no policy root, a restrictive update cannot fail its proof.
         let read = RootRead::transfer(ring, delegate_rail);
@@ -188,40 +186,35 @@ impl TransactCheck<'_> {
         }
         let owners = &accounts[layout.owners.clone()];
         // 7. Each rail names who authorizes the spend, and the statement binds that identity.
-        let (sender, signers) = match data.rail {
-            RingRail::Anonymous => {
-                check_owner_run(owners, &co_signers)?;
-                // The proof holds each public owner's live input to the run, an empty run spends nothing.
-                if data.public_owners && !data.no_spend && owners.is_empty() {
-                    return Err(CustomRingError::OwnerSignerCount.into());
-                }
-                ([0; 32], signer_set(owners, slots)?)
-            }
-            RingRail::Confidential => {
-                check_owner_run(owners, &co_signers)?;
-                // The in-proof owner signs inside SPP's anonymous rail proof, the frame names its key.
-                let sender = match data.in_proof_owner {
-                    Some(owner) => {
-                        let owner = Address::new_from_array(*owner.owner);
-                        if co_signers.contains(&owner) {
-                            return Err(CustomRingError::CoSignerIsOwner.into());
-                        }
-                        solana_owner_identity(owner.as_array()).map_err(CustomRingError::from)?
-                    }
-                    None if !data.no_spend && owners.is_empty() => {
-                        return Err(CustomRingError::OwnerSignerCount.into());
-                    }
-                    None => [0; 32],
-                };
-                (sender, signer_set(owners, slots)?)
-            }
-            RingRail::Delegate | RingRail::AnonymousDelegate => {
+        let (sender, signers) = match data.authorization {
+            RailAuthorization::Delegate | RailAuthorization::AnonymousDelegate => {
                 // SPP's authority rail admits no owner signer, the delegate slot is the move's one
                 // authorization beside governance's rail flag in `RingConfig`.
                 if !owners.is_empty() {
                     return Err(CustomRingError::InvalidSettlementAccounts.into());
                 }
                 ([0; 32], SignerSet::default())
+            }
+            owner_signed => {
+                check_owner_run(owners, &co_signers)?;
+                let sender = match owner_signed {
+                    // The in-proof owner signs inside SPP's anonymous rail proof, the frame names its key.
+                    RailAuthorization::ConfidentialInProof(owner) => {
+                        let owner = Address::new_from_array(owner.owner);
+                        if co_signers.contains(&owner) {
+                            return Err(CustomRingError::CoSignerIsOwner.into());
+                        }
+                        solana_owner_identity(owner.as_array()).map_err(CustomRingError::from)?
+                    }
+                    // The proof holds each published owner's live input to the run, an empty run spends nothing.
+                    RailAuthorization::ConfidentialSigner | RailAuthorization::AnonymousPublic
+                        if !data.no_spend && owners.is_empty() =>
+                    {
+                        return Err(CustomRingError::OwnerSignerCount.into());
+                    }
+                    _ => [0; 32],
+                };
+                (sender, signer_set(owners, slots)?)
             }
         };
 
@@ -239,12 +232,10 @@ impl TransactCheck<'_> {
             )?,
         };
         // 9. The co-signers hold the party cells, a zero cell reads as absent.
-        let party_identities = match data.rail.anonymous_frame() {
-            true => AnonymousParties {
-                co_signers: co_signers.as_slice(),
-            }
-            .identities()?,
-            false => [[0; 32]; ANONYMOUS_PARTIES],
+        let party_identities = if data.rail().anonymous_frame() {
+            anonymous_party_identities(co_signers.as_slice())?
+        } else {
+            [[0; 32]; ANONYMOUS_PARTIES]
         };
 
         Ok(TransactAccounts {

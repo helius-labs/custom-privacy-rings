@@ -5,9 +5,6 @@
 //! program lets any of them name the hidden owner and the wallet decides. A SOL destination with data or
 //! a program owner, or a token account with a second authority or a keypair address, could name the
 //! hidden owner behind another key, so the wallet refuses each.
-//!
-//! Read after `program-libs/interface/src/instructions/withdrawals.rs`. Read before `program-libs/interface/src/instructions/cosign.rs`,
-//! `programs/custom-ring/src/instructions/transfer/accounts.rs`.
 
 use solana_address::Address;
 use spl_token_2022_interface::{extension::PodStateWithExtensions, pod::PodAccount};
@@ -35,11 +32,6 @@ pub trait SettlementAccount {
     fn address(&self) -> &Address;
     fn owner(&self) -> &Address;
     fn token_account(&self) -> Result<TokenAccountState, CustomRingError>;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AnonymousParties<'a> {
-    pub co_signers: &'a [Address],
 }
 
 impl TokenAccountState {
@@ -70,16 +62,16 @@ impl TokenAccountControl {
     }
 }
 
-impl AnonymousParties<'_> {
-    /// Solana owner identities in co-signer order, zero past the last co-signer.
-    pub fn identities(&self) -> Result<[[u8; 32]; ANONYMOUS_PARTIES], CustomRingError> {
-        if self.co_signers.len() > ANONYMOUS_PARTIES {
-            return Err(CustomRingError::TooManyAnonymousParties);
-        }
-        let mut identities = [[0u8; 32]; ANONYMOUS_PARTIES];
-        for (cell, co_signer) in identities.iter_mut().zip(self.co_signers) {
-            *cell = solana_owner_identity(co_signer.as_array())?;
-        }
-        Ok(identities)
+/// Solana owner identities in co-signer order, zero past the last co-signer.
+pub fn anonymous_party_identities(
+    co_signers: &[Address],
+) -> Result<[[u8; 32]; ANONYMOUS_PARTIES], CustomRingError> {
+    if co_signers.len() > ANONYMOUS_PARTIES {
+        return Err(CustomRingError::TooManyAnonymousParties);
     }
+    let mut identities = [[0u8; 32]; ANONYMOUS_PARTIES];
+    for (cell, co_signer) in identities.iter_mut().zip(co_signers) {
+        *cell = solana_owner_identity(co_signer.as_array())?;
+    }
+    Ok(identities)
 }

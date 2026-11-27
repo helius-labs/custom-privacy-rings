@@ -476,8 +476,8 @@ impl RecordWriter {
         // 3. The storage update is the transaction's one instruction.
         let data = StorageUpdateIxData {
             revision: checked.revision,
-            writes,
-            asset_writes: Vec::new(),
+            writes: &writes,
+            asset_writes: &[],
             tracking_revision: proof.tracking_revision(),
             apply: proof.apply(),
         };
@@ -594,9 +594,10 @@ impl RecordWriter {
                 .key(owner)
                 .is_ok_and(|key| update.entries.iter().any(|entry| entry.member == key))
         });
-        match matched {
-            true => Ok(()),
-            false => Err(RecordUpdateRefusal::UnregisteredOwnerUnmatched.into()),
+        if matched {
+            Ok(())
+        } else {
+            Err(RecordUpdateRefusal::UnregisteredOwnerUnmatched.into())
         }
     }
 
@@ -687,12 +688,13 @@ impl BatchWrites<'_> {
             .ok_or(RecordUpdateRefusal::Disabled)?;
         // 2. Each salted key names its owner through an enrollment the auditor key opens, or an
         //    owner the submit matched under the ring salt.
-        let ring_salted = match unregistered.is_empty() {
-            true => RingSalted::default(),
-            false => RingSalted {
+        let ring_salted = if unregistered.is_empty() {
+            RingSalted::default()
+        } else {
+            RingSalted {
                 owners: unregistered,
                 salt: Zeroizing::new(source.ring_salt(ring).await?),
-            },
+            }
         };
         let mut owners = Vec::new();
         for (write_index, entry) in (0u8..).zip(entries) {

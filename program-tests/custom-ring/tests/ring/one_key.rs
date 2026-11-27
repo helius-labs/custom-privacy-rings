@@ -673,17 +673,17 @@ impl Landed<'_> {
             .as_u64()
             .context("the transaction's compute units")?;
         // Surfpool reports empty return data when no program sets one.
-        let returned = match confirmed["meta"]["returnData"]["data"][0].is_string() {
-            true => decode(&confirmed["meta"]["returnData"]["data"][0])?,
-            false => Vec::new(),
+        let returned = if confirmed["meta"]["returnData"]["data"][0].is_string() {
+            decode(&confirmed["meta"]["returnData"]["data"][0])?
+        } else {
+            Vec::new()
         };
-        let heap = match returned.is_empty() {
-            true => None,
-            false => {
-                Some(u64::from_le_bytes(returned.try_into().map_err(|_| {
-                    anyhow!("{label} returned no eight byte heap peak")
-                })?))
-            }
+        let heap = if returned.is_empty() {
+            None
+        } else {
+            Some(u64::from_le_bytes(returned.try_into().map_err(|_| {
+                anyhow!("{label} returned no eight byte heap peak")
+            })?))
         };
         ensure!(bytes <= MAX_TRANSACTION_SIZE, "{label} has {bytes} bytes");
         ensure!(

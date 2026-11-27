@@ -11,9 +11,6 @@
 //! 3. One instruction covers one co-signer record.
 //!
 //! The transfer names `[co_signer_record, instructions_sysvar]` in the pair of each approved record.
-//!
-//! Read after `program-libs/interface/src/instructions/cosign.rs`. Read before
-//! `programs/custom-ring/src/instructions/transfer/approve_transfer.rs`, `programs/custom-ring/src/instructions/accounts/loader.rs`.
 
 use arrayvec::ArrayVec;
 use solana_address::Address;

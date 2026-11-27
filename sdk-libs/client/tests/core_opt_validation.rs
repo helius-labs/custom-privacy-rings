@@ -1,7 +1,18 @@
 mod frames;
 
-use custom_ring_interface::{CustomRingError, ParsedTransact, Replies, MIN_REPLY_LEN};
+use custom_ring_interface::{
+    shape_flag, transact_flag, CustomRingError, ParsedTransact, RailAuthorization, Replies,
+    RingRail, RingTransactData, MIN_REPLY_LEN,
+};
 use frames::Fixture;
+use zolana_ring_client::FrameEncode;
+
+const RAILS: [RingRail; 4] = [
+    RingRail::Confidential,
+    RingRail::Anonymous,
+    RingRail::Delegate,
+    RingRail::AnonymousDelegate,
+];
 
 #[test]
 fn checked_frames_accept_the_supported_authorization_modes() {
@@ -11,67 +22,61 @@ fn checked_frames_accept_the_supported_authorization_modes() {
     }
 }
 
+/// The flags name the variant, the instruction tag and the ring mode name the rail, so a frame with
+/// none of the three bits parses under the confidential and both delegate rails.
 #[test]
-fn checked_frames_reject_hidden_owner_proofs_on_other_authorization_modes() {
+fn each_authorization_encodes_its_flags_and_parses_back_under_its_rail() {
     let fixture = Fixture::new();
-    let hidden = fixture.anonymous_compact().anonymous;
-    for mut data in [
+    let flag = Err(CustomRingError::FlagNotAllowed);
+    let length = Err(CustomRingError::RingTransactLength);
+    let own = |data: &RingTransactData<'_>| Ok(data.authorization);
+    let (signer, in_proof, hidden, public, delegate, anonymous_delegate) = (
         fixture.confidential_policy(),
         fixture.confidential_in_proof_owner(),
-        fixture.anonymous_public_owners(),
-        fixture.delegate(),
-        fixture.anonymous_delegate(),
-    ] {
-        data.anonymous = hidden;
-        assert_eq!(
-            ParsedTransact::new(data),
-            Err(CustomRingError::FlagNotAllowed)
-        );
-    }
-}
-
-#[test]
-fn checked_frames_require_the_hidden_owner_proof() {
-    let fixture = Fixture::new();
-    let mut data = fixture.anonymous();
-    data.anonymous = None;
-    assert_eq!(
-        ParsedTransact::new(data),
-        Err(CustomRingError::FlagNotAllowed)
-    );
-}
-
-#[test]
-fn checked_frames_reject_confidential_owner_proofs_on_other_rails() {
-    let fixture = Fixture::new();
-    let owner = fixture.confidential_in_proof_owner().in_proof_owner;
-    for mut data in [
         fixture.anonymous(),
         fixture.anonymous_public_owners(),
         fixture.delegate(),
         fixture.anonymous_delegate(),
+    );
+    let unflagged = [
+        Ok(RailAuthorization::ConfidentialSigner),
+        length,
+        Ok(RailAuthorization::Delegate),
+        Ok(RailAuthorization::AnonymousDelegate),
+    ];
+    for (data, bits, by_rail) in [
+        (&signer, [false; 3], [own(&signer), length, flag, flag]),
+        (
+            &in_proof,
+            [true, false, false],
+            [own(&in_proof), flag, flag, flag],
+        ),
+        (
+            &hidden,
+            [false, false, true],
+            [flag, own(&hidden), flag, flag],
+        ),
+        (
+            &public,
+            [false, true, false],
+            [flag, own(&public), flag, flag],
+        ),
+        (&delegate, [false; 3], unflagged),
+        (&anonymous_delegate, [false; 3], unflagged),
     ] {
-        data.in_proof_owner = owner;
+        let compact = data.encode().unwrap();
         assert_eq!(
-            ParsedTransact::new(data),
-            Err(CustomRingError::FlagNotAllowed)
+            [
+                compact[transact_flag::BYTE] & transact_flag::OWNER_IN_PROOF != 0,
+                compact[1] & shape_flag::PUBLIC_OWNERS != 0,
+                compact[1] & shape_flag::DEFAULT_OWNER_TAG != 0,
+            ],
+            bits
         );
-    }
-}
-
-#[test]
-fn checked_frames_reject_public_owners_on_other_rails() {
-    let fixture = Fixture::new();
-    for mut data in [
-        fixture.confidential_policy(),
-        fixture.delegate(),
-        fixture.anonymous_delegate(),
-    ] {
-        data.public_owners = true;
-        assert_eq!(
-            ParsedTransact::new(data),
-            Err(CustomRingError::FlagNotAllowed)
-        );
+        let parsed = RAILS.map(|rail| {
+            RingTransactData::parse(&compact, rail).map(|parsed| parsed.data().authorization)
+        });
+        assert_eq!(parsed, by_rail, "{}", data.rail());
     }
 }
 

@@ -3,8 +3,6 @@
 //! SPP holds no list. A ring's rules read one bit per list from its registries, and the semantics
 //! live here for every side. The program links the crate for the table hash and its validation, the
 //! SDKs also for refusals ahead of a proof.
-//!
-//! Read after `docs/design/records-and-roots.md`. Read before `program-libs/policy/src/list.rs`, `program-libs/policy/src/rule_table/mod.rs`.
 
 mod approval_totals;
 mod asset_limits;
@@ -26,8 +24,8 @@ pub use quantities::{
 };
 pub use rule_table::{
     EncodedRuleTable, Guard, Mode, OutflowLimit, PolicySource, PolicyTableError, Rule, RuleTable,
-    RuleTableBuilder, RuleTableError, SourceMap, SourceMapError, Subject, TableParts, MAX_RULES,
-    MAX_SOURCES, POLICY_TABLE_DOMAIN, POLICY_TABLE_FIELDS,
+    RuleTableBuilder, RuleTableError, SourceMap, SourceMapError, Subject, MAX_RULES, MAX_SOURCES,
+    POLICY_TABLE_DOMAIN, POLICY_TABLE_FIELDS,
 };
 pub use rules::{
     OutputSubjects, PaymentSubjects, RecordLists, RuleRefusal, TransferSubject, TransferSubjects,

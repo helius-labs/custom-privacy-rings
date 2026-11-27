@@ -4,8 +4,8 @@ use custom_ring_interface::stream::slot_tag;
 use custom_ring_interface::{
     key_catalog::FrameKey, tag as ring_tag, tagged_x25519, AnonymousProofData, AuditKey,
     AuditStreamLayout, AuditorMessage, CustomRingProof, FrameExtensions, InProofOwner, InputTrees,
-    PlainGroth16Proof, RecordForm, RecordKind, RingOutput, RingRail, RingTransactData, SlotBody,
-    CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN,
+    NamedRoots, PlainGroth16Proof, RailAuthorization, RecordForm, RecordKind, RingOutput, RingRail,
+    RingTransactData, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -514,9 +514,10 @@ impl Transfer {
             payloads: None,
             voucher: None,
         };
-        match records.data {
-            true => Self::with_data(disclosure, outputs),
-            false => disclosure,
+        if records.data {
+            Self::with_data(disclosure, outputs)
+        } else {
+            disclosure
         }
     }
 
@@ -554,21 +555,31 @@ impl Transfer {
             commitment_pok: zero,
         };
         let anonymous = rail == Rail::Anonymous;
+        let authorization = if anonymous {
+            RailAuthorization::AnonymousHidden(AnonymousProofData {
+                commitment: zero,
+                commitment_pok: zero,
+                default_owner_tag: None,
+            })
+        } else if disclosure.in_proof {
+            RailAuthorization::ConfidentialInProof(InProofOwner {
+                owner: zero,
+                commitment: zero,
+                commitment_pok: zero,
+            })
+        } else {
+            RailAuthorization::ConfidentialSigner
+        };
         let data = RingTransactData {
-            rail: match anonymous {
-                true => RingRail::Anonymous,
-                false => RingRail::Confidential,
-            },
+            authorization,
             n_in: shape.n_inputs() as u8,
             n_out: shape.n_outputs() as u8,
             proof: &proof,
             tracking_revision: Default::default(),
-            own_revision: None,
-            policy: None,
+            named_roots: NamedRoots::TrackingOnly,
             spl_withdrawal_owners: &[],
             approval: Default::default(),
             no_spend: disclosure.real_inputs == 0,
-            public_owners: false,
             expiry_unix_ts: 0,
             tx_viewing_u: &tx_viewing_u,
             salt: &self.salt,
@@ -601,16 +612,6 @@ impl Transfer {
             recipient_keys: message.recipient_keys,
             vouched: layout.vouched,
             private_tx_hash: &zero,
-            anonymous: anonymous.then_some(AnonymousProofData {
-                commitment: &zero,
-                commitment_pok: &zero,
-                default_owner_tag: None,
-            }),
-            in_proof_owner: disclosure.in_proof.then_some(InProofOwner {
-                owner: &zero,
-                commitment: &zero,
-                commitment_pok: &zero,
-            }),
             spp_proof: &groth16,
             nullifiers: &tx.nullifiers,
             input_trees: InputTrees::One(TreeContext {
@@ -667,12 +668,13 @@ pub fn audited_opening(output: &Output, slot: &Slot) -> OutputOpening {
             recipient_u,
             tag,
         } => OutputOpening::Ring {
-            utxo: match utxo.nullifier_pk == ZERO_NULLIFIER_PUBKEY {
-                true => audited(utxo),
-                false => AuditedUtxo {
+            utxo: if utxo.nullifier_pk == ZERO_NULLIFIER_PUBKEY {
+                audited(utxo)
+            } else {
+                AuditedUtxo {
                     owner: UtxoOwner::Unresolved,
                     ..audited(utxo)
-                },
+                }
             },
             owner_tag: RingOwnerTag(slot_tag(tag.unwrap_or(*recipient_u))),
         },

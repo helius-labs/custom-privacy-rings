@@ -4,14 +4,11 @@
 //! A transfer proof opens many records under one root, and their paths share the top of the tree. The
 //! proof carries that top once as a canopy, and each path stops where it reaches the canopy. A key's
 //! opening count is fixed, so a client repeats its records and subjects to fill it.
-//!
-//! Read after `program-libs/member-registry/src/tree.rs`. Read before
-//! `prover/circuits/policy/record_pool.go`, `prover/circuits/registry/shared_path.go`.
 
 use custom_ring_interface::{tracking::TRACKING_QUAD_HEIGHT, QUAD_ARITY, QUAD_HEIGHT};
 
 use crate::{
-    path::{capacity, check_index, children, quad_node, NodePosition, TreePath},
+    path::{capacity, check_index, quad_node, NodePosition, PathFold, TreePath},
     tree::IndexedLeaf,
     MemberRecord, RecordTreeError,
 };
@@ -64,9 +61,10 @@ impl Canopy {
 
     fn of_width(height: usize, width: usize) -> Result<Self, RecordTreeError> {
         let canopy = Self::covering_at(height, width).map_err(|_| RecordTreeError::PoolShape)?;
-        match canopy.width() == width {
-            true => Ok(canopy),
-            false => Err(RecordTreeError::PoolShape),
+        if canopy.width() == width {
+            Ok(canopy)
+        } else {
+            Err(RecordTreeError::PoolShape)
         }
     }
 }
@@ -115,9 +113,10 @@ impl<L: IndexedLeaf + Default + Clone> RecordPoolOf<L> {
                 .records
                 .get(subject.record_index as usize)
                 .ok_or(RecordTreeError::PoolShape)?;
-            match *record.member() == subject.member || record.brackets(&subject.member) {
-                true => Ok(()),
-                false => Err(RecordTreeError::NotBracketed),
+            if *record.member() == subject.member || record.brackets(&subject.member) {
+                Ok(())
+            } else {
+                Err(RecordTreeError::NotBracketed)
             }
         })
     }
@@ -196,9 +195,10 @@ impl SharedProof {
                 return Err(RecordTreeError::PoolShape);
             }
             let node = path.fold(height, *leaf)?;
-            match self.canopy.get(node.position) == Some(&node.value) {
-                true => Ok(()),
-                false => Err(RecordTreeError::RootMismatch),
+            if self.canopy.get(node.position) == Some(&node.value) {
+                Ok(())
+            } else {
+                Err(RecordTreeError::RootMismatch)
             }
         })
     }
@@ -212,14 +212,13 @@ struct CanopyNode {
 impl SharedPath {
     fn fold(&self, height: usize, leaf: [u8; 32]) -> Result<CanopyNode, RecordTreeError> {
         check_index(self.index, height)?;
-        let mut node = leaf;
-        for (level, siblings) in self.siblings.iter().enumerate() {
-            let digit = NodePosition::on_path(self.index, level).digit();
-            node = quad_node(&children(node, digit, siblings))?;
-        }
         Ok(CanopyNode {
             position: NodePosition::on_path(self.index, self.siblings.len()).position as usize,
-            value: node,
+            value: PathFold {
+                index: self.index,
+                siblings: &self.siblings,
+            }
+            .node(leaf)?,
         })
     }
 }

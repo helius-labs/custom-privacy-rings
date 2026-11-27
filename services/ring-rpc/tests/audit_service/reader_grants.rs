@@ -1,7 +1,7 @@
 //! Serves a wallet reader its own part of each transaction, refuses it outside its wallet and refuses a reader whose only grant is revoked, in the tree or the database.
 
 use super::*;
-use custom_ring_interface::{InProofOwner, RingRail, RingTransactData};
+use custom_ring_interface::{InProofOwner, RailAuthorization, RingRail, RingTransactData};
 use zolana_ring_client::rpc::{GetWalletStatusResponse, GET_WALLET_STATUS};
 use zolana_ring_client::FrameEncode;
 
@@ -182,9 +182,10 @@ async fn a_revoked_grant_stops_reads() {
             .expect("stored grant");
         assert_eq!(held, action);
         let read = wallet_read(&service, &reader, wallet.pubkey()).await;
-        match readable {
-            true => assert_eq!(signatures(&activity(read)), [owned.tx_signature]),
-            false => assert!(not_granted(read)),
+        if readable {
+            assert_eq!(signatures(&activity(read)), [owned.tx_signature])
+        } else {
+            assert!(not_granted(read))
         }
     }
 }
@@ -214,9 +215,10 @@ async fn a_database_ring_grant_serves_a_ring_without_a_records_registry() {
             .expect("stored grant");
         assert_eq!(held, action);
         let read = ring_read(&service, &reader).await;
-        match readable {
-            true => assert_eq!(granted(read), [fixture.audited.tx_signature]),
-            false => assert!(not_granted(read)),
+        if readable {
+            assert_eq!(granted(read), [fixture.audited.tx_signature])
+        } else {
+            assert!(not_granted(read))
         }
     }
 }
@@ -344,10 +346,10 @@ fn owned_in_proof(fixture: &Fixture, owner: Address) -> StaticSource {
     let mut data = RingTransactData::parse(&frame[1..], RingRail::Confidential)
         .expect("frame")
         .into_data();
-    data.in_proof_owner = Some(InProofOwner {
-        owner: owner.as_array(),
-        commitment: &zero,
-        commitment_pok: &zero,
+    data.authorization = RailAuthorization::ConfidentialInProof(InProofOwner {
+        owner: owner.to_bytes(),
+        commitment: zero,
+        commitment_pok: zero,
     });
     let encoded = [vec![frame[0]], data.encode().expect("frame")].concat();
     *frame = encoded;

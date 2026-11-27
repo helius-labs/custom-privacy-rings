@@ -187,8 +187,9 @@ pub use crate::storage_data::{
 };
 pub use crate::tags::{HistoryRows, IndexerReads, TagWindow, TAGS_PER_REQUEST};
 pub use crate::transfer_accounts::{
-    located_layout, AnonymousExitDestination, ApprovalEncode, CoSignerPairs, KnownPrefix,
-    ListRegistry, PolicySources, WithdrawalLeg, SYSTEM_PROGRAM_ID, TRANSFER_APPROVAL_DATA_LEN,
+    located_layout, AnonymousExitDestination, AnonymousExitRefusal, ApprovalEncode, CoSignerPairs,
+    KnownPrefix, ListRegistry, PolicySources, WithdrawalLeg, SYSTEM_PROGRAM_ID,
+    TRANSFER_APPROVAL_DATA_LEN,
 };
 pub use crate::viewing_history::{
     AdvancedTag, StreamCounter, TransferTags, ViewingHistory, ViewingKeyEntry, TAG_WINDOW,

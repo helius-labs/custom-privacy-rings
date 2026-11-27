@@ -1,7 +1,4 @@
 //! One processor per instruction tag of the Storage program.
-//!
-//! Read after `programs/storage/src/lib.rs`. Read before `programs/storage/src/instructions/update.rs`,
-//! `programs/storage/src/instructions/apply_enrollments.rs`.
 
 mod apply_enrollments;
 mod initialize;

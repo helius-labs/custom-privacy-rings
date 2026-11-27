@@ -1,8 +1,5 @@
 //! Hands a policy registry to a new authority.
 //!
-//! Read after `programs/storage/src/lib.rs`, `program-libs/interface/src/accounts/storage.rs`. Read
-//! before `programs/storage/src/instructions/update.rs`.
-//!
 //! Guarantees:
 //! 1. Both keys sign, so a mistyped key cannot lock the registry.
 //! 2. The old authority loses every right in the instruction, and no root moves.

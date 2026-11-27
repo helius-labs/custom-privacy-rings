@@ -2,7 +2,8 @@
 
 use custom_ring_interface::{
     extension_flag, key_catalog::TransferShape, stream::framed_slot_tag, CustomRingError,
-    FrameExtensions, FrameHeader, InputTrees, RingOutput, RingPolicy, RingTransactData, SlotBody,
+    FrameExtensions, FrameHeader, InputTrees, RailAuthorization, RingOutput, RingPolicy,
+    RingTransactData, SlotBody,
 };
 use spr_interface::instruction::{
     instruction_data::transact::CacheAccess, ExternalDataPreimage, InterfaceTransfer,
@@ -30,7 +31,7 @@ pub trait FrameEncode {
 
 impl FrameEncode for RingTransactData<'_> {
     fn encode(&self) -> Result<Vec<u8>, CustomRingError> {
-        self.encode_under(self.rail.key_shape(&FrameHeader::of(self)?)?)
+        self.encode_under(self.rail().key_shape(&FrameHeader::of(self)?)?)
     }
 
     fn encode_under(&self, shape: TransferShape) -> Result<Vec<u8>, CustomRingError> {
@@ -49,10 +50,10 @@ impl FrameEncode for RingTransactData<'_> {
         out.push(self.approval.bits());
         out.extend_from_slice(bytemuck::bytes_of(self.proof));
         out.extend_from_slice(&self.tracking_revision.0);
-        if let Some(revision) = self.own_revision {
+        if let Some(revision) = self.named_roots.own() {
             out.extend_from_slice(&revision.0);
         }
-        if let Some(revision) = self.policy.and_then(|policy| policy.curator_revision) {
+        if let Some(revision) = self.named_roots.curator() {
             out.extend_from_slice(&revision.0);
         }
         out.extend_from_slice(&self.expiry_unix_ts.to_le_bytes());
@@ -90,17 +91,23 @@ impl FrameEncode for RingTransactData<'_> {
         out.extend_from_slice(self.envelope);
         out.extend_from_slice(self.recipient_keys);
         out.extend_from_slice(self.private_tx_hash);
-        if let Some(anonymous) = &self.anonymous {
-            out.extend_from_slice(anonymous.commitment);
-            out.extend_from_slice(anonymous.commitment_pok);
-            if let Some(tag) = anonymous.default_owner_tag {
-                out.extend_from_slice(tag);
+        match &self.authorization {
+            RailAuthorization::AnonymousHidden(hidden) => {
+                out.extend_from_slice(&hidden.commitment);
+                out.extend_from_slice(&hidden.commitment_pok);
+                if let Some(tag) = &hidden.default_owner_tag {
+                    out.extend_from_slice(tag);
+                }
             }
-        }
-        if let Some(owner) = &self.in_proof_owner {
-            out.extend_from_slice(owner.owner);
-            out.extend_from_slice(owner.commitment);
-            out.extend_from_slice(owner.commitment_pok);
+            RailAuthorization::ConfidentialInProof(owner) => {
+                out.extend_from_slice(&owner.owner);
+                out.extend_from_slice(&owner.commitment);
+                out.extend_from_slice(&owner.commitment_pok);
+            }
+            RailAuthorization::ConfidentialSigner
+            | RailAuthorization::AnonymousPublic
+            | RailAuthorization::Delegate
+            | RailAuthorization::AnonymousDelegate => {}
         }
         out.extend_from_slice(bytemuck::bytes_of(self.spp_proof));
         out.extend_from_slice(self.nullifiers.as_flattened());

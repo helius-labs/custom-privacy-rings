@@ -5,10 +5,12 @@ use custom_ring_interface::{
     cosign::ApprovalMask,
     funder_account_position, input_flag,
     key_catalog::{FrameKey, RingCircuit},
-    spl_withdrawal_count, tag, transact_flag, AnonymousProofData, CoSignScope, CustomRingError,
-    CustomRingProof, InputTrees, PlainGroth16Proof, PolicyProof, RingOutput, RingPolicy, RingRail,
-    RingRole, RingTransactData, RootRead, SlotBody, TransferLayout, EXIT_RECORD_LEN,
-    RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX, TRANSACT_PAYER_INDEX,
+    spl_withdrawal_count,
+    storage::Revision,
+    tag, transact_flag, AnonymousProofData, CoSignScope, CustomRingError, CustomRingProof,
+    InProofOwner, InputTrees, NamedRoots, PlainGroth16Proof, RailAuthorization, RingOutput,
+    RingPolicy, RingRail, RingRole, RingTransactData, RootRead, SlotBody, TransferLayout,
+    EXIT_RECORD_LEN, RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX, TRANSACT_PAYER_INDEX,
 };
 use solana_address::Address;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
@@ -110,21 +112,34 @@ impl Fixture {
         n_out: u8,
         policy: bool,
     ) -> RingTransactData<'_> {
-        let hidden_sender = rail == RingRail::Anonymous;
+        let authorization = match rail {
+            RingRail::Confidential => RailAuthorization::ConfidentialSigner,
+            RingRail::Anonymous => RailAuthorization::AnonymousHidden(AnonymousProofData {
+                commitment: self.keys[3],
+                commitment_pok: self.keys[4],
+                default_owner_tag: None,
+            }),
+            RingRail::Delegate => RailAuthorization::Delegate,
+            RingRail::AnonymousDelegate => RailAuthorization::AnonymousDelegate,
+        };
+        let own = Revision::default();
+        let named_roots = if rail.is_delegate() {
+            NamedRoots::TrackingOnly
+        } else if policy {
+            NamedRoots::Policy { own, curator: None }
+        } else {
+            NamedRoots::Own(own)
+        };
         let mut data = RingTransactData {
-            rail,
+            authorization,
             n_in,
             n_out,
             proof: &self.proofs[0],
             tracking_revision: Default::default(),
-            own_revision: (!rail.is_delegate()).then(Default::default),
-            policy: policy.then_some(PolicyProof {
-                curator_revision: None,
-            }),
+            named_roots,
             spl_withdrawal_owners: &[],
             approval: ApprovalMask::default(),
             no_spend: false,
-            public_owners: false,
             expiry_unix_ts: 1_800_000_000,
             tx_viewing_u: &self.keys[0],
             salt: &self.salt,
@@ -147,12 +162,6 @@ impl Fixture {
             recipient_keys: &[],
             vouched: false,
             private_tx_hash: &self.fields[0],
-            anonymous: hidden_sender.then(|| AnonymousProofData {
-                commitment: &self.keys[3],
-                commitment_pok: &self.keys[4],
-                default_owner_tag: None,
-            }),
-            in_proof_owner: None,
             spp_proof: &self.spp_proof,
             nullifiers: &self.fields[1..1 + usize::from(n_in)],
             input_trees: InputTrees::One(TreeContext {
@@ -175,8 +184,7 @@ impl Fixture {
 
     pub fn public_owners(&self, n_in: u8, n_out: u8, policy: bool) -> RingTransactData<'_> {
         let mut data = self.transfer(RingRail::Anonymous, n_in, n_out, policy);
-        data.public_owners = true;
-        data.anonymous = None;
+        data.authorization = RailAuthorization::AnonymousPublic;
         data
     }
 
@@ -189,10 +197,10 @@ impl Fixture {
         policy: bool,
     ) -> RingTransactData<'a> {
         let mut data = self.transfer(RingRail::Confidential, n_in, n_out, policy);
-        data.in_proof_owner = Some(custom_ring_interface::InProofOwner {
-            owner,
-            commitment: &self.keys[3],
-            commitment_pok: &self.keys[4],
+        data.authorization = RailAuthorization::ConfidentialInProof(InProofOwner {
+            owner: *owner,
+            commitment: self.keys[3],
+            commitment_pok: self.keys[4],
         });
         self.fit_stream(&mut data);
         data
@@ -584,7 +592,7 @@ fn an_anonymous_transfer_binds_a_live_own_root() {
     let fixture = Fixture::new();
     let mut ring = Ring::new(Setup::Anonymous);
     let mut data = fixture.transfer(RingRail::Anonymous, 2, 2, false);
-    data.own_revision = Some(7u64.into());
+    data.named_roots = NamedRoots::Own(7u64.into());
     let spp = spp_list(&ring.payer.pubkey(), &data, &[]);
     refused(
         send(
@@ -597,7 +605,7 @@ fn an_anonymous_transfer_binds_a_live_own_root() {
         ),
         CustomRingError::RootNotServed,
     );
-    data.own_revision = Some(Default::default());
+    data.named_roots = NamedRoots::Own(Default::default());
     let accounts = [vec![AccountMeta::new_readonly(policy_pda(), false)], spp].concat();
     refused(
         ring.send(
@@ -783,7 +791,7 @@ fn a_bare_ring_reads_the_tracking_root_alone() {
         confidential(&mut ring, Vec::new(), &data),
         CustomRingError::FlagNotAllowed,
     );
-    data.own_revision = None;
+    data.named_roots = NamedRoots::TrackingOnly;
     reaches_verification(confidential(&mut ring, Vec::new(), &data));
     let account: RingPolicy = ring.read(&policy_pda());
     assert_eq!(
@@ -1669,7 +1677,7 @@ fn an_anonymous_ring_delegate_settles_on_the_authority_rail() {
     )
     .expect("an anonymous ring takes a delegate");
     let data = fixture.transfer(RingRail::AnonymousDelegate, 2, 2, false);
-    assert!(data.anonymous.is_none());
+    assert_eq!(data.authorization, RailAuthorization::AnonymousDelegate);
     let bytes = data.encode().unwrap();
     reaches_verification(delegate_move(&mut ring, &delegate, &data, bytes));
 }
@@ -1878,17 +1886,17 @@ fn a_ring_with_records_binds_its_own_root_without_a_policy() {
     let fixture = Fixture::new();
     let mut ring = Ring::new(Setup::AuditOnly);
     let mut data = fixture.transfer(RingRail::Confidential, 2, 2, false);
-    data.own_revision = Some(1u64.into());
+    data.named_roots = NamedRoots::Own(1u64.into());
     refused(
         confidential(&mut ring, Vec::new(), &data),
         CustomRingError::RootNotServed,
     );
-    data.own_revision = None;
+    data.named_roots = NamedRoots::TrackingOnly;
     refused(
         confidential(&mut ring, Vec::new(), &data),
         CustomRingError::FlagNotAllowed,
     );
-    data.own_revision = Some(0u64.into());
+    data.named_roots = NamedRoots::Own(0u64.into());
     reaches_verification(confidential(&mut ring, Vec::new(), &data));
 }
 

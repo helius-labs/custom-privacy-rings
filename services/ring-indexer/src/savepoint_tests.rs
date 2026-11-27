@@ -94,8 +94,8 @@ fn private_update(members: &[u8]) -> BlockInfo {
     };
     let data = StorageUpdateIxData {
         revision: Revision::default(),
-        writes,
-        asset_writes: Vec::new(),
+        writes: &writes,
+        asset_writes: &[],
         tracking_revision: Some(Revision::from(FLOOR + 5)),
         apply: &apply,
     };

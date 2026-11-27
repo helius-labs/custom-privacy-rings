@@ -1,7 +1,4 @@
 //! Owner signatures authorize reader grants within one tracking registry namespace.
-//!
-//! Read after `program-libs/interface/src/accounts/tracking.rs`.
-//! Read before `programs/storage/src/instructions/owner_grant.rs`.
 
 use bytemuck::{Pod, Zeroable};
 use solana_address::Address;

@@ -9,7 +9,7 @@ use std::sync::{
 };
 
 use custom_ring_interface::{
-    cosign::{ApprovalMask, CoSignDemand, CoSignOperation},
+    cosign::{ApprovalMask, CoSignOperation},
     stream::slot_tag,
     CoSignScope, RingMode,
 };
@@ -462,7 +462,7 @@ impl PreparedRingDeposit {
         self.terms.cosigner
     }
 
-    pub fn co_sign_demand(&self) -> CoSignDemand {
+    pub fn co_sign_demand(&self) -> CoSignScope {
         deposit_demand()
     }
 
@@ -644,7 +644,7 @@ impl DepositLeg {
     }
 }
 
-fn deposit_demand() -> CoSignDemand {
+fn deposit_demand() -> CoSignScope {
     CoSignOperation {
         spends_note: false,
         public_legs: CoSignScope::DEPOSITS,

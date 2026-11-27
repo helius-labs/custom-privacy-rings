@@ -772,9 +772,10 @@ impl ShapeRing<'_> {
         for case in grouped(cases, |case| case.key) {
             loaded.load(case.key)?;
             let case = case.item;
-            let inputs = match case.spends_default_ring() {
-                true => self.default_ring_notes(LegKind::Sol, case.notes)?,
-                false => self.utxos(case.notes)?,
+            let inputs = if case.spends_default_ring() {
+                self.default_ring_notes(LegKind::Sol, case.notes)?
+            } else {
+                self.utxos(case.notes)?
             };
             let transfer = ShapeTransfer {
                 shape: case.shape,
@@ -960,9 +961,10 @@ impl ShapeRing<'_> {
         let mut unspent: HashMap<(LegKind, usize), Vec<WalletUtxo>> = HashMap::new();
         for shape in family.shapes() {
             let most = usize::from(shape.withdrawals);
-            let fewest = match wide_key(shape) {
-                true => past_narrow_legs(shape)?,
-                false => 0,
+            let fewest = if wide_key(shape) {
+                past_narrow_legs(shape)?
+            } else {
+                0
             };
             restart_prover()?;
             for kind in [LegKind::Sol, LegKind::Spl] {

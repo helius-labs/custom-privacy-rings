@@ -1,8 +1,5 @@
 //! The policy tree's leaf, one member's list bits and mint settings, and the proof input of one write.
 //!
-//! Read after `program-libs/member-registry/src/tree.rs`, `program-libs/interface/src/accounts/member_registry.rs`.
-//! Read before `prover/circuits/registry/apply_records.go`.
-//!
 //! Invariants, `ApplyRecordsCircuit` holds each.
 //! 1. A write keeps every list bit outside its mask, and moves mint settings only under the entry's flag.
 //! 2. A write that would leave a new member's record empty inserts nothing, the member stays absent and the root stays.
@@ -181,8 +178,8 @@ impl WritableLeaf for MemberRecord {
             low_path,
             slot,
         } = step;
-        match present {
-            true => RecordWriteProofInput {
+        if present {
+            RecordWriteProofInput {
                 entry,
                 exists: true,
                 old_next: low.next,
@@ -191,8 +188,9 @@ impl WritableLeaf for MemberRecord {
                 slot,
                 low: Self::default(),
                 low_path: QuadPath::default(),
-            },
-            false => RecordWriteProofInput {
+            }
+        } else {
+            RecordWriteProofInput {
                 entry,
                 exists: false,
                 old_next: low.next,
@@ -201,7 +199,7 @@ impl WritableLeaf for MemberRecord {
                 slot,
                 low,
                 low_path,
-            },
+            }
         }
     }
 }

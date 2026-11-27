@@ -1,6 +1,4 @@
 //! The per-mint settings an asset's record holds, a frame names none of them.
-//!
-//! Read after `program-libs/policy/src/member.rs`. Read before `program-libs/policy/src/asset_limits.rs`.
 
 use crate::AssetLimits;
 

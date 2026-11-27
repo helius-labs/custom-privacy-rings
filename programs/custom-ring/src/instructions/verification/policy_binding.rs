@@ -8,15 +8,13 @@
 //! a row of the tracking registry the source pins raises that floor. Every configuration write checks the pairing of each salted
 //! source of the account it proposes, so a refused pairing never reaches the stored account. The
 //! policy reads in `instructions/accounts/loader.rs` check it again on the stored account.
-//!
-//! Read after `instructions/configuration/setup/initialize.rs`. Read before `instructions/configuration/policy/update_policy.rs`.
 
 use bytemuck::Zeroable;
 use custom_ring_interface::{
     CustomRingError, PolicyTableIxData, RingPolicy, SourceSlot, N_SOURCE_SLOTS,
 };
 use pinocchio::{error::ProgramError, AccountView, Address, ProgramResult};
-use zolana_ring_policy::{EncodedRuleTable, ListId, ListSet, TableParts};
+use zolana_ring_policy::{EncodedRuleTable, ListId, ListSet};
 
 use crate::instructions::loader::{load_records_registry, load_storage_registry};
 
@@ -43,9 +41,7 @@ impl TableBinding<'_> {
     #[inline(never)]
     pub fn bind(self) -> Result<Box<BoundTable>, ProgramError> {
         let table = self.table;
-        let rules = TableParts { rows: &table.rules }
-            .encode()
-            .map_err(CustomRingError::from)?;
+        let rules = EncodedRuleTable::from_rows(&table.rules).map_err(CustomRingError::from)?;
         let sources = self.sources(rules.referenced())?;
         Ok(Box::new(BoundTable { rules, sources }))
     }
@@ -62,27 +58,31 @@ impl TableBinding<'_> {
                 return Err(CustomRingError::InvalidSource.into());
             }
             seen = seen.union(ListSet::single(list_id));
-            let registry = match spec.source {
-                0 => Address::default(),
-                n => {
-                    let address = *self
-                        .curators
-                        .get(usize::from(n) - 1)
-                        .ok_or(CustomRingError::InvalidSource)?
-                        .address();
-                    if address == Address::default() {
-                        return Err(CustomRingError::InvalidSource.into());
-                    }
-                    address
-                }
-            };
             sources[list_id.slot()] = SourceSlot {
                 list_id: list_id as u8,
-                registry,
+                registry: source_registry(spec.source, self.curators)?,
             };
         }
         Ok(sources)
     }
+}
+
+/// Source 0 is the own records at the zero address, source `k` the `k`-th of `curators` and never zero.
+pub(crate) fn source_registry(
+    source: u8,
+    curators: &[AccountView],
+) -> Result<Address, CustomRingError> {
+    let Some(index) = usize::from(source).checked_sub(1) else {
+        return Ok(Address::default());
+    };
+    let address = *curators
+        .get(index)
+        .ok_or(CustomRingError::InvalidSource)?
+        .address();
+    if address == Address::default() {
+        return Err(CustomRingError::InvalidSource);
+    }
+    Ok(address)
 }
 
 impl ProposedSources<'_> {
@@ -105,9 +105,10 @@ impl ProposedSources<'_> {
                 .iter()
                 .find(|account| *account.address() == address)
                 .ok_or(CustomRingError::MissingRegistry)?;
-            let registry = match address == self.proposed.records {
-                true => load_records_registry(self.program_id, account)?,
-                false => load_storage_registry(account)?,
+            let registry = if address == self.proposed.records {
+                load_records_registry(self.program_id, account)?
+            } else {
+                load_storage_registry(account)?
             };
             self.proposed.check_source_pair(&address, &registry)?;
         }

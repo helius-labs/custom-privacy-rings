@@ -1,6 +1,6 @@
 //! The co-signer a ring operation carries, decided by the program's own rule.
 
-use custom_ring_interface::{cosign::CoSignDemand, CustomRingError, TransferApproval};
+use custom_ring_interface::{CoSignScope, CustomRingError, TransferApproval};
 use solana_address::Address;
 use solana_instruction::AccountMeta;
 use solana_sdk_ids::sysvar;
@@ -12,7 +12,7 @@ use crate::{CustomRing, CustomRingConfig, RingError};
 pub(crate) struct CoSignerChoice<'a> {
     pub ring: CustomRing,
     pub config: &'a CustomRingConfig,
-    pub demand: CoSignDemand,
+    pub demand: CoSignScope,
     pub supplied: Vec<Address>,
 }
 

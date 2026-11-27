@@ -1,6 +1,4 @@
 //! Every refusal of the ring program, one enum for the program and its clients.
-//!
-//! Read after `program-libs/interface/src/lib.rs`. Read before `program-libs/interface/tests/error_codes.rs`.
 
 use solana_program_error::ProgramError;
 use spr_hasher::HasherError;
@@ -72,12 +70,6 @@ ring_errors! {
     UnexpectedApproval = 8241 => "a delegate frame carries no approval bit",
     InvalidSettlementAccounts = 8242 => "settlement accounts do not match the public legs",
     TooManyPublicLegs = 8243 => "too many public legs",
-    AnonymousExitTokenAccountShared = 8247 =>
-        "an anonymous SPL withdrawal's token account must have no delegate and no close authority",
-    AnonymousExitAccountHasData = 8248 =>
-        "an anonymous SOL withdrawal must leave to a system account without data",
-    AnonymousExitTokenAccountOnCurve = 8249 =>
-        "an anonymous SPL withdrawal's token account address must be off the ed25519 curve",
     AnonymousExitTokenAccountInvalid = 8250 =>
         "an anonymous SPL withdrawal's destination is no initialized token program account",
     OutputBodyLength = 8253 => "a ring output body exceeds its length prefix",

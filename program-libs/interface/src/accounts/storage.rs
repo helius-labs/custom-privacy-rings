@@ -6,9 +6,6 @@
 //! rule reads therefore retires every earlier root at once, and any other write keeps the outgoing root
 //! for a proof in flight.
 //!
-//! Read after `docs/design/records-and-roots.md`, `program-libs/interface/src/accounts/member_registry.rs`.
-//! Read before `program-libs/interface/src/accounts/tracking.rs`, `programs/storage/src/instructions/update.rs`.
-//!
 //! Invariants:
 //! 1. An update whose apply proof sets the restrictive bit retires every earlier root in the same instruction, and a proof in flight under one of them fails and proves again. The bit is set when a write clears a grant bit, sets a deny bit, masks a private list, tightens a mint setting or changes an asset limit, and the statement binds it.
 //! 2. Any other update keeps the outgoing root for `grace_slots` and over a full history evicts the oldest kept root, so routine writes never stall. Every served root then reads each policy field no more permissive than the newest root, and rules are monotone in those fields, so a kept root admits no transfer the newest refuses.
@@ -142,17 +139,23 @@ impl StorageRegistry {
         [Self::SEED, creator.as_ref(), &registry_id.0]
     }
 
-    /// Holds only the sentinel root at revision zero.
+    /// Host only, the program writes the fields into the account data with `init`.
+    #[cfg(not(target_os = "solana"))]
     pub fn new(authority: Address, ix: &InitializeIxData) -> Self {
         let mut registry = Self::zeroed();
-        registry.discriminator = Self::DISCRIMINATOR;
-        registry.authority = authority;
-        registry.grace_slots = ix.grace_slots;
-        registry.ring_id = ix.ring_id;
-        registry.tracking_registry = ix.tracking_registry;
-        registry.next_index = 1u64.to_le_bytes();
-        registry.roots[0].hash = MEMBER_REGISTRY_EMPTY_ROOT;
+        registry.init(authority, ix);
         registry
+    }
+
+    /// Holds only the sentinel root at revision zero, written into zeroed account data.
+    pub fn init(&mut self, authority: Address, ix: &InitializeIxData) {
+        self.discriminator = Self::DISCRIMINATOR;
+        self.authority = authority;
+        self.grace_slots = ix.grace_slots;
+        self.ring_id = ix.ring_id;
+        self.tracking_registry = ix.tracking_registry;
+        self.next_index = 1u64.to_le_bytes();
+        self.roots[0].hash = MEMBER_REGISTRY_EMPTY_ROOT;
     }
 
     pub const fn grace_slots(&self) -> u64 {
@@ -189,12 +192,13 @@ impl StorageRegistry {
             floor => floor,
         };
         // 2. The proven restrictive bit picks the retirement, the grace reaches only a batch that tightens nothing.
-        let retirement = match data.apply.restrictive() {
-            true => Retirement::Immediate,
-            false => Retirement::Graced {
+        let retirement = if data.apply.restrictive() {
+            Retirement::Immediate
+        } else {
+            Retirement::Graced {
                 slot,
                 grace_slots: self.grace_slots(),
-            },
+            }
         };
         // 3. A refusal in the history leaves the floor and the next index unwritten.
         advance_roots(
@@ -376,18 +380,25 @@ mod tests {
     use super::*;
     use crate::{ApplyRecordsIxData, RecordWriteData, WriteRecordsIxData};
 
-    fn dummy_update(apply: &ApplyRecordsIxData) -> StorageUpdateIxData<'_> {
+    fn write() -> RecordWriteData {
+        RecordWriteData {
+            member: [1; 32],
+            lists: WriteRecordsIxData {
+                mask: 1u64.to_le_bytes(),
+                value: 1u64.to_le_bytes(),
+            },
+            mint_policy: crate::mint_policy_write(None),
+        }
+    }
+
+    fn dummy_update<'a>(
+        apply: &'a ApplyRecordsIxData,
+        writes: &'a [RecordWriteData],
+    ) -> StorageUpdateIxData<'a> {
         StorageUpdateIxData {
             revision: Revision::from(0),
-            writes: vec![RecordWriteData {
-                member: [1; 32],
-                lists: WriteRecordsIxData {
-                    mask: 1u64.to_le_bytes(),
-                    value: 1u64.to_le_bytes(),
-                },
-                mint_policy: crate::mint_policy_write(None),
-            }],
-            asset_writes: Vec::new(),
+            writes,
+            asset_writes: &[],
             tracking_revision: None,
             apply,
         }
@@ -405,13 +416,14 @@ mod tests {
             },
         );
         let before = registry;
+        let writes = [write()];
         for bad_index in [0, QUAD_CAPACITY + 1, u64::MAX] {
             let apply = ApplyRecordsIxData {
                 new_root: [9; 32],
                 new_next_index: bad_index.to_le_bytes(),
                 ..ApplyRecordsIxData::zeroed()
             };
-            let data = dummy_update(&apply);
+            let data = dummy_update(&apply, &writes);
             assert_eq!(
                 registry.update(RootUpdate {
                     slot: 10,
@@ -427,7 +439,7 @@ mod tests {
             new_next_index: QUAD_CAPACITY.to_le_bytes(),
             ..ApplyRecordsIxData::zeroed()
         };
-        let data = dummy_update(&apply);
+        let data = dummy_update(&apply, &writes);
         registry
             .update(RootUpdate {
                 slot: 10,

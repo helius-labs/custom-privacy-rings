@@ -13,12 +13,10 @@
 //!
 //! The trailing accounts hold the registries the write names, then each registry a salted list of the
 //! proposed account reads that the write does not name. Accounts match by address.
-//!
-//! Read after `instructions/verification/policy_binding.rs`. Read before `program-libs/interface/src/accounts/state.rs`.
 
 use custom_ring_interface::{
-    CustomRingError, PolicySourceIxData, PolicyTableIxData, PolicyUpdate, RingPolicy, RingRole,
-    SourceSlot, UpdatePolicyIxData,
+    CustomRingError, PolicyTableIxData, PolicyUpdate, RingPolicy, RingRole, SourceSlot, SourceSpec,
+    UpdatePolicyIxData,
 };
 use pinocchio::{
     sysvars::{clock::Clock, Sysvar},
@@ -30,7 +28,7 @@ use zolana_ring_policy::ListId;
 use crate::instructions::{
     instruction_runtime::parse,
     loader::RoleHolder,
-    policy_binding::{ProposedSources, TableBinding},
+    policy_binding::{source_registry, ProposedSources, TableBinding},
 };
 
 #[inline(never)]
@@ -97,15 +95,18 @@ impl PolicyWrite<'_> {
 
     /// Only a list the rules reference has a source, the own records or one curator.
     #[inline(never)]
-    fn move_source(self, source: PolicySourceIxData) -> ProgramResult {
+    fn move_source(self, source: SourceSpec) -> ProgramResult {
         let list_id =
             ListId::try_from(source.list_id).map_err(|_| CustomRingError::InvalidListId)?;
-        let (registry, named) = match (source.source, self.trailing) {
-            (0, _) => (Address::default(), Named::Nothing),
-            (1, [curator, ..]) if *curator.address() != Address::default() => {
-                (*curator.address(), Named::Curator)
-            }
-            _ => return Err(CustomRingError::InvalidSource.into()),
+        // A move names the first trailing curator at most, a table any of them.
+        if source.source > 1 {
+            return Err(CustomRingError::InvalidSource.into());
+        }
+        let registry = source_registry(source.source, self.trailing)?;
+        let named = if source.source == 0 {
+            Named::Nothing
+        } else {
+            Named::Curator
         };
         if self.policy.sources[list_id.slot()].list_id == 0 {
             return Err(CustomRingError::InvalidSource.into());

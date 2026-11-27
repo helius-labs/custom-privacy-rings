@@ -10,8 +10,6 @@
 //!
 //! The run relies on SPP for note membership, unspent nullifiers, value conservation, expiry, and the
 //! activation and pause of `RingConfig`. SPP's proof covers the expanded data through its external data hash.
-//!
-//! Read after `lib.rs`. Read before `instructions/transfer/accounts.rs`, `instructions/transfer/verify.rs`.
 
 use custom_ring_interface::{InstructionTag, RingPolicy, RingRail, RingTransactData};
 use pinocchio::{

@@ -1,6 +1,4 @@
 //! Writes a ring account's first image.
-//!
-//! Read after `instructions/mod.rs`. Read before `instructions/configuration/setup/initialize.rs`.
 
 use custom_ring_interface::RingAccount;
 use pinocchio::{error::ProgramError, AccountView, ProgramResult};

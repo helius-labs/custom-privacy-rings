@@ -16,10 +16,10 @@ use custom_ring_interface::{
     storage::Revision,
     stream::slot_tag,
     tag, AnonymousProofData, AppMessage, CustomRingError, CustomRingProof, FrameExtensions,
-    InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof, RecordForm, RecordKind, Replies,
-    RingOutput, RingPolicy, RingRail, RingTransactData, RootRead, SlotBody, TransferApproval,
-    TransferLayout, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, MIN_REPLY_LEN, RECIPIENT_KEY_LEN,
-    TAGGED_X25519_KEY_LEN, TRANSFER_RECORD_LEN,
+    InProofOwner, InputTrees, NamedRoots, PlainGroth16Proof, RailAuthorization, RecordForm,
+    RecordKind, Replies, RingOutput, RingPolicy, RingRail, RingTransactData, RootRead, SlotBody,
+    TransferApproval, TransferLayout, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, MIN_REPLY_LEN,
+    RECIPIENT_KEY_LEN, TAGGED_X25519_KEY_LEN, TRANSFER_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -300,9 +300,10 @@ impl Fit {
 
     fn of(instructions: &[Instruction], payer: &Address, priority_fee: bool) -> Result<Self> {
         let budget = ComputeBudgetConfig::new(0);
-        let budget = match priority_fee {
-            true => budget.with_priority_fee(1),
-            false => budget,
+        let budget = if priority_fee {
+            budget.with_priority_fee(1)
+        } else {
+            budget
         };
         let size = transaction_size(payer, instructions, budget)?;
         let signers: BTreeSet<_> = instructions
@@ -368,9 +369,10 @@ impl Measured {
 }
 
 const fn fits_column(fits: bool) -> &'static str {
-    match fits {
-        true => "yes",
-        false => "no",
+    if fits {
+        "yes"
+    } else {
+        "no"
     }
 }
 
@@ -417,9 +419,10 @@ impl Transfer {
                     amount: 1,
                     blinding: [11; 32],
                     ring_program_id: None,
-                    data: match load.has_data {
-                        true => Data::new(vec![DataRecord::UtxoData(vec![10; 32])]),
-                        false => Data::default(),
+                    data: if load.has_data {
+                        Data::new(vec![DataRecord::UtxoData(vec![10; 32])])
+                    } else {
+                        Data::default()
                     },
                 }
                 .serialize()?
@@ -433,16 +436,18 @@ impl Transfer {
         let legs = self.legs(frame);
         let interface_transfers: Vec<InterfaceTransfer> =
             legs.iter().map(|(transfer, _)| *transfer).collect();
-        let withdrawal_owners = match policy_roots {
-            true => vec![field; spl_withdrawal_count(&interface_transfers)],
-            false => Vec::new(),
+        let withdrawal_owners = if policy_roots {
+            vec![field; spl_withdrawal_count(&interface_transfers)]
+        } else {
+            Vec::new()
         };
 
         let slots: Vec<RingOutput<'_>> = (0..outputs)
             .map(|slot| {
-                let body = match load.every_body && slot + 1 == outputs {
-                    true => SlotBody::Exit(&exit_body),
-                    false => SlotBody::Recipient(&recipient_body),
+                let body = if load.every_body && slot + 1 == outputs {
+                    SlotBody::Exit(&exit_body)
+                } else {
+                    SlotBody::Recipient(&recipient_body)
                 };
                 RingOutput {
                     hash: &field,
@@ -459,8 +464,8 @@ impl Transfer {
         let reply_len = u16::try_from(load.reply_len)?;
         let reply_region = vec![13u8; load.reply_len * reply_bodies];
         let message_bytes = vec![15u8; load.message_len];
-        let extensions = match load.extensions {
-            true => FrameExtensions {
+        let extensions = if load.extensions {
+            FrameExtensions {
                 data_hash: Some(&field),
                 ring_data_hash: Some(&field),
                 messages: vec![
@@ -472,31 +477,54 @@ impl Transfer {
                 ],
                 cache: None,
                 approval_totals: co_signer.then_some(&field),
-            },
-            false => FrameExtensions::default(),
+            }
+        } else {
+            FrameExtensions::default()
         };
 
         let context = TreeContext {
             utxo_tree_root_index: 0,
             nullifier_tree_root_index: 0,
         };
+        let authorization = match frame {
+            FrameRail::Signer | FrameRail::SignerEntry => RailAuthorization::ConfidentialSigner,
+            FrameRail::InProof => RailAuthorization::ConfidentialInProof(InProofOwner {
+                owner: field,
+                commitment: field,
+                commitment_pok: field,
+            }),
+            FrameRail::Hidden | FrameRail::HiddenEntry => {
+                RailAuthorization::AnonymousHidden(AnonymousProofData {
+                    commitment: field,
+                    commitment_pok: field,
+                    default_owner_tag: frame.entry().then_some(field),
+                })
+            }
+            FrameRail::PublicOwners => RailAuthorization::AnonymousPublic,
+            FrameRail::Delegate => RailAuthorization::Delegate,
+            FrameRail::AnonymousDelegate => RailAuthorization::AnonymousDelegate,
+        };
         let mut data = RingTransactData {
-            rail,
+            authorization,
             n_in: u8::try_from(inputs)?,
             n_out: u8::try_from(outputs)?,
             proof: &proof,
             tracking_revision: revision,
-            own_revision: policy_roots.then_some(revision),
-            policy: policy_roots.then_some(PolicyProof {
-                curator_revision: Some(revision),
-            }),
+            named_roots: if policy_roots {
+                NamedRoots::Policy {
+                    own: revision,
+                    curator: Some(revision),
+                }
+            } else {
+                NamedRoots::TrackingOnly
+            },
             spl_withdrawal_owners: &withdrawal_owners,
-            approval: match co_signer {
-                true => ApprovalMask::OUTFLOW,
-                false => ApprovalMask::default(),
+            approval: if co_signer {
+                ApprovalMask::OUTFLOW
+            } else {
+                ApprovalMask::default()
             },
             no_spend: false,
-            public_owners: frame == FrameRail::PublicOwners,
             expiry_unix_ts: u32::MAX,
             tx_viewing_u: &field,
             salt: &salt,
@@ -525,25 +553,16 @@ impl Transfer {
             recipient_keys: &[],
             vouched: false,
             private_tx_hash: &field,
-            anonymous: frame.hidden_sender().then_some(AnonymousProofData {
-                commitment: &field,
-                commitment_pok: &field,
-                default_owner_tag: frame.entry().then_some(&field),
-            }),
-            in_proof_owner: (frame == FrameRail::InProof).then_some(InProofOwner {
-                owner: &field,
-                commitment: &field,
-                commitment_pok: &field,
-            }),
             spp_proof: &spp_proof,
             nullifiers: &nullifiers,
-            input_trees: match load.second_tree {
-                true => InputTrees::Two {
+            input_trees: if load.second_tree {
+                InputTrees::Two {
                     first: context,
                     second: context,
                     second_inputs: 1,
-                },
-                false => InputTrees::One(context),
+                }
+            } else {
+                InputTrees::One(context)
             },
         };
         let stream = match data.audit_stream() {
@@ -582,40 +601,38 @@ impl Transfer {
         let owner_signers: Vec<Address> =
             (0..self.owners).map(|owner| indexed(0xc0, owner)).collect();
         let input_tree = spr_interface::pda::tree(0);
-        let input_trees = match load.second_tree {
-            true => vec![input_tree, spr_interface::pda::tree(1)],
-            false => vec![input_tree],
+        let input_trees = if load.second_tree {
+            vec![input_tree, spr_interface::pda::tree(1)]
+        } else {
+            vec![input_tree]
         };
         let accounts: Vec<TransactInterfaceTransferAccounts> =
             legs.iter().map(|(_, accounts)| *accounts).collect();
         let expanded = data.transact_ix_data(&config, TransactProof::zeroed())?;
         let spp_cpi_len = 1 + expanded.serialize()?.len();
-        let spp = match delegate {
-            true => {
-                RingAuthorityTransact {
-                    payer,
-                    input_trees,
-                    output_tree: input_tree,
-                    ring_program_id: RING_PROGRAM,
-                    interface_transfer_accounts: accounts,
-                    data: expanded,
-                }
-                .instruction()
-                .accounts
+        let spp = if delegate {
+            RingAuthorityTransact {
+                payer,
+                input_trees,
+                output_tree: input_tree,
+                ring_program_id: RING_PROGRAM,
+                interface_transfer_accounts: accounts,
+                data: expanded,
             }
-            false => {
-                RingTransact {
-                    payer,
-                    input_trees,
-                    output_tree: input_tree,
-                    ring_program_id: RING_PROGRAM,
-                    owner_signers: owner_signers.clone(),
-                    interface_transfer_accounts: accounts,
-                    data: expanded,
-                }
-                .instruction()
-                .accounts
+            .instruction()
+            .accounts
+        } else {
+            RingTransact {
+                payer,
+                input_trees,
+                output_tree: input_tree,
+                ring_program_id: RING_PROGRAM,
+                owner_signers: owner_signers.clone(),
+                interface_transfer_accounts: accounts,
+                data: expanded,
             }
+            .instruction()
+            .accounts
         };
         let mut metas = RingPrefix {
             config: &config,
@@ -647,9 +664,10 @@ impl Transfer {
                 .iter_mut()
                 .for_each(|meta| meta.is_signer = false);
         }
-        let ring_tag = match delegate {
-            true => tag::AUTHORITY_TRANSFER,
-            false => tag::TRANSFER,
+        let ring_tag = if delegate {
+            tag::AUTHORITY_TRANSFER
+        } else {
+            tag::TRANSFER
         };
         let frame_bytes = [&[ring_tag][..], &encoded].concat();
         let frame_len = frame_bytes.len();
@@ -658,9 +676,10 @@ impl Transfer {
             accounts: metas,
             data: frame_bytes,
         };
-        let instructions = match load.program {
-            true => through_program(instruction, co_signer),
-            false => vec![instruction],
+        let instructions = if load.program {
+            through_program(instruction, co_signer)
+        } else {
+            vec![instruction]
         };
         Ok(TransferFit::Measured(Measured {
             fit: Fit::of(&instructions, &payer, load.priority_fee)?,
@@ -674,9 +693,12 @@ impl Transfer {
         &self,
         frame: FrameRail,
     ) -> Vec<(InterfaceTransfer, TransactInterfaceTransferAccounts)> {
-        let destination = |leg: usize| match frame.hidden_sender() {
-            true => indexed(0xd0, 0),
-            false => indexed(0xd0, leg),
+        let destination = |leg: usize| {
+            if frame.hidden_sender() {
+                indexed(0xd0, 0)
+            } else {
+                indexed(0xd0, leg)
+            }
         };
         (0..self.legs)
             .filter_map(|leg| match self.load.legs {
@@ -790,9 +812,10 @@ impl RingPrefix<'_> {
         );
         if self.co_signer {
             metas.push(AccountMeta::new_readonly(COSIGNER_RECORD, false));
-            metas.push(match self.approved {
-                true => AccountMeta::new_readonly(INSTRUCTIONS_SYSVAR, false),
-                false => AccountMeta::new_readonly(COSIGNER, true),
+            metas.push(if self.approved {
+                AccountMeta::new_readonly(INSTRUCTIONS_SYSVAR, false)
+            } else {
+                AccountMeta::new_readonly(COSIGNER, true)
             });
         }
         metas
@@ -901,11 +924,12 @@ fn table() -> Result<String> {
                     )?;
                     continue;
                 };
-                let widest = match frame.has_owner_run() && load.name == FULL.name {
-                    true => transfer
+                let widest = if frame.has_owner_run() && load.name == FULL.name {
+                    transfer
                         .widest_settled_run()?
-                        .map_or("none".to_owned(), |(owners, _)| owners.to_string()),
-                    false => "-".to_owned(),
+                        .map_or("none".to_owned(), |(owners, _)| owners.to_string())
+                } else {
+                    "-".to_owned()
                 };
                 let fit = measured.fit;
                 writeln!(
@@ -983,14 +1007,15 @@ fn entry_capacities(table: &mut String) -> Result<()> {
                         writeln!(table, "| {}x{} | {} | {} | {legs} | {name} | none | - | - | - | - | - | no | {limit} |", shape.n_inputs(), shape.n_outputs(), frame.name(), load.name)?;
                         break;
                     };
-                    let over = match owners == shape.n_inputs() {
-                        true => "inputs".to_owned(),
-                        false => (Transfer {
+                    let over = if owners == shape.n_inputs() {
+                        "inputs".to_owned()
+                    } else {
+                        (Transfer {
                             owners: owners + 1,
                             ..transfer
                         })
                         .measure()?
-                        .limit(),
+                        .limit()
                     };
                     writeln!(
                         table,
@@ -1115,9 +1140,10 @@ impl Transfer {
                 None => high = middle - 1,
             }
         }
-        let over = match low == *range.end() {
-            true => "wire field".to_owned(),
-            false => at(low + 1).refusal(),
+        let over = if low == *range.end() {
+            "wire field".to_owned()
+        } else {
+            at(low + 1).refusal()
         };
         Widening::Settled {
             value: low,

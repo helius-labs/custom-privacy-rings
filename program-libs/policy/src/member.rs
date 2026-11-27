@@ -4,8 +4,6 @@
 //! enrolled salt for its private one. A salted key names its owner only to a holder of the salt, so a
 //! private list entry shows no wallet in public. The registration circuit refuses a zero salt, so no
 //! private record shares the public key.
-//!
-//! Read after `program-libs/policy/src/list.rs`. Read before `program-libs/policy/src/mint.rs`.
 
 use solana_address::Address;
 use spr_hasher::{

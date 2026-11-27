@@ -2,9 +2,6 @@
 //!
 //! `WriteRecordsIxData::entry_within` holds a list write to its writer's lists and its value inside
 //! its mask. The apply circuit takes the chained value as given, a value past the mask would reach the tree.
-//!
-//! Read after `program-libs/interface/src/accounts/state.rs`. Read before `program-libs/interface/src/instructions/transact.rs`,
-//! `programs/custom-ring/src/lib.rs`.
 
 use bytemuck::{Pod, Zeroable};
 use solana_address::Address;
@@ -93,7 +90,7 @@ pub struct InitializeIxData {
     pub kind: RingKind,
     pub roles: RingRoles,
     /// Required on a policy ring.
-    pub policy: Option<PolicyBindingIxData>,
+    pub policy: Option<PolicyTableIxData>,
 }
 
 /// The admin and the new key sign.
@@ -167,24 +164,13 @@ pub struct PolicyTableIxData {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct PolicyBindingIxData {
-    pub table: PolicyTableIxData,
-}
-
-/// `source` 0 is the ring's own records, 1 the single trailing curator `StorageRegistry`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
-pub struct PolicySourceIxData {
-    pub list_id: u8,
-    pub source: u8,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, SchemaRead, SchemaWrite)]
 #[wincode(tag_encoding = "u8")]
 pub enum UpdatePolicyIxData {
     #[wincode(tag = 0)]
     Rules(PolicyTableIxData),
+    /// `source` 0 or 1, one trailing curator at most.
     #[wincode(tag = 1)]
-    Source(PolicySourceIxData),
+    Source(SourceSpec),
     /// One trailing records registry under any authority.
     #[wincode(tag = 2)]
     Records,

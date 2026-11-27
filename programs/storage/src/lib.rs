@@ -7,11 +7,6 @@
 //! stay apart because a stale apply proof fails on revision, and one shared tree would let
 //! enrollment traffic delay a restrictive write.
 //!
-//! Read after `docs/design/records-and-roots.md`, `program-libs/interface/src/accounts/storage.rs`,
-//! `program-libs/interface/src/accounts/tracking.rs`. Read before
-//! `programs/storage/src/loader.rs`, `programs/storage/src/instructions/update.rs`,
-//! `programs/storage/src/instructions/apply_enrollments.rs`.
-//!
 //! Guarantees:
 //! 1. A root enters a registry only with an apply proof over the registry's current root, next index and revision, and the program chains the writes that proof covers.
 //! 2. A policy root moves under the registry authority's signature alone. A tracking root moves under the registry authority's signature, over writes each owner signed.

@@ -1,6 +1,8 @@
 //! The one ring proof of a transfer, one request over the audit and policy sections.
 
-use custom_ring_interface::{key_catalog::RingCircuit, CustomRingProof, ParsedTransact};
+use custom_ring_interface::{
+    key_catalog::RingCircuit, CustomRingProof, ParsedTransact, RailAuthorization,
+};
 use spr_client::AsyncRpc;
 use spr_hasher::primitives::solana_owner_identity;
 use spr_transaction::TransactionError;
@@ -39,9 +41,10 @@ impl Assembled {
         let parsed = ParsedTransact::new(parts.data()?)?;
         let stream = parsed.audit_stream();
         let class = stream.key.class();
-        let entries = match parts.entry {
-            true => audit.entry_openings(class)?,
-            false => Vec::new(),
+        let entries = if parts.entry {
+            audit.entry_openings(class)?
+        } else {
+            Vec::new()
         };
         let transfer = TransferParams {
             public_input_hash: self.public_input_hash,
@@ -63,9 +66,12 @@ impl Assembled {
             signers: signer_identities(owner_run, class)?,
             rows: frame.policy.rows.clone(),
             private_tx_hash: parts.private_tx_hash,
-            in_proof: parts.in_proof_owner.is_some(),
-            hidden: parts.anonymous.is_some(),
-            delegate: parts.rail.is_delegate(),
+            in_proof: matches!(
+                parts.authorization,
+                RailAuthorization::ConfidentialInProof(_)
+            ),
+            hidden: matches!(parts.authorization, RailAuthorization::AnonymousHidden(_)),
+            delegate: parts.authorization.rail().is_delegate(),
             sender: self.sender,
             delegate_asset: frame.delegate_asset,
             party_identities: self.party_identities.to_vec(),

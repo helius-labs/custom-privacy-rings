@@ -760,7 +760,7 @@ fn list_write(list: ListId) -> RecordWriteData {
 
 fn update_of<'a>(
     revision: u64,
-    writes: Vec<RecordWriteData>,
+    writes: &'a [RecordWriteData],
     apply: &'a ApplyRecordsIxData,
 ) -> StorageUpdateIxData<'a> {
     let private = writes.iter().any(|write| {
@@ -769,18 +769,10 @@ fn update_of<'a>(
     StorageUpdateIxData {
         revision: revision.into(),
         writes,
-        asset_writes: Vec::new(),
+        asset_writes: &[],
         tracking_revision: private.then_some(Revision::from(0)),
         apply,
     }
-}
-
-fn update_data<'a>(
-    revision: u64,
-    list: ListId,
-    apply: &'a ApplyRecordsIxData,
-) -> StorageUpdateIxData<'a> {
-    update_of(revision, vec![list_write(list)], apply)
 }
 
 fn public_registry(grace_slots: u64) -> StorageRegistry {
@@ -814,7 +806,7 @@ fn an_allow_list_addition_keeps_grace_and_a_block_list_addition_ends_every_older
     registry
         .update(RootUpdate {
             slot: 1,
-            data: &update_data(0, ListId::Allow, &permissive),
+            data: &update_of(0, &[list_write(ListId::Allow)], &permissive),
         })
         .unwrap();
     assert!(registry.root(0.into(), 1).is_ok());
@@ -823,7 +815,7 @@ fn an_allow_list_addition_keeps_grace_and_a_block_list_addition_ends_every_older
     registry
         .update(RootUpdate {
             slot: 1,
-            data: &update_data(1, ListId::Block, &restrictive),
+            data: &update_of(1, &[list_write(ListId::Block)], &restrictive),
         })
         .unwrap();
     assert_eq!(registry.root(1.into(), 1), Err(StorageError::RootExpired));
@@ -840,7 +832,7 @@ fn a_permissive_update_over_a_full_history_evicts_the_oldest_root() {
         registry
             .update(RootUpdate {
                 slot: 1,
-                data: &update_data(revision, ListId::Allow, &apply),
+                data: &update_of(revision, &[list_write(ListId::Allow)], &apply),
             })
             .unwrap();
     }
@@ -850,7 +842,11 @@ fn a_permissive_update_over_a_full_history_evicts_the_oldest_root() {
     registry
         .update(RootUpdate {
             slot: 2,
-            data: &update_data(newest, ListId::Block, &restrictive_apply_ix()),
+            data: &update_of(
+                newest,
+                &[list_write(ListId::Block)],
+                &restrictive_apply_ix(),
+            ),
         })
         .unwrap();
     assert_eq!(
@@ -862,7 +858,8 @@ fn a_permissive_update_over_a_full_history_evicts_the_oldest_root() {
 #[test]
 fn update_data_round_trips_and_refuses_no_writes() {
     let apply = apply_ix();
-    let data = update_data(7, ListId::Block, &apply);
+    let writes = [list_write(ListId::Block)];
+    let data = update_of(7, &writes, &apply);
     let encoded = data.encode().unwrap();
     assert_eq!(StorageUpdateIxData::parse(&encoded), Ok(data));
     let mut no_writes = encoded;
@@ -876,15 +873,18 @@ fn update_data_round_trips_and_refuses_no_writes() {
 #[test]
 fn a_mint_settings_tag_above_one_is_no_entry() {
     let apply = apply_ix();
-    let mut data = update_data(0, ListId::Reader, &apply);
-    data.writes[0].mint_policy[0] = 2;
+    let mut writes = [list_write(ListId::Reader)];
+    writes[0].mint_policy[0] = 2;
+    let data = update_of(0, &writes, &apply);
     assert!(data.entries().next().unwrap().is_err());
 }
 
 #[test]
 fn the_restrictive_byte_has_one_encoding() {
     let apply = restrictive_apply_ix();
-    let encoded = update_data(0, ListId::Block, &apply).encode().unwrap();
+    let encoded = update_of(0, &[list_write(ListId::Block)], &apply)
+        .encode()
+        .unwrap();
     assert!(StorageUpdateIxData::parse(&encoded)
         .unwrap()
         .apply
@@ -900,7 +900,8 @@ fn the_restrictive_byte_has_one_encoding() {
 #[test]
 fn private_writes_require_a_tracking_pin_before_any_root_changes() {
     let apply = restrictive_apply_ix();
-    let data = update_data(0, ListId::PrivateBlock, &apply);
+    let writes = [list_write(ListId::PrivateBlock)];
+    let data = update_of(0, &writes, &apply);
     let mut public = public_registry(10);
     let before = public;
     assert_eq!(
@@ -915,7 +916,7 @@ fn private_writes_require_a_tracking_pin_before_any_root_changes() {
         let mut source = pinned_registry(ring_id);
         let before = source;
         assert_eq!(source.newest().hash, MEMBER_REGISTRY_EMPTY_ROOT);
-        let stale = update_data(1, ListId::PrivateBlock, &apply);
+        let stale = update_of(1, &writes, &apply);
         assert_eq!(
             source.update(RootUpdate {
                 slot: 1,
@@ -933,8 +934,9 @@ fn private_updates_keep_the_highest_tracking_floor_and_retire_old_roots() {
     let (apply, restrictive) = (apply_ix(), restrictive_apply_ix());
     for ring_id in [[3; 32], [0; 32]] {
         let mut source = pinned_registry(ring_id);
+        let writes = [list_write(ListId::PrivateBlock)];
         for (revision, tracking, floor) in [(0, 5, 5), (1, 3, 5), (2, 8, 8)] {
-            let mut data = update_data(revision, ListId::PrivateBlock, &restrictive);
+            let mut data = update_of(revision, &writes, &restrictive);
             data.tracking_revision = Some(Revision::from(tracking));
             source
                 .update(RootUpdate {
@@ -951,14 +953,14 @@ fn private_updates_keep_the_highest_tracking_floor_and_retire_old_roots() {
         source
             .update(RootUpdate {
                 slot: 1,
-                data: &update_data(3, ListId::Block, &restrictive),
+                data: &update_of(3, &[list_write(ListId::Block)], &restrictive),
             })
             .unwrap();
         assert_eq!(source.tracking_floor, Revision::from(8));
         source
             .update(RootUpdate {
                 slot: 1,
-                data: &update_data(4, ListId::Reader, &apply),
+                data: &update_of(4, &[list_write(ListId::Reader)], &apply),
             })
             .unwrap();
         assert_eq!(source.tracking_floor, Revision::from(8));
@@ -969,8 +971,9 @@ fn private_updates_keep_the_highest_tracking_floor_and_retire_old_roots() {
 #[test]
 fn private_masks_need_a_tracking_row_even_when_the_write_clears_the_bit() {
     let apply = restrictive_apply_ix();
-    let mut data = update_data(0, ListId::PrivateBlock, &apply);
-    data.writes[0].lists.value = [0; 8];
+    let mut writes = [list_write(ListId::PrivateBlock)];
+    writes[0].lists.value = [0; 8];
+    let mut data = update_of(0, &writes, &apply);
     assert_eq!(data.private_writes(), Ok(1));
     assert!(StorageUpdateIxData::parse(&data.encode().unwrap()).is_ok());
     data.tracking_revision = None;
@@ -983,14 +986,16 @@ fn asset_preimages_exempt_only_the_matching_private_write() {
     let mint = key(9);
     let mut asset = list_write(ListId::PrivateBlock);
     asset.member = *Member::asset(&mint).unwrap().as_bytes();
-    let mut data = update_of(0, vec![asset, list_write(ListId::PrivateBlock)], &apply);
-    data.asset_writes = vec![AssetWrite {
+    let writes = [asset, list_write(ListId::PrivateBlock)];
+    let exempt = [AssetWrite {
         write_index: 0,
         mint,
     }];
+    let mut data = update_of(0, &writes, &apply);
+    data.asset_writes = &exempt;
     assert_eq!(data.private_writes(), Ok(0b10));
     assert!(StorageUpdateIxData::parse(&data.encode().unwrap()).is_ok());
-    data.writes.pop();
+    data.writes = &writes[..1];
     data.tracking_revision = None;
     assert_eq!(data.private_writes(), Ok(0));
     assert!(StorageUpdateIxData::parse(&data.encode().unwrap()).is_ok());
@@ -1004,14 +1009,22 @@ fn asset_preimages_exempt_only_the_matching_private_write() {
             mint: key(8),
         },
     ] {
-        data.asset_writes = vec![invalid];
-        assert_eq!(data.private_writes(), Err(StorageError::InvalidAssetWrite));
+        let invalid = [invalid];
+        let refused = StorageUpdateIxData {
+            asset_writes: &invalid,
+            ..data
+        };
+        assert_eq!(
+            refused.private_writes(),
+            Err(StorageError::InvalidAssetWrite)
+        );
     }
-    data.asset_writes = vec![AssetWrite {
-        write_index: 0,
-        mint,
+    data.asset_writes = &exempt;
+    let public = [RecordWriteData {
+        lists: list_write(ListId::Block).lists,
+        ..asset
     }];
-    data.writes[0].lists = list_write(ListId::Block).lists;
+    data.writes = &public;
     assert!(data.entries().all(|entry| entry.is_ok()));
     assert_eq!(data.private_writes(), Err(StorageError::InvalidAssetWrite));
 }
@@ -1022,16 +1035,21 @@ fn asset_write_indices_are_distinct_and_in_increasing_order() {
     let mint = key(9);
     let mut asset = list_write(ListId::PrivateBlock);
     asset.member = *Member::asset(&mint).unwrap().as_bytes();
-    let mut data = update_of(0, vec![asset, asset], &apply);
+    let writes = [asset, asset];
+    let mut data = update_of(0, &writes, &apply);
     for indexes in [[0, 0], [1, 0], [0, 2]] {
-        data.asset_writes = indexes
-            .map(|write_index| AssetWrite { write_index, mint })
-            .to_vec();
-        assert_eq!(data.private_writes(), Err(StorageError::InvalidAssetWrite));
+        let assets = indexes.map(|write_index| AssetWrite { write_index, mint });
+        let refused = StorageUpdateIxData {
+            asset_writes: &assets,
+            ..data
+        };
+        assert_eq!(
+            refused.private_writes(),
+            Err(StorageError::InvalidAssetWrite)
+        );
     }
-    data.asset_writes = [0, 1]
-        .map(|write_index| AssetWrite { write_index, mint })
-        .to_vec();
+    let assets = [0, 1].map(|write_index| AssetWrite { write_index, mint });
+    data.asset_writes = &assets;
     data.tracking_revision = None;
     assert_eq!(data.private_writes(), Ok(0));
     assert!(data.encode().is_ok());
@@ -1040,7 +1058,8 @@ fn asset_write_indices_are_distinct_and_in_increasing_order() {
 #[test]
 fn a_public_update_carries_no_tracking_revision() {
     let apply = apply_ix();
-    let mut data = update_data(0, ListId::Block, &apply);
+    let writes = [list_write(ListId::Block)];
+    let mut data = update_of(0, &writes, &apply);
     let encoded = data.encode().unwrap();
     data.tracking_revision = Some(Revision::from(0));
     assert_eq!(data.encode(), Err(StorageError::InvalidTrackingRegistry));
@@ -1056,7 +1075,8 @@ fn a_public_update_carries_no_tracking_revision() {
 #[test]
 fn the_parser_reads_a_tracking_revision_exactly_when_a_write_is_private() {
     let apply = restrictive_apply_ix();
-    let mut data = update_data(0, ListId::PrivateBlock, &apply);
+    let writes = [list_write(ListId::PrivateBlock)];
+    let mut data = update_of(0, &writes, &apply);
     for revision in [0, u64::from(u32::MAX) + 1, u64::MAX] {
         data.tracking_revision = Some(Revision::from(revision));
         let encoded = data.encode().unwrap();
@@ -1080,10 +1100,11 @@ fn the_parser_reads_a_tracking_revision_exactly_when_a_write_is_private() {
 #[test]
 fn public_update_wire_has_no_tracking_revision() {
     let apply = apply_ix();
-    let data = update_data(7, ListId::Block, &apply);
+    let writes = [list_write(ListId::Block)];
+    let data = update_of(7, &writes, &apply);
     let mut expected = 7u64.to_le_bytes().to_vec();
     expected.push(1);
-    expected.extend_from_slice(bytemuck::cast_slice(&data.writes));
+    expected.extend_from_slice(bytemuck::cast_slice(data.writes));
     expected.push(0);
     expected.extend_from_slice(bytemuck::bytes_of(&apply));
     assert_eq!(data.encode().unwrap(), expected);
@@ -1221,7 +1242,8 @@ fn storage_update_refuses_revision_overflow() {
     let mut registry = public_registry(10);
     registry.roots[0].revision = Revision::from(u64::MAX);
     let before = registry;
-    let data = update_data(u64::MAX, ListId::Allow, &apply);
+    let writes = [list_write(ListId::Allow)];
+    let data = update_of(u64::MAX, &writes, &apply);
     assert_eq!(
         registry.update(RootUpdate {
             slot: 1,

@@ -74,8 +74,8 @@ use std::{
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use custom_ring_cli::{wait_for, Landing, ModeName, Probe};
 use custom_ring_interface::{
-    AnonymousProofData, CustomRingError, RingMode, RingPolicy, RingRail, RingRole,
-    RingTransactData, RING_POLICY, RING_POLICY_PDA_SEED,
+    AnonymousProofData, CustomRingError, RailAuthorization, RingMode, RingPolicy, RingRail,
+    RingRole, RingTransactData, RING_POLICY, RING_POLICY_PDA_SEED,
 };
 use custom_ring_test_validator::{
     cli::{merged, RingProject, RingToml},
@@ -447,7 +447,10 @@ fn assert_anonymous_spp_rail(instruction: &Instruction, owner: &[u8; 32]) -> Res
         "the in-proof owner proves on SPP's anonymous rail"
     );
     ensure!(
-        data.in_proof_owner.map(|published| *published.owner) == Some(*owner),
+        matches!(
+            data.authorization,
+            RailAuthorization::ConfidentialInProof(published) if published.owner == *owner
+        ),
         "the frame publishes the in-proof owner"
     );
     Ok(())
@@ -552,9 +555,12 @@ fn opened(audited: &AuditedTransaction) -> Vec<Opened> {
 fn ring_amounts(audited: &AuditedTransaction) -> Result<Vec<u64>> {
     opened(audited)
         .into_iter()
-        .map(|opened| match opened.exit {
-            false => Ok(opened.amount),
-            true => Err(anyhow!("slot {} left the ring", opened.slot_index)),
+        .map(|opened| {
+            if opened.exit {
+                Err(anyhow!("slot {} left the ring", opened.slot_index))
+            } else {
+                Ok(opened.amount)
+            }
         })
         .collect()
 }

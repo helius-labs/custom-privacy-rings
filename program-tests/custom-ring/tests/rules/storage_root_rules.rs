@@ -5,8 +5,8 @@ use custom_ring_interface::{
     storage_instruction::InitializeTrackingIxData,
     tag,
     tracking::TrackingRegistry,
-    CustomRingError, PolicyTableIxData, RingPolicy, RingRail, RingRole, RingTransactData,
-    SourceSpec, UpdatePolicyIxData, STORAGE_PROGRAM_ID,
+    CustomRingError, NamedRoots, PolicyTableIxData, RingPolicy, RingRail, RingRole,
+    RingTransactData, SourceSpec, UpdatePolicyIxData, STORAGE_PROGRAM_ID,
 };
 use solana_address::Address;
 use solana_instruction::AccountMeta;
@@ -81,10 +81,16 @@ fn a_policy_transfer_proves_under_a_live_storage_root() {
         &[root(1, [0x0d; 32]), retired(0, [0x0e; 32], 1_000)],
     );
     let mut data = fixture.transfer(RingRail::Confidential, 2, 2, true);
-    data.own_revision = Some(Revision::from(1));
+    data.named_roots = NamedRoots::Policy {
+        own: Revision::from(1),
+        curator: None,
+    };
     reaches_verification(transfer_reading(&mut ring, &[RECORDS], &data));
     // A retired root verifies until its registry expiry.
-    data.own_revision = Some(Revision::from(0));
+    data.named_roots = NamedRoots::Policy {
+        own: Revision::from(0),
+        curator: None,
+    };
     ring.warp(999);
     reaches_verification(transfer_reading(&mut ring, &[RECORDS], &data));
     ring.warp(1_000);
@@ -99,7 +105,10 @@ fn a_curator_revocation_refuses_the_next_subscriber_transfer() {
     let fixture = Fixture::new();
     let mut ring = subscriber_ring();
     let mut data = fixture.transfer(RingRail::Confidential, 2, 2, true);
-    data.policy.as_mut().unwrap().curator_revision = Some(Revision::from(4));
+    data.named_roots = NamedRoots::Policy {
+        own: Revision::default(),
+        curator: Some(Revision::from(4)),
+    };
     reaches_verification(transfer_reading(&mut ring, &[RECORDS, CURATOR], &data));
     ring.apply_immediate(CURATOR, [0x0b; 32]);
     refused(
@@ -115,7 +124,10 @@ fn a_registry_the_ring_does_not_bind_is_refused() {
     let stranger = Address::new_from_array([0x5d; 32]);
     ring.store_registry(stranger, &Keypair::new().pubkey(), &[root(4, [0x0c; 32])]);
     let mut data = fixture.transfer(RingRail::Confidential, 2, 2, true);
-    data.policy.as_mut().unwrap().curator_revision = Some(Revision::from(4));
+    data.named_roots = NamedRoots::Policy {
+        own: Revision::default(),
+        curator: Some(Revision::from(4)),
+    };
     for registries in [[stranger, CURATOR], [RECORDS, stranger], [CURATOR, RECORDS]] {
         refused(
             transfer_reading(&mut ring, &registries, &data),
@@ -150,7 +162,10 @@ fn update_policy_rebinds_the_records_to_a_registry_of_any_authority() {
     assert_eq!(after.policy_hash, before.policy_hash);
     assert_eq!(after.generation(), before.generation() + 1);
     let mut data = fixture.transfer(RingRail::Confidential, 2, 2, true);
-    data.own_revision = Some(Revision::from(3));
+    data.named_roots = NamedRoots::Policy {
+        own: Revision::from(3),
+        curator: None,
+    };
     refused(
         transfer_reading(&mut ring, &[RECORDS], &data),
         CustomRingError::UnboundRegistry,
@@ -290,7 +305,10 @@ fn a_curated_public_ring_reads_a_curator_pinned_to_its_own_tracking_registry() {
         u64::MAX,
     );
     let mut data = fixture.transfer(RingRail::Confidential, 2, 2, true);
-    data.policy.as_mut().unwrap().curator_revision = Some(Revision::from(4));
+    data.named_roots = NamedRoots::Policy {
+        own: Revision::default(),
+        curator: Some(Revision::from(4)),
+    };
     data.tracking_revision = Revision::from(2);
     reaches_verification(transfer_reading(&mut ring, &[RECORDS, CURATOR], &data));
 }
@@ -321,7 +339,10 @@ fn a_private_list_mapped_to_a_curator_on_another_tracking_registry_is_refused() 
     .unwrap();
     pin_registry(&mut ring, CURATOR, Address::new_from_array([0x61; 32]), 0);
     let mut data = fixture.transfer(RingRail::Confidential, 2, 2, true);
-    data.policy.as_mut().unwrap().curator_revision = Some(Revision::from(4));
+    data.named_roots = NamedRoots::Policy {
+        own: Revision::default(),
+        curator: Some(Revision::from(4)),
+    };
     refused(
         transfer_reading(&mut ring, &[RECORDS, CURATOR], &data),
         CustomRingError::SaltedSourceOtherTracking,

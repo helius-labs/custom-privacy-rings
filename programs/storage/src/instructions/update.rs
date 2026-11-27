@@ -4,10 +4,6 @@
 //! root and verifies a proof of each batch of writes. Every write travels in instruction data, and a
 //! reader rebuilds the tree from them.
 //!
-//! Read after `programs/storage/src/lib.rs`, `program-libs/interface/src/accounts/storage.rs`,
-//! `program-libs/interface/src/instructions/storage.rs`. Read before
-//! `prover/circuits/registry/apply_records.go`.
-//!
 //! Guarantees:
 //! 1. The new root and next index follow from the current ones by exactly the instruction's writes, in order.
 //! 2. A batch the proof marks restrictive retires every earlier root in the instruction, any other batch keeps the outgoing root for the registry's grace.

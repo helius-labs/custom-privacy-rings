@@ -2,8 +2,6 @@
 //!
 //! The circuit computes these values. A wallet computes the same ones for its approval bits ahead of
 //! a proof, and the program derives no threshold.
-//!
-//! Read after `program-libs/policy/src/asset_limits.rs`. Read before `program-libs/policy/src/approval_totals.rs`, `prover/circuits/policy/outflow.go`.
 
 use crate::MintPolicy;
 
@@ -262,10 +260,7 @@ impl ApprovalInputs<'_> {
             let threshold = policy_of(&public.asset).withdrawal_threshold;
             threshold != 0 && public.gross > u128::from(threshold)
         });
-        let bit = |set: bool, mask: ApprovalMask| match set {
-            true => mask,
-            false => ApprovalMask::EMPTY,
-        };
+        let bit = |set: bool, mask: ApprovalMask| if set { mask } else { ApprovalMask::EMPTY };
         bit(over_outflow, ApprovalMask::OUTFLOW)
             .union(bit(over_withdrawal, ApprovalMask::WITHDRAWAL))
     }

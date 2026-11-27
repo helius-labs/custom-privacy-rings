@@ -7,9 +7,9 @@ use custom_ring_interface::{
     },
     tag,
     tracking::TrackingRegistry,
-    CoSignScope, CoSigner, CustomRingError, InitializeIxData, InstructionTag, PolicyBindingIxData,
-    PolicySourceIxData, PolicyTableIxData, RingKind, RingMode, RingPolicy, RingRole,
-    SetPausedIxData, SourceSpec, UpdatePolicyIxData, STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN,
+    CoSignScope, CoSigner, CustomRingError, InitializeIxData, InstructionTag, PolicyTableIxData,
+    RingKind, RingMode, RingPolicy, RingRole, SetPausedIxData, SourceSpec, UpdatePolicyIxData,
+    CO_SIGNER, STORAGE_PROGRAM_ID, TAGGED_X25519_KEY_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{error::InstructionError, AccountMeta, Instruction};
@@ -18,13 +18,13 @@ use solana_transaction_error::TransactionError;
 use spr_account_checks::AccountError;
 use spr_interface::state::RingConfig;
 use zolana_ring_client::EnrollmentRequestEncode;
-use zolana_ring_policy::{ring_id_field, ListId, ListSet, Rule, Subject, TableParts};
+use zolana_ring_policy::{ring_id_field, EncodedRuleTable, ListId, ListSet, Rule, Subject};
 
 use crate::common::{
     allow_list_table, auditor_pubkey, co_signer_record, list_table, policy_pda, program_data_of,
     refused, refused_with, ring_auth, root, rules_write, set_co_signer, set_delegate,
     tracking_registry, within_budget, ClearCoSignerIx, InitializeIx, Ring, Sent, SetCoSignerIx,
-    Setup, UpdateAuthorityIx, UpdatePolicyIx, PROGRAM, RECORDS,
+    Setup, UpdateAuthorityIx, UpdatePolicyIx, PROGRAM, RECORDS, SYSTEM,
 };
 use crate::transact_rules::SPP;
 
@@ -78,9 +78,7 @@ fn policy_config(ring: &Ring) -> InitializeIxData {
         auditor_pubkey: auditor_pubkey(),
         kind: RingKind::Policy,
         roles: ring.roles.addresses(),
-        policy: Some(PolicyBindingIxData {
-            table: allow_list_table(Vec::new()),
-        }),
+        policy: Some(allow_list_table(Vec::new())),
     }
 }
 
@@ -200,11 +198,9 @@ fn the_ring_records_the_slot_it_was_created_in() {
     ring.warp(created);
     let data = InitializeIxData {
         kind: RingKind::Anonymous,
-        policy: Some(PolicyBindingIxData {
-            table: PolicyTableIxData {
-                sources: Vec::new(),
-                rules: Vec::new(),
-            },
+        policy: Some(PolicyTableIxData {
+            sources: Vec::new(),
+            rules: Vec::new(),
         }),
         ..audit_only_config(&ring)
     };
@@ -262,6 +258,37 @@ fn each_co_signer_lives_in_its_own_record() {
     );
     let account: RingPolicy = ring.read(&policy_pda());
     assert_eq!(account.co_signers.covered(), None);
+}
+
+/// An occupied record address opens only as the program's record of the same signer.
+#[test]
+fn a_co_signer_write_over_an_occupied_record_needs_that_signer_s_record() {
+    let mut ring = Ring::new(Setup::AuditOnly);
+    let signer = Address::new_from_array([1; 32]);
+    let set = SetCoSignerIx {
+        payer: ring.payer.pubkey(),
+        authority: ring.roles.cosign_admin.pubkey(),
+        signer,
+        scope: 1,
+    }
+    .instruction();
+    let record = co_signer_record(&signer);
+    let stranger = CoSigner {
+        discriminator: CO_SIGNER,
+        signer: Address::new_from_array([2; 32]),
+        scope: 1,
+        bump: 0,
+    };
+    ring.store(record, SYSTEM, bytemuck::bytes_of(&stranger).to_vec());
+    refused(
+        ring.role_send(RingRole::CosignAdmin, set.clone()),
+        CustomRingError::InvalidCoSignerRecord,
+    );
+    ring.write(&record, &stranger);
+    refused(
+        ring.role_send(RingRole::CosignAdmin, set),
+        CustomRingError::InvalidCoSignerRecord,
+    );
 }
 
 fn appoint(ring: &mut Ring, delegate: &Keypair) -> Sent {
@@ -396,9 +423,7 @@ fn initialize_refuses_each_table_form() {
     for (rule, refusal) in refused_table_forms() {
         let mut ring = uninitialized(Setup::Policy);
         let mut data = policy_config(&ring);
-        data.policy = Some(PolicyBindingIxData {
-            table: own_source_table(&[rule]),
-        });
+        data.policy = Some(own_source_table(&[rule]));
         refused(upgrade_initialize(&mut ring, data), refusal);
         assert_eq!(ring.lamports(&policy_pda()), 0, "{rule:?}");
     }
@@ -428,23 +453,20 @@ fn a_source_write_refuses_each_table_form_it_would_store_again() {
         let mut ring = Ring::new(Setup::Policy);
         let policy = ring.roles.policy.pubkey();
         let mut account: RingPolicy = ring.read(&policy_pda());
-        account.rules = TableParts {
-            rows: &[rule.encoded()],
-        }
-        .encode()
-        .unwrap();
+        account.rules = EncodedRuleTable::from_rows(&[rule.encoded()]).unwrap();
         let referenced = rule.referenced();
         for (slot, list_id) in account.sources.iter_mut().zip(ListId::ALL) {
-            slot.list_id = match referenced.contains(list_id) {
-                true => list_id as u8,
-                false => 0,
+            slot.list_id = if referenced.contains(list_id) {
+                list_id as u8
+            } else {
+                0
             };
         }
         ring.write(&policy_pda(), &account);
         let list_id = referenced.iter().next().unwrap();
         let instruction = UpdatePolicyIx {
             authority: policy,
-            update: UpdatePolicyIxData::Source(PolicySourceIxData {
+            update: UpdatePolicyIxData::Source(SourceSpec {
                 list_id: list_id as u8,
                 source: 0,
             }),
@@ -468,9 +490,7 @@ fn both_policy_writes_take_a_grant_over_several_lists_and_one_denial_per_list() 
     ]);
     let mut ring = uninitialized(Setup::Policy);
     let mut data = policy_config(&ring);
-    data.policy = Some(PolicyBindingIxData {
-        table: table.clone(),
-    });
+    data.policy = Some(table.clone());
     upgrade_initialize(&mut ring, data).expect("consistent list operations");
     let mut ring = Ring::new(Setup::Policy);
     let policy = ring.roles.policy.pubkey();
@@ -621,16 +641,17 @@ fn initialize_refuses_records_of_another_ring() {
             let mut ring = uninitialized(setup);
             let authority = ring.roles.policy.pubkey();
             ring.store_registry_of(ring_id, RECORDS, &authority, &[root(0, [0x0e; 32])]);
-            let table = match setup.kind().has_policy() {
-                true => allow_list_table(Vec::new()),
-                false => PolicyTableIxData {
+            let table = if setup.kind().has_policy() {
+                allow_list_table(Vec::new())
+            } else {
+                PolicyTableIxData {
                     sources: Vec::new(),
                     rules: Vec::new(),
-                },
+                }
             };
             let data = InitializeIxData {
                 kind: setup.kind(),
-                policy: Some(PolicyBindingIxData { table }),
+                policy: Some(table),
                 ..policy_config(&ring)
             };
             refused(
@@ -698,6 +719,49 @@ fn a_curator_source_may_name_any_ring_s_registry() {
     .expect("a foreign ring's registry serves as a curator");
 }
 
+/// A table names the `k`-th trailing curator, a moved source names the own records or the first.
+#[test]
+fn a_source_move_names_no_curator_past_the_first() {
+    let curators = [
+        Address::new_from_array([0x5f; 32]),
+        Address::new_from_array([0x60; 32]),
+    ];
+    let mut ring = Ring::new(Setup::Policy);
+    let policy = ring.roles.policy.pubkey();
+    for curator in curators {
+        ring.store_registry_of([0x71; 32], curator, &policy, &[root(4, [0x0c; 32])]);
+    }
+    let write = |update| {
+        UpdatePolicyIx {
+            authority: policy,
+            update,
+            trailing: &curators,
+        }
+        .instruction()
+    };
+    for source in [2, u8::MAX] {
+        let moved = UpdatePolicyIxData::Source(SourceSpec {
+            list_id: ListId::Allow as u8,
+            source,
+        });
+        refused(
+            ring.role_send(RingRole::Policy, write(moved)),
+            CustomRingError::InvalidSource,
+        );
+    }
+    let second = PolicyTableIxData {
+        sources: vec![SourceSpec {
+            list_id: ListId::Allow as u8,
+            source: 2,
+        }],
+        ..allow_list_table(Vec::new())
+    };
+    ring.role_send(RingRole::Policy, write(UpdatePolicyIxData::Rules(second)))
+        .expect("a table names the second trailing curator");
+    let account: RingPolicy = ring.read(&policy_pda());
+    assert_eq!(account.sources[ListId::Allow.slot()].registry, curators[1]);
+}
+
 struct RoleWrite {
     role: RingRole,
     signer_slot: usize,
@@ -733,7 +797,7 @@ const ROLE_WRITES: [RoleWrite; 8] = [
         instruction: |_, signer, _| {
             UpdatePolicyIx {
                 authority: *signer,
-                update: UpdatePolicyIxData::Source(PolicySourceIxData {
+                update: UpdatePolicyIxData::Source(SourceSpec {
                     list_id: ListId::Allow as u8,
                     source: 0,
                 }),
@@ -996,7 +1060,7 @@ fn a_source_write_names_a_known_list() {
     for list_id in [0, u8::MAX] {
         let instruction = UpdatePolicyIx {
             authority: policy,
-            update: UpdatePolicyIxData::Source(PolicySourceIxData { list_id, source: 0 }),
+            update: UpdatePolicyIxData::Source(SourceSpec { list_id, source: 0 }),
             trailing: &[],
         }
         .instruction();
@@ -1322,7 +1386,7 @@ fn a_nonzero_source_refuses_the_default_curator_address() {
             RingRole::Policy,
             UpdatePolicyIx {
                 authority: policy,
-                update: UpdatePolicyIxData::Source(PolicySourceIxData {
+                update: UpdatePolicyIxData::Source(SourceSpec {
                     list_id: ListId::Allow as u8,
                     source: 1,
                 }),

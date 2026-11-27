@@ -38,9 +38,9 @@ impl<'a> StorageUpdateCodec<'a> for StorageUpdateIxData<'a> {
         let mut data = Vec::new();
         data.extend_from_slice(&self.revision.0);
         data.push(count);
-        data.extend_from_slice(bytemuck::cast_slice(&self.writes));
+        data.extend_from_slice(bytemuck::cast_slice(self.writes));
         data.push(asset_count);
-        data.extend_from_slice(bytemuck::cast_slice(&self.asset_writes));
+        data.extend_from_slice(bytemuck::cast_slice(self.asset_writes));
         if let Some(revision) = self.tracking_revision {
             data.extend_from_slice(&revision.0);
         }
@@ -51,7 +51,7 @@ impl<'a> StorageUpdateCodec<'a> for StorageUpdateIxData<'a> {
     fn private_writes(&self) -> Result<u16, StorageError> {
         RecordWriteClassification {
             entries: self.entries(),
-            asset_writes: &self.asset_writes,
+            asset_writes: self.asset_writes,
         }
         .private_writes()
     }

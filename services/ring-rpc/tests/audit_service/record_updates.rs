@@ -417,7 +417,8 @@ impl Records {
         let (mode, update) = data[0].split_first().expect("update tag");
         let writes = StorageUpdateIxData::parse(update)
             .expect("update data")
-            .writes;
+            .writes
+            .to_vec();
         Flushed {
             accounts: message.static_account_keys().to_vec(),
             signature: transaction.signatures[0],

@@ -1,7 +1,7 @@
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, stream::slot_tag, AnonymousProofData, AppMessage,
-    CustomRingProof, FrameExtensions, InputTrees, PlainGroth16Proof, Replies, RingOutput, SlotBody,
-    MIN_REPLY_LEN, RING_RECORD_LEN,
+    CustomRingProof, FrameExtensions, InputTrees, NamedRoots, PlainGroth16Proof, RailAuthorization,
+    Replies, RingOutput, SlotBody, MIN_REPLY_LEN, RING_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -273,17 +273,19 @@ fn anonymous_transfer_with(
     let keys = vec![8; 32 * outputs];
     let envelope_room = vec![7; 8192];
     let mut data = RingTransactData {
-        rail: RingRail::Anonymous,
+        authorization: RailAuthorization::AnonymousHidden(AnonymousProofData {
+            commitment: field,
+            commitment_pok: field,
+            default_owner_tag: None,
+        }),
         n_in: inputs as u8,
         n_out: outputs as u8,
         proof: &proof,
         tracking_revision: Revision::from(9),
-        own_revision: None,
-        policy: None,
+        named_roots: NamedRoots::TrackingOnly,
         spl_withdrawal_owners: &[],
         approval: ApprovalMask::default(),
         no_spend: false,
-        public_owners: false,
         expiry_unix_ts: u32::MAX,
         tx_viewing_u: &field,
         salt: &salt,
@@ -305,12 +307,6 @@ fn anonymous_transfer_with(
         recipient_keys: &keys,
         vouched: false,
         private_tx_hash: &field,
-        anonymous: Some(AnonymousProofData {
-            commitment: &field,
-            commitment_pok: &field,
-            default_owner_tag: None,
-        }),
-        in_proof_owner: None,
         spp_proof: &spp_proof,
         nullifiers: &nullifiers,
         input_trees: InputTrees::One(TreeContext {

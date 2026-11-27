@@ -4,9 +4,6 @@
 //! instruction carries the restrictive bit and the statement binds it, so a label the writes do not
 //! prove fails verification. A private mask requires its owner's tracking row unless a mint preimage
 //! authenticates an asset key at the same write position.
-//!
-//! Read after `program-libs/interface/src/accounts/storage.rs`, `program-libs/interface/src/accounts/tracking.rs`.
-//! Read before `programs/storage/src/instructions/update.rs`.
 
 use arrayvec::ArrayVec;
 use bytemuck::{Pod, Zeroable};
@@ -203,8 +200,8 @@ pub struct RecordWriteClassification<'a, I> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StorageUpdateIxData<'a> {
     pub revision: Revision,
-    pub writes: Vec<RecordWriteData>,
-    pub asset_writes: Vec<AssetWrite>,
+    pub writes: &'a [RecordWriteData],
+    pub asset_writes: &'a [AssetWrite],
     /// Names the tracking root the selected rows open under, the update raises the floor to it.
     pub tracking_revision: Option<Revision>,
     pub apply: &'a ApplyRecordsIxData,
@@ -441,29 +438,17 @@ impl<'a> ParsedStorageUpdate<'a> {
         let mut bytes = Bytes::new(data, StorageError::InvalidInstructionData);
         let revision = Revision(*bytes.array()?);
         let count = usize::from(storage_write_count(usize::from(bytes.byte()?))?);
-        let writes = bytes.take(count * core::mem::size_of::<RecordWriteData>())?;
+        let writes: &[RecordWriteData] = bytes.pod_slice(count)?;
         // 2. Asset preimages name write positions, their hashes and ordering are checked with the derived bitmap.
         let asset_count = usize::from(bytes.byte()?);
         if asset_count > count {
             return Err(StorageError::InvalidAssetWrite);
         }
-        let assets = bytes.take(asset_count * core::mem::size_of::<AssetWrite>())?;
-        let writes: Vec<RecordWriteData> = writes
-            .as_chunks::<{ core::mem::size_of::<RecordWriteData>() }>()
-            .0
-            .iter()
-            .map(|bytes| bytemuck::pod_read_unaligned(bytes))
-            .collect();
-        let asset_writes: Vec<AssetWrite> = assets
-            .as_chunks::<{ core::mem::size_of::<AssetWrite>() }>()
-            .0
-            .iter()
-            .map(|bytes| bytemuck::pod_read_unaligned(bytes))
-            .collect();
+        let asset_writes = bytes.pod_slice(asset_count)?;
         // 3. The derived bitmap, never a flag, decides whether a tracking revision follows.
         let (entries, private_writes) = RecordWriteClassification {
             entries: writes.iter().map(RecordWriteData::storage_entry),
-            asset_writes: &asset_writes,
+            asset_writes,
         }
         .classify()?;
         let tracking_revision = match private_writes {
@@ -519,9 +504,10 @@ pub fn parse_writes(count: u8, mut data: &[u8]) -> Result<Vec<EnrollmentWrite<'_
             Ok(write)
         })
         .collect::<Result<Vec<_>, StorageError>>()?;
-    match data.is_empty() {
-        true => Ok(writes),
-        false => Err(StorageError::InvalidInstructionData),
+    if data.is_empty() {
+        Ok(writes)
+    } else {
+        Err(StorageError::InvalidInstructionData)
     }
 }
 

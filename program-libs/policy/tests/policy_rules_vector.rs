@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use spr_hasher::primitives::right_align;
 use zolana_ring_policy::{
-    registry_field, DebitInput, ListId, ListSet, OutputSubjects, PolicySource, RecordLists, Rule,
-    RuleRefusal, RuleTable, RuleTableBuilder, SourceMap, Subject, TableParts, TransferSubject,
-    TransferSubjects,
+    registry_field, DebitInput, EncodedRuleTable, ListId, ListSet, OutputSubjects, PolicySource,
+    RecordLists, Rule, RuleRefusal, RuleTable, RuleTableBuilder, SourceMap, Subject,
+    TransferSubject, TransferSubjects,
 };
 
 const VECTORS: &str = concat!(
@@ -255,8 +255,7 @@ impl Case {
             .iter()
             .map(|asset| bytes(asset))
             .collect();
-        let table = TableParts { rows: &rows }
-            .encode()
+        let table = EncodedRuleTable::from_rows(&rows)
             .and_then(|encoded| encoded.decode())
             .expect("the rows decode");
         let slots: Vec<PolicySource> = self

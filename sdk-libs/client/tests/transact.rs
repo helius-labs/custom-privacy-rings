@@ -93,7 +93,7 @@ fn compute_vectors() -> ExpansionVectors {
                 .collect();
             Case {
                 name: name.to_string(),
-                rail: data.rail.to_string(),
+                rail: data.rail().to_string(),
                 compact: hex::encode(data.encode().unwrap()),
                 settlements: legs.iter().map(|leg| leg.map(hex::encode)).collect(),
                 transact_ix_data: hex::encode(data.expand(&config).unwrap().serialize().unwrap()),
@@ -198,7 +198,7 @@ fn ring_transact_expansion_vector() {
                     .is_some()),
             }
         }
-        let mut forwarded = vec![data.rail.spp_tag()];
+        let mut forwarded = vec![data.rail().spp_tag()];
         forwarded.extend(spp.serialize().unwrap());
         assert_eq!(hex::encode(forwarded), case.spp_instruction_data);
     }
@@ -321,13 +321,13 @@ fn the_counts_fix_every_length_and_trailing_bytes_are_refused() {
         let mut compact = data.encode().unwrap();
         compact.push(0);
         assert_eq!(
-            RingTransactData::parse(&compact, data.rail),
+            RingTransactData::parse(&compact, data.rail()),
             Err(CustomRingError::RingTransactLength),
             "{name}"
         );
         compact.truncate(compact.len() - 2);
         assert_eq!(
-            RingTransactData::parse(&compact, data.rail),
+            RingTransactData::parse(&compact, data.rail()),
             Err(CustomRingError::RingTransactLength),
             "{name}"
         );
@@ -347,7 +347,7 @@ fn the_output_count_stays_between_one_and_the_capacity() {
             let mut refused = compact.clone();
             refused[OUTPUT_COUNT_BYTE] = count;
             assert_eq!(
-                RingTransactData::parse(&refused, data.rail),
+                RingTransactData::parse(&refused, data.rail()),
                 Err(CustomRingError::OutputCountOutOfRange),
                 "{count}"
             );
@@ -556,13 +556,13 @@ fn reply_metadata_is_one_length_on_the_anonymous_frame_alone() {
     claimed[transact_flag::BYTE] |= transact_flag::REPLY_METADATA;
     assert!(RingTransactData::parse(&claimed, RingRail::Anonymous).is_err());
     for (name, data) in fixture.cases() {
-        if data.rail.anonymous_frame() {
+        if data.rail().anonymous_frame() {
             continue;
         }
         let mut foreign = data.encode().unwrap();
         foreign[transact_flag::BYTE] |= transact_flag::REPLY_METADATA;
         assert_eq!(
-            RingTransactData::parse(&foreign, data.rail),
+            RingTransactData::parse(&foreign, data.rail()),
             Err(CustomRingError::FlagNotAllowed),
             "{name}"
         );
@@ -1111,14 +1111,6 @@ fn public_owners_select_the_confidential_circuit() {
             .into_data(),
         data
     );
-    let mut with_proof = data.clone();
-    with_proof.anonymous = fixture.anonymous_compact().anonymous;
-    assert!(with_proof.anonymous.unwrap().default_owner_tag.is_none());
-    assert_eq!(
-        ParsedTransact::new(with_proof.clone()).err(),
-        Some(CustomRingError::FlagNotAllowed),
-    );
-    assert_eq!(with_proof.encode(), Err(CustomRingError::FlagNotAllowed));
     let hidden = fixture.anonymous();
     assert!(matches!(
         hidden.circuit(),
@@ -1147,13 +1139,13 @@ fn the_approval_byte_sits_past_the_header() {
 fn the_in_proof_owner_is_refused_off_the_confidential_rail() {
     let fixture = Fixture::new();
     for (name, data) in fixture.cases() {
-        if data.rail == RingRail::Confidential {
+        if data.rail() == RingRail::Confidential {
             continue;
         }
         let mut compact = data.encode().unwrap();
         compact[transact_flag::BYTE] |= transact_flag::OWNER_IN_PROOF;
         assert_eq!(
-            RingTransactData::parse(&compact, data.rail),
+            RingTransactData::parse(&compact, data.rail()),
             Err(CustomRingError::FlagNotAllowed),
             "{name}"
         );
@@ -1262,7 +1254,7 @@ fn every_rail_reads_its_audit_stream() {
         assert_eq!(expected.checked(), Ok(expected), "{key:?}");
         let compact = data.encode().unwrap();
         assert_eq!(
-            RingTransactData::parse(&compact, data.rail)
+            RingTransactData::parse(&compact, data.rail())
                 .unwrap()
                 .audit_stream(),
             expected,
@@ -1290,7 +1282,7 @@ fn encoded_cases(fixture: &Fixture) -> Vec<(&'static str, RingTransactData<'_>, 
 fn the_compact_data_reads_back() {
     let fixture = Fixture::new();
     for (name, data, compact) in encoded_cases(&fixture) {
-        let parsed = RingTransactData::parse(&compact, data.rail)
+        let parsed = RingTransactData::parse(&compact, data.rail())
             .unwrap()
             .into_data();
         assert_eq!(parsed, data, "{name}");
@@ -1323,7 +1315,7 @@ fn a_vouched_frame_carries_the_voucher_key_after_the_slot_keys() {
             compact[OUTPUT_COUNT_BYTE] | output_flag::VOUCHED,
             "{name}"
         );
-        let parsed = RingTransactData::parse(&vouched, data.rail)
+        let parsed = RingTransactData::parse(&vouched, data.rail())
             .unwrap()
             .into_data();
         assert_eq!(parsed, data, "{name}");
@@ -1339,7 +1331,7 @@ fn a_vouched_frame_carries_the_voucher_key_after_the_slot_keys() {
         let mut flagged = compact.clone();
         flagged[OUTPUT_COUNT_BYTE] |= output_flag::VOUCHED;
         assert!(
-            RingTransactData::parse(&flagged, data.rail).is_err(),
+            RingTransactData::parse(&flagged, data.rail()).is_err(),
             "{name}"
         );
         let mut unvouched = data.clone();
@@ -1373,7 +1365,7 @@ fn a_truncated_or_appended_ciphertext_is_refused() {
         appended.insert(end, 0x7a);
         for refused in [truncated, appended] {
             assert_eq!(
-                RingTransactData::parse(&refused, data.rail),
+                RingTransactData::parse(&refused, data.rail()),
                 Err(CustomRingError::RingTransactLength),
                 "{name}"
             );

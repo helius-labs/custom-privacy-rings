@@ -295,15 +295,16 @@ impl RegistryWrite<'_> {
     pub fn send(self) -> Result<()> {
         let env = self.env;
         let list = ListSet::single(self.list_id);
-        let lists = match self.present {
-            true => ListChange {
+        let lists = if self.present {
+            ListChange {
                 set: list,
                 clear: ListSet::EMPTY,
-            },
-            false => ListChange {
+            }
+        } else {
+            ListChange {
                 set: ListSet::EMPTY,
                 clear: list,
-            },
+            }
         }
         .check()?;
         let write = RecordWriteData {
@@ -603,9 +604,10 @@ impl StorageRecords<'_> {
                 Ok(response) => response,
                 Err(error) => {
                     let error = RingError::from(error);
-                    return match error.is_projection_lag() {
-                        true => Ok(Probe::Retry(error.into())),
-                        false => Err(error.into()),
+                    return if error.is_projection_lag() {
+                        Ok(Probe::Retry(error.into()))
+                    } else {
+                        Err(error.into())
                     };
                 }
             };
@@ -615,16 +617,17 @@ impl StorageRecords<'_> {
             let state = StorageRegistry::decode(&account.owner, &account.data)
                 .ok_or_else(|| anyhow::anyhow!("the ring's records are not a storage registry"))?;
             Ok(
-                match inputs.old_root == state.newest().hash
+                if inputs.old_root == state.newest().hash
                     && inputs.old_next_index == state.next_index()
                 {
-                    true => Probe::Ready((response, inputs, state)),
-                    false => Probe::NotYet,
+                    Probe::Ready((response, inputs, state))
+                } else {
+                    Probe::NotYet
                 },
             )
         })?;
-        let (apply, tracking_revision) = match owners.is_empty() {
-            true => (
+        let (apply, tracking_revision) = if owners.is_empty() {
+            (
                 env.run(
                     StorageApplyProof {
                         inputs: &inputs,
@@ -634,20 +637,19 @@ impl StorageRecords<'_> {
                     .prove(env.client.ring_client()),
                 )?,
                 None,
-            ),
-            false => {
-                let proven = env.run(
-                    PrivateStorageWrite {
-                        ring: self.ring,
-                        inputs: &inputs,
-                        registry: &state,
-                        asset_writes: &[],
-                        owners,
-                    }
-                    .prove(env.client.ring_client()),
-                )?;
-                (proven.apply, Some(proven.tracking_revision))
-            }
+            )
+        } else {
+            let proven = env.run(
+                PrivateStorageWrite {
+                    ring: self.ring,
+                    inputs: &inputs,
+                    registry: &state,
+                    asset_writes: &[],
+                    owners,
+                }
+                .prove(env.client.ring_client()),
+            )?;
+            (proven.apply, Some(proven.tracking_revision))
         };
         let update = UpdateStorage {
             authority,
@@ -655,8 +657,8 @@ impl StorageRecords<'_> {
             tracking_registry: state.tracking_registry,
             data: StorageUpdateIxData {
                 revision: Revision::from(response.revision),
-                writes: self.writes,
-                asset_writes: Vec::new(),
+                writes: &self.writes,
+                asset_writes: &[],
                 tracking_revision,
                 apply: &apply,
             },

@@ -153,10 +153,12 @@ fn an_anonymous_ring_hides_owners_and_preserves_auditor_access() -> Result<()> {
 
     // 3. A corrupted inner BSB22 commitment reaches SPP with every proof fixed,
     //    SPP refuses the encoding or the proof of knowledge.
-    let valid = frame(&instruction, RingRail::Anonymous)?
-        .anonymous
-        .context("an anonymous transfer carries its BSB22 commitment")?;
-    let (commitment, pok) = (*valid.commitment, *valid.commitment_pok);
+    let RailAuthorization::AnonymousHidden(valid) =
+        frame(&instruction, RingRail::Anonymous)?.authorization
+    else {
+        anyhow::bail!("an anonymous transfer carries its BSB22 commitment");
+    };
+    let (commitment, pok) = (valid.commitment, valid.commitment_pok);
     let tree_before = fetch_account(rpc, &env.tree)?;
     for (commitment, commitment_pok, error) in [
         (
@@ -178,9 +180,9 @@ fn an_anonymous_ring_hides_owners_and_preserves_auditor_access() -> Result<()> {
         let tampered = reframed(
             &instruction,
             &RingTransactData {
-                anonymous: Some(AnonymousProofData {
-                    commitment: &commitment,
-                    commitment_pok: &commitment_pok,
+                authorization: RailAuthorization::AnonymousHidden(AnonymousProofData {
+                    commitment,
+                    commitment_pok,
                     ..valid
                 }),
                 ..frame(&instruction, RingRail::Anonymous)?

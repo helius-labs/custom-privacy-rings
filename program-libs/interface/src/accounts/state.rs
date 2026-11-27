@@ -4,10 +4,6 @@
 //! reads no list or auditor key. `RingPolicy` holds what the ring adds. The program rebuilds each
 //! statement from the account, so a prover picks no role key, auditor key, policy hash or registry.
 //!
-//! Read after `docs/spec.md`, `docs/design/records-and-roots.md`. Read before
-//! `program-libs/interface/src/accounts/storage.rs`, `program-libs/interface/src/accounts/tracking.rs`,
-//! `program-libs/interface/src/instructions/transact.rs`, `programs/custom-ring/src/instructions/accounts/loader.rs`.
-//!
 //! Invariants
 //! 1. `policy_hash` hashes `rules` and `sources`, and `set_policy` is the one write and validates the whole table first. The circuit holds its table to the hash, so a table the program refused never reaches a proof.
 //! 2. A nonzero `records` names a registry of the ring's own `ring_id`, and `tracking` the registry `Initialize` created, and it never moves. `RegistrySlots::load` compares each account it reads to these addresses.
@@ -39,12 +35,10 @@ pub trait RingAccount: Pod + sealed::Sealed {
     const DISCRIMINATOR: u8;
     const SEED: &'static [u8];
     const SIZE: usize = core::mem::size_of::<Self>();
-    /// Not an initialized account of the program.
+    /// Not an initialized account of the program, or a creation off the canonical address.
     const INVALID: CustomRingError;
     /// Creation over an existing account.
     const EXISTS: CustomRingError;
-    /// Not the canonical address.
-    const ADDRESS: CustomRingError;
 
     fn bump(&self) -> u8;
 
@@ -82,7 +76,7 @@ mod sealed {
 macro_rules! ring_accounts {
     ($(
         $ty:ident = $disc:ident: $disc_value:literal, $seed:ident: $seed_value:literal,
-        $invalid:ident, $exists:ident, $address:ident $(, $valid:expr)?;
+        $invalid:ident, $exists:ident $(, $valid:expr)?;
     )*) => {$(
         pub const $disc: u8 = $disc_value;
         pub const $seed: &[u8] = $seed_value;
@@ -99,7 +93,6 @@ macro_rules! ring_accounts {
             const SEED: &'static [u8] = $seed;
             const INVALID: CustomRingError = CustomRingError::$invalid;
             const EXISTS: CustomRingError = CustomRingError::$exists;
-            const ADDRESS: CustomRingError = CustomRingError::$address;
 
             fn bump(&self) -> u8 {
                 self.bump
@@ -118,10 +111,10 @@ macro_rules! ring_accounts {
 // Discriminator zero marks an uninitialized account.
 ring_accounts! {
     RingPolicy = RING_POLICY: 15, RING_POLICY_PDA_SEED: b"policy",
-        InvalidRingPolicy, RingPolicyAlreadyExists, InvalidRingPolicy,
+        InvalidRingPolicy, RingPolicyAlreadyExists,
         |ring: &RingPolicy| ring.mode().is_ok();
     CoSigner = CO_SIGNER: 14, CO_SIGNER_PDA_SEED: b"co_signer",
-        InvalidCoSignerRecord, CoSignerRecordAlreadyExists, InvalidCoSignerRecord,
+        InvalidCoSignerRecord, CoSignerRecordAlreadyExists,
         |record: &CoSigner| record.scope().is_some() && record.signer != Address::default();
 }
 
@@ -354,9 +347,10 @@ impl RingPolicy {
         // An unpaired source serving a private list takes no floor, and a blocked enrolled owner
         // then proves itself unenrolled under an old tracking root. A public read holds no such
         // risk, one curator serves many rings and pins at most one of their registries.
-        match source.tracking_registry == self.tracking || !self.reads_salted(address) {
-            true => Ok(()),
-            false => Err(CustomRingError::SaltedSourceOtherTracking),
+        if source.tracking_registry == self.tracking || !self.reads_salted(address) {
+            Ok(())
+        } else {
+            Err(CustomRingError::SaltedSourceOtherTracking)
         }
     }
 
@@ -366,9 +360,10 @@ impl RingPolicy {
     /// A source's floor counts revisions of the registry it pins, so a public curator's floor
     /// says nothing of the ring's registry and comparing them would refuse a live root.
     pub fn tracking_floor(&self, address: &Address, source: &StorageRegistry) -> Revision {
-        match self.reads_salted(address) {
-            true => source.tracking_floor,
-            false => Revision::default(),
+        if self.reads_salted(address) {
+            source.tracking_floor
+        } else {
+            Revision::default()
         }
     }
 
@@ -685,9 +680,10 @@ impl CoSignerCounts {
 
 /// A zero slot serves the own records.
 fn source_address<'a>(slot: &'a SourceSlot, records: &'a Address) -> &'a Address {
-    match slot.registry == Address::default() {
-        true => records,
-        false => &slot.registry,
+    if slot.registry == Address::default() {
+        records
+    } else {
+        &slot.registry
     }
 }
 

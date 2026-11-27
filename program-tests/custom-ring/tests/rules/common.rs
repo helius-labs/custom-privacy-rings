@@ -4,10 +4,9 @@ use custom_ring_interface::{
     storage_instruction::InitializeIxData as StorageInitialize,
     tag,
     tracking::TrackingRegistry,
-    CustomRingError, InitializeIxData, InstructionTag, PolicyBindingIxData, PolicyTableIxData,
-    RingKind, RingPolicy, RingRole, RingRoles, RootRead, SetCoSignerRecordIxData, SourceSpec,
-    UpdateAuthorityIxData, UpdatePolicyIxData, CO_SIGNER_PDA_SEED, RING_POLICY_PDA_SEED,
-    STORAGE_PROGRAM_ID,
+    CustomRingError, InitializeIxData, InstructionTag, PolicyTableIxData, RingKind, RingPolicy,
+    RingRole, RingRoles, RootRead, SetCoSignerRecordIxData, SourceSpec, UpdateAuthorityIxData,
+    UpdatePolicyIxData, CO_SIGNER_PDA_SEED, RING_POLICY_PDA_SEED, STORAGE_PROGRAM_ID,
 };
 use litesvm::{
     types::{FailedTransactionMetadata, TransactionMetadata},
@@ -186,12 +185,13 @@ impl Ring {
         ring.store_registry(RECORDS, &policy_key, &[root(0, [0x0e; 32])]);
         // The SDK creates the records pinned to their ring's tracking registry.
         ring.pair_registry(RECORDS, tracking_registry(), 0);
-        let table = match setup.kind().has_policy() {
-            true => allow_list_table(limits),
-            false => PolicyTableIxData {
+        let table = if setup.kind().has_policy() {
+            allow_list_table(limits)
+        } else {
+            PolicyTableIxData {
                 sources: Vec::new(),
                 rules: Vec::new(),
-            },
+            }
         };
         let initialize = InitializeIx {
             payer: ring.payer.pubkey(),
@@ -200,8 +200,7 @@ impl Ring {
                 auditor_pubkey: auditor_pubkey(),
                 kind: setup.kind(),
                 roles: ring.roles.addresses(),
-                policy: (!matches!(setup, Setup::Bare | Setup::BareAnonymous))
-                    .then_some(PolicyBindingIxData { table }),
+                policy: (!matches!(setup, Setup::Bare | Setup::BareAnonymous)).then_some(table),
             },
             curators: &[],
         }

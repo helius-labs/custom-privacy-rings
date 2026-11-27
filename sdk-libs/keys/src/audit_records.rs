@@ -468,7 +468,7 @@ pub fn decode_recipient_keys(
     layout: AuditStreamLayout,
 ) -> Result<Vec<[u8; 32]>, CustomRingError> {
     read_all(plaintext, |bytes| {
-        Ok(bytes.fields(layout.outputs)?.to_vec())
+        Ok(bytes.pod_slice(layout.outputs)?.to_vec())
     })
 }
 

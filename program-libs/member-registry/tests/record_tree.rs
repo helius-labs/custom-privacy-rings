@@ -538,17 +538,18 @@ fn only_a_tightening_write_retires_the_served_root() {
             ..ApplyRecordsIxData::zeroed()
         };
         let revision = state.newest().revision;
+        let writes = [RecordWriteData {
+            member: entry.member,
+            lists: WriteRecordsIxData {
+                mask: entry.mask.to_le_bytes(),
+                value: entry.value.to_le_bytes(),
+            },
+            mint_policy: mint_policy_write(entry.mint_policy),
+        }];
         let data = StorageUpdateIxData {
             revision,
-            writes: vec![RecordWriteData {
-                member: entry.member,
-                lists: WriteRecordsIxData {
-                    mask: entry.mask.to_le_bytes(),
-                    value: entry.value.to_le_bytes(),
-                },
-                mint_policy: mint_policy_write(entry.mint_policy),
-            }],
-            asset_writes: Vec::new(),
+            writes: &writes,
+            asset_writes: &[],
             tracking_revision: None,
             apply: &apply,
         };
