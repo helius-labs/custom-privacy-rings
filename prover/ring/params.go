@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/helius-labs/zolana/prover/server/prover/common"
+	proofrequest "github.com/helius-labs/zolana/prover/server/prover/request"
 )
 
 // Request fields carry the circuit field names, their tags the wire names.
@@ -361,7 +362,7 @@ func Unmarshal(data []byte, v any) error {
 }
 
 const (
-	MaxBodyBytes    = 8 << 20
+	MaxBodyBytes    = proofrequest.MaxBodyBytes
 	maxDepth        = 32
 	maxJSONArrayLen = 4096
 )
@@ -426,7 +427,11 @@ func strictObject(decoder *json.Decoder, t reflect.Type, token json.Token, depth
 			return fmt.Errorf("repeated field %q", name)
 		}
 		seen[name] = true
-		if err := strictly(decoder, field.typ, depth+1); err != nil {
+		typ := field.typ
+		if typ.Kind() == reflect.Pointer {
+			typ = typ.Elem()
+		}
+		if err := strictly(decoder, typ, depth+1); err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 	}

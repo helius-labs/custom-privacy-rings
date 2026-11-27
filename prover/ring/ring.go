@@ -32,11 +32,11 @@ func (k Key) extension() common.ExtensionCircuit {
 		return bind(k, transfer.NewTransferCircuit, k.transferShape(), k.Pools.validate)
 	case ApplyRecords:
 		if k.Private {
-			return bind[PrivateApplyRecordsParams](k, registry.NewPrivateApplyRecordsCircuit, k.Inputs, nil)
+			return bind(k, registry.NewPrivateApplyRecordsCircuit, k.Inputs, (*PrivateApplyRecordsParams).checkSlots)
 		}
-		return bind[ApplyRecordsParams](k, registry.NewApplyRecordsCircuit, k.Inputs, nil)
+		return bind(k, registry.NewApplyRecordsCircuit, k.Inputs, (*ApplyRecordsParams).checkWrites)
 	case ApplyEnrollments:
-		return bind[ApplyEnrollmentsParams](k, registry.NewApplyEnrollmentsCircuit, k.Inputs, nil)
+		return bind(k, registry.NewApplyEnrollmentsCircuit, k.Inputs, (*ApplyEnrollmentsParams).checkWrites)
 	case RegisterKey:
 		return bind[RegisterKeyParams](k, unsized[registry.RegisterKeyCircuit], struct{}{}, nil)
 	case Merge:
@@ -80,6 +80,30 @@ func (r *request[P]) UnmarshalJSON(data []byte) error {
 	}
 	if got := r.params.head().CircuitType; got != r.circuit {
 		return fmt.Errorf("custom-ring: a %s request on the %s key", got, r.circuit)
+	}
+	return nil
+}
+
+func (p *ApplyParams[W]) checkWrites() error {
+	if int(p.Count) > len(p.Writes) {
+		return fmt.Errorf("write count exceeds supplied slots")
+	}
+	for i, write := range p.Writes[:p.Count] {
+		if write == nil {
+			return fmt.Errorf("missing active write at slot %d", i)
+		}
+	}
+	return nil
+}
+
+func (p *PrivateApplyRecordsParams) checkSlots() error {
+	if err := p.checkWrites(); err != nil {
+		return err
+	}
+	for i, owner := range p.Owners {
+		if p.PrivateWrites&(1<<i) != 0 && owner == nil {
+			return fmt.Errorf("missing private owner at slot %d", i)
+		}
 	}
 	return nil
 }

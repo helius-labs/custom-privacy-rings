@@ -50,6 +50,8 @@ func TestDecodeRejectsMalformedRequests(t *testing.T) {
 		{"missing field", transferKey, func(m map[string]any) { delete(m, "firstNullifier") }, `missing field "firstNullifier"`},
 		{"missing layout", transferKey, func(m map[string]any) { delete(m, "layout") }, `missing field "layout"`},
 		{"missing flag", batchKey, func(m map[string]any) { delete(write(m), "exists") }, `writes: [0]: missing field "exists"`},
+		{"explicit null approval", transferKey, func(m map[string]any) { m["approvalBlinder"] = nil }, "approvalBlinder: null value"},
+		{"null active write", batchKey, func(m map[string]any) { m["writes"].([]any)[0] = nil }, "missing active write"},
 		{"null field", transferKey, func(m map[string]any) { m["firstNullifier"] = nil }, "firstNullifier: null value"},
 		{"null bytes", transferKey, func(m map[string]any) { m["auditorPk"] = nil }, "auditorPk: null value"},
 		{"field at the modulus", transferKey, func(m map[string]any) { m["firstNullifier"] = modulus }, canonical},
@@ -163,8 +165,17 @@ func assertAllZeroVariables(t *testing.T, v reflect.Value, path string) {
 	}
 }
 
+func TestPrivateWriteRequiresOwner(t *testing.T) {
+	private := requestOf[PrivateApplyRecordsParams](t, "custom-ring-apply-records-private-2", ringregistry.PrivateBatch(t, 2, ringregistry.PrivateBlockBit))
+	private.Owners[0] = nil
+	if _, err := decode("custom-ring-apply-records-private-2", mustMarshal(t, private)); err == nil || !strings.Contains(err.Error(), "missing private owner") {
+		t.Fatalf("missing private owner: %v", err)
+	}
+}
+
 func TestAssignNilSlotsAndAbsentPrivateOwnerRoundTrip(t *testing.T) {
 	records := applyRequest(t, "custom-ring-apply-records-2", 2)
+	records.Count = 1
 	records.Writes[1] = nil
 	assigned, err := decode("custom-ring-apply-records-2", mustMarshal(t, records))
 	if err != nil {
