@@ -4,11 +4,13 @@ use custom_ring_interface::{tag, RingMode};
 use solana_account::Account;
 use solana_instruction::AccountMeta;
 use solana_message::Hash;
-use spr_client::{AsyncProverClient, AsyncSprClient};
+use spr_client::AsyncSprClient;
 use spr_keypair::ShieldedKeypair;
 
 use super::*;
-use crate::tests::support::{keypair, program, ring, Chain, Registry, RingSettings, SLOT};
+use crate::tests::support::{
+    keypair, program, ring, unavailable_prover, Chain, Registry, RingSettings, SLOT,
+};
 
 #[tokio::test]
 async fn a_policy_write_moves_the_proof() {
@@ -289,8 +291,8 @@ impl SignatureHistory for Cluster {
 fn client(cluster: &Cluster) -> RingClient<Cluster, Chain> {
     let chain = Chain::ring(RingSettings::new(RingMode::Confidential));
     RingClient::new(
-        AsyncSprClient::new(cluster.clone(), chain, AsyncProverClient::local()),
-        AsyncProverClient::local(),
+        AsyncSprClient::new(cluster.clone(), chain, unavailable_prover()),
+        unavailable_prover(),
     )
 }
 

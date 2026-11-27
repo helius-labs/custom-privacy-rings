@@ -66,7 +66,7 @@ pub fn program_data_of(program: &Address) -> Address {
     Address::find_program_address(&[program.as_ref()], &LOADER).0
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Setup {
     AuditOnly,
     Policy,

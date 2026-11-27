@@ -540,13 +540,8 @@ mod tests {
 
     #[test]
     fn gateway_connection_failures_do_not_expose_the_key() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
-        let url = format!(
-            "http://{}/v1/zolana/ring?api-key=secret",
-            listener.local_addr().expect("address")
-        );
-        drop(listener);
-        let error = RingRpcClient::new(&url)
+        let url = "http://127.0.0.1:1/v1/zolana/ring?api-key=secret";
+        let error = RingRpcClient::new(url)
             .expect("client")
             .call::<bool>(RING_STATUS, json!({}))
             .expect_err("unreachable");

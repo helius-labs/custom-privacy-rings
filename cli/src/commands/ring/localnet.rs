@@ -514,8 +514,7 @@ mod tests {
             "name = \"x\"\ntarget = \"localnet\"\nprogram_id = \"11111111111111111111111111111111\"\noperator_manifest = \"operator.json\"\n\n[localnet]\nrpc = \"r\"\nindexer = \"i\"\nprover = \"p\"\nring_rpc = \"http://{addr}\"\n\n[devnet]\nrpc = \"r\"\nindexer = \"i\"\nprover = \"p\"\nring_rpc = \"g\"\n"
         ))
         .expect("ring.toml");
-        let scope = env::temp_dir().join(format!("ring-localnet-scope-{}", std::process::id()));
-        file::create_dir_all(&scope).expect("scope");
+        let scope = scratch_dir("localnet-scope");
         let command = Command::new("/nonexistent/ring-rpc");
         let error =
             start_ring_rpc(command, &config, addr.port(), &scope).expect_err("foreign listener");

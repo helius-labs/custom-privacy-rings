@@ -14,8 +14,10 @@ use custom_ring_interface::{
     CoSignScope, CoSigner, CoSignerCounts, NewRing, PolicyUpdate, RingMode, RingPolicy, RingRoles,
     SourceSlot, CO_SIGNER, N_SOURCE_SLOTS, RING_POLICY_PDA_SEED, STORAGE_PROGRAM_ID,
 };
+use http::{HeaderMap, StatusCode};
 use solana_account::Account;
 use solana_address::Address;
+use spr_api::{HttpClient, HttpFuture, HttpRequest, HttpResponse};
 use spr_client::{
     rpc::STATE_TREE_HEIGHT, AsyncProverClient, AsyncRpc, AsyncSprClient, AsyncWitnessReader,
     ClientError, Context, GetMerkleProofsResponse, IndexerRpcConfig, InputWitnesses, MerkleContext,
@@ -462,8 +464,28 @@ impl Chain {
     }
 
     fn client_on(self, source: ProofDataSource) -> RingClient<Chain, Chain> {
-        let prover = || AsyncProverClient::local().with_proof_data_source(source);
+        let prover = || unavailable_prover().with_proof_data_source(source);
         RingClient::new(AsyncSprClient::new(self.clone(), self, prover()), prover())
+    }
+}
+
+/// Answers every request with a status a proof request does not retry.
+pub(crate) fn unavailable_prover() -> AsyncProverClient {
+    AsyncProverClient::with_client("http://127.0.0.1:1".to_owned(), UnavailableProver)
+}
+
+#[derive(Debug)]
+struct UnavailableProver;
+
+impl HttpClient for UnavailableProver {
+    fn send<'a>(&'a self, _request: HttpRequest) -> HttpFuture<'a> {
+        Box::pin(async {
+            Ok(HttpResponse {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                headers: HeaderMap::new(),
+                body: Vec::new(),
+            })
+        })
     }
 }
 

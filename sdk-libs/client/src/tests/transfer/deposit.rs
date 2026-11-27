@@ -3,6 +3,7 @@ use custom_ring_interface::{
 };
 use solana_address::Address;
 use solana_signer::Signer;
+use spr_client::ClientError;
 use spr_indexer_api::SerializablePubkey;
 use spr_interface::pda;
 use zolana_ring_keys::RingAddress;
@@ -393,15 +394,13 @@ async fn a_retry_draws_a_new_frame_and_an_attempt_proves_once() {
         retried.transaction.first_nullifier(),
         prepared.transaction.first_nullifier()
     );
-    let _first_attempt = prepared.prove(&client).await;
+    let refused = |proved| matches!(proved, Err(RingError::Client(ClientError::ProverServer(_))));
+    assert!(refused(prepared.prove(&client).await));
     assert!(matches!(
         prepared.prove(&client).await,
         Err(RingError::DepositFrameReused)
     ));
-    assert!(!matches!(
-        retried.prove(&client).await,
-        Err(RingError::DepositFrameReused)
-    ));
+    assert!(refused(retried.prove(&client).await));
 }
 
 mod relay {

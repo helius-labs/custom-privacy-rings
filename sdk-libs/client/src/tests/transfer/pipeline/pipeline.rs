@@ -3020,10 +3020,9 @@ fn measured_spl_leg(
 
 /// One JSON line per keyed measurement when `RING_FIT_REPORT` names the file.
 #[tokio::test]
+#[ignore = "writes the file RING_FIT_REPORT names"]
 async fn ring_fit_report_measures_every_keyed_shape_with_withdrawal_legs() {
-    let Ok(path) = std::env::var("RING_FIT_REPORT") else {
-        return;
-    };
+    let path = std::env::var("RING_FIT_REPORT").expect("RING_FIT_REPORT names the report file");
     let mut lines = Vec::new();
     for shape in spr_client::SPP_SUPPORTED_SHAPES {
         for rail in Measured::COLUMNS
@@ -3081,29 +3080,88 @@ async fn ring_fit_report_measures_every_keyed_shape_with_withdrawal_legs() {
 }
 
 /// The program cannot depend on the SDK's ciphertexts, the SDK pins the sizes.
-#[tokio::test]
-async fn every_transfer_shape_takes_its_pinned_transaction_size() {
-    let mut measured = Vec::new();
-    for shape in spr_client::SPP_SUPPORTED_SHAPES {
-        let mut bytes = [None; Measured::COLUMNS.len()];
-        for (rail, slot) in Measured::COLUMNS.into_iter().zip(&mut bytes) {
-            if rail.keyed(shape) {
-                *slot = Some(Measure::pinned(rail, shape).bytes().await);
-            }
-        }
-        measured.push(SizePin {
-            n_in: shape.n_inputs(),
-            n_out: shape.n_outputs(),
-            bytes,
-        });
+mod every_transfer_shape_takes_its_pinned_transaction_size {
+    use super::*;
+
+    /// A test per column for nextest to run in parallel.
+    macro_rules! column_tests {
+        ($($test:ident: $column:ident),+ $(,)?) => {
+            const TESTED: [Measured; Measured::COLUMNS.len()] = [$(Measured::$column),+];
+            $(
+                #[tokio::test]
+                async fn $test() {
+                    assert_pinned_column(Measured::$column).await;
+                }
+            )+
+        };
     }
-    let table: String = measured
-        .iter()
-        .map(|SizePin { n_in, n_out, bytes }| {
-            format!("    SizePin {{ n_in: {n_in}, n_out: {n_out}, bytes: {bytes:?} }},\n")
-        })
-        .collect();
-    assert_eq!(measured, SIZE_PINS, "measured:\n{table}");
+
+    async fn assert_pinned_column(rail: Measured) {
+        let column = Measured::COLUMNS
+            .iter()
+            .position(|column| *column == rail)
+            .expect("a column");
+        let pinned: Vec<_> = SIZE_PINS.iter().map(|pin| pin.bytes[column]).collect();
+        assert_eq!(
+            measured_column(rail).await,
+            pinned,
+            "{rail:?}, `table` prints SIZE_PINS"
+        );
+    }
+
+    async fn measured_column(rail: Measured) -> Vec<Option<usize>> {
+        let mut bytes = Vec::new();
+        for shape in spr_client::SPP_SUPPORTED_SHAPES {
+            bytes.push(if rail.keyed(shape) {
+                Some(Measure::pinned(rail, shape).bytes().await)
+            } else {
+                None
+            });
+        }
+        bytes
+    }
+
+    column_tests! {
+        confidential: Confidential,
+        confidential_policy: ConfidentialPolicy,
+        confidential_escrow: ConfidentialEscrow,
+        in_proof_owner: InProofOwner,
+        in_proof_owner_policy: InProofOwnerPolicy,
+        in_proof_owner_escrow: InProofOwnerEscrow,
+        anonymous: Anonymous,
+        anonymous_policy: AnonymousPolicy,
+        anonymous_entry: AnonymousEntry,
+        anonymous_entry_policy: AnonymousEntryPolicy,
+        delegate: Delegate,
+    }
+
+    #[test]
+    fn every_row_is_a_supported_shape_and_every_column_has_its_test() {
+        let rows: Vec<_> = SIZE_PINS.iter().map(|pin| (pin.n_in, pin.n_out)).collect();
+        let shapes: Vec<_> = spr_client::SPP_SUPPORTED_SHAPES
+            .iter()
+            .map(|shape| (shape.n_inputs(), shape.n_outputs()))
+            .collect();
+        assert_eq!(rows, shapes);
+        assert_eq!(TESTED, Measured::COLUMNS);
+    }
+
+    #[tokio::test]
+    #[ignore = "prints SIZE_PINS, run with --nocapture and paste the output"]
+    async fn table() {
+        let mut columns = Vec::new();
+        for rail in Measured::COLUMNS {
+            columns.push(measured_column(rail).await);
+        }
+        for (row, shape) in spr_client::SPP_SUPPORTED_SHAPES.iter().enumerate() {
+            let bytes: Vec<_> = columns.iter().map(|column| column[row]).collect();
+            println!(
+                "    SizePin {{ n_in: {}, n_out: {}, bytes: {bytes:?} }},",
+                shape.n_inputs(),
+                shape.n_outputs()
+            );
+        }
+    }
 }
 
 /// Each confidential input class fits one transaction on both rails without a policy.

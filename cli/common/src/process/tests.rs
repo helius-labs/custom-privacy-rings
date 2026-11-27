@@ -105,7 +105,6 @@ fn a_foreign_listener_is_left_running_and_reported() {
         error.to_string(),
         format!("port {port} is held by a process the cli did not start")
     );
-    drop(listener);
-    stop_owned_listener(&scope, port).expect("free port");
+    stop_owned_listener(&scope, 1).expect("free port");
     std::fs::remove_dir_all(scope).unwrap();
 }

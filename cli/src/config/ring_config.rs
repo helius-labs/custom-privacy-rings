@@ -484,6 +484,7 @@ fn expand_env(text: &str, dotenv: &HashMap<String, String>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operator_manifest::tests::scratch_dir;
 
     const EXAMPLE: &str = r#"
 name = "demo-ring"
@@ -507,8 +508,7 @@ ring_rpc = "http://127.0.0.1:8785"
     #[test]
     fn a_cluster_tee_policy_reads_beside_ring_toml_and_a_pinned_one_replaces_it() {
         let policy = probe_policy();
-        let dir = std::env::temp_dir().join(format!("ring-cluster-tee-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("cluster-tee");
         let loopback = |policy_file: Option<&str>| Urls {
             prover_tee_policy: policy_file.map(PathBuf::from),
             ..prover_urls("http://127.0.0.1:3001")
@@ -542,8 +542,7 @@ ring_rpc = "http://127.0.0.1:8785"
     fn a_tee_policy_file_reads_bare_or_as_a_deployment_pin() {
         let policy = probe_policy();
         let bare = serde_json::to_string(&policy).unwrap();
-        let dir = std::env::temp_dir().join(format!("ring-tee-policy-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("tee-policy");
         for (name, json) in [
             ("bare", bare.clone()),
             ("pinned", format!(r#"{{"deployment":{bare}}}"#)),
@@ -790,8 +789,7 @@ ring_rpc = "http://127.0.0.1:8785"
 
     #[test]
     fn set_target_rewrites_only_the_target_line() {
-        let dir = std::env::temp_dir().join(format!("ring-toml-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
+        let dir = scratch_dir("toml");
         let path = dir.join("ring.toml");
         std::fs::write(
             &path,
@@ -811,8 +809,7 @@ ring_rpc = "http://127.0.0.1:8785"
 
     #[test]
     fn a_dotenv_key_fills_its_placeholder_and_stays_out_of_the_environment() {
-        let dir = std::env::temp_dir().join(format!("ring-dotenv-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("dir");
+        let dir = scratch_dir("dotenv");
         let path = dir.join("ring.toml");
         let keyed = EXAMPLE.replacen(
             "https://api.devnet.solana.com",

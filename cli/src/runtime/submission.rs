@@ -312,8 +312,6 @@ fn signer_failure(error: impl Into<anyhow::Error>) -> RingError {
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
-
     use solana_instruction::AccountMeta;
     use solana_keypair::Keypair;
     use spr_client::ComputeBudgetConfig;
@@ -344,9 +342,7 @@ mod tests {
     }
 
     fn unreachable_ring_rpc() -> RingRpcClient {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
-        let url = format!("http://{}", listener.local_addr().expect("address"));
-        RingRpcClient::new(&url).expect("loopback")
+        RingRpcClient::new("http://127.0.0.1:1").expect("loopback")
     }
 
     #[test]
