@@ -157,11 +157,12 @@ impl<'t, R: Rail> WalletRelay<'t, R> {
             .ok_or(RingError::MissingAnonymousSigner)?;
         let token_account_setup = self.owner.token_account_setup.clone();
         // The relay refuses a setup naming no withdrawal, only an owner's terms read it here.
-        let setup = match staged.owner_signers.is_empty() {
-            true => Vec::new(),
-            false => sealed
+        let setup = if staged.owner_signers.is_empty() {
+            Vec::new()
+        } else {
+            sealed
                 .relay_proof_inputs(RelayRail::Confidential, nullifier_key.clone())
-                .token_account_setup(payer, &token_account_setup)?,
+                .token_account_setup(payer, &token_account_setup)?
         };
         let terms = sealed.transfer_terms(payer, &setup)?;
         let funders = sealed.funder_terms(payer, &setup)?;

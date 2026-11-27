@@ -16,12 +16,12 @@ use solana_signature::Signature;
 use spr_client::{AsyncRpc, IndexerRpcConfig};
 use spr_keypair::{PublicKey, ShieldedAddress, ViewingKey, X25519Pubkey};
 use spr_transaction::{
-    instructions::merge::MergeOutputPlaintext, DecryptionResult, DeriveRequest, Mint, ShieldedKeys,
-    ShieldedTransaction, TransactionError, TransactionKeyRequest, WalletUtxo,
+    instructions::merge::MergeOutputPlaintext, DecryptionResult, DeriveRequest, Mint,
+    OutputContext, ShieldedKeys, ShieldedTransaction, TransactionError, TransactionKeyRequest,
+    WalletUtxo,
 };
 use zolana_ring_keys::ring_body_output;
-use zolana_ring_keys::SlotSecret;
-use zolana_ring_keys::{RingDeliveryRequest, RingKeys};
+use zolana_ring_keys::RingKeys;
 use zolana_ring_transaction::{
     is_contributory, open_recipient_body, open_reply, AnonymousOutput, OpenedBody, OpenedNote,
     ReplyClaim, RingAssets,
@@ -32,9 +32,8 @@ use crate::{
     anonymous_wallet::{AnonymousWallet, PendingNote, WalletRevision},
     confidential::is_ring_merge,
     decrypt::SealedRecipientKeys,
-    delivered::{self, RingDeliveryContext},
+    delivered::{self, OpenedSlot, RingDeliveryContext, RingNoteCodec},
     error::RowDisposition,
-    exactly_one_each,
     merge_audit::RingMergeBody,
     origin::TransactionOrigin,
     tags::IndexerReads,
@@ -390,26 +389,16 @@ struct Scan<'s, 'a, 'r, I: ?Sized, K: ?Sized> {
 
 struct Body<'t> {
     tx: &'t ShieldedTransaction,
-    position: usize,
     context: RingDeliveryContext,
-    found: AnonymousStream,
 }
 
 impl<'t> Body<'t> {
-    fn of(tx: &'t ShieldedTransaction, position: usize, found: AnonymousStream) -> Option<Self> {
+    fn of(tx: &'t ShieldedTransaction, position: usize) -> Option<Self> {
         ring_body_output(&tx.output_slots.get(position)?.payload)?;
         Some(Self {
             tx,
-            position,
             context: RingDeliveryContext::of(tx)?,
-            found,
         })
-    }
-
-    fn every(tx: &'t ShieldedTransaction) -> Vec<Self> {
-        (0..tx.output_slots.len())
-            .filter_map(|position| Self::of(tx, position, AnonymousStream::FullScan))
-            .collect()
     }
 }
 
@@ -447,39 +436,6 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
             .collect()
     }
 
-    /// Each body's slot secret, one agreement per transaction inside the holder.
-    fn body_secrets<'t>(
-        &self,
-        viewing_pubkey: X25519Pubkey,
-        bodies: Vec<Body<'t>>,
-    ) -> Result<Vec<(Body<'t>, SlotSecret)>, AnonymousError> {
-        if bodies.is_empty() {
-            return Ok(Vec::new());
-        }
-        let requests = bodies
-            .iter()
-            .map(|body| {
-                Ok(RingDeliveryRequest {
-                    viewing_pubkey,
-                    tx_viewing_pk: body.context.tx_viewing_pk,
-                    salt: body.context.salt,
-                    output_index: u32::try_from(body.position)
-                        .map_err(|_| TransactionError::TooManyOutputs)?,
-                    first_nullifier: body.context.first_nullifier,
-                })
-            })
-            .collect::<Result<Vec<RingDeliveryRequest>, AnonymousError>>()?;
-        let secrets = exactly_one_each(
-            self.sync.keys.ring_delivery_secrets(&requests)?,
-            requests.len(),
-        )?;
-        bodies
-            .into_iter()
-            .zip(secrets)
-            .map(|(body, secret)| Ok((body, SlotSecret::new(secret)?)))
-            .collect()
-    }
-
     /// `None` when another key sent the transaction.
     fn own_transaction_key(
         &self,
@@ -497,32 +453,24 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
     /// Only a rebuilt commitment proves the note the wallet's, every other body stays silent.
     fn open_recipient(
         &mut self,
-        index: usize,
-        body: &Body<'_>,
-        position: usize,
-        secret: &SlotSecret,
+        tx: &ShieldedTransaction,
+        opened: OpenedSlot,
     ) -> Result<(), AnonymousError> {
-        let slot = &body.tx.output_slots[position];
-        let Some((ciphertext, reply)) = ring_body_output(&slot.payload) else {
-            return Ok(());
-        };
-        let opened = self
-            .output_at(body, &self.address, position)
-            .open(ciphertext, secret);
-        match opened {
-            Ok(Some(OpenedBody::Note(note))) => {
-                self.accept(index, body.tx, body.found, position, note)?;
+        let position = opened.slot_index as usize;
+        match opened.body {
+            OpenedBody::Note(note) => {
+                let utxo = published_note(tx, position, note)?;
+                self.keep(utxo, opened.viewing_pubkey, AnonymousStream::FullScan);
             }
-            Ok(Some(OpenedBody::UnknownMint(note))) => {
-                self.hold_back(body.tx, position, note)?;
-            }
-            Ok(None) | Err(_) => return Ok(()),
+            OpenedBody::UnknownMint(note) => self.hold_back(tx, position, note)?,
         }
-        if let Some(claim) = open_reply(reply, secret).ok().flatten() {
-            let viewing_pubkey = self.history.entries()[index].viewing_pubkey();
+        let slot = &tx.output_slots[position];
+        let claim = ring_body_output(&slot.payload)
+            .and_then(|(_, reply)| open_reply(reply, &opened.secret).ok().flatten());
+        if let Some(claim) = claim {
             self.sender_claims.push(SenderClaim {
                 utxo_hash: slot.output_context.hash,
-                viewing_pubkey,
+                viewing_pubkey: opened.viewing_pubkey,
                 claim,
             });
         }
@@ -573,7 +521,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
                 continue;
             }
             // An exit carries no ring body.
-            let Some(body) = Body::of(tx, position, AnonymousStream::FullScan) else {
+            let Some(body) = Body::of(tx, position) else {
                 continue;
             };
             if let Some(sent) = self.sent_payment(&body, position, &recipient, &tx_viewing_key) {
@@ -659,21 +607,6 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
         }
     }
 
-    /// Keeps a rebuilt note once, under the stream that found it.
-    fn accept(
-        &mut self,
-        index: usize,
-        tx: &ShieldedTransaction,
-        stream: AnonymousStream,
-        position: usize,
-        note: OpenedNote,
-    ) -> Result<(), AnonymousError> {
-        let viewing_pubkey = self.history.entries()[index].viewing_pubkey();
-        let utxo = published_note(tx, position, note)?;
-        self.keep(utxo, viewing_pubkey, stream);
-        Ok(())
-    }
-
     /// Verified under a mint `assets` does not name, it waits among the pending notes.
     fn hold_back(
         &mut self,
@@ -730,7 +663,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
                     want: 2,
                 }
             })?;
-            let Some(mut note) = merge.rebuild(MergeKeys {
+            let Some(mut note) = merge.output.rebuild(MergeKeys {
                 owner: self.address.signing_pubkey,
                 nullifier_pk: self.address.nullifier_pubkey,
                 key,
@@ -811,18 +744,22 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
 }
 
 /// Nothing of it is authentic until its commitment rebuilds.
-pub(crate) struct OwnerMerge<'t> {
-    pub(crate) tx: &'t ShieldedTransaction,
-    ring: Address,
+struct OwnerMerge<'t> {
     first_nullifier: [u8; 32],
-    body: RingMergeBody,
+    output: MergeOutput<'t>,
 }
 
-struct MergeKeys {
-    owner: PublicKey,
-    nullifier_pk: [u8; 32],
-    key: [u8; 32],
-    blinding: [u8; 32],
+pub(crate) struct MergeOutput<'t> {
+    pub(crate) ring: Address,
+    pub(crate) body: RingMergeBody,
+    pub(crate) context: &'t OutputContext,
+}
+
+pub(crate) struct MergeKeys {
+    pub(crate) owner: PublicKey,
+    pub(crate) nullifier_pk: [u8; 32],
+    pub(crate) key: [u8; 32],
+    pub(crate) blinding: [u8; 32],
 }
 
 impl<'t> OwnerMerge<'t> {
@@ -835,19 +772,23 @@ impl<'t> OwnerMerge<'t> {
             return None;
         }
         Some(Self {
-            tx,
-            ring: tx.ring_program_id?,
             first_nullifier: *tx.nullifiers.first()?,
-            body: RingMergeBody::of(slot)?,
+            output: MergeOutput {
+                ring: tx.ring_program_id?,
+                body: RingMergeBody::of(slot)?,
+                context: &slot.output_context,
+            },
         })
     }
 
     fn commitment(&self) -> &'t [u8; 32] {
-        &self.tx.output_slots[0].output_context.hash
+        &self.output.context.hash
     }
+}
 
+impl MergeOutput<'_> {
     /// `None` under another wallet's secrets, the cipher is unauthenticated and only the commitment decides.
-    fn rebuild(&self, keys: MergeKeys) -> Result<Option<OpenedNote>, AnonymousError> {
+    pub(crate) fn rebuild(&self, keys: MergeKeys) -> Result<Option<OpenedNote>, TransactionError> {
         let Ok(plaintext) = MergeOutputPlaintext::decrypt(&self.body.encrypted, &keys.key) else {
             return Ok(None);
         };
@@ -861,9 +802,9 @@ impl<'t> OwnerMerge<'t> {
             &keys.nullifier_pk,
             &[0; 32],
             &self.body.ring_data_hash,
-            self.tx.output_slots[0].output_context.tree_id,
+            self.context.tree_id,
         )?;
-        Ok((hash == *self.commitment()).then_some(OpenedNote {
+        Ok((hash == self.context.hash).then_some(OpenedNote {
             utxo,
             nullifier_pk: keys.nullifier_pk,
             data_hash: None,

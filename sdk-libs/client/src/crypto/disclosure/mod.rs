@@ -220,10 +220,9 @@ fn check_evidence(evidence: &AuditEvidence) -> Result<(), AuditError> {
 }
 
 pub(crate) fn canonical(field: [u8; 32]) -> Result<[u8; 32], AuditError> {
-    match is_canonical_bn254_scalar_be(&field) {
-        true => Ok(field),
-        false => Err(AuditError::DisclosureField),
-    }
+    is_canonical_bn254_scalar_be(&field)
+        .then_some(field)
+        .ok_or(AuditError::DisclosureField)
 }
 
 #[cfg(test)]

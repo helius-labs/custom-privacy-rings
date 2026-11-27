@@ -158,25 +158,24 @@ impl PolicyRead<'_> {
             None => None,
         };
         // Every screened owner's row decides the key width.
-        let rows_read = match gates.any_salted() {
-            true => {
-                for owner in live_owners
-                    .iter()
-                    .flatten()
-                    .chain(withdrawals.iter().map(|w| &w.owner))
-                    .chain(&self.voucher)
-                {
-                    tracked.index(Some(*owner));
-                }
-                let members = tracked.opened();
-                let read = TrackingRead {
-                    root: tracking,
-                    members,
-                    openings: members.len(),
-                };
-                Some(read.read(client).await?)
+        let rows_read = if gates.any_salted() {
+            for owner in live_owners
+                .iter()
+                .flatten()
+                .chain(withdrawals.iter().map(|w| &w.owner))
+                .chain(&self.voucher)
+            {
+                tracked.index(Some(*owner));
             }
-            false => None,
+            let members = tracked.opened();
+            let read = TrackingRead {
+                root: tracking,
+                members,
+                openings: members.len(),
+            };
+            Some(read.read(client).await?)
+        } else {
+            None
         };
         let live_assets = self.output_assets()?;
         let input_assets = self.input_assets()?;
@@ -325,9 +324,11 @@ impl PolicyRead<'_> {
         self.inputs
             .output_utxos
             .iter()
-            .map(|output| match output.is_dummy() {
-                false => Ok(Some(*Member::asset(&output.asset.asset)?.as_bytes())),
-                true => Ok(None),
+            .map(|output| {
+                if output.is_dummy() {
+                    return Ok(None);
+                }
+                Ok(Some(*Member::asset(&output.asset.asset)?.as_bytes()))
             })
             .collect()
     }
@@ -338,9 +339,11 @@ impl PolicyRead<'_> {
             .input_utxos
             .iter()
             .filter(|input| !input.is_compact())
-            .map(|input| match input.is_note() {
-                false => Ok(None),
-                true => Ok(Some(*Member::asset(&input.utxo.asset.asset)?.as_bytes())),
+            .map(|input| {
+                if !input.is_note() {
+                    return Ok(None);
+                }
+                Ok(Some(*Member::asset(&input.utxo.asset.asset)?.as_bytes()))
             })
             .collect()
     }
@@ -495,18 +498,22 @@ impl EntryPlan<'_> {
             });
         }
         for withdrawal in self.withdrawals {
-            planned.withdrawal_owners.push(match screened {
-                true => owner(plan, withdrawal.owner)?,
-                false => OwnerEntry::default(),
+            planned.withdrawal_owners.push(if screened {
+                owner(plan, withdrawal.owner)?
+            } else {
+                OwnerEntry::default()
             });
             planned.withdrawal_assets.push(plan.asset(withdrawal.asset));
         }
         planned.public_assets = self
             .public_assets
             .iter()
-            .map(|asset| match *asset == [0; 32] {
-                true => 0,
-                false => plan.public_asset(*asset),
+            .map(|asset| {
+                if *asset == [0; 32] {
+                    0
+                } else {
+                    plan.public_asset(*asset)
+                }
             })
             .collect();
         // A zero value input can name an asset no payment moves, only its own subject row screens

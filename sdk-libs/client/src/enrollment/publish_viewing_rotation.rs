@@ -1,6 +1,6 @@
 //! Hands the ring's enrollment writer a rotated viewing key for the owner's leaf, the key senders read once its batch lands.
 //!
-//! Read after `crate::ViewingRotation`, whose stored keys and history come first.
+//! The key goes out only as the current key of both the stored keys and the viewing history.
 
 use solana_address::Address;
 use spr_client::AsyncRpc;

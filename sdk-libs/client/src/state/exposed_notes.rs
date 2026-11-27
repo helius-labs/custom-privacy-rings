@@ -81,11 +81,10 @@ pub fn verify_ring_owned<K: ShieldedKeys + ?Sized>(
     let mut exposed_if_spent = Vec::new();
     let mut spent_exposed = HashSet::new();
     for note in zero_key {
-        match owned.spent.remove(&note.nullifier) {
-            true => {
-                spent_exposed.insert(note.nullifier);
-            }
-            false => exposed_if_spent.push(note),
+        if owned.spent.remove(&note.nullifier) {
+            spent_exposed.insert(note.nullifier);
+        } else {
+            exposed_if_spent.push(note);
         }
     }
     Ok(RingOwnedUtxos {

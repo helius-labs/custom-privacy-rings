@@ -5,10 +5,6 @@
 //! one tracking root and the written key `ListKey(member, salt)` under the row's list tag. The update
 //! names that root's revision, Storage reads it from the pinned tracking registry and raises
 //! `tracking_floor` to it in the same instruction, so no frame proves absence under an older root.
-//!
-//! Read after `program-libs/interface/src/instructions/storage.rs` and
-//! `program-libs/member-registry/src/record.rs`.
-//! Read before `programs/storage/src/instructions/update.rs`.
 
 use custom_ring_interface::{
     domain,
@@ -43,7 +39,7 @@ use zolana_ring_policy::Member;
 use crate::{
     client::{RingClient, RingIndexerBackend},
     prover::{to_instruction_proof, RingRequest},
-    records::path_of,
+    records::{apply_inputs, path_of},
     registry_records::TrackingMemberRead,
     request::{
         ApplyEnrollments as ApplyEnrollmentsBody, ApplyRecords, PrivateApplyRecords,
@@ -344,14 +340,14 @@ impl BoundOwner {
         let member = solana_owner_identity(write.owner.as_array())?;
         let owner = Member::from_bytes(member)?;
         let keyed = |key: Member| written == Some(*key.as_bytes());
-        let ring = match Member::salted(&owner, &write.list_salt).is_ok_and(keyed) {
-            true => false,
-            false if keyed(Member::ring_salted(&owner, &write.list_salt)?) => true,
-            false => {
-                return Err(RingError::ListKeyMismatch {
-                    write_index: write.write_index,
-                })
-            }
+        let ring = if Member::salted(&owner, &write.list_salt).is_ok_and(keyed) {
+            false
+        } else if keyed(Member::ring_salted(&owner, &write.list_salt)?) {
+            true
+        } else {
+            return Err(RingError::ListKeyMismatch {
+                write_index: write.write_index,
+            });
         };
         Ok(Self {
             write: *write,
@@ -704,15 +700,7 @@ fn tracking_apply_inputs(
             })
         })
         .collect::<Result<_, RingError>>()?;
-    Ok(ApplyProofInputs {
-        old_root: response.old_root.0,
-        new_root: response.new_root.0,
-        old_next_index: response.old_next_index,
-        new_next_index: response.new_next_index,
-        chain_start: response.chain_start.0,
-        chain_end: response.chain_end.0,
-        writes,
-    })
+    Ok(apply_inputs(response, writes))
 }
 
 pub(crate) fn storage_ix(accounts: Vec<AccountMeta>, data: Vec<u8>) -> Instruction {

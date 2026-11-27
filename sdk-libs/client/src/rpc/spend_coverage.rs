@@ -7,7 +7,7 @@ use spr_indexer_api::{Base64String, Hash, SerializablePubkey, SerializableSignat
 
 use super::{
     base64, cursor_in_bounds, Attestation, ReadBuildError, ReadTarget, RequestBuildError,
-    SignedRequest,
+    RequestSignature, SignedRequest,
 };
 
 pub const GET_SPEND_COVERAGE: &str = "getSpendCoverage";
@@ -106,15 +106,16 @@ impl SpendCoverageRequest {
         self,
         authority: &S,
     ) -> Result<GetSpendCoverageRequest, RequestBuildError> {
-        let (timestamp, message) = self.message()?;
-        let signature = authority
-            .try_sign_message(&message)
-            .map_err(RequestBuildError::Signature)?;
+        let RequestSignature {
+            timestamp,
+            nonce,
+            signature,
+        } = self.signed_by(authority)?;
         Ok(GetSpendCoverageRequest {
             ring: self.attestation.target.ring.into(),
             authority: self.attestation.authority.into(),
             timestamp,
-            nonce: self.nonce.to_vec().into(),
+            nonce,
             cursor: self.attestation.cursor,
             signature: signature.into(),
         })

@@ -1,11 +1,12 @@
 use custom_ring_interface::domain;
 use solana_address::Address;
 use spr_indexer_api::Hash;
+use zolana_ring_keys::REDACTED;
 use zolana_ring_policy::Member;
 
 use crate::{
     rpc::GetListSaltResponse, OwnerListSalts, OwnerListTags, PrivateKeyKind, PrivateListMember,
-    RingError, REDACTED,
+    RingError,
 };
 
 const OWNER: Address = Address::new_from_array([0x11; 32]);

@@ -50,6 +50,7 @@ use zolana_ring_indexer::{
         RingTrackingRecordView, RingTrackingSealView,
     },
 };
+use zolana_ring_keys::REDACTED;
 use zolana_ring_member_registry::{
     Canopy, MemberRecord, MemberRegistryTree, RecordOpening, RecordTree, TrackingOpening,
     TrackingRecord, TrackingTree,
@@ -59,7 +60,6 @@ use zolana_ring_policy::{Member, RuleTable};
 use crate::{
     client::RingClient, trees::PoolTree, AsyncRingIndexer, CustomRing, NullifierKeyEnvelope,
     RingIndexerError, SealedNullifierKey, TrackingRegistryHost, TransferTags, ViewingHistory,
-    REDACTED,
 };
 
 pub(crate) const SLOT: u64 = 2_359_301;
@@ -1059,6 +1059,15 @@ where
     if std::env::var_os("UPDATE_RELAY_MESSAGES").is_some() {
         let json = serde_json::to_string_pretty(&fresh).unwrap();
         std::fs::write(&path, json + "\n").unwrap();
+    }
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// `UPDATE_PROVER_JSON=1` rewrites `path` under the crate from `fresh`, the committed file is the one read.
+pub(crate) fn pinned_request(path: &str, fresh: &serde_json::Value) -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(fresh).unwrap() + "\n").unwrap();
     }
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }

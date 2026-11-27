@@ -1,8 +1,7 @@
 //! The local half of a viewing key rotation, `crate::RotateViewingKey` publishes it.
 
 use spr_keypair::ViewingKey;
-use thiserror::Error;
-use zolana_ring_keys::{RingKeyError, RotatingRingKeys};
+use zolana_ring_keys::RotatingRingKeys;
 
 use crate::{AnonymousError, ViewingHistory};
 
@@ -13,17 +12,9 @@ pub struct ViewingRotation {
     pub history: ViewingHistory,
 }
 
-#[derive(Debug, Error)]
-pub enum ViewingRotationError {
-    #[error(transparent)]
-    Keys(#[from] RingKeyError),
-    #[error(transparent)]
-    History(#[from] AnonymousError),
-}
-
 impl ViewingRotation {
     /// `next` becomes current in both, every earlier key stays held and scanned.
-    pub fn rotate(self, next: ViewingKey, rotated_at: i64) -> Result<Self, ViewingRotationError> {
+    pub fn rotate(self, next: ViewingKey, rotated_at: i64) -> Result<Self, AnonymousError> {
         let history = self.history.with_rotated_key(next.pubkey(), rotated_at)?;
         let keys = self.keys.rotate(next)?;
         Ok(Self { keys, history })

@@ -3,7 +3,7 @@ use solana_address::Address;
 use solana_signer::Signer;
 use spr_indexer_api::{Base64String, SerializablePubkey, SerializableSignature};
 
-use super::{base64, Attestation, ReadTarget, RequestBuildError, SignedRequest};
+use super::{base64, Attestation, ReadTarget, RequestBuildError, RequestSignature, SignedRequest};
 
 const MERGE_SETTINGS_DOMAIN: &str = "zolana/ring-rpc-merge-settings";
 
@@ -60,16 +60,17 @@ impl MergeSettingsRequest {
         self,
         owner: &S,
     ) -> Result<SetMergeSettingsRequest, RequestBuildError> {
-        let (timestamp, message) = self.message()?;
-        let signature = owner
-            .try_sign_message(&message)
-            .map_err(RequestBuildError::Signature)?;
+        let RequestSignature {
+            timestamp,
+            nonce,
+            signature,
+        } = self.signed_by(owner)?;
         Ok(SetMergeSettingsRequest {
             ring: self.attestation.target.ring.into(),
             owner: self.attestation.owner.into(),
             settings: self.attestation.settings,
             timestamp,
-            nonce: self.nonce.to_vec().into(),
+            nonce,
             signature: signature.into(),
         })
     }

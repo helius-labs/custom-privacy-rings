@@ -661,8 +661,8 @@ impl Delegated<'_> {
             }
         };
         let ring_rail = RingRail::delegate(config.mode);
-        let delivery = match ring_rail.anonymous_frame() {
-            true => RingDelivery::Anonymous(Box::new(
+        let delivery = if ring_rail.anonymous_frame() {
+            RingDelivery::Anonymous(Box::new(
                 // An output back to the source reads as change and takes no payment slot, a
                 // payment to the source still publishes its tag on a change slot.
                 self.outputs
@@ -680,22 +680,21 @@ impl Delegated<'_> {
                             None => plan.with_random_tag(),
                         }
                     }),
-            )),
-            false => {
-                // The confidential rail publishes each recipient's bootstrap tag and no other.
-                let requested = self.outputs.iter().any(|output| {
-                    let bootstrap = bootstrap_slot_tag(output.recipient.viewing_pubkey.u());
-                    output.tag.is_some_and(|tag| slot_tag(tag) != bootstrap)
-                });
-                if requested {
-                    return Err(RingError::RequestedTagUnpublished);
-                }
-                DeliveredRail {
-                    outputs: shape.n_outputs(),
-                    rail: ring_rail,
-                }
-                .delivery()?
+            ))
+        } else {
+            // The confidential rail publishes each recipient's bootstrap tag and no other.
+            let requested = self.outputs.iter().any(|output| {
+                let bootstrap = bootstrap_slot_tag(output.recipient.viewing_pubkey.u());
+                output.tag.is_some_and(|tag| slot_tag(tag) != bootstrap)
+            });
+            if requested {
+                return Err(RingError::RequestedTagUnpublished);
             }
+            DeliveredRail {
+                outputs: shape.n_outputs(),
+                rail: ring_rail,
+            }
+            .delivery()?
         };
         let rail =
             RingOutputRail::new(self.tx_viewing_key.clone(), config.auditor_pubkey, delivery);

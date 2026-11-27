@@ -48,15 +48,17 @@ impl RingRelay for StubRelay {
     async fn prepare_relay(&self, request: PrepareRelayRequest) -> Result<RelayStep, RingError> {
         let relay_id = request.relay_id()?;
         self.prepared.lock().unwrap().push(request);
-        Ok(match self.asks_signature {
-            true => RelayStep::SignMessage {
+        Ok(if self.asks_signature {
+            RelayStep::SignMessage {
                 relay_id,
-                message: match self.message.is_empty() {
-                    true => vec![1].into(),
-                    false => self.message.clone().into(),
+                message: if self.message.is_empty() {
+                    vec![1].into()
+                } else {
+                    self.message.clone().into()
                 },
-            },
-            false => RelayStep::Submitted { relay_id },
+            }
+        } else {
+            RelayStep::Submitted { relay_id }
         })
     }
 
@@ -645,12 +647,10 @@ async fn a_relayed_spend_proves_on_the_key_its_owner_sealed() {
     let (wide, circuit, built) = relayed(25, Some([3; 32])).await;
     assert_eq!((wide, shape(circuit)), (true, (2, 40, true)));
 
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/custom-ring-transfer-relayed-wide-data.json");
-    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
-        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
-    }
-    assert!(path.exists());
+    crate::tests::support::pinned_request(
+        "tests/fixtures/custom-ring-transfer-relayed-wide-data.json",
+        &built,
+    );
 }
 
 /// Each published slot's record, opened under the transaction key and the key it seals to.
@@ -5063,7 +5063,7 @@ mod request_fixtures {
     use super::*;
     use crate::{
         relay_message::ApprovalOpening,
-        tests::support::{wallet, TREE_ID},
+        tests::support::{pinned_request, wallet, TREE_ID},
     };
 
     /// `UPDATE_PROVER_JSON=1` writes the file, `TestGoldenRequestsAssignTheRecordedWitness` solves what it holds.
@@ -5076,12 +5076,10 @@ mod request_fixtures {
             crate::prover::RequestBody::new(request.circuit, &request.body).unwrap(),
         )
         .unwrap();
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("tests/fixtures/custom-ring-transfer-{name}.json"));
-        if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
-            std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
-        }
-        assert!(path.exists());
+        pinned_request(
+            &format!("tests/fixtures/custom-ring-transfer-{name}.json"),
+            &built,
+        );
         (built, request.circuit)
     }
 

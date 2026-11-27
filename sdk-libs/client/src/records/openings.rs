@@ -6,12 +6,14 @@ use spr_indexer_api::Hash;
 use zolana_ring_indexer::rpc::{
     GetStorageApplyProofInputsResponse, GetStorageMemberOpeningsRequest,
     GetStorageMemberOpeningsResponse, GetStorageMemberRecordsResponse,
-    GetStorageRecordPoolResponse, RingMemberOpening, RingMemberRecordView, RingRecordPathView,
+    GetStorageRecordPoolResponse, RegistryApplyProofInputsResponse, RegistryRecordPoolResponse,
+    RingMemberOpening, RingMemberRecordView, RingRecordOpening, RingRecordPathView,
     RingRecordWriteView, MAX_RING_MEMBER_PAGE_LIMIT,
 };
 use zolana_ring_member_registry::{
-    ApplyProofInputs, Canopy, MemberRecord, OpeningCheck, PoolSubject, QuadPathOf, RecordOpening,
-    RecordPool, RecordWriteProofInput, SharedPath, SharedProof,
+    ApplyProofInputs, Canopy, IndexedLeaf, MemberRecord, OpeningCheck, PoolSubject, QuadPathOf,
+    RecordOpening, RecordPool, RecordPoolOf, RecordTreeError, RecordWriteProofInput, SharedPath,
+    SharedProof,
 };
 use zolana_ring_policy::{ListId, Member, MemberError};
 
@@ -54,48 +56,15 @@ pub struct RecordPoolCheck<'a> {
 
 impl RecordPoolCheck<'_> {
     pub fn verify(self) -> Result<RecordPoolRead, AuditError> {
-        let response = self.response;
         let invalid = |_| AuditError::InvalidMemberRegistry;
-        let canopy = Canopy::covering(self.openings).map_err(invalid)?;
-        if response.root.root.0 != *self.root
-            || response.canopy.len() != canopy.width()
-            || response.subjects.len() != self.members.len()
-        {
-            return Err(AuditError::InvalidMemberRegistry);
+        let pool = ServedPool {
+            response: self.response,
+            root: self.root,
+            members: self.members,
+            canopy: Canopy::covering(self.openings).map_err(invalid)?,
         }
-        let pool = RecordPool {
-            records: response
-                .records
-                .iter()
-                .map(|row| member_record(&row.record))
-                .collect(),
-            proof: SharedProof {
-                canopy: response.canopy.iter().map(|node| node.0).collect(),
-                paths: response
-                    .records
-                    .iter()
-                    .map(|row| SharedPath {
-                        index: row.path.index,
-                        siblings: row
-                            .path
-                            .siblings
-                            .iter()
-                            .map(|level| level.clone().map(|sibling| sibling.0))
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            subjects: self
-                .members
-                .iter()
-                .zip(&response.subjects)
-                .map(|(member, record_index)| PoolSubject {
-                    member: *member,
-                    record_index: *record_index,
-                })
-                .collect(),
-        };
-        pool.verify(self.root).map_err(invalid)?;
+        .verify(member_record)
+        .map_err(invalid)?;
         Ok(RecordPoolRead { pool })
     }
 }
@@ -190,19 +159,9 @@ impl MemberOpeningRead {
         root: &[u8; 32],
         member: &[u8; 32],
     ) -> Result<Self, AuditError> {
-        let record = member_record(&view.record);
-        let path = path_of(&view.path)?;
-        let opening = match view.present {
-            true => RecordOpening::Present { record, path },
-            false => RecordOpening::Absent { low: record, path },
-        };
-        OpeningCheck {
-            opening: &opening,
-            root,
-            member,
-        }
-        .verify()
-        .map_err(|_| AuditError::InvalidMemberRegistry)?;
+        let opening = ServedOpening { view, root, member }
+            .verify(member_record)
+            .map_err(|_| AuditError::InvalidMemberRegistry)?;
         Ok(Self { opening })
     }
 
@@ -217,6 +176,109 @@ impl MemberOpeningRead {
     pub fn listed(&self, list: ListId) -> bool {
         self.record()
             .is_some_and(|record| record.lists & list.record_bit() != 0)
+    }
+}
+
+/// `members` stay distinct.
+pub(crate) struct ServedPool<'a, R> {
+    pub response: &'a RegistryRecordPoolResponse<R>,
+    pub root: &'a [u8; 32],
+    pub members: &'a [[u8; 32]],
+    pub canopy: Canopy,
+}
+
+impl<R> ServedPool<'_, R> {
+    /// The response names `root`, takes the canopy width and one subject per member.
+    pub fn verify<L: IndexedLeaf + Default + Clone>(
+        self,
+        leaf: impl Fn(&R) -> L,
+    ) -> Result<RecordPoolOf<L>, RecordTreeError> {
+        let Self {
+            response,
+            root,
+            members,
+            canopy,
+        } = self;
+        if response.root.root.0 != *root {
+            return Err(RecordTreeError::RootMismatch);
+        }
+        if response.canopy.len() != canopy.width() || response.subjects.len() != members.len() {
+            return Err(RecordTreeError::PoolShape);
+        }
+        let pool = RecordPoolOf {
+            records: response
+                .records
+                .iter()
+                .map(|row| leaf(&row.record))
+                .collect(),
+            proof: SharedProof {
+                canopy: response.canopy.iter().map(|node| node.0).collect(),
+                paths: response
+                    .records
+                    .iter()
+                    .map(|row| SharedPath {
+                        index: row.path.index,
+                        siblings: row
+                            .path
+                            .siblings
+                            .iter()
+                            .map(|level| level.clone().map(|sibling| sibling.0))
+                            .collect(),
+                    })
+                    .collect(),
+            },
+            subjects: members
+                .iter()
+                .zip(&response.subjects)
+                .map(|(member, record_index)| PoolSubject {
+                    member: *member,
+                    record_index: *record_index,
+                })
+                .collect(),
+        };
+        pool.verify(root)?;
+        Ok(pool)
+    }
+}
+
+pub(crate) struct ServedOpening<'a, R> {
+    pub view: &'a RingRecordOpening<R>,
+    pub root: &'a [u8; 32],
+    pub member: &'a [u8; 32],
+}
+
+#[derive(Debug)]
+pub(crate) enum OpeningError {
+    /// The path holds another number of levels than the tree.
+    Malformed,
+    Tree(RecordTreeError),
+}
+
+impl<R> ServedOpening<'_, R> {
+    /// The member's record or the low record bracketing it, refused unless its path reaches `root`.
+    pub fn verify<L, const H: usize>(
+        self,
+        leaf: impl FnOnce(&R) -> L,
+    ) -> Result<RecordOpening<L>, OpeningError>
+    where
+        L: IndexedLeaf<Path = QuadPathOf<H>>,
+    {
+        let view = self.view;
+        let path = path_of(&view.path).map_err(|_| OpeningError::Malformed)?;
+        let record = leaf(&view.record);
+        let opening = if view.present {
+            RecordOpening::Present { record, path }
+        } else {
+            RecordOpening::Absent { low: record, path }
+        };
+        OpeningCheck {
+            opening: &opening,
+            root: self.root,
+            member: self.member,
+        }
+        .verify()
+        .map_err(OpeningError::Tree)?;
+        Ok(opening)
     }
 }
 
@@ -248,15 +310,22 @@ pub fn member_record(view: &RingMemberRecordView) -> MemberRecord {
 pub fn storage_apply_proof_inputs(
     response: &GetStorageApplyProofInputsResponse,
 ) -> Result<ApplyProofInputs, AuditError> {
-    Ok(ApplyProofInputs {
+    Ok(apply_inputs(response, record_writes(&response.writes)?))
+}
+
+pub(crate) fn apply_inputs<V, W>(
+    response: &RegistryApplyProofInputsResponse<V>,
+    writes: Vec<W>,
+) -> ApplyProofInputs<W> {
+    ApplyProofInputs {
         old_root: response.old_root.0,
         new_root: response.new_root.0,
         old_next_index: response.old_next_index,
         new_next_index: response.new_next_index,
         chain_start: response.chain_start.0,
         chain_end: response.chain_end.0,
-        writes: record_writes(&response.writes)?,
-    })
+        writes,
+    }
 }
 
 fn record_writes(views: &[RingRecordWriteView]) -> Result<Vec<RecordWriteProofInput>, AuditError> {

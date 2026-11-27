@@ -40,9 +40,10 @@ const fn right_align_one() -> [u8; 32] {
 
 impl PoolSubjects {
     pub fn opened(&self) -> &[[u8; 32]] {
-        match self.members.is_empty() {
-            true => &NO_SUBJECT,
-            false => &self.members,
+        if self.members.is_empty() {
+            &NO_SUBJECT
+        } else {
+            &self.members
         }
     }
 

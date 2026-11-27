@@ -1,6 +1,6 @@
 //! Exact-tag reads of the indexer, an output nobody can decrypt still occupies its tag.
 
-use std::{collections::HashMap, future::Future};
+use std::future::Future;
 
 use solana_address::Address;
 use spr_keypair::viewing_key::ViewTag;
@@ -30,34 +30,6 @@ pub struct HistoryRows<T> {
     pub next: HistoryPosition,
 }
 
-#[derive(Clone, Debug)]
-pub struct TagWindow<K = u64> {
-    by_tag: HashMap<ViewTag, K>,
-}
-
-impl TagWindow {
-    /// `tags` in index order from `start`.
-    pub fn new(start: u64, tags: impl IntoIterator<Item = ViewTag>) -> Self {
-        Self::indexed((start..).zip(tags))
-    }
-}
-
-impl<K: Copy> TagWindow<K> {
-    pub fn indexed(tags: impl IntoIterator<Item = (K, ViewTag)>) -> Self {
-        Self {
-            by_tag: tags.into_iter().map(|(index, tag)| (tag, index)).collect(),
-        }
-    }
-
-    pub fn tags(&self) -> Vec<ViewTag> {
-        self.by_tag.keys().copied().collect()
-    }
-
-    pub fn index_of(&self, tag: &ViewTag) -> Option<K> {
-        self.by_tag.get(tag).copied()
-    }
-}
-
 #[must_use]
 pub struct IndexerReads<'a, I: ?Sized> {
     indexer: &'a I,
@@ -67,17 +39,6 @@ pub struct IndexerReads<'a, I: ?Sized> {
 }
 
 impl<'a, I: AsyncRpc + ?Sized> IndexerReads<'a, I> {
-    pub fn new(indexer: &'a I) -> Self {
-        Self::configured(indexer, None)
-    }
-
-    pub fn with_indexer_config(self, config: IndexerRpcConfig) -> Self {
-        Self {
-            config: Some(config),
-            ..self
-        }
-    }
-
     pub(crate) fn configured(indexer: &'a I, config: Option<IndexerRpcConfig>) -> Self {
         Self {
             indexer,
@@ -98,7 +59,7 @@ impl<'a, I: AsyncRpc + ?Sized> IndexerReads<'a, I> {
         window: RecoveryWindow,
     ) -> Result<(GetShieldedTransactionsByTagsResponse, u32), ClientError> {
         loop {
-            let limit = window.page_limit.unwrap_or(self.ring_page_limit);
+            let limit = self.ring_page_limit;
             let result = self
                 .indexer
                 .get_shielded_transactions_by_ring(
@@ -114,9 +75,7 @@ impl<'a, I: AsyncRpc + ?Sized> IndexerReads<'a, I> {
             match result {
                 Ok(page) => return Ok((page, limit)),
                 Err(ClientError::Indexer(message))
-                    if window.page_limit.is_none()
-                        && limit > 1
-                        && message.contains(RESPONSE_TOO_LARGE) =>
+                    if limit > 1 && message.contains(RESPONSE_TOO_LARGE) =>
                 {
                     self.ring_page_limit = limit / 2;
                 }

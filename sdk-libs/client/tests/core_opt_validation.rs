@@ -22,8 +22,7 @@ fn checked_frames_accept_the_supported_authorization_modes() {
     }
 }
 
-/// The flags name the variant, the instruction tag and the ring mode name the rail, so a frame with
-/// none of the three bits parses under the confidential and both delegate rails.
+/// A frame with none of the three flag bits parses under the confidential and both delegate rails.
 #[test]
 fn each_authorization_encodes_its_flags_and_parses_back_under_its_rail() {
     let fixture = Fixture::new();

@@ -1,7 +1,5 @@
 //! A ring deposit is a transfer frame that spends only dummies. Public deposit legs fund one ring
 //! output per recipient, and every check of the transfer statement runs on it.
-//!
-//! Read after `transfer/pipeline/mod.rs`. Read before `transfer/pipeline/relay.rs`.
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},

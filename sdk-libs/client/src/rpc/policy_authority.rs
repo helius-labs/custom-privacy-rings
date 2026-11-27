@@ -5,7 +5,10 @@ use solana_address::Address;
 use solana_signer::Signer;
 use spr_indexer_api::{Base64String, Hash, SerializablePubkey, SerializableSignature};
 
-use super::{base64, Attestation, ReadTarget, RecordUpdateId, RequestBuildError, SignedRequest};
+use super::{
+    base64, Attestation, ReadTarget, RecordUpdateId, RequestBuildError, RequestSignature,
+    SignedRequest,
+};
 
 const POLICY_AUTHORITY_DOMAIN: &str = "zolana/ring-rpc-policy-authority";
 
@@ -236,10 +239,11 @@ impl<A: PolicyAuthorityAction> Attestation for PolicyAuthorityAttestation<A> {
 impl<A: PolicyAuthorityAction> SignedRequest<PolicyAuthorityAttestation<A>> {
     /// `authority` must be the attestation's authority, the service checks the signature against it.
     pub fn sign<S: Signer + ?Sized>(self, authority: &S) -> Result<A::Request, RequestBuildError> {
-        let (timestamp, message) = self.message()?;
-        let signature = authority
-            .try_sign_message(&message)
-            .map_err(RequestBuildError::Signature)?;
+        let RequestSignature {
+            timestamp,
+            nonce,
+            signature,
+        } = self.signed_by(authority)?;
         let PolicyAuthorityAttestation {
             target,
             authority,
@@ -250,7 +254,7 @@ impl<A: PolicyAuthorityAction> SignedRequest<PolicyAuthorityAttestation<A>> {
             PolicyAuthorityAuth {
                 authority: authority.into(),
                 timestamp,
-                nonce: self.nonce.to_vec().into(),
+                nonce,
                 signature: signature.into(),
             },
         ))

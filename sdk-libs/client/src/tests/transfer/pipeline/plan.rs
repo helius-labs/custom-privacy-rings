@@ -180,11 +180,9 @@ fn a_read_keeps_a_seal_of_one_stream_and_refuses_another() {
         outcomes,
         ["reuse", "reuse", "reseal", "reuse"].map(Value::from)
     );
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/transfer-plan-rekey.json");
-    let body = serde_json::to_string_pretty(&Value::from(pinned)).unwrap() + "\n";
-    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
-        std::fs::write(&path, &body).unwrap();
-    }
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+    let cases = Value::from(pinned);
+    assert_eq!(
+        crate::tests::support::pinned_request("tests/fixtures/transfer-plan-rekey.json", &cases),
+        cases
+    );
 }

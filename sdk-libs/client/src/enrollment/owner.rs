@@ -5,10 +5,6 @@
 //! for good. A rotation carries only the new viewing key and moves only the leaf's `viewing_hash`. The
 //! writer batches signed writes into one `EnrollBatch`, storage verifies every owner signature and
 //! proof, and a write grants nothing until that batch lands under a root.
-//!
-//! Read after `sdk-libs/client/src/rpc/enrollment.rs` and
-//! `programs/storage/src/instructions/apply_enrollments.rs`.
-//! Read before `services/ring-writer/src/operations/enrollment_applier.rs`.
 
 use async_trait::async_trait;
 use custom_ring_interface::{

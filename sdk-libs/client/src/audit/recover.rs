@@ -11,14 +11,13 @@ use spr_client::{AsyncRpc, IndexerRpcConfig};
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use spr_keypair::{hash::owner_hash, NullifierKey, ShieldedAddress, X25519Keypair};
 use spr_transaction::{
-    instructions::merge::{
-        merge_circuit_width, merge_output_blinding, merge_output_key, MergeOutputPlaintext,
-    },
+    instructions::merge::{merge_circuit_width, merge_output_blinding, merge_output_key},
     Data, OutputContext, ShieldedTransaction, TransactionError, Utxo, WalletUtxo,
 };
 use zolana_ring_transaction::RingAssets;
 
 use crate::{
+    anonymous::{MergeKeys, MergeOutput},
     confirmed_merge,
     decrypt::TransactionAudit,
     history::HistoryCursor,
@@ -678,34 +677,35 @@ fn merge_successor(
     let Some(slot) = transaction.output_slots.first() else {
         return Ok(None);
     };
-    let Some(RingMergeBody {
-        ring_data_hash,
-        encrypted,
-    }) = RingMergeBody::of(slot)
+    let Some(body) = RingMergeBody::of(slot) else {
+        return Ok(None);
+    };
+    let output = MergeOutput {
+        ring,
+        body,
+        context: &slot.output_context,
+    };
+    let Some(note) = output.rebuild(MergeKeys {
+        owner: source.address.signing_pubkey,
+        nullifier_pk: source.address.nullifier_pubkey,
+        key: merge_output_key(source.nullifier_key, first_nullifier)?,
+        blinding: merge_output_blinding(source.nullifier_key, first_nullifier)?,
+    })?
     else {
         return Ok(None);
     };
-    let key = merge_output_key(source.nullifier_key, first_nullifier)?;
-    let Ok(plaintext) = MergeOutputPlaintext::decrypt(&encrypted, &key) else {
-        return Ok(None);
-    };
-    let utxo = plaintext.into_utxo(
-        source.address.signing_pubkey,
-        spr_transaction::Mint::new(plaintext.mint, 0),
-        merge_output_blinding(source.nullifier_key, first_nullifier)?,
-        Some(ring),
-    );
     let hashes = UtxoDataHashes {
         data_hash: None,
-        ring_data_hash: Some(ring_data_hash),
+        ring_data_hash: note.ring_data_hash,
     };
-    let (successor, opens) = source.wallet_utxo(
-        utxo,
-        source.address.nullifier_pubkey,
+    // `rebuild` checked the commitment.
+    let (successor, _) = source.wallet_utxo(
+        note.utxo,
+        note.nullifier_pk,
         &slot.output_context,
         hashes,
         transaction,
         0,
     )?;
-    Ok(opens.then_some(successor))
+    Ok(Some(successor))
 }

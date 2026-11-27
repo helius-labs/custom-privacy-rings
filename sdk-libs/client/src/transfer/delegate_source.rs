@@ -2,9 +2,9 @@
 //! public zero key needs no enrollment, any other key comes only from the source's enrollment and
 //! must derive the address the request names.
 //!
-//! Read [`ResolvedSource::resolve`] first, then [`ResolvedSource::check_notes`] on the recovered
-//! notes before they reach a [`DelegateSource`](crate::DelegateSource), or
-//! [`AllowedNullifiers::admit`] per requested source on the relay path.
+//! Recovered notes pass [`ResolvedSource::check_notes`] before they reach a
+//! [`DelegateSource`](crate::DelegateSource), or [`AllowedNullifiers::admit`] per requested source
+//! on the relay path.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -107,12 +107,13 @@ impl ResolvedSource {
         enrollment: &E,
     ) -> Result<Self, E::Error> {
         // 1. The zero key's secret is public, its notes need no escrow.
-        let nullifier_key = match address.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY {
-            true => NullifierKey::from_secret([0; 31]),
-            false => enrollment
+        let nullifier_key = if address.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY {
+            NullifierKey::from_secret([0; 31])
+        } else {
+            enrollment
                 .escrowed_key(&address)
                 .await?
-                .ok_or(DelegateSourceError::Unenrolled)?,
+                .ok_or(DelegateSourceError::Unenrolled)?
         };
         // 2. An enrollment under another key would spend notes the named address does not hold.
         let derived = nullifier_key.pubkey().map_err(DelegateSourceError::from)?;
@@ -225,10 +226,9 @@ impl AllowedNullifiers {
             .into_iter()
             .map(ShieldedAddress::to_bytes)
             .collect();
-        match requested == self.sources {
-            true => Ok(()),
-            false => Err(DelegateSourceError::SourcesMismatch),
-        }
+        (requested == self.sources)
+            .then_some(())
+            .ok_or(DelegateSourceError::SourcesMismatch)
     }
 
     /// The proof names `spent` notes and no position, the distinct admitted nullifiers must count
@@ -277,10 +277,11 @@ impl SourceSpends {
 
     /// A source's change in a mint is at most what the frame spends of it there.
     pub(crate) fn check_change(&self) -> Result<(), MessageMismatch> {
-        match self.0.values().all(|left| *left >= 0) {
-            true => Ok(()),
-            false => Err(MessageMismatch::ChangeExceedsSpend),
-        }
+        self.0
+            .values()
+            .all(|left| *left >= 0)
+            .then_some(())
+            .ok_or(MessageMismatch::ChangeExceedsSpend)
     }
 }
 

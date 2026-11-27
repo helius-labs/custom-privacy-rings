@@ -2,6 +2,8 @@
 
 #[path = "common/history_page.rs"]
 pub mod history_page;
+#[path = "common/page_window.rs"]
+mod page_window;
 
 use std::{
     collections::HashSet,
@@ -40,8 +42,8 @@ use spr_transaction::{
 use zolana_ring_client::{
     auditor_view_tag, note_state, verify_ring_owned, AnonymousError, AnonymousScan,
     AnonymousStream, AnonymousSync, AnonymousWallet, AuditError, AuditStreamSeal, NoteState,
-    RingConfidentialScan, RingNoteCodec, SenderAuditFrame, SenderAuditFrames, SentCheck,
-    ViewingHistory, TAG_WINDOW,
+    PendingClaim, RingConfidentialScan, RingNoteCodec, SenderAuditFrame, SenderAuditFrames,
+    SentCheck, ViewingHistory, TAG_WINDOW,
 };
 use zolana_ring_keys::encode_ring_body_output;
 use zolana_ring_keys::AuditEvidence;
@@ -59,6 +61,7 @@ use zolana_ring_transaction::{
 };
 
 use history_page::EventsPage;
+use page_window::{page_window, MockPageWindow};
 
 const RING: Address = Address::new_from_array([4; 32]);
 const TREE: u16 = 2;
@@ -87,23 +90,6 @@ struct Indexer {
     /// The ring page at the index fails.
     failing_page: Mutex<Option<usize>>,
     ring_pages: AtomicUsize,
-}
-
-struct MockPageWindow {
-    token: Option<PaginationToken>,
-    limit: usize,
-}
-
-fn page_window<T: spr_indexer_api::Positioned>(
-    mut page: spr_indexer_api::Page<T>,
-    window: MockPageWindow,
-) -> spr_indexer_api::Page<T> {
-    page.data
-        .retain(|row| window.token.is_none_or(|token| row.position() > token));
-    let more = page.data.len() > window.limit;
-    page.data.truncate(window.limit);
-    page.pagination_token = page.data.last().filter(|_| more).map(|row| row.position());
-    page
 }
 
 impl Indexer {
@@ -375,9 +361,10 @@ impl Wallet {
                     Some(tag) => plan.with_tag(tag),
                     None => plan,
                 };
-                match self.replies {
-                    true => plan.with_reply(reply.clone()),
-                    false => plan,
+                if self.replies {
+                    plan.with_reply(reply.clone())
+                } else {
+                    plan
                 }
             });
         let input = self.funding.remove(0);
@@ -1943,6 +1930,15 @@ fn a_wallet_document_round_trips_and_refuses_an_unknown_field() {
         AnonymousWallet::from_json(r#"{"viewingHistory":[]}"#),
         Err(AnonymousError::WalletDocument(_))
     ));
+    let mut repeated: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let key = repeated["history"]["viewingHistory"][0]["viewingPubkey"].clone();
+    repeated["history"]["viewingHistory"][1]["viewingPubkey"] = key.clone();
+    let Err(AnonymousError::WalletDocument(reason)) =
+        AnonymousWallet::from_json(&repeated.to_string())
+    else {
+        panic!("a repeated key is refused as a wallet document fault");
+    };
+    assert!(!reason.contains(key.as_str().unwrap()), "{reason}");
 }
 
 #[test]
@@ -2374,6 +2370,126 @@ async fn bounded_recovery_resumes_after_restart_at_its_fixed_target() {
     );
     assert_eq!(wallet.notes().len(), 4);
     assert_eq!(after_slot(wallet.history()), Some(target));
+}
+
+#[tokio::test]
+async fn a_resumed_recovery_refuses_another_owner_key_set_ring_mode_or_starting_history() {
+    let indexer = Indexer::default();
+    let mut alice = Wallet::new(1);
+    let bob = Wallet::new(2);
+    for _ in 0..2 {
+        alice.pay(&indexer, &[pay(&bob.address(), 5)]);
+    }
+    *indexer.page_cap.lock().unwrap() = Some(1);
+    let assets = assets();
+    let (both_keys, history) = wiped(2, &[ViewingKey::new()]);
+    let first_key = RotatingRingKeys::new(&keypair(2)).unwrap();
+    let step = |keys| {
+        AnonymousSync::new(keys, &assets)
+            .with_page_budget(1)
+            .unwrap()
+    };
+    let mut wallet = AnonymousWallet::new(history);
+    let paused = step(&first_key)
+        .with_full_scan(RING)
+        .fetch_wallet(&indexer, &wallet)
+        .await
+        .unwrap();
+    assert_eq!(paused.status(), zolana_ring_client::RecoveryStatus::Paused);
+    wallet.absorb(paused).unwrap();
+    let stored: serde_json::Value = serde_json::from_str(&wallet.to_json()).unwrap();
+    let mut other_owner = stored.clone();
+    other_owner["recovery"]["scope"]["owner"] = Wallet::new(3).address().to_string().into();
+    let mut moved_history = stored.clone();
+    moved_history["history"]["viewingHistory"][0]["request"]["next"] = 1.into();
+    for edited in [other_owner, moved_history] {
+        let edited = AnonymousWallet::from_json(&edited.to_string()).unwrap();
+        assert!(matches!(
+            step(&first_key)
+                .with_full_scan(RING)
+                .fetch_wallet(&indexer, &edited)
+                .await,
+            Err(AnonymousError::RecoveryScopeChanged)
+        ));
+    }
+    for resumed in [
+        step(&both_keys).with_full_scan(RING),
+        step(&first_key),
+        step(&first_key).with_full_scan(Address::new_from_array([5; 32])),
+        step(&first_key).with_full_scan(RING).with_full_rescan(),
+    ] {
+        assert!(matches!(
+            resumed.fetch_wallet(&indexer, &wallet).await,
+            Err(AnonymousError::RecoveryScopeChanged)
+        ));
+    }
+    assert!(step(&first_key)
+        .with_full_scan(RING)
+        .fetch_wallet(&indexer, &wallet)
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn a_tag_sync_holds_no_note_whose_published_commitment_was_replaced() {
+    let indexer = Indexer::default();
+    let mut alice = Wallet::new(1);
+    let bob = Wallet::new(2);
+    let mut replaced = alice.seal(&indexer, &[pay(&bob.address(), 30)]);
+    replaced.output_slots[1].output_context.hash = field(8, 8);
+    indexer.publish(replaced);
+    let mut stored = AnonymousWallet::new(ViewingHistory::new(bob.keys.viewing_pubkey(), 0));
+    tag_sync(&indexer, &bob.keys, &mut stored).await;
+    assert!(held(&stored).is_empty() && stored.pending_notes().is_empty());
+    let paid = alice.pay(&indexer, &[pay(&bob.address(), 30)]);
+    tag_sync(&indexer, &bob.keys, &mut stored).await;
+    assert_eq!(held(&stored), [output(&paid, 1)]);
+}
+
+#[tokio::test]
+async fn every_site_recovery_opens_no_foreign_or_changed_merge() {
+    let indexer = Indexer::default();
+    let (bob, carol) = (Wallet::new(2), Wallet::new(3));
+    publish_merge(&indexer, &carol, vec![field(3, 1)], 100);
+    publish_merge(&indexer, &bob, vec![field(2, 1)], 100);
+    indexer
+        .transactions
+        .lock()
+        .unwrap()
+        .last_mut()
+        .unwrap()
+        .output_slots[0]
+        .output_context
+        .hash = field(8, 8);
+    let opened = publish_merge(&indexer, &bob, vec![field(2, 2)], 100);
+    let scan = AnonymousSync::new(&bob.keys, &assets())
+        .full_scan(&indexer, &fresh(&bob), RING)
+        .await
+        .unwrap();
+    assert_eq!(found(&scan), [opened]);
+    assert!(scan.pending_notes().is_empty());
+}
+
+#[test]
+fn a_pending_claim_prints_no_claimed_key() {
+    let claimed_viewing_key = ViewingKey::new().pubkey();
+    let printed = format!(
+        "{:?}",
+        PendingClaim {
+            utxo_hash: [7; 32],
+            claimed_viewing_key,
+            claimed_owner_key: [0xa1; 32],
+            claimed_nullifier_pk: [0xb2; 32],
+        }
+    );
+    assert!(printed.contains(&format!("{:?}", [7u8; 32])), "{printed}");
+    for hidden in [
+        format!("{:?}", claimed_viewing_key.as_bytes()),
+        "161".to_owned(),
+        "178".to_owned(),
+    ] {
+        assert!(!printed.contains(&hidden), "{printed}");
+    }
 }
 
 #[tokio::test]

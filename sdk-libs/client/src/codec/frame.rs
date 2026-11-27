@@ -246,19 +246,15 @@ fn write_extensions(
         }
     }
     if let Some(cache) = &extensions.cache {
-        write_cache_access(cache, out);
+        out.extend(
+            <CacheAccess as Serialize>::serialize(cache)
+                .map_err(|_| CustomRingError::InvalidInstructionData)?,
+        );
     }
     if let Some(totals) = extensions.approval_totals {
         out.extend_from_slice(totals);
     }
     Ok(())
-}
-
-fn write_cache_access(cache: &CacheAccess, out: &mut Vec<u8>) {
-    out.extend_from_slice(&cache.read_bitmap.to_le_bytes());
-    for write in &cache.write_slots {
-        out.extend_from_slice(&[write.output, write.slot]);
-    }
 }
 
 fn push_bitmap(out: &mut Vec<u8>, bits: impl ExactSizeIterator<Item = bool>) {

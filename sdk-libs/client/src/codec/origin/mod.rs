@@ -473,9 +473,9 @@ fn ring_withdrawals_of(
 }
 
 #[cfg(all(test, feature = "solana-rpc"))]
-use rpc::confirmed_origin_for;
+use rpc::{confirmed_origin, confirmed_origin_for};
 #[cfg(feature = "solana-rpc")]
-pub use rpc::{confirmed_origin, ConfirmedRingOrigins, ORIGIN_TRANSACTION_CONFIG};
+pub use rpc::{ConfirmedRingOrigins, ORIGIN_TRANSACTION_CONFIG};
 
 #[cfg(feature = "solana-rpc")]
 mod rpc {

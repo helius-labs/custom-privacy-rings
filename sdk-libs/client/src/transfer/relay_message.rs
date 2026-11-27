@@ -38,7 +38,7 @@ use crate::{
     pipeline::refused_delegate,
     rpc::{AuthorityWithdrawal, RelayId, TxViewingSecret},
     sole_mint, AuditEnvelope, CoSignerPairs, CustomRing, CustomRingConfig, DelegateRequester,
-    OpenedAudit, PendingSignature, RequestedAuthorityTransfer, RingError, REDACTED,
+    OpenedAudit, PendingSignature, RequestedAuthorityTransfer, RingError,
 };
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -181,34 +181,20 @@ pub struct SlotOpening {
     pub tag: Option<Hash>,
 }
 
-impl core::fmt::Debug for SlotOpening {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            slot,
-            owner,
-            nullifier_pk,
-            mint,
-            amount,
-            blinding: _,
-            tree_id,
-            data_hash,
-            ring_data_hash,
-            tag,
-        } = self;
-        f.debug_struct("SlotOpening")
-            .field("slot", slot)
-            .field("owner", owner)
-            .field("nullifier_pk", nullifier_pk)
-            .field("mint", mint)
-            .field("amount", amount)
-            .field("blinding", &REDACTED)
-            .field("tree_id", tree_id)
-            .field("data_hash", data_hash)
-            .field("ring_data_hash", ring_data_hash)
-            .field("tag", tag)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(SlotOpening {
+    shown: [
+        slot,
+        owner,
+        nullifier_pk,
+        mint,
+        amount,
+        tree_id,
+        data_hash,
+        ring_data_hash,
+        tag
+    ],
+    hidden: [blinding],
+});
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -235,20 +221,10 @@ pub struct ApprovalOpening {
     pub public: Vec<PublicTotalsOpening>,
 }
 
-impl core::fmt::Debug for ApprovalOpening {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            blinder: _,
-            outputs,
-            public,
-        } = self;
-        f.debug_struct("ApprovalOpening")
-            .field("blinder", &REDACTED)
-            .field("outputs", outputs)
-            .field("public", public)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(ApprovalOpening {
+    shown: [outputs, public],
+    hidden: [blinder],
+});
 
 /// Amounts are decimal text, a `u128` does not survive every JSON reader.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,20 +265,10 @@ pub struct ExactApproval {
     pub seen_blinders: Vec<Hash>,
 }
 
-impl core::fmt::Debug for ExactApproval {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            opening,
-            limits,
-            seen_blinders: _,
-        } = self;
-        f.debug_struct("ExactApproval")
-            .field("opening", opening)
-            .field("limits", limits)
-            .field("seen_blinders", &REDACTED)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(ExactApproval {
+    shown: [opening, limits],
+    hidden: [seen_blinders],
+});
 
 /// `peak` bounds one owner's outflow, `outflow` the sum over owners, `gross` each public row's
 /// withdrawals with no deposit subtracted.
@@ -1649,6 +1615,7 @@ fn requests_write(message: &v1::Message, index: usize) -> bool {
 mod tests {
     use solana_message::Hash as Blockhash;
     use spr_client::{compile_message, ComputeBudgetConfig};
+    use zolana_ring_keys::REDACTED;
 
     use super::*;
 

@@ -23,7 +23,8 @@ use super::*;
 use crate::{
     client::RingClient,
     tests::support::{
-        account, empty, fresh_wallet_tags, ring, ring_utxo, zero_key, Chain, RingSettings, TREE_ID,
+        account, empty, fresh_wallet_tags, pinned_request, ring, ring_utxo, zero_key, Chain,
+        RingSettings, TREE_ID,
     },
     AnonymousExitRefusal, ApprovalEncode,
 };
@@ -1721,13 +1722,10 @@ async fn the_anonymous_audit_request_of_an_exit_a_payment_and_change_keeps_its_p
     );
     assert_eq!(built["inputCount"], 1);
     assert_eq!(built["inputs"].as_array().unwrap().len(), 24);
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/custom-ring-transfer-anonymous-exit.json");
-    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
-        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
-    }
-    let pinned: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let pinned = pinned_request(
+        "tests/fixtures/custom-ring-transfer-anonymous-exit.json",
+        &built,
+    );
     assert_eq!(request_layout(&built), request_layout(&pinned));
     assert_eq!(
         slot_kinds(&pinned, &sender_key),
@@ -1787,13 +1785,10 @@ async fn the_in_proof_owner_request_publishes_the_sender_of_every_spent_note() {
             .count(),
         2
     );
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/custom-ring-transfer-confidential-in-proof.json");
-    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
-        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
-    }
-    let pinned: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let pinned = pinned_request(
+        "tests/fixtures/custom-ring-transfer-confidential-in-proof.json",
+        &built,
+    );
     assert_eq!(request_layout(&built), request_layout(&pinned));
 }
 
@@ -2066,13 +2061,10 @@ async fn the_owner_count_selects_the_key_and_opens_ascending_rows() {
         crate::prover::RequestBody::new(request.circuit, &request.body).unwrap(),
     )
     .unwrap();
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/custom-ring-transfer-wide-owners.json");
-    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
-        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
-    }
-    let pinned: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let pinned = pinned_request(
+        "tests/fixtures/custom-ring-transfer-wide-owners.json",
+        &built,
+    );
     assert_eq!(request_layout(&built), request_layout(&pinned));
 }
 
@@ -2126,13 +2118,7 @@ async fn a_wide_spend_with_a_data_tail_seals_on_the_wide_key() {
         crate::prover::RequestBody::new(request.circuit, &request.body).unwrap(),
     )
     .unwrap();
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/custom-ring-transfer-wide-data.json");
-    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
-        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
-    }
-    let pinned: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let pinned = pinned_request("tests/fixtures/custom-ring-transfer-wide-data.json", &built);
     assert_eq!(request_layout(&built), request_layout(&pinned));
 }
 
@@ -2259,12 +2245,7 @@ async fn the_request_carries_a_signature_over_the_vouch_digest_vouched_or_not() 
         built["ownSubjects"][own]["member"],
         hex_of(owner_record(&voucher).as_bytes())
     );
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/custom-ring-transfer-vouched.json");
-    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
-        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
-    }
-    assert!(path.exists());
+    pinned_request("tests/fixtures/custom-ring-transfer-vouched.json", &built);
     let parts = assembled.parts();
     assert!(parts.vouched);
     assert_eq!(parts.recipient_keys.len(), 32 * (parts.outputs.len() + 1));
@@ -2423,13 +2404,7 @@ async fn the_member_policy_request_opens_each_subject_once_in_padded_pools() {
         .all(|(index, member)| *member == own[index % 3]));
     assert_eq!(built["ownRecords"].as_array().unwrap().len(), own.len());
     let name = built["circuitType"].as_str().unwrap();
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("tests/fixtures/{name}.json"));
-    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
-        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
-    }
-    let pinned: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let pinned = pinned_request(&format!("tests/fixtures/{name}.json"), &built);
     assert_eq!(request_layout(&built), request_layout(&pinned));
 }
 
@@ -2540,9 +2515,10 @@ impl Measured {
     }
 
     fn keyed(self, shape: spr_client::Shape) -> bool {
-        match self.entry() {
-            true => super::anonymous::AnonymousKey::Entry.serves(shape),
-            false => shape_keyed(self.ring_rail(), shape),
+        if self.entry() {
+            super::anonymous::AnonymousKey::Entry.serves(shape)
+        } else {
+            shape_keyed(self.ring_rail(), shape)
         }
     }
 
@@ -2750,9 +2726,10 @@ impl Measure {
             );
         }
         // An anonymous exit pays one destination.
-        let leg_owners: Vec<ShieldedKeypair> = match rail.anonymous() {
-            true => (0..legs.min(1)).map(|_| keypair(40)).collect(),
-            false => (0..legs).map(|index| keypair(40 + index as u8)).collect(),
+        let leg_owners: Vec<ShieldedKeypair> = if rail.anonymous() {
+            (0..legs.min(1)).map(|_| keypair(40)).collect()
+        } else {
+            (0..legs).map(|index| keypair(40 + index as u8)).collect()
         };
         let destinations: Vec<Address> = (0..legs)
             .map(|index| {
@@ -2792,12 +2769,13 @@ impl Measure {
             registry = registry.with_mint(MEASURED_SPL.asset, Default::default());
         }
         // Escrow and delivery name a registry the size of any other, never the system program's key.
-        let chain = match policy {
-            true => Chain::ring(settings).with_registry(registry, &crate::tests::pipeline_rules()),
-            false => Chain::ring(settings).with_records(registry),
+        let chain = if policy {
+            Chain::ring(settings).with_registry(registry, &crate::tests::pipeline_rules())
+        } else {
+            Chain::ring(settings).with_records(registry)
         };
-        let chain = match curator {
-            true => chain.with_curator(
+        let chain = if curator {
+            chain.with_curator(
                 MEASURED_CURATOR,
                 &zolana_ring_policy::RuleTable::builder()
                     .rule(zolana_ring_policy::Rule::require(
@@ -2813,15 +2791,17 @@ impl Measure {
                         zolana_ring_policy::ListId::Block,
                     ))
                     .build(),
-            ),
-            false => chain,
+            )
+        } else {
+            chain
         };
-        let chain = match second_tree {
-            true => chain.with_tree(TREE_ID + 1),
-            false => chain,
+        let chain = if second_tree {
+            chain.with_tree(TREE_ID + 1)
+        } else {
+            chain
         };
-        let chain = match spl_legs {
-            true => destinations.iter().fold(chain, |chain, recipient| {
+        let chain = if spl_legs {
+            destinations.iter().fold(chain, |chain, recipient| {
                 chain.with(
                     pda::associated_token_address_with_program(
                         recipient,
@@ -2830,8 +2810,9 @@ impl Measure {
                     ),
                     token_account(token_state(MEASURED_SPL.asset, *recipient)),
                 )
-            }),
-            false => chain,
+            })
+        } else {
+            chain
         };
         let client = chain.client();
         let assets = AssetRegistry::default();
@@ -2844,12 +2825,13 @@ impl Measure {
             priority_fee,
         };
         let compact = published.is_some() || spent_inputs.is_some();
-        let spent = |utxos: Vec<WalletUtxo>| match compact {
-            true => {
+        let spent = |utxos: Vec<WalletUtxo>| {
+            if compact {
                 ConfidentialTransaction::new_compact_with_ring(utxos, payer, ring().program_id())
                     .unwrap()
+            } else {
+                paid_ring_transaction(utxos, payer)
             }
-            false => paid_ring_transaction(utxos, payer),
         };
         // Nothing returns to the sender on a frame of no change slot.
         let paid_amount = |index: usize| match (change_slots, index) {
@@ -2967,9 +2949,10 @@ impl FrameSize<'_> {
             Some(signer) => transfer.with_co_signer(signer),
             None => transfer,
         };
-        let transfer = match self.priority_fee {
-            true => transfer.with_priority_fee(1),
-            false => transfer,
+        let transfer = if self.priority_fee {
+            transfer.with_priority_fee(1)
+        } else {
+            transfer
         };
         match transfer.frame(self.client).await {
             Ok(unwitnessed) => {
@@ -2977,9 +2960,10 @@ impl FrameSize<'_> {
                     unwitnessed.frame.proof_inputs.check_shape().unwrap(),
                     self.shape
                 );
-                let budget = match self.priority_fee {
-                    true => spr_client::ComputeBudgetConfig::new(0).with_priority_fee(1),
-                    false => spr_client::ComputeBudgetConfig::new(0),
+                let budget = if self.priority_fee {
+                    spr_client::ComputeBudgetConfig::new(0).with_priority_fee(1)
+                } else {
+                    spr_client::ComputeBudgetConfig::new(0)
                 };
                 let instruction = unwitnessed.instruction().unwrap();
                 let size = spr_client::transaction_size(
@@ -5605,9 +5589,10 @@ async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
     for pinned in &pinned {
         let chain = Chain::ring(RingSettings::new(pinned.mode));
         let config = ring().require_config(&chain).await.unwrap();
-        let (sender, address): (&dyn RingSender, ShieldedAddress) = match pinned.pda_owner {
-            true => (&program, program.address),
-            false => (&holder, holder.shielded_address().unwrap()),
+        let (sender, address): (&dyn RingSender, ShieldedAddress) = if pinned.pda_owner {
+            (&program, program.address)
+        } else {
+            (&holder, holder.shielded_address().unwrap())
         };
         let notes: Vec<WalletUtxo> = pinned
             .notes
@@ -5628,11 +5613,10 @@ async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
         let transfer = || {
             let payer = crate::tests::support::payer();
             let program = ring().program_id();
-            let transaction = match pinned.compact {
-                true => {
-                    ConfidentialTransaction::new_compact_with_ring(notes.clone(), payer, program)
-                }
-                false => ConfidentialTransaction::new_with_ring(notes.clone(), payer, program),
+            let transaction = if pinned.compact {
+                ConfidentialTransaction::new_compact_with_ring(notes.clone(), payer, program)
+            } else {
+                ConfidentialTransaction::new_with_ring(notes.clone(), payer, program)
             }
             .unwrap();
             let start = CustomRingTransfer::new(CustomRingTransferInput {
@@ -5743,13 +5727,7 @@ async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
         "stateHash": hex::encode(STATE_HASH),
         "cases": cases,
     });
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../test-vectors/proof/ring-transfer-plans.json");
-    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
-        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
-    }
-    let pinned: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let pinned = pinned_request("../../test-vectors/proof/ring-transfer-plans.json", &built);
     assert_eq!(pinned, built);
 }
 

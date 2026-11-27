@@ -270,10 +270,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
                 let fresh = *bound..counter.listed().end;
                 *bound = fresh.end;
                 // A later round lists only tags no stored sync read.
-                let read_before = match first {
-                    true => counter.read_before().end,
-                    false => 0,
-                };
+                let read_before = if first { counter.read_before().end } else { 0 };
                 let split = read_before.min(fresh.end).max(fresh.start);
                 let parts = [
                     (fresh.start..split, entry.tag_position()),
@@ -336,8 +333,8 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
             keys: self.keys,
             assets: self.assets,
         };
-        for opened in codec.opened(row)? {
-            let Some(slot) = usize::try_from(opened.opening.slot_index)
+        for opened in codec.opened(row, &self.keys.viewing_public_keys())? {
+            let Some(slot) = usize::try_from(opened.slot_index)
                 .ok()
                 .and_then(|position| row.output_slots.get(position))
             else {

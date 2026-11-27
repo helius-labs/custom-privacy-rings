@@ -1,7 +1,5 @@
 //! Registry records, read under a root or signed as record updates.
 
-use std::fmt;
-
 use custom_ring_interface::domain;
 use solana_address::Address;
 use solana_signer::Signer;
@@ -14,18 +12,17 @@ use zolana_ring_indexer::{
     tracking::{GetTrackingOpeningsRequest, GetTrackingRecordPoolRequest},
 };
 use zolana_ring_keys::RingAddress;
-use zolana_ring_member_registry::{
-    Canopy, OpeningCheck, PoolSubject, SharedPath, SharedProof, TrackingOpening, TrackingPool,
-    TrackingRecord,
-};
+use zolana_ring_member_registry::{Canopy, TrackingOpening, TrackingPool, TrackingRecord};
 use zolana_ring_policy::{ListWrite, Member, MintPolicy, Writer};
 
 use crate::{
-    records::{path_of, MemberOpeningRead, RecordPoolCheck, RecordPoolRead, StorageTip},
+    records::{
+        MemberOpeningRead, RecordPoolCheck, RecordPoolRead, ServedOpening, ServedPool, StorageTip,
+    },
     resolver::tracking_record,
     rpc::{GetListSaltResponse, RecordUpdate, RecordUpdateEntry, SubmitRecordUpdateRequest},
     submission::BoundRoot,
-    AsyncRingIndexer, CustomRing, RecipientResolver, ResolvedRecipient, RingError, REDACTED,
+    AsyncRingIndexer, CustomRing, RecipientResolver, ResolvedRecipient, RingError,
 };
 
 #[cfg(test)]
@@ -152,47 +149,14 @@ impl TrackingRead<'_> {
                 openings: self.openings as u64,
             })
             .await?;
-        let canopy = Canopy::covering_tracking(self.openings)?;
-        if response.root.root.0 != root
-            || response.canopy.len() != canopy.width()
-            || response.subjects.len() != self.members.len()
-        {
-            return Err(RingError::InvalidRecordOpening);
+        let pool = ServedPool {
+            response: &response,
+            root: &root,
+            members: self.members,
+            canopy: Canopy::covering_tracking(self.openings)?,
         }
-        let pool = TrackingPool {
-            records: response
-                .records
-                .iter()
-                .map(|row| tracking_record(&row.record))
-                .collect(),
-            proof: SharedProof {
-                canopy: response.canopy.iter().map(|node| node.0).collect(),
-                paths: response
-                    .records
-                    .iter()
-                    .map(|row| SharedPath {
-                        index: row.path.index,
-                        siblings: row
-                            .path
-                            .siblings
-                            .iter()
-                            .map(|level| level.clone().map(|sibling| sibling.0))
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            subjects: self
-                .members
-                .iter()
-                .zip(&response.subjects)
-                .map(|(member, record_index)| PoolSubject {
-                    member: *member,
-                    record_index: *record_index,
-                })
-                .collect(),
-        };
-        pool.verify(&root)
-            .map_err(|_| RingError::InvalidRecordOpening)?;
+        .verify(tracking_record)
+        .map_err(|_| RingError::InvalidRecordOpening)?;
         let viewing_seqs = response
             .records
             .iter()
@@ -326,20 +290,13 @@ impl TrackingMemberRead {
         let [view] = response.openings.as_slice() else {
             return Err(RingError::InvalidRecordOpening);
         };
-        let path = path_of(&view.path)?;
-        let record = tracking_record(&view.record);
-        let opening = match view.present {
-            true => TrackingOpening::Present { record, path },
-            false => TrackingOpening::Absent { low: record, path },
-        };
-        OpeningCheck {
-            opening: &opening,
+        ServedOpening {
+            view,
             root: &root,
             member: &self.member,
         }
-        .verify()
-        .map_err(|_| RingError::InvalidRecordOpening)?;
-        Ok(opening)
+        .verify(tracking_record)
+        .map_err(|_| RingError::InvalidRecordOpening)
     }
 }
 
@@ -398,14 +355,9 @@ pub struct OwnerListSalts {
     pub ring_salt: Option<[u8; 32]>,
 }
 
-impl fmt::Debug for OwnerListSalts {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OwnerListSalts")
-            .field("list_salt", &self.list_salt.as_ref().map(|_| REDACTED))
-            .field("ring_salt", &self.ring_salt.as_ref().map(|_| REDACTED))
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(OwnerListSalts {
+    present: [list_salt, ring_salt],
+});
 
 impl OwnerListSalts {
     pub fn from_response(response: &GetListSaltResponse) -> Self {

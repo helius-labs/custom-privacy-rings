@@ -6,8 +6,7 @@ use solana_signer::Signer;
 use spr_indexer_api::{Base64String, Hash, SerializablePubkey, SerializableSignature};
 use zeroize::Zeroize;
 
-use super::{base64, Attestation, ReadTarget, RequestBuildError, SignedRequest};
-use crate::REDACTED;
+use super::{base64, Attestation, ReadTarget, RequestBuildError, RequestSignature, SignedRequest};
 
 pub const GET_LIST_SALT: &str = "getListSalt";
 const LIST_SALT_DOMAIN: &str = "zolana/ring-rpc-list-salt";
@@ -34,18 +33,9 @@ pub struct GetListSaltResponse {
     pub ring_salt: Option<Hash>,
 }
 
-impl core::fmt::Debug for GetListSaltResponse {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            list_salt,
-            ring_salt,
-        } = self;
-        f.debug_struct("GetListSaltResponse")
-            .field("list_salt", &list_salt.as_ref().map(|_| REDACTED))
-            .field("ring_salt", &ring_salt.as_ref().map(|_| REDACTED))
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(GetListSaltResponse {
+    present: [list_salt, ring_salt],
+});
 
 impl Drop for GetListSaltResponse {
     fn drop(&mut self) {
@@ -86,16 +76,17 @@ impl ListSaltRequest {
         self,
         writer: &S,
     ) -> Result<GetListSaltRequest, RequestBuildError> {
-        let (timestamp, message) = self.message()?;
-        let signature = writer
-            .try_sign_message(&message)
-            .map_err(RequestBuildError::Signature)?;
+        let RequestSignature {
+            timestamp,
+            nonce,
+            signature,
+        } = self.signed_by(writer)?;
         Ok(GetListSaltRequest {
             ring: self.attestation.target.ring.into(),
             writer: self.attestation.writer.into(),
             owner: self.attestation.owner.into(),
             timestamp,
-            nonce: self.nonce.to_vec().into(),
+            nonce,
             signature: signature.into(),
         })
     }
@@ -103,6 +94,8 @@ impl ListSaltRequest {
 
 #[cfg(test)]
 mod tests {
+    use zolana_ring_keys::REDACTED;
+
     use super::*;
 
     #[test]

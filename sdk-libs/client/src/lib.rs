@@ -13,7 +13,7 @@ mod address_ceiling;
 #[path = "admin/roles.rs"]
 mod admin;
 #[path = "audit/anonymous.rs"]
-pub mod anonymous;
+mod anonymous;
 #[path = "state/anonymous_wallet.rs"]
 mod anonymous_wallet;
 #[cfg(feature = "operations")]
@@ -23,7 +23,7 @@ mod client;
 #[path = "transfer/co_signer.rs"]
 mod co_signer;
 #[path = "codec/compute_units.rs"]
-pub mod compute_units;
+mod compute_units;
 #[path = "audit/confidential.rs"]
 mod confidential;
 #[path = "crypto/decrypt/mod.rs"]
@@ -32,7 +32,7 @@ mod decrypt;
 #[path = "transfer/delegate_source.rs"]
 mod delegate_source;
 #[path = "audit/delivered_utxos.rs"]
-pub mod delivered;
+mod delivered;
 #[cfg(feature = "operations")]
 #[path = "transfer/deposit.rs"]
 mod deposit;
@@ -42,12 +42,12 @@ mod disclosure;
 mod encryption;
 #[cfg(feature = "operations")]
 #[path = "enrollment/owner.rs"]
-pub mod enrollment;
+mod enrollment;
 mod error;
 #[path = "state/exposed_notes.rs"]
 mod exposed_notes;
 #[path = "codec/frame.rs"]
-pub mod frame;
+mod frame;
 #[cfg(feature = "operations")]
 #[path = "transport/heap.rs"]
 mod heap;
@@ -56,9 +56,7 @@ pub mod history;
 #[path = "transport/ring_indexer.rs"]
 mod indexer;
 #[path = "codec/key_catalog.rs"]
-pub mod key_catalog;
-#[path = "state/known_utxo_index.rs"]
-mod known;
+mod key_catalog;
 #[cfg(feature = "operations")]
 #[path = "transfer/limits.rs"]
 mod limits;
@@ -68,13 +66,13 @@ mod merge;
 #[path = "merge/audit.rs"]
 mod merge_audit;
 #[path = "codec/merge_data.rs"]
-pub mod merge_data;
+mod merge_data;
 #[path = "state/merge_ledger.rs"]
 mod merge_ledger;
 #[path = "codec/origin/mod.rs"]
 mod origin;
 #[path = "codec/owner_signature.rs"]
-pub mod owner_signature;
+mod owner_signature;
 #[cfg(feature = "operations")]
 #[path = "transfer/pipeline/mod.rs"]
 mod pipeline;
@@ -128,18 +126,18 @@ mod signature_history;
 #[path = "records/storage.rs"]
 mod storage;
 #[path = "codec/storage_accounts.rs"]
-pub mod storage_accounts;
+mod storage_accounts;
 #[path = "codec/storage_data.rs"]
-pub mod storage_data;
+mod storage_data;
 #[cfg(feature = "operations")]
 #[path = "transport/submission.rs"]
 mod submission;
 #[path = "transport/tags.rs"]
-pub mod tags;
+mod tags;
 #[cfg(all(test, feature = "operations"))]
 mod tests;
 #[path = "codec/transfer_accounts.rs"]
-pub mod transfer_accounts;
+mod transfer_accounts;
 #[cfg(feature = "operations")]
 #[path = "state/pool_trees.rs"]
 mod trees;
@@ -148,18 +146,16 @@ mod types;
 #[path = "enrollment/vault.rs"]
 mod vault_enrollment;
 #[path = "state/viewing_history.rs"]
-pub mod viewing_history;
+mod viewing_history;
 #[path = "enrollment/viewing_rotation.rs"]
 mod viewing_rotation;
 #[path = "codec/vouch.rs"]
-pub mod vouch;
+mod vouch;
 #[cfg(feature = "operations")]
 #[path = "transfer/wallet_payment.rs"]
 mod wallet_payment;
 #[path = "audit/wallet_sync.rs"]
 mod wallet_sync;
-
-pub(crate) const REDACTED: &str = "<redacted>";
 
 pub use crate::anonymous::{
     AnonymousRingUtxo, AnonymousScan, AnonymousStream, AnonymousSync, AuditorRecovery,
@@ -178,40 +174,36 @@ pub use crate::key_catalog::{
 };
 pub use crate::merge_data::{CustomRingMergeIxData, SealedMergeRecord};
 #[cfg(feature = "solana-rpc")]
-pub use crate::origin::{confirmed_origin, ConfirmedRingOrigins, ORIGIN_TRANSACTION_CONFIG};
+pub use crate::origin::{ConfirmedRingOrigins, ORIGIN_TRANSACTION_CONFIG};
 pub use crate::owner_signature::{OwnerSignature, SignatureInstruction};
 pub use crate::storage_accounts::{OwnerGrantHost, StorageRegistryAddress, TrackingRegistryHost};
 pub use crate::storage_data::{
     AuthorityWriteEntry, EnrollmentRequestEncode, ListWriteData, StorageEventDecode,
     StorageUpdateCodec,
 };
-pub use crate::tags::{HistoryRows, IndexerReads, TagWindow, TAGS_PER_REQUEST};
 pub use crate::transfer_accounts::{
     located_layout, AnonymousExitDestination, AnonymousExitRefusal, ApprovalEncode, CoSignerPairs,
     KnownPrefix, ListRegistry, PolicySources, WithdrawalLeg, SYSTEM_PROGRAM_ID,
-    TRANSFER_APPROVAL_DATA_LEN,
 };
 pub use crate::viewing_history::{
-    AdvancedTag, StreamCounter, TransferTags, ViewingHistory, ViewingKeyEntry, TAG_WINDOW,
+    AdvancedTag, TransferTags, ViewingHistory, ViewingKeyEntry, TAG_WINDOW,
 };
 pub use crate::vouch::VouchMessage;
 pub use crate::{
     confidential::{RingConfidentialNotes, RingConfidentialScan, RingFullScan},
-    decrypt::{FramedRow, SealedRecipientKeys, TransactionAudit},
+    decrypt::{FramedRow, TransactionAudit},
     disclosure::{AuditEnvelope, AuditStreamSeal, OpenedAudit, SealedAuditStream},
     encryption::{
-        auditor_view_tag, open_merge_record, MergeRecordSeal, NullifierKeyEnvelope,
-        SealedMergeCiphertexts, SealedMergeOpening, SealedNullifierKey,
+        auditor_view_tag, MergeRecordSeal, NullifierKeyEnvelope, SealedMergeOpening,
+        SealedNullifierKey,
     },
     error::{AnonymousError, AuditError, AuditFailureKind, RowDisposition},
     exposed_notes::{
-        is_zero_key, mint_balances, note_state, verify_ring_owned, MintBalance, NoteState,
-        RingOwnedUtxos,
+        mint_balances, note_state, verify_ring_owned, MintBalance, NoteState, RingOwnedUtxos,
     },
     indexer::{AsyncRingIndexer, RingIndexer, RingIndexerError},
-    known::KnownUtxoIndex,
     merge_audit::{confirmed_merge, MergeAudit, MergeAuditPage},
-    merge_ledger::{AuditedMergeOutput, ConfirmedMerge, MergeId, MergeLedger, MergeRecordOutput},
+    merge_ledger::{AuditedMergeOutput, ConfirmedMerge, MergeLedger, MergeRecordOutput},
     origin::{
         ring_event_origin_in, ConfirmedEvent, ConfirmedEventKind, ConfirmedMergeDisclosure,
         RingOrigin, RingWithdrawal, TransactionOrigin,
@@ -219,23 +211,20 @@ pub use crate::{
     reader::{Ed25519ReaderKey, P256ReaderKey, ReaderKey, ReaderKeyError},
     records::{
         member_record, owner_record_key, path_of, storage_apply_proof_inputs, MemberOpeningRead,
-        RecordPoolCheck, RecordPoolRead, StorageTip,
+        StorageTip,
     },
     recover::{
         MemberRecovery, RecoveredNotes, RecoveryProgress, RecoveryStep, RingRecovery, SourceMember,
     },
-    resolver::{
-        RecipientResolver, RegisteredKeys, ResolveError, ResolvedRecipient, TrackingLeaf,
-        TrackingLeafCheck,
-    },
-    scan::{AuditedPage, RingScan, RingScanPage, ScanPage, SkippedRow},
+    resolver::{RegisteredKeys, ResolveError, TrackingLeaf, TrackingLeafCheck},
+    scan::{RingScan, ScanPage, SkippedRow},
     types::{
         AuditedEntryInput, AuditedOutput, AuditedTransaction, AuditedUtxo, CreatedUtxo, KnownUtxo,
         OutputOpening, OutputPayloadError, OutputPayloadErrorKind, RingOwnerTag, UtxoOwner,
     },
 };
-pub use program_data::{program_data, ProgramData, PROGRAM_DATA_METADATA_LEN};
-pub use viewing_rotation::{ViewingRotation, ViewingRotationError};
+pub use program_data::{program_data, ProgramData};
+pub use viewing_rotation::ViewingRotation;
 pub use wallet_sync::{RingWalletNotes, RingWalletScanned, RingWalletSync, RingWalletSynced};
 pub use zolana_ring_indexer::rpc::RingRpcError;
 
@@ -246,8 +235,11 @@ pub use custom_ring_interface::{
 #[cfg(feature = "operations")]
 pub use spr_program::instruction::{DepositAsset, DepositSplAccounts};
 
+pub(crate) use crate::exposed_notes::is_zero_key;
 #[cfg(feature = "operations")]
 pub use crate::prover::secret_json_body;
+#[cfg(feature = "operations")]
+pub(crate) use crate::resolver::{RecipientResolver, ResolvedRecipient};
 #[cfg(feature = "operations")]
 pub use crate::{
     account::{
@@ -268,8 +260,8 @@ pub use crate::{
         TrackingEnrollment,
     },
     deposit::{
-        fetch_asset_id_async, DepositOutput, DepositRecipient, PreparedRingDeposit, RingDeposit,
-        RingDepositBatch, RingDepositBatchReceipt, RingDepositReceipt,
+        DepositOutput, DepositRecipient, PreparedRingDeposit, RingDeposit, RingDepositBatch,
+        RingDepositBatchReceipt, RingDepositReceipt,
     },
     enrollment::{
         Enroll, EnrolledLeaf, EnrollmentRead, EnrollmentService, OwnedChange, OwnerEnrollment,
