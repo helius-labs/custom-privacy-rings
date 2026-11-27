@@ -2082,7 +2082,7 @@ mod tests {
         let refused = relay
             .co_sign_transaction(&CoSignTransactionRequest {
                 ring: Address::new_from_array([9; 32]).into(),
-                message: Vec::new().into(),
+                transaction: Vec::new().into(),
                 approved_transfer: None,
             })
             .await;

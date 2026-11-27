@@ -45,6 +45,8 @@ pub struct RefuseListApprovalRequest {
 pub struct CreateRecordsRegistryRequest {
     pub ring: SerializablePubkey,
     pub auth: PolicyAuthorityAuth,
+    /// The serialized v1 creation message, paid by `auth.authority`.
+    pub message: Base64String,
 }
 
 /// Signed by the policy authority alone, it names the enrollment writer the service runs.
@@ -65,6 +67,9 @@ pub struct RegisterEnrollmentRingResponse {}
 pub struct CreateRecordsRegistryResponse {
     pub registry: SerializablePubkey,
     pub storage_authority: SerializablePubkey,
+    /// The storage authority's signature over the request message, absent once the registry exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<SerializableSignature>,
 }
 
 /// Oldest first.
@@ -108,8 +113,11 @@ pub struct RefuseListApproval {
     pub update_id: RecordUpdateId,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CreateRecords;
+/// The signed line names no message bytes, the service signs only the creation it builds itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreateRecords {
+    pub message: Base64String,
+}
 
 /// `writer` is the service's `EnrollmentWriter` key, read from its health.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +200,7 @@ impl PolicyAuthorityAction for CreateRecords {
         CreateRecordsRegistryRequest {
             ring: ring.into(),
             auth,
+            message: self.message,
         }
     }
 }
@@ -290,12 +299,19 @@ impl CreateRecordsRegistryRequest {
     pub fn create(
         target: ReadTarget,
         authority: Address,
+        action: CreateRecords,
     ) -> SignedRequest<PolicyAuthorityAttestation<CreateRecords>> {
         SignedRequest::new(PolicyAuthorityAttestation {
             target,
             authority,
-            action: CreateRecords,
+            action,
         })
+    }
+
+    pub fn action(&self) -> CreateRecords {
+        CreateRecords {
+            message: self.message.clone(),
+        }
     }
 }
 

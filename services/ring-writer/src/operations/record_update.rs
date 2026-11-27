@@ -85,8 +85,8 @@ ring_service_core::listed_refusals! {
         UnknownListApproval = -32244,
         #[error("valid until slot is past the list approval window")]
         ListApprovalWindow = -32245,
-        #[error("records registry creation did not land")]
-        RecordsNotCreated = -32260,
+        #[error("records creation message is not the one the service builds for the ring authority")]
+        RecordsMessageMismatch = -32261,
         #[error("ring policy commits no tag of the service ring salt")]
         RingSaltNotCommitted = -32279,
         #[error("an unregistered owner keys no entry of the update under the ring salt")]

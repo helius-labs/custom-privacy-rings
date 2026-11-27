@@ -70,6 +70,7 @@ spr-instruction = { workspace = true }
 spr-interface = { workspace = true }
 spr-transaction = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+wincode = { workspace = true }
 zolana-ring-keys = { workspace = true }
 zolana-ring-member-registry = { workspace = true }
 zolana-ring-policy = { workspace = true }

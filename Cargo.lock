@@ -10932,6 +10932,7 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing-subscriber",
+ "wincode",
  "zolana-operator-custody",
  "zolana-ring-client",
  "zolana-ring-indexer",

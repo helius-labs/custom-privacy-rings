@@ -1,8 +1,8 @@
 use anyhow::Result;
 use solana_hash::Hash;
 use solana_message::VersionedMessage;
-use solana_signer::SignerError;
-use spr_client::{rpc::compile_message, Rpc};
+use solana_signer::{null_signer::NullSigner, SignerError};
+use spr_client::{rpc::compile_message, sign_transaction, Rpc};
 use thiserror::Error;
 use zolana_operator_custody::{
     presigned_transaction, signed_transaction, CollectedSignature, OperatorSigner,
@@ -238,11 +238,24 @@ impl SubmissionSigners for CoSigned<'_> {
                 })
             })
             .collect::<Result<Vec<_>, SignerError>>()?;
+        // The co-signer signs last, its slot stays zero in the transaction it reads.
+        let transaction = {
+            let unsigned = NullSigner::new(&expected);
+            let presigned: Vec<&dyn Signer> = signatures
+                .iter()
+                .map(|signature| signature as &dyn Signer)
+                .chain([&unsigned as &dyn Signer])
+                .collect();
+            let transaction =
+                sign_transaction(message.clone(), &presigned).map_err(signer_failure)?;
+            wincode::serialize(&transaction).map_err(signer_failure)?
+        };
         let (rpc, ring) = (self.rpc.clone(), self.ring);
-        let answer = tokio::task::spawn_blocking(move || rpc.co_sign_transaction(ring, bytes))
-            .await
-            .map_err(signer_failure)?
-            .map_err(signer_failure)?;
+        let answer =
+            tokio::task::spawn_blocking(move || rpc.co_sign_transaction(ring, transaction))
+                .await
+                .map_err(signer_failure)?
+                .map_err(signer_failure)?;
         signatures.push(named_co_signer(expected, answer).map_err(signer_failure)?);
         presigned_transaction(message, &signatures)
             .map(|transaction| transaction.signatures)

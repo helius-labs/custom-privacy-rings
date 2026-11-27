@@ -1634,7 +1634,21 @@ fn the_policy_authority_requests_match_the_shared_vector() {
         &serde_json::to_string(&refuse).expect("json"),
         &vector.refuse.wire,
     );
-    let create_records = CreateRecordsRegistryRequest::create(target(), authority.pubkey());
+    #[derive(Deserialize)]
+    struct Creation {
+        message: String,
+    }
+    let creation: Creation = serde_json::from_str(include_str!(
+        "../../../../test-vectors/rpc/records_creation_message.json"
+    ))
+    .expect("creation vector");
+    let create_records = CreateRecordsRegistryRequest::create(
+        target(),
+        authority.pubkey(),
+        CreateRecords {
+            message: hex::decode(creation.message).expect("hex").into(),
+        },
+    );
     pinned(
         file,
         "/createRecords/message",

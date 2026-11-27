@@ -310,7 +310,7 @@ pub use crate::{
     signature_history::SignatureHistory,
     storage::{
         EnrollBatch, InitializeStorage, PrivateStorageWrite, ProvenEnrollBatch, ProvenPrivateWrite,
-        SaltedOwnerWrite, StorageApplyProof, UpdateStorage,
+        RecordsCreation, SaltedOwnerWrite, StorageApplyProof, UpdateStorage,
     },
     submission::{
         live_registry, LocalSigners, RingOperation, RingSubmission, SettledSubmission,

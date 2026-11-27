@@ -1,4 +1,7 @@
+use solana_address::Address;
 use solana_message::VersionedMessage;
+use solana_signature::Signature;
+use solana_transaction::versioned::VersionedTransaction;
 use zolana_ring_client::rpc::{CoSignTransactionRequest, CoSignTransactionResponse};
 
 use ring_service_core::{
@@ -25,17 +28,25 @@ impl DirectCoSign<'_> {
         request: &CoSignTransactionRequest,
     ) -> Result<CoSignTransactionResponse, RingCosignerError> {
         let signer = self.policy.signer().ok_or(CoSignError::Disabled)?;
-        if request.message.0.len() > solana_message::v1::MAX_TRANSACTION_SIZE {
+        if request.transaction.0.len() > solana_message::v1::MAX_TRANSACTION_SIZE {
             return Err(CoSignError::MessageScope.into());
         }
-        let message: VersionedMessage =
-            wincode::deserialize(&request.message.0).map_err(|_| CoSignError::MessageScope)?;
+        let VersionedTransaction {
+            signatures,
+            message,
+        } = wincode::deserialize(&request.transaction.0).map_err(|_| CoSignError::MessageScope)?;
         let scoped = SignerScope {
             ring: request.ring.0,
             signer,
             approved_transfer: request.approved_transfer.clone(),
         }
         .admit(message)?;
+        OtherSigners {
+            message: scoped.message(),
+            signatures: &signatures,
+            co_signer: signer,
+        }
+        .signed()?;
         // A reservation is released past the height, a later one would land uncounted.
         let last_valid_block_height = self
             .chain
@@ -65,6 +76,29 @@ impl DirectCoSign<'_> {
     }
 }
 
+struct OtherSigners<'a> {
+    message: &'a VersionedMessage,
+    signatures: &'a [Signature],
+    co_signer: Address,
+}
+
+impl OtherSigners<'_> {
+    /// The service simulates and reserves only for a transaction every other required signer signed.
+    fn signed(self) -> Result<(), CoSignError> {
+        let required = usize::from(self.message.header().num_required_signatures);
+        let bytes = self.message.serialize();
+        let signed = match self.message.static_account_keys().get(..required) {
+            Some(keys) if self.signatures.len() == required => {
+                keys.iter().zip(self.signatures).all(|(key, signature)| {
+                    *key == self.co_signer || signature.verify(key.as_ref(), &bytes)
+                })
+            }
+            _ => false,
+        };
+        signed.then_some(()).ok_or(CoSignError::MissingSignature)
+    }
+}
+
 impl ApprovedCall {
     /// A program can pass simulation and never run the transfer its approval names.
     fn ran_once_in(&self, calls: &[InnerCall]) -> Result<(), CoSignError> {
@@ -91,12 +125,11 @@ mod tests {
 
     use async_trait::async_trait;
     use custom_ring_interface::{tag, TransferApproval};
-    use solana_address::Address;
     use solana_hash::Hash;
     use solana_instruction::{AccountMeta, Instruction};
+    use solana_keypair::Keypair;
     use solana_message::{v0, AddressLookupTableAccount, Message};
-    use solana_signature::Signature;
-    use solana_transaction::versioned::VersionedTransaction;
+    use solana_signer::{null_signer::NullSigner, Signer};
     use spr_client::{compile_message, ComputeBudgetConfig};
     use zolana_ring_client::rpc::ApprovedTransfer;
     use zolana_ring_client::CustomRing;
@@ -107,13 +140,49 @@ mod tests {
     use crate::cosign::{CoSignRequest, CoSignSettlement};
 
     const SIGNER: Address = Address::new_from_array([0x44; 32]);
-    const PAYER: Address = Address::new_from_array([0x55; 32]);
+
+    fn payer() -> Keypair {
+        Keypair::new_from_array([0x55; 32])
+    }
 
     /// Counts what reaches the chain and the signing policy.
     #[derive(Default)]
     struct Reached {
         chain_reads: AtomicUsize,
         decisions: AtomicUsize,
+    }
+
+    impl Reached {
+        async fn co_sign(
+            &self,
+            transaction: &VersionedTransaction,
+        ) -> Result<Signature, RingCosignerError> {
+            DirectCoSign {
+                chain: self,
+                policy: self,
+            }
+            .sign(&CoSignTransactionRequest {
+                ring: RING.into(),
+                transaction: wincode::serialize(transaction).expect("encoded").into(),
+                approved_transfer: None,
+            })
+            .await
+            .map(|response| response.signature.0)
+        }
+
+        fn chain_reads_and_decisions(&self) -> [usize; 2] {
+            [&self.chain_reads, &self.decisions].map(|count| count.load(Ordering::Relaxed))
+        }
+    }
+
+    fn unsigned(message: VersionedMessage) -> VersionedTransaction {
+        VersionedTransaction {
+            signatures: vec![
+                Signature::default();
+                usize::from(message.header().num_required_signatures)
+            ],
+            message,
+        }
     }
 
     #[async_trait]
@@ -183,72 +252,100 @@ mod tests {
         }
     }
 
-    /// A lookup table could load the ring or a second transfer past every scope check.
-    #[tokio::test]
-    async fn a_legacy_or_a_table_loading_message_is_refused_before_any_signature() {
+    /// `[payer, ..signers, record, co-signer]`.
+    fn co_signed(signers: &[Address]) -> Instruction {
         let record = CustomRing::new(RING).co_signer_pda(&SIGNER);
-        let co_signed = Instruction {
-            program_id: RING,
-            accounts: vec![
-                AccountMeta::new(PAYER, true),
+        let accounts = signers
+            .iter()
+            .map(|signer| AccountMeta::new_readonly(*signer, true))
+            .chain([
                 AccountMeta::new_readonly(record, false),
                 AccountMeta::new_readonly(SIGNER, true),
-            ],
+            ]);
+        Instruction {
+            program_id: RING,
+            accounts: core::iter::once(AccountMeta::new(payer().pubkey(), true))
+                .chain(accounts)
+                .collect(),
             data: vec![tag::TRANSFER],
-        };
-        let instructions = [co_signed];
-        let table = AddressLookupTableAccount {
-            key: Address::new_from_array([0x66; 32]),
-            addresses: vec![record],
-        };
-        let loading = v0::Message::try_compile(&PAYER, &instructions, &[table], Hash::default())
-            .expect("v0 message");
-        assert_eq!(loading.address_table_lookups.len(), 1);
-        let sign = |message: VersionedMessage| async move {
-            let reached = Reached::default();
-            let signed = DirectCoSign {
-                chain: &reached,
-                policy: &reached,
-            }
-            .sign(&CoSignTransactionRequest {
-                ring: RING.into(),
-                message: message.serialize().into(),
-                approved_transfer: None,
-            })
-            .await;
-            (
-                signed.map(|response| response.signature.0),
-                reached.chain_reads.load(Ordering::Relaxed),
-                reached.decisions.load(Ordering::Relaxed),
-            )
-        };
-
-        for refused in [
-            VersionedMessage::Legacy(Message::new(&instructions, Some(&PAYER))),
-            VersionedMessage::V0(loading),
-            VersionedMessage::V0(
-                v0::Message::try_compile(&PAYER, &instructions, &[], Hash::default())
-                    .expect("v0 message"),
-            ),
-        ] {
-            let (signed, chain_reads, decisions) = sign(refused).await;
-            assert!(matches!(
-                signed,
-                Err(RingCosignerError::CoSign(CoSignError::MessageScope))
-            ));
-            assert_eq!((chain_reads, decisions), (0, 0));
         }
+    }
 
-        let version_one = compile_message(
-            &PAYER,
-            &instructions,
+    fn version_one(instruction: Instruction) -> VersionedMessage {
+        compile_message(
+            &payer().pubkey(),
+            &[instruction],
             Hash::default(),
             ComputeBudgetConfig::new(1),
         )
-        .expect("v1 message");
-        let (signed, chain_reads, decisions) = sign(version_one).await;
-        assert_eq!(signed.expect("signed"), Signature::default());
-        assert_eq!((chain_reads, decisions), (2, 1));
+        .expect("v1 message")
+    }
+
+    /// A lookup table could load the ring or a second transfer past every scope check.
+    #[tokio::test]
+    async fn a_legacy_or_a_table_loading_message_is_refused_before_any_signature() {
+        let payer = payer().pubkey();
+        let instructions = [co_signed(&[])];
+        let table = AddressLookupTableAccount {
+            key: Address::new_from_array([0x66; 32]),
+            addresses: vec![CustomRing::new(RING).co_signer_pda(&SIGNER)],
+        };
+        let loading = v0::Message::try_compile(&payer, &instructions, &[table], Hash::default())
+            .expect("v0 message");
+        assert_eq!(loading.address_table_lookups.len(), 1);
+
+        for refused in [
+            VersionedMessage::Legacy(Message::new(&instructions, Some(&payer))),
+            VersionedMessage::V0(loading),
+            VersionedMessage::V0(
+                v0::Message::try_compile(&payer, &instructions, &[], Hash::default())
+                    .expect("v0 message"),
+            ),
+        ] {
+            let reached = Reached::default();
+            assert!(matches!(
+                reached.co_sign(&unsigned(refused)).await,
+                Err(RingCosignerError::CoSign(CoSignError::MessageScope))
+            ));
+            assert_eq!(reached.chain_reads_and_decisions(), [0, 0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transaction_another_signer_has_not_signed_reaches_no_chain_read() {
+        let (payer, owner, stranger) = (payer(), Keypair::new(), Keypair::new());
+        let message = version_one(co_signed(&[owner.pubkey()]));
+        let co_signer = NullSigner::new(&SIGNER);
+        let signed = |signers: &[&dyn Signer]| {
+            VersionedTransaction::try_new(message.clone(), signers).expect("signed")
+        };
+        let owner_slot = message
+            .static_account_keys()
+            .iter()
+            .position(|key| *key == owner.pubkey())
+            .expect("owner signs");
+        let mut foreign = signed(&[&payer, &owner, &co_signer]);
+        foreign.signatures[owner_slot] = stranger.sign_message(&message.serialize());
+
+        for refused in [
+            unsigned(message.clone()),
+            signed(&[&payer, &NullSigner::new(&owner.pubkey()), &co_signer]),
+            foreign,
+        ] {
+            let reached = Reached::default();
+            assert!(matches!(
+                reached.co_sign(&refused).await,
+                Err(RingCosignerError::CoSign(CoSignError::MissingSignature))
+            ));
+            assert_eq!(reached.chain_reads_and_decisions(), [0, 0]);
+        }
+
+        let reached = Reached::default();
+        let answer = reached
+            .co_sign(&signed(&[&payer, &owner, &co_signer]))
+            .await;
+        assert_eq!(answer.expect("co-signed"), Signature::default());
+        assert_eq!(reached.chain_reads_and_decisions(), [2, 1]);
     }
 
     const RING: Address = Address::new_from_array([0x11; 32]);
