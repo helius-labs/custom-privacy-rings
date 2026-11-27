@@ -21,8 +21,7 @@ use zk_ring_program::{
     client::{owner, ProvenInstruction},
 };
 use zolana_ring_client::{
-    rpc::{CoSignTransactionRequest, CoSignTransactionResponse},
-    ApplicationData, ApprovalEncode, NoteData, ProgramCommitment,
+    rpc::CoSignTransactionRequest, ApplicationData, ApprovalEncode, NoteData, ProgramCommitment,
 };
 use zolana_ring_policy::AssetLimits;
 
@@ -234,19 +233,13 @@ impl ProvenStep {
         if self.transfer.co_signers.is_empty() {
             return send(env.client.rpc(), payer, &self.instructions);
         }
-        let message = self.message(env, payer.pubkey())?;
-        let presigned = Presigning {
+        CoSignAsk {
+            env,
+            ring,
+            ring_rpc,
             payer,
-            co_signer: ring_rpc.co_signer,
         }
-        .transaction(message.clone())?;
-        let co_signed = co_sign_once_read(ring_rpc, &self.co_sign_request(ring, &presigned)?)?;
-        CoSigned {
-            payer,
-            message,
-            co_signer: ring_rpc.co_signer,
-            co_signature: co_signed.signature.0,
-        }
+        .co_sign_once_read(self)?
         .send(env.client.rpc())
     }
 }
@@ -264,28 +257,50 @@ impl Presigning<'_> {
     }
 }
 
-/// Ring RPC refuses an input it has not ingested yet and a client above its rate, the wallet asks again.
-fn co_sign_once_read(
-    ring_rpc: &CoSigningRingRpc,
-    request: &CoSignTransactionRequest,
-) -> Result<CoSignTransactionResponse> {
-    let retried = [
-        (CoSignError::LimitsUnavailable as i32).to_string(),
-        "429 Too Many Requests".to_owned(),
-    ];
-    wait_for("Ring RPC to read the inputs", || {
-        match ring_rpc.co_sign(request.clone()) {
-            Ok(co_signed) => Ok(Probe::Ready(co_signed)),
-            Err(refusal)
-                if retried
-                    .iter()
-                    .any(|sign| refusal.to_string().contains(sign)) =>
-            {
-                Ok(Probe::Retry(refusal.into()))
+/// Each attempt presigns a message over a fresh blockhash, a long wait for Ring RPC never expires it.
+struct CoSignAsk<'a> {
+    env: &'a TestEnv,
+    ring: CustomRing,
+    ring_rpc: &'a CoSigningRingRpc,
+    payer: &'a dyn Signer,
+}
+
+impl<'a> CoSignAsk<'a> {
+    /// Ring RPC refuses an input it has not ingested yet and a client above its rate, the wallet asks again.
+    fn co_sign_once_read(&self, step: &ProvenStep) -> Result<CoSigned<'a>> {
+        let retried = [
+            (CoSignError::LimitsUnavailable as i32).to_string(),
+            "429 Too Many Requests".to_owned(),
+        ];
+        let co_signer = self.ring_rpc.co_signer;
+        wait_for("Ring RPC to read the inputs", || {
+            let message = step.message(self.env, self.payer.pubkey())?;
+            let presigned = Presigning {
+                payer: self.payer,
+                co_signer,
             }
-            Err(refusal) => Err(refusal.into()),
-        }
-    })
+            .transaction(message.clone())?;
+            match self
+                .ring_rpc
+                .co_sign(step.co_sign_request(self.ring, &presigned)?)
+            {
+                Ok(co_signed) => Ok(Probe::Ready(CoSigned {
+                    payer: self.payer,
+                    message,
+                    co_signer,
+                    co_signature: co_signed.signature.0,
+                })),
+                Err(refusal)
+                    if retried
+                        .iter()
+                        .any(|sign| refusal.to_string().contains(sign)) =>
+                {
+                    Ok(Probe::Retry(refusal.into()))
+                }
+                Err(refusal) => Err(refusal.into()),
+            }
+        })
+    }
 }
 
 /// A ring that demands Ring RPC's co-signature, the program's counter created then updated once.
@@ -463,9 +478,11 @@ fn a_program_updates_its_ring_note_under_a_ring_rpc_approval() -> Result<()> {
     let updated = Updated::new()?;
     let env = &updated.env;
     let payer = &env.sender.keypair;
-    let presigning = Presigning {
+    let ask = CoSignAsk {
+        env,
+        ring: updated.ring,
+        ring_rpc: &updated.ring_rpc,
         payer,
-        co_signer: updated.ring_rpc.co_signer,
     };
 
     // 1. An approval covers the committed frame alone, on chain and at Ring RPC.
@@ -483,13 +500,10 @@ fn a_program_updates_its_ring_note_under_a_ring_rpc_approval() -> Result<()> {
             .collect(),
         transfer: approved.transfer,
     };
-    let message = swapped.message(env, payer.pubkey())?;
-    let refusal = co_sign_once_read(
-        &updated.ring_rpc,
-        &swapped.co_sign_request(updated.ring, &presigning.transaction(message.clone())?)?,
-    )
-    .err()
-    .context("a co-signature over another call")?;
+    let refusal = ask
+        .co_sign_once_read(&swapped)
+        .err()
+        .context("a co-signature over another call")?;
     ensure!(
         refusal.to_string().contains(&format!(
             "{:#x}",
@@ -514,17 +528,14 @@ fn a_program_updates_its_ring_note_under_a_ring_rpc_approval() -> Result<()> {
     };
     Rejection::custom(CustomRingError::TransferApprovalOtherCall as u32)
         .at(u8::try_from(approvals.len())?)
-        .assert_client(&refused(message)?);
+        .assert_client(&refused(swapped.message(env, payer.pubkey())?)?);
 
     // 2. Ring RPC signs no outflow that takes the sender above its window cap.
     let above = updated.step(SENDER_CAP)?.prove(env, payer.pubkey())?;
-    let message = above.message(env, payer.pubkey())?;
-    let refusal = co_sign_once_read(
-        &updated.ring_rpc,
-        &above.co_sign_request(updated.ring, &presigning.transaction(message)?)?,
-    )
-    .err()
-    .context("a co-signature above the cap")?;
+    let refusal = ask
+        .co_sign_once_read(&above)
+        .err()
+        .context("a co-signature above the cap")?;
     ensure!(
         refusal
             .to_string()

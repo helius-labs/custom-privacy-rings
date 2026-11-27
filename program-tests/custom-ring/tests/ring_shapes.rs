@@ -1,7 +1,11 @@
 //! Every transfer shape of the five basic rails settles or is refused before proving as too large.
 //! Every catalog key lands one real proof at the least load selecting it, its full capacity apart.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    fmt,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 use super::*;
 use custom_ring_interface::{
@@ -59,6 +63,102 @@ fn grouped<T, K: PartialEq + Copy>(
         .into_iter()
         .flat_map(|(key, members)| members.into_iter().map(move |item| Keyed { item, key }))
         .collect()
+}
+
+const SWEEP_PART: &str = "RING_SWEEP_PART";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SweepPart {
+    Whole,
+    Keys,
+    Shapes(ShapePart),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ShapePart {
+    /// Zero based.
+    index: usize,
+    of: usize,
+}
+
+impl SweepPart {
+    fn from_env() -> Result<Self> {
+        match std::env::var(SWEEP_PART) {
+            Err(std::env::VarError::NotPresent) => Ok(Self::Whole),
+            value => value.with_context(|| format!("read {SWEEP_PART}"))?.parse(),
+        }
+    }
+}
+
+impl FromStr for SweepPart {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        if value == "keys" {
+            return Ok(Self::Keys);
+        }
+        value
+            .split_once('/')
+            .and_then(|(number, of)| {
+                Some(ShapePart {
+                    index: ordinal(number)?.checked_sub(1)?,
+                    of: ordinal(of)?,
+                })
+            })
+            .filter(|part| part.index < part.of)
+            .map(Self::Shapes)
+            .with_context(|| {
+                format!("{SWEEP_PART} {value:?} is neither keys nor <k>/<n> with 1 <= k <= n")
+            })
+    }
+}
+
+impl fmt::Display for SweepPart {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Whole => formatter.write_str("whole"),
+            Self::Keys => formatter.write_str("keys"),
+            Self::Shapes(part) => write!(formatter, "{}/{}", part.index + 1, part.of),
+        }
+    }
+}
+
+impl ShapePart {
+    /// Positions interleave, each part takes a similar mix of cheap and costly shapes.
+    fn select<T>(self, grouped: Vec<T>) -> Vec<T> {
+        grouped
+            .into_iter()
+            .skip(self.index)
+            .step_by(self.of)
+            .collect()
+    }
+}
+
+/// Digits alone, `usize::from_str` takes a sign.
+fn ordinal(digits: &str) -> Option<usize> {
+    Some(digits)
+        .filter(|digits| digits.bytes().all(|byte| byte.is_ascii_digit()))?
+        .parse()
+        .ok()
+}
+
+fn sweep_shapes(column: Column) -> Vec<Keyed<Shape, Option<TransferShape>>> {
+    let rail = column.rail();
+    grouped(
+        SPP_SUPPORTED_SHAPES
+            .into_iter()
+            .filter(|shape| column.keyed(*shape)),
+        |shape| {
+            FrameKey {
+                rail,
+                inputs: shape.n_inputs(),
+                outputs: shape.n_outputs(),
+                spends_default_ring: false,
+                wide: false,
+            }
+            .shape()
+        },
+    )
 }
 
 /// Merge widths whose full nullifier list fits one v1 transaction.
@@ -709,24 +809,12 @@ impl<'a> ColumnSetup<'a> {
 }
 
 impl ShapeRing<'_> {
-    fn sweep(&self, coverage: &mut Coverage) -> Result<()> {
-        let (mut settled, mut too_large) = (Vec::new(), Vec::new());
-        let rail = self.column.rail();
-        let shapes = grouped(
-            SPP_SUPPORTED_SHAPES
-                .into_iter()
-                .filter(|shape| self.column.keyed(*shape)),
-            |shape| {
-                FrameKey {
-                    rail,
-                    inputs: shape.n_inputs(),
-                    outputs: shape.n_outputs(),
-                    spends_default_ring: false,
-                    wide: false,
-                }
-                .shape()
-            },
-        );
+    fn sweep(
+        &self,
+        shapes: Vec<Keyed<Shape, Option<TransferShape>>>,
+        coverage: &mut Coverage,
+    ) -> Result<()> {
+        let mut too_large = Vec::new();
         let mut loaded = LoadedKey::default();
         for shape in shapes {
             loaded.load(shape.key)?;
@@ -737,18 +825,18 @@ impl ShapeRing<'_> {
                 spend: Spend::Rail(self.column.rail()),
                 legs: Vec::new(),
             };
-            match self.settle(transfer, coverage)? {
-                Settlement::Settled => settled.push(shape),
-                Settlement::TooLarge(_) => too_large.push(shape),
+            if let Settlement::TooLarge(_) = self.settle(transfer, coverage)? {
+                too_large.push(shape);
             }
         }
         println!("RING_SHAPES {:?} too_large={too_large:?}", self.column);
+        // A part answers for the widest shapes it runs.
         let unfit: Vec<Shape> = self
             .column
             .widest()
             .iter()
             .copied()
-            .filter(|shape| !settled.contains(shape))
+            .filter(|shape| too_large.contains(shape))
             .collect();
         ensure!(
             unfit.is_empty(),
@@ -1729,32 +1817,51 @@ fn sweep_salted() -> Result<()> {
 }
 
 fn sweep(column: Column) -> Result<()> {
-    configured(column, |ring, coverage| {
-        ring.sweep(coverage)?;
-        ring.catalog_keys(coverage)?;
-        match column {
-            Column::Anonymous | Column::Salted => {}
-            Column::Delegate => ring.sixteen_outputs_refused()?,
-            Column::Confidential => ring.in_proof_owners(coverage)?,
-            Column::ConfidentialPolicy => {
-                ring.in_proof_owners(coverage)?;
-                ring.wide_withdrawals(coverage)?;
-                ring.spl_withdrawals(coverage)?;
-            }
-            Column::AnonymousPolicy => {
-                ring.wide_withdrawals(coverage)?;
-                ring.spl_withdrawals(coverage)?;
-            }
+    let part = SweepPart::from_env()?;
+    let shapes = match part {
+        SweepPart::Whole => sweep_shapes(column),
+        SweepPart::Keys => Vec::new(),
+        SweepPart::Shapes(share) => share.select(sweep_shapes(column)),
+    };
+    println!(
+        "RING_SWEEP_PART {column:?} part={part} shapes={}",
+        shapes.len()
+    );
+    configured(column, |ring, coverage| match part {
+        SweepPart::Whole => {
+            ring.sweep(shapes, coverage)?;
+            key_phases(ring, coverage)
         }
-        if matches!(
-            column,
-            Column::Anonymous | Column::Confidential | Column::Delegate
-        ) {
-            ring.merges(coverage)?;
-        }
-        coverage.assert_column_keys(column);
-        Ok(())
+        SweepPart::Keys => key_phases(ring, coverage),
+        SweepPart::Shapes(_) => ring.sweep(shapes, coverage),
     })
+}
+
+fn key_phases(ring: &ShapeRing<'_>, coverage: &mut Coverage) -> Result<()> {
+    let column = ring.column;
+    ring.catalog_keys(coverage)?;
+    match column {
+        Column::Anonymous | Column::Salted => {}
+        Column::Delegate => ring.sixteen_outputs_refused()?,
+        Column::Confidential => ring.in_proof_owners(coverage)?,
+        Column::ConfidentialPolicy => {
+            ring.in_proof_owners(coverage)?;
+            ring.wide_withdrawals(coverage)?;
+            ring.spl_withdrawals(coverage)?;
+        }
+        Column::AnonymousPolicy => {
+            ring.wide_withdrawals(coverage)?;
+            ring.spl_withdrawals(coverage)?;
+        }
+    }
+    if matches!(
+        column,
+        Column::Anonymous | Column::Confidential | Column::Delegate
+    ) {
+        ring.merges(coverage)?;
+    }
+    coverage.assert_column_keys(column);
+    Ok(())
 }
 
 #[test]
@@ -1852,4 +1959,63 @@ fn sanity_wide_withdrawal_heap_sentinel() -> Result<()> {
             coverage,
         )
     })
+}
+
+#[test]
+fn every_keyed_shape_runs_in_one_sweep_part() -> Result<()> {
+    let columns = [
+        Column::Confidential,
+        Column::ConfidentialPolicy,
+        Column::Anonymous,
+        Column::AnonymousPolicy,
+        Column::Delegate,
+        Column::Salted,
+    ];
+    let items = |keyed: Vec<Keyed<Shape, _>>| -> Vec<Shape> {
+        keyed.into_iter().map(|shape| shape.item).collect()
+    };
+    for column in columns {
+        let listed = items(sweep_shapes(column));
+        for of in 1..=6 {
+            let parts = (1..=of)
+                .map(|number| match format!("{number}/{of}").parse()? {
+                    SweepPart::Shapes(part) => Ok(items(part.select(sweep_shapes(column)))),
+                    other => Err(anyhow!("{number}/{of} parsed as {other}")),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let mut joined = parts.concat();
+            joined.sort_by_key(|shape| listed.iter().position(|listed| listed == shape));
+            assert_eq!(joined, listed, "{column:?} split {of} ways");
+            for shape in listed.iter().chain(column.widest()) {
+                let holders = parts.iter().filter(|part| part.contains(shape)).count();
+                assert_eq!(
+                    holders, 1,
+                    "{column:?} {shape:?} in {holders} of {of} parts"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn ring_sweep_part_refuses_malformed_values() -> Result<()> {
+    for value in [
+        "", "0/2", "3/2", "1/0", "a/b", "1/2x", "1/2/3", "+1/2", "whole", "keys ",
+    ] {
+        let refusal = value
+            .parse::<SweepPart>()
+            .err()
+            .with_context(|| format!("{value:?} parsed"))?;
+        assert!(
+            refusal.to_string().contains(&format!("{value:?}")),
+            "{refusal}"
+        );
+    }
+    assert_eq!("keys".parse::<SweepPart>()?, SweepPart::Keys);
+    assert_eq!(
+        "2/3".parse::<SweepPart>()?,
+        SweepPart::Shapes(ShapePart { index: 1, of: 3 })
+    );
+    Ok(())
 }
