@@ -243,11 +243,11 @@ export class AnonymousWallet {
     this.#notes._absorb(commit, base, write);
     this.#revision += 1n;
     this.#claims = this.#withClaims(commit.senderClaims);
+    for (const { viewingPublicKey, stream, index } of commit.foundTags)
+      this.#history = this.#history._withFound(viewingPublicKey, stream, index);
     const { tagPosition } = commit;
     if (tagPosition !== undefined)
       this.#history = this.#history._withTagPosition(tagPosition.keys, tagPosition.afterSlot);
-    for (const { viewingPublicKey, stream, index } of commit.foundTags)
-      this.#history = this.#history._withFound(viewingPublicKey, stream, index);
     // A retry leaves only once the indexer returned its spend row, a lagging indexer keeps it stored.
     const retries = new Map(this.#mergeRetries);
     for (const nullifier of commit.retried) retries.delete(bytesKey(nullifier));
@@ -278,7 +278,11 @@ export class AnonymousWallet {
   }
 
   /** Only raises a tag counter or adds a key, Rust `AnonymousWallet::update_history`. */
-  updateHistory(updated: ViewingHistory): void {
+  updateHistory({
+    expected,
+    updated,
+  }: Readonly<{ expected: ViewingHistory; updated: ViewingHistory }>): void {
+    if (expected !== this.#history) throw new RingError("RING_SCAN_PROGRESS_MOVED");
     // A paused recovery fixes the key scope, and its counters can trail an index already used.
     if (this.#recovery !== null && updated.toJson() !== this.#history.toJson())
       throw new RingError("RING_SCAN_HISTORY_CHANGED");
@@ -299,7 +303,7 @@ export class AnonymousWallet {
 
   /** The wallet holds the advanced history before the holder is asked. */
   #taken<Tag>(advanced: AdvancedTag<Tag>): Tag {
-    this.updateHistory(advanced.history);
+    this.updateHistory({ expected: this.#history, updated: advanced.history });
     return advanced.tag;
   }
 

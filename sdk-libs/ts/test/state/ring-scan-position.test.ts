@@ -224,7 +224,7 @@ describe("atomic progress", () => {
     const wallet = anonymousWallet(bob, bob.fresh());
     const scan = await bob.sync(indexer, wallet.history());
     const during = await wallet.history().requestTag(bob.keys);
-    wallet.updateHistory(during.history);
+    wallet.updateHistory({ expected: wallet.history(), updated: during.history });
     await wallet.absorb(scan);
     expect(wallet.history().current().requestCount).toBe(1n);
     expect(position(wallet.history())).toBe(9n);
@@ -241,7 +241,10 @@ describe("atomic progress", () => {
     const wallet = anonymousWallet(bob, bob.fresh());
     const scan = await bob.sync(indexer, wallet.history());
     const added = ViewingKey.generate().publicKey();
-    wallet.updateHistory(wallet.history().withRotatedKey(added, 5n));
+    wallet.updateHistory({
+      expected: wallet.history(),
+      updated: wallet.history().withRotatedKey(added, 5n),
+    });
     await wallet.absorb(scan);
     expect(wallet.history().current().viewingPublicKey.equals(added)).toBe(true);
     expect(wallet.history().entry(added)?.ringPosition(RING)).toBeNull();
@@ -257,7 +260,7 @@ describe("atomic progress", () => {
     const scan = await bob.sync(indexer, wallet.history());
     const ring = randomAddress();
     await wallet.takeTransferTags(bob.keys);
-    wallet.updateHistory(wallet.history().withRing(ring));
+    wallet.updateHistory({ expected: wallet.history(), updated: wallet.history().withRing(ring) });
     await wallet.absorb(scan);
     const entry = wallet.history().current();
     expect(entry.txCount).toBe(1n);
@@ -286,12 +289,23 @@ describe("atomic progress", () => {
     const bob = new ScanWallet(2);
     const base = bob.fresh();
     const wallet = anonymousWallet(bob, base);
-    const minted = (await base.requestTag(bob.keys)).history;
-    wallet.updateHistory(minted);
-    expect(() => wallet.updateHistory(base)).toThrow("RING_SCAN_PROGRESS_MOVED");
+    const [reserved, duplicate] = await Promise.all([
+      base.requestTag(bob.keys),
+      base.requestTag(bob.keys),
+    ]);
+    const minted = reserved.history;
+    wallet.updateHistory({ expected: base, updated: minted });
+    expect(() => wallet.updateHistory({ expected: base, updated: duplicate.history })).toThrow(
+      "RING_SCAN_PROGRESS_MOVED",
+    );
+    expect(() => wallet.updateHistory({ expected: wallet.history(), updated: base })).toThrow(
+      "RING_SCAN_PROGRESS_MOVED",
+    );
     const selected = await minted.select(bob.keys);
-    wallet.updateHistory(selected.history);
-    expect(() => wallet.updateHistory(minted)).toThrow("RING_SCAN_PROGRESS_MOVED");
+    wallet.updateHistory({ expected: wallet.history(), updated: selected.history });
+    expect(() => wallet.updateHistory({ expected: wallet.history(), updated: minted })).toThrow(
+      "RING_SCAN_PROGRESS_MOVED",
+    );
     const { txCount, requestCount } = wallet.history().current();
     expect([txCount, requestCount]).toEqual([1n, 1n]);
   });
@@ -367,7 +381,9 @@ describe("atomic progress", () => {
     const history = bob.fresh();
     const scan = await bob.sync(indexer, history);
     const wallet = anonymousWallet(bob, history);
-    expect(() => wallet.updateHistory(scan.history)).toThrow("RING_SCAN_PROGRESS_MOVED");
+    expect(() =>
+      wallet.updateHistory({ expected: wallet.history(), updated: scan.history }),
+    ).toThrow("RING_SCAN_PROGRESS_MOVED");
     expect(position(wallet.history())).toBeNull();
     // A position written alone reads as no document, the wallet keeps its stored one.
     expect(() => AnonymousWallet.fromJson(scan.history.toJson())).toThrow("RING_WALLET_DOCUMENT");
@@ -379,10 +395,13 @@ describe("atomic progress", () => {
     const bob = new ScanWallet(2);
     const wallet = anonymousWallet(bob, bob.fresh());
     const { history: counted } = await wallet.history().requestTag(bob.keys);
-    wallet.updateHistory(counted);
+    wallet.updateHistory({ expected: wallet.history(), updated: counted });
     expect(wallet.history().current().requestCount).toBe(1n);
     const added = ViewingKey.generate().publicKey();
-    wallet.updateHistory(wallet.history().withRotatedKey(added, 5n));
+    wallet.updateHistory({
+      expected: wallet.history(),
+      updated: wallet.history().withRotatedKey(added, 5n),
+    });
     expect(wallet.history().entry(added)?.ringPosition(RING)).toBeNull();
     const stored = '"request":{"next":1,"scanned":0}';
     expect(wallet.history().toJson()).toContain(stored);
@@ -390,7 +409,9 @@ describe("atomic progress", () => {
     const watermark = ViewingHistory.fromJson(
       wallet.history().toJson().replace(stored, '"request":{"next":4,"scanned":4}'),
     );
-    expect(() => wallet.updateHistory(watermark)).toThrow("RING_SCAN_PROGRESS_MOVED");
+    expect(() => wallet.updateHistory({ expected: wallet.history(), updated: watermark })).toThrow(
+      "RING_SCAN_PROGRESS_MOVED",
+    );
   });
 
   it("persists a note under an unknown mint as pending with progress advanced, spendable once it registers with no rescan", async () => {
@@ -535,7 +556,10 @@ describe("viewing keys", () => {
     await alice.pay(indexer, [{ to: bob.address, amount: 1n }], { slot: 10n });
     const wallet = anonymousWallet(bob, bob.fresh());
     await wallet.absorb(await bob.sync(indexer, wallet.history()));
-    wallet.updateHistory(wallet.history().withRotatedKey(added.publicKey(), 5n));
+    wallet.updateHistory({
+      expected: wallet.history(),
+      updated: wallet.history().withRotatedKey(added.publicKey(), 5n),
+    });
     await alice.pay(indexer, [{ to: rotatedAddress, amount: 2n }], { slot: 20n });
     const holder = LocalRingKeys.fromKeys({
       address: rotatedAddress,

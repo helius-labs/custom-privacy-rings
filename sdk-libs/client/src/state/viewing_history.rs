@@ -19,6 +19,7 @@ pub struct StreamCounter {
     next: u64,
     /// Past the highest index a sync found.
     scanned: u64,
+    read_end: u64,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -47,6 +48,12 @@ pub struct ViewingHistory {
     entries: Vec<ViewingKeyEntry>,
 }
 
+#[must_use]
+pub struct HistoryUpdate {
+    pub(crate) expected: ViewingHistory,
+    pub(crate) updated: ViewingHistory,
+}
+
 /// `history` is advanced past `tag`.
 #[must_use]
 #[derive(Clone, Debug)]
@@ -63,10 +70,7 @@ impl StreamCounter {
 
     /// The indices an earlier sync read through its key's tag position.
     pub(crate) fn read_before(&self) -> Range<u64> {
-        match self.scanned {
-            0 => 0..0,
-            scanned => 0..scanned.saturating_add(TAG_WINDOW),
-        }
+        0..self.read_end
     }
 
     fn mint(&mut self) -> Result<u64, AnonymousError> {
@@ -153,6 +157,8 @@ impl ViewingKeyEntry {
     /// Only a terminal page's `context.slot` reaches here.
     pub(crate) fn set_tag_position(&mut self, after_slot: u64) {
         self.tag_position = Some(after_slot);
+        self.tx.read_end = self.tx.listed().end;
+        self.request.read_end = self.request.listed().end;
     }
 
     /// A stale history lowers no counter, its next selection would take a published index again.
@@ -161,6 +167,8 @@ impl ViewingKeyEntry {
             && self.request.next >= stored.request.next
             && self.tx.scanned == stored.tx.scanned
             && self.request.scanned == stored.request.scanned
+            && self.tx.read_end == stored.tx.read_end
+            && self.request.read_end == stored.request.read_end
             && self.tag_position == stored.tag_position
             && stored
                 .ring_positions
@@ -240,6 +248,13 @@ impl ViewingHistory {
                 .map(|ring| (*ring, None))
                 .collect(),
             ..ViewingKeyEntry::new(viewing_pubkey, created_at)
+        }
+    }
+
+    pub fn advance_to(&self, updated: ViewingHistory) -> HistoryUpdate {
+        HistoryUpdate {
+            expected: self.clone(),
+            updated,
         }
     }
 
@@ -374,6 +389,8 @@ struct RingPositionJson {
 struct CounterJson {
     next: u64,
     scanned: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    read_end: Option<u64>,
 }
 
 impl From<StreamCounter> for CounterJson {
@@ -381,6 +398,7 @@ impl From<StreamCounter> for CounterJson {
         Self {
             next: counter.next,
             scanned: counter.scanned,
+            read_end: (counter.read_end != 0).then_some(counter.read_end),
         }
     }
 }
@@ -392,10 +410,15 @@ impl TryFrom<CounterJson> for StreamCounter {
         if stored.scanned > stored.next {
             return Err(invalid("a scan watermark passes its next index"));
         }
-        Ok(Self {
+        let counter = Self {
             next: stored.next,
             scanned: stored.scanned,
-        })
+            read_end: stored.read_end.unwrap_or_default(),
+        };
+        if counter.read_end > counter.listed().end {
+            return Err(invalid("tag coverage exceeds the listed range"));
+        }
+        Ok(counter)
     }
 }
 
@@ -611,18 +634,39 @@ mod tests {
     }
 
     #[test]
-    fn a_stream_lists_a_window_past_its_counter_and_reads_before_only_past_a_found_index() {
+    fn a_stream_resumes_only_the_range_covered_by_its_last_completed_read() {
         let history = ViewingHistory::new(ViewingKey::new().pubkey(), 0).with_request_count(5);
         let mut entry = history.current().clone();
         assert_eq!(entry.request.listed(), 0..69);
         assert!(entry.request.read_before().is_empty());
         entry.found(ViewTagStream::Request, 2);
         assert_eq!(entry.request.listed(), 0..69);
-        assert_eq!(entry.request.read_before(), 0..67);
+        assert!(entry.request.read_before().is_empty());
+        entry.set_tag_position(7);
+        assert_eq!(entry.tx.read_before(), 0..64);
+        assert_eq!(entry.request.read_before(), 0..69);
         entry.found(ViewTagStream::Request, 9);
         assert_eq!(entry.request.listed(), 0..74);
+        assert_eq!(entry.request.read_before(), 0..69);
+        entry.set_tag_position(8);
         assert_eq!(entry.request.read_before(), 0..74);
         assert_eq!(entry.tx.listed(), 0..64);
+    }
+
+    #[test]
+    fn a_saved_slot_without_stream_coverage_rescans_once() {
+        let mut history = ViewingHistory::new(ViewingKey::new().pubkey(), 0);
+        history.current_mut().set_tag_position(10);
+        let mut saved = to_stored(&history);
+        let previous = &mut saved["viewingHistory"][0]["request"];
+        previous.as_object_mut().unwrap().remove("readEnd");
+        let mut restored = stored::deserialize(saved).unwrap();
+        assert_eq!(restored.current().tag_position(), Some(10));
+        assert_eq!(restored.current().tx.read_before(), 0..TAG_WINDOW);
+        assert!(restored.current().request.read_before().is_empty());
+        restored.current_mut().set_tag_position(11);
+        let saved = stored::deserialize(to_stored(&restored)).unwrap();
+        assert_eq!(saved.current().request.read_before(), 0..TAG_WINDOW);
     }
 
     #[test]
@@ -639,10 +683,12 @@ mod tests {
         history.entries_mut()[0].tx = StreamCounter {
             next: 5,
             scanned: 3,
+            ..StreamCounter::default()
         };
         history.entries_mut()[0].request = StreamCounter {
             next: 9,
             scanned: 7,
+            ..StreamCounter::default()
         };
         let mut document = to_stored(&history);
         let entry = &document["viewingHistory"][0];

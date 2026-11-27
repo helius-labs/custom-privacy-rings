@@ -115,7 +115,7 @@ impl AnonymousWalletStore {
                 "the wallet is in a recovery scan, finish it before a send"
             );
             let selected = wallet.history().select(keys)?;
-            wallet.update_history(selected.history)?;
+            wallet.update_history(wallet.history().advance_to(selected.history))?;
             Ok(selected.tag)
         })
     }
@@ -166,7 +166,10 @@ impl WalletScan<'_> {
             store: &store,
             watch,
         }
-        .fetch(&ctx.zolana)
+        .fetch(
+            &ctx.zolana,
+            &zolana_ring_client::FinalizedRpcOrigin::new(rpc.client().get_inner_client()),
+        )
     }
 }
 
@@ -175,16 +178,22 @@ impl ScanAt<'_> {
     fn fetch<R: BlockingRpc, I: BlockingIndexer>(
         self,
         zolana: &Zolana<R, I>,
+        origin: &impl zolana_ring_client::FinalizedTransactionOrigin,
     ) -> Result<RingWalletNotes> {
         let scanned = self.sync.scan(zolana.indexer())?;
         let synced = self.store.update(|wallet| {
             if let Some(ring) = self.watch {
                 let watched = wallet.history().clone().with_ring(ring, None);
-                wallet.update_history(watched)?;
+                wallet.update_history(wallet.history().advance_to(watched))?;
             }
             zolana.block_on(async {
                 let indexer = zolana.as_async().indexer();
-                Ok(scanned.sync(indexer, wallet).await?)
+                Ok(scanned
+                    .sync(
+                        zolana_ring_client::RingWalletSources { indexer, origin },
+                        wallet,
+                    )
+                    .await?)
             })
         })?;
         match synced {
@@ -343,7 +352,7 @@ mod tests {
                     store
                         .update(|wallet| {
                             let minted = wallet.history().request_tag(keys)?.history;
-                            wallet.update_history(minted)?;
+                            wallet.update_history(wallet.history().advance_to(minted))?;
                             Ok(())
                         })
                         .unwrap()

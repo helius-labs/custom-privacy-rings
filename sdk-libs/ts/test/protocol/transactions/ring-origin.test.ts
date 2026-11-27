@@ -933,6 +933,19 @@ function rustFixture(name: string) {
 }
 
 describe("RpcTransactionOrigin", () => {
+  it("binds each wallet opening to a finalized transaction and reuses the lookup", async () => {
+    const { indexed, confirmed } = transferFixture();
+    const getTransaction = vi.fn(() => ({ send: async () => confirmed }));
+    const verify = RpcTransactionOrigin.finalizedTransfers(solanaRpcReads({ getTransaction }));
+    await verify(indexed, RING);
+    await expect(verify({ ...indexed, slot: indexed.slot + 1n }, RING)).rejects.toThrow();
+    expect(getTransaction).toHaveBeenCalledTimes(1);
+    expect(getTransaction).toHaveBeenCalledWith(
+      indexed.txSignature,
+      expect.objectContaining({ commitment: "finalized", maxSupportedTransactionVersion: 1 }),
+    );
+  });
+
   it.each(["confirmed-event"])(
     "matches Rust's %s codec and rejects substituted recovery data",
     async (name) => {

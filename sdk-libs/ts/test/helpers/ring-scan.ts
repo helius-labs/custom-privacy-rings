@@ -174,6 +174,7 @@ export interface Pay {
   readonly to: ShieldedAddress;
   readonly amount: bigint;
   readonly reply?: ReplyMetadata;
+  readonly tag?: Bytes32;
 }
 
 export type SealedTransfer = IndexedShieldedTransaction;
@@ -244,11 +245,13 @@ export class ScanWallet {
     // An output to the sender reads as change, the plan holds no payment for it.
     const plan = payments
       .filter((pay) => !pay.to.viewingPublicKey.equals(this.address.viewingPublicKey))
-      .reduce(
-        (planned, pay) =>
-          planned.withPayment({ recipient: pay.to.viewingPublicKey, reply: pay.reply ?? null }),
-        AnonymousPlan.create(),
-      );
+      .reduce((planned, pay) => {
+        const next = planned.withPayment({
+          recipient: pay.to.viewingPublicKey,
+          reply: pay.reply ?? null,
+        });
+        return pay.tag === undefined ? next : next.withTag(pay.tag);
+      }, AnonymousPlan.create());
     const input = this.#funding.shift();
     if (input === undefined) throw new Error("no funding left");
     const transfer = (

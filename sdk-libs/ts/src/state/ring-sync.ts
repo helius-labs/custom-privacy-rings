@@ -28,6 +28,10 @@ import {
   type WalletUtxo,
 } from "@heliuslabs/spr/transaction";
 
+import {
+  RpcTransactionOrigin,
+  type VerifyFinalizedTransfer,
+} from "../protocol/transaction/origin.js";
 import { ringBodyOutput } from "../protocol/transaction/output.js";
 import { openReply, type ReplyClaim } from "../protocol/codec/anonymous-delivery.js";
 import { openRecipientBody } from "../crypto/derivation/blinding.js";
@@ -149,12 +153,13 @@ export async function syncRingWallet(
   if (!isRingKeys(keys)) throw new RingError("RING_KEYS_REQUIRED", { details: { reason: "sync" } });
   return wallet._withSyncLock(async () => {
     const revision = wallet._revision;
+    const history = ring.history();
     // 1. The core sync resumes from its checkpoints on a copy, nothing reaches the wallet before step 4.
     const staging = wallet._clone();
     const reads = new RingReads(input, staging, context);
     const report = await syncWallet({ ...input, wallet: staging, client: reads.client }, context);
     // 2. Core opens the rows under each held key's listed tags past its position.
-    const tagged = await reads.tagged(keys, ring.history());
+    const tagged = await reads.tagged(keys, history);
     if (ring.pendingOpenings().some((note) => isPendingNote(staging.registry, note)))
       await reads.refreshRegistry();
     // 3. The core sync read the spends of held notes. A note new to the wallet or promoted and a stored retry still need theirs.
@@ -200,6 +205,7 @@ export async function syncRingWallet(
     const initial = new Set(wallet.utxos().map(outputKey));
     const opened = new Set(fresh.map(outputKey));
     let storedUtxos = 0;
+    if (ring.history() !== history) throw new RingError("RING_SCAN_PROGRESS_MOVED");
     ring._absorbSync(
       {
         notes: fresh,
@@ -251,6 +257,7 @@ function withAssetFields(
 }
 
 export type RingSyncClient = SyncWalletInput["client"] &
+  Readonly<{ verifyFinalizedTransfer?: VerifyFinalizedTransfer }> &
   Pick<IndexerReader, "getShieldedTransactionsByNullifiers" | "getShieldedTransactionsByTags">;
 
 interface Site {
@@ -372,10 +379,11 @@ interface TagGroup {
 /** Rust `Listing`. */
 class TagListing {
   readonly #streamTags = new Map<string, FoundTag>();
+  readonly #opened = new Set<string>();
+  #matched: FoundTag[] = [];
   readonly #bounds = new Map<string, bigint>();
   #first = true;
 
-  /** An index within the window of a found one was read through its key's position, any other tag was never read. */
   async list(
     keys: RingKeys,
     entries: readonly ViewingKeyEntry[],
@@ -435,7 +443,10 @@ class TagListing {
         (_, offset) => indices.start + BigInt(offset),
       );
       for (const [index, tag] of answered(indexes, tags)) {
-        this.#streamTags.set(bytesKey(tag), { viewingPublicKey, stream, index });
+        const key = this.#key(viewingPublicKey, tag);
+        const found = { viewingPublicKey, stream, index };
+        if (this.#opened.delete(key)) this.#matched.push(found);
+        else this.#streamTags.set(key, found);
         group(position).tags.push(tag);
       }
     }
@@ -444,17 +455,31 @@ class TagListing {
     );
   }
 
-  /** The stream tags `row` publishes on a slot opened under the key each was listed for. */
-  found(
+  observe(
     row: IndexedShieldedTransaction,
     openedUnder: WeakMap<OutputSlot, X25519PublicKey>,
-  ): readonly FoundTag[] {
-    return row.outputSlots.flatMap((slot) => {
-      const listed = this.#streamTags.get(bytesKey(slot.viewTag));
-      return listed !== undefined && openedUnder.get(slot)?.equals(listed.viewingPublicKey) === true
-        ? [listed]
-        : [];
-    });
+  ): void {
+    for (const slot of row.outputSlots) {
+      const viewing = openedUnder.get(slot);
+      if (viewing === undefined) continue;
+      const key = this.#key(viewing, slot.viewTag);
+      const found = this.#streamTags.get(key);
+      if (found === undefined) this.#opened.add(key);
+      else {
+        this.#matched.push(found);
+        this.#streamTags.delete(key);
+      }
+    }
+  }
+
+  takeMatches(): readonly FoundTag[] {
+    const matched = this.#matched;
+    this.#matched = [];
+    return matched;
+  }
+
+  #key(viewing: X25519PublicKey, tag: Bytes32): string {
+    return bytesKey(viewing.toBytes()) + bytesKey(tag);
   }
 }
 
@@ -468,11 +493,17 @@ class RingReads {
   readonly #context: RequestContext | undefined;
   readonly #rpcConfig: IndexerRpcConfig;
   readonly #pageLimit: HalvingPageLimit;
+  readonly #verifyTransfer: VerifyFinalizedTransfer | undefined;
   readonly #spends: IndexedShieldedTransaction[] = [];
   #refreshed = false;
 
   constructor(input: RingSyncInput, staging: Wallet, context: RequestContext | undefined) {
     const { client, config } = input;
+    this.#verifyTransfer =
+      client.verifyFinalizedTransfer ??
+      (client.solanaRpc === undefined
+        ? undefined
+        : RpcTransactionOrigin.finalizedTransfers(client.solanaRpc));
     this.#staging = staging;
     this.#context = context;
     this.#rpcConfig = createIndexerRpcConfig(
@@ -538,7 +569,18 @@ class RingReads {
       // no counter.
       const fresh = read.filter((row) => unseen(seen, eventKey(row)));
       await this.open(keys, fresh);
-      for (const found of fresh.flatMap((row) => listing.found(row, this.#openedUnder))) {
+      for (const row of fresh) {
+        const ring = row.ringProgramId;
+        if (ring === undefined || !row.outputSlots.some((slot) => this.#openedUnder.has(slot)))
+          continue;
+        if (this.#verifyTransfer === undefined)
+          throw new RingError("RING_ORIGIN_UNAVAILABLE", {
+            details: { transactionId: row.txSignature },
+          });
+        await this.#verifyTransfer(row, ring, this.#context);
+        listing.observe(row, this.#openedUnder);
+      }
+      for (const found of listing.takeMatches()) {
         counted = counted._withFound(found.viewingPublicKey, found.stream, found.index);
         foundTags.push(found);
       }

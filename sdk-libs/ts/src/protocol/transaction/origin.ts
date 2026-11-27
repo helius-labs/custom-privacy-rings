@@ -75,6 +75,12 @@ export type ConfirmedRingTransaction =
       sealedRecord: Pick<SealedMergeRecord, "ephemeralPublicKey" | "envelope" | "record">;
     }>;
 
+export type VerifyFinalizedTransfer = (
+  transaction: IndexedShieldedTransaction,
+  ring: Address,
+  context?: RequestContext,
+) => Promise<void>;
+
 /** Mirrors Rust `TransactionOrigin`, an unknown signature is an error, never absent. */
 export interface TransactionOrigin {
   /** Binds indexed data to the exact confirmed transfer or merge. Other-ring events return undefined. */
@@ -409,8 +415,19 @@ export class RpcTransactionOrigin implements TransactionOrigin {
   readonly #transactions = new Map<Signature, Promise<unknown>>();
   static readonly #MAX_TRANSACTIONS = 4096;
 
-  constructor(rpc: SolanaRpc) {
+  readonly #commitment: "confirmed" | "finalized";
+
+  constructor(rpc: SolanaRpc, commitment: "confirmed" | "finalized" = "confirmed") {
     this.#rpc = rpc;
+    this.#commitment = commitment;
+  }
+
+  static finalizedTransfers(rpc: SolanaRpc): VerifyFinalizedTransfer {
+    const origin = new RpcTransactionOrigin(rpc, "finalized");
+    return async (transaction, ring, context) => {
+      const event = await origin.confirmedTransaction(transaction, ring, context);
+      if (event?.kind !== "transfer") throw invalid("finalizedTransfer");
+    };
   }
 
   async confirmedTransaction(
@@ -444,7 +461,9 @@ export class RpcTransactionOrigin implements TransactionOrigin {
     let transaction: unknown;
     try {
       transaction = await runKitRpc("getTransaction", context, (abortSignal) =>
-        this.#rpc.getTransaction(signature, ORIGIN_TRANSACTION_CONFIG).send({ abortSignal }),
+        this.#rpc
+          .getTransaction(signature, { ...ORIGIN_TRANSACTION_CONFIG, commitment: this.#commitment })
+          .send({ abortSignal }),
       );
     } catch (cause) {
       throw new RingError("RING_ORIGIN_UNAVAILABLE", {

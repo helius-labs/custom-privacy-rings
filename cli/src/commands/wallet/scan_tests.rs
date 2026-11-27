@@ -30,6 +30,9 @@ use super::{
 #[path = "../../../../sdk-libs/client/tests/common/history_page.rs"]
 mod history_page;
 
+#[path = "../../../../sdk-libs/client/tests/common/wallet_origin.rs"]
+mod wallet_origin;
+
 use history_page::EventsPage;
 
 const TREE: u16 = 2;
@@ -280,7 +283,10 @@ impl Member {
             store: &self.store,
             watch: None,
         }
-        .fetch(zolana)
+        .fetch(
+            zolana,
+            &wallet_origin::WalletChain(zolana.indexer().transactions.clone()),
+        )
         .unwrap()
     }
 

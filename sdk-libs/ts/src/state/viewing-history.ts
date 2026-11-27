@@ -20,7 +20,10 @@ export class StreamCounter {
   /** Past the highest index a sync found. */
   readonly scanned: bigint;
 
-  private constructor(next: bigint, scanned: bigint) {
+  readonly readEnd: bigint;
+
+  private constructor(next: bigint, scanned: bigint, readEnd: bigint = 0n) {
+    this.readEnd = readEnd;
     this.next = next;
     this.scanned = scanned;
     Object.freeze(this);
@@ -29,9 +32,14 @@ export class StreamCounter {
   static readonly EMPTY: StreamCounter = new StreamCounter(0n, 0n);
 
   /** Refuses a watermark past `next`. */
-  static restore(stored: Readonly<{ next: bigint; scanned: bigint }>): StreamCounter {
+  static restore(
+    stored: Readonly<{ next: bigint; scanned: bigint; readEnd?: bigint }>,
+  ): StreamCounter {
     if (stored.scanned > stored.next) throw invalid("a scan watermark passes its next index");
-    return new StreamCounter(stored.next, stored.scanned);
+    const counter = new StreamCounter(stored.next, stored.scanned, stored.readEnd);
+    if (counter.readEnd > counter._listed().end)
+      throw invalid("tag coverage exceeds the listed range");
+    return counter;
   }
 
   /** @internal Every index taken and `TAG_WINDOW` past them, `zolana/docs/spec.md` First Time Sync Wallet. */
@@ -41,25 +49,28 @@ export class StreamCounter {
 
   /** @internal The indices an earlier sync read through its key's tag position. */
   _readBefore(): ViewTagRequest["indices"] {
-    const end = this.scanned === 0n ? 0n : min(this.scanned + TAG_WINDOW, U64_MAX);
-    return Object.freeze({ start: 0n, end });
+    return Object.freeze({ start: 0n, end: this.readEnd });
+  }
+
+  _readThrough(): StreamCounter {
+    return new StreamCounter(this.next, this.scanned, this._listed().end);
   }
 
   /** @internal Past the index a request or a send takes, `next` before the call. */
   _minted(): StreamCounter {
     if (this.next === U64_MAX) throw new RingError("RING_COUNTER_OVERFLOW");
-    return new StreamCounter(this.next + 1n, this.scanned);
+    return new StreamCounter(this.next + 1n, this.scanned, this.readEnd);
   }
 
   /** @internal */
   _found(index: bigint): StreamCounter {
     const scanned = max(this.scanned, past(index));
-    return new StreamCounter(max(this.next, scanned), scanned);
+    return new StreamCounter(max(this.next, scanned), scanned, this.readEnd);
   }
 
   /** @internal `next` never falls. */
   _atLeast(next: bigint): StreamCounter {
-    return new StreamCounter(max(this.next, next), this.scanned);
+    return new StreamCounter(max(this.next, next), this.scanned, this.readEnd);
   }
 }
 
@@ -184,14 +195,21 @@ export class ViewingKeyEntry {
 
   /** @internal */
   _withTagPosition(afterSlot: bigint): ViewingKeyEntry {
-    return new ViewingKeyEntry({ ...this.#fields(), tagPosition: afterSlot });
+    return new ViewingKeyEntry({
+      ...this.#fields(),
+      tagPosition: afterSlot,
+      tx: this.tx._readThrough(),
+      request: this.request._readThrough(),
+    });
   }
 
   /** @internal A lower `next` would issue a tag again. */
   _progressMatches(stored: ViewingKeyEntry): boolean {
     const counters = COUNTERS.every(
       (stream) =>
-        this[stream].next >= stored[stream].next && this[stream].scanned === stored[stream].scanned,
+        this[stream].next >= stored[stream].next &&
+        this[stream].scanned === stored[stream].scanned &&
+        this[stream].readEnd === stored[stream].readEnd,
     );
     const keptEvery = stored
       .ringPositions()
@@ -430,7 +448,7 @@ export class ViewingHistory {
   /** Its positions and counters decide what a sync skips, store it as key material. */
   toJson(): string {
     const counter = (value: StreamCounter): string =>
-      `{"next":${value.next},"scanned":${value.scanned}}`;
+      `{"next":${value.next},"scanned":${value.scanned}${value.readEnd === 0n ? "" : `,"readEnd":${value.readEnd}`}}`;
     const entries = this.entries.map((entry) => {
       const positions = [...entry.ringPositions()]
         .sort((left, right) => byAddressBytes(left.ring, right.ring))
@@ -563,10 +581,15 @@ function storedRing(value: unknown): Address {
 
 function storedCounter(value: unknown, name: string): StreamCounter {
   const stored = record(value, name);
-  known(stored, name, ["next", "scanned"]);
+  known(
+    stored,
+    name,
+    Object.hasOwn(stored, "readEnd") ? ["next", "scanned", "readEnd"] : ["next", "scanned"],
+  );
   return StreamCounter.restore({
     next: u64(stored["next"], name),
     scanned: u64(stored["scanned"], name),
+    readEnd: stored["readEnd"] == null ? 0n : u64(stored["readEnd"], name),
   });
 }
 
