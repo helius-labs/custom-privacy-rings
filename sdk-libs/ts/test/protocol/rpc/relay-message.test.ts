@@ -40,6 +40,7 @@ import { ringComputeUnitLimit } from "../../../src/operations/management/admin.j
 import { SIZE_PROBE_LIFETIME } from "../../../src/operations/workflow/compile.js";
 import { RingInstructionTag } from "../../../src/protocol/transaction/instruction-tag.js";
 import { readFileSync } from "node:fs";
+import { decodeRelayStep } from "../../../src/protocol/ring-rpc/ring-rpc-codec.js";
 
 import {
   getBase58Encoder,
@@ -85,6 +86,7 @@ import {
 } from "../../../src/protocol/pda/index.js";
 import {
   PendingRelaySignature,
+  PreparedAuthorityTransfer,
   UnsignedRelay,
   type RingRelayClient,
 } from "../../../src/rpc/relay.js";
@@ -116,6 +118,7 @@ interface DelegateRequest {
     readonly ring: Address;
     readonly delegate: Address;
     readonly txViewingKey: string;
+    readonly timestamp: number;
     readonly transfer: {
       readonly sources: readonly string[];
       readonly payments: readonly {
@@ -154,15 +157,13 @@ function auditorOf(request: DelegateRequest): X25519PublicKey {
   return X25519PublicKey.fromBytes(new Uint8Array(base64.encode(request.auditor)) as Bytes33);
 }
 
-function delegate(
-  request: DelegateRequest,
-  pinned: Vector<DelegateRequest> = delegates,
-): Promise<ExpectedRelayMessage> {
+function delegateTerms(request: DelegateRequest, pinned: Readonly<{ ringPolicy: string }>) {
   const shielded = (text: string) => ShieldedAddress.fromBytes(new Uint8Array(base58.encode(text)));
   const { prepare } = request;
-  return expectedDelegate({
+  return {
     request: {
-      ring: prepare.ring,
+      ...prepare,
+      timestamp: BigInt(prepare.timestamp),
       delegate: prepare.delegate,
       txViewingKey: new Uint8Array(base64.encode(prepare.txViewingKey)),
       transfer: {
@@ -185,10 +186,15 @@ function delegate(
     } as unknown as PrepareAuthorityTransferRequest,
     quote: { feePayer: request.feePayer, validUntilSlot: 0n },
     config: vectorRingPolicy(pinned),
-    allowed: pinnedAllowed(pinned),
-    // The vector's frames append to Rust `support::TREE_ID`.
     outputTreeId: 0,
-  });
+  };
+}
+
+function delegate(
+  request: DelegateRequest,
+  pinned: Vector<DelegateRequest> = delegates,
+): Promise<ExpectedRelayMessage> {
+  return expectedDelegate({ ...delegateTerms(request, pinned), allowed: pinnedAllowed(pinned) });
 }
 
 /** The vector holds no openings, the honest frame's spent notes stand in as in Rust. */
@@ -454,6 +460,41 @@ describe("relay message check", () => {
       }
     });
 
+    it("checks the mint issuer's input openings against the signed SPP frame", async () => {
+      const vector = fixture<{ ringPolicy: string; request: DelegateRequest; step: unknown }>(
+        "relay_mint_message.json",
+      );
+      const terms = delegateTerms(vector.request, vector);
+      const [payment] = terms.request.transfer.payments;
+      if (payment === undefined) throw new Error("missing payment");
+      const issuer = new PreparedAuthorityTransfer({ ...terms, mint: payment.mint });
+      const step = decodeRelayStep(vector.step);
+      if (step.step !== "signMintTransfer") throw new Error("missing openings");
+      for (const inputOpenings of [
+        step.inputOpenings,
+        [],
+        [...step.inputOpenings].reverse(),
+        step.inputOpenings.map((opening) => ({ ...opening, sourceIndex: 1 })),
+        step.inputOpenings.map((opening) => ({ ...opening, amount: opening.amount + 1n })),
+        step.inputOpenings.map(({ ringDataHash: _hash, ...opening }) => opening),
+      ]) {
+        const sent = await issuer.send({
+          prepareAuthorityTransfer: async () => ({ ...step, inputOpenings }),
+          submitRelay: async () => {
+            throw new Error("unexpected submission");
+          },
+        });
+        if (!(sent instanceof PendingRelaySignature)) throw new Error("missing message");
+        const verify = () => sent.verify(terms.request.delegate);
+        if (inputOpenings === step.inputOpenings)
+          expect(verify().signer).toBe(terms.request.delegate);
+        else
+          expect(verify).toThrow(
+            expect.objectContaining({ details: { mismatch: "SpendsUnrequestedNote" } }),
+          );
+      }
+    });
+
     it("refuses a record of another mint", async () => {
       const mint = encodeBase58(new Uint8Array(32).fill(9));
       expect(await verdictOf(rewritten((record) => ({ ...record, mint })))).toBe("Recipients");
@@ -611,6 +652,21 @@ describe("relay message check", () => {
         Uint8Array.from(instruction().data ?? []).subarray(1),
         "anonymous",
       );
+      const publishedFrame = {
+        ...frame,
+        outputs: frame.outputs.map((output, slot) => {
+          const opening = published.find((open) => open.slot === slot);
+          return opening === undefined
+            ? output
+            : { ...output, hash: openingHash(opening, terms.ring) };
+        }),
+      };
+      const config = vectorRingPolicy(owners);
+      const externalDataHash = RingTransactData.externalDataHash(
+        publishedFrame,
+        { auditorPubkey: config.auditorPublicKey.toBytes() },
+        [],
+      );
       const { messageBytes } = compileUnsignedTransaction({
         feePayer: terms.feePayer,
         lifetime: SIZE_PROBE_LIFETIME,
@@ -618,14 +674,8 @@ describe("relay message check", () => {
           {
             ...instruction(),
             data: ringInstructionData({
-              ...frame,
+              ...publishedFrame,
               ...(replies === undefined ? {} : { replies }),
-              outputs: frame.outputs.map((output, slot) => {
-                const opening = published.find((open) => open.slot === slot);
-                return opening === undefined
-                  ? output
-                  : { ...output, hash: openingHash(opening, terms.ring) };
-              }),
             }),
           },
         ],
@@ -633,8 +683,8 @@ describe("relay message check", () => {
       });
       return verdict(
         await expectedPublicOwner({
-          terms: named,
-          config: vectorRingPolicy(owners),
+          terms: { ...named, externalDataHash },
+          config,
           knownNotes: entry.knownNullifiers.map((nullifier) => ({
             nullifier: new Uint8Array(base58.encode(nullifier)) as Bytes32,
           })),
@@ -653,7 +703,7 @@ describe("relay message check", () => {
       expect(await verdictWith(opened)).toBe("Accepted");
     });
 
-    it("moves no verdict on a reply that claims another sender", async () => {
+    it("refuses a reply outside the sealed delivery", async () => {
       const frame = RingTransactData.parse(
         Uint8Array.from(instruction().data ?? []).subarray(1),
         "anonymous",
@@ -681,7 +731,7 @@ describe("relay message check", () => {
       );
       expect(bodies.length).toBeGreaterThan(0);
       expect(carried.replies?.region).toEqual(replies.region);
-      expect(await verdictWith(opened, [dataOpening], replies)).toBe("Accepted");
+      expect(await verdictWith(opened, [dataOpening], replies)).toBe("Data");
       expect(await verdictWith(ordinary, [dataOpening], replies)).toBe("Recipients");
     });
 
@@ -758,9 +808,9 @@ describe("relay message check", () => {
         ],
         computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
       });
-      const naming = (legs: readonly PublicLeg[]) =>
+      const naming = (legs: readonly PublicLeg[], externalDataHash = terms.externalDataHash) =>
         expectedPublicOwner({
-          terms: { ...terms, legs },
+          terms: { ...terms, legs, externalDataHash },
           config: vectorRingPolicy(owners),
           knownNotes: entry.knownNullifiers.map((nullifier) => ({
             nullifier: new Uint8Array(base58.encode(nullifier)) as Bytes32,
@@ -795,6 +845,14 @@ describe("relay message check", () => {
                 { address: encodeBase58(new Uint8Array(32).fill(56)), role: AccountRole.WRITABLE },
                 { address: encodeBase58(new Uint8Array(32).fill(57)), role: AccountRole.READONLY },
               ];
+        const withdrawnFrame = {
+          ...baseFrame,
+          interfaceTransfers: [leg],
+          splWithdrawalOwners:
+            leg.kind === "splWithdrawal" && baseFrame.ownRevision !== undefined
+              ? [new Uint8Array(32).fill(58) as Bytes32]
+              : [],
+        };
         const withdrawn = compileUnsignedTransaction({
           feePayer: terms.feePayer,
           lifetime: SIZE_PROBE_LIFETIME,
@@ -802,14 +860,7 @@ describe("relay message check", () => {
             {
               ...baseIx,
               accounts: [...baseAccounts, ...extra],
-              data: ringInstructionData({
-                ...baseFrame,
-                interfaceTransfers: [leg],
-                splWithdrawalOwners:
-                  leg.kind === "splWithdrawal" && baseFrame.ownRevision !== undefined
-                    ? [new Uint8Array(32).fill(58) as Bytes32]
-                    : [],
-              }),
+              data: ringInstructionData(withdrawnFrame),
             },
           ],
           computeUnitLimit: ringComputeUnitLimit(RingInstructionTag.transfer),
@@ -837,9 +888,19 @@ describe("relay message check", () => {
         expect(
           verdict(await naming([withdrawal, withdrawal]), withdrawnMessage, terms.signer),
         ).toBe("Legs");
-        expect(verdict(await naming([withdrawal]), withdrawnMessage, terms.signer)).toBe(
-          "Accepted",
+        const externalDataHash = RingTransactData.externalDataHash(
+          withdrawnFrame,
+          { auditorPubkey: vectorRingPolicy(owners).auditorPublicKey.toBytes() },
+          [
+            {
+              asset: extra[leg.kind === "solWithdrawal" ? 0 : 1]!.address,
+              user: extra[leg.kind === "solWithdrawal" ? 1 : 3]!.address,
+            },
+          ],
         );
+        expect(
+          verdict(await naming([withdrawal], externalDataHash), withdrawnMessage, terms.signer),
+        ).toBe("Accepted");
       }
 
       const writablePrefix = compileUnsignedTransaction({
@@ -1093,6 +1154,11 @@ describe("relay message check", () => {
           ring: RING,
           feePayer: PAYER,
           signer: SIGNER,
+          externalDataHash: RingTransactData.externalDataHash(
+            funderFrame,
+            { auditorPubkey: POLICY.auditorPublicKey.toBytes() },
+            [{ asset: key(30), user: SIGNER }],
+          ),
           slots: funderFrame.outputs.map(({ hash, ownerTag }) => ({ hash, tag: ownerTag })),
           legs: [{ direction: "deposit", mint: null, amount: 5n, accounts: [key(30), SIGNER] }],
           setup: [setup],

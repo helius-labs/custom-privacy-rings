@@ -158,7 +158,7 @@ function encodeTokenAccountSetup(setup: readonly TokenAccountSetup[] | undefined
 
 /** Rust `RelayStep`. */
 export function decodeRelayStep(value: unknown): RelayStep {
-  const step = object(value, "$", ["step", "relayId", "message"])["step"];
+  const step = object(value, "$", ["step", "relayId", "message", "inputOpenings"])["step"];
   if (step === "submitted") {
     const row = object(value, "$", ["step", "relayId"]);
     return { step, relayId: checkedHash(row["relayId"], "relayId") };
@@ -169,6 +169,41 @@ export function decodeRelayStep(value: unknown): RelayStep {
       step,
       relayId: checkedHash(row["relayId"], "relayId"),
       message: checkedBase64(row["message"], "message"),
+    };
+  }
+  if (step === "signMintTransfer") {
+    const row = object(value, "$", ["step", "relayId", "message", "inputOpenings"]);
+    const openings = row["inputOpenings"];
+    if (!Array.isArray(openings) || openings.length === 0 || openings.length > 0xff)
+      return schemaFailure(
+        "INDEXER_SCHEMA_INVALID_TYPE",
+        "inputOpenings",
+        "a nonempty input list",
+        openings,
+      );
+    return {
+      step,
+      relayId: checkedHash(row["relayId"], "relayId"),
+      message: checkedBase64(row["message"], "message"),
+      inputOpenings: openings.map((input, index) => {
+        const path = `inputOpenings[${index}]`;
+        const opening = object(input, path, [
+          "sourceIndex",
+          "treeId",
+          "amount",
+          "blinding",
+          "ringDataHash",
+        ]);
+        return {
+          sourceIndex: schemaWire.count(opening["sourceIndex"], `${path}.sourceIndex`, 0xffff),
+          treeId: schemaWire.count(opening["treeId"], `${path}.treeId`, 0xffff),
+          amount: schemaWire.u64(opening["amount"], `${path}.amount`),
+          blinding: schemaWire.hash(opening["blinding"], `${path}.blinding`),
+          ...(opening["ringDataHash"] === undefined
+            ? {}
+            : { ringDataHash: schemaWire.hash(opening["ringDataHash"], `${path}.ringDataHash`) }),
+        };
+      }),
     };
   }
   return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", "step", "a relay step", step);

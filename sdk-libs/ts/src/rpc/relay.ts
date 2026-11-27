@@ -200,6 +200,13 @@ export class PreparedAuthorityTransfer {
   async send(relay: RingAuthorityRelayClient, context?: RequestContext): Promise<RelaySent> {
     const expected = await expectedDelegate(this.#requested);
     const step = await relay.prepareAuthorityTransfer(this.request, context);
+    if (step.step === "signMintTransfer" && expected.mint !== undefined) {
+      return accepted({
+        step: { ...step, step: "signMessage" },
+        relayId: this.relayId(),
+        expected: { ...expected, inputOpenings: step.inputOpenings },
+      });
+    }
     return accepted({ step, relayId: this.relayId(), expected });
   }
 }
@@ -215,6 +222,7 @@ function accepted({
 }>): RelaySent {
   if (step.relayId !== relayId) throw new RingError("RING_RELAY_ID_MISMATCH");
   if (step.step === "submitted") return Object.freeze({ step: "submitted", relayId });
+  if (step.step === "signMintTransfer") throw mismatch("Unrequested");
   return new PendingRelaySignature(relayId, base64.encode(step.message) as Uint8Array, expected);
 }
 

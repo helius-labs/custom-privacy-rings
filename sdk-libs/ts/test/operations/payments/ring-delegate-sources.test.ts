@@ -247,7 +247,9 @@ describe("delegate sources", () => {
       });
       const recordsOnly = await expectedDelegate({ ...asked, mint: SOL_MINT });
       const message = messageOf(fixture, instruction);
-      expect(checkRelayMessage(recordsOnly, message, delegate as never).signer).toBe(delegate);
+      expect(() => checkRelayMessage(recordsOnly, message, delegate as never)).toThrow(
+        expect.objectContaining({ details: { mismatch: "Accounts" } }),
+      );
     });
 
     it.each([

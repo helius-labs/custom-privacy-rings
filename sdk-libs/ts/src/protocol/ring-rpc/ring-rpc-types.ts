@@ -94,7 +94,21 @@ export interface PrepareRelayRequest {
 /** Rust `RelayStep`, `message` the v1 message the wallet signs for `submitRelay`. */
 export type RelayStep =
   | Readonly<{ step: "submitted"; relayId: Hash }>
-  | Readonly<{ step: "signMessage"; relayId: Hash; message: Base64String }>;
+  | Readonly<{ step: "signMessage"; relayId: Hash; message: Base64String }>
+  | Readonly<{
+      step: "signMintTransfer";
+      relayId: Hash;
+      message: Base64String;
+      inputOpenings: readonly MintInputOpening[];
+    }>;
+
+export interface MintInputOpening {
+  readonly sourceIndex: number;
+  readonly treeId: number;
+  readonly amount: bigint;
+  readonly blinding: Bytes32;
+  readonly ringDataHash?: Bytes32;
+}
 
 /** Rust `SubmitRelayRequest`. */
 export interface SubmitRelayRequest {
@@ -347,7 +361,6 @@ export interface GetListSaltRequest {
   readonly signature: Signature;
 }
 
-/** Rust `PrepareAuthorityTransferRequest`, answered with a `signMessage` step until the delegate signs. */
 export interface PrepareAuthorityTransferRequest {
   readonly ring: Address;
   readonly delegate: Address;

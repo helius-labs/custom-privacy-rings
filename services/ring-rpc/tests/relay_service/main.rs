@@ -672,7 +672,9 @@ fn funded_transfer(fixture: &Fixture, quote: RelayQuote, amount: u64) -> Prepare
 
 impl Fixture {
     async fn status(&self, step: RelayStep) -> RelayStatus {
-        let (RelayStep::Submitted { relay_id } | RelayStep::SignMessage { relay_id, .. }) = step;
+        let (RelayStep::Submitted { relay_id }
+        | RelayStep::SignMessage { relay_id, .. }
+        | RelayStep::SignMintTransfer { relay_id, .. }) = step;
         self.call(GET_RELAY_STATUS, GetRelayStatusRequest { relay_id })
             .await
     }

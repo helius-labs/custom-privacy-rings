@@ -21,6 +21,7 @@ import {
 } from "../../protocol/pda/index.js";
 import type {
   AuthorityWithdrawal,
+  MintInputOpening,
   PrepareAuthorityTransferRequest,
   RelayQuote,
 } from "../../protocol/ring-rpc/ring-rpc-types.js";
@@ -137,9 +138,13 @@ export class SourceSpends {
   }
 
   /** @internal */
-  debit(source: SpendSource, mint: Address, amount: bigint): void {
+  credit(source: SpendSource, mint: Address, amount: bigint): void {
     const spend = spendKey(source, mint);
-    this.#left.set(spend, (this.#left.get(spend) ?? 0n) - amount);
+    this.#left.set(spend, (this.#left.get(spend) ?? 0n) + amount);
+  }
+
+  debit(source: SpendSource, mint: Address, amount: bigint): void {
+    this.credit(source, mint, -amount);
   }
 
   /** @internal A source's change in a mint is at most what the frame spends of it there. */
@@ -194,6 +199,8 @@ export interface ExpectedDelegate {
   readonly withdrawals: readonly PublicLeg[];
   /** Every note of each requested source, undefined for a mint's permanent delegate. */
   readonly allowed: AllowedNullifiers | undefined;
+  readonly mint?: Address;
+  readonly inputOpenings?: readonly MintInputOpening[];
   readonly outputTreeId: number;
 }
 
@@ -202,6 +209,7 @@ export interface RelayTransferTerms {
   readonly ring: Address;
   readonly feePayer: Address;
   readonly signer: Address;
+  readonly externalDataHash: Bytes32;
   /** One per published slot in slot order, each rebuilds its slot's commitment. */
   readonly slots: readonly SlotOpening[];
   /** The signer's notes the transfer spends. */
@@ -217,6 +225,7 @@ export interface RelayFunderTerms {
   readonly ring: Address;
   readonly feePayer: Address;
   readonly signer: Address;
+  readonly externalDataHash: Bytes32;
   /** One per published slot in slot order. */
   readonly slots: readonly SlotCommitment[];
   /** Every leg of the frame in frame order. */
@@ -431,6 +440,7 @@ export async function expectedDelegate(
     ),
     withdrawals: Object.freeze(await Promise.all(transfer.withdrawals.map(expectedWithdrawal))),
     allowed,
+    ...defined({ mint: requested.mint }),
     outputTreeId,
   });
 }

@@ -52,7 +52,6 @@ pub struct PreparedRelay {
 pub enum DelegateRequester {
     /// Every note of each requested source, a note Ring RPC selects outside it is refused.
     Ring(AllowedNullifiers),
-    /// The one mint of every leg, its permanent delegate opens no source.
     Mint(Address),
 }
 
@@ -165,7 +164,19 @@ impl PreparedAuthorityTransfer {
     pub async fn send<R: RingRelay + ?Sized>(self, relay: &R) -> Result<RelaySent, RingError> {
         let relay_id = self.relay_id()?;
         let step = relay.prepare_authority_transfer(self.request).await?;
-        let expected = ExpectedMessage::Delegate(self.expected);
+        let mut expected = self.expected;
+        let step = match step {
+            RelayStep::SignMintTransfer {
+                relay_id,
+                message,
+                input_openings,
+            } if matches!(expected.requester, DelegateRequester::Mint(_)) => {
+                expected.input_openings = input_openings;
+                RelayStep::SignMessage { relay_id, message }
+            }
+            step => step,
+        };
+        let expected = ExpectedMessage::Delegate(expected);
         Ok(RelaySent::accepted(step, &relay_id)?.expecting(Some(expected)))
     }
 }
@@ -173,6 +184,7 @@ impl PreparedAuthorityTransfer {
 impl RelaySent {
     fn accepted(step: RelayStep, expected: &RelayId) -> Result<Self, RingError> {
         let sent = match step {
+            RelayStep::SignMintTransfer { .. } => return Err(MessageMismatch::Unrequested.into()),
             RelayStep::Submitted { relay_id } => Self::Submitted(relay_id),
             RelayStep::SignMessage { relay_id, message } => Self::SignMessage(PendingSignature {
                 relay_id,

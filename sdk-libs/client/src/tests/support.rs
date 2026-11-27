@@ -140,6 +140,31 @@ pub(crate) fn wallet(utxo: Utxo, key: &NullifierKey, tree_id: u16, leaf_index: u
     }
 }
 
+pub(crate) fn permanent_delegate_mint(issuer: Address) -> Account {
+    use spl_token_2022_interface::{
+        extension::{
+            permanent_delegate::PermanentDelegate, BaseStateWithExtensionsMut, ExtensionType,
+            PodStateWithExtensionsMut,
+        },
+        pod::PodMint,
+    };
+    let extensions = [ExtensionType::PermanentDelegate];
+    let mut data =
+        vec![0; ExtensionType::try_calculate_account_len::<PodMint>(&extensions).unwrap()];
+    let mut state = PodStateWithExtensionsMut::<PodMint>::unpack_uninitialized(&mut data).unwrap();
+    state
+        .init_extension::<PermanentDelegate>(false)
+        .unwrap()
+        .delegate = Some(issuer.to_bytes().into()).try_into().unwrap();
+    state.base.is_initialized = true.into();
+    state.init_account_type().unwrap();
+    Account {
+        owner: Address::new_from_array(spr_interface::SPL_TOKEN_2022_PROGRAM_ID),
+        data,
+        ..Default::default()
+    }
+}
+
 pub(crate) fn ring_utxo(
     owner: &ShieldedKeypair,
     asset: Mint,

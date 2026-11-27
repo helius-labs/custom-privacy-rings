@@ -29,7 +29,8 @@ import type { Address, Bytes32, RequestContext, Transaction } from "@heliuslabs/
 import {
   NullifierKey,
   ShieldedAddress,
-  ShieldedKeypair,
+  SigningKey,
+  ViewingKey,
   type Bytes31,
 } from "@heliuslabs/spr/keypair";
 import {
@@ -159,9 +160,7 @@ export class PreparedRingDeposit {
   readonly #asset: Address;
   readonly #amount: bigint;
   readonly #rail: DepositRail;
-  /** The fresh sender's, Ring RPC proves a relayed frame with it. */
-  readonly #nullifierKey: NullifierKey;
-  #proved = false;
+  #sender: DepositSender | undefined;
 
   private constructor(
     fields: Readonly<{
@@ -170,7 +169,7 @@ export class PreparedRingDeposit {
       asset: Address;
       amount: bigint;
       rail: DepositRail;
-      nullifierKey: NullifierKey;
+      sender: DepositSender;
     }>,
   ) {
     this.#ringProgramId = fields.ringProgramId;
@@ -178,7 +177,7 @@ export class PreparedRingDeposit {
     this.#asset = fields.asset;
     this.#amount = fields.amount;
     this.#rail = fields.rail;
-    this.#nullifierKey = fields.nullifierKey;
+    this.#sender = fields.sender;
   }
 
   /** Builds the frame against the ring's mode, nothing is proven. */
@@ -211,6 +210,7 @@ export class PreparedRingDeposit {
     context?: RequestContext,
   ): Promise<PreparedRingDepositRelay> {
     let payload: Uint8Array | undefined;
+    let sender: DepositSender | undefined;
     try {
       if (params.depositorSigner.address !== signerAddress(params.depositor))
         throw mismatch("Signer");
@@ -219,6 +219,7 @@ export class PreparedRingDeposit {
         { ...params, feePayer: quote.feePayer },
         context,
       );
+      sender = prepared.#takeSender();
       const intent = prepared.intent();
       const approval = await (params.approve ?? approveUnattended)({
         solanaPublicKey: signerAddress(params.depositor),
@@ -228,7 +229,7 @@ export class PreparedRingDeposit {
       checkIntentApproval(approval, intent, ringIntentMismatch);
       const frame = await prepared.#rail.depositRelay(
         params.client,
-        { quote, nullifierKey: prepared.#nullifierKey },
+        { quote, nullifierKey: sender.nullifierKey },
         context,
       );
       payload = frame.payload;
@@ -257,6 +258,7 @@ export class PreparedRingDeposit {
     } catch (cause) {
       throw wrapRingError("RING_BUILD_DEPOSIT", cause);
     } finally {
+      sender?.destroy();
       payload?.fill(0);
     }
   }
@@ -278,9 +280,20 @@ export class PreparedRingDeposit {
 
   /** @internal A second proof is refused, a retry prepares a new frame. */
   proveTransfer(client: RingDepositClient, context?: RequestContext): Promise<ProvenRingTransfer> {
-    if (this.#proved) throw new RingError("RING_DEPOSIT_FRAME_REUSED");
-    this.#proved = true;
-    return this.#rail.prove(client, context);
+    const sender = this.#takeSender();
+    return this.#rail.prove(client, context).finally(sender.destroy);
+  }
+
+  destroy(): void {
+    this.#sender?.destroy();
+    this.#sender = undefined;
+  }
+
+  #takeSender(): DepositSender {
+    const sender = this.#sender;
+    if (sender === undefined) throw new RingError("RING_DEPOSIT_FRAME_REUSED");
+    this.#sender = undefined;
+    return sender;
   }
 
   /** @internal */
@@ -326,16 +339,6 @@ export class PreparedRingDeposit {
         funder,
         ...(params.coSigners ?? []),
       ]);
-    // 1. The sender spends nothing and seeds the transaction key. Its zero key keeps the anonymous
-    //    rail's zero change out of the tracking rows a keyed owner needs.
-    const fresh = ShieldedKeypair.generate();
-    const nullifierKey = NullifierKey.fromSecret(new Uint8Array(31) as Bytes31);
-    const sender = ShieldedAddress.fromPublicKeys(
-      fresh.signingPublicKey(),
-      nullifierKey.publicKey(),
-      fresh.viewingKey().publicKey(),
-    );
-    const transfer = ConfidentialTransfer.newDeposit(sender, outputTree.treeId, params.feePayer);
     // 2. One public leg funds the output, the funder signs the leg's accounts.
     let deposit: TransactDeposit;
     let source: DepositSource;
@@ -355,44 +358,81 @@ export class PreparedRingDeposit {
         tokenProgram,
       };
     }
-    transfer.deposit(asset, params.amount, source);
-    const input: CustomRingTransferInput = {
-      ringProgramId,
-      keys: LocalKeys.fromKeys(
-        { address: sender, viewingKeys: [fresh.viewingKey()], nullifierKey },
-        client.proofService,
-      ),
-      transfer,
-      assets: await depositAssets(client, asset, context),
-      deposits: [deposit],
-      listSalts: paid.listSalts,
-      ...defined({ coSigners: params.coSigners }),
-    };
-    // 3. A confidential ring delivers to the recipient's tag, an anonymous ring pays a plan slot on
-    //    the public owner rail, whose empty owner run the payer authorizes.
-    let rail: DepositRail;
-    if (paid.payee === undefined) {
-      transfer.send(paid.address, asset, params.amount);
-      rail = CustomRingTransfer.new(input);
-    } else {
-      const { tags } = params;
-      const payment = { ...paid.payee, asset, amount: params.amount, reply: null };
-      const named = CustomRingTransfer.new(input).spendPublic(sender.solanaAddress());
-      rail = (tags === undefined ? named : named.withTags(tags)).withPayment(payment);
-      // A deposit publishes its funder, a bootstrap tag beside it would name the recipient.
-      const tag = paymentTag(payment, tags);
-      const bootstrap = bootstrapSlotTag(payment.to.recipient.viewingPublicKey.u());
-      if (tag === undefined || equalBytes(slotTag(tag), bootstrap))
-        throw new RingError("RING_DEPOSIT_BOOTSTRAP_TAG");
+    const assets = await depositAssets(client, asset, context);
+    const sender = depositSender(client.proofService);
+    try {
+      const address = sender.keys.address();
+      const transfer = ConfidentialTransfer.newDeposit(address, outputTree.treeId, params.feePayer);
+      transfer.deposit(asset, params.amount, source);
+      const input: CustomRingTransferInput = {
+        ringProgramId,
+        keys: sender.keys,
+        transfer,
+        assets,
+        deposits: [deposit],
+        listSalts: paid.listSalts,
+        ...defined({ coSigners: params.coSigners }),
+      };
+      // 3. A confidential ring delivers to the recipient's tag, an anonymous ring pays a plan slot on
+      //    the public owner rail, whose empty owner run the payer authorizes.
+      let rail: DepositRail;
+      if (paid.payee === undefined) {
+        transfer.send(paid.address, asset, params.amount);
+        rail = CustomRingTransfer.new(input);
+      } else {
+        const { tags } = params;
+        const payment = { ...paid.payee, asset, amount: params.amount, reply: null };
+        const named = CustomRingTransfer.new(input).spendPublic(address.solanaAddress());
+        rail = (tags === undefined ? named : named.withTags(tags)).withPayment(payment);
+        // A deposit publishes its funder, a bootstrap tag beside it would name the recipient.
+        const tag = paymentTag(payment, tags);
+        const bootstrap = bootstrapSlotTag(payment.to.recipient.viewingPublicKey.u());
+        if (tag === undefined || equalBytes(slotTag(tag), bootstrap))
+          throw new RingError("RING_DEPOSIT_BOOTSTRAP_TAG");
+      }
+      return new PreparedRingDeposit({
+        ringProgramId,
+        recipient: paid.address,
+        asset,
+        amount: params.amount,
+        rail,
+        sender,
+      });
+    } catch (cause) {
+      sender.destroy();
+      throw cause;
     }
-    return new PreparedRingDeposit({
-      ringProgramId,
-      recipient: paid.address,
-      asset,
-      amount: params.amount,
-      rail,
+  }
+}
+
+type DepositSender = ReturnType<typeof depositSender>;
+
+function depositSender(proofs: ProofService) {
+  const nullifierKey = NullifierKey.fromSecret(new Uint8Array(31) as Bytes31);
+  const signing = SigningKey.generate();
+  let viewing: ViewingKey | undefined;
+  try {
+    viewing = ViewingKey.generate();
+    const address = ShieldedAddress.fromPublicKeys(
+      signing.publicKey(),
+      nullifierKey.publicKey(),
+      viewing.publicKey(),
+    );
+    const keys = LocalKeys.fromKeys({ address, viewingKeys: [viewing], nullifierKey }, proofs);
+    return {
+      keys,
       nullifierKey,
-    });
+      destroy: () => {
+        keys.destroy();
+        nullifierKey.destroy();
+      },
+    };
+  } catch (cause) {
+    nullifierKey.destroy();
+    throw cause;
+  } finally {
+    viewing?.destroy();
+    signing.destroy();
   }
 }
 

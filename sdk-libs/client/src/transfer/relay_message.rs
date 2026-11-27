@@ -33,12 +33,12 @@ use zolana_ring_transaction::{open_recipient_body, record_key};
 
 use crate::{
     compute_unit_limit,
-    delegate_source::{SourceMint, SourceSpends},
+    delegate_source::{MintInputCheck, SourceMint},
     located_layout,
     pipeline::refused_delegate,
     rpc::{AuthorityWithdrawal, RelayId, TxViewingSecret},
     sole_mint, AuditEnvelope, CoSignerPairs, CustomRing, CustomRingConfig, DelegateRequester,
-    OpenedAudit, PendingSignature, RequestedAuthorityTransfer, RingError,
+    OpenedAudit, PendingSignature, RequestedAuthorityTransfer, RingError, Settlement, SppExpansion,
 };
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -111,6 +111,7 @@ pub struct RelayTransferTerms {
     pub ring: SerializablePubkey,
     pub fee_payer: SerializablePubkey,
     pub signer: SerializablePubkey,
+    pub external_data_hash: Hash,
     /// One per published slot in slot order, each rebuilds its slot's commitment.
     pub slots: Vec<SlotOpening>,
     /// The signer's notes the transfer spends.
@@ -128,6 +129,7 @@ pub struct RelayFunderTerms {
     pub ring: SerializablePubkey,
     pub fee_payer: SerializablePubkey,
     pub signer: SerializablePubkey,
+    pub external_data_hash: Hash,
     /// One per published slot in slot order.
     pub slots: Vec<SlotCommitment>,
     /// Every interface transfer leg of the frame in frame order.
@@ -340,6 +342,7 @@ pub(crate) struct ExpectedDelegate {
     pub payments: Vec<ExpectedPayment>,
     pub withdrawals: Vec<PublicLeg>,
     pub requester: DelegateRequester,
+    pub(crate) input_openings: Vec<crate::rpc::MintInputOpening>,
     pub output_tree_id: u16,
 }
 
@@ -426,6 +429,8 @@ impl ExpectedMessage {
 
 /// The frame's account list cut by the one layout the program reads it with.
 struct DecodedTransfer<'a> {
+    frame: &'a ParsedTransact<'a>,
+    policy: &'a RingPolicy,
     accounts: &'a [AccountMeta],
     layout: TransferLayout,
     legs: Vec<SettlementLeg>,
@@ -434,10 +439,11 @@ struct DecodedTransfer<'a> {
 impl<'a> DecodedTransfer<'a> {
     fn decode(
         ring: CustomRing,
-        policy: &RingPolicy,
-        data: &RingTransactData<'_>,
+        policy: &'a RingPolicy,
+        frame: &'a ParsedTransact<'a>,
         accounts: &'a [AccountMeta],
     ) -> Result<Self, MessageMismatch> {
+        let data = frame.data();
         let layout = located_layout(
             data,
             policy,
@@ -446,6 +452,8 @@ impl<'a> DecodedTransfer<'a> {
         )
         .map_err(|_| MessageMismatch::Accounts)?;
         Ok(Self {
+            frame,
+            policy,
             accounts,
             legs: layout.legs(&data.interface_transfers).collect(),
             layout,
@@ -454,6 +462,30 @@ impl<'a> DecodedTransfer<'a> {
 
     fn key(&self, index: usize) -> Option<Address> {
         self.accounts.get(index).map(|meta| meta.pubkey)
+    }
+
+    fn check_external_data(&self, expected: &Hash) -> Result<(), MessageMismatch> {
+        let settlements = self
+            .legs
+            .iter()
+            .map(|leg| {
+                let [asset, user] = leg
+                    .asset_and_user(self.accounts)
+                    .ok_or(MessageMismatch::Accounts)?;
+                Ok(Settlement {
+                    asset_account: asset.pubkey.as_array(),
+                    user_account: user.pubkey.as_array(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let hash = self
+            .frame
+            .data()
+            .external_data_hash(self.policy, &settlements)
+            .map_err(|_| MessageMismatch::Data)?;
+        (hash == expected.0)
+            .then_some(())
+            .ok_or(MessageMismatch::Data)
     }
 
     fn group(&self, leg: &SettlementLeg) -> &'a [AccountMeta] {
@@ -561,7 +593,6 @@ trait ExpectedFrame {
     fn check_frame(
         &self,
         envelope: &Envelope,
-        parsed: &ParsedTransact<'_>,
         decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch>;
 }
@@ -582,10 +613,10 @@ fn check_message<E: ExpectedFrame>(
     let decoded = DecodedTransfer::decode(
         envelope.ring,
         expected.policy(),
-        parsed.data(),
+        &parsed,
         &instruction.accounts,
     )?;
-    expected.check_frame(&envelope, &parsed, &decoded)?;
+    expected.check_frame(&envelope, &decoded)?;
     Ok(envelope.verified(message))
 }
 
@@ -763,6 +794,7 @@ impl ExpectedDelegate {
                 .map(withdrawal_leg)
                 .collect::<Result<_, _>>()?,
             requester: requester.clone(),
+            input_openings: Vec::new(),
             output_tree_id: *output_tree_id,
         })
     }
@@ -806,17 +838,27 @@ impl ExpectedDelegate {
         }
         check_legs(&self.withdrawals, decoded, decoded.legs.iter())?;
         // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
+        let records = open_records(parsed, &self.tx_viewing_key, &opened)?;
         let mut spends = match &self.requester {
-            DelegateRequester::Ring(allowed) => Some(
-                allowed
-                    .check_spends(opened.real_inputs, data.nullifiers)
-                    .map_err(|_| MessageMismatch::SpendsUnrequestedNote)?,
-            ),
-            DelegateRequester::Mint(_) => None,
+            DelegateRequester::Ring(allowed) => allowed
+                .check_spends(opened.real_inputs, data.nullifiers)
+                .map_err(|_| MessageMismatch::SpendsUnrequestedNote)?,
+            DelegateRequester::Mint(mint) => {
+                if decoded.layout.mint.and_then(|index| decoded.key(index)) != Some(*mint) {
+                    return Err(MessageMismatch::Accounts);
+                }
+                MintInputCheck {
+                    expected: self,
+                    mint: *mint,
+                    frame: data,
+                    real_inputs: opened.real_inputs,
+                    records: &records,
+                }
+                .spends()?
+            }
         };
         // 3. Each live record pays one requested payment or returns change to a requested source,
         // sealed to that owner's viewing key.
-        let records = open_records(parsed, &self.tx_viewing_key, &opened)?;
         let anonymous = data.rail().anonymous_frame();
         // An anonymous frame publishes each tag once, a match returns every slot of the transaction.
         let published: Vec<ViewTag> = data
@@ -854,16 +896,14 @@ impl ExpectedDelegate {
                     record.kind == RecordKind::Ring && source.owns(&record) && sealed_to(source)
                 })
                 .ok_or(MessageMismatch::Recipients)?;
-            if let Some(spends) = &mut spends {
-                spends.debit(
-                    SourceMint {
-                        owner_key: source.owner_key,
-                        nullifier_pk: source.nullifier_pk,
-                        mint: record.mint,
-                    },
-                    record.amount,
-                );
-            }
+            spends.debit(
+                SourceMint {
+                    owner_key: source.owner_key,
+                    nullifier_pk: source.nullifier_pk,
+                    mint: record.mint,
+                },
+                record.amount,
+            );
             // An anonymous source's change publishes no tag of its own, a note that source spent finds it.
             if anonymous {
                 continue;
@@ -876,8 +916,7 @@ impl ExpectedDelegate {
         if !unpaid.is_empty() {
             return Err(MessageMismatch::Recipients);
         }
-        // 4. A mint's permanent delegate holds no notes to weigh the change against.
-        spends.as_ref().map_or(Ok(()), SourceSpends::check_change)
+        spends.check_change()
     }
 }
 
@@ -909,10 +948,9 @@ impl ExpectedFrame for ExpectedDelegate {
     fn check_frame(
         &self,
         envelope: &Envelope,
-        parsed: &ParsedTransact<'_>,
         decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
-        self.check_moved(parsed, decoded)?;
+        self.check_moved(decoded.frame, decoded)?;
         check_sole_signer(envelope, decoded, decoded.layout.delegate.into_iter())
     }
 }
@@ -1130,16 +1168,16 @@ impl ExpectedFrame for ExpectedPublicOwner {
     fn check_frame(
         &self,
         envelope: &Envelope,
-        parsed: &ParsedTransact<'_>,
         decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
-        self.check_moved(parsed.data(), decoded)?;
+        self.check_moved(decoded.frame.data(), decoded)?;
         let run = decoded
             .layout
             .owners
             .clone()
             .filter(|&index| decoded.key(index) == Some(envelope.signer));
-        check_sole_signer(envelope, decoded, run)
+        check_sole_signer(envelope, decoded, run)?;
+        decoded.check_external_data(&self.terms.external_data_hash)
     }
 }
 
@@ -1173,11 +1211,10 @@ impl ExpectedFrame for ExpectedFunder {
     fn check_frame(
         &self,
         envelope: &Envelope,
-        parsed: &ParsedTransact<'_>,
         decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
         let terms = &self.terms;
-        let outputs = &parsed.data().outputs;
+        let outputs = &decoded.frame.data().outputs;
         // 1. Each published output is the one the sealing wallet stated at its slot.
         if terms.slots.len() != outputs.len() {
             return Err(MessageMismatch::UnopenedOutput);
@@ -1206,7 +1243,8 @@ impl ExpectedFrame for ExpectedFunder {
             .collect();
         let slots: Vec<usize> = funded.iter().filter_map(|leg| leg.funder).collect();
         let sol_funded = funded.iter().any(|leg| !leg.transfer.is_spl());
-        check_signer(envelope, decoded, &slots, sol_funded)
+        check_signer(envelope, decoded, &slots, sol_funded)?;
+        decoded.check_external_data(&terms.external_data_hash)
     }
 }
 
@@ -1375,10 +1413,9 @@ impl ExpectedFrame for ExpectedCoSigner {
     fn check_frame(
         &self,
         envelope: &Envelope,
-        parsed: &ParsedTransact<'_>,
         decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
-        let data = parsed.data();
+        let data = decoded.frame.data();
         match &self.rule {
             CoSignerRule::Threshold { accepts } => {
                 if data.approval.bits() & !accepts.bits() != 0 {
@@ -1387,7 +1424,7 @@ impl ExpectedFrame for ExpectedCoSigner {
             }
             CoSignerRule::Exact(exact) => exact.check(
                 data.extensions.approval_totals,
-                parsed.audit_stream().capacity,
+                decoded.frame.audit_stream().capacity,
             )?,
         }
         // The key signs the pair of its own record, a slot beside another record approves for it.

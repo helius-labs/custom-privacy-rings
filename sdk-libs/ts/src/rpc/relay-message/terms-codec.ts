@@ -24,6 +24,7 @@ export function encodeRelayTransferTerms(terms: RelayTransferTerms): string {
     ring: terms.ring,
     feePayer: terms.feePayer,
     signer: terms.signer,
+    externalDataHash: encodeBase58(terms.externalDataHash),
     slots: terms.slots.map((opening) => ({
       slot: opening.slot,
       owner: opening.owner,
@@ -74,6 +75,7 @@ export function decodeRelayTransferTerms(json: string): RelayTransferTerms {
       "ring",
       "feePayer",
       "signer",
+      "externalDataHash",
       "slots",
       "nullifiers",
       "legs",
@@ -83,6 +85,7 @@ export function decodeRelayTransferTerms(json: string): RelayTransferTerms {
       ring: address(row["ring"] as string),
       feePayer: address(row["feePayer"] as string),
       signer: address(row["signer"] as string),
+      externalDataHash: scalar.hash(row["externalDataHash"], "externalDataHash"),
       slots: (row["slots"] as readonly unknown[]).map(decodeSlotOpening),
       nullifiers: (row["nullifiers"] as readonly unknown[]).map((nullifier) =>
         scalar.hash(nullifier, "nullifiers"),
@@ -99,6 +102,7 @@ export function encodeRelayFunderTerms(terms: RelayFunderTerms): string {
     ring: terms.ring,
     feePayer: terms.feePayer,
     signer: terms.signer,
+    externalDataHash: encodeBase58(terms.externalDataHash),
     slots: terms.slots.map((slot) => ({
       hash: encodeBase58(slot.hash),
       ...(slot.tag === undefined ? {} : { tag: encodeBase58(slot.tag) }),
@@ -110,11 +114,20 @@ export function encodeRelayFunderTerms(terms: RelayFunderTerms): string {
 
 export function decodeRelayFunderTerms(json: string): RelayFunderTerms {
   return withMismatch("Undecodable", () => {
-    const row = fields(parseWire(json), ["ring", "feePayer", "signer", "slots", "legs", "setup"]);
+    const row = fields(parseWire(json), [
+      "ring",
+      "feePayer",
+      "signer",
+      "externalDataHash",
+      "slots",
+      "legs",
+      "setup",
+    ]);
     return Object.freeze({
       ring: address(row["ring"] as string),
       feePayer: address(row["feePayer"] as string),
       signer: address(row["signer"] as string),
+      externalDataHash: scalar.hash(row["externalDataHash"], "externalDataHash"),
       slots: (row["slots"] as readonly unknown[]).map(decodeSlotCommitment),
       legs: (row["legs"] as readonly unknown[]).map(decodeLeg),
       setup: (row["setup"] as readonly unknown[]).map(decodeTokenAccountCreate),

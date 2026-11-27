@@ -5,9 +5,10 @@ import {
   getBase64Encoder,
   type Address,
 } from "@solana/kit";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
+import { LocalKeys } from "@heliuslabs/spr/client";
 import type { Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 import { ShieldedKeypair, SigningKey } from "@heliuslabs/spr/keypair";
 import { AssetRegistry, SOL_MINT } from "@heliuslabs/spr/transaction";
@@ -91,6 +92,44 @@ describe("ring deposit", () => {
       causeCode: "RING_DEPOSIT_FRAME_REUSED",
     });
   });
+
+  it.each(["prove", "cancel", "failed proof"])(
+    "releases the deposit sender after %s",
+    async (path) => {
+      const fixture = await ringFixture();
+      const recipient = ShieldedKeypair.generate();
+      fixture.enroll(recipient.shieldedAddress());
+      const client = depositClient(fixture);
+      const copies = vi.spyOn(LocalKeys, "fromKeys");
+      onTestFinished(() => copies.mockRestore());
+      const prepared = await PreparedRingDeposit.prepare({
+        client,
+        ringProgramId: fixture.ringProgramId,
+        feePayer: fixture.authority,
+        recipient: { kind: "confidential", address: recipient.shieldedAddress() },
+        amount: 3n,
+      });
+      const input = copies.mock.lastCall![0];
+      const local = copies.mock.results.at(-1)!.value as LocalKeys;
+      expect(() => input.viewingKeys[0]!.publicKey()).toThrow();
+      expect(local.viewingPublicKeys()).toHaveLength(1);
+      if (path === "cancel") {
+        prepared.destroy();
+      } else if (path === "failed proof") {
+        await expect(
+          prepared.prove({ ...client, getAccount: async () => undefined }),
+        ).rejects.toThrow();
+      } else {
+        await prepared.prove(client);
+      }
+      expect(() => input.nullifierKey.publicKey()).toThrow();
+      expect(() => local.viewingPublicKeys()).toThrow();
+      await expect(prepared.prove(client)).rejects.toMatchObject({
+        causeCode: "RING_DEPOSIT_FRAME_REUSED",
+      });
+      expect(recipient.viewingPublicKey()).toEqual(recipient.shieldedAddress().viewingPublicKey);
+    },
+  );
 
   it("refuses a client that assembles proof data itself before any proof", async () => {
     const fixture = await ringFixture();
@@ -247,7 +286,9 @@ describe("ring deposit", () => {
     expect(anonymous.sppCalls).toEqual([]);
   });
 
-  it("relays a deposit on the deposit rail under the funder's request text and refuses a funding fee payer", async () => {
+  it("relays a deposit on the deposit rail under the funder's request text and refuses a funding fee payer", async ({
+    onTestFinished,
+  }) => {
     const fixture = await ringFixture({ mode: "anonymous" });
     const owner = ShieldedKeypair.generate();
     fixture.enroll(owner.shieldedAddress());
@@ -271,6 +312,8 @@ describe("ring deposit", () => {
         service: getBase58Decoder().decode(new Uint8Array(32).fill(2)) as Address,
       },
     };
+    const copies = vi.spyOn(LocalKeys, "fromKeys");
+    onTestFinished(() => copies.mockRestore());
     const { relay } = await PreparedRingDeposit.prepareRelay({
       ...params,
       quote: { feePayer: fixture.authority, validUntilSlot: 100n },
@@ -319,5 +362,9 @@ describe("ring deposit", () => {
         quote: { feePayer: funder, validUntilSlot: 100n },
       }),
     ).rejects.toMatchObject({ causeCode: "RING_RELAY_FEE_PAYER_FUNDS_DEPOSIT" });
+    expect(copies).toHaveBeenCalledTimes(2);
+    for (const { value } of copies.mock.results) {
+      expect(() => (value as LocalKeys).viewingPublicKeys()).toThrow();
+    }
   });
 });

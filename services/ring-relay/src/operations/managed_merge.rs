@@ -383,6 +383,7 @@ pub(crate) mod tests {
 
     pub(crate) struct EscrowRingSource {
         config: RingConfiguration,
+        pub(crate) mint_delegate: Mutex<Option<Address>>,
         /// Zero until a test commits one.
         pub(crate) ring_list_tag: Mutex<[u8; 32]>,
         pub(crate) origins: Mutex<HashMap<Signature, RingOrigin>>,
@@ -399,7 +400,7 @@ pub(crate) mod tests {
             mint: Address,
             signer: Address,
         ) -> Result<bool, ClientError> {
-            Ok(mint == MINT && signer == mint_delegate().pubkey())
+            Ok(mint == MINT && *self.mint_delegate.lock().unwrap() == Some(signer))
         }
 
         async fn salted_list_writers(&self, _ring: Address) -> Result<Vec<Address>, ClientError> {
@@ -744,6 +745,7 @@ pub(crate) mod tests {
                         ..bytemuck::Zeroable::zeroed()
                     },
                 },
+                mint_delegate: Mutex::new(Some(mint_delegate().pubkey())),
                 ring_list_tag: Mutex::default(),
                 origins: Mutex::default(),
                 tracking: TrackingLedger::default(),
@@ -1182,6 +1184,7 @@ pub(crate) mod tests {
                     ..bytemuck::Zeroable::zeroed()
                 },
             },
+            mint_delegate: Mutex::new(Some(mint_delegate().pubkey())),
             ring_list_tag: Mutex::new([0; 32]),
             origins: Mutex::new(HashMap::new()),
             tracking: TrackingLedger::default(),

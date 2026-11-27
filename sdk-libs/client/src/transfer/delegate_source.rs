@@ -200,6 +200,103 @@ pub(crate) struct SourceMint {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SourceSpends(BTreeMap<SourceMint, i128>);
 
+pub(crate) struct MintInputCheck<'a> {
+    pub expected: &'a crate::relay_message::ExpectedDelegate,
+    pub mint: Address,
+    pub frame: &'a custom_ring_interface::RingTransactData<'a>,
+    pub real_inputs: u8,
+    pub records: &'a [(zolana_ring_keys::OutputRecord, spr_keypair::X25519Pubkey)],
+}
+
+impl MintInputCheck<'_> {
+    pub fn spends(self) -> Result<SourceSpends, MessageMismatch> {
+        use custom_ring_interface::RecordKind;
+        use spr_hasher::primitives::is_canonical_bn254_scalar_be;
+        use spr_keypair::PublicKey;
+        use spr_transaction::{
+            instructions::transact::PrivateTxHash, utxo::derive_private_tx_blinding, Mint, Utxo,
+        };
+
+        let refused = MessageMismatch::SpendsUnrequestedNote;
+        let openings = &self.expected.input_openings;
+        if self.real_inputs == 0
+            || usize::from(self.real_inputs) != openings.len()
+            || self.frame.outputs.len() != self.records.len()
+        {
+            return Err(refused);
+        }
+        let mut spends = SourceSpends::default();
+        let hashes = openings
+            .iter()
+            .map(|opening| {
+                let source = self
+                    .expected
+                    .sources
+                    .get(usize::from(opening.source_index))
+                    .ok_or(refused)?;
+                let ring_data_hash = opening
+                    .ring_data_hash
+                    .as_ref()
+                    .map_or([0; 32], |hash| hash.0);
+                if !is_canonical_bn254_scalar_be(&source.nullifier_pk)
+                    || !is_canonical_bn254_scalar_be(&opening.blinding.0)
+                    || !is_canonical_bn254_scalar_be(&ring_data_hash)
+                {
+                    return Err(refused);
+                }
+                let hash = Utxo {
+                    owner: PublicKey::from_ed25519(&source.owner_key),
+                    asset: Mint::new(self.mint, 0),
+                    amount: opening.amount,
+                    blinding: opening.blinding.0,
+                    ring_program_id: Some(self.expected.ring.program_id()),
+                    data: Default::default(),
+                }
+                .hash(
+                    &source.nullifier_pk,
+                    &[0; 32],
+                    &ring_data_hash,
+                    opening.tree_id,
+                )
+                .map_err(|_| refused)?;
+                spends.credit(
+                    SourceMint {
+                        owner_key: source.owner_key,
+                        nullifier_pk: source.nullifier_pk,
+                        mint: self.mint.to_bytes(),
+                    },
+                    opening.amount,
+                );
+                Ok(hash)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let outputs: Vec<_> = self
+            .frame
+            .outputs
+            .iter()
+            .zip(self.records)
+            .filter(|(_, (record, _))| record.kind != RecordKind::Dummy)
+            .map(|(output, _)| *output.hash)
+            .collect();
+        let key = self.expected.tx_viewing_key.key().map_err(|_| refused)?;
+        let seed = zeroize::Zeroizing::new(
+            zolana_ring_keys::ring_blinding_seed(&key.secret_bytes(), self.frame.salt)
+                .map_err(|_| refused)?,
+        );
+        let blinding = zeroize::Zeroizing::new(
+            derive_private_tx_blinding(self.frame.first_nullifier().map_err(|_| refused)?, &seed)
+                .map_err(|_| refused)?,
+        );
+        let hash = PrivateTxHash::new(&hashes, &outputs, &blinding)
+            .hash()
+            .map_err(|_| refused)?;
+        if hash != *self.frame.private_tx_hash {
+            return Err(refused);
+        }
+        Ok(spends)
+    }
+}
+
 impl AllowedNullifiers {
     /// Admits nothing of `source` when one of its openings fails.
     pub fn admit(
@@ -250,7 +347,7 @@ impl AllowedNullifiers {
         }
         let mut spends = SourceSpends::default();
         for note in admitted {
-            *spends.0.entry(note.held).or_default() += i128::from(note.amount);
+            spends.credit(note.held, note.amount);
         }
         Ok(spends)
     }
@@ -271,6 +368,10 @@ impl AllowedNote {
 }
 
 impl SourceSpends {
+    fn credit(&mut self, held: SourceMint, amount: u64) {
+        *self.0.entry(held).or_default() += i128::from(amount);
+    }
+
     pub(crate) fn debit(&mut self, held: SourceMint, amount: u64) {
         *self.0.entry(held).or_default() -= i128::from(amount);
     }

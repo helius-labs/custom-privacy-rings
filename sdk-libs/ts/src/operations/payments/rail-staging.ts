@@ -13,11 +13,7 @@ import type {
 } from "@heliuslabs/spr/interface";
 import { associatedTokenAddress, signerAddress } from "@heliuslabs/spr/internal";
 import type { NullifierKey, ShieldedAddress, X25519PublicKey } from "@heliuslabs/spr/keypair";
-import type {
-  ExpectedSealed,
-  RelayTransferTerms,
-  TokenAccountCreate,
-} from "../../rpc/relay-message.js";
+import type { ExpectedSealed, TokenAccountCreate } from "../../rpc/relay-message.js";
 import { randomBlinding, ShieldedPublicKey, ViewingKey } from "@heliuslabs/spr/keypair";
 import type { AssetRegistry, ProofInputUtxo, WalletUtxo } from "@heliuslabs/spr/transaction";
 import { SppProofInputs, type PreparedTransfer } from "@heliuslabs/spr/transaction";
@@ -25,7 +21,6 @@ import {
   encodeRelayProofInputs,
   relayLegs,
   type RelayProofInputs,
-  type RelayLegAccounts,
 } from "../../protocol/ring-rpc/relay-proof-inputs.js";
 import type {
   RelayIntent,
@@ -55,8 +50,7 @@ import { anonymousPartyIdentities } from "../../protocol/membership/parties.js";
 import {
   proveStagedTransfer,
   sealRelayedTransfer,
-  sealedFunderTerms,
-  sealedTransferTerms,
+  sealedRelayTerms,
   type SealedTransfer,
   type CoSignerForm,
   type ProvenRingTransfer,
@@ -237,11 +231,18 @@ export async function stageTransfer(
     rail.kind === "confidential" ? inProofOwnerKey(rail.inProofOwner, sender) : undefined;
   const prepared = current(owner).transfer.prepare();
   checkWithdrawalAccounts(prepared, withdrawal);
-  if (rail.kind !== "anonymous") checkDepositAccounts(prepared, owner.deposits);
+  checkDepositAccounts(prepared, owner.deposits);
   const hidden =
     rail.kind === "anonymous"
       ? await hiddenOwner({ rail, deposits: owner.deposits, client, sender, prepared }, context)
       : undefined;
+  if (
+    hidden !== undefined &&
+    owner.coSigners?.some((key) => equalBytes(addressBytes(key), hidden.owner))
+  )
+    throw new RingError("RING_CO_SIGNER_INVALID", {
+      details: { reason: "CoSignerIsOwner", code: RingProgramError.coSignerIsOwner },
+    });
   const payments = rail.kind === "confidential" ? [] : rail.payments;
   const tags = rail.kind === "confidential" ? undefined : rail.tags;
   if (anonymous && payments.some((payment) => isSmallOrder(payment.to.recipient.viewingPublicKey)))
@@ -296,7 +297,7 @@ export async function stageTransfer(
           rail: outputs,
           sender,
           ownerSigners,
-          ...(rail.kind === "anonymous" ? {} : stagedDeposits(owner)),
+          ...stagedDeposits(owner),
           ...defined({ withdrawal }),
           ...(rail.kind !== "confidential" || owner.withdrawalOwner === undefined
             ? {}
@@ -418,24 +419,14 @@ function stagedSpend(
       ? {
           rail: "anonymous",
           publicOwners: true,
-          anonymous: { partyIdentities: (coSigners) => anonymousPartyIdentities(coSigners) },
+          anonymous: { partyIdentities: anonymousPartyIdentities },
         }
       : { rail: "confidential" };
   return {
     rail: "anonymous",
     anonymous: {
       ...(hidden?.exitTokenOwner === undefined ? {} : { tokenOwner: hidden.exitTokenOwner }),
-      // A hidden co-signer approves its own outflow, no exposure waiver admits it.
-      partyIdentities: (coSigners: readonly Address[]) => {
-        if (
-          hidden !== undefined &&
-          coSigners.some((coSigner) => equalBytes(addressBytes(coSigner), hidden.owner))
-        )
-          throw new RingError("RING_CO_SIGNER_INVALID", {
-            details: { reason: "CoSignerIsOwner", code: RingProgramError.coSignerIsOwner },
-          });
-        return anonymousPartyIdentities(coSigners);
-      },
+      partyIdentities: anonymousPartyIdentities,
     },
   };
 }
@@ -601,12 +592,8 @@ type RelayFrame<Relayed> = Readonly<{
   sealRow?: SealRow;
   /** Refusals over the seal, ahead of its wire inputs. */
   deliver(sealed: SealedTransfer, stage: StagedRail): Promise<RelayDelivery<Relayed>>;
-}> &
-  (
-    | Readonly<{ kind: "spend" }>
-    /** The frame's sender proves nothing, each funder signs every output and leg of the frame. */
-    | Readonly<{ kind: "deposit"; funders: readonly Address[] }>
-  );
+  kind: "spend" | "deposit";
+}>;
 
 /**
  * A secret a staged transfer holds is destroyed on every exit, success or throw, the transaction
@@ -633,9 +620,6 @@ async function relayRail<Relayed>(
       throw new RingError("RING_RELAY_PAYER_MISMATCH", {
         details: { payer: prepared.payer, feePayer: quote.feePayer },
       });
-    // The fee payer signs whatever the relay sends, a leg naming it would fund the note from the relay.
-    if (frame.kind === "deposit" && frame.funders.includes(quote.feePayer))
-      throw new RingError("RING_RELAY_FEE_PAYER_FUNDS_DEPOSIT");
     const { rail, inProofOwner, publicOwners } = stage.spend;
     const sealed = sealRelayedTransfer({
       ringProgramId,
@@ -705,23 +689,23 @@ export async function relaySpend(
         ...defined({ sealRow: relay.sealRow }),
         deliver: async (sealed, { prepared, staged, approvalBlinder }) => {
           const { proofInputs } = sealed;
+          const terms = sealedRelayTerms({
+            ringProgramId,
+            feePayer: quote.feePayer,
+            sealed,
+            staged,
+            setup: await tokenAccountCreates(relay.tokenAccountSetup, staged.withdrawal),
+          });
           await approval?.approve({ prepared, proofInputs, coSigners: [] });
           const wire = {
             rail: spendWireRail(rail, staged.rail.delivery),
             leafIndexes: proofInputs.inputUtxos.map((spent) => leafIndexOf(spent, relay.notes)),
-            interfaceTransferAccounts: staged.withdrawal === undefined ? [] : [staged.withdrawal],
+            interfaceTransferAccounts: terms.interfaceTransferAccounts,
             coOwners,
             ...stagedBlinder(approvalBlinder),
           };
           const finish = async (payload: Uint8Array): Promise<UnsignedRelay> => {
             const coSigners = owner.coSigners ?? [];
-            const terms = sealedTransferTerms({
-              ringProgramId,
-              feePayer: quote.feePayer,
-              sealed,
-              staged,
-              setup: await tokenAccountCreates(relay.tokenAccountSetup, staged.withdrawal),
-            });
             return new UnsignedRelay({
               signer,
               messageHash: proofInputs.messageHash(),
@@ -772,8 +756,6 @@ export function relayDeposit(
   const { transfer, relay } = input;
   const { owner } = transfer;
   const { quote } = relay;
-  const deposits = owner.deposits ?? [];
-  const funders = [...new Set(deposits.map(({ funder }) => signerAddress(funder)))];
   return relayRail(
     {
       transfer,
@@ -782,29 +764,25 @@ export function relayDeposit(
         kind: "deposit",
         quote,
         nullifierKey: relay.nullifierKey,
-        funders,
         deliver: async (sealed, { staged }) => {
           const { proofInputs } = sealed;
           const plan = staged.rail.delivery;
           const legs = proofInputs.externalData.interfaceTransfers;
+          const terms = sealedRelayTerms({
+            ringProgramId: owner.ringProgramId,
+            feePayer: quote.feePayer,
+            sealed,
+            staged,
+            setup: [],
+          });
           const wire: RelayWire = {
             rail: { kind: "deposit", ...(plan.kind === "anonymous" ? { plan: plan.plan } : {}) },
             leafIndexes: proofInputs.inputUtxos.map(() => 0n),
-            interfaceTransferAccounts: deposits.map(relayLegAccounts),
+            interfaceTransferAccounts: terms.interfaceTransferAccounts,
             coOwners: [],
           };
           const finish = (payload: Uint8Array): DepositRelayFrame => {
-            const expected: ExpectedSealed = Object.freeze({
-              kind: "sealed",
-              terms: [],
-              funders: sealedFunderTerms({
-                ringProgramId: owner.ringProgramId,
-                feePayer: quote.feePayer,
-                sealed,
-                deposits,
-              }),
-              chargedOutflows: chargedOutflowsOf(proofInputs),
-            });
+            const expected = sealedExpectation(terms, undefined, sealed);
             // The caller owns the copy, the encoded bytes are wiped with the frame.
             return Object.freeze({ payload: payload.slice(), legs: relayLegs(legs), expected });
           };
@@ -844,13 +822,14 @@ function stagedBlinder(blinder: Bytes32 | undefined): Readonly<{ approvalBlinder
 
 /** The relay builds the frame, the sealing wallet hands the opening to its co-signer. */
 function sealedExpectation(
-  terms: readonly RelayTransferTerms[],
+  { terms, funders }: Pick<ReturnType<typeof sealedRelayTerms>, "terms" | "funders">,
   blinder: Bytes32 | undefined,
   sealed: Pick<SealedTransfer, "proofInputs" | "plan">,
 ): ExpectedSealed {
   return Object.freeze({
     kind: "sealed",
     terms,
+    funders,
     chargedOutflows: chargedOutflowsOf(sealed.proofInputs),
     ...(blinder === undefined
       ? {}
@@ -1007,20 +986,6 @@ function stagedDeposits(
   input: CustomRingTransferInput,
 ): Readonly<{ deposits?: readonly TransactDeposit[] }> {
   return input.deposits === undefined ? {} : { deposits: input.deposits };
-}
-
-/** The relay wire's account group of one deposit leg, a SOL leg names its funder. */
-function relayLegAccounts(deposit: TransactDeposit): RelayLegAccounts {
-  return deposit.kind === "sol"
-    ? { kind: "sol", recipient: signerAddress(deposit.funder) }
-    : {
-        kind: "splDeposit",
-        mint: deposit.mint,
-        splTokenInterface: deposit.splTokenInterface,
-        tokenAuthority: signerAddress(deposit.funder),
-        userTokenAccount: deposit.sourceTokenAccount,
-        tokenProgram: deposit.tokenProgram,
-      };
 }
 
 /** A padding slot names no leaf. */

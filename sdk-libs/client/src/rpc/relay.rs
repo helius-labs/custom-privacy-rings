@@ -158,6 +158,11 @@ pub enum RelayStep {
         relay_id: RelayId,
         message: Base64String,
     },
+    SignMintTransfer {
+        relay_id: RelayId,
+        message: Base64String,
+        input_openings: Vec<super::MintInputOpening>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

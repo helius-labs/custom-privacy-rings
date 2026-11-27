@@ -21,6 +21,7 @@ fn compute_vector() -> Value {
         ring: address(1),
         fee_payer: address(2),
         signer: address(3),
+        external_data_hash: Hash([23; 32]),
         slots: vec![SlotOpening {
             slot: 7,
             owner: address(3),

@@ -22,7 +22,7 @@ import {
   type PublicLeg,
   type RelayFunderTerms,
 } from "../../../src/rpc/relay-message.js";
-import type { RingTransactData } from "../../../src/protocol/transaction/transact.js";
+import { RingTransactData } from "../../../src/protocol/transaction/transact.js";
 import { ringPolicyData } from "../../helpers/ring-accounts.js";
 import { field, ringFrame, ringInstructionData } from "../../helpers/ring-frame.js";
 
@@ -53,6 +53,25 @@ const terms = (
   ring: RING,
   feePayer: PAYER,
   signer: FUNDER,
+  externalDataHash: RingTransactData.externalDataHash(
+    {
+      ...FRAME,
+      interfaceTransfers: legs.map(({ amount, mint, direction }) =>
+        mint === null
+          ? { kind: direction === "deposit" ? "solDeposit" : "solWithdrawal", amount }
+          : {
+              kind: direction === "deposit" ? "splDeposit" : "splWithdrawal",
+              amount,
+              splInterfaceBump: 255,
+            },
+      ),
+    },
+    { auditorPubkey: POLICY.auditorPublicKey.toBytes() },
+    legs.map(({ accounts, mint }) => ({
+      asset: mint ?? accounts[0]!,
+      user: accounts[mint === null ? 1 : 3]!,
+    })),
+  ),
   slots,
   legs,
   setup: [],
@@ -66,12 +85,14 @@ async function message(
     run?: readonly AccountMeta[];
     registry?: AccountMeta;
     outputs?: RingTransactData["outputs"];
+    recipientKeys?: Uint8Array;
   }>,
 ): Promise<Uint8Array> {
   const frame: RingTransactData = {
     ...FRAME,
     interfaceTransfers: input.transfers,
     outputs: input.outputs ?? FRAME.outputs,
+    recipientKeys: input.recipientKeys ?? FRAME.recipientKeys,
   };
   const spp = (at: number, role: AccountRole): AccountMeta => ({ address: key(at), role });
   const accounts: AccountMeta[] = [
@@ -133,6 +154,15 @@ describe("a public funder's check", () => {
       config: POLICY,
     }).pending();
     expect(pending.verify(FUNDER).signer).toBe(FUNDER);
+  });
+
+  it("refuses a different sealed recipient key for the same commitment", async () => {
+    const bytes = await message({
+      transfers: [solLeg(5n)],
+      groups: solGroup,
+      recipientKeys: FRAME.recipientKeys.map((byte) => byte ^ 1),
+    });
+    expect(await verdict(terms([sol(5n)]), bytes)).toBe("Data");
   });
 
   it("signs a sealed deposit frame through the funder's own terms and the returned message", async () => {
@@ -208,7 +238,9 @@ describe("a public funder's check", () => {
       { accounts: [key(34), FUNDER] },
       { accounts: [...sol(5n).accounts, key(34)] },
     ])
-      expect(await verdict(terms([{ ...sol(5n), ...changed }]), bytes)).toBe("Legs");
+      expect(
+        await verdict({ ...terms([sol(5n)]), legs: [{ ...sol(5n), ...changed }] }, bytes),
+      ).toBe("Legs");
   });
 
   it("refuses a leg another key funds, the frame holds no leg of the signer", async () => {
@@ -276,13 +308,18 @@ describe("a public funder's check", () => {
     const named = terms(
       [
         sol(5n),
-        { direction: "deposit", mint: MINT, amount: (1n << 60n) + 1n, accounts: [MINT, key(31)] },
+        {
+          direction: "deposit",
+          mint: MINT,
+          amount: (1n << 60n) + 1n,
+          accounts: [MINT, key(31), FUNDER, key(32), key(33)],
+        },
       ],
       [SLOTS[0] as RelayFunderTerms["slots"][number], { hash: field(91) }],
     );
     const text = encodeRelayFunderTerms(named);
     expect(text).toContain(
-      `"signer":"${FUNDER}","slots":[{"hash":"${encodeBase58(field(10))}","tag":"${encodeBase58(field(40))}"},{"hash":"${encodeBase58(field(91))}"}],"legs":`,
+      `"externalDataHash":"${encodeBase58(named.externalDataHash)}","slots":[{"hash":"${encodeBase58(field(10))}","tag":"${encodeBase58(field(40))}"},{"hash":"${encodeBase58(field(91))}"}],"legs":`,
     );
     expect(text).toContain(
       `{"direction":"deposit","mint":null,"amount":5,"accounts":["${key(30)}","${FUNDER}"]}`,
@@ -293,6 +330,7 @@ describe("a public funder's check", () => {
       named,
     );
     for (const [from, to] of [
+      ['"externalDataHash"', '"hash"'],
       ['"slots"', '"slats"'],
       ['{"hash"', '{"commitment"'],
       ['"tag":"', '"blinding":"'],
