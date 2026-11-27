@@ -773,7 +773,7 @@ fmt-check:
     cargo fmt --all -- --check
 
 clippy:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets -- -D warnings -D clippy::match_bool
 
 check-all:
     cargo check --workspace --all-targets
