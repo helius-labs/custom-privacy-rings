@@ -45,6 +45,7 @@ As an example, S spends 1000, deposits 1000, returns 1000 to S and exits 1000 to
 - Window limits are optional service policy and never a ring limit.
 - Each asset's record holds a sender cap, a volume cap, a deposit cap and a withdrawal cap, each with its own window in slots. A zero cap is no cap.
 - The sender cap counts one owner's outflow. The volume cap counts what the ring moves.
+- The operator can set an exit cap per mint with `--co-signer-exit-cap`. It counts what one owner moves out of the ring of that asset, the smaller of its charged outflow and the frame's exits and withdrawals, and no record or proof holds it.
 - Ring RPC checks them when it decides whether to co-sign, and the program checks only the co-signature.
 - Ring RPC derives each row from the frame it signs. It refuses an input it cannot name with `LimitsUnavailable`, and it refuses an asset without a record.
 - A co-signed message contains one ring instruction, and Ring RPC refuses a second relevant instruction. A program transfer's message instead holds the `ApproveTransfer` instructions and the one program instruction they name. Ring RPC also refuses a message that is not version 1.

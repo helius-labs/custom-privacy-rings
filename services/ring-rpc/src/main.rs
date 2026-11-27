@@ -174,7 +174,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             .with_co_signer(signer)
             .with_co_signer_approval(CoSignerApproval::new(
                 args.co_signer_approve.iter().copied(),
-            ));
+            ))
+            .with_co_signer_exit_caps(args.co_signer_exit_caps.clone());
     }
     if let Some(services) = relay_services {
         builder = builder.with_relay(services);

@@ -307,19 +307,23 @@ async fn what_leaves_is_each_exit_and_withdrawal_leg_and_never_a_deposit_or_a_ri
     );
     let stays = audited(vec![spend(&alice)], vec![ring_slot(0, BOB, 100)]);
     let store = &store;
-    let leaving = async |transaction: &AuditedTransaction, public_flows: Vec<PublicFlow>| {
+    let exiting = async |transaction: &AuditedTransaction, public_flows: Vec<PublicFlow>| {
         read(store, transaction, public_flows)
             .await
             .expect("rows")
-            .leaving
+            .flows
+            .iter()
+            .map(|flow| (*flow.owner.as_bytes(), flow.flow.exiting))
+            .collect::<Vec<_>>()
     };
-    let of_the_mint = |amount: u128| BTreeMap::from([(mint_of_asset(), amount)]);
-    assert_eq!(leaving(&exits, vec![public(30, 0)]).await, of_the_mint(60));
-    assert_eq!(leaving(&exits, vec![public(0, 30)]).await, of_the_mint(30));
-    assert_eq!(leaving(&stays, vec![public(0, 30)]).await, BTreeMap::new());
+    let of_alice = |amount: u128| vec![(owner_identity(&ALICE), amount)];
+    assert_eq!(exiting(&exits, vec![public(30, 0)]).await, of_alice(60));
+    assert_eq!(exiting(&exits, vec![public(0, 30)]).await, of_alice(30));
+    assert_eq!(exiting(&stays, vec![public(0, 30)]).await, of_alice(0));
 }
 
-/// A deposit funds the exit of 15 and no note is spent, the rows ask the registry for no mint.
+/// A deposit funds the exit of 15 and no note is spent, the rows ask the registry for no mint
+/// and no owner exits.
 #[tokio::test]
 async fn a_deposit_funded_exit_and_an_exit_of_nothing_need_no_registry_mint() {
     let no_mints = RingAssets::new([]).expect("assets");
@@ -347,7 +351,7 @@ async fn a_deposit_funded_exit_and_an_exit_of_nothing_need_no_registry_mint() {
     }
     .read(0)
     .expect("read");
-    assert_eq!(read.leaving, BTreeMap::from([(mint_of_asset(), 15)]));
+    assert!(read.flows.iter().all(|flow| flow.flow.exiting == 0));
 }
 
 #[tokio::test]
@@ -548,5 +552,96 @@ fn the_reserved_figure_matches_the_circuit_quantities() {
             })
             .collect();
         assert_eq!(reserved, circuit, "{}", case["name"]);
+    }
+}
+
+/// One frame's notes and legs, each owner's identity starts with its byte.
+struct Moved {
+    inputs: Vec<DebitInput>,
+    outputs: Vec<DebitOutput>,
+    public: Vec<PublicFlow>,
+}
+
+impl Moved {
+    /// Each row's owner byte and its exit measure.
+    fn exiting(self) -> Vec<(u8, u128)> {
+        OwnerFlows {
+            inputs: &self.inputs,
+            outputs: &self.outputs,
+            owner_signers: &[],
+            public: &self.public,
+            no_spend_owner: Member::from_bytes([0xee; 32]).expect("tag"),
+        }
+        .rows(|_| Ok(mint_of_asset()))
+        .expect("rows")
+        .iter()
+        .map(|row| (row.owner.as_bytes()[0], row.flow.exiting))
+        .collect()
+    }
+}
+
+#[test]
+fn an_owner_exits_the_smaller_of_its_charge_and_what_leaves_its_asset() {
+    let spent = |owner: u8, amount| DebitInput {
+        owner: [owner; 32],
+        asset: asset_field(),
+        amount,
+    };
+    let paid = |owner: u8, amount| DebitOutput {
+        ring: true,
+        owner: [owner; 32],
+        asset: asset_field(),
+        amount,
+    };
+    let exited = |owner: u8, amount| DebitOutput {
+        ring: false,
+        ..paid(owner, amount)
+    };
+    let legs = |deposited, withdrawn| PublicFlow {
+        mint: mint_of_asset(),
+        asset: asset_field(),
+        deposited,
+        withdrawn,
+    };
+    let cases = [
+        // An exit and a withdrawal leave, a payment inside the ring does not.
+        (
+            vec![spent(7, 30)],
+            vec![exited(9, 30)],
+            vec![],
+            vec![(7, 30)],
+        ),
+        (vec![spent(7, 30)], vec![], vec![legs(0, 30)], vec![(7, 30)]),
+        (vec![spent(7, 30)], vec![paid(8, 30)], vec![], vec![(7, 0)]),
+        (
+            vec![spent(7, 100)],
+            vec![paid(8, 70), exited(9, 30)],
+            vec![],
+            vec![(7, 30)],
+        ),
+        // The frame names no payer of an exit, each owner counts up to all that leaves.
+        (
+            vec![spent(7, 10), spent(8, 50)],
+            vec![exited(1, 20), exited(2, 10), paid(3, 30)],
+            vec![],
+            vec![(7, 10), (8, 30)],
+        ),
+        // A spend returned to its owner beside a deposit funded exit counts by its charge.
+        (
+            vec![spent(7, 100)],
+            vec![paid(7, 100), exited(8, 100)],
+            vec![legs(100, 0)],
+            vec![(7, 100)],
+        ),
+        // A public leg alone spends no note and charges no owner.
+        (vec![], vec![], vec![legs(0, 30)], vec![(0xee, 0)]),
+    ];
+    for (inputs, outputs, public, expected) in cases {
+        let moved = Moved {
+            inputs,
+            outputs,
+            public,
+        };
+        assert_eq!(moved.exiting(), expected);
     }
 }

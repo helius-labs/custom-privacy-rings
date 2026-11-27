@@ -447,6 +447,8 @@ struct StoredFlow {
     #[serde_as(as = "DisplayFromStr")]
     charged_outflow: u128,
     #[serde_as(as = "DisplayFromStr")]
+    exiting: u128,
+    #[serde_as(as = "DisplayFromStr")]
     deposited: u128,
     #[serde_as(as = "DisplayFromStr")]
     withdrawn: u128,
@@ -526,6 +528,7 @@ fn stored_co_sign(pending: &PendingCoSign) -> StoredCoSign {
                         asset: flow.asset.into(),
                         debit: flow.debit,
                         charged_outflow: flow.charged_outflow,
+                        exiting: flow.exiting,
                         deposited: flow.deposited,
                         withdrawn: flow.withdrawn,
                     })
@@ -621,6 +624,7 @@ fn pending_co_sign(stored: StoredCoSign) -> Result<PendingCoSign, DbErr> {
                                 asset: flow.asset.0,
                                 debit: flow.debit,
                                 charged_outflow: flow.charged_outflow,
+                                exiting: flow.exiting,
                                 deposited: flow.deposited,
                                 withdrawn: flow.withdrawn,
                             },
@@ -836,6 +840,7 @@ mod tests {
                         asset: FEE_PAYER,
                         debit: u128::MAX,
                         charged_outflow: u128::MAX,
+                        exiting: 0,
                         deposited: past_u64,
                         withdrawn: 0,
                     },
@@ -867,6 +872,7 @@ mod tests {
                         asset: FEE_PAYER,
                         debit: 1,
                         charged_outflow: 1,
+                        exiting: 0,
                         deposited: 0,
                         withdrawn: 0,
                     },

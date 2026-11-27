@@ -19,6 +19,7 @@ pub(super) struct Amounts {
     pub outflow: u128,
     pub deposited: u128,
     pub withdrawn: u128,
+    pub exiting: u128,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -83,22 +84,27 @@ impl From<&AssetFlow> for Amounts {
             outflow: flow.charged_outflow,
             deposited: flow.deposited,
             withdrawn: flow.withdrawn,
+            exiting: flow.exiting,
         }
     }
 }
 
 impl Amounts {
     pub(super) fn clipped(self) -> Self {
+        let clip = |amount: u128| amount.min(MEASURE_CEILING);
         Self {
-            outflow: self.outflow.min(MEASURE_CEILING),
-            deposited: self.deposited.min(MEASURE_CEILING),
-            withdrawn: self.withdrawn.min(MEASURE_CEILING),
+            outflow: clip(self.outflow),
+            deposited: clip(self.deposited),
+            withdrawn: clip(self.withdrawn),
+            exiting: clip(self.exiting),
         }
     }
 
+    /// An owner window reads its owner's outflow and exits alone.
     pub(super) fn owner(self) -> Self {
         Self {
             outflow: self.outflow,
+            exiting: self.exiting,
             ..Self::default()
         }
     }
@@ -109,40 +115,25 @@ impl Amounts {
             Measure::Volume => self.outflow.checked_add(self.deposited),
             Measure::Deposited => Some(self.deposited),
             Measure::Withdrawn => Some(self.withdrawn),
+            Measure::Exiting => Some(self.exiting),
         }
     }
 
     fn checked_add(self, other: Self) -> Result<Self, DbErr> {
-        Ok(Self {
-            outflow: self
-                .outflow
-                .checked_add(other.outflow)
-                .ok_or_else(overflow)?,
-            deposited: self
-                .deposited
-                .checked_add(other.deposited)
-                .ok_or_else(overflow)?,
-            withdrawn: self
-                .withdrawn
-                .checked_add(other.withdrawn)
-                .ok_or_else(overflow)?,
-        })
+        self.combine(other, u128::checked_add).ok_or_else(overflow)
     }
 
     fn checked_sub(self, other: Self) -> Result<Self, DbErr> {
-        Ok(Self {
-            outflow: self
-                .outflow
-                .checked_sub(other.outflow)
-                .ok_or_else(underflow)?,
-            deposited: self
-                .deposited
-                .checked_sub(other.deposited)
-                .ok_or_else(underflow)?,
-            withdrawn: self
-                .withdrawn
-                .checked_sub(other.withdrawn)
-                .ok_or_else(underflow)?,
+        self.combine(other, u128::checked_sub).ok_or_else(underflow)
+    }
+
+    /// `None` when `step` refuses any one measure.
+    fn combine(self, other: Self, step: impl Fn(u128, u128) -> Option<u128>) -> Option<Self> {
+        Some(Self {
+            outflow: step(self.outflow, other.outflow)?,
+            deposited: step(self.deposited, other.deposited)?,
+            withdrawn: step(self.withdrawn, other.withdrawn)?,
+            exiting: step(self.exiting, other.exiting)?,
         })
     }
 
@@ -151,11 +142,12 @@ impl Amounts {
             outflow: u128::from_be_bytes(bytes(row, "outflow")?),
             deposited: u128::from_be_bytes(bytes(row, "deposited")?),
             withdrawn: u128::from_be_bytes(bytes(row, "withdrawn")?),
+            exiting: u128::from_be_bytes(bytes(row, "exiting")?),
         })
     }
 
-    fn values(self) -> [Value; 3] {
-        [self.outflow, self.deposited, self.withdrawn]
+    fn values(self) -> [Value; 4] {
+        [self.outflow, self.deposited, self.withdrawn, self.exiting]
             .map(|amount| Value::from(amount.to_be_bytes().to_vec()))
     }
 }
@@ -346,7 +338,7 @@ impl<C: ConnectionTrait> Nodes<'_, C> {
                 values.extend(key.values()?);
             }
             let sql = format!(
-                "SELECT ring,asset,epoch,scope_kind,owner,node,outflow,deposited,withdrawn FROM cosign_totals WHERE {}",
+                "SELECT ring,asset,epoch,scope_kind,owner,node,outflow,deposited,withdrawn,exiting FROM cosign_totals WHERE {}",
                 conditions.join(" OR ")
             );
             for row in sql::Query::new(sql, values).all(self.conn).await? {
@@ -365,12 +357,12 @@ impl Nodes<'_, DatabaseTransaction> {
             let mut slots = Vec::new();
             for (key, amount) in batch {
                 let start = values.len() + 1;
-                slots.push(format!("({})", placeholders(start, 9)));
+                slots.push(format!("({})", placeholders(start, 10)));
                 values.extend(key.values()?);
                 values.extend(amount.values());
             }
             let sql = format!(
-                "INSERT INTO cosign_totals(ring,asset,epoch,scope_kind,owner,node,outflow,deposited,withdrawn) VALUES {} ON CONFLICT(ring,asset,epoch,scope_kind,owner,node) DO UPDATE SET outflow=excluded.outflow,deposited=excluded.deposited,withdrawn=excluded.withdrawn",
+                "INSERT INTO cosign_totals(ring,asset,epoch,scope_kind,owner,node,outflow,deposited,withdrawn,exiting) VALUES {} ON CONFLICT(ring,asset,epoch,scope_kind,owner,node) DO UPDATE SET outflow=excluded.outflow,deposited=excluded.deposited,withdrawn=excluded.withdrawn,exiting=excluded.exiting",
                 slots.join(",")
             );
             sql::Query::new(sql, values).execute(self.conn).await?;
@@ -454,13 +446,11 @@ mod tests {
     fn node_arithmetic_refuses_overflow_and_missing_refund_value() {
         let full = Amounts {
             outflow: u128::MAX,
-            deposited: 0,
-            withdrawn: 0,
+            ..Amounts::default()
         };
         let one = Amounts {
             outflow: 1,
-            deposited: 0,
-            withdrawn: 0,
+            ..Amounts::default()
         };
         assert!(full.checked_add(one).is_err());
         assert!(Amounts::default().checked_sub(one).is_err());

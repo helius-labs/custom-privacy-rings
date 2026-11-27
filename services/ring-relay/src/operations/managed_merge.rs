@@ -758,6 +758,7 @@ pub(crate) mod tests {
                 shared: shared.clone(),
                 store: Some(store),
                 approval: CoSignerApproval::new([ApproveClass::Transfers]),
+                exit_caps: Vec::new(),
             }
             .build()
             .expect("co-signer");

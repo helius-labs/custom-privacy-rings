@@ -25,6 +25,7 @@ pub(crate) enum Measure {
     Volume,
     Deposited,
     Withdrawn,
+    Exiting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,7 +344,7 @@ impl<C: ConnectionTrait> UsageLedger<'_, C> {
 
     async fn reservations(&self, ticket: &Ticket) -> Result<Vec<Reservation>, DbErr> {
         let sql = format!(
-            "SELECT ring,owner,asset,slot,state,outflow_hi,outflow_lo,deposited_hi,deposited_lo,withdrawn_hi,withdrawn_lo FROM cosign_usage WHERE signature=$1 LIMIT {}",
+            "SELECT ring,owner,asset,slot,state,outflow_hi,outflow_lo,deposited_hi,deposited_lo,withdrawn_hi,withdrawn_lo,exiting_hi,exiting_lo FROM cosign_usage WHERE signature=$1 LIMIT {}",
             MAX_USAGE_FLOWS + 1
         );
         let rows = sql::Query::new(&sql, vec![ticket_value(ticket)])
@@ -449,7 +450,7 @@ impl UsageLedger<'_, DatabaseTransaction> {
             let mut slots = Vec::new();
             for row in batch {
                 let start = values.len() + 1;
-                slots.push(format!("({})", placeholders(start, 12)));
+                slots.push(format!("({})", placeholders(start, 14)));
                 values.extend([
                     ticket_value(reserve.ticket),
                     address_value(&row.asset),
@@ -461,13 +462,14 @@ impl UsageLedger<'_, DatabaseTransaction> {
                     row.amounts.outflow,
                     row.amounts.deposited,
                     row.amounts.withdrawn,
+                    row.amounts.exiting,
                 ] {
                     values.extend(halves(amount)?);
                 }
                 values.push(Value::from(ReservationState::Held.stored()));
             }
             let sql = format!(
-                "INSERT INTO cosign_usage(signature,asset,ring,owner,slot,outflow_hi,outflow_lo,deposited_hi,deposited_lo,withdrawn_hi,withdrawn_lo,state) VALUES {}",
+                "INSERT INTO cosign_usage(signature,asset,ring,owner,slot,outflow_hi,outflow_lo,deposited_hi,deposited_lo,withdrawn_hi,withdrawn_lo,exiting_hi,exiting_lo,state) VALUES {}",
                 slots.join(",")
             );
             sql::Query::new(&sql, values).execute(self.conn).await?;
@@ -631,6 +633,7 @@ impl Reservation {
                 outflow: amount("outflow")?,
                 deposited: amount("deposited")?,
                 withdrawn: amount("withdrawn")?,
+                exiting: amount("exiting")?,
             },
         })
     }

@@ -21,7 +21,7 @@ use zolana_operator_custody::{
 
 use crate::{client_rate::ClientLimitArgs, server::BindPolicy};
 use ring_audit::wallet_snapshots::WalletSnapshotLimits;
-use ring_cosigner::cosign::ApproveClass;
+use ring_cosigner::{cosign::ApproveClass, cosign_limits::ExitCap};
 use ring_service_core::{
     keys::KeySource,
     keys::{GrantRowsSecret, RootSecret},
@@ -86,6 +86,13 @@ pub struct ServeArgs {
         value_delimiter = ','
     )]
     pub co_signer_approve: Vec<ApproveClass>,
+    /// The most each owner moves out of the ring of a mint in a window, as `<mint>:<cap>:<window slots>`.
+    #[arg(
+        long = "co-signer-exit-cap",
+        env = "RING_RPC_CO_SIGNER_EXIT_CAPS",
+        value_delimiter = ','
+    )]
+    pub co_signer_exit_caps: Vec<ExitCap>,
     #[arg(
         long = "allow-origin",
         env = "RING_RPC_ALLOW_ORIGINS",
@@ -237,6 +244,10 @@ pub enum CustodyConfigError {
     SigningStore,
     #[error("approval classes require a co-signer")]
     Approval,
+    #[error("exit caps require a co-signer")]
+    ExitCaps,
+    #[error("each exit cap names its own mint")]
+    RepeatedExitCap,
     #[error("relay budgets require a fee payer")]
     RelayBudget,
     #[error("enrollment options require an enrollment applier")]
@@ -409,6 +420,17 @@ impl ServeArgs {
         if !self.co_signer_approve.is_empty() && manifest.co_signer.is_none() {
             return Err(CustodyConfigError::Approval);
         }
+        if !self.co_signer_exit_caps.is_empty() && manifest.co_signer.is_none() {
+            return Err(CustodyConfigError::ExitCaps);
+        }
+        let mut mints = HashSet::new();
+        if !self
+            .co_signer_exit_caps
+            .iter()
+            .all(|cap| mints.insert(cap.mint))
+        {
+            return Err(CustodyConfigError::RepeatedExitCap);
+        }
         if (self.relay_budget_lamports != 0 || self.relay_signer_budget_lamports != 0)
             && manifest.fee_payer.is_none()
         {
@@ -524,6 +546,8 @@ mod tests {
     fn each_role_option_without_its_counterpart_is_refused_by_name() {
         use CustodyConfigError::*;
         let ring = address(9);
+        let exit_cap = format!("{}:100:50", address(8));
+        let twice = format!("{exit_cap},{}:200:60", address(8));
         let stored = |flags: &[&'static str]| [&STORE[..], flags].concat();
         let cases: Vec<(&str, Vec<&str>, String, CustodyConfigError)> = vec![
             (
@@ -567,6 +591,18 @@ mod tests {
                 vec!["--co-signer-approve", "transfers"],
                 custody(&[]),
                 Approval,
+            ),
+            (
+                "exit caps without a co-signer",
+                vec!["--co-signer-exit-cap", &exit_cap],
+                custody(&[]),
+                ExitCaps,
+            ),
+            (
+                "an exit cap naming its mint twice",
+                [&STORE[..], &["--co-signer-exit-cap", &twice]].concat(),
+                custody(&[("storage_authority", 2), ("co_signer", 3)]),
+                RepeatedExitCap,
             ),
             (
                 "a relay budget without a fee payer",
@@ -647,6 +683,7 @@ mod tests {
     #[test]
     fn a_manifest_with_every_role_and_its_options_is_accepted() {
         let ring = address(9);
+        let exit_caps = format!("{}:100:50,{}:200:60", address(7), address(8));
         let flags = [
             &STORE[..],
             &[
@@ -654,6 +691,8 @@ mod tests {
                 "replica-a",
                 "--co-signer-approve",
                 "transfers,deposits",
+                "--co-signer-exit-cap",
+                &exit_caps,
                 "--relay-budget-lamports",
                 "1000",
                 "--relay-signer-budget-lamports",

@@ -1,4 +1,5 @@
 use std::{
+    num::NonZeroU64,
     path::PathBuf,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering},
 };
@@ -38,11 +39,25 @@ fn flow(owner: u8, asset: Address, debit: u64) -> OwnerFlow {
             asset,
             debit: debit.into(),
             charged_outflow: debit.into(),
+            exiting: 0,
             deposited: 0,
             withdrawn: 0,
         },
     }
 }
+
+/// A row of SOL whose whole charge leaves the ring.
+fn exit(owner: u8, amount: u64) -> OwnerFlow {
+    let mut moved = flow(owner, SOL, amount);
+    moved.flow.exiting = amount.into();
+    moved
+}
+
+const EXIT_CAP: ExitCap = ExitCap {
+    mint: SOL,
+    cap: NonZeroU64::new(CAP).unwrap(),
+    window_slots: NonZeroU64::new(WINDOW).unwrap(),
+};
 
 /// The slot and the limits move under a running co-signer, every asset answers the same limits.
 struct Clocked {
@@ -88,7 +103,6 @@ impl AssetLimitSource for Clocked {
         self.frame_reads.fetch_add(1, Ordering::Relaxed);
         Ok(FrameRead::Transfer(TransferRead {
             flows: self.frame.clone(),
-            leaving: BTreeMap::new(),
             spends_note: true,
             approval_bits: None,
             co_signers: Vec::new(),
@@ -136,6 +150,7 @@ impl Window {
             },
             store: Arc::new(store.clone()),
             approval: CoSignerApproval::new([ApproveClass::Transfers, ApproveClass::Deposits]),
+            exit_caps: Vec::new(),
         }
         .build();
         Self {
@@ -168,6 +183,13 @@ impl Window {
 
     async fn clear(&self) {
         clear_usage(&self.store).await;
+    }
+
+    /// The service caps each owner's exits of SOL, the record caps nothing.
+    fn exits(mut self) -> Self {
+        self.limit(AssetLimits::EMPTY);
+        self.co_signer.rule.exit_caps.insert(SOL, EXIT_CAP);
+        self
     }
 
     fn limit(&self, limits: AssetLimits) {
@@ -714,6 +736,7 @@ impl WindowOracle<'_> {
                                 Measure::Deposited => deposited,
                                 Measure::Withdrawn => flow.flow.withdrawn.min(1_u128 << 64),
                                 Measure::Volume => outflow + deposited,
+                                Measure::Exiting => flow.flow.exiting.min(1_u128 << 64),
                             }
                         })
                         .sum();
@@ -731,26 +754,35 @@ impl WindowOracle<'_> {
                     );
                 }
                 let owners = [*member(7).as_bytes(), *member(8).as_bytes()];
-                let sum = WindowSum {
-                    ring: &RING,
-                    asset: &asset,
-                    measure: Measure::Outflow,
-                    slot,
-                    window_slots,
-                };
-                let totals = ledger
-                    .owner_totals(sum, &owners)
-                    .await
-                    .expect("owner totals");
-                for owner in owners {
-                    let expected: u128 = active()
-                        .filter(|(_, flow)| flow.owner.as_bytes() == &owner)
-                        .map(|(_, flow)| flow.flow.charged_outflow.min(1_u128 << 64))
-                        .sum();
-                    assert_eq!(
-                        totals[&owner], expected,
-                        "owner {owner:?} asset {asset} slot {slot} window {window_slots}"
-                    );
+                for measure in [Measure::Outflow, Measure::Exiting] {
+                    let sum = WindowSum {
+                        ring: &RING,
+                        asset: &asset,
+                        measure,
+                        slot,
+                        window_slots,
+                    };
+                    let totals = ledger
+                        .owner_totals(sum, &owners)
+                        .await
+                        .expect("owner totals");
+                    for owner in owners {
+                        let expected: u128 = active()
+                            .filter(|(_, flow)| flow.owner.as_bytes() == &owner)
+                            .map(|(_, flow)| {
+                                let moved = match measure {
+                                    Measure::Exiting => flow.flow.exiting,
+                                    _ => flow.flow.charged_outflow,
+                                };
+                                moved.min(1_u128 << 64)
+                            })
+                            .sum();
+                        assert_eq!(
+                            totals[&owner], expected,
+                            "owner {owner:?} asset {asset} slot {slot} window {window_slots} \
+                             measure {measure:?}"
+                        );
+                    }
                 }
             }
         }
@@ -792,6 +824,7 @@ async fn all_window_measures_match_an_immutable_ledger_after_out_of_order_refund
         );
         moved.flow.deposited = u128::from(amount * 2);
         moved.flow.withdrawn = u128::from(amount * 3);
+        moved.flow.exiting = u128::from(amount / 2);
         tickets.push(window.signed(amount as u8, vec![moved]).await);
         entries.push((slot, moved));
         WindowOracle {
@@ -810,6 +843,7 @@ async fn all_window_measures_match_an_immutable_ledger_after_out_of_order_refund
         entries[index].1.flow.charged_outflow = 0;
         entries[index].1.flow.deposited = 0;
         entries[index].1.flow.withdrawn = 0;
+        entries[index].1.flow.exiting = 0;
         WindowOracle {
             entries: &entries,
             windows: &[0, 1, 2, WINDOW, MAX_LIMIT_WINDOW_SLOTS],
@@ -868,6 +902,7 @@ async fn seeded_window_histories_match_direct_sums_through_refunds() {
             &mut moved.flow.charged_outflow,
             &mut moved.flow.deposited,
             &mut moved.flow.withdrawn,
+            &mut moved.flow.exiting,
         ] {
             *amount = match random.gen_range(0..5) {
                 0 => 0,
@@ -906,6 +941,7 @@ async fn seeded_window_histories_match_direct_sums_through_refunds() {
             entries[refunded].1.flow.charged_outflow = 0;
             entries[refunded].1.flow.deposited = 0;
             entries[refunded].1.flow.withdrawn = 0;
+            entries[refunded].1.flow.exiting = 0;
             WindowOracle {
                 entries: &entries,
                 windows: &windows,
@@ -965,4 +1001,68 @@ async fn concurrent_admissions_across_slot_ticks_never_fail_closed_on_postgres()
     let store = Store::open(&url, 1).await.expect("store");
     clear_usage(&store).await;
     assert_admissions_across_moving_slots_all_sign(&url).await;
+}
+
+#[tokio::test]
+async fn an_owners_exits_past_the_exit_cap_refuse_while_an_in_ring_payment_signs() {
+    let window = Window::open("sqlite::memory:").await.exits();
+    window.signed(1, vec![exit(7, 60)]).await;
+    window.refuses(2, vec![exit(7, 41)]).await;
+    window.signed(3, vec![flow(7, SOL, 41)]).await;
+    window.signed(4, vec![exit(8, CAP)]).await;
+    window.refuses(5, vec![exit(8, 1)]).await;
+}
+
+#[tokio::test]
+async fn the_exit_window_slides_and_a_restart_keeps_its_total() {
+    let file = StoreFile::new("exits");
+    let window = Window::open(&file.url()).await.exits();
+    window.signed(1, vec![exit(7, CAP)]).await;
+    drop(window);
+    let restarted = Window::open(&file.url()).await.exits();
+    restarted
+        .slot
+        .store(START_SLOT + WINDOW - 1, Ordering::Relaxed);
+    restarted.refuses(2, vec![exit(7, 1)]).await;
+    restarted.slot.store(START_SLOT + WINDOW, Ordering::Relaxed);
+    restarted.signed(3, vec![exit(7, CAP)]).await;
+}
+
+/// Two co-signers over one store grant one owner's exit allowance once.
+async fn assert_two_co_signers_share_one_exit_allowance(url: &str) {
+    let windows = [
+        Arc::new(Window::open(url).await.exits()),
+        Arc::new(Window::open(url).await.exits()),
+    ];
+    let mut decisions = tokio::task::JoinSet::new();
+    for nonce in 1..=24u8 {
+        let window = windows[usize::from(nonce % 2)].clone();
+        decisions.spawn(async move {
+            window
+                .co_signer
+                .decide(&request(nonce, vec![exit(7, 20)]))
+                .await
+        });
+    }
+    let mut signed = 0;
+    while let Some(decision) = decisions.join_next().await {
+        if let CoSignDecision::Signed(_) = decision.expect("task").expect("decision") {
+            signed += 1;
+        }
+    }
+    assert_eq!(signed, CAP / 20);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_co_signers_over_one_sqlite_file_grant_one_exit_allowance() {
+    let file = StoreFile::new("exit-allowance");
+    assert_two_co_signers_share_one_exit_allowance(&file.url()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "needs RING_RPC_TEST_POSTGRES_URL"]
+async fn two_co_signers_over_one_postgres_store_grant_one_exit_allowance() {
+    let url = std::env::var("RING_RPC_TEST_POSTGRES_URL").expect("postgres url");
+    Window::open(&url).await.clear().await;
+    assert_two_co_signers_share_one_exit_allowance(&url).await;
 }

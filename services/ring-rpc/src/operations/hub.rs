@@ -47,7 +47,7 @@ use ring_writer::{
 use ring_audit::RingAuditError;
 use ring_cosigner::{
     cosign::{CoSignPolicy, CoSignerApproval},
-    cosign_limits::CoSignPolicyInit,
+    cosign_limits::{CoSignPolicyInit, ExitCap},
 };
 use ring_relay::{
     managed_merge::{ManagedMerge, ManagedMergeInit},
@@ -122,6 +122,7 @@ pub struct HubBuilder<S> {
     grant_rows: Option<GrantRowsSecret>,
     co_signer: Option<SigningIdentity>,
     co_signer_approval: CoSignerApproval,
+    co_signer_exit_caps: Vec<ExitCap>,
     relay_budget: RelayBudget,
     relay: Option<RelayParts>,
     enrollments: Option<Arc<EnrollmentApplier>>,
@@ -148,6 +149,7 @@ impl<S: TransactionSource> Hub<S> {
             grant_rows: None,
             co_signer: None,
             co_signer_approval: CoSignerApproval::default(),
+            co_signer_exit_caps: Vec::new(),
             relay_budget: RelayBudget::default(),
             relay: None,
             enrollments: None,
@@ -487,6 +489,12 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
+    #[must_use = "use the updated builder"]
+    pub fn with_co_signer_exit_caps(mut self, exit_caps: Vec<ExitCap>) -> Self {
+        self.co_signer_exit_caps = exit_caps;
+        self
+    }
+
     /// Without it the relay sends nothing.
     #[must_use = "use the updated builder"]
     pub const fn with_relay_budget(mut self, budget: RelayBudget) -> Self {
@@ -565,6 +573,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
             shared: shared.clone(),
             store: durable,
             approval: self.co_signer_approval,
+            exit_caps: self.co_signer_exit_caps,
         }
         .build()?;
         let relay = self.relay.map(|parts| {

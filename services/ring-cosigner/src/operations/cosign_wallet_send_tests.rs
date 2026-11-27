@@ -84,11 +84,11 @@ fn transfer(owner: u8, amount: u64, nullifiers: &[[u8; 32]]) -> TransferRead {
                 asset: ASSET,
                 debit: amount.into(),
                 charged_outflow: amount.into(),
+                exiting: 0,
                 deposited: 0,
                 withdrawn: 0,
             },
         }],
-        leaving: BTreeMap::new(),
         spends_note: true,
         approval_bits: None,
         co_signers: Vec::new(),
@@ -117,6 +117,7 @@ impl Wallet {
             },
             store: Arc::new(store.clone()),
             approval: CoSignerApproval::new([ApproveClass::Transfers]),
+            exit_caps: Vec::new(),
         }
         .build();
         Self { co_signer, store }
