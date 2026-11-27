@@ -68,7 +68,7 @@ export type RelayIntent =
       delegateSignature: Signature;
       tokenAccountSetup?: readonly TokenAccountSetup[];
     }>
-  /** `proofInputs` is a Rust `RelayProofInputs` on the deposit rail, the depositor signs its digest here and its legs later. */
+  /** `proofInputs` is a Rust `RelayProofInputs` on the deposit rail, the depositor signs its digest here and the frame later. */
   | Readonly<{ operation: "deposit"; proofInputs: Base64String; depositorSignature: Signature }>
   /** `proofInputs` is a Rust `RelayMergeInputs`, the owner signs its digest here. */
   | Readonly<{ operation: "merge"; proofInputs: Base64String; ownerSignature: Signature }>;
@@ -186,6 +186,8 @@ export interface RefuseListApprovalRequest {
 export interface CreateRecordsRegistryRequest {
   readonly ring: Address;
   readonly auth: PolicyAuthorityAuth;
+  /** The v1 creation message `auth.authority` pays, `recordsCreationTransaction` builds it. */
+  readonly message: Base64String;
 }
 
 /** Rust `RegisterEnrollmentRingRequest`, signed by the policy authority alone. */
@@ -198,6 +200,8 @@ export interface RegisterEnrollmentRingRequest {
 export interface RecordsRegistry {
   readonly registry: Address;
   readonly storageAuthority: Address;
+  /** The storage authority's signature over the request message, absent once the registry exists. */
+  readonly signature?: Signature;
 }
 
 /** Rust `GetPendingListApprovalsResponse`, oldest first, `nextCursor` absent on the last page. */
@@ -215,10 +219,11 @@ export interface PendingListApproval {
   readonly validUntilSlot: bigint;
 }
 
-/** Rust `CoSignTransactionRequest`, `message` is the serialized v1 message of one ring transfer. */
+/** Rust `CoSignTransactionRequest`. */
 export interface CoSignTransactionRequest {
   readonly ring: Address;
-  readonly message: Base64String;
+  /** The wire v1 transaction of one ring transfer, every required signer but the co-signer signed. */
+  readonly transaction: Base64String;
   /** Set where a program calls the transfer under the message's `ApproveTransfer`. */
   readonly approvedTransfer?: ApprovedTransfer;
 }
@@ -231,7 +236,7 @@ export interface ApprovedTransfer {
   readonly accounts: readonly Address[];
 }
 
-/** Rust `CoSignTransactionResponse`, `signature` signs the request message under `signer`. */
+/** Rust `CoSignTransactionResponse`, `signature` signs the message of the request transaction under `signer`. */
 export interface CoSignTransactionResponse {
   readonly signer: Address;
   readonly signature: Signature;

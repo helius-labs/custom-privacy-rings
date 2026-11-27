@@ -52,13 +52,15 @@ export type RelayMessageMismatch =
   | "Legs"
   | "SpendsUnnamedNote"
   | "SpendsUnrequestedNote"
+  | "ChangeExceedsSpend"
   | "Unrequested"
   | "Signer";
 
 /** Rust `AllowedNullifiers`, filled only by `admit`. */
 export class AllowedNullifiers {
   readonly #sources = new Set<string>();
-  readonly #nullifiers = new Set<string>();
+  /** Keyed by the admitted note's nullifier. */
+  readonly #notes = new Map<string, Readonly<{ spend: string; amount: bigint }>>();
 
   /** Rust `AllowedNullifiers::admit`, admits nothing of `source` when one opening fails. */
   admit(
@@ -84,10 +86,17 @@ export class AllowedNullifiers {
       const rebuilt = ProofInputUtxo.fromNullifierKey(note.utxo, nullifierKey, hashes, note.treeId);
       if (!equalBytes(rebuilt.nullifier(), note.nullifier()))
         throw delegateSourceRefusal("unboundOpening", index);
-      return rebuilt.nullifier();
+      return {
+        nullifier: rebuilt.nullifier(),
+        spend: spendKey(
+          { ownerKey: owner, nullifierPk: address.nullifierPublicKey },
+          note.utxo.asset,
+        ),
+        amount: note.utxo.amount,
+      };
     });
     this.#sources.add(encodeBase58(address.toBytes()));
-    for (const nullifier of nullifiers) this.#nullifiers.add(encodeBase58(nullifier));
+    for (const { nullifier, ...note } of nullifiers) this.#notes.set(encodeBase58(nullifier), note);
     return this;
   }
 
@@ -100,14 +109,49 @@ export class AllowedNullifiers {
   }
 
   /**
-   * The proof names `spent` notes and no note position. An admitted nullifier is a real note's and
-   * SPP publishes it at most once, so the published ones the set holds must count every spent note.
+   * Rust `AllowedNullifiers::check_spends`. The proof names `spent` notes and no note position. An
+   * admitted nullifier is a real note's and SPP publishes it at most once, so the published ones the
+   * set holds must count every spent note.
    */
-  countsSpends(spent: number, published: Iterable<Bytes32>): boolean {
+  checkSpends(spent: number, published: Iterable<Bytes32>): SourceSpends {
+    const left = new Map<string, bigint>();
     let allowed = 0;
-    for (const nullifier of published) if (this.#nullifiers.has(encodeBase58(nullifier))) allowed++;
-    return allowed === spent;
+    for (const nullifier of published) {
+      const note = this.#notes.get(encodeBase58(nullifier));
+      if (note === undefined) continue;
+      allowed++;
+      left.set(note.spend, (left.get(note.spend) ?? 0n) + note.amount);
+    }
+    if (allowed !== spent) throw mismatch("SpendsUnrequestedNote");
+    return new SourceSpends(left);
   }
+}
+
+/** Rust `SourceSpends`, what a frame spends of each requested source per mint less its change there. */
+export class SourceSpends {
+  readonly #left: Map<string, bigint>;
+
+  /** @internal */
+  constructor(left: Map<string, bigint>) {
+    this.#left = left;
+  }
+
+  /** @internal */
+  debit(source: SpendSource, mint: Address, amount: bigint): void {
+    const spend = spendKey(source, mint);
+    this.#left.set(spend, (this.#left.get(spend) ?? 0n) - amount);
+  }
+
+  /** @internal A source's change in a mint is at most what the frame spends of it there. */
+  checkChange(): void {
+    if ([...this.#left.values()].some((left) => left < 0n)) throw mismatch("ChangeExceedsSpend");
+  }
+}
+
+type SpendSource = Pick<ExpectedOwner, "ownerKey" | "nullifierPk">;
+
+function spendKey(source: SpendSource, mint: Address): string {
+  return `${encodeBase58(source.ownerKey)}:${encodeBase58(source.nullifierPk)}:${mint}`;
 }
 
 function delegateSourceRefusal(reason: "foreignNote" | "unboundOpening", index: number): RingError {
@@ -168,15 +212,23 @@ export interface RelayTransferTerms {
   readonly setup: readonly TokenAccountCreate[];
 }
 
-/** What one public funder agrees to, its own deposit legs alone and no slot or note. */
+/** What one public funder agrees to, every output and leg of the frame and no note. */
 export interface RelayFunderTerms {
   readonly ring: Address;
   readonly feePayer: Address;
   readonly signer: Address;
-  /** The legs the key funds in frame order. */
+  /** One per published slot in slot order. */
+  readonly slots: readonly SlotCommitment[];
+  /** Every leg of the frame in frame order. */
   readonly legs: readonly PublicLeg[];
   /** The token accounts the fee payer creates ahead of the ring instruction. */
   readonly setup: readonly TokenAccountCreate[];
+}
+
+export interface SlotCommitment {
+  readonly hash: Bytes32;
+  /** Absent on an exit. */
+  readonly tag?: Bytes32;
 }
 
 /** One interface transfer leg a key agrees to, Rust `PublicLeg`. */
@@ -223,7 +275,7 @@ export interface ExpectedPublicOwner {
   readonly knownNullifiers: readonly Bytes32[];
 }
 
-/** One public funder reading the frame's deposit legs against its terms, Rust `ExpectedFunder`. */
+/** One public funder reading the frame's outputs and legs against its terms, Rust `ExpectedFunder`. */
 export interface ExpectedFunder {
   readonly kind: "funder";
   readonly terms: RelayFunderTerms;

@@ -394,6 +394,7 @@ export function encodeCreateRecordsRegistryRequest(
   return {
     ring: checkedAddress(value.ring, "ring"),
     auth: encodePolicyAuthorityAuth(value.auth),
+    message: checkedBase64(value.message, "message"),
   };
 }
 
@@ -414,10 +415,12 @@ export function decodeRegisterEnrollmentRingResponse(value: unknown): void {
 
 /** Rust `CreateRecordsRegistryResponse`. */
 export function decodeRecordsRegistry(value: unknown): RecordsRegistry {
-  const row = object(value, "$", ["registry", "storageAuthority"]);
+  const row = object(value, "$", ["registry", "storageAuthority", "signature"]);
+  const signature = row["signature"];
   return {
     registry: checkedAddress(row["registry"], "registry"),
     storageAuthority: checkedAddress(row["storageAuthority"], "storageAuthority"),
+    ...(signature === undefined ? {} : { signature: checkedSignature(signature, "signature") }),
   };
 }
 
@@ -454,7 +457,7 @@ export function decodePendingListApprovalsPage(value: unknown): PendingListAppro
 export function encodeCoSignTransactionRequest(value: CoSignTransactionRequest): WireObject {
   return {
     ring: checkedAddress(value.ring, "ring"),
-    message: checkedBase64(value.message, "message"),
+    transaction: checkedBase64(value.transaction, "transaction"),
     ...(value.approvedTransfer === undefined
       ? {}
       : {

@@ -3,7 +3,7 @@ import { AccountRole, type AccountMeta, type Address } from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
-import type { Bytes32 } from "@heliuslabs/spr/interface";
+import { SOL_INTERFACE, type Bytes32 } from "@heliuslabs/spr/interface";
 import { compileUnsignedTransaction, encodeBase58 } from "@heliuslabs/spr/internal";
 
 import { ringComputeUnitLimit } from "../../../src/operations/management/admin.js";
@@ -24,7 +24,7 @@ import {
 } from "../../../src/rpc/relay-message.js";
 import type { RingTransactData } from "../../../src/protocol/transaction/transact.js";
 import { ringPolicyData } from "../../helpers/ring-accounts.js";
-import { ringFrame, ringInstructionData } from "../../helpers/ring-frame.js";
+import { field, ringFrame, ringInstructionData } from "../../helpers/ring-frame.js";
 
 const key = (byte: number): Address => encodeBase58(new Uint8Array(32).fill(byte));
 const RING = key(1);
@@ -40,10 +40,20 @@ const TRACKING: AccountMeta = { address: POLICY.tracking, role: AccountRole.READ
 
 beforeAll(initializePoseidon);
 
-const terms = (legs: RelayFunderTerms["legs"]): RelayFunderTerms => ({
+const FRAME = ringFrame({ rail: "confidential", inputs: 1, outputs: 2 });
+const SLOTS: RelayFunderTerms["slots"] = FRAME.outputs.map(({ hash, ownerTag }) => ({
+  hash,
+  tag: ownerTag,
+}));
+
+const terms = (
+  legs: RelayFunderTerms["legs"],
+  slots: RelayFunderTerms["slots"] = SLOTS,
+): RelayFunderTerms => ({
   ring: RING,
   feePayer: PAYER,
   signer: FUNDER,
+  slots,
   legs,
   setup: [],
 });
@@ -55,11 +65,13 @@ async function message(
     groups: readonly AccountMeta[];
     run?: readonly AccountMeta[];
     registry?: AccountMeta;
+    outputs?: RingTransactData["outputs"];
   }>,
 ): Promise<Uint8Array> {
   const frame: RingTransactData = {
-    ...ringFrame({ rail: "confidential", inputs: 1, outputs: 2 }),
+    ...FRAME,
     interfaceTransfers: input.transfers,
+    outputs: input.outputs ?? FRAME.outputs,
   };
   const spp = (at: number, role: AccountRole): AccountMeta => ({ address: key(at), role });
   const accounts: AccountMeta[] = [
@@ -157,6 +169,37 @@ describe("a public funder's check", () => {
     expect(await verdict(terms([sol(5n), sol(7n)]), two)).toBe("Accepted");
   });
 
+  it("refuses its exact leg in a frame that publishes other outputs", async () => {
+    const outputs = FRAME.outputs.map((output, at) =>
+      at === 1 ? { ...output, hash: field(90) } : output,
+    );
+    const bytes = await message({ transfers: [solLeg(5n)], groups: solGroup, outputs });
+    expect(await verdict(terms([sol(5n)]), bytes)).toBe("Recipients");
+    const untagged = SLOTS.map((slot, at) => (at === 0 ? { hash: slot.hash } : slot));
+    const plain = await message({ transfers: [solLeg(5n)], groups: solGroup });
+    expect(await verdict(terms([sol(5n)], untagged), plain)).toBe("Recipients");
+    expect(await verdict(terms([sol(5n)], SLOTS.slice(0, 1)), plain)).toBe("UnopenedOutput");
+  });
+
+  it("refuses its exact leg beside a withdrawal leg its terms do not name", async () => {
+    const bytes = await message({
+      transfers: [solLeg(5n), { kind: "solWithdrawal", amount: 3n }],
+      groups: [
+        ...solGroup,
+        { address: SOL_INTERFACE, role: WRITE },
+        { address: key(36), role: WRITE },
+      ],
+    });
+    expect(await verdict(terms([sol(5n)]), bytes)).toBe("Legs");
+    const withdrawal: PublicLeg = {
+      direction: "withdrawal",
+      mint: null,
+      amount: 3n,
+      accounts: [SOL_INTERFACE, key(36)],
+    };
+    expect(await verdict(terms([sol(5n), withdrawal]), bytes)).toBe("Accepted");
+  });
+
   it("refuses a leg of another direction, mint or settlement account", async () => {
     const bytes = await message({ transfers: [solLeg(5n)], groups: solGroup });
     for (const changed of [
@@ -174,7 +217,7 @@ describe("a public funder's check", () => {
       groups: [solGroup[0] as AccountMeta, { address: key(35), role: SIGN_WRITE }],
     });
     expect(await verdict(terms([{ ...sol(5n), accounts: [key(30), key(35)] }]), bytes)).toBe(
-      "Legs",
+      "Accounts",
     );
   });
 
@@ -229,18 +272,30 @@ describe("a public funder's check", () => {
     expect(await verdict(terms([sol(5n)]), bytes, key(9))).toBe("Unrequested");
   });
 
-  it("encodes its terms as Rust serde, null on a SOL leg", () => {
-    const named = terms([
-      sol(5n),
-      { direction: "deposit", mint: MINT, amount: (1n << 60n) + 1n, accounts: [MINT, key(31)] },
-    ]);
+  it("encodes its terms as Rust serde, null on a SOL leg and no tag on an exit slot", () => {
+    const named = terms(
+      [
+        sol(5n),
+        { direction: "deposit", mint: MINT, amount: (1n << 60n) + 1n, accounts: [MINT, key(31)] },
+      ],
+      [SLOTS[0] as RelayFunderTerms["slots"][number], { hash: field(91) }],
+    );
     const text = encodeRelayFunderTerms(named);
+    expect(text).toContain(
+      `"signer":"${FUNDER}","slots":[{"hash":"${encodeBase58(field(10))}","tag":"${encodeBase58(field(40))}"},{"hash":"${encodeBase58(field(91))}"}],"legs":`,
+    );
     expect(text).toContain(
       `{"direction":"deposit","mint":null,"amount":5,"accounts":["${key(30)}","${FUNDER}"]}`,
     );
     expect(text).toContain(`"amount":${(1n << 60n) + 1n},`);
     expect(decodeRelayFunderTerms(text)).toEqual(named);
+    expect(decodeRelayFunderTerms(text.replace('}],"legs"', ',"tag":null}],"legs"'))).toEqual(
+      named,
+    );
     for (const [from, to] of [
+      ['"slots"', '"slats"'],
+      ['{"hash"', '{"commitment"'],
+      ['"tag":"', '"blinding":"'],
       ['"legs"', '"lags"'],
       ['"direction":"deposit","mint":null,', '"mint":null,'],
       ['"direction":"deposit","mint":null', '"direction":"refund","mint":null'],

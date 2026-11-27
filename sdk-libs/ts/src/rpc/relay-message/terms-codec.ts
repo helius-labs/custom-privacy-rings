@@ -1,4 +1,5 @@
 import { address } from "@solana/kit";
+import type { Bytes32 } from "@heliuslabs/spr/interface";
 import { encodeBase58 } from "@heliuslabs/spr/internal";
 import { wirePrimitives } from "../../protocol/wire-primitives.js";
 import type {
@@ -13,6 +14,7 @@ import {
   type TokenAccountCreate,
   withMismatch,
   type RelayFunderTerms,
+  type SlotCommitment,
   type SlotOpening,
 } from "./expected.js";
 
@@ -103,6 +105,10 @@ export function encodeRelayFunderTerms(terms: RelayFunderTerms): string {
     ring: terms.ring,
     feePayer: terms.feePayer,
     signer: terms.signer,
+    slots: terms.slots.map((slot) => ({
+      hash: encodeBase58(slot.hash),
+      ...(slot.tag === undefined ? {} : { tag: encodeBase58(slot.tag) }),
+    })),
     legs: terms.legs.map(encodeLeg),
     setup: terms.setup,
   });
@@ -110,14 +116,23 @@ export function encodeRelayFunderTerms(terms: RelayFunderTerms): string {
 
 export function decodeRelayFunderTerms(json: string): RelayFunderTerms {
   return withMismatch("Undecodable", () => {
-    const row = fields(parseWire(json), ["ring", "feePayer", "signer", "legs", "setup"]);
+    const row = fields(parseWire(json), ["ring", "feePayer", "signer", "slots", "legs", "setup"]);
     return Object.freeze({
       ring: address(row["ring"] as string),
       feePayer: address(row["feePayer"] as string),
       signer: address(row["signer"] as string),
+      slots: (row["slots"] as readonly unknown[]).map(decodeSlotCommitment),
       legs: (row["legs"] as readonly unknown[]).map(decodeLeg),
       setup: (row["setup"] as readonly unknown[]).map(decodeTokenAccountCreate),
     });
+  });
+}
+
+function decodeSlotCommitment(value: unknown): SlotCommitment {
+  const row = fields(value, ["hash"], ["tag"]);
+  return Object.freeze({
+    hash: scalar.hash(row["hash"], "hash"),
+    ...decodedTag(row),
   });
 }
 
@@ -161,8 +176,13 @@ function decodeSlotOpening(value: unknown): SlotOpening {
     treeId: scalar.count(row["treeId"], "treeId", 0xffff),
     dataHash: scalar.hash(row["dataHash"], "dataHash"),
     ringDataHash: scalar.hash(row["ringDataHash"], "ringDataHash"),
-    ...((row["tag"] ?? null) === null ? {} : { tag: scalar.hash(row["tag"], "tag") }),
+    ...decodedTag(row),
   });
+}
+
+/** Rust `Option` with serde `default`, null reads as absent. */
+function decodedTag(row: Readonly<Record<string, unknown>>): Readonly<{ tag?: Bytes32 }> {
+  return (row["tag"] ?? null) === null ? {} : { tag: scalar.hash(row["tag"], "tag") };
 }
 
 /** Rust `deny_unknown_fields`, every field of `names` required and each of `optional` a serde `default`. */

@@ -6,7 +6,7 @@
 //! notes before they reach a [`DelegateSource`](crate::DelegateSource), or
 //! [`AllowedNullifiers::admit`] per requested source on the relay path.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use solana_address::Address;
@@ -18,7 +18,10 @@ use spr_keypair::{
 use spr_transaction::{TransactionError, WalletUtxo};
 use thiserror::Error;
 
-use crate::{pipeline::same_owner, AsyncRingIndexer, AuditError, RegisteredKeys, ResolveError};
+use crate::{
+    pipeline::same_owner, AsyncRingIndexer, AuditError, MessageMismatch, RegisteredKeys,
+    ResolveError,
+};
 
 #[derive(Debug, Error)]
 pub enum DelegateSourceError {
@@ -176,8 +179,25 @@ impl ResolvedSource {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AllowedNullifiers {
     sources: BTreeSet<[u8; SHIELDED_ADDRESS_LEN]>,
-    nullifiers: BTreeSet<[u8; 32]>,
+    notes: BTreeMap<[u8; 32], AllowedNote>,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AllowedNote {
+    held: SourceMint,
+    amount: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct SourceMint {
+    pub owner_key: [u8; 32],
+    pub nullifier_pk: [u8; 32],
+    pub mint: [u8; 32],
+}
+
+/// What a frame spends of each requested source per mint, less the change it returns there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SourceSpends(BTreeMap<SourceMint, i128>);
 
 impl AllowedNullifiers {
     /// Admits nothing of `source` when one of its openings fails.
@@ -186,9 +206,14 @@ impl AllowedNullifiers {
         source: &ResolvedSource,
         notes: &[WalletUtxo],
     ) -> Result<(), DelegateSourceError> {
-        let nullifiers = source.nullifiers(notes)?;
+        let admitted = source
+            .nullifiers(notes)?
+            .into_iter()
+            .zip(notes)
+            .map(|(nullifier, note)| Ok((nullifier, AllowedNote::of(note)?)))
+            .collect::<Result<Vec<_>, DelegateSourceError>>()?;
         self.sources.insert(source.address.to_bytes());
-        self.nullifiers.extend(nullifiers);
+        self.notes.extend(admitted);
         Ok(())
     }
 
@@ -212,14 +237,49 @@ impl AllowedNullifiers {
         &self,
         spent: u8,
         published: impl IntoIterator<Item = &'n [u8; 32]>,
-    ) -> Result<(), DelegateSourceError> {
-        let allowed = published
+    ) -> Result<SourceSpends, DelegateSourceError> {
+        let admitted: Vec<&AllowedNote> = published
             .into_iter()
-            .filter(|nullifier| self.nullifiers.contains(*nullifier))
-            .count();
-        match allowed == usize::from(spent) {
+            .filter_map(|nullifier| self.notes.get(nullifier))
+            .collect();
+        if admitted.len() != usize::from(spent) {
+            return Err(DelegateSourceError::UnrequestedInput {
+                spent,
+                allowed: admitted.len(),
+            });
+        }
+        let mut spends = SourceSpends::default();
+        for note in admitted {
+            *spends.0.entry(note.held).or_default() += i128::from(note.amount);
+        }
+        Ok(spends)
+    }
+}
+
+impl AllowedNote {
+    /// Read only after the opening rebuilds the hash and nullifier these fields commit.
+    fn of(note: &WalletUtxo) -> Result<Self, DelegateSourceError> {
+        Ok(Self {
+            held: SourceMint {
+                owner_key: note.utxo.owner.confidential_view_tag()?,
+                nullifier_pk: note.nullifier_pubkey,
+                mint: note.utxo.asset.asset.to_bytes(),
+            },
+            amount: note.utxo.amount,
+        })
+    }
+}
+
+impl SourceSpends {
+    pub(crate) fn debit(&mut self, held: SourceMint, amount: u64) {
+        *self.0.entry(held).or_default() -= i128::from(amount);
+    }
+
+    /// A source's change in a mint is at most what the frame spends of it there.
+    pub(crate) fn check_change(&self) -> Result<(), MessageMismatch> {
+        match self.0.values().all(|left| *left >= 0) {
             true => Ok(()),
-            false => Err(DelegateSourceError::UnrequestedInput { spent, allowed }),
+            false => Err(MessageMismatch::ChangeExceedsSpend),
         }
     }
 }

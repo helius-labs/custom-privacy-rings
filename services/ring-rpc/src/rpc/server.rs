@@ -1590,7 +1590,7 @@ mod tests {
     const GET_HEALTH: &[u8] = b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
 
     /// One whole response, its status line first.
-    async fn response(stream: &mut tokio::net::TcpStream) -> String {
+    async fn response(stream: &mut tokio::net::TcpStream) -> std::io::Result<String> {
         let mut read = Vec::new();
         loop {
             let text = String::from_utf8_lossy(&read).to_lowercase();
@@ -1600,12 +1600,12 @@ mod tests {
                     .find_map(|line| line.strip_prefix("content-length:"))
                     .map_or(0, |length| length.trim().parse::<usize>().expect("length"));
                 if body.len() >= length {
-                    return text;
+                    return Ok(text);
                 }
             }
             let mut chunk = [0; 1024];
-            match stream.read(&mut chunk).await.expect("response bytes") {
-                0 => panic!("closed inside a response, read {text:?}"),
+            match stream.read(&mut chunk).await? {
+                0 => return Err(std::io::ErrorKind::UnexpectedEof.into()),
                 count => read.extend_from_slice(&chunk[..count]),
             }
         }
@@ -1624,8 +1624,12 @@ mod tests {
         let served = async {
             loop {
                 let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
-                stream.write_all(GET_HEALTH).await.expect("request");
-                if response(&mut stream).await.starts_with("http/1.1 200") {
+                // A full server drops a connection past its refusal slots unanswered.
+                let served = match stream.write_all(GET_HEALTH).await {
+                    Ok(()) => response(&mut stream).await,
+                    Err(error) => Err(error),
+                };
+                if served.is_ok_and(|response| response.starts_with("http/1.1 200")) {
                     return;
                 }
                 tokio::task::yield_now().await;
@@ -1648,7 +1652,10 @@ mod tests {
 
         let mut held = tokio::net::TcpStream::connect(addr).await.expect("connect");
         held.write_all(GET_HEALTH).await.expect("request");
-        assert!(response(&mut held).await.starts_with("http/1.1 200"));
+        assert!(response(&mut held)
+            .await
+            .expect("response")
+            .starts_with("http/1.1 200"));
 
         let mut excess = tokio::net::TcpStream::connect(addr).await.expect("connect");
         excess.write_all(GET_HEALTH).await.expect("request");
@@ -1683,7 +1690,10 @@ mod tests {
 
         let mut keep_alive = tokio::net::TcpStream::connect(addr).await.expect("connect");
         keep_alive.write_all(GET_HEALTH).await.expect("request");
-        assert!(response(&mut keep_alive).await.starts_with("http/1.1 200"));
+        assert!(response(&mut keep_alive)
+            .await
+            .expect("response")
+            .starts_with("http/1.1 200"));
 
         for partial in [&b""[..], &b"POST / HTTP/1.1\r\nHost: localhost\r\n"[..]] {
             let mut silent = tokio::net::TcpStream::connect(addr).await.expect("connect");
@@ -1695,7 +1705,10 @@ mod tests {
             .write_all(GET_HEALTH)
             .await
             .expect("second request");
-        assert!(response(&mut keep_alive).await.starts_with("http/1.1 200"));
+        assert!(response(&mut keep_alive)
+            .await
+            .expect("response")
+            .starts_with("http/1.1 200"));
         serves_again(addr).await;
         handle.stop().expect("stop");
         handle.stopped().await;

@@ -35,12 +35,12 @@ use zeroize::Zeroizing;
 use zolana_operator_custody::{signed_transaction, SigningIdentity};
 use zolana_ring_client::{
     rpc::{
-        GetPendingListApprovalsRequest, GetPendingListApprovalsResponse,
-        GetRecordUpdateStatusRequest, PendingListApproval, RecordUpdateError, RecordUpdateId,
-        RecordUpdateStatus, RefuseListApprovalRequest, SubmitRecordUpdateRequest,
-        SubmitRecordUpdateResponse, PENDING_LIST_APPROVALS_PAGE_LIMIT,
+        CreateRecordsRegistryResponse, GetPendingListApprovalsRequest,
+        GetPendingListApprovalsResponse, GetRecordUpdateStatusRequest, PendingListApproval,
+        RecordUpdateError, RecordUpdateId, RecordUpdateStatus, RefuseListApprovalRequest,
+        SubmitRecordUpdateRequest, SubmitRecordUpdateResponse, PENDING_LIST_APPROVALS_PAGE_LIMIT,
     },
-    CustomRing, InitializeStorage, PrivateStorageWrite, ProvenPrivateWrite, RingError,
+    CustomRing, PrivateStorageWrite, ProvenPrivateWrite, RecordsCreation, RingError,
     SaltedOwnerWrite, StorageTip, UpdateStorage, PROOF_UNITS,
 };
 use zolana_ring_indexer::redact::redacted;
@@ -63,8 +63,6 @@ use crate::{
 
 pub const RECORD_FLUSH_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_BATCH_PLANS: usize = 2;
-const CONFIRM_POLL_INTERVAL: Duration = Duration::from_millis(400);
-const CREATE_COMPUTE_UNITS: u32 = 100_000;
 
 /// The owner and list salt behind a salted list key.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -88,6 +86,14 @@ pub trait PrivateWrites: Send + Sync {
     async fn prove(&self, write: PrivateStorageWrite<'_>) -> Result<ProvenPrivateWrite, RingError>;
 }
 
+/// `payer` is the authority the request signature proves.
+#[must_use]
+pub struct RecordsCreationRequest<'a> {
+    pub ring: Address,
+    pub payer: Address,
+    pub message: &'a [u8],
+}
+
 /// The one writer of every registry its authority key holds.
 pub struct RecordWriter {
     store: Store,
@@ -97,8 +103,6 @@ pub struct RecordWriter {
     reader_grants: ReaderGrantStore,
     /// Holds the queue check and the insert of one update together.
     submits: tokio::sync::Mutex<()>,
-    /// One records creation at a time, a second request finds the first registry.
-    creations: tokio::sync::Mutex<()>,
     private_writes: OnceLock<Arc<dyn PrivateWrites>>,
 }
 
@@ -125,7 +129,6 @@ impl WriterParts {
             genesis_hash: self.genesis_hash,
             reader_grants: self.reader_grants,
             submits: tokio::sync::Mutex::default(),
-            creations: tokio::sync::Mutex::default(),
             private_writes: OnceLock::new(),
         }
     }
@@ -144,36 +147,30 @@ impl RecordWriter {
         self.private_writes.set(source)
     }
 
-    /// The writer authority owns and pays for the ring's records.
-    pub async fn create_records(&self, ring: Address) -> Result<Address, WriterError> {
-        let storage = InitializeStorage::records(CustomRing::new(ring), self.authority());
-        let registry = storage.registry();
-        let _creating = self.creations.lock().await;
-        if self.registry(registry).await?.is_some() {
-            return Ok(registry);
-        }
-        let latest = self.chain.latest_blockhash().await?;
-        let message = compile_message(
-            &self.authority(),
-            &[storage.instruction()],
-            latest.blockhash,
-            ComputeBudgetConfig::new(CREATE_COMPUTE_UNITS),
-        )?;
-        let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
-        let attempt = Attempt {
-            signature: transaction.signatures[0],
-            last_valid_block_height: latest.last_valid_block_height,
+    /// The ring authority pays and sends, the writer authority signs only the creation it builds.
+    pub async fn create_records(
+        &self,
+        request: RecordsCreationRequest<'_>,
+    ) -> Result<CreateRecordsRegistryResponse, WriterError> {
+        let creation = RecordsCreation {
+            ring: CustomRing::new(request.ring),
+            payer: request.payer,
+            storage_authority: self.authority(),
         };
-        self.chain.send(&transaction).await?;
-        loop {
-            match attempt.landing(self.chain.as_ref()).await? {
-                Landing::Pending => tokio::time::sleep(CONFIRM_POLL_INTERVAL).await,
-                Landing::Landed(ChainOutcome::Confirmed { .. }) => return Ok(registry),
-                Landing::Landed(ChainOutcome::Failed { .. }) | Landing::Expired => {
-                    return Err(RecordUpdateRefusal::RecordsNotCreated.into())
-                }
-            }
+        let registry = creation.storage().registry();
+        let answer = |signature| CreateRecordsRegistryResponse {
+            registry: registry.into(),
+            storage_authority: creation.storage_authority.into(),
+            signature,
+        };
+        if self.registry(registry).await?.is_some() {
+            return Ok(answer(None));
         }
+        if !creation.is_message(request.message) {
+            return Err(RecordUpdateRefusal::RecordsMessageMismatch.into());
+        }
+        let signature = self.authority.sign(request.message).await?;
+        Ok(answer(Some(signature.into())))
     }
 
     /// A resubmitted update returns the id it was queued under.

@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use solana_account::Account;
 use solana_account_decoder_client_types::UiAccount;
 use solana_address::Address;
+use solana_hash::Hash;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_rpc_client_api::{
     client_error::{reqwest, Error as ClientError, ErrorKind},
@@ -85,6 +86,10 @@ impl SolanaRpc {
     pub fn with_block_headers(mut self, block_headers: BlockHeaders) -> Self {
         self.block_headers = block_headers;
         self
+    }
+
+    pub async fn genesis_hash(&self) -> Result<Hash, RpcError> {
+        Ok(self.client.get_genesis_hash().await?)
     }
 
     pub async fn get_slot(&self) -> Result<u64, RpcError> {

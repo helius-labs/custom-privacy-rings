@@ -1583,28 +1583,51 @@ async fn submit_rejects_malformed_or_unsigned_requests_before_chain_reads() {
 }
 
 #[tokio::test]
-async fn create_records_registry_serves_its_rings_and_repeats_one_registry() {
-    use zolana_ring_client::rpc::CreateRecordsRegistryRequest;
+async fn create_records_registry_signs_only_the_creation_it_builds_and_sends_nothing() {
+    use solana_message::{compiled_instruction::CompiledInstruction, VersionedMessage};
+    use zolana_ring_client::{
+        rpc::{CreateRecords, CreateRecordsRegistryRequest},
+        RecordsCreation,
+    };
+
+    use super::cosign_relay::FaultySigner;
+
+    let request = |target: ReadTarget, signer: &Keypair, message: &VersionedMessage| {
+        CreateRecordsRegistryRequest::create(
+            target,
+            signer.pubkey(),
+            CreateRecords {
+                message: message.serialize().into(),
+            },
+        )
+        .sign(signer)
+        .expect("signed")
+    };
+    let blockhash = solana_hash::Hash::new_from_array([0x61; 32]);
+    let ring_one = Address::new_from_array([0x31; 32]);
+    let creation = RecordsCreation {
+        ring: CustomRing::new(ring_one),
+        payer: deployer().pubkey(),
+        storage_authority: storage_authority().pubkey(),
+    };
+    let honest = creation.message(blockhash).expect("message");
 
     let records = Records::new().await;
-    let foreign_local = CreateRecordsRegistryRequest::create(
+    let foreign_local = request(
         ReadTarget {
             cluster: GENESIS,
             service: records.hub.service_pubkey(),
             ring: OTHER_RING,
         },
-        deployer().pubkey(),
-    )
-    .sign(&deployer())
-    .expect("signed");
+        &deployer(),
+        &honest,
+    );
     assert!(matches!(
         records.hub.create_records_registry(&foreign_local).await,
         Err(RingRpcError::Audit(RingAuditError::RingNotServed))
     ));
-    assert!(records.chain.sent.lock().unwrap().is_empty());
 
     let fixture = Fixture::new();
-    let ring_one = Address::new_from_array([0x31; 32]);
     let mut source = fixture.source();
     source
         .upgrade_authorities
@@ -1636,23 +1659,20 @@ async fn create_records_registry_serves_its_rings_and_repeats_one_registry() {
         records: super::Records::listing(&[]),
         proof_change: Mutex::default(),
     });
+    let signer = FaultySigner::new(storage_authority());
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
     let hub = Hub::builder(source, identity(GENESIS))
         .with_store(store)
-        .with_storage_chain(chain.clone(), Arc::new(storage_authority()))
+        .with_storage_chain(chain.clone(), signer.clone())
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
         .expect("hub");
+    let target = |ring| ReadTarget {
+        cluster: GENESIS,
+        service: hub.service_pubkey(),
+        ring,
+    };
 
-    let foreign_auditor = CreateRecordsRegistryRequest::create(
-        ReadTarget {
-            cluster: GENESIS,
-            service: hub.service_pubkey(),
-            ring: RING,
-        },
-        authority().pubkey(),
-    )
-    .sign(&authority())
-    .expect("signed");
+    let foreign_auditor = request(target(RING), &authority(), &honest);
     assert!(matches!(
         hub.create_records_registry(&foreign_auditor).await,
         Err(RingRpcError::Service(ServiceError::Unauthorized(
@@ -1660,18 +1680,46 @@ async fn create_records_registry_serves_its_rings_and_repeats_one_registry() {
         )))
     ));
 
-    let first = CreateRecordsRegistryRequest::create(
-        ReadTarget {
-            cluster: GENESIS,
-            service: hub.service_pubkey(),
-            ring: ring_one,
-        },
-        deployer().pubkey(),
-    )
-    .sign(&deployer())
-    .expect("signed");
-    let created = hub.create_records_registry(&first).await.expect("created");
-    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+    let VersionedMessage::V1(compiled) = &honest else {
+        panic!("a v1 message");
+    };
+    let edited = |edit: fn(&mut CompiledInstruction) -> Option<CompiledInstruction>| {
+        let mut compiled = compiled.clone();
+        let added = edit(&mut compiled.instructions[0]);
+        compiled.instructions.extend(added);
+        VersionedMessage::V1(compiled)
+    };
+    let other_payer = RecordsCreation {
+        payer: stranger().pubkey(),
+        ..creation
+    };
+    for hostile in [
+        other_payer.message(blockhash).expect("message"),
+        edited(|initialize| Some(initialize.clone())),
+        edited(|initialize| {
+            initialize.data[1] ^= 1;
+            None
+        }),
+    ] {
+        assert!(matches!(
+            hub.create_records_registry(&request(target(ring_one), &deployer(), &hostile))
+                .await,
+            Err(RingRpcError::Writer(WriterError::RecordUpdate(
+                RecordUpdateRefusal::RecordsMessageMismatch
+            )))
+        ));
+    }
+    assert_eq!(signer.calls(), 0);
+
+    let created = hub
+        .create_records_registry(&request(target(ring_one), &deployer(), &honest))
+        .await
+        .expect("signed");
+    assert_eq!(created.registry.0, creation.storage().registry());
+    assert_eq!(created.storage_authority.0, creation.storage_authority);
+    let signature = created.signature.expect("a signature").0;
+    assert!(signature.verify(creation.storage_authority.as_ref(), &honest.serialize()));
+    assert_eq!(signer.calls(), 1);
 
     let existing_registry =
         StorageRegistry::new(storage_authority().pubkey(), &initialize_records());
@@ -1679,20 +1727,12 @@ async fn create_records_registry_serves_its_rings_and_repeats_one_registry() {
         created.registry.0,
         owned(STORAGE_PROGRAM_ID, bytemuck::bytes_of(&existing_registry)),
     );
-    let repeat = CreateRecordsRegistryRequest::create(
-        ReadTarget {
-            cluster: GENESIS,
-            service: hub.service_pubkey(),
-            ring: ring_one,
-        },
-        deployer().pubkey(),
-    )
-    .sign(&deployer())
-    .expect("signed");
     let repeated = hub
-        .create_records_registry(&repeat)
+        .create_records_registry(&request(target(ring_one), &deployer(), &honest))
         .await
-        .expect("idempotent");
+        .expect("existing");
     assert_eq!(repeated.registry, created.registry);
-    assert_eq!(chain.sent.lock().unwrap().len(), 1);
+    assert_eq!(repeated.signature, None);
+    assert_eq!(signer.calls(), 1);
+    assert!(chain.sent.lock().unwrap().is_empty());
 }

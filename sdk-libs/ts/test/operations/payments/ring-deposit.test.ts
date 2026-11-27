@@ -17,11 +17,13 @@ import { RingAddress, RingPaymentRequest } from "../../../src/crypto/keys/ring-a
 import {
   PreparedRingDeposit,
   type RingDepositClient,
+  type RingDepositParams,
 } from "../../../src/operations/payments/deposit.js";
 import {
   decodeRelayProofInputs,
   depositRequestDigest,
 } from "../../../src/protocol/ring-rpc/relay-proof-inputs.js";
+import { PendingRelaySignature } from "../../../src/rpc/relay.js";
 import { relayRequestAttestation } from "../../../src/rpc/ring-rpc.js";
 import { RingInstructionTag } from "../../../src/protocol/transaction/instruction-tag.js";
 import { AnonymousSync } from "../../../src/state/anonymous-sync.js";
@@ -211,6 +213,40 @@ describe("ring deposit", () => {
     expect([...confidential.sppCalls, ...anonymous.sppCalls]).toEqual([]);
   });
 
+  it("refuses a public signer equal to an anonymous recipient's owner key, a confidential ring takes it", async () => {
+    const anonymous = await ringFixture({ mode: "anonymous" });
+    const confidential = await ringFixture();
+    // A browser identity's owner key is its wallet key.
+    const owner = ShieldedKeypair.fromKeypair(SigningKey.generate());
+    const wallet = owner.shieldedAddress().solanaAddress();
+    const tags = await freshWalletTags(owner);
+    const deposit = (
+      fixture: Fixture,
+      linked: Partial<Pick<RingDepositParams, "feePayer" | "depositor" | "cosigner">>,
+    ) => {
+      fixture.enroll(owner.shieldedAddress());
+      return PreparedRingDeposit.prepare({
+        client: depositClient(fixture),
+        ringProgramId: fixture.ringProgramId,
+        feePayer: fixture.authority,
+        recipient:
+          fixture === anonymous
+            ? { kind: "anonymous", keys: walletKeys(owner), listSalt: SALT }
+            : { kind: "confidential", address: owner.shieldedAddress() },
+        tags,
+        amount: 3n,
+        ...linked,
+      });
+    };
+    for (const linked of [{ depositor: wallet }, { feePayer: wallet }, { cosigner: wallet }]) {
+      await expect(deposit(anonymous, linked)).rejects.toMatchObject({
+        causeCode: "RING_ANONYMOUS_SIGNER_LINKS_OWNER",
+      });
+      await expect(deposit(confidential, linked)).resolves.toBeInstanceOf(PreparedRingDeposit);
+    }
+    expect(anonymous.sppCalls).toEqual([]);
+  });
+
   it("relays a deposit on the deposit rail under the funder's request text and refuses a funding fee payer", async () => {
     const fixture = await ringFixture({ mode: "anonymous" });
     const owner = ShieldedKeypair.generate();
@@ -266,6 +302,16 @@ describe("ring deposit", () => {
     expect(signing.verify(text, signature as Bytes64)).toBe(true);
     expect(signing.verify(depositRequestDigest(payload), signature as Bytes64)).toBe(false);
     expect(fixture.sppCalls).toEqual([]);
+    const sent = await relay.send({
+      prepareRelay: async () => ({ step: "signMessage", relayId: relay.relayId(), message: "" }),
+    } as never);
+    if (!(sent instanceof PendingRelaySignature)) throw new Error("a pending signature");
+    expect(sent.funderTerms(funder)?.slots).toEqual(
+      decoded.externalData.outputs.map(({ utxoHash, ownerTag }) => ({
+        hash: utxoHash,
+        ...(ownerTag.kind === "inline" ? { tag: ownerTag.value } : {}),
+      })),
+    );
 
     await expect(
       PreparedRingDeposit.prepareRelay({

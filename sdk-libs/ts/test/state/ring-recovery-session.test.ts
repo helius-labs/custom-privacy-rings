@@ -160,6 +160,31 @@ describe("durable recovery", () => {
     expect(held.history().current().request.next).toBe(1n);
   });
 
+  it("refuses a tag take or a history change while a paused recovery owns the history", async () => {
+    const source = new RecoverySource();
+    const alice = new ScanWallet(1);
+    const bob = new ScanWallet(2);
+    for (const slot of [10n, 20n])
+      await alice.pay(source.indexer, [{ to: bob.address, amount: slot }], { slot });
+    const sync = AnonymousSync.create(bob.keys, ASSETS).withScanLimits({
+      pageSize: 1,
+      maxPages: 1,
+    });
+    const held = wallet(bob);
+    await held.absorb(await sync.fetchWallet(source.client(), held));
+    expect(held.recoveryCoverage().status).toBe("Paused");
+    const document = held.toJson();
+    await expect(held.takeRequestTag(bob.keys)).rejects.toThrow("RING_SCAN_HISTORY_CHANGED");
+    await expect(held.takeTransferTags(bob.keys)).rejects.toThrow("RING_SCAN_HISTORY_CHANGED");
+    expect(() => held.updateHistory(held.history().withRequestCount(5n))).toThrow(
+      "RING_SCAN_HISTORY_CHANGED",
+    );
+    expect(held.toJson()).toBe(document);
+    const restored = await complete(sync, source, held);
+    await restored.takeRequestTag(bob.keys);
+    expect(restored.history().current().request.next).toBe(1n);
+  });
+
   it("refuses a changed recovery scope and another wallet instance", async () => {
     const source = new RecoverySource();
     const bob = new ScanWallet(2);

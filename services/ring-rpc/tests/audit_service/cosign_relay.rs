@@ -11,6 +11,8 @@ use ring_relay::RingRelayError;
 use ring_service_core::landing::ChainOutcome;
 use sea_orm::{ConnectionTrait, Statement};
 use solana_instruction::{AccountMeta, Instruction};
+use solana_signer::null_signer::NullSigner;
+use solana_transaction::versioned::VersionedTransaction;
 use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_keypair::{ShieldedKeypair, SigningKey};
 use zolana_operator_custody::{CustodyError, OperatorSigner};
@@ -153,14 +155,14 @@ impl RelayProver for FramedProver {
     }
 }
 
-struct FaultySigner {
+pub(super) struct FaultySigner {
     keypair: Keypair,
     unavailable: AtomicBool,
     calls: AtomicUsize,
 }
 
 impl FaultySigner {
-    fn new(keypair: Keypair) -> Arc<Self> {
+    pub(super) fn new(keypair: Keypair) -> Arc<Self> {
         Arc::new(Self {
             keypair,
             unavailable: AtomicBool::new(false),
@@ -172,7 +174,7 @@ impl FaultySigner {
         self.unavailable.store(unavailable, Ordering::Relaxed);
     }
 
-    fn calls(&self) -> usize {
+    pub(super) fn calls(&self) -> usize {
         self.calls.load(Ordering::Relaxed)
     }
 }
@@ -1219,7 +1221,7 @@ async fn a_direct_request_is_simulated_then_signed_under_the_same_rules() {
             CO_SIGN_TRANSACTION,
             as_object(CoSignTransactionRequest {
                 ring: RING.into(),
-                message: sent.message.serialize().into(),
+                transaction: wincode::serialize(&sent).expect("encoded").into(),
                 approved_transfer: None,
             }),
         )
@@ -1326,13 +1328,19 @@ impl ProgramCall {
         relay: &CappedRelay,
         transfer: Option<ApprovedTransfer>,
     ) -> Result<CoSignTransactionResponse, jsonrpsee::MethodsError> {
+        let fee_payer: &dyn Signer = &relay.fee_payer_key.keypair;
+        let signed = VersionedTransaction::try_new(
+            self.message.clone(),
+            &[fee_payer, &NullSigner::new(&relay.co_signer)],
+        )
+        .expect("signed by the fee payer");
         relay
             .module
             .call(
                 CO_SIGN_TRANSACTION,
                 as_object(CoSignTransactionRequest {
                     ring: RING.into(),
-                    message: self.message.serialize().into(),
+                    transaction: wincode::serialize(&signed).expect("encoded").into(),
                     approved_transfer: transfer,
                 }),
             )

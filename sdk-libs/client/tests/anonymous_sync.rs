@@ -41,7 +41,7 @@ use zolana_ring_client::{
     auditor_view_tag, note_state, verify_ring_owned, AnonymousError, AnonymousScan,
     AnonymousStream, AnonymousSync, AnonymousWallet, AuditError, AuditStreamSeal, NoteState,
     RingConfidentialScan, RingNoteCodec, SenderAuditFrame, SenderAuditFrames, SentCheck,
-    ViewingHistory,
+    ViewingHistory, TAG_WINDOW,
 };
 use zolana_ring_keys::encode_ring_body_output;
 use zolana_ring_keys::AuditEvidence;
@@ -51,7 +51,7 @@ use zolana_ring_keys::RecipientPayload;
 use zolana_ring_keys::SlotSecret;
 use zolana_ring_keys::{
     bootstrap_slot_tag, RingDeliveryRequest, RingKeyError, RingKeys, RotatingRingKeys,
-    ViewTagRequest,
+    ViewTagRequest, ViewTagStream,
 };
 use zolana_ring_transaction::{
     published_outputs, record_key, seal_reply, AnonymousPlan, BodyForm, ExitSlot, RecipientBody,
@@ -768,6 +768,39 @@ async fn one_tag_sync_finds_a_bootstrap_payment_a_request_payment_and_the_change
         ]
     );
     assert_eq!(indexer.take_ring_pages(), 0);
+}
+
+/// A wallet restored from its seed starts each counter at zero.
+#[tokio::test]
+async fn change_and_a_payment_under_the_highest_listed_tags_move_both_counters_past_them() {
+    let indexer = Indexer::default();
+    let mut alice = Wallet::new(1);
+    let mut bob = Wallet::new(2);
+    let mut stored = AnonymousWallet::new(ViewingHistory::new(bob.keys.viewing_pubkey(), 0));
+    let [sender, request] = [ViewTagStream::Sender, ViewTagStream::Request].map(|stream| {
+        bob.keys
+            .view_tags(&[ViewTagRequest {
+                viewing_pubkey: bob.keys.viewing_pubkey(),
+                stream,
+                indices: TAG_WINDOW - 1..TAG_WINDOW,
+            }])
+            .unwrap()[0][0]
+    });
+    bob.sender_tag = Some(sender);
+    let sent = bob.pay(&indexer, &[pay(&alice.address(), 20)]);
+    let to_request = Pay {
+        to: &bob.address(),
+        amount: 7,
+        tag: Some(request),
+    };
+    let paid = alice.pay(&indexer, &[to_request]);
+    tag_sync(&indexer, &bob.keys, &mut stored).await;
+    assert_eq!(held(&stored), [output(&sent, 0), output(&paid, 1)]);
+    let current = stored.history().current();
+    assert_eq!(
+        (current.tx_count(), current.request_count()),
+        (TAG_WINDOW, TAG_WINDOW)
+    );
 }
 
 /// The ring sync opens every body of a row its caller hands it, no tag selects one.

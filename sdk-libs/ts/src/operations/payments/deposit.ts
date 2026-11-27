@@ -82,7 +82,7 @@ import {
   type CustomRingTransferInput,
   type PublicOwnerTransfer,
 } from "./transfer-rails.js";
-import { payeeOf, paymentTag, type PaymentPayee } from "./anonymous.js";
+import { checkHiddenParties, payeeOf, paymentTag, type PaymentPayee } from "./anonymous.js";
 import { assetLabel, type RingTransferClient } from "./transfer.js";
 
 const base58 = getBase58Decoder();
@@ -204,7 +204,7 @@ export class PreparedRingDeposit {
     }
   }
 
-  /** Ring RPC proves and pays, the depositor signs the request now and its legs on the returned message. */
+  /** Ring RPC proves and pays, the depositor signs the request now and the returned frame later. */
   static async prepareRelay(
     params: RingDepositRelayParams,
     context?: RequestContext,
@@ -321,6 +321,12 @@ export class PreparedRingDeposit {
     ]);
     const anonymous = config.mode === "anonymous";
     const paid = await depositPayee(params, anonymous, context);
+    if (anonymous)
+      checkHiddenParties(paid.address.signingPublicKey.ed25519(), [
+        params.feePayer,
+        funder,
+        ...(params.coSigners ?? []),
+      ]);
     // 1. The sender spends nothing and seeds the transaction key. Its zero key keeps the anonymous
     //    rail's zero change out of the tracking rows a keyed owner needs.
     const fresh = ShieldedKeypair.generate();

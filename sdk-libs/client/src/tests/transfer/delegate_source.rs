@@ -3,7 +3,10 @@ use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use spr_keypair::{random_blinding, NullifierKey, PublicKey, ShieldedAddress, X25519Keypair};
 use spr_transaction::{Data, Mint, Utxo, WalletUtxo};
 
-use super::{AllowedNullifiers, DelegateSourceError, ResolvedSource, TrackingEnrollment};
+use super::{
+    AllowedNote, AllowedNullifiers, DelegateSourceError, ResolvedSource, SourceMint,
+    TrackingEnrollment,
+};
 use crate::{
     tests::support::{
         auditor, keypair, program, ring_utxo, wallet, Chain, ServedLeaf, TRACKING, TREE_ID,
@@ -143,14 +146,32 @@ async fn a_recovered_note_of_another_owner_is_refused() {
     ));
 }
 
-/// A pinned relay vector holds no openings, its honest frame's nullifiers stand in for them.
-pub(crate) fn allowed_as_pinned(
-    sources: &[ShieldedAddress],
-    nullifiers: impl IntoIterator<Item = [u8; 32]>,
-) -> AllowedNullifiers {
-    AllowedNullifiers {
-        sources: sources.iter().map(ShieldedAddress::to_bytes).collect(),
-        nullifiers: nullifiers.into_iter().collect(),
+/// A pinned relay vector holds no openings, its honest frame's nullifiers stand in for the source's notes.
+pub(crate) struct PinnedSpends<'a> {
+    pub source: &'a ShieldedAddress,
+    pub mint: Mint,
+    pub amount: u64,
+    pub nullifiers: Vec<[u8; 32]>,
+}
+
+impl PinnedSpends<'_> {
+    pub(crate) fn allowed(self) -> AllowedNullifiers {
+        let note = AllowedNote {
+            held: SourceMint {
+                owner_key: self.source.signing_pubkey.confidential_view_tag().unwrap(),
+                nullifier_pk: self.source.nullifier_pubkey,
+                mint: self.mint.asset.to_bytes(),
+            },
+            amount: self.amount,
+        };
+        AllowedNullifiers {
+            sources: [self.source.to_bytes()].into(),
+            notes: self
+                .nullifiers
+                .into_iter()
+                .map(|nullifier| (nullifier, note))
+                .collect(),
+        }
     }
 }
 

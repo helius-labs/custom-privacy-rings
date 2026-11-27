@@ -4,13 +4,14 @@
 
 use solana_address::Address;
 use zolana_ring_client::rpc::{
-    CreateRecords, CreateRecordsRegistryRequest, CreateRecordsRegistryResponse,
-    GetPendingListApprovalsRequest, GetPendingListApprovalsResponse, ListPendingApprovals,
-    PolicyAuthorityAuth, RecordUpdateStatus, RefuseListApproval, RefuseListApprovalRequest,
-    RegisterEnrollment, RegisterEnrollmentRingRequest, RegisterEnrollmentRingResponse,
+    CreateRecordsRegistryRequest, CreateRecordsRegistryResponse, GetPendingListApprovalsRequest,
+    GetPendingListApprovalsResponse, ListPendingApprovals, PolicyAuthorityAuth, RecordUpdateStatus,
+    RefuseListApproval, RefuseListApprovalRequest, RegisterEnrollment,
+    RegisterEnrollmentRingRequest, RegisterEnrollmentRingResponse,
 };
 
 use ring_service_core::upstream::TransactionSource;
+use ring_writer::record_writer::RecordsCreationRequest;
 
 use ring_audit::policy_action::PolicyAction;
 
@@ -67,22 +68,25 @@ impl<S: TransactionSource> Hub<S> {
         Ok(writer.refuse_list_approval(request).await?)
     }
 
-    /// The upgrade authority signs before `Initialize`, the policy authority after.
+    /// The upgrade authority signs before `Initialize`, the policy authority after, and the signer pays.
     pub async fn create_records_registry(
         &self,
         request: &CreateRecordsRegistryRequest,
     ) -> Result<CreateRecordsRegistryResponse, RingRpcError> {
         let ring = request.ring.0;
         let writer = self.record_writer()?;
-        self.policy_action(ring, &request.auth, CreateRecords)
+        self.policy_action(ring, &request.auth, request.action())
             .authorize::<_, _, RingRpcError, _, _>(|authority| {
                 self.shared().require_ring_authority(ring, authority)
             })
             .await?;
-        Ok(CreateRecordsRegistryResponse {
-            registry: writer.create_records(ring).await?.into(),
-            storage_authority: writer.authority().into(),
-        })
+        Ok(writer
+            .create_records(RecordsCreationRequest {
+                ring,
+                payer: request.auth.authority.0,
+                message: &request.message.0,
+            })
+            .await?)
     }
 
     /// The policy authority alone, the signed action names this service's enrollment writer.

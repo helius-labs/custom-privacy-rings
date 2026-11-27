@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     collections::HashSet,
-    net::{IpAddr, SocketAddr},
+    net::IpAddr,
     num::{NonZeroU32, NonZeroU64, NonZeroUsize},
     path::PathBuf,
     time::Duration,
@@ -25,6 +25,7 @@ use ring_cosigner::cosign::ApproveClass;
 use ring_service_core::{
     keys::KeySource,
     keys::{GrantRowsSecret, RootSecret},
+    kms::{KmsArgs, MissingRegion},
     origins::{loopback_url, OriginTransport},
 };
 use ring_writer::record_update::ReaderGrantStore;
@@ -169,15 +170,6 @@ pub struct ServeArgs {
 }
 
 #[derive(Debug, Args)]
-struct KmsArgs {
-    /// AWS KMS region, defaults to AWS_REGION.
-    #[arg(long, conflicts_with = "localnet_kms")]
-    kms_region: Option<String>,
-    #[arg(long, env = "RING_RPC_LOCALNET_KMS")]
-    localnet_kms: Option<SocketAddr>,
-}
-
-#[derive(Debug, Args)]
 struct SecretArgs {
     #[command(flatten)]
     kms: KmsArgs,
@@ -231,8 +223,8 @@ pub enum CustodyConfigError {
     File(#[from] std::io::Error),
     #[error("invalid custody manifest")]
     Manifest(#[from] serde_json::Error),
-    #[error("missing AWS region")]
-    MissingRegion,
+    #[error(transparent)]
+    MissingRegion(#[from] MissingRegion),
     #[error("only a single ring auditor requires a ring program ID")]
     AuditorRing,
     #[error("local KMS requires a loopback bind address and Solana RPC URL")]
@@ -442,21 +434,6 @@ impl ServeArgs {
             return Err(CustodyConfigError::SharedAddress);
         }
         Ok(())
-    }
-}
-
-impl KmsArgs {
-    fn endpoint(&self) -> Result<KmsEndpoint, CustodyConfigError> {
-        if let Some(endpoint) = self.localnet_kms {
-            return Ok(KmsEndpoint::Localnet(endpoint));
-        }
-        // Read by hand, a clap env value would conflict with the local KMS flag.
-        self.kms_region
-            .clone()
-            .or_else(|| std::env::var("AWS_REGION").ok())
-            .filter(|region| !region.is_empty())
-            .map(|region| KmsEndpoint::Aws { region })
-            .ok_or(CustodyConfigError::MissingRegion)
     }
 }
 
@@ -772,7 +749,7 @@ mod tests {
         ));
         assert!(matches!(
             endpoint(&["--kms-region", ""]).expect("flags"),
-            Err(CustodyConfigError::MissingRegion)
+            Err(MissingRegion)
         ));
         assert!(endpoint(&[&AWS_KMS[..], &LOCAL_KMS].concat()).is_err());
     }

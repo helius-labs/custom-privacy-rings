@@ -277,27 +277,29 @@ export class AnonymousWallet {
     return this.#notes.promotePending();
   }
 
-  /** Only raises a tag counter or adds a key. */
+  /** Only raises a tag counter or adds a key, Rust `AnonymousWallet::update_history`. */
   updateHistory(updated: ViewingHistory): void {
+    // A paused recovery fixes the key scope, and its counters can trail an index already used.
+    if (this.#recovery !== null && updated.toJson() !== this.#history.toJson())
+      throw new RingError("RING_SCAN_HISTORY_CHANGED");
     if (!updated._progressMatches(this.#history)) throw new RingError("RING_SCAN_PROGRESS_MOVED");
     this.#history = updated;
     this.#revision += 1n;
   }
 
   /** Concurrent callers never share an index, a holder failure burns it. */
-  takeRequestTag(keys: RingKeys, context?: RequestContext): Promise<ViewTag> {
+  async takeRequestTag(keys: RingKeys, context?: RequestContext): Promise<ViewTag> {
     return this.#taken(this.#history._takeRequest())(keys, context);
   }
 
   /** The sender tag of one transfer, its index taken as `takeRequestTag` takes one. */
-  takeTransferTags(keys: RingKeys, context?: RequestContext): Promise<TransferTags> {
+  async takeTransferTags(keys: RingKeys, context?: RequestContext): Promise<TransferTags> {
     return this.#taken(this.#history._takeSender())(keys, context);
   }
 
   /** The wallet holds the advanced history before the holder is asked. */
   #taken<Tag>(advanced: AdvancedTag<Tag>): Tag {
-    this.#history = advanced.history;
-    this.#revision += 1n;
+    this.updateHistory(advanced.history);
     return advanced.tag;
   }
 

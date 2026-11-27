@@ -3,18 +3,20 @@
 use anyhow::{bail, ensure, Context as _, Result};
 use custom_ring_interface::RingRoles;
 use solana_address::Address;
+use spr_client::{sign_transaction, Rpc};
 use spr_keypair::X25519Pubkey;
 use zolana_operator_custody::OperatorSigner;
 use zolana_ring_client::{
-    rpc::{read_auditor_pubkey, write_auditor_pubkey},
+    rpc::{read_auditor_pubkey, write_auditor_pubkey, CreateRecords, CreateRecordsRegistryRequest},
     CustomRingConfig, InitialPolicy, Initialize, ListRegistry, PolicySources, PolicyTable,
-    PolicyUpdate, RingError, RingKind, SourceOwner, UpdatePolicy,
+    PolicyUpdate, RecordsCreation, RingError, RingKind, SourceOwner, UpdatePolicy,
 };
 use zolana_ring_policy::{ListId, RuleTable};
 
 use crate::{
     catalogue,
     config::{ModeName, Target},
+    context::transaction_failure,
     deploy, fund, line,
     policy::{self, CompiledPolicy, PolicySpec},
     status,
@@ -51,6 +53,11 @@ struct RingInitialization<'a> {
     auditor_pk: X25519Pubkey,
     kind: RingKind,
     policy: Option<&'a CompiledPolicy>,
+}
+
+#[must_use]
+struct RecordsRegistry<'a> {
+    authority: &'a dyn OperatorSigner,
 }
 
 #[must_use]
@@ -214,9 +221,10 @@ impl ConfigCreation<'_> {
 impl RingInitialization<'_> {
     fn send(self, ctx: &Context) -> Result<()> {
         let target = self.policy_authority.address();
-        let records = ctx
-            .ring_rpc()?
-            .create_records_registry(ctx.ring_rpc_target()?, &ctx.request_signer(self.deployer))?;
+        let records = RecordsRegistry {
+            authority: self.deployer,
+        }
+        .create(ctx)?;
         let empty = RuleTable::empty();
         let (rules, shared_sources) = match self.policy {
             Some(policy) => {
@@ -261,6 +269,41 @@ impl RingInitialization<'_> {
         };
         ctx.send_operator(operators, &[initialize])?;
         Ok(())
+    }
+}
+
+impl RecordsRegistry<'_> {
+    /// Ring RPC answers no signature once another sender lands the creation first.
+    fn create(self, ctx: &Context) -> Result<Address> {
+        let ring_rpc = ctx.ring_rpc()?;
+        let creation = RecordsCreation {
+            ring: ctx.ring,
+            payer: self.authority.address(),
+            storage_authority: ring_rpc.storage_authority()?,
+        };
+        let registry = creation.storage().registry();
+        if ctx.rpc().get_account(registry)?.is_some() {
+            return Ok(registry);
+        }
+        ctx.fund(creation.payer, fund::MIN_AUTHORITY_BALANCE)?;
+        let (blockhash, _) = ctx.rpc().get_latest_blockhash()?;
+        let message = creation.message(blockhash)?;
+        let payer = ctx.request_signer(self.authority);
+        let request = CreateRecordsRegistryRequest::create(
+            ctx.ring_rpc_target()?,
+            creation.payer,
+            CreateRecords {
+                message: message.serialize().into(),
+            },
+        )
+        .sign(&payer)?;
+        if let Some(storage) = ring_rpc.create_records_registry(request, creation)? {
+            let transaction = sign_transaction(message, &[&payer, &storage])?;
+            ctx.rpc()
+                .process_transaction(transaction)
+                .map_err(transaction_failure)?;
+        }
+        Ok(registry)
     }
 }
 

@@ -13,12 +13,12 @@ pub const CO_SIGN_TRANSACTION: &str = "coSignTransaction";
 pub const EDIT_CO_SIGN_LIST: &str = "editCoSignList";
 pub const GET_CO_SIGN_LISTS: &str = "getCoSignLists";
 
-/// `message` is the serialized v1 message of one ring transfer.
+/// `transaction` is the serialized v1 transaction of one ring transfer, every required signer but the co-signer signed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CoSignTransactionRequest {
     pub ring: SerializablePubkey,
-    pub message: Base64String,
+    pub transaction: Base64String,
     /// Set where a program calls the transfer under the message's `ApproveTransfer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_transfer: Option<ApprovedTransfer>,
@@ -34,7 +34,7 @@ pub struct ApprovedTransfer {
     pub accounts: Vec<SerializablePubkey>,
 }
 
-/// `signature` signs the request message under `signer`.
+/// `signature` signs the message of the request transaction under `signer`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CoSignTransactionResponse {

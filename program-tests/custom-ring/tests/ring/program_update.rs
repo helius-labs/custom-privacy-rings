@@ -7,6 +7,8 @@ use custom_ring_test_validator::{ring_rpc::CoSigningRingRpc, shared::CoSigned};
 use ring_cosigner::cosign::{ApproveClass, CoSignError, CoSignerApproval};
 use ring_writer::record_update::MAX_LIMIT_WINDOW_SLOTS;
 use solana_message::VersionedMessage;
+use solana_signer::null_signer::NullSigner;
+use solana_transaction::versioned::VersionedTransaction;
 use spr_program::{
     hasher::{data_hash, DataHasher},
     proof::compressed_proof,
@@ -212,11 +214,11 @@ impl ProvenStep {
     fn co_sign_request(
         &self,
         ring: CustomRing,
-        message: &VersionedMessage,
+        transaction: &VersionedTransaction,
     ) -> Result<CoSignTransactionRequest> {
         Ok(CoSignTransactionRequest {
             ring: ring.program_id().into(),
-            message: message.serialize().into(),
+            transaction: wincode::serialize(transaction)?.into(),
             approved_transfer: Some(self.transfer.approved_transfer()?),
         })
     }
@@ -233,7 +235,12 @@ impl ProvenStep {
             return send(env.client.rpc(), payer, &self.instructions);
         }
         let message = self.message(env, payer.pubkey())?;
-        let co_signed = co_sign_once_read(ring_rpc, &self.co_sign_request(ring, &message)?)?;
+        let presigned = Presigning {
+            payer,
+            co_signer: ring_rpc.co_signer,
+        }
+        .transaction(message.clone())?;
+        let co_signed = co_sign_once_read(ring_rpc, &self.co_sign_request(ring, &presigned)?)?;
         CoSigned {
             payer,
             message,
@@ -241,6 +248,19 @@ impl ProvenStep {
             co_signature: co_signed.signature.0,
         }
         .send(env.client.rpc())
+    }
+}
+
+/// The payer signs ahead of Ring RPC, whose slot stays zero.
+struct Presigning<'a> {
+    payer: &'a dyn Signer,
+    co_signer: Address,
+}
+
+impl Presigning<'_> {
+    fn transaction(&self, message: VersionedMessage) -> Result<VersionedTransaction> {
+        let unsigned = NullSigner::new(&self.co_signer);
+        Ok(sign_transaction(message, &[self.payer, &unsigned])?)
     }
 }
 
@@ -443,6 +463,10 @@ fn a_program_updates_its_ring_note_under_a_ring_rpc_approval() -> Result<()> {
     let updated = Updated::new()?;
     let env = &updated.env;
     let payer = &env.sender.keypair;
+    let presigning = Presigning {
+        payer,
+        co_signer: updated.ring_rpc.co_signer,
+    };
 
     // 1. An approval covers the committed frame alone, on chain and at Ring RPC.
     let approved = updated.step(PAID / 2)?.prove(env, payer.pubkey())?;
@@ -462,7 +486,7 @@ fn a_program_updates_its_ring_note_under_a_ring_rpc_approval() -> Result<()> {
     let message = swapped.message(env, payer.pubkey())?;
     let refusal = co_sign_once_read(
         &updated.ring_rpc,
-        &swapped.co_sign_request(updated.ring, &message)?,
+        &swapped.co_sign_request(updated.ring, &presigning.transaction(message.clone())?)?,
     )
     .err()
     .context("a co-signature over another call")?;
@@ -497,7 +521,7 @@ fn a_program_updates_its_ring_note_under_a_ring_rpc_approval() -> Result<()> {
     let message = above.message(env, payer.pubkey())?;
     let refusal = co_sign_once_read(
         &updated.ring_rpc,
-        &above.co_sign_request(updated.ring, &message)?,
+        &above.co_sign_request(updated.ring, &presigning.transaction(message)?)?,
     )
     .err()
     .context("a co-signature above the cap")?;

@@ -32,7 +32,9 @@ use zolana_ring_policy::{ApprovalTotals, Member, OutputTotals, OwnerDebit, Publi
 use zolana_ring_transaction::{open_recipient_body, record_key};
 
 use crate::{
-    compute_unit_limit, located_layout,
+    compute_unit_limit,
+    delegate_source::{SourceMint, SourceSpends},
+    located_layout,
     pipeline::refused_delegate,
     rpc::{AuthorityWithdrawal, RelayId, TxViewingSecret},
     sole_mint, AuditEnvelope, CoSignerPairs, CustomRing, CustomRingConfig, DelegateRequester,
@@ -79,6 +81,8 @@ pub enum MessageMismatch {
     SpendsUnnamedNote,
     #[error("the message spends a note no requested source opening derives")]
     SpendsUnrequestedNote,
+    #[error("the change to a source exceeds what the message spends of it in that mint")]
+    ChangeExceedsSpend,
     #[error("the terms leave a published output unopened")]
     UnopenedOutput,
     #[error("the public legs differ from the signer's terms")]
@@ -117,17 +121,28 @@ pub struct RelayTransferTerms {
     pub setup: Vec<TokenAccountCreate>,
 }
 
-/// What one public funder agrees to, its own deposit legs alone.
+/// What one public funder agrees to, every published output and public leg of the frame it funds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RelayFunderTerms {
     pub ring: SerializablePubkey,
     pub fee_payer: SerializablePubkey,
     pub signer: SerializablePubkey,
-    /// The legs the signer funds in frame order.
+    /// One per published slot in slot order.
+    pub slots: Vec<SlotCommitment>,
+    /// Every interface transfer leg of the frame in frame order.
     pub legs: Vec<PublicLeg>,
     /// The token accounts the fee payer creates ahead of the ring instruction.
     pub setup: Vec<TokenAccountCreate>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SlotCommitment {
+    pub hash: Hash,
+    /// `None` on an exit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<Hash>,
 }
 
 /// One interface transfer leg with its settlement group in frame order.
@@ -335,7 +350,7 @@ pub(crate) struct ExpectedPublicOwner {
     known_nullifiers: Vec<[u8; 32]>,
 }
 
-/// One public funder reading the frame's deposit legs against its terms.
+/// One public funder reading the frame's outputs and legs against its terms.
 #[derive(Clone, Debug)]
 pub(crate) struct ExpectedFunder {
     terms: RelayFunderTerms,
@@ -819,11 +834,14 @@ impl ExpectedDelegate {
         }
         check_legs(&self.withdrawals, decoded, decoded.legs.iter())?;
         // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
-        if let DelegateRequester::Ring(allowed) = &self.requester {
-            allowed
-                .check_spends(opened.real_inputs, data.nullifiers)
-                .map_err(|_| MessageMismatch::SpendsUnrequestedNote)?;
-        }
+        let mut spends = match &self.requester {
+            DelegateRequester::Ring(allowed) => Some(
+                allowed
+                    .check_spends(opened.real_inputs, data.nullifiers)
+                    .map_err(|_| MessageMismatch::SpendsUnrequestedNote)?,
+            ),
+            DelegateRequester::Mint(_) => None,
+        };
         // 3. Each live record pays one requested payment or returns change to a requested source,
         // sealed to that owner's viewing key.
         let records = open_records(parsed, &self.tx_viewing_key, &opened)?;
@@ -863,6 +881,16 @@ impl ExpectedDelegate {
                     record.kind == RecordKind::Ring && source.owns(&record) && sealed_to(source)
                 })
                 .ok_or(MessageMismatch::Recipients)?;
+            if let Some(spends) = &mut spends {
+                spends.debit(
+                    SourceMint {
+                        owner_key: source.owner_key,
+                        nullifier_pk: source.nullifier_pk,
+                        mint: record.mint,
+                    },
+                    record.amount,
+                );
+            }
             // An anonymous source's change publishes no tag of its own, a note that source spent finds it.
             if anonymous {
                 continue;
@@ -872,10 +900,11 @@ impl ExpectedDelegate {
                 return Err(MessageMismatch::Recipients);
             }
         }
-        match unpaid.is_empty() {
-            true => Ok(()),
-            false => Err(MessageMismatch::Recipients),
+        if !unpaid.is_empty() {
+            return Err(MessageMismatch::Recipients);
         }
+        // 4. A mint's permanent delegate holds no notes to weigh the change against.
+        spends.as_ref().map_or(Ok(()), SourceSpends::check_change)
     }
 }
 
@@ -940,7 +969,7 @@ impl OwnerApproval<'_> {
     }
 }
 
-/// A funder's approval, its signature moves the legs it names and nothing else of its.
+/// A funder's approval, its signature moves the legs it funds and nothing else of its.
 #[must_use]
 pub struct FunderApproval<'a> {
     pub relay_id: RelayId,
@@ -1019,11 +1048,11 @@ impl ExpectedPublicOwner {
         for (opening, published) in terms.slots.iter().zip(&data.outputs) {
             // An exit commits no ring, a ring id here would refuse every exit.
             let rebuilt = opening.utxo_hash((!published.is_exit()).then_some(terms.ring.0))?;
-            if rebuilt != *published.hash {
-                return Err(MessageMismatch::Recipients);
-            }
-            let tagged = opening.tag.as_ref().map(|tag| tag.0) == Some(published.owner_tag);
-            if !published.is_exit() && !tagged {
+            let stated = SlotCommitment {
+                hash: Hash(rebuilt),
+                tag: opening.tag.clone(),
+            };
+            if !stated.publishes(published) {
                 return Err(MessageMismatch::Recipients);
             }
         }
@@ -1086,6 +1115,14 @@ impl SlotOpening {
         }
         .hash()
         .map_err(|_| MessageMismatch::Recipients)
+    }
+}
+
+impl SlotCommitment {
+    /// SPP binds an exit's tag to its owner, any other slot publishes the stated tag.
+    fn publishes(&self, output: &RingOutput<'_>) -> bool {
+        self.hash.0 == *output.hash
+            && (output.is_exit() || self.tag.as_ref().map(|tag| tag.0) == Some(output.owner_tag))
     }
 }
 
@@ -1158,24 +1195,44 @@ impl ExpectedFrame for ExpectedFunder {
         })
     }
 
-    /// The signature authorizes every position naming the key, so the check holds both sides.
+    /// A relayed deposit proves no owner signature, the funder reads every output and leg before it
+    /// signs. The signature authorizes every position naming the key, so the check holds both sides.
     fn check_frame(
         &self,
         envelope: &Envelope,
-        _parsed: &ParsedTransact<'_>,
+        parsed: &ParsedTransact<'_>,
         decoded: &DecodedTransfer<'_>,
     ) -> Result<(), MessageMismatch> {
-        // 1. The legs of the frame that take the key as funder match the terms exactly, a leg the
-        // sender adds would draw funds the signer never agreed to.
-        let funded = decoded.legs.iter().filter(|leg| {
-            leg.funder
-                .is_some_and(|funder| decoded.key(funder) == Some(envelope.signer))
-        });
-        check_legs(&self.terms.legs, decoded, funded.clone())?;
-        // 2. Past its funder slots the key appears nowhere. A run entry would authorize its data
-        // outputs and spent notes under one signature, the sharper authority the terms never name.
-        let slots: Vec<usize> = funded.filter_map(|leg| leg.funder).collect();
-        let sol_funded = self.terms.legs.iter().any(|leg| leg.mint.is_none());
+        let terms = &self.terms;
+        let outputs = &parsed.data().outputs;
+        // 1. Each published output is the one the sealing wallet stated at its slot.
+        if terms.slots.len() != outputs.len() {
+            return Err(MessageMismatch::UnopenedOutput);
+        }
+        if !terms
+            .slots
+            .iter()
+            .zip(outputs)
+            .all(|(slot, output)| slot.publishes(output))
+        {
+            return Err(MessageMismatch::Recipients);
+        }
+        // 2. The frame moves public funds through the legs the terms name and no other, a
+        // withdrawal has no funder to refuse it.
+        check_legs(&terms.legs, decoded, decoded.legs.iter())?;
+        // 3. Past the funder slots of its legs the key appears nowhere. A run entry would authorize
+        // its data outputs and spent notes under one signature, the sharper authority the terms
+        // never name.
+        let funded: Vec<&SettlementLeg> = decoded
+            .legs
+            .iter()
+            .filter(|leg| {
+                leg.funder
+                    .is_some_and(|funder| decoded.key(funder) == Some(envelope.signer))
+            })
+            .collect();
+        let slots: Vec<usize> = funded.iter().filter_map(|leg| leg.funder).collect();
+        let sol_funded = funded.iter().any(|leg| !leg.transfer.is_spl());
         check_signer(envelope, decoded, &slots, sol_funded)
     }
 }

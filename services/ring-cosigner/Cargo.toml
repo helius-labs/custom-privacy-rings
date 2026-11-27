@@ -25,6 +25,7 @@ solana-address = { workspace = true, features = ["curve25519"] }
 solana-message = { workspace = true }
 solana-sdk-ids = { workspace = true }
 solana-signature = { workspace = true, features = ["verify"] }
+solana-transaction = { workspace = true, features = ["wincode"] }
 spr-hasher = { workspace = true }
 spr-interface = { workspace = true }
 spr-transaction = { workspace = true }
@@ -47,7 +48,6 @@ solana-hash = { workspace = true }
 solana-instruction = { workspace = true }
 solana-keypair = { workspace = true }
 solana-signer = { workspace = true }
-solana-transaction = { workspace = true }
 spr-client = { workspace = true, features = ["solana-rpc"] }
 spr-indexer-api = { workspace = true }
 spr-keypair = { workspace = true }

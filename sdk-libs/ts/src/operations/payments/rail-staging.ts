@@ -55,8 +55,8 @@ import { anonymousPartyIdentities } from "../../protocol/membership/parties.js";
 import {
   proveStagedTransfer,
   sealRelayedTransfer,
+  sealedFunderTerms,
   sealedTransferTerms,
-  stagedLegs,
   type SealedTransfer,
   type CoSignerForm,
   type ProvenRingTransfer,
@@ -148,17 +148,20 @@ type TaggedPayments = Readonly<{
 /** Without the wallet's sender tag change takes random bytes, the note the wallet spends finds it. */
 function taggedPlan(tagged: TaggedPayments): AnonymousPlan {
   const { prepared, sender, payments, tags } = tagged;
-  // 1. An entry spends default-ring notes alone, a core sync that reads their spend first leaves
-  // only the sender tag to find the change.
-  const notes = spentNotes(prepared.inputs);
-  const entry = notes.length > 0 && notes.every(isDefaultRingNote);
-  if (tags === undefined && entry) throw new RingError("RING_SENDER_TAG_REQUIRED");
+  // 1. An entry spends the sender's default-ring notes and no ring note of its own, a core sync
+  // that reads their spend first leaves only the sender tag to find the change.
+  const own = spentNotes(prepared.inputs).filter((input) =>
+    input.utxo.owner.equals(sender.signingPublicKey),
+  );
+  const entry = own.length > 0 && own.every(isDefaultRingNote);
   // 2. Change takes the sender tag only under the key the tags derive from, a deposit's
   // fresh sender holds another key and its change a random tag.
+  const senderTags = tags?.viewingPublicKey.equals(sender.viewingPublicKey) ? tags : undefined;
+  if (senderTags === undefined && entry) throw new RingError("RING_SENDER_TAG_REQUIRED");
   const plan =
-    tags !== undefined && tags.viewingPublicKey.equals(sender.viewingPublicKey)
-      ? AnonymousPlan.create().withSenderTag(tags.sender)
-      : AnonymousPlan.create();
+    senderTags === undefined
+      ? AnonymousPlan.create()
+      : AnonymousPlan.create().withSenderTag(senderTags.sender);
   // 3. The send call alone attaches a reply, no default path does.
   return payments.reduce((planned, payment) => {
     const paid = planned.withPayment({
@@ -600,7 +603,7 @@ type RelayFrame<Relayed> = Readonly<{
 }> &
   (
     | Readonly<{ kind: "spend" }>
-    /** The frame's sender proves nothing, each funder signs its legs. */
+    /** The frame's sender proves nothing, each funder signs every output and leg of the frame. */
     | Readonly<{ kind: "deposit"; funders: readonly Address[] }>
   );
 
@@ -758,7 +761,7 @@ function spendWireRail(
   };
 }
 
-/** One funder term per funding key, Ring RPC builds the frame and the funder signs its legs. */
+/** One funder term per funding key, Ring RPC builds the frame and the funder signs it. */
 export function relayDeposit(
   input: Readonly<{
     transfer: RailTransfer;
@@ -785,7 +788,6 @@ export function relayDeposit(
           const { proofInputs } = sealed;
           const plan = staged.rail.delivery;
           const legs = proofInputs.externalData.interfaceTransfers;
-          const funded = stagedLegs({ transfers: legs, deposits, withdrawal: undefined });
           const wire: RelayWire = {
             rail: { kind: "deposit", ...(plan.kind === "anonymous" ? { plan: plan.plan } : {}) },
             leafIndexes: proofInputs.inputUtxos.map(() => 0n),
@@ -796,17 +798,12 @@ export function relayDeposit(
             const expected: ExpectedSealed = Object.freeze({
               kind: "sealed",
               terms: [],
-              funders: funders.map((signer) =>
-                Object.freeze({
-                  ring: owner.ringProgramId,
-                  feePayer: quote.feePayer,
-                  signer,
-                  legs: Object.freeze(
-                    funded.filter(({ funder }) => funder === signer).map(({ leg }) => leg),
-                  ),
-                  setup: [],
-                }),
-              ),
+              funders: sealedFunderTerms({
+                ringProgramId: owner.ringProgramId,
+                feePayer: quote.feePayer,
+                sealed,
+                deposits,
+              }),
               chargedOutflows: chargedOutflowsOf(proofInputs),
             });
             // The caller owns the copy, the encoded bytes are wiped with the frame.

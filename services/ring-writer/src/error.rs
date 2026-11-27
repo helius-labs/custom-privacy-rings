@@ -94,7 +94,7 @@ mod tests {
                 ListApprovalBatch => -32242,
                 UnknownListApproval => -32244,
                 ListApprovalWindow => -32245,
-                RecordsNotCreated => -32260,
+                RecordsMessageMismatch => -32261,
                 InvalidLimits => -32276,
                 LimitsWithoutRecord => -32277,
                 RingSaltNotCommitted => -32279,

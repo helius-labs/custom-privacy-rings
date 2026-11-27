@@ -25,8 +25,9 @@ use custom_ring_interface::{
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
+use solana_message::{Hash as Blockhash, VersionedMessage};
 use solana_sdk_ids::{ed25519_program, sysvar};
-use spr_client::AsyncRpc;
+use spr_client::{compile_message, AsyncRpc, ComputeBudgetConfig};
 use spr_hasher::primitives::solana_owner_identity;
 use spr_indexer_api::Hash;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
@@ -59,6 +60,8 @@ use crate::{
 #[path = "../tests/records/storage.rs"]
 mod tests;
 
+const CREATE_COMPUTE_UNITS: u32 = 100_000;
+
 /// The creator signs and becomes the authority, the payer funds the account.
 #[must_use]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +74,15 @@ pub struct InitializeStorage {
     pub ring_id: [u8; 32],
     /// Nonzero creates a private source paired with the named tracking registry.
     pub tracking_registry: Address,
+}
+
+/// The ring authority pays for the ring's records, the storage authority creates and owns them.
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordsCreation {
+    pub ring: CustomRing,
+    pub payer: Address,
+    pub storage_authority: Address,
 }
 
 /// `tracking_registry` is the registry's pin, read only by a batch with private writes.
@@ -167,6 +179,36 @@ impl InitializeStorage {
             ],
             [&[tag::INITIALIZE], bytemuck::bytes_of(&data)].concat(),
         )
+    }
+}
+
+impl RecordsCreation {
+    pub fn storage(self) -> InitializeStorage {
+        InitializeStorage {
+            payer: self.payer,
+            ..InitializeStorage::records(self.ring, self.storage_authority)
+        }
+    }
+
+    /// The storage authority signs only these bytes, as a read-only creator that pays nothing.
+    pub fn message(self, blockhash: Blockhash) -> Result<VersionedMessage, RingError> {
+        Ok(compile_message(
+            &self.payer,
+            &[self.storage().instruction()],
+            blockhash,
+            ComputeBudgetConfig::new(CREATE_COMPUTE_UNITS),
+        )?)
+    }
+
+    /// Byte for byte the message under the blockhash `message` names.
+    pub fn is_message(self, message: &[u8]) -> bool {
+        wincode::deserialize::<VersionedMessage>(message)
+            .ok()
+            .and_then(|received| {
+                let blockhash = Blockhash::new_from_array(received.recent_blockhash().to_bytes());
+                self.message(blockhash).ok()
+            })
+            .is_some_and(|expected| expected.serialize() == message)
     }
 }
 

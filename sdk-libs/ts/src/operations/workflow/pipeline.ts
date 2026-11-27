@@ -46,6 +46,7 @@ import {
   withdrawalLeg,
   ZERO_ADDRESS,
   type PublicLeg,
+  type RelayFunderTerms,
   type RelayTransferTerms,
   type TokenAccountCreate,
 } from "../../rpc/relay-message.js";
@@ -411,39 +412,7 @@ export function sealedTransferTerms(
       withdrawal: staged.withdrawal,
     }).map(({ leg }) => leg),
   );
-  // Every signer reads every published slot, a dummy opens under the zero owner.
-  const slots = Object.freeze(
-    sealed.published.map(({ output }, slot) => {
-      const owner = output.ownerAddress;
-      const published = proofInputs.externalData.outputs[slot]?.ownerTag;
-      return Object.freeze({
-        ...(owner === undefined || output.isDummy()
-          ? {
-              slot,
-              owner: ZERO_ADDRESS,
-              nullifierPk: ZERO_32,
-              mint: ZERO_ADDRESS,
-              amount: 0n,
-              blinding: output.blinding,
-              treeId: proofInputs.outputTreeId,
-              dataHash: ZERO_32,
-              ringDataHash: ZERO_32,
-            }
-          : {
-              slot,
-              owner: encodeBase58(owner.signingPublicKey.confidentialViewTag()) as Address,
-              nullifierPk: owner.nullifierPublicKey,
-              mint: output.asset,
-              amount: output.amount,
-              blinding: output.blinding,
-              treeId: proofInputs.outputTreeId,
-              dataHash: output.dataHash ?? ZERO_32,
-              ringDataHash: output.ringDataHash ?? ZERO_32,
-            }),
-        ...(published?.kind === "inline" ? { tag: published.value } : {}),
-      });
-    }),
-  );
+  const slots = Object.freeze(sealedSlots(sealed).map(({ opening }) => opening));
   return staged.ownerSigners.map((signer) => {
     // A Solana address names a wallet or a PDA alike, a key rebuilt as Ed25519 never equals a PDA owner.
     const ownedBy = (owner: ShieldedPublicKey): boolean =>
@@ -461,6 +430,82 @@ export function sealedTransferTerms(
       legs,
       setup: input.setup,
     });
+  });
+}
+
+/** One term per funding key, each naming every published slot and every leg of the frame. */
+export function sealedFunderTerms(
+  input: Readonly<{
+    ringProgramId: Address;
+    feePayer: Address;
+    sealed: SealedTransfer;
+    deposits: readonly TransactDeposit[];
+  }>,
+): readonly RelayFunderTerms[] {
+  const { sealed } = input;
+  const run = stagedLegs({
+    transfers: sealed.proofInputs.externalData.interfaceTransfers,
+    deposits: input.deposits,
+    withdrawal: undefined,
+  });
+  const legs = Object.freeze(run.map(({ leg }) => leg));
+  const slots = Object.freeze(sealedSlots(sealed).map(({ published }) => published));
+  const funders = new Set(run.flatMap(({ funder }) => (funder === undefined ? [] : [funder])));
+  return [...funders].map((signer) =>
+    Object.freeze({
+      ring: input.ringProgramId,
+      feePayer: input.feePayer,
+      signer,
+      slots,
+      legs,
+      setup: [],
+    }),
+  );
+}
+
+function sealedSlots(sealed: SealedTransfer): readonly Readonly<{
+  opening: RelayTransferTerms["slots"][number];
+  published: RelayFunderTerms["slots"][number];
+}>[] {
+  const { proofInputs } = sealed;
+  // Every signer reads every published slot, a dummy opens under the zero owner.
+  return sealed.published.flatMap(({ output }, slot) => {
+    const owner = output.ownerAddress;
+    const published = proofInputs.externalData.outputs[slot];
+    if (published === undefined) return [];
+    const { ownerTag } = published;
+    const tagged = ownerTag.kind === "inline" ? { tag: ownerTag.value } : {};
+    return [
+      {
+        opening: Object.freeze({
+          ...(owner === undefined || output.isDummy()
+            ? {
+                slot,
+                owner: ZERO_ADDRESS,
+                nullifierPk: ZERO_32,
+                mint: ZERO_ADDRESS,
+                amount: 0n,
+                blinding: output.blinding,
+                treeId: proofInputs.outputTreeId,
+                dataHash: ZERO_32,
+                ringDataHash: ZERO_32,
+              }
+            : {
+                slot,
+                owner: encodeBase58(owner.signingPublicKey.confidentialViewTag()) as Address,
+                nullifierPk: owner.nullifierPublicKey,
+                mint: output.asset,
+                amount: output.amount,
+                blinding: output.blinding,
+                treeId: proofInputs.outputTreeId,
+                dataHash: output.dataHash ?? ZERO_32,
+                ringDataHash: output.ringDataHash ?? ZERO_32,
+              }),
+          ...tagged,
+        }),
+        published: Object.freeze({ hash: published.utxoHash, ...tagged }),
+      },
+    ];
   });
 }
 

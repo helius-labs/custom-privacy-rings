@@ -23,7 +23,7 @@ use zolana_ring_client::{
         GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS, HEALTH, RING_STATUS,
         SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE,
     },
-    CustomRing, InitializeStorage, OwnerListSalts,
+    OwnerListSalts, RecordsCreation,
 };
 
 use crate::{config::redact_url, line, probe, wait_for, Context, Probe};
@@ -180,28 +180,34 @@ impl RingRpcClient {
         })
     }
 
-    /// The ring's records PDA under the storage authority the service names, created on first call.
+    /// The storage authority's signature over the request's creation message, `None` once the registry exists.
     pub fn create_records_registry(
         &self,
-        target: ReadTarget,
-        authority: &dyn Signer,
-    ) -> Result<Address> {
-        let ring = target.ring;
-        let request =
-            CreateRecordsRegistryRequest::create(target, authority.pubkey()).sign(authority)?;
+        request: CreateRecordsRegistryRequest,
+        expected: RecordsCreation,
+    ) -> Result<Option<CollectedSignature>> {
+        let message = request.message.0.clone();
         let created: CreateRecordsRegistryResponse = self.call(CREATE_RECORDS_REGISTRY, request)?;
-        let records = created.registry.0;
-        let storage_authority = created.storage_authority.0;
-        let expected =
-            InitializeStorage::records(CustomRing::new(ring), storage_authority).registry();
+        let url = redact_url(&self.url);
+        let registry = expected.storage().registry();
+        let storage_authority = expected.storage_authority;
         ensure!(
-            records == expected,
-            "the ring rpc at {} named registry {} that is not the ring records under storage authority {}",
-            redact_url(&self.url),
-            records,
-            storage_authority
+            created.registry.0 == registry && created.storage_authority.0 == storage_authority,
+            "the ring rpc at {url} named registry {} under storage authority {}, the creation names {registry} under {storage_authority}",
+            created.registry.0,
+            created.storage_authority.0
         );
-        Ok(records)
+        let Some(signature) = created.signature else {
+            return Ok(None);
+        };
+        ensure!(
+            signature.0.verify(storage_authority.as_ref(), &message),
+            "the ring rpc at {url} answered a records creation its storage authority {storage_authority} did not sign"
+        );
+        Ok(Some(CollectedSignature {
+            signer: storage_authority,
+            signature: signature.0,
+        }))
     }
 
     /// Unsigned, `release_auditor_key` is the attested path `init` pins from.
@@ -212,8 +218,20 @@ impl RingRpcClient {
 
     /// The key a signed read binds.
     pub fn service_pubkey(&self) -> Result<Address> {
-        let health: HealthResponse = self.call(HEALTH, json!([]))?;
-        Ok(health.service_pubkey.0)
+        Ok(self.health()?.service_pubkey.0)
+    }
+
+    /// The creator of every ring's records the service writes.
+    pub fn storage_authority(&self) -> Result<Address> {
+        self.health()?
+            .storage_authority_pubkey
+            .map(|key| key.0)
+            .with_context(|| {
+                format!(
+                    "the ring rpc at {} runs no record writer and names no storage authority",
+                    redact_url(&self.url)
+                )
+            })
     }
 
     pub fn check_serves(&self, ring: Address) -> Result<()> {
@@ -267,11 +285,11 @@ impl RingRpcClient {
     pub fn co_sign_transaction(
         &self,
         ring: Address,
-        message: Vec<u8>,
+        transaction: Vec<u8>,
     ) -> Result<CollectedSignature> {
         let request = CoSignTransactionRequest {
             ring: ring.into(),
-            message: message.into(),
+            transaction: transaction.into(),
             approved_transfer: None,
         };
         let answer: CoSignTransactionResponse = self.call(CO_SIGN_TRANSACTION, request)?;
@@ -343,6 +361,10 @@ impl RingRpcClient {
             cursor = Some(next);
         }
         bail!("the ring rpc returned more than {MAX_PAGES} pending list approval pages")
+    }
+
+    fn health(&self) -> Result<HealthResponse> {
+        self.call(HEALTH, json!([]))
     }
 
     /// A service that holds another key for this ring can open nothing here.

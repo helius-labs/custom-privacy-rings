@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use solana_address::Address;
 use solana_signature::Signature;
-use spr_client::{AsyncRpc, IndexerRpcConfig};
+use spr_client::{AsyncRpc, IndexerRpcConfig, OutputSlot};
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_keypair::viewing_key::ViewTag;
 use spr_transaction::{
@@ -136,7 +136,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
         // 1. A tag read before returns only rows above its key's position and a tag never read
         // returns all its rows, the ledger holds what earlier rows opened.
         let tagged = self.read_tags(&mut reads, &mut history).await?;
-        // 2. Every event read so far opens once, later rounds follow only spends.
+        // 2. Every event read so far opens here, later rounds follow only spends.
         let rows = union_events(transactions, tagged.rows);
         let opened = self.open_rows(&rows)?;
         let mut found = Found {
@@ -222,7 +222,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
                     covered = Some(covered.map_or(slot, |lowest| lowest.min(slot)));
                 }
             }
-            // 2. Every row moves the counters whatever its ring, a tag proves no ownership.
+            // 2. A tag proves no ownership, a row that opens nothing moves no counter and still joins the rows `sync` opens.
             for row in rows {
                 if seen.insert(event_identity(&row)) {
                     self.count(&row, history, &listing, &mut read)?;
@@ -310,7 +310,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
         Ok(groups)
     }
 
-    /// A reply is kept only on a body a held key rebuilds.
+    /// A counter moves only on a body its tag's listed key rebuilds, a reply is kept only on a body a held key rebuilds.
     fn count(
         &self,
         row: &ShieldedTransaction,
@@ -318,25 +318,17 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
         listing: &Listing,
         read: &mut TagRead,
     ) -> Result<(), AnonymousError> {
-        let reply_of = |position: u32| {
-            usize::try_from(position)
-                .ok()
-                .and_then(|position| row.output_slots.get(position))
-                .and_then(|slot| Some((slot, ring_body_output(&slot.payload)?.1)))
-                .filter(|(_, reply)| !reply.is_empty())
+        let streamed = |slot: &OutputSlot| {
+            listing
+                .tags
+                .get(&slot.view_tag)
+                .filter(|listed| listed.stream.is_some())
         };
-        let mut replies = false;
-        for (position, slot) in (0u32..).zip(&row.output_slots) {
-            if let Some(Listed {
-                entry,
-                stream: Some((stream, index)),
-            }) = listing.tags.get(&slot.view_tag)
-            {
-                history.entries_mut()[*entry].found(*stream, *index);
-            }
-            replies |= reply_of(position).is_some();
-        }
-        let Some(ring) = row.ring_program_id.filter(|_| replies) else {
+        let opens = row
+            .output_slots
+            .iter()
+            .any(|slot| streamed(slot).is_some() || reply_of(slot).is_some());
+        let Some(ring) = row.ring_program_id.filter(|_| opens) else {
             return Ok(());
         };
         let codec = RingNoteCodec {
@@ -345,7 +337,23 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
             assets: self.assets,
         };
         for opened in codec.opened(row)? {
-            let Some((slot, sealed)) = reply_of(opened.opening.slot_index) else {
+            let Some(slot) = usize::try_from(opened.opening.slot_index)
+                .ok()
+                .and_then(|position| row.output_slots.get(position))
+            else {
+                continue;
+            };
+            if let Some(&Listed {
+                entry,
+                stream: Some((stream, index)),
+            }) = streamed(slot)
+            {
+                let entry = &mut history.entries_mut()[entry];
+                if entry.viewing_pubkey() == opened.viewing_pubkey {
+                    entry.found(stream, index);
+                }
+            }
+            let Some(sealed) = reply_of(slot) else {
                 continue;
             };
             if let Some(claim) = open_reply(sealed, &opened.secret)? {
@@ -539,6 +547,12 @@ fn event_identity(tx: &ShieldedTransaction) -> (Signature, Option<u16>) {
     (tx.tx_signature, tx.event_index)
 }
 
+fn reply_of(slot: &OutputSlot) -> Option<&[u8]> {
+    ring_body_output(&slot.payload)
+        .map(|(_, reply)| reply)
+        .filter(|reply| !reply.is_empty())
+}
+
 fn union_events(
     known: &[ShieldedTransaction],
     tagged: Vec<ShieldedTransaction>,
@@ -617,7 +631,10 @@ mod tests {
     use spr_transaction::Utxo;
 
     use super::*;
-    use crate::NoteState;
+    use crate::{
+        viewing_history::{StreamCounter, TAG_WINDOW},
+        NoteState,
+    };
 
     const NOT_IN_FIELD: [u8; 32] = [0xff; 32];
     const RING: Address = Address::new_from_array([0x90; 32]);
@@ -762,6 +779,36 @@ mod tests {
 
     fn served(page: &GetShieldedTransactionsByTagsResponse) -> usize {
         page.data.iter().map(|item| item.events.len()).sum()
+    }
+
+    struct Decoys {
+        decoy: ShieldedTransaction,
+        read: Mutex<Vec<ViewTag>>,
+    }
+
+    #[async_trait]
+    impl AsyncRpc for Decoys {
+        async fn get_shielded_transactions_by_tags(
+            &self,
+            tags: Vec<[u8; 32]>,
+            _pagination_token: Option<PaginationToken>,
+            _limit: Option<u32>,
+            _filters: HistoryFilters,
+            _config: Option<IndexerRpcConfig>,
+        ) -> Result<GetShieldedTransactionsByTagsResponse, ClientError> {
+            let tag = *tags.last().unwrap();
+            let mut read = self.read.lock().unwrap();
+            read.push(tag);
+            let mut decoy = self.decoy.clone();
+            decoy.tx_signature = Signature::from([read.len() as u8; 64]);
+            decoy.output_slots[0].view_tag = tag;
+            let data = (read.len() <= 3).then(|| TransactionEvents {
+                slot: decoy.slot,
+                signature: decoy.tx_signature,
+                events: vec![decoy],
+            });
+            Ok(terminal(self.decoy.slot, data.into_iter().collect()))
+        }
     }
 
     /// Answers as its keypair does, except the merge output key it fails.
@@ -1021,9 +1068,9 @@ mod tests {
     }
 
     /// Stores one sync and returns the unregistered mints it met.
-    async fn absorb_sync(
+    async fn absorb_sync<I: AsyncRpc>(
         scan: &RingConfidentialScan<'_, ShieldedKeypair>,
-        indexer: &Rows,
+        indexer: &I,
         ledger: &mut AnonymousWallet,
     ) -> BTreeSet<Address> {
         let commit = scan.sync(indexer, ledger, &[]).await.unwrap();
@@ -1222,6 +1269,37 @@ mod tests {
             .sync(&Rows::default(), &ledger(&other), &[])
             .await;
         assert!(matches!(refused, Err(AnonymousError::HeldKeyNotInHistory)));
+    }
+
+    #[tokio::test]
+    async fn a_decoy_under_the_highest_listed_tag_moves_no_counter_and_the_sync_reads_once() {
+        let owner = wallet(7);
+        let assets = assets();
+        let indexer = Decoys {
+            decoy: payment_event(&wallet(8), 0),
+            read: Mutex::default(),
+        };
+        let mut stored = ledger(&owner);
+        absorb_sync(
+            &RingConfidentialScan::new(&owner, &assets),
+            &indexer,
+            &mut stored,
+        )
+        .await;
+        let counters = stored
+            .history()
+            .current()
+            .streams()
+            .map(|(_, counter)| counter);
+        assert_eq!(counters, [StreamCounter::default(); 2]);
+        let highest = owner
+            .view_tags(&[ViewTagRequest {
+                viewing_pubkey: owner.viewing_pubkey(),
+                stream: ViewTagStream::Request,
+                indices: TAG_WINDOW - 1..TAG_WINDOW,
+            }])
+            .unwrap();
+        assert_eq!(*indexer.read.lock().unwrap(), highest[0]);
     }
 
     /// `merge_ring` under a nonzero key, the proven encoding and its first nullifier tag.

@@ -53,6 +53,42 @@ fn a_rings_records_pin_its_tracking_registry_at_their_own_address() {
 }
 
 #[test]
+fn the_records_creation_message_matches_the_shared_vector() {
+    use solana_keypair::Keypair;
+    use solana_signer::Signer;
+
+    #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Vector {
+        description: String,
+        ring: String,
+        payer: String,
+        storage_authority: String,
+        blockhash: String,
+        message: String,
+    }
+    let creation = RecordsCreation {
+        ring: CustomRing::new(Address::new_from_array([7; 32])),
+        payer: Keypair::new_from_array([8; 32]).pubkey(),
+        storage_authority: Address::new_from_array([5; 32]),
+    };
+    let blockhash = Blockhash::new_from_array([6; 32]);
+    let message = creation.message(blockhash).unwrap().serialize();
+    assert!(creation.is_message(&message));
+    let fresh = Vector {
+        description: "The records creation a ring authority pays and the storage authority signs. The ring is 0x07 repeated, the payer the Ed25519 keypair of seed 0x08 repeated, the storage authority 0x05 repeated and the blockhash 0x06 repeated. message is the hex of the serialized v1 message the Rust RecordsCreation::message and the TypeScript recordsCreationTransaction build.".to_owned(),
+        ring: creation.ring.program_id().to_string(),
+        payer: creation.payer.to_string(),
+        storage_authority: creation.storage_authority.to_string(),
+        blockhash: blockhash.to_string(),
+        message: hex::encode(&message),
+    };
+    let stored =
+        crate::tests::support::pinned_vector("records_creation_message.json", fresh.clone());
+    assert_eq!(stored, fresh);
+}
+
+#[test]
 fn a_public_write_names_the_authority_and_registry_alone() {
     let accounts = update(ListId::Block, None).unwrap().accounts;
     assert_eq!(

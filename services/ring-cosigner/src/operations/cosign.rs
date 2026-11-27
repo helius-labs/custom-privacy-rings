@@ -130,6 +130,8 @@ ring_service_core::listed_refusals! {
         StaleBlockhash = -32177,
         #[error("another transfer of an input holds a reservation until it lands or expires")]
         InputReserved = -32178,
+        #[error("a required signer other than the co-signer has not signed the transaction")]
+        MissingSignature = -32179,
         #[error("the co-sign request names an asset with no record")]
         UnrecordedAsset = -32296,
     }
@@ -263,7 +265,7 @@ mod tests {
     fn cosign_error_codes_are_stable() {
         let codes = [
             -32160, -32161, -32162, -32163, -32164, -32165, -32166, -32167, -32168, -32169, -32175,
-            -32176, -32177, -32178, -32296,
+            -32176, -32177, -32178, -32179, -32296,
         ];
         for (error, code) in CoSignError::ALL.into_iter().zip(codes) {
             assert_eq!(ErrorObjectOwned::from(error).code(), code);
