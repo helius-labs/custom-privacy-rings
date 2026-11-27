@@ -26,7 +26,7 @@ pub(crate) struct GrantQuery {
     pub wallet: Option<Address>,
 }
 
-/// Fixed at startup, a read consults no other grant source.
+/// The store of the list grants, fixed at startup.
 pub enum Grants {
     Tree,
     Database(Box<GrantRows>),
