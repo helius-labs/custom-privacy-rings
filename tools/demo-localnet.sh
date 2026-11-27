@@ -57,7 +57,7 @@ setting() {
     "$just_bin" --evaluate "$1"
 }
 
-"$just_bin" build-ring-rpc ring-localnet
+"$just_bin" ring-localnet
 RING_SOLANA_RPC_URL="$(setting localnet-rpc-url)"
 RING_INDEXER_URL="$(setting localnet-ring-indexer-url)"
 RING_PROVER_URL="$(setting localnet-prover-url)"

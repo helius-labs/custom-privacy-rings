@@ -13,28 +13,34 @@ if [[ $# -lt 4 || $# -gt 5 ]]; then
 fi
 workdir="$1" rpc_url="$2" photon_url="$3" port="$4" start_slot="${5:-latest}"
 bin="${RING_INDEXER_BIN:-target/debug/ring-indexer}"
-[[ -x "$bin" ]] || { echo "Missing executable $bin, run just build-ring-indexer" >&2; exit 1; }
+[[ -x "$bin" ]] || { echo "Missing executable $bin, run just build-ring-tools" >&2; exit 1; }
 
 mkdir -p "$workdir"
 workdir="$(cd "$workdir" && pwd)"
 lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
-for _ in $(seq 1 30); do
+for _ in $(seq 1 150); do
   lsof -ti "tcp:$port" -sTCP:LISTEN >/dev/null 2>&1 || break
-  sleep 1
+  sleep 0.2
 done
+if lsof -ti "tcp:$port" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "port $port is still held" >&2
+  exit 1
+fi
 rm -f "$workdir"/ring-indexer.db "$workdir"/ring-indexer.db-*
 nohup "$bin" --db-url "sqlite://$workdir/ring-indexer.db?mode=rwc" \
   --rpc-url "$rpc_url" --photon-url "$photon_url" --port "$port" --start-slot "$start_slot" \
   > "$workdir/ring-indexer.log" 2>&1 &
+indexer_pid=$!
 
 printf 'waiting for ring indexer http://127.0.0.1:%s ' "$port"
-for _ in $(seq 1 120); do
+for _ in $(seq 1 600); do
+  kill -0 "$indexer_pid" 2>/dev/null || { echo " exited"; tail -n 50 "$workdir/ring-indexer.log" >&2 || true; exit 1; }
   if curl -sf --max-time 5 "http://127.0.0.1:$port/ready" >/dev/null 2>&1; then
     echo " ready"
     exit 0
   fi
   printf '.'
-  sleep 1
+  sleep 0.2
 done
 echo " timed out"
 tail -n 50 "$workdir/ring-indexer.log" >&2 || true

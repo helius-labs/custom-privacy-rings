@@ -1,25 +1,57 @@
 name: Proving keys
-description: Restore the cached proving keys, download only a key missing or off its lockfile digest.
+description: The pinned proving keys, from the cache entry of main, from the artifact of the run, or from the release.
 inputs:
-  save:
-    description: Fill and save a missing cache entry, a hit skips the restore.
-    default: "false"
+  mode:
+    description: fill stores the keys once for the run, restore puts them in place for a job that proves.
+    required: true
 runs:
   using: composite
   steps:
-    - id: keys
+    - id: pin
+      shell: bash
+      run: |
+        pins="$(just custom-ring-key-pins)"
+        echo "key=proving-keys-$(sha256sum <<<"$pins" | cut -c1-40)" >> "$GITHUB_OUTPUT"
+    - id: cached
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: zolana/prover/server/proving-keys
-        key: proving-keys-${{ hashFiles('prover/ring/proving-keys.lock', 'zolana/prover/server/prover/provingkeys/proving-keys.lock') }}
-        lookup-only: ${{ inputs.save }}
-    - if: steps.keys.outputs.cache-hit != 'true' || inputs.save != 'true'
+        key: ${{ steps.pin.outputs.key }}
+        lookup-only: ${{ inputs.mode == 'fill' }}
+    # `pattern` passes on a run with no artifact, the recipe's `fetch-custom-ring-keys` then downloads the keys.
+    - if: inputs.mode == 'restore' && steps.cached.outputs.cache-hit != 'true'
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        pattern: proving_keys
+        path: ${{ runner.temp }}/ring-ci-artifacts
+        merge-multiple: true
+    - if: inputs.mode == 'restore' && steps.cached.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        archive="$RUNNER_TEMP/ring-ci-artifacts/proving_keys.tar.zst"
+        [[ ! -f "$archive" ]] || { tar -I zstd -xf "$archive" && rm "$archive"; }
+    - if: inputs.mode == 'fill' && steps.cached.outputs.cache-hit != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
       run: just fetch-custom-ring-keys
-    - if: steps.keys.outputs.cache-hit != 'true' && inputs.save == 'true'
+    # Only main writes the cache, a pull request entry is one more full copy under the repository cache limit.
+    - if: inputs.mode == 'fill' && steps.cached.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: zolana/prover/server/proving-keys
-        key: ${{ steps.keys.outputs.cache-primary-key }}
+        key: ${{ steps.pin.outputs.key }}
+    - if: inputs.mode == 'fill' && steps.cached.outputs.cache-hit != 'true' && github.ref != 'refs/heads/main'
+      shell: bash
+      run: |
+        pins="$(just custom-ring-key-pins)"
+        sed 's,^\([^ ]*\) .*,zolana/prover/server/proving-keys/\1,' <<<"$pins" | tar -I 'zstd -T0' -cf "$RUNNER_TEMP/proving_keys.tar.zst" -T -
+    - if: inputs.mode == 'fill' && steps.cached.outputs.cache-hit != 'true' && github.ref != 'refs/heads/main'
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: proving_keys
+        path: ${{ runner.temp }}/proving_keys.tar.zst
+        if-no-files-found: error
+        overwrite: true
+        compression-level: 0
+        retention-days: 1
