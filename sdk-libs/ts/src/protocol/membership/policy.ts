@@ -30,6 +30,7 @@ import {
 import { RingError } from "../error.js";
 import { publicListKey } from "./private-list.js";
 import { GuardScope, type DebitInput } from "./owner-debits.js";
+import { defined } from "../defined.js";
 
 /** Mirrors Rust `ListId`, the on-chain discriminant of a list, never `0`. */
 export const ListId = Object.freeze({
@@ -710,7 +711,7 @@ export function pinnedPolicy(
     sources,
     policyHash: registry.policyHash,
     ringListTag: registry.ringListTag,
-    ...(curator === undefined ? {} : { curator }),
+    ...defined({ curator }),
   });
 }
 

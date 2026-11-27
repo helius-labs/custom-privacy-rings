@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import { initializePoseidon, type Bytes32 } from "@heliuslabs/spr";
 import { mergeDummyNullifier, mergeOutputBlinding } from "@heliuslabs/spr/internal";
@@ -13,10 +14,6 @@ function bytes(value: string): Bytes32 {
   return Uint8Array.from(Buffer.from(value.replace(/^0x/, ""), "hex")) as Bytes32;
 }
 
-function hex(value: Uint8Array): string {
-  return `0x${Buffer.from(value).toString("hex")}`;
-}
-
 describe("seeded merge derivations", () => {
   beforeAll(initializePoseidon);
 
@@ -27,7 +24,9 @@ describe("seeded merge derivations", () => {
 
     it(`${testCase.name} derives the output blinding of the shared vector`, () => {
       expect(seed[0]).toBe(0);
-      expect(hex(seededMergeOutputBlinding(seed, first))).toBe(testCase.output_blinding);
+      expect(`0x${bytesToHex(seededMergeOutputBlinding(seed, first))}`).toBe(
+        testCase.output_blinding,
+      );
       expect(seededMergeOutputBlinding(seed, first)).toEqual(
         mergeOutputBlinding(nullifierKey(), first),
       );

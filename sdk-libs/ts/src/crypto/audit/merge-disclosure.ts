@@ -96,7 +96,7 @@ const MERGE_SALT = new Uint8Array(16) as Bytes16;
 const COMPRESSED_G2_LEN = 64;
 const DECOMPRESSED_G2_LEN = 128;
 /** `tag ‖ output_ring_data_hash` ahead of the SPP body. */
-export const MERGE_RING_DATA_PREFIX_LEN = 1 + 32;
+const MERGE_RING_DATA_PREFIX_LEN = 1 + 32;
 
 /** The merge request short of what sealing yields, its seed known to the holder alone. */
 export type RingMergeDisclosureRequest = Omit<

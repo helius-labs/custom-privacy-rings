@@ -24,12 +24,7 @@ import {
   STORAGE_REGISTRY_DISCRIMINATOR,
 } from "../../src/protocol/codec/ring-codecs.js";
 import { X25519Keypair } from "@heliuslabs/spr/keypair";
-import {
-  LIST_IDS,
-  encodeRule,
-  referencedLists,
-  type RuleTable,
-} from "../../src/protocol/membership/policy.js";
+import { LIST_IDS, encodeRule, type RuleTable } from "../../src/protocol/membership/policy.js";
 
 export const ZERO_ADDRESS = getAddressDecoder().decode(new Uint8Array(32));
 
@@ -37,16 +32,6 @@ const MODE_BYTES: Readonly<Record<RingMode, number>> = { confidential: 0, anonym
 
 export function ownedAccount(owner: Address, data: Uint8Array): RpcAccount {
   return { owner, lamports: 1n, data };
-}
-
-/** Every referenced list read from the ring's own registry, the other slots empty. */
-export function ownSources(table: RuleTable): readonly RingSourceSlot[] {
-  const referenced = referencedLists(table.rules);
-  return LIST_IDS.map((listId) =>
-    referenced.includes(listId)
-      ? { listId, registry: ZERO_ADDRESS }
-      : { listId: 0, registry: ZERO_ADDRESS },
-  );
 }
 
 /** SPP's `RingConfig` registration of `ringProgramId`, active unless told otherwise. */

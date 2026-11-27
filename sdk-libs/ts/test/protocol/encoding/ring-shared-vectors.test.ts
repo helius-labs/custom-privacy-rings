@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { EMPTY_MINT_POLICY } from "../../../src/protocol/membership/mint-policy.js";
 import {
   TRACKING_EMPTY_ROOT,
@@ -70,12 +71,8 @@ function bytes<T extends Uint8Array>(value: string, length?: number): T {
   return decoded as T;
 }
 
-function hex(value: Uint8Array): string {
-  return Buffer.from(value).toString("hex");
-}
-
 function hexes(values: readonly Uint8Array[]): string[] {
-  return values.map(hex);
+  return values.map(bytesToHex);
 }
 
 function field(value: string): Bytes32 {
@@ -86,7 +83,7 @@ function field(value: string): Bytes32 {
 function flipped(value: Uint8Array): Bytes32 {
   const copy = Uint8Array.from(value);
   copy[31] = (copy[31] ?? 0) ^ 1;
-  return field(hex(copy));
+  return field(bytesToHex(copy));
 }
 
 function ringError(reason: string): unknown {
@@ -116,11 +113,11 @@ describe("ring-records.json", () => {
     for (const update of records.updates) {
       let chain = field(update.chain_start);
       for (const write of update.writes) {
-        expect(hex(recordWriteHash(entry(write)))).toBe(write.entry_hash);
+        expect(bytesToHex(recordWriteHash(entry(write)))).toBe(write.entry_hash);
         chain = writeChain(chain, entry(write));
-        expect(hex(chain)).toBe(write.chain);
+        expect(bytesToHex(chain)).toBe(write.chain);
       }
-      expect(hex(chain)).toBe(update.chain_end);
+      expect(bytesToHex(chain)).toBe(update.chain_end);
     }
   });
 
@@ -147,12 +144,12 @@ describe("ring-records.json", () => {
         chainStart: field(update.chain_start),
         writes,
       });
-      expect(hex(inputs.newRoot)).toBe(update.new_root);
+      expect(bytesToHex(inputs.newRoot)).toBe(update.new_root);
       expect(inputs.newNextIndex).toBe(BigInt(update.new_next_index));
-      expect(hex(inputs.chainEnd)).toBe(update.chain_end);
+      expect(bytesToHex(inputs.chainEnd)).toBe(update.chain_end);
       const statement = applyRecordsStatement(inputs);
       expect(statement.count).toBe(BigInt(update.count));
-      expect(hex(applyRecordsStatementHash(statement))).toBe(update.statement_hash);
+      expect(bytesToHex(applyRecordsStatementHash(statement))).toBe(update.statement_hash);
     }
   });
 
@@ -288,7 +285,7 @@ describe("ring-statements.json", () => {
       const outputs = vector.outputs.map(statementOutput);
       const statement0 = statementOf(vector, outputs);
       expect(
-        hex(
+        bytesToHex(
           envelopeDigest(
             statement0.head.envelope,
             statement0.head.recipientKeys,
@@ -298,14 +295,14 @@ describe("ring-statements.json", () => {
         vector.rail,
       ).toBe(vector.envelope_digest);
       expect(
-        hex(recordChain(outputs, vector.output_capacity, statement0.head.layout.records)),
+        bytesToHex(recordChain(outputs, vector.output_capacity, statement0.head.layout.records)),
         vector.rail,
       ).toBe(vector.record_chain);
       const statement = statementOf(vector, outputs);
       const elements = transferStatementElements(statement);
       expect(elements, vector.rail).toHaveLength(vector.elements.length);
       expect(hexes(elements), vector.rail).toEqual(vector.elements);
-      expect(hex(transferStatementHash(statement))).toBe(vector.public_input_hash);
+      expect(bytesToHex(transferStatementHash(statement))).toBe(vector.public_input_hash);
     }
   });
 
@@ -381,7 +378,7 @@ describe("ring-statements.json", () => {
       },
     };
     expect(hexes(applyRecordsStatementElements(applyStatement))).toEqual(apply.elements);
-    expect(hex(applyRecordsStatementHash(applyStatement))).toBe(apply.public_input_hash);
+    expect(bytesToHex(applyRecordsStatementHash(applyStatement))).toBe(apply.public_input_hash);
     const pub = statements.apply_records_public;
     const publicStatement = {
       oldRoot: field(pub.old_root),
@@ -394,7 +391,7 @@ describe("ring-statements.json", () => {
       restrictive: pub.restrictive,
     };
     expect(hexes(applyRecordsStatementElements(publicStatement))).toEqual(pub.elements);
-    expect(hex(applyRecordsStatementHash(publicStatement))).toBe(pub.public_input_hash);
+    expect(bytesToHex(applyRecordsStatementHash(publicStatement))).toBe(pub.public_input_hash);
     const register = statements.register_key;
     const registerStatement = {
       ringId: field(register.ring_id),
@@ -406,7 +403,9 @@ describe("ring-statements.json", () => {
       ciphertext: bytes<Bytes64>(register.ciphertext, 64),
     };
     expect(hexes(registerKeyStatementElements(registerStatement))).toEqual(register.elements);
-    expect(hex(registerKeyStatementHash(registerStatement))).toBe(register.public_input_hash);
+    expect(bytesToHex(registerKeyStatementHash(registerStatement))).toBe(
+      register.public_input_hash,
+    );
   });
 
   it("rebuilds the apply enrollments statement, its domain apart from apply records", () => {
@@ -421,7 +420,7 @@ describe("ring-statements.json", () => {
       count: BigInt(apply.count),
     };
     expect(hexes(applyEnrollmentsStatementElements(statement))).toEqual(apply.elements);
-    expect(hex(applyEnrollmentsStatementHash(statement))).toBe(apply.public_input_hash);
+    expect(bytesToHex(applyEnrollmentsStatementHash(statement))).toBe(apply.public_input_hash);
   });
 
   it("hashes a tracking entry and chains it as the program does", () => {
@@ -437,9 +436,9 @@ describe("ring-statements.json", () => {
       priorViewingHash: field(tracking.prior_viewing_hash),
       proven: tracking.proven,
     };
-    expect(hex(trackingEntryHash(entry))).toBe(tracking.entry_hash);
-    expect(hex(chainLink(ZERO_32, trackingEntryHash(entry)))).toBe(tracking.chain_from_zero);
-    expect(hex(TRACKING_EMPTY_ROOT)).toBe(tracking.empty_root);
+    expect(bytesToHex(trackingEntryHash(entry))).toBe(tracking.entry_hash);
+    expect(bytesToHex(chainLink(ZERO_32, trackingEntryHash(entry)))).toBe(tracking.chain_from_zero);
+    expect(bytesToHex(TRACKING_EMPTY_ROOT)).toBe(tracking.empty_root);
   });
 });
 
@@ -545,9 +544,11 @@ describe("disclosure packing", () => {
     const plaintext = Uint8Array.from({ length: 40 }, (_, index) => index + 1);
     const fields = packDisclosure(plaintext);
     expect(fields).toHaveLength(2);
-    expect(hex(fields[0] ?? new Uint8Array())).toBe(`00${hex(plaintext.subarray(0, 31))}`);
-    expect(hex(fields[1] ?? new Uint8Array())).toBe(
-      `00${hex(plaintext.subarray(31))}${"00".repeat(22)}`,
+    expect(bytesToHex(fields[0] ?? new Uint8Array())).toBe(
+      `00${bytesToHex(plaintext.subarray(0, 31))}`,
+    );
+    expect(bytesToHex(fields[1] ?? new Uint8Array())).toBe(
+      `00${bytesToHex(plaintext.subarray(31))}${"00".repeat(22)}`,
     );
     expect(unpackDisclosure(fields, 40)).toEqual(plaintext);
     const padded = fields.map((entry, index) => (index === 1 ? flipped(entry) : entry));
@@ -559,7 +560,7 @@ describe("the list lookup key", () => {
   const seven = field("07".padStart(64, "0"));
 
   it("keys an owner's public lists on the zero salt as Rust `Member::public` does", () => {
-    expect(hex(publicListKey(seven))).toBe(
+    expect(bytesToHex(publicListKey(seven))).toBe(
       "18eb3f0cf43fb318e0ab77c3d2fc13af04d5ef7fa7afd1f47909f087ff748fe3",
     );
     expect(publicMember(seven as Member)).toEqual(publicListKey(seven));
@@ -569,7 +570,7 @@ describe("the list lookup key", () => {
 
   it("keys an entry under the ring salt as Rust `Member::ring_salted` does, off the owner salt keys", () => {
     const nine = field("09".padStart(64, "0"));
-    expect(hex(ringListKey(seven, nine))).toBe(
+    expect(bytesToHex(ringListKey(seven, nine))).toBe(
       "15a7b631d43ec4b96f98ec8966e6c29bd975793a919b2d1180dc0b9c500b9ebe",
     );
     expect(ringListKey(seven, nine)).not.toEqual(privateListKey(seven, nine));

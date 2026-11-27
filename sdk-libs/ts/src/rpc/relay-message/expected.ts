@@ -28,6 +28,7 @@ import { RingInstructionTag } from "../../protocol/transaction/instruction-tag.j
 import { ringRailOf, type RingRail } from "../../protocol/transaction/transact.js";
 import type { RingPolicy } from "../../protocol/codec/ring-codecs.js";
 import { RecordKind } from "../../protocol/codec/audit-stream.js";
+import { defined } from "../../protocol/defined.js";
 
 /** Rust `MessageMismatch`, the variant names the shared vectors carry. */
 export type RelayMessageMismatch =
@@ -80,8 +81,7 @@ export class AllowedNullifiers {
         throw delegateSourceRefusal("foreignNote", index);
       // 2. Rebuilt, not read, any carried nullifier passes under the shared zero key.
       const hashes = {
-        ...(note.dataHash === undefined ? {} : { dataHash: note.dataHash }),
-        ...(note.ringDataHash === undefined ? {} : { ringDataHash: note.ringDataHash }),
+        ...defined({ dataHash: note.dataHash, ringDataHash: note.ringDataHash }),
       };
       const rebuilt = ProofInputUtxo.fromNullifierKey(note.utxo, nullifierKey, hashes, note.treeId);
       if (!equalBytes(rebuilt.nullifier(), note.nullifier()))

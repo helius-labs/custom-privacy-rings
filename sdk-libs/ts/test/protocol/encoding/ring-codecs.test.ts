@@ -1,3 +1,4 @@
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   address,
@@ -68,10 +69,6 @@ function rebuiltHash(utxo: Parameters<typeof knownUtxoHash>[0], ringId: Bytes32)
   const hash = knownUtxoHash(utxo, ringId);
   if (hash === undefined) throw new Error("no data hashes");
   return hash;
-}
-
-function hex(value: string): Uint8Array {
-  return Uint8Array.from(Buffer.from(value, "hex"));
 }
 
 function filled(byte: number, length: number): Uint8Array {
@@ -712,7 +709,7 @@ describe("ring reader keys", () => {
       bytes: `01${Buffer.from(ed25519.getPublicKey(filled(23, 32))).toString("hex")}00`,
     },
     {
-      key: P256ReaderKey.fromBytes(hex(P256_HEX) as Bytes33) as ReaderKey,
+      key: P256ReaderKey.fromBytes(hexToBytes(P256_HEX) as Bytes33) as ReaderKey,
       bytes: `00${P256_HEX}`,
     },
   ];
@@ -721,9 +718,11 @@ describe("ring reader keys", () => {
     for (const { key, bytes } of KEYS) {
       expect(Buffer.from(readerKeyBytes(key)).toString("hex")).toBe(bytes);
       expect(readerKeyEquals(parseReaderKey(readerKeyToString(key)), key)).toBe(true);
-      expect(readerKeyEquals(readerKeyFromBytes(hex(bytes)), key)).toBe(true);
+      expect(readerKeyEquals(readerKeyFromBytes(hexToBytes(bytes)), key)).toBe(true);
     }
-    expect(P256ReaderKey.fromUncompressed(hex(P256_UNCOMPRESSED)).toBytes()).toEqual(hex(P256_HEX));
+    expect(P256ReaderKey.fromUncompressed(hexToBytes(P256_UNCOMPRESSED)).toBytes()).toEqual(
+      hexToBytes(P256_HEX),
+    );
   });
 
   it("refuses keys that cannot sign a read like Rust `ReaderKey`", () => {
@@ -744,7 +743,7 @@ describe("ring reader keys", () => {
     expect(() => checkedReaderKey(getAddressDecoder().decode(mixedTorsion))).toThrow(
       "RING_READER_KEY",
     );
-    const scheme = hex(`01${"17".repeat(32)}00`);
+    const scheme = hexToBytes(`01${"17".repeat(32)}00`);
     scheme[0] = 2;
     expect(() => readerKeyFromBytes(scheme)).toThrow("RING_READER_KEY");
     expect(() => parseReaderKey("not-a-key")).toThrow("RING_READER_KEY");
@@ -757,7 +756,7 @@ describe("ring passkey", () => {
     const passkey = {
       credentialId: filled(9, 16),
       publicKey: P256ReaderKey.fromBytes(
-        hex("02039b852db622408abe58a18c0f056631a6ca4b2cfeec198aae25017cad09d4e8") as Bytes33,
+        hexToBytes("02039b852db622408abe58a18c0f056631a6ca4b2cfeec198aae25017cad09d4e8") as Bytes33,
       ),
     };
     let seen: PublicKeyCredentialRequestOptions | undefined;
@@ -1444,7 +1443,7 @@ describe("ring read request", () => {
       );
     }) as typeof globalThis.fetch;
     const signer = {
-      reader: readerKeyBytes(P256ReaderKey.fromBytes(hex(P256_HEX) as Bytes33)),
+      reader: readerKeyBytes(P256ReaderKey.fromBytes(hexToBytes(P256_HEX) as Bytes33)),
       sign: () =>
         Promise.resolve({
           signature: filled(1, 70),
@@ -1761,14 +1760,16 @@ describe("merge settings", () => {
       "nonce",
       "signature",
     ]);
-    expect(decodeMergeSettings(encodeMergeSettings(settings))).toEqual(settings);
+    expect(decodeMergeSettings(wireSettings())).toEqual(settings);
   });
 
   it("refuses a note count past u32", () => {
-    expect(() =>
-      decodeMergeSettings({ ...encodeMergeSettings(settings), targetNoteCount: 2 ** 32 }),
-    ).toThrow();
+    expect(() => decodeMergeSettings({ ...wireSettings(), targetNoteCount: 2 ** 32 })).toThrow();
   });
+
+  function wireSettings(): object {
+    return JSON.parse(JSON.stringify(encodeMergeSettings(settings))) as object;
+  }
 });
 
 describe("storage apply proof inputs", () => {

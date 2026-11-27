@@ -1,7 +1,6 @@
 import type { Address } from "@heliuslabs/spr/interface";
-import { wireDecoder } from "@heliuslabs/spr/internal";
 
-import { RingError } from "../error.js";
+import { address, boolean, exactRecord, invalid } from "./wire.js";
 
 export type RingKeyMode = "local" | "derived";
 
@@ -25,16 +24,7 @@ export interface RingRpcHealth {
   readonly readerGrants: RingReaderGrantMode;
 }
 
-function invalid(path: string): RingError {
-  return new RingError("RING_RPC", {
-    details: { reason: "invalid response", path },
-  });
-}
-
-const { record, address, boolean } = wireDecoder(invalid);
-
-const SKIPPED_KEYS = ["coSignerPubkey", "storageAuthorityPubkey", "feePayerPubkey"];
-const REQUIRED_FIELDS = [
+const REQUIRED_FIELDS = new Set([
   "mode",
   "servicePubkey",
   "enrollmentWriterPubkey",
@@ -42,17 +32,17 @@ const REQUIRED_FIELDS = [
   "recordWriter",
   "enrollmentWrites",
   "readerGrants",
-];
+]);
+const FIELDS = new Set([
+  ...REQUIRED_FIELDS,
+  "coSignerPubkey",
+  "storageAuthorityPubkey",
+  "feePayerPubkey",
+]);
 
 /** Rust `deny_unknown_fields`, a role key is skipped and the enrollment writer is null without its role. */
 export function decodeRingRpcHealth(value: unknown): RingRpcHealth {
-  const wire = record(value, "result");
-  if (
-    Object.keys(wire).some((key) => !REQUIRED_FIELDS.includes(key) && !SKIPPED_KEYS.includes(key))
-  )
-    throw invalid("result.shape");
-  const missing = REQUIRED_FIELDS.find((key) => !Object.hasOwn(wire, key));
-  if (missing !== undefined) throw invalid(`result.${missing}`);
+  const wire = exactRecord(value, FIELDS, REQUIRED_FIELDS, "result");
   const mode = wire["mode"];
   if (mode !== "local" && mode !== "derived") throw invalid("result.mode");
   const readerGrants = wire["readerGrants"];

@@ -2,7 +2,6 @@
  * The audit section of a ring transfer, the auditor stream and its opened slots. Each published
  * input classifies once through `inputClassOf`. The ring proof opens the notes alone, in SPP's note
  * order, the envelope counts, entry records and owner rows read that order.
- * Read after `protocol/codec/audit-stream.ts`. Read before `proof/transfer-proof.ts`.
  */
 import { RING_SLOT_PADDING, ringInputOpening, ringOutputOpening } from "../rpc/prover/assembly.js";
 import {
@@ -40,6 +39,7 @@ import { RingError } from "../protocol/error.js";
 import { sealRingDisclosure, type RingDisclosure } from "../crypto/audit/ring-disclosure.js";
 
 import type { PublishedSlot, RingOutputRail } from "../operations/payments/output-rail.js";
+import { defined } from "../protocol/defined.js";
 
 /** The auditor stream every transfer statement binds, Rust `SealedAudit`. */
 export interface SealedAudit {
@@ -84,7 +84,7 @@ export function sealAudit(
         layout,
         recipientKeys: input.published.map((slot) => slot.recipientKey),
         inputs: input.inputs,
-        ...(input.voucher === undefined ? {} : { voucher: input.voucher }),
+        ...defined({ voucher: input.voucher }),
       }),
     });
     return Object.freeze({
@@ -117,7 +117,7 @@ export function auditDisclosure(
   return Object.freeze({
     envelope: auditEnvelopeOf(input.txViewingSecret, inputs, layout),
     recipientKeys: Object.freeze(input.recipientKeys.map((key) => key.u())),
-    ...(input.voucher === undefined ? {} : { voucher: input.voucher }),
+    ...defined({ voucher: input.voucher }),
   });
 }
 

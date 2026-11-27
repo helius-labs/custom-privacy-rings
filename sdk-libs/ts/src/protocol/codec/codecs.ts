@@ -23,6 +23,7 @@ import {
 } from "@heliuslabs/spr/interface";
 
 import { ClientError } from "@heliuslabs/spr/client";
+import { defined } from "../defined.js";
 
 const BN254_BASE_MODULUS = bn254.fields.Fp.ORDER;
 
@@ -114,7 +115,7 @@ export function readMergeData(reader: Reader): MergeTransactInstructionData {
     nullifiers,
     utxoTreeRootIndex,
     nullifierTreeRootIndex,
-    ...(cacheSlot === undefined ? {} : { cacheSlot }),
+    ...defined({ cacheSlot }),
   };
 }
 

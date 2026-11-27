@@ -1,7 +1,6 @@
 /**
  * The auditor stream of a transfer and the per-slot output record, sealed and opened over their
  * canonical plaintexts, Rust `AuditStreamSeal`, `AuditEnvelope` and `OutputRecord`.
- * Read after `protocol/codec/audit-stream.ts`. Read before `operations/payments/output-rail.ts` and the audit readers.
  */
 import { checkedBytes, clampViewingSecret, concatBytes } from "@heliuslabs/spr/internal";
 import {
@@ -49,6 +48,7 @@ import {
   type AuditorEnvelope,
   type AuditorMessage,
 } from "./audit.js";
+import { defined } from "../../protocol/defined.js";
 
 /** One transfer's auditor plaintexts, Rust `AuditStreamSeal`. */
 export interface RingDisclosure {
@@ -253,7 +253,7 @@ function readDisclosure(schedule: AuditSchedule, published: PublishedAudit): Rin
     return Object.freeze({
       envelope,
       recipientKeys: Object.freeze(recipientKeys),
-      ...(voucher === undefined ? {} : { voucher }),
+      ...defined({ voucher }),
     });
   } finally {
     schedule.destroy();

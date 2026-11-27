@@ -21,10 +21,30 @@ import type {
   TrackingOpeningsRequest,
   TrackingRecordPoolRequest,
 } from "../protocol/indexer/tracking-codec.js";
+import type {
+  StorageMemberOpenings,
+  StorageMemberPage,
+  StorageOpeningsRequest,
+  StoragePageRequest,
+  StorageRecordPool,
+  StorageRecordPoolRequest,
+  StorageRoot,
+} from "../protocol/indexer/indexer-types.js";
 import type { ServedTrackingPool } from "../protocol/membership/tracking.js";
 import type { RingProver } from "../protocol/proof/ring-proof-requests.js";
 
-export type { RingMemberOpening, RingProver, RingServedRecord };
+export type {
+  RingMemberOpening,
+  RingProver,
+  RingServedRecord,
+  StorageMemberOpenings,
+  StorageMemberPage,
+  StorageOpeningsRequest,
+  StoragePageRequest,
+  StorageRecordPool,
+  StorageRecordPoolRequest,
+  StorageRoot,
+};
 
 /** The nullifier key an owner enrolled, sealed to the auditor. */
 export interface RingSealedKey {
@@ -33,59 +53,6 @@ export interface RingSealedKey {
   readonly nullifierPk: Bytes32;
   readonly ephemeralPublicKey: X25519PublicKey;
   readonly ciphertext: Bytes64;
-}
-
-/** A root a `StorageRegistry` history holds, named by the revision the ring program reads. */
-export interface StorageRoot {
-  readonly root: Bytes32;
-  readonly revision: bigint;
-  readonly nextIndex: bigint;
-}
-
-/** At most `MAX_RING_MEMBER_BATCH` members of one `StorageRegistry`, all under `expectedRoot`. */
-export interface StorageOpeningsRequest {
-  readonly registry: Address;
-  readonly members: readonly Bytes32[];
-  readonly expectedRoot: Bytes32;
-}
-
-export interface StorageRecordPoolRequest extends StorageOpeningsRequest {
-  readonly openings: number;
-}
-
-export interface StorageMemberOpenings {
-  readonly context: Readonly<{ slot: bigint; blockTime: bigint }>;
-  readonly root: StorageRoot;
-  /** In request order. */
-  readonly openings: readonly RingMemberOpening[];
-}
-
-/** Leaves of one `StorageRegistry` from `startIndex`, all under `expectedRoot`. */
-export interface StoragePageRequest {
-  readonly registry: Address;
-  readonly expectedRoot: Bytes32;
-  readonly startIndex: number;
-  readonly limit: number;
-}
-
-/** Leaves from `startIndex` at one root, each with its path. */
-export interface StorageMemberPage {
-  readonly context: Readonly<{ slot: bigint; blockTime: bigint }>;
-  readonly root: StorageRoot;
-  readonly records: readonly RingServedRecord[];
-  /** `undefined` on the last page. */
-  readonly nextLeafIndex: number | undefined;
-}
-
-/** Records under one root, unverified until `verifyRecordPool` checks them against it. */
-export interface StorageRecordPool {
-  readonly context: Readonly<{ slot: bigint; blockTime: bigint }>;
-  readonly root: StorageRoot;
-  /** Distinct leaves in first use order, each path cut at the canopy. */
-  readonly records: readonly RingServedRecord[];
-  readonly canopy: readonly Bytes32[];
-  /** `subjects[i]` indexes the record holding or bracketing member `i`. */
-  readonly subjects: readonly number[];
 }
 
 export interface RingRecordReader {

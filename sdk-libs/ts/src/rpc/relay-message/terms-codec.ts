@@ -1,7 +1,7 @@
 import { address } from "@solana/kit";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
 import { encodeBase58 } from "@heliuslabs/spr/internal";
-import { wirePrimitives } from "../../protocol/wire-primitives.js";
+import { parseExactJson, toU64, wirePrimitives } from "../../protocol/wire-primitives.js";
 import type {
   ApprovalOpening,
   OutputTotalsOpening,
@@ -18,9 +18,6 @@ import {
   type SlotOpening,
 } from "./expected.js";
 
-/** The engine floor holds `JSON.rawJSON`, the TS lib does not type it. */
-const rawJson = (JSON as unknown as { rawJSON(text: string): unknown }).rawJSON;
-
 /** Rust's serde JSON byte for byte, an amount past the safe integers stays exact. */
 export function encodeRelayTransferTerms(terms: RelayTransferTerms): string {
   return JSON.stringify({
@@ -32,7 +29,7 @@ export function encodeRelayTransferTerms(terms: RelayTransferTerms): string {
       owner: opening.owner,
       nullifierPk: encodeBase58(opening.nullifierPk),
       mint: opening.mint,
-      amount: rawJson(opening.amount.toString()),
+      amount: toU64(opening.amount, "amount"),
       blinding: encodeBase58(opening.blinding),
       treeId: opening.treeId,
       dataHash: encodeBase58(opening.dataHash),
@@ -49,19 +46,17 @@ function encodeLeg(leg: PublicLeg): unknown {
   return {
     direction: leg.direction,
     mint: leg.mint,
-    amount: rawJson(leg.amount.toString()),
+    amount: toU64(leg.amount, "amount"),
     accounts: leg.accounts,
   };
 }
 
-/** An integer past the safe range keeps its digits, Serde refuses `7.0` and `-0` for an integer. */
+/** An integer past the safe range keeps its digits as the transport hands them over. */
 function parseWire(json: string): unknown {
-  return JSON.parse(json, (_key: string, value: unknown, context?: { source?: string }) => {
-    if (typeof value !== "number") return value;
-    const source = context?.source ?? "";
-    if (!/^(0|[1-9][0-9]*)$/.test(source)) throw mismatch("Undecodable");
-    return Number.isSafeInteger(value) ? value : source;
-  }) as unknown;
+  return parseExactJson(json, (digits) => {
+    const value = Number(digits);
+    return Number.isSafeInteger(value) ? value : digits;
+  });
 }
 
 function decodeTokenAccountCreate(entry: unknown): TokenAccountCreate {

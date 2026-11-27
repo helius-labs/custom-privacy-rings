@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { readFileSync } from "node:fs";
 
 import { address, getBase58Decoder } from "@solana/kit";
@@ -39,10 +40,6 @@ function bytes(value: string): Uint8Array {
   return Uint8Array.from(value.match(/../g)?.map((pair) => Number.parseInt(pair, 16)) ?? []);
 }
 
-function hex(value: Uint8Array): string {
-  return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 function rustVariant(run: () => unknown): string {
   try {
     run();
@@ -64,7 +61,7 @@ describe("shared ring address vectors (test-vectors/wallet/ring_address.json)", 
     for (const vector of vectors.valid) {
       const request = RingPaymentRequest.parse(vector.uri);
       expect(request.toString(), vector.name).toBe(vector.uri);
-      expect(hex(request.address.recipient.toBytes())).toBe(vector.recipient);
+      expect(bytesToHex(request.address.recipient.toBytes())).toBe(vector.recipient);
       expect(request.address.ringProgramId).toBe(vector.ring_program_id);
       expect(request.amount).toBe(vector.amount === null ? undefined : BigInt(vector.amount));
       expect(request.mint).toBe(vector.mint ?? undefined);
@@ -106,7 +103,7 @@ describe("shared ring address vectors (test-vectors/wallet/ring_address.json)", 
     const request = new RingPaymentRequest({ address: ringAddress });
     viewing.destroy();
     expect(request.toString()).toBe(vector.uri);
-    expect(hex(ShieldedAddress.fromBytes(bytes(vector.recipient)).toBytes())).toBe(
+    expect(bytesToHex(ShieldedAddress.fromBytes(bytes(vector.recipient)).toBytes())).toBe(
       vector.recipient,
     );
   });

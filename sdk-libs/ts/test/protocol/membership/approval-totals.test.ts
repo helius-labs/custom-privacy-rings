@@ -1,3 +1,4 @@
+import { hexToBytes } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
@@ -26,7 +27,6 @@ type Case = Readonly<{
 }>;
 
 const identity = (value: number): Bytes32 => bigIntBytes(BigInt(value)) as Bytes32;
-const fromHex = (text: string): Bytes32 => Uint8Array.from(Buffer.from(text, "hex")) as Bytes32;
 const note = (row: Note) => ({
   owner: identity(row.owner),
   asset: identity(row.asset),
@@ -67,7 +67,9 @@ describe("approval_totals.json", () => {
   it.each(digests.cases.map((digest, at) => [digest.name, digest, cases[at] as Case] as const))(
     "%s",
     (_, digest, vector) => {
-      const commitment = totalsOf(vector, digest.slots).commitment(fromHex(digest.blinder));
+      const commitment = totalsOf(vector, digest.slots).commitment(
+        hexToBytes(digest.blinder) as Bytes32,
+      );
       expect(Buffer.from(commitment).toString("hex")).toBe(digest.commitment);
     },
   );

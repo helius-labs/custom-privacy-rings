@@ -27,6 +27,7 @@ import { openOutputSlot, type OpenedOutput } from "../audit/ring-disclosure.js";
 import { domainHash, RingDomain } from "./ring-domain.js";
 import { packedSecret } from "./ring-stream.js";
 import { withOutputFields } from "../../protocol/proof/proof-output.js";
+import { defined } from "../../protocol/defined.js";
 
 /** SPP's `blinding_seed`, the seed of every ring output's TXOB blinding. */
 export function ringBlindingSeed(txViewingSecret: Bytes32, salt: Bytes16): Bytes32 {
@@ -181,8 +182,7 @@ export function openRecipientNote(
     utxo,
     utxoHash,
     nullifierPublicKey: candidate,
-    ...(dataHash === undefined ? {} : { dataHash }),
-    ...(ringDataHash === undefined ? {} : { ringDataHash }),
+    ...defined({ dataHash, ringDataHash }),
     registered:
       reader.assets.addressForField(hashBytes(addressBytes(record.mint, "mint")) as Bytes32) !==
       undefined,

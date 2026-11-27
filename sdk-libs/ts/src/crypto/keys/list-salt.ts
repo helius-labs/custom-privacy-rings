@@ -8,7 +8,7 @@ import type { Address } from "@solana/kit";
 import { domainField, RingDomain } from "../derivation/ring-domain.js";
 
 /** Above the field modulus, so no merge of a real nullifier derives a salt. */
-export const LIST_SALT_LABEL = (() => {
+const LIST_SALT_LABEL = (() => {
   const label = new Uint8Array(32);
   label.set(new TextEncoder().encode("CRING/list_salt"));
   return label as Bytes32;

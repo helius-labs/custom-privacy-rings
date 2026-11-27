@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { encodeRingBodyOutput } from "../../src/protocol/transaction/output.js";
 import { getBase58Decoder, type Signature } from "@solana/kit";
 import { describe, expect, it, vi } from "vitest";
@@ -29,7 +30,6 @@ import { TREE, TREE_ID, randomAddress } from "../helpers/ring-pipeline.js";
 import {
   ASSETS,
   found,
-  hex,
   keypair,
   output,
   RING,
@@ -91,9 +91,9 @@ describe("full scan recovery", () => {
     );
     expect(byTag).not.toHaveBeenCalled();
     expect(byNullifier).toHaveBeenCalledTimes(1);
-    expect(byNullifier.mock.calls.flatMap(([request]) => request.nullifiers).map(hex)).toEqual(
-      recovered.utxos.map((note) => hex(note.nullifier)),
-    );
+    expect(
+      byNullifier.mock.calls.flatMap(([request]) => request.nullifiers).map(bytesToHex),
+    ).toEqual(recovered.utxos.map((note) => bytesToHex(note.nullifier)));
     expect(
       byNullifier.mock.calls.every(([request]) => request.nullifiers.length <= TAGS_PER_REQUEST),
     ).toBe(true);
@@ -101,7 +101,7 @@ describe("full scan recovery", () => {
     expect(recovered.status).toBe("Complete");
     expect(recovered.history.current().tx).toEqual(history.current().tx);
     expect(recovered.history.current().request).toEqual(history.current().request);
-    expect(found(recovered)).toEqual([hex(output(wrong, 1))]);
+    expect(found(recovered)).toEqual([bytesToHex(output(wrong, 1))]);
     expect(recovered.found[0]?.stream).toEqual({ kind: "fullScan" });
     expect((await recover(alice, indexer)).utxos.map((note) => note.utxo.amount)).toEqual([70n]);
   });
@@ -125,8 +125,8 @@ describe("full scan recovery", () => {
     indexer.publish(tx);
 
     const sender = await recover(alice, indexer);
-    expect(sender.found.map(({ utxoHash, stream }) => [hex(utxoHash), stream])).toEqual([
-      [hex(output(tx, 0)), { kind: "fullScan" }],
+    expect(sender.found.map(({ utxoHash, stream }) => [bytesToHex(utxoHash), stream])).toEqual([
+      [bytesToHex(output(tx, 0)), { kind: "fullScan" }],
     ]);
     expect(sender.utxos.map((note) => note.utxo.amount)).toEqual([50n]);
     // No tag binds a body, the sender lists each payment from the stream its own key sealed.
@@ -173,7 +173,9 @@ describe("full scan recovery", () => {
     indexer.contexts.push(10n, 10n, 12n);
     const recovered = await recover(bob, indexer, { pageSize: 1 });
     expect(indexer.ringReads).toHaveLength(3);
-    expect([...found(recovered)].sort()).toEqual(rows.map((row) => hex(output(row, 1))).sort());
+    expect([...found(recovered)].sort()).toEqual(
+      rows.map((row) => bytesToHex(output(row, 1))).sort(),
+    );
     expect(recovered.history.entry(bob.viewingKey)?.ringPosition(RING)).toBe(12n);
   });
 
@@ -272,9 +274,11 @@ describe("full scan recovery", () => {
     );
     expect(indexer.ringReads.length - pagesBefore).toBe(1);
     expect(byNullifier).toHaveBeenCalledTimes(1);
-    const queried = byNullifier.mock.calls.flatMap(([request]) => request.nullifiers).map(hex);
+    const queried = byNullifier.mock.calls
+      .flatMap(([request]) => request.nullifiers)
+      .map(bytesToHex);
     expect(queried.sort()).toEqual(
-      [...nullifiers, merged.nullifier(mergedHash, nullifierKey)].map(hex).sort(),
+      [...nullifiers, merged.nullifier(mergedHash, nullifierKey)].map(bytesToHex).sort(),
     );
     expect(new Set(queried).size).toBe(queried.length);
     expect(
@@ -286,7 +290,9 @@ describe("full scan recovery", () => {
     expect(recovered.utxos.filter((utxo) => !utxo.spent).map((utxo) => utxo.utxo.amount)).toEqual([
       100n,
     ]);
-    expect(recovered.spentNullifiers.map(hex).sort()).toEqual(nullifiers.map(hex).sort());
+    expect(recovered.spentNullifiers.map(bytesToHex).sort()).toEqual(
+      nullifiers.map(bytesToHex).sort(),
+    );
   });
 
   it("finds what a read of the stored ring positions finds on one history", async () => {
@@ -351,7 +357,7 @@ describe("full scan recovery", () => {
     expect(recovered.utxos).toEqual([]);
     expect(recovered.pendingOpenings.map((note) => note.utxo.amount)).toEqual([7n]);
     expect(recovered.unknownMints).toEqual([mint]);
-    expect(recovered.unmatched.map(hex)).toEqual([hex(hash)]);
+    expect(recovered.unmatched.map(bytesToHex)).toEqual([bytesToHex(hash)]);
   });
 
   describe("a confidential slot", () => {
@@ -426,10 +432,14 @@ describe("full scan recovery", () => {
         ring: ringNoteCodec({ ringProgramId: RING, keys: bob.keys, assets: ASSETS }),
       });
       // No tag selects a body, the commitment rebuild alone names the owner.
-      expect(opened.utxos().map((note) => hex(note.outputContext.hash))).toEqual([hex(hash)]);
+      expect(opened.utxos().map((note) => bytesToHex(note.outputContext.hash))).toEqual([
+        bytesToHex(hash),
+      ]);
       const recovered = await scan(bob, indexer);
-      expect(recovered.utxos.map((note) => hex(note.outputContext.hash))).toEqual([hex(hash)]);
-      expect(recovered.auditorRecovery.unopened.map(hex)).not.toContain(hex(hash));
+      expect(recovered.utxos.map((note) => bytesToHex(note.outputContext.hash))).toEqual([
+        bytesToHex(hash),
+      ]);
+      expect(recovered.auditorRecovery.unopened.map(bytesToHex)).not.toContain(bytesToHex(hash));
     });
 
     it("reports a commitment published twice once", async () => {
@@ -444,7 +454,9 @@ describe("full scan recovery", () => {
         txSignature: getBase58Decoder().decode(new Uint8Array(64).fill(0x7e)) as Signature,
       });
       const recovered = await scan(bob, indexer);
-      expect(recovered.utxos.map((note) => hex(note.outputContext.hash))).toEqual([hex(hash)]);
+      expect(recovered.utxos.map((note) => bytesToHex(note.outputContext.hash))).toEqual([
+        bytesToHex(hash),
+      ]);
     });
 
     it("opens nothing from a bad body and leaves it and a foreign slot to the auditor", async () => {
@@ -458,8 +470,8 @@ describe("full scan recovery", () => {
       const foreign = deliver(indexer, new ScanWallet(3), (slot) => slot);
       const recovered = await scan(bob, indexer);
       expect(recovered.utxos).toEqual([]);
-      expect(recovered.auditorRecovery.unopened.map(hex)).toEqual(
-        expect.arrayContaining([hex(bad), hex(foreign)]),
+      expect(recovered.auditorRecovery.unopened.map(bytesToHex)).toEqual(
+        expect.arrayContaining([bytesToHex(bad), bytesToHex(foreign)]),
       );
     });
   });

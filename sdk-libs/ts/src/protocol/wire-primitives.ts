@@ -1,4 +1,4 @@
-import { U64_MAX, indexerCodec, indexerScalars, wireDecoder } from "@heliuslabs/spr/internal";
+import { U64_MAX, indexerScalars, wireDecoder } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
 
 export type WireFault = "type" | "integer";
@@ -55,7 +55,39 @@ export const schemaWire = wirePrimitives((path, fault, value) =>
     : indexerScalars.schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", path, "a string", value),
 );
 
-/** A request `u64`, refused past the range a JSON number carries exactly. */
-export function toU64(value: bigint, path: string): number {
-  return indexerCodec.toWireInteger(value, path, 0n, U64_MAX);
+/** JSON text `JSON.stringify` writes in place. */
+export type RawJson = Readonly<{ rawJSON: string }>;
+
+/** The engine floor holds `JSON.rawJSON` and a reviver's `context.source`, the TS lib types neither. */
+const engineJson = JSON as unknown as Readonly<{
+  rawJSON(text: string): RawJson;
+  parse(
+    text: string,
+    reviver: (key: string, value: unknown, context: Readonly<{ source?: string }>) => unknown,
+  ): unknown;
+}>;
+
+/** A request `u64` in its exact digits, the number Rust serde reads. */
+export function toU64(value: bigint, path: string): RawJson {
+  if (typeof value !== "bigint" || value < 0n || value > U64_MAX)
+    return indexerScalars.schemaFailure(
+      "INDEXER_SCHEMA_INVALID_INTEGER",
+      path,
+      `an integer from 0 through ${U64_MAX}`,
+      value,
+    );
+  return engineJson.rawJSON(value.toString());
+}
+
+const INTEGER_LITERAL = /^(?:0|-?[1-9][0-9]*)$/;
+
+/** `JSON.parse` that hands `integer` each integer literal's digits and refuses any other number. */
+export function parseExactJson(text: string, integer: (digits: string) => unknown): unknown {
+  return engineJson.parse(text, (_key, value, context) => {
+    if (typeof value !== "number") return value;
+    const digits = context.source;
+    if (digits === undefined || !INTEGER_LITERAL.test(digits))
+      throw new SyntaxError("a number is not an integer literal");
+    return integer(digits);
+  });
 }

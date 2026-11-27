@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { AccountRole, getBase58Decoder, type Address } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
@@ -8,7 +9,7 @@ import {
   TransferApproval,
   approveTransferInstruction,
 } from "../../../src/protocol/transaction/transfer-approval.js";
-import { filled, hex, ringError } from "../../helpers/ring-pipeline.js";
+import { filled, ringError } from "../../helpers/ring-pipeline.js";
 
 const address = (seed: number): Address => getBase58Decoder().decode(filled(seed)) as Address;
 const call = {
@@ -20,10 +21,10 @@ const call = {
 describe("TransferApproval", () => {
   // Rust `TransferApproval::digest` and `encode` over the same input.
   it("digests and encodes the vector Rust produces", () => {
-    expect(hex(TransferApproval.digest(call))).toBe(
+    expect(bytesToHex(TransferApproval.digest(call))).toBe(
       "2ed0f53961ae51c9a8751a719a070cc01715ad2b4d73ad2c2c59f2be419a9356",
     );
-    expect(hex(TransferApproval.encode({ position: 3, digest: filled(9) }))).toBe(
+    expect(bytesToHex(TransferApproval.encode({ position: 3, digest: filled(9) }))).toBe(
       `4103${"09".repeat(32)}`,
     );
   });

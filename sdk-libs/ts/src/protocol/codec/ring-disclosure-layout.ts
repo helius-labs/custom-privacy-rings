@@ -66,7 +66,7 @@ export function publishedRecordLen(form: RecordForm, kind: RecordKind): number {
 }
 
 /** A data frame's payload follows the record at its length prefix or longer, any other body ends at the record, Rust `RecordForm::fits_recipient_body`. */
-export function fitsRecipientBody(form: RecordForm, bodyLength: number): boolean {
+function fitsRecipientBody(form: RecordForm, bodyLength: number): boolean {
   const recordLength = publishedRecordLen(form, RecordKind.ring);
   return form.data ? bodyLength >= recordLength + PAYLOAD_LENGTH_LEN : bodyLength === recordLength;
 }

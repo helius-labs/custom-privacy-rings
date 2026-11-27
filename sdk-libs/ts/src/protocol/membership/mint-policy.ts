@@ -111,7 +111,7 @@ export function mintPolicyFromBytes(bytes: Uint8Array): MintPolicy {
   });
 }
 
-export function sameMintPolicy(left: MintPolicy, right: MintPolicy): boolean {
+function sameMintPolicy(left: MintPolicy, right: MintPolicy): boolean {
   return equalBytes(mintPolicyBytes(left), mintPolicyBytes(right));
 }
 

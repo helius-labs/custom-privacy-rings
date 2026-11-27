@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeRingRpcHealth } from "../../../src/protocol/ring-rpc/health.js";
+import { decodeRingRpcHealth } from "../../../src/rpc/ring-rpc/health.js";
 
 const KEY = "11111111111111111111111111111111";
 const WRITER = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T";

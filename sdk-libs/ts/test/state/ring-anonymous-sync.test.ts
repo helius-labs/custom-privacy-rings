@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { getBase58Decoder, type Signature } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
@@ -34,7 +35,6 @@ import {
   ASSETS,
   field,
   found,
-  hex,
   keypair,
   output,
   RING,
@@ -49,8 +49,8 @@ await initializePoseidon();
 const ZERO = new Uint8Array(32) as Bytes32;
 
 function stream(scan: AnonymousScan, utxoHash: Bytes32): AnonymousStream {
-  const entry = scan.found.find((utxo) => hex(utxo.utxoHash) === hex(utxoHash));
-  if (entry === undefined) throw new Error(`note ${hex(utxoHash)} not found`);
+  const entry = scan.found.find((utxo) => bytesToHex(utxo.utxoHash) === bytesToHex(utxoHash));
+  if (entry === undefined) throw new Error(`note ${bytesToHex(utxoHash)} not found`);
   return entry.stream;
 }
 
@@ -101,7 +101,7 @@ describe("anonymous sync", () => {
     await alice.pay(indexer, [{ to: stranger, amount: 9n }]);
     const paid = await alice.pay(indexer, [{ to: bob.address, amount: 30n }]);
     const scanned = await bob.sync(indexer, bob.fresh());
-    expect(found(scanned)).toEqual([hex(output(paid, 1))]);
+    expect(found(scanned)).toEqual([bytesToHex(output(paid, 1))]);
     expect(scanned.unmatched).toEqual([]);
   });
 
@@ -113,7 +113,10 @@ describe("anonymous sync", () => {
     const withChange = await carol.pay(indexer, [{ to: bob.address, amount: 40n }]);
     const scan = await carol.sync(indexer, carol.fresh());
     expect(scan.utxos.map((note) => note.utxo.amount)).toEqual([0n, 60n]);
-    expect(found(scan)).toEqual([hex(output(noChange, 0)), hex(output(withChange, 0))]);
+    expect(found(scan)).toEqual([
+      bytesToHex(output(noChange, 0)),
+      bytesToHex(output(withChange, 0)),
+    ]);
     expect(scan.sent.map((row) => row.amount)).toEqual([100n, 40n]);
   });
 
@@ -125,8 +128,8 @@ describe("anonymous sync", () => {
     indexer.publish(paid);
     const scan = await carol.sync(indexer, carol.fresh());
     expect(scan.utxos.map((note) => note.utxo.amount)).toEqual([60n]);
-    expect(scan.sent.map((row) => [hex(row.utxoHash), row.amount])).toEqual([
-      [hex(output(paid, 1)), 40n],
+    expect(scan.sent.map((row) => [bytesToHex(row.utxoHash), row.amount])).toEqual([
+      [bytesToHex(output(paid, 1)), 40n],
     ]);
   });
 
@@ -150,30 +153,30 @@ describe("anonymous sync", () => {
     expect(
       scan.sent.map((row) => [
         row.position,
-        hex(row.recipientViewingPublicKey.toBytes()),
-        row.ownerPublicKey === undefined ? undefined : hex(row.ownerPublicKey.toBytes()),
+        bytesToHex(row.recipientViewingPublicKey.toBytes()),
+        row.ownerPublicKey === undefined ? undefined : bytesToHex(row.ownerPublicKey.toBytes()),
         row.amount,
         row.check,
-        hex(row.utxoHash),
+        bytesToHex(row.utxoHash),
         row.txSignature,
       ]),
     ).toEqual([
       [
         1,
-        hex(bob.viewingPublicKey.toBytes()),
-        hex(bob.signingPublicKey.toBytes()),
+        bytesToHex(bob.viewingPublicKey.toBytes()),
+        bytesToHex(bob.signingPublicKey.toBytes()),
         30n,
         { kind: "verified", mint: SOL_MINT },
-        hex(output(paid, 1)),
+        bytesToHex(output(paid, 1)),
         paid.txSignature,
       ],
       [
         2,
-        hex(carol.viewingPublicKey.toBytes()),
+        bytesToHex(carol.viewingPublicKey.toBytes()),
         undefined,
         20n,
         { kind: "unverified" },
-        hex(output(paid, 2)),
+        bytesToHex(output(paid, 2)),
         paid.txSignature,
       ],
     ]);
@@ -276,7 +279,7 @@ describe("anonymous sync", () => {
     });
     const paid = await alice.pay(indexer, [{ to: bob.address, amount: 30n }]);
     const scanned = await bob.sync(indexer, bob.fresh());
-    expect(found(scanned)).toEqual([hex(output(paid, 1))]);
+    expect(found(scanned)).toEqual([bytesToHex(output(paid, 1))]);
     expect(scanned.unmatched).toEqual([]);
   });
 
@@ -330,10 +333,12 @@ describe("anonymous sync", () => {
     });
     const next = await bob.sync(indexer, held.history, held.utxos);
     expect(stream(next, mergedHash)).toEqual({ kind: "merge", firstNullifier: first });
-    expect(next.spentNullifiers.map(hex)).toEqual(expect.arrayContaining(nullifiers.map(hex)));
+    expect(next.spentNullifiers.map(bytesToHex)).toEqual(
+      expect.arrayContaining(nullifiers.map(bytesToHex)),
+    );
     expect(
-      next.utxos.filter((utxo) => !utxo.spent).map((utxo) => hex(utxo.outputContext.hash)),
-    ).toEqual([hex(mergedHash)]);
+      next.utxos.filter((utxo) => !utxo.spent).map((utxo) => bytesToHex(utxo.outputContext.hash)),
+    ).toEqual([bytesToHex(mergedHash)]);
     const wallet = AnonymousWallet.create(
       new Wallet({ identity: bob.address, registry: ASSETS }),
       bob.fresh(),
@@ -344,10 +349,12 @@ describe("anonymous sync", () => {
     await expect(wallet.absorb({ ...next })).rejects.toThrow("RING_SCAN_CONSUMED");
     const repeated = await bob.sync(indexer, wallet.history(), wallet.notes());
     await wallet.absorb(repeated);
-    expect(wallet.notes().map((utxo) => [hex(utxo.outputContext.hash), utxo.spent])).toEqual([
-      ...held.utxos.map((utxo) => [hex(utxo.outputContext.hash), true]),
-      [hex(mergedHash), false],
-    ]);
+    expect(wallet.notes().map((utxo) => [bytesToHex(utxo.outputContext.hash), utxo.spent])).toEqual(
+      [
+        ...held.utxos.map((utxo) => [bytesToHex(utxo.outputContext.hash), true]),
+        [bytesToHex(mergedHash), false],
+      ],
+    );
   });
 
   it("reports only the wallet's own spends out of a whole ring's rows", async () => {
@@ -376,7 +383,7 @@ describe("anonymous sync", () => {
     const [note] = scan.utxos;
     if (note === undefined) throw new Error("no note");
     const hash = output(paid, 1);
-    expect(hex(note.outputContext.hash)).toBe(hex(hash));
+    expect(bytesToHex(note.outputContext.hash)).toBe(bytesToHex(hash));
     expect(scan.found[0]?.nullifierPublicKey).toEqual(ZERO_NULLIFIER_PK);
     expect(note.nullifier).toEqual(poseidon([hash, note.utxo.blinding, ZERO_32]));
   });
@@ -386,7 +393,7 @@ describe("anonymous sync", () => {
     const alice = new ScanWallet(1);
     const entered = await alice.pay(indexer, [{ to: alice.address, amount: 25n }]);
     const scan = await alice.sync(indexer, alice.fresh());
-    expect(found(scan)).toEqual([hex(output(entered, 0)), hex(output(entered, 1))]);
+    expect(found(scan)).toEqual([bytesToHex(output(entered, 0)), bytesToHex(output(entered, 1))]);
     expect(scan.utxos.map((note) => note.utxo.amount).sort()).toEqual([25n, 75n]);
     expect(scan.utxos.every((note) => note.utxo.ringProgramId !== undefined)).toBe(true);
   });
@@ -398,7 +405,7 @@ describe("anonymous sync", () => {
     const paid = await alice.pay(indexer, [{ to: bob, amount: 100n }]);
     expect(paid.outputSlots[0]?.payload.length).toBeGreaterThan(0);
     const scan = await alice.sync(indexer, alice.fresh());
-    expect(found(scan)).toEqual([hex(output(paid, 0))]);
+    expect(found(scan)).toEqual([bytesToHex(output(paid, 0))]);
     expect(scan.utxos[0]?.utxo.amount).toBe(0n);
   });
 
@@ -417,7 +424,7 @@ describe("anonymous sync", () => {
     const scan = await bob.sync(indexer, bob.fresh());
     const claim = scan.senderClaims[0];
     if (claim === undefined) throw new Error("no claim");
-    expect(hex(claim.utxoHash)).toBe(hex(output(paid, 1)));
+    expect(bytesToHex(claim.utxoHash)).toBe(bytesToHex(output(paid, 1)));
 
     const wallet = AnonymousWallet.create(
       new Wallet({ identity: bob.address, registry: ASSETS }),
@@ -447,7 +454,7 @@ describe("anonymous sync", () => {
       { to: carol.address, amount: 20n },
     ]);
     const decodes = await bob.sync(indexer, bob.fresh());
-    expect(found(decodes)).toEqual([hex(output(paid, 1))]);
+    expect(found(decodes)).toEqual([bytesToHex(output(paid, 1))]);
     expect(decodes.senderClaims.map(({ claim }) => claim.claimed.viewingKey.u())).toEqual([
       alice.viewingKey.u(),
     ]);
@@ -455,13 +462,13 @@ describe("anonymous sync", () => {
       alice.address.signingPublicKey.confidentialViewTag(),
     );
     const undecodable = await carol.sync(indexer, carol.fresh());
-    expect(found(undecodable)).toEqual([hex(output(paid, 2))]);
+    expect(found(undecodable)).toEqual([bytesToHex(output(paid, 2))]);
     expect(undecodable.senderClaims).toEqual([]);
   });
 });
 
 function hex2(key: Readonly<{ toBytes(): Uint8Array }>): string {
-  return hex(key.toBytes());
+  return bytesToHex(key.toBytes());
 }
 
 describe("viewing history", () => {
@@ -505,6 +512,7 @@ describe("viewing history", () => {
       '"request":{"next":0,"scanned":0,"pending":[]}',
       '"request":{"next":0}',
       '"request":{"next":-1,"scanned":0}',
+      '"request":{"next":0.0,"scanned":0}',
       `"request":{"next":${1n << 64n},"scanned":0}`,
       '"knownSenders":[]',
     ])
@@ -533,10 +541,10 @@ describe("viewing history", () => {
     const first = await fresh.select(wallet.keys);
     const second = await first.history.select(wallet.keys);
     expect(first.tag.viewingPublicKey.equals(wallet.viewingKey)).toBe(true);
-    expect([first, second].map(({ tag }) => hex(tag.sender))).toEqual(
-      [0n, 1n].map((index) => hex(slotTag(viewing.senderViewTag(index)))),
+    expect([first, second].map(({ tag }) => bytesToHex(tag.sender))).toEqual(
+      [0n, 1n].map((index) => bytesToHex(slotTag(viewing.senderViewTag(index)))),
     );
-    expect(hex(first.tag.sender)).not.toBe(hex(second.tag.sender));
+    expect(bytesToHex(first.tag.sender)).not.toBe(bytesToHex(second.tag.sender));
     expect([first, second].map(({ history }) => history.current().txCount)).toEqual([1n, 2n]);
     expect(second.history.current().requestCount).toBe(0n);
     const ceiling = ViewingHistory.fromJson(

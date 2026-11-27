@@ -13,14 +13,13 @@ import {
   targetLines,
   walletLines,
   checkedReadTarget,
-  timestampOrNow,
-  freshNonce,
+  AttestationRequest,
 } from "./signed-request.js";
 import {
   type WebAuthnSignature,
   type RingReadSigner,
 } from "../../protocol/ring-rpc/read-signer.js";
-import { encoder, base64Decoder, checkedUnixTimestamp } from "./wire.js";
+import { encoder, base64Decoder } from "./wire.js";
 
 const AUDITED_UTXOS_DOMAIN = "zolana/ring-rpc-audited-utxos";
 /** Rust `AUDITED_UTXOS_LIMIT`, the UTXO hashes one read names. */
@@ -64,13 +63,13 @@ export interface SignedAuditedUtxosRead {
 }
 
 /** Mirrors Rust `AuditedUtxosRequest`, one to `RING_AUDITED_UTXOS_LIMIT` hashes. */
-export class RingAuditedUtxosRequest {
+export class RingAuditedUtxosRequest extends AttestationRequest {
   readonly #target: RingReadTarget;
   readonly #utxoHashes: readonly Bytes32[];
   #wallet?: Address;
-  #timestamp?: bigint;
 
   private constructor(target: RingReadTarget, utxoHashes: readonly Bytes32[]) {
+    super();
     this.#target = checkedReadTarget(target);
     this.#utxoHashes = utxoHashes;
   }
@@ -85,15 +84,8 @@ export class RingAuditedUtxosRequest {
     return this;
   }
 
-  /** Unix seconds, the RPC rejects a clock more than its skew away. */
-  at(timestamp: bigint): this {
-    this.#timestamp = checkedUnixTimestamp(timestamp, "timestamp");
-    return this;
-  }
-
   async sign(signer: RingReadSigner): Promise<SignedAuditedUtxosRead> {
-    const timestamp = timestampOrNow(this.#timestamp);
-    const nonce = freshNonce();
+    const { timestamp, nonce } = this.stamp();
     const signature = await signer.sign(
       auditedUtxosAttestation({
         target: this.#target,

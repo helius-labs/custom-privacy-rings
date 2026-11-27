@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
@@ -14,7 +15,7 @@ import { AssetRegistry, Utxo, Wallet, type WalletUtxo } from "@heliuslabs/spr/tr
 import { AnonymousSync } from "../../src/state/anonymous-sync.js";
 import { AnonymousWallet } from "../../src/state/anonymous-wallet.js";
 import { TREE, TREE_ID, randomAddress } from "../helpers/ring-pipeline.js";
-import { field, hex, RING, ScanIndexer, ScanWallet, signature } from "../helpers/ring-scan.js";
+import { field, RING, ScanIndexer, ScanWallet, signature } from "../helpers/ring-scan.js";
 
 await initializePoseidon();
 
@@ -110,18 +111,18 @@ describe("pending merge notes", () => {
       const initial = await read(wallet, [seed]);
       expect(initial.utxos).toEqual([]);
       expect(initial.unknownMints).toEqual([mint]);
-      expect(initial.unmatched.map(hex)).toEqual([hex(first.outputContext.hash)]);
-      expect(initial.spentNullifiers.map(hex)).toEqual([hex(seed.nullifier)]);
+      expect(initial.unmatched.map(bytesToHex)).toEqual([bytesToHex(first.outputContext.hash)]);
+      expect(initial.spentNullifiers.map(bytesToHex)).toEqual([bytesToHex(seed.nullifier)]);
       await wallet.absorb(initial);
 
       const restored = AnonymousWallet.fromJson(wallet.toJson());
       const second = publishMerge({ indexer, owner, spent: first, slot: 3n });
       const next = await read(restored, [...restored.notes(), ...restored.pendingOpenings()]);
       expect(next.utxos).toEqual([]);
-      expect(next.pendingOpenings.map((note) => hex(note.outputContext.hash))).toEqual([
-        hex(second.outputContext.hash),
+      expect(next.pendingOpenings.map((note) => bytesToHex(note.outputContext.hash))).toEqual([
+        bytesToHex(second.outputContext.hash),
       ]);
-      expect(next.spentNullifiers.map(hex)).toEqual([hex(first.nullifier)]);
+      expect(next.spentNullifiers.map(bytesToHex)).toEqual([bytesToHex(first.nullifier)]);
       await restored.absorb(next);
       expect(restored.notes()).toEqual([]);
 
@@ -135,8 +136,8 @@ describe("pending merge notes", () => {
         persisted
           .notes()
           .filter((note) => !note.spent)
-          .map((note) => hex(note.outputContext.hash)),
-      ).toEqual([hex(second.outputContext.hash)]);
+          .map((note) => bytesToHex(note.outputContext.hash)),
+      ).toEqual([bytesToHex(second.outputContext.hash)]);
       expect(indexer.ringReads).toHaveLength(reads);
     },
   );
@@ -195,8 +196,8 @@ describe("pending merge notes", () => {
       wallet
         .notes()
         .filter((note) => !note.spent)
-        .map((note) => hex(note.outputContext.hash)),
-    ).toEqual([hex(second.outputContext.hash)]);
+        .map((note) => bytesToHex(note.outputContext.hash)),
+    ).toEqual([bytesToHex(second.outputContext.hash)]);
     expect(indexer.ringReads).toHaveLength(reads);
   });
 });

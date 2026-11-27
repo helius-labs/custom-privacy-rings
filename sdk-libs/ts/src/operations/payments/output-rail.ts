@@ -47,6 +47,7 @@ import { RingAddress } from "../../crypto/keys/ring-address.js";
 import { ringBlindedOutputs, ringBlindingSeed } from "../../crypto/derivation/blinding.js";
 import { RingError } from "../../protocol/error.js";
 import { ringTransactOutput, type RingOutput } from "../../protocol/transaction/transact.js";
+import { defined } from "../../protocol/defined.js";
 
 /** How the ring outputs of one transfer reach their recipients, Rust `RingDelivery`. */
 export type RingDelivery =
@@ -56,7 +57,7 @@ export type RingDelivery =
   | Readonly<{ kind: "anonymous"; plan: AnonymousPlan }>;
 
 /** The change at `added` leads, SPL ahead of SOL, then each dataless output declared to the sender, Rust `lead_change`. */
-export function leadChange(
+function leadChange(
   outputs: readonly ProofOutputUtxo[],
   sender: ShieldedAddress,
   added: ReadonlySet<number>,
@@ -74,17 +75,17 @@ export function leadChange(
 }
 
 /** The first padding slot of a ring frame, where a zero change goes when nothing returns, `-1` with none spare. */
-export function spareSlot(outputs: readonly ProofOutputUtxo[]): number {
+function spareSlot(outputs: readonly ProofOutputUtxo[]): number {
   return outputs.findIndex((output) => output.isDummy() && output.ringProgramId !== undefined);
 }
 
 /** The application data `output` sends beside its record, Rust `recipient_payload`. */
-export function recipientPayload(output: ProofOutputUtxo): RecipientPayload {
+function recipientPayload(output: ProofOutputUtxo): RecipientPayload {
   return Object.freeze({ data: output.data.utxoData() ?? new Uint8Array() });
 }
 
 /** The circuit derives the kind and the zero-key bit from the slot's opening, a dummy's plaintext is zero, Rust `RingOutputRail::output_record`. */
-export function outputRecord(output: ProofOutputUtxo): OutputRecord {
+function outputRecord(output: ProofOutputUtxo): OutputRecord {
   const owner = output.ownerAddress;
   if (owner === undefined || output.isDummy()) return DUMMY_RECORD;
   const kind = output.ringProgramId === undefined ? RecordKind.exit : RecordKind.ring;
@@ -377,8 +378,7 @@ export class RingOutputRail {
           slotIndex,
           wire: Object.freeze(wire),
           recipientKey: slot.recipientKey,
-          ...(reply === undefined ? {} : { reply }),
-          ...(slot.anonymous === undefined ? {} : { anonymous: slot.anonymous }),
+          ...defined({ reply, anonymous: slot.anonymous }),
         });
       }),
     );

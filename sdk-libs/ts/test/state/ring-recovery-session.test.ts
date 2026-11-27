@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it, vi } from "vitest";
 import { initializePoseidon } from "@heliuslabs/spr";
 import { type GetByTagsRequest, type GetByNullifiersRequest } from "@heliuslabs/spr/client";
@@ -8,15 +9,7 @@ import { AnonymousWallet } from "../../src/state/anonymous-wallet.js";
 import { RECOVERY_DIAGNOSTIC_SAMPLES } from "../../src/state/recovery-session.js";
 import { extended } from "../../src/operations/workflow/extended.js";
 import { selectRingInputs } from "../../src/operations/payments/transfer.js";
-import {
-  ASSETS,
-  RING,
-  ScanIndexer,
-  ScanWallet,
-  field,
-  hex,
-  signature,
-} from "../helpers/ring-scan.js";
+import { ASSETS, RING, ScanIndexer, ScanWallet, field, signature } from "../helpers/ring-scan.js";
 
 await initializePoseidon();
 
@@ -42,10 +35,10 @@ class RecoverySource {
       },
       getShieldedTransactionsByNullifiers: async (request) => {
         this.spendQueries.push(request);
-        const wanted = new Set(request.nullifiers.map(hex));
+        const wanted = new Set(request.nullifiers.map(bytesToHex));
         return this.transactions(
           this.indexer.transactions.filter((row) =>
-            row.nullifiers.some((value) => wanted.has(hex(value))),
+            row.nullifiers.some((value) => wanted.has(bytesToHex(value))),
           ),
           request,
         );
@@ -230,8 +223,8 @@ describe("durable recovery", () => {
     expect(() => select(restored)).toThrow("RING_SYNC_INCOMPLETE");
     const checked = await complete(sync, source, restored);
     expect(select(checked)).toHaveLength(1);
-    expect(source.spendQueries.flatMap((query) => query.nullifiers).map(hex)).toEqual([
-      hex(checked.notes()[0]!.nullifier),
+    expect(source.spendQueries.flatMap((query) => query.nullifiers).map(bytesToHex)).toEqual([
+      bytesToHex(checked.notes()[0]!.nullifier),
     ]);
   });
 
@@ -376,7 +369,7 @@ describe("durable recovery", () => {
       new Wallet({ identity: bob.address, registry: ASSETS }),
       history,
     );
-    held.wallet._setSyncCheckpoint("nullifiers", hex(field(1, 1)), 300n);
+    held.wallet._setSyncCheckpoint("nullifiers", bytesToHex(field(1, 1)), 300n);
     await expect(
       AnonymousSync.create(bob.keys, ASSETS).fetchWallet(source.client(), held),
     ).rejects.toThrow("RING_HISTORY_PAGE_INVALID");

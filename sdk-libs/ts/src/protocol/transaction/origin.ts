@@ -43,8 +43,9 @@ import {
   type SealedMergeRecord,
 } from "../../crypto/audit/merge-disclosure.js";
 import { RingTransactData, landedRingRail, type RingRail } from "./transact.js";
-import { readMergeData, writeInterfaceTransfer } from "../codec/codecs.js";
+import { readInterfaceTransfer, readMergeData, writeInterfaceTransfer } from "../codec/codecs.js";
 import { cacheAccountCount as cacheAccounts, settlementAccountCount } from "./transfer-layout.js";
+import { defined } from "../defined.js";
 
 const base58Encoder = getBase58Encoder();
 
@@ -620,7 +621,7 @@ function bindConfirmedTransaction(
       ...(data.txViewingPk === undefined
         ? {}
         : { txViewingPublicKey: X25519PublicKey.fromBytes(data.txViewingPk) }),
-      ...(data.salt === undefined ? {} : { salt: data.salt }),
+      ...defined({ salt: data.salt }),
       outputSlots: Object.freeze(outputSlots),
       messages: Object.freeze(data.messages),
       nullifiers: Object.freeze(data.nullifiers),
@@ -828,26 +829,6 @@ function readTransferData(reader: Reader, accounts: readonly Address[]): Confirm
     inputTreeIndexes: inputs.map((input) => input.treeIndex),
     anonymous: circuit === 3 || circuit === 6,
   };
-}
-
-function readInterfaceTransfer(reader: Reader): InterfaceTransfer {
-  const kind = reader.u8("interfaceTransfer.kind");
-  const amount = reader.u64("interfaceTransfer.amount");
-  switch (kind) {
-    case 0:
-      return { kind: "solDeposit", amount };
-    case 1:
-      return { kind: "solWithdrawal", amount };
-    case 2:
-    case 3:
-      return {
-        kind: kind === 2 ? "splDeposit" : "splWithdrawal",
-        amount,
-        splInterfaceBump: reader.u8("interfaceTransfer.splInterfaceBump"),
-      };
-    default:
-      throw invalid("interfaceTransfer.kind");
-  }
 }
 
 function parsed(

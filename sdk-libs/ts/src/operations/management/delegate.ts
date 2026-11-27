@@ -59,6 +59,7 @@ import {
   type RingSubmissionBuildState,
 } from "../workflow/submission.js";
 import { RING_AUTHORITY_SHAPES } from "../../protocol/transaction/spp.js";
+import { defined } from "../../protocol/defined.js";
 
 export type RingDelegateTransferClient = DelegateTransferClient & BlockhashProvider & KitRpcAccess;
 
@@ -334,8 +335,7 @@ async function buildDelegateTransaction(
       outputs: moved,
       assets,
       outputTreeId: move.client.treeId,
-      ...(move.txViewingKey === undefined ? {} : { txViewingKey: move.txViewingKey }),
-      ...(withdrawal === undefined ? {} : { withdrawal }),
+      ...defined({ txViewingKey: move.txViewingKey, withdrawal }),
     });
     const approval: RingTransferApproval = {
       transaction:

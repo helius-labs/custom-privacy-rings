@@ -155,7 +155,7 @@ export function isChange(output: ProofOutputUtxo, sender: ShieldedAddress): bool
 }
 
 /** A nonzero data hash or ring data hash, the commitment covers both. */
-export function carriesData(output: ProofOutputUtxo): boolean {
+function carriesData(output: ProofOutputUtxo): boolean {
   return (
     (output.dataHash !== undefined && !isZero(output.dataHash)) ||
     (output.ringDataHash !== undefined && !isZero(output.ringDataHash))

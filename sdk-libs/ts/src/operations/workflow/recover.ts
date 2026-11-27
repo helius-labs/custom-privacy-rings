@@ -36,10 +36,11 @@ import {
 import { outputTreeId } from "../../protocol/membership/trees.js";
 import { ringIdField } from "../../crypto/derivation/ring-stream.js";
 import { zeroKeyNullifier } from "../../state/exposed-notes.js";
+import { defined } from "../../protocol/defined.js";
 
 export type RingRecoveryClient = RingAuditReader;
 
-export const RECOVERY_INPUT_SAMPLE_LIMIT = 64;
+const RECOVERY_INPUT_SAMPLE_LIMIT = 64;
 
 /** Mirrors Rust `MemberRecovery`, a source member's notes from the auditor's view and its nullifier key. */
 export interface RingRecoveryParams {
@@ -456,8 +457,7 @@ function sourceWalletUtxo(
     utxo,
     outputContext,
     nullifier: sourceNullifier(input, nullifierPk, outputContext.hash, utxo.blinding),
-    ...(dataHash === undefined ? {} : { dataHash }),
-    ...(ringDataHash === undefined ? {} : { ringDataHash }),
+    ...defined({ dataHash, ringDataHash }),
     spent: false,
   });
   const commitment = utxo.hash(nullifierPk, outputTreeId(outputContext), dataHash, ringDataHash);

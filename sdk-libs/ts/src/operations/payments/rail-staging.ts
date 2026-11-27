@@ -89,6 +89,7 @@ import type {
 } from "./transfer-rails.js";
 import { checkCoOwnerKeys, checkZeroKeyInputs, ringSpendAuthority } from "./ring-spend.js";
 import { type CoOwner } from "../../protocol/ring-rpc/relay-proof-inputs.js";
+import { defined } from "../../protocol/defined.js";
 const base64 = getBase64Decoder();
 
 export type Owned = TransferLine<CustomRingTransferInput>;
@@ -296,11 +297,11 @@ export async function stageTransfer(
           sender,
           ownerSigners,
           ...(rail.kind === "anonymous" ? {} : stagedDeposits(owner)),
-          ...(withdrawal === undefined ? {} : { withdrawal }),
+          ...defined({ withdrawal }),
           ...(rail.kind !== "confidential" || owner.withdrawalOwner === undefined
             ? {}
             : { withdrawalOwner: owner.withdrawalOwner }),
-          ...(owner.extensions === undefined ? {} : { extensions: owner.extensions }),
+          ...defined({ extensions: owner.extensions }),
           ...(planSalt === undefined ? committedStage(program, proofInputs) : {}),
         },
       };
@@ -411,7 +412,7 @@ function stagedSpend(
   const { inProofOwner, hidden } = ring;
   if (rail.kind === "confidential")
     // SPP's anonymous rail hides the owner, the statement publishes it.
-    return { rail: "confidential", ...(inProofOwner === undefined ? {} : { inProofOwner }) };
+    return { rail: "confidential", ...defined({ inProofOwner }) };
   if (rail.kind === "publicOwners")
     return ring.anonymous
       ? {
@@ -476,7 +477,7 @@ export function sealOutputs<Checked>(
         assets: seal.assets,
         auditor: seal.auditor,
         instructionDiscriminator: seal.instructionDiscriminator,
-        ...(seal.zeroChangeAsset === undefined ? {} : { zeroChangeAsset: seal.zeroChangeAsset }),
+        ...defined({ zeroChangeAsset: seal.zeroChangeAsset }),
       }),
     );
   } catch (cause) {
@@ -643,10 +644,10 @@ async function relayRail<Relayed>(
         ...staged,
         spend:
           frame.kind === "deposit"
-            ? { rail, ...(publicOwners === undefined ? {} : { publicOwners }) }
-            : { rail, ...(inProofOwner === undefined ? {} : { inProofOwner }) },
+            ? { rail, ...defined({ publicOwners }) }
+            : { rail, ...defined({ inProofOwner }) },
       },
-      ...(frame.sealRow === undefined ? {} : { sealRow: frame.sealRow }),
+      ...defined({ sealRow: frame.sealRow }),
     });
     let payload: Uint8Array | undefined;
     try {
@@ -701,7 +702,7 @@ export async function relaySpend(
         kind: "spend",
         quote,
         nullifierKey: relay.nullifierKey,
-        ...(relay.sealRow === undefined ? {} : { sealRow: relay.sealRow }),
+        ...defined({ sealRow: relay.sealRow }),
         deliver: async (sealed, { prepared, staged, approvalBlinder }) => {
           const { proofInputs } = sealed;
           await approval?.approve({ prepared, proofInputs, coSigners: [] });
@@ -731,9 +732,7 @@ export async function relaySpend(
                 intent: {
                   operation: rail.kind,
                   proofInputs: base64.decode(payload) as RelayIntent["proofInputs"],
-                  ...(relay.tokenAccountSetup === undefined
-                    ? {}
-                    : { tokenAccountSetup: relay.tokenAccountSetup }),
+                  ...defined({ tokenAccountSetup: relay.tokenAccountSetup }),
                 },
               },
               expected: sealedExpectation(terms, approvalBlinder, sealed),
@@ -756,7 +755,7 @@ function spendWireRail(
   return {
     kind: "anonymous",
     plan: delivery.plan,
-    ...(rail.exitTokenOwner === undefined ? {} : { exitTokenOwner: rail.exitTokenOwner }),
+    ...defined({ exitTokenOwner: rail.exitTokenOwner }),
     ownerExposed: rail.exposure === "accepted",
   };
 }

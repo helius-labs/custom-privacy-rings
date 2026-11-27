@@ -86,6 +86,7 @@ import {
   type RingSubmissionBuildState,
 } from "../workflow/submission.js";
 import { resolveRingOutputTree } from "../../protocol/membership/trees.js";
+import { defined } from "../../protocol/defined.js";
 
 export type RingTransferClient = CustomRingTransferClient & BlockhashProvider;
 
@@ -425,8 +426,7 @@ function buildDirectSpend<Spend extends RingSpendParams, Resolved>(
   const { params, rail, retry } = input;
   const railed = {
     ...params,
-    ...(rail.anonymous === undefined ? {} : { anonymous: rail.anonymous }),
-    ...(rail.spendPublic === undefined ? {} : { spendPublic: rail.spendPublic }),
+    ...defined({ anonymous: rail.anonymous, spendPublic: rail.spendPublic }),
   };
   return buildRingSpend({ params, rail, strategy: input.operation(railed), retry }, context);
 }
@@ -606,9 +606,7 @@ function withdrawalStrategy(params: WithdrawalParams): RingSpendStrategy<
           payer: params.feePayer,
           recipient: params.recipient,
           asset,
-          ...(params.splTokenProgram === undefined
-            ? {}
-            : { splTokenProgram: params.splTokenProgram }),
+          ...defined({ splTokenProgram: params.splTokenProgram }),
         }),
       ]);
       return { settlement, setupInstructions };
@@ -711,12 +709,10 @@ async function buildRingSpend<R>(
     const { plan, owner } = staged;
     const approval: RingTransferApproval = {
       transaction: {
-        ...(params.priorityFeeLamports === undefined
-          ? {}
-          : { priorityFeeLamports: params.priorityFeeLamports }),
-        ...(plan.setupInstructions === undefined
-          ? {}
-          : { setupInstructions: plan.setupInstructions }),
+        ...defined({
+          priorityFeeLamports: params.priorityFeeLamports,
+          setupInstructions: plan.setupInstructions,
+        }),
       },
       approve: async ({ prepared }) => {
         await approveSpend({ params, feePayer: params.feePayer, plan, owner, prepared });
@@ -768,10 +764,7 @@ async function relayRingSpend<S, R extends RingRelayRail>(
       quote: spend.quote,
       nullifierKey: spend.nullifierKey,
       notes: staged.selected,
-      ...(plan.tokenAccountSetup === undefined
-        ? {}
-        : { tokenAccountSetup: plan.tokenAccountSetup }),
-      ...(spend.sealRow === undefined ? {} : { sealRow: spend.sealRow }),
+      ...defined({ tokenAccountSetup: plan.tokenAccountSetup, sealRow: spend.sealRow }),
     };
     const approval: RingTransferApproval = {
       transaction: {},
@@ -922,9 +915,9 @@ async function stageRingSpend<R>(
     keys: params.keys,
     transfer,
     assets: params.wallet.registry,
-    ...(input.coSigners === undefined ? {} : { coSigners: input.coSigners }),
+    ...defined({ coSigners: input.coSigners }),
     listSalts: spendListSalts(params),
-    ...(params.ringSalt === undefined ? {} : { ringSalt: params.ringSalt }),
+    ...defined({ ringSalt: params.ringSalt }),
   });
   return Object.freeze({
     selected,

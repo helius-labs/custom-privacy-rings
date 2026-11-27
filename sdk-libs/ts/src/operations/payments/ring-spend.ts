@@ -28,6 +28,7 @@ import {
 
 import { RingError } from "../../protocol/error.js";
 import type { CoOwner } from "../../protocol/ring-rpc/relay-proof-inputs.js";
+import { defined } from "../../protocol/defined.js";
 
 /** Input 0 seeds every output blinding, the rail refuses a frame whose hidden owner does not lead it. */
 export function ringSpendTransfer(
@@ -184,12 +185,11 @@ export function standIn(input: ProofInputUtxo, owner: ShieldedAddress): ProofInp
       amount: utxo.amount,
       blinding: utxo.blinding,
       data: utxo.data,
-      ...(utxo.ringProgramId === undefined ? {} : { ringProgramId: utxo.ringProgramId }),
+      ...defined({ ringProgramId: utxo.ringProgramId }),
     }),
     nullifierPublicKey: owner.nullifierPublicKey,
     nullifier: input.nullifier(),
     treeId: input.treeId,
-    ...(input.dataHash === undefined ? {} : { dataHash: input.dataHash }),
-    ...(input.ringDataHash === undefined ? {} : { ringDataHash: input.ringDataHash }),
+    ...defined({ dataHash: input.dataHash, ringDataHash: input.ringDataHash }),
   });
 }

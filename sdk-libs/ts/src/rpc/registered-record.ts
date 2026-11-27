@@ -35,7 +35,7 @@ export async function fetchBoundRoot(
 }
 
 /** No ring proof binds the root. */
-export async function fetchRegistryRoot(
+async function fetchRegistryRoot(
   input: Readonly<{ client: Pick<ChainReader, "getAccount">; registry: Address }>,
   context?: RequestContext,
 ): Promise<RegistryRoot> {
@@ -64,7 +64,7 @@ export async function readMemberRecords(
 }
 
 /** @internal `readMemberRecords` with the root the reads verify under. */
-export function readOwnRecords(
+function readOwnRecords(
   input: Readonly<{
     client: RingRecordReadClient;
     ringProgramId: Address;
@@ -91,7 +91,7 @@ export function readOwnRecords(
 }
 
 /** One opening per member in member order, each verified against `root`, Rust `RecordReads::read`. */
-export function readMemberOpenings(
+function readMemberOpenings(
   input: Readonly<{
     client: Pick<RingRecordReader, "getStorageMemberOpenings">;
     root: RegistryRoot;

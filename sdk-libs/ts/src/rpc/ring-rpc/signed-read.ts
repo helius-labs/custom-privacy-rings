@@ -7,8 +7,7 @@ import {
   targetLines,
   walletLines,
   checkedReadTarget,
-  timestampOrNow,
-  freshNonce,
+  AttestationRequest,
   authWire,
 } from "./signed-request.js";
 import {
@@ -26,6 +25,7 @@ import {
   requestAddress,
   requestBytes,
 } from "./wire.js";
+import { defined } from "../../protocol/defined.js";
 
 const READ_DOMAIN = "zolana/ring-rpc-read";
 /** Rust `AUDIT_PAGE_LIMIT`. */
@@ -78,15 +78,15 @@ export interface SignedRingRead {
 }
 
 /** Mirrors Rust `ReadRequest`, every signature draws its own nonce. */
-export class RingReadRequest {
+export class RingReadRequest extends AttestationRequest {
   readonly #method: RingPagedRead;
   readonly #target: RingReadTarget;
   #cursor?: Uint8Array;
   #limit?: bigint;
   #wallet?: Address;
-  #timestamp?: bigint;
 
   private constructor(method: RingPagedRead, target: RingReadTarget) {
+    super();
     this.#method = method;
     this.#target = checkedReadTarget(target);
   }
@@ -119,15 +119,8 @@ export class RingReadRequest {
     return this;
   }
 
-  /** Unix seconds, the RPC rejects a clock more than its skew away. */
-  at(timestamp: bigint): this {
-    this.#timestamp = checkedUnixTimestamp(timestamp, "timestamp");
-    return this;
-  }
-
   async sign(signer: RingReadSigner): Promise<SignedRingRead> {
-    const timestamp = timestampOrNow(this.#timestamp);
-    const nonce = freshNonce();
+    const { timestamp, nonce } = this.stamp();
     const signature = await signer.sign(
       ringReadAttestation({
         method: this.#method,
@@ -161,7 +154,7 @@ export function signedReadParams(
     ringProgramId: checked.ringProgramId,
     ...(checked.cursor === undefined ? {} : { cursor: base64Decoder.decode(checked.cursor) }),
     ...(checked.limit === undefined ? {} : { limit: Number(checked.limit) }),
-    ...(checked.wallet === undefined ? {} : { wallet: checked.wallet }),
+    ...defined({ wallet: checked.wallet }),
     auth: {
       reader: base64Decoder.decode(checked.reader),
       ...authWire({
@@ -277,8 +270,7 @@ export function checkedSignedRead(value: unknown, method: RingPagedRead): Signed
   return Object.freeze({
     method,
     ...checkedReadAuth(read),
-    ...(cursor === undefined ? {} : { cursor }),
-    ...(limit === undefined ? {} : { limit }),
+    ...defined({ cursor, limit }),
   });
 }
 

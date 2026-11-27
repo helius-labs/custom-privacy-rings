@@ -151,6 +151,7 @@ import {
   type PlannedTransfer,
   type SealRow,
 } from "./transfer-plan.js";
+import { defined } from "../../protocol/defined.js";
 
 /** The client a ring transfer reads the ring and proves with, every rail adds its SPP prover. */
 export type RingProvingClient = TreeContext &
@@ -562,7 +563,7 @@ async function selectStagedKey(input: StagedTransferInput, context: RequestConte
     ...(input.voucher === undefined
       ? {}
       : { voucher: input.voucher.publicKey().ownerProofInputHash() }),
-    ...(input.ringSalt === undefined ? {} : { ringSalt: input.ringSalt }),
+    ...defined({ ringSalt: input.ringSalt }),
     ...tokenOwnerHint(spend.anonymous?.tokenOwner ?? staged.withdrawalOwner),
   };
   const demand = await policyDemand({ ...demandInput, rows: liveRows }, context);
@@ -768,12 +769,10 @@ async function assembleStagedTransfer<T>(
       inputTrees: Object.freeze(proofInputs.inputTreeIds().map(treeAddress)),
       outputTree: treeAddress(proofInputs.outputTreeId),
       ownerSigners: staged.ownerSigners,
-      ...(staged.deposits === undefined ? {} : { deposits: staged.deposits }),
-      ...(staged.withdrawal === undefined ? {} : { withdrawal: staged.withdrawal }),
+      ...defined({ deposits: staged.deposits, withdrawal: staged.withdrawal }),
       registries: ringRegistrySlots(config, transferRootRead(config, delegate)),
       coSigners,
-      ...(staged.coSignerForm === undefined ? {} : { coSignerForm: staged.coSignerForm }),
-      ...(spend.delegate === undefined ? {} : { delegate: spend.delegate }),
+      ...defined({ coSignerForm: staged.coSignerForm, delegate: spend.delegate }),
       ...(proofInputs.cacheAccounts.read === undefined
         ? {}
         : { cache: TransactCacheAccounts.read(proofInputs.cacheAccounts.read) }),
@@ -787,7 +786,7 @@ async function assembleStagedTransfer<T>(
     const frameExtensions: FrameExtensions = Object.freeze({
       ...staged.extensions,
       ...(approval === undefined ? {} : { approvalTotals: approval.digest }),
-      ...(cache === undefined ? {} : { cache }),
+      ...defined({ cache }),
     });
     const preview = previewData({
       rail: ringRail,
@@ -803,7 +802,7 @@ async function assembleStagedTransfer<T>(
       wideOwners: plan.wideOwners,
       publicOwners: spend.publicOwners === true,
       extensions: frameExtensions,
-      ...(spend.inProofOwner === undefined ? {} : { inProofOwner: spend.inProofOwner }),
+      ...defined({ inProofOwner: spend.inProofOwner }),
     });
     const publicInputHash = transferStatementHash(
       ringTransferStatement(preview, {
@@ -860,7 +859,7 @@ async function assembleStagedTransfer<T>(
         accounts,
         ringId,
         preview,
-        ...(approval === undefined ? {} : { approval }),
+        ...defined({ approval }),
       }),
     );
   } finally {
@@ -899,7 +898,7 @@ async function proveAssembled(
     publicOwners: spend.publicOwners === true,
     partyIdentities: assembled.partyIdentities,
     signers: assembled.signers,
-    ...(assembled.approval === undefined ? {} : { approval: assembled.approval }),
+    ...defined({ approval: assembled.approval }),
   });
   let proofs: readonly [ProvenRingTransact | ProvenAnonymousRingTransact, Uint8Array];
   try {
@@ -969,8 +968,7 @@ export async function ringTransactInstruction(
   const deposits = (accounts.deposits ?? []).flatMap(depositSettlementAccounts);
   const settled = await ringTransactAccounts({
     ...signed,
-    ...(accounts.withdrawal === undefined ? {} : { withdrawal: accounts.withdrawal }),
-    ...(accounts.cache === undefined ? {} : { cache: accounts.cache }),
+    ...defined({ withdrawal: accounts.withdrawal, cache: accounts.cache }),
   });
   const layout = transferLayout(
     data,
@@ -1033,8 +1031,7 @@ function withAuditorMessage(
       instructionDiscriminator: external.instructionDiscriminator,
       expiryUnixTs: U32_MAX,
       interfaceTransfers: external.interfaceTransfers,
-      ...(extensions.dataHash === undefined ? {} : { dataHash: extensions.dataHash }),
-      ...(extensions.ringDataHash === undefined ? {} : { ringDataHash: extensions.ringDataHash }),
+      ...defined({ dataHash: extensions.dataHash, ringDataHash: extensions.ringDataHash }),
       txViewingPublicKey: external.txViewingPublicKey,
       salt: external.salt,
       outputs: external.outputs,
@@ -1219,15 +1216,14 @@ function provenData(
   return Object.freeze({
     ...preview,
     proof: input.proof,
-    ...(anonymous === undefined ? {} : { anonymous }),
-    ...(inProofOwner === undefined ? {} : { inProofOwner }),
+    ...defined({ anonymous, inProofOwner }),
     sppProof,
     nullifiers: Object.freeze(nullifiers),
     inputTrees,
   });
 }
 
-export function spendsDefaultRing(proofInputs: SppProofInputs): boolean {
+function spendsDefaultRing(proofInputs: SppProofInputs): boolean {
   return proofInputs.inputUtxos.some(isDefaultRingNote);
 }
 
@@ -1275,7 +1271,7 @@ export function boundState(proven: ProvenRingTransfer): RingBoundState {
   return Object.freeze({
     ...(proven.roots.length === 0 ? {} : { roots: proven.roots }),
     trackingRoot: proven.trackingRoot,
-    ...(proven.policy === undefined ? {} : { policy: proven.policy }),
+    ...defined({ policy: proven.policy }),
   });
 }
 

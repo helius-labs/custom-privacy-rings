@@ -72,11 +72,7 @@ export {
 } from "./ring-rpc/wallet-reads.js";
 export { type RingState, type RingActivation, type RingStatus } from "./ring-rpc/status.js";
 export { RING_PAYLOAD_ERROR_KINDS } from "./ring-rpc/audit-decoders.js";
-export type {
-  RingKeyMode,
-  RingReaderGrantMode,
-  RingRpcHealth,
-} from "../protocol/ring-rpc/health.js";
+export type { RingKeyMode, RingReaderGrantMode, RingRpcHealth } from "./ring-rpc/health.js";
 export type {
   AuditedEntryInput,
   AuditedInput,

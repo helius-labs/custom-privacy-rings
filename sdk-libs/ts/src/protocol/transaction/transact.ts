@@ -71,6 +71,7 @@ import {
   encodeRingOutput,
   RingScheme,
 } from "./output.js";
+import { defined } from "../defined.js";
 
 /** The program rail the data serves, fixed by the instruction and the ring mode, Rust `RingRail`. */
 export type RingRail = "confidential" | "anonymous" | "delegate" | "anonymousDelegate";
@@ -276,7 +277,7 @@ export function isAnonymousFrame(rail: RingRail): boolean {
 }
 
 /** Rust `MAX_SPP_MESSAGES`, SPP's `messages` vector has a `u8` length. */
-export const MAX_SPP_MESSAGES = 0xff;
+const MAX_SPP_MESSAGES = 0xff;
 
 /** Rust `MAX_CPI_DATA_LEN`, the runtime's ceiling on the SPP data a transfer forwards. */
 export const MAX_CPI_DATA_LEN = 10 * 1024;
@@ -289,7 +290,7 @@ function checkMessageCount(count: number): void {
   if (count > MAX_APPLICATION_MESSAGES) throw invalid("TooManyApplicationMessages");
 }
 
-export function railSppTag(rail: RingRail): number {
+function railSppTag(rail: RingRail): number {
   return isDelegateRail(rail) ? InstructionTag.ringAuthorityTransact : InstructionTag.ringTransact;
 }
 
@@ -683,8 +684,7 @@ function readCompact(bytes: Reader, rail: RingRail): RingTransactData {
     nOut,
     proof,
     trackingRevision,
-    ...(ownRevision === undefined ? {} : { ownRevision }),
-    ...(policy === undefined ? {} : { policy }),
+    ...defined({ ownRevision, policy }),
     splWithdrawalOwners: Object.freeze(splWithdrawalOwners),
     approval,
     noSpend: has(flags, Flag.noSpend),
@@ -700,12 +700,11 @@ function readCompact(bytes: Reader, rail: RingRail): RingTransactData {
     wideOwners: header.flags.wideOwners,
     vouched: header.flags.vouched,
     outputs: Object.freeze(outputs),
-    ...(replies === undefined ? {} : { replies }),
+    ...defined({ replies }),
     envelope,
     recipientKeys,
     privateTxHash,
-    ...(anonymous === undefined ? {} : { anonymous }),
-    ...(inProofOwner === undefined ? {} : { inProofOwner }),
+    ...defined({ anonymous, inProofOwner }),
     sppProof,
     nullifiers: Object.freeze(nullifiers),
     inputTrees,
@@ -748,7 +747,7 @@ function readAnonymous(bytes: Reader, tagged: boolean): AnonymousProofData {
   return Object.freeze({
     commitment,
     commitmentPok,
-    ...(defaultOwnerTag === undefined ? {} : { defaultOwnerTag }),
+    ...defined({ defaultOwnerTag }),
   });
 }
 
@@ -788,11 +787,9 @@ function readExtensions(bytes: Reader): FrameExtensions {
     ? field32(bytes, "approvalTotals")
     : undefined;
   return Object.freeze({
-    ...(dataHash === undefined ? {} : { dataHash }),
-    ...(ringDataHash === undefined ? {} : { ringDataHash }),
+    ...defined({ dataHash, ringDataHash }),
     ...(messages === undefined ? {} : { messages: Object.freeze(messages) }),
-    ...(cache === undefined ? {} : { cache }),
-    ...(approvalTotals === undefined ? {} : { approvalTotals }),
+    ...defined({ cache, approvalTotals }),
   });
 }
 
@@ -1130,7 +1127,7 @@ function circuitId(data: RingTransactData): RingCircuitId {
   const proofData = (commitment: Bytes32, commitmentPok: Bytes32, defaultOwnerTag?: Bytes32) =>
     Object.freeze({
       bsb22Commitment: Object.freeze({ commitment, commitmentPok }),
-      ...(defaultOwnerTag === undefined ? {} : { defaultOwnerTag }),
+      ...defined({ defaultOwnerTag }),
     });
   const anonymousCircuit = (data_: ReturnType<typeof proofData>): RingCircuitId =>
     Object.freeze(
@@ -1186,10 +1183,7 @@ function transactIxData(
     txViewingPk: taggedX25519(data.txViewingU),
     salt: data.salt,
     interfaceTransfers: data.interfaceTransfers,
-    ...(data.extensions.dataHash === undefined ? {} : { dataHash: data.extensions.dataHash }),
-    ...(data.extensions.ringDataHash === undefined
-      ? {}
-      : { ringDataHash: data.extensions.ringDataHash }),
+    ...defined({ dataHash: data.extensions.dataHash, ringDataHash: data.extensions.ringDataHash }),
     outputs: data.outputs.map((output, slot) => ringTransactOutput(output, replies[slot])),
     messages,
     privateTxHash: data.privateTxHash,

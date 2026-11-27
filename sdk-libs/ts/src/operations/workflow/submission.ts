@@ -52,6 +52,7 @@ import {
   type RingBoundState,
   type RingTransactionFrame,
 } from "./pipeline.js";
+import { defined } from "../../protocol/defined.js";
 
 /** Keeps the signed intent and validity bounds of one transaction attempt. */
 export interface RingSubmissionAttempt extends RingBoundState {
@@ -219,7 +220,7 @@ export class RingTransactionSubmission {
       first,
       build,
       wallet: input.wallet,
-      ...(input.registry === undefined ? {} : { registry: input.registry }),
+      ...defined({ registry: input.registry }),
       ...(retry.reservation === undefined
         ? {}
         : {

@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { withConfirmedReads } from "../../helpers/clients.js";
 import { EMPTY_MINT_POLICY } from "../../../src/protocol/membership/mint-policy.js";
 import { publicListKey } from "../../../src/protocol/membership/private-list.js";
@@ -112,7 +113,6 @@ import {
   CURATOR_REVISION,
   OWN_REVISION,
   TRACKING_REVISION,
-  hex,
   type Fixture,
   type RingFixtureOptions,
 } from "../../helpers/ring-pipeline.js";
@@ -138,6 +138,19 @@ function transferTo(
   for (const recipient of recipients)
     transfer.send(recipient.shieldedAddress(), SOL_MINT, options.each ?? 400n);
   return transfer;
+}
+
+function senderRail(
+  fixture: Fixture,
+  sender: ShieldedKeypair,
+  transfer: ConfidentialTransfer,
+): CustomRingTransfer {
+  return CustomRingTransfer.new({
+    ringProgramId: fixture.ringProgramId,
+    keys: walletKeys(sender),
+    transfer,
+    assets,
+  });
 }
 
 async function prove(
@@ -426,12 +439,7 @@ describe("confidential rail", () => {
         4n,
         WithdrawalTarget.spl({ recipientTokenAccount, splTokenInterface, splInterfaceBump }),
       );
-      return CustomRingTransfer.new({
-        ringProgramId: fixture.ringProgramId,
-        keys: walletKeys(sender),
-        transfer,
-        assets,
-      })
+      return senderRail(fixture, sender, transfer)
         .withWithdrawalAccounts(
           TransactWithdrawal.spl({
             mint,
@@ -465,12 +473,10 @@ describe("confidential rail", () => {
     await checkFrameCounted(fixture, {
       payer: fixture.authority,
       prove: (approval) =>
-        CustomRingTransfer.new({
-          ringProgramId: fixture.ringProgramId,
-          keys: walletKeys(sender),
-          transfer: transferTo(fixture, sender, [recipient]),
-          assets,
-        }).proveApproved(fixture.client, approval),
+        senderRail(fixture, sender, transferTo(fixture, sender, [recipient])).proveApproved(
+          fixture.client,
+          approval,
+        ),
     });
   });
 
@@ -707,13 +713,7 @@ describe("policy ring", () => {
       },
     });
     const transfer = transferTo(fixture, sender, [recipient]);
-    const rail = (client: Fixture["client"]) =>
-      CustomRingTransfer.new({
-        ringProgramId: fixture.ringProgramId,
-        keys: walletKeys(sender),
-        transfer,
-        assets,
-      }).prove(client);
+    const rail = (client: Fixture["client"]) => senderRail(fixture, sender, transfer).prove(client);
 
     // The indexer serves a curator revision the registry account does not hold yet.
     await expect(rail(served(CURATOR_REVISION + 1n))).rejects.toThrow(
@@ -751,12 +751,11 @@ describe("policy ring", () => {
     const voucher = ShieldedKeypair.fromKeypair(vouching);
     const fixture = await curatedRing([sender, voucher]);
     const rail = (signer: SigningKey) =>
-      CustomRingTransfer.new({
-        ringProgramId: fixture.ringProgramId,
-        keys: walletKeys(sender),
-        transfer: transferTo(fixture, sender, [recipient], { each: 100n }),
-        assets,
-      }).withVoucher(signingKeySpendSigner(signer));
+      senderRail(
+        fixture,
+        sender,
+        transferTo(fixture, sender, [recipient], { each: 100n }),
+      ).withVoucher(signingKeySpendSigner(signer));
     const proven = await rail(vouching).prove(fixture.client);
     const { data, call } = await expanded(fixture, proven, "confidential");
 
@@ -797,12 +796,11 @@ describe("policy ring", () => {
   it("refuses a voucher on a ring with no rule table before any read", async () => {
     const fixture = await ringFixture();
     const sender = ShieldedKeypair.generate();
-    const rail = CustomRingTransfer.new({
-      ringProgramId: fixture.ringProgramId,
-      keys: walletKeys(sender),
-      transfer: transferTo(fixture, sender, [ShieldedKeypair.generate()], { each: 100n }),
-      assets,
-    }).withVoucher(signingKeySpendSigner(SigningKey.generate()));
+    const rail = senderRail(
+      fixture,
+      sender,
+      transferTo(fixture, sender, [ShieldedKeypair.generate()], { each: 100n }),
+    ).withVoucher(signingKeySpendSigner(SigningKey.generate()));
     await expect(rail.prove(fixture.client)).rejects.toThrow(ringError("RING_VOUCHER_UNSCREENED"));
     expect(fixture.ringRequests).toHaveLength(0);
   });
@@ -968,12 +966,7 @@ describe("policy ring", () => {
     const sender = ShieldedKeypair.fromKeypair(signing);
     const recipient = ShieldedKeypair.generate();
     const fixture = await ringFixture({ table: EMPTY_TABLE });
-    const proven = await CustomRingTransfer.new({
-      ringProgramId: fixture.ringProgramId,
-      keys: walletKeys(sender),
-      transfer: transferTo(fixture, sender, [recipient]),
-      assets,
-    })
+    const proven = await senderRail(fixture, sender, transferTo(fixture, sender, [recipient]))
       .withInProofOwner(signingKeySpendSigner(signing))
       .prove(fixture.client);
     const { data, call } = await expanded(fixture, proven, "confidential");
@@ -1012,12 +1005,7 @@ describe("policy ring", () => {
     );
     transfer.send(ShieldedKeypair.generate().shieldedAddress(), SOL_MINT, 30n);
     await expect(
-      CustomRingTransfer.new({
-        ringProgramId: fixture.ringProgramId,
-        keys: walletKeys(sender),
-        transfer,
-        assets,
-      })
+      senderRail(fixture, sender, transfer)
         .withInProofOwner(signingKeySpendSigner(signing))
         .prove(fixture.client),
     ).rejects.toThrow(ringError("RING_IN_PROOF_DEFAULT_RING_INPUT", { index: 1 }));
@@ -1087,8 +1075,8 @@ describe("signer set and owner debits", () => {
     const request = checkTransferProof(fixture, data);
     const identities = owners.map(identity);
     expect(bindingSigners(request)).toEqual(identities);
-    expect(new Set(screenedMembers(request, 2).map(hex))).toEqual(
-      new Set(identities.map(publicListKey).map(hex)),
+    expect(new Set(screenedMembers(request, 2).map(bytesToHex))).toEqual(
+      new Set(identities.map(publicListKey).map(bytesToHex)),
     );
     expect(request).toMatchObject({ sender: ZERO });
     checkDisclosure(fixture, call, data);
@@ -1279,8 +1267,8 @@ describe("delegate rail", () => {
       sender: zero,
       withdrawalHash: policyWithdrawalHash([]),
     });
-    expect([request.policyHash, request.ownRoot, request.curatorRoot].map(hex)).toEqual(
-      [zero, zero, zero].map(hex),
+    expect([request.policyHash, request.ownRoot, request.curatorRoot].map(bytesToHex)).toEqual(
+      [zero, zero, zero].map(bytesToHex),
     );
     expect(request.rows[0]).toEqual(
       source.shieldedAddress().signingPublicKey.ownerProofInputHash(),

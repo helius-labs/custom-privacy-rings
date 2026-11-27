@@ -13,6 +13,7 @@ import { isZeroAddress, registryCurator } from "../../protocol/codec/ring-codecs
 import { fetchRingPolicy, fetchStorageRegistry } from "../../protocol/membership/config.js";
 import { isPrivateList, listIdFromByte } from "../../protocol/membership/policy.js";
 import { RingError, wrapRingError } from "../../protocol/error.js";
+import { defined } from "../../protocol/defined.js";
 
 export type RingPolicyAdminClient = BlockhashProvider & Pick<ChainReader, "getAccount">;
 
@@ -127,9 +128,7 @@ async function compile(
     instructions: [instruction],
     computeUnitLimit:
       params.computeUnitLimit ?? ringComputeUnitLimit(RingInstructionTag.updatePolicy),
-    ...(params.priorityFeeLamports === undefined
-      ? {}
-      : { priorityFeeLamports: params.priorityFeeLamports }),
+    ...defined({ priorityFeeLamports: params.priorityFeeLamports }),
   });
 }
 

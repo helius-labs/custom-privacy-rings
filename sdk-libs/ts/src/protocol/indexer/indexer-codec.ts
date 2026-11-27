@@ -1,38 +1,38 @@
 import { ASSET_LIMIT_KEYS, type MintPolicy } from "../membership/mint-policy.js";
-import type { indexerTypes } from "@heliuslabs/spr/internal";
-import { indexerCodec, indexerScalars } from "@heliuslabs/spr/internal";
+import { indexerCodec, indexerScalars, type MethodDescriptor } from "@heliuslabs/spr/internal";
+import type { Bytes32 } from "@heliuslabs/spr";
 
 import {
   QUAD_CAPACITY,
   QUAD_ARITY,
   QUAD_HEIGHT,
   canopyLevels,
+  type MemberRecord,
+  type QuadPath,
+  type RingMemberOpening,
+  type RingServedRecord,
 } from "../membership/member-registry.js";
 import { schemaWire, toU64 } from "../wire-primitives.js";
 import type {
-  RingMemberOpeningView,
-  RingMemberRecordView,
-  RingRecordPathView,
   RingRecordWriteView,
   StorageApplyProofInputsRequest,
   StorageApplyProofInputsResponse,
-  StorageMemberOpeningsRequest,
-  StorageMemberOpeningsResponse,
-  StorageMemberPageResponse,
-  StorageMemberRecordsRequest,
+  StorageMemberOpenings,
+  StorageMemberPage,
+  StorageOpeningsRequest,
+  StoragePageRequest,
+  StorageRecordPool,
   StorageRecordPoolRequest,
-  StorageRecordPoolResponse,
-  StorageRootView,
+  StorageRoot,
 } from "./indexer-types.js";
 
 /** `spr_indexer_api::MAX_RING_MEMBER_PAGE_LIMIT`: members one ring page or opening batch names. */
 export const MAX_RING_MEMBER_BATCH = 100;
 
 const { array, context, object, toWireInteger, wireInteger } = indexerCodec;
-const { checkedAddress, checkedHash, schemaFailure } = indexerScalars;
+const { checkedAddress, checkedHash, hash, hashBytes, schemaFailure } = indexerScalars;
 
 type WireObject = Record<string, unknown>;
-type Hash = indexerTypes.Hash;
 
 const { u64 } = schemaWire;
 
@@ -43,74 +43,101 @@ function boolean(value: unknown, path: string): boolean {
   return value;
 }
 
-/** Rust `GetStorageMemberRecordsRequest`. */
-export function encodeStorageMemberRecordsRequest(value: StorageMemberRecordsRequest): WireObject {
-  return {
+function field(value: unknown, path: string): Bytes32 {
+  return hashBytes(checkedHash(value, path));
+}
+
+/** Rust `GetStorageMemberOpeningsRequest` and `GetStorageMemberOpeningsResponse`. */
+export const getStorageMemberOpeningsMethod: MethodDescriptor<
+  StorageOpeningsRequest,
+  StorageMemberOpenings
+> = {
+  name: "getStorageMemberOpenings",
+  encodeRequest: openingsRequest,
+  decodeResponse: (value) => {
+    const row = object(value, "$", ["context", "root", "openings"]);
+    return Object.freeze({
+      context: context(row["context"], "context"),
+      root: storageRoot(row["root"], "root"),
+      openings: Object.freeze(array(row["openings"], "openings", memberOpening)),
+    });
+  },
+};
+
+/** Rust `GetStorageMemberRecordsRequest` and `GetStorageMemberRecordsResponse`. */
+export const getStorageMemberRecordsMethod: MethodDescriptor<
+  StoragePageRequest,
+  StorageMemberPage
+> = {
+  name: "getStorageMemberRecords",
+  encodeRequest: (value) => ({
     registry: checkedAddress(value.registry, "registry"),
-    expectedRoot: checkedHash(value.expectedRoot, "expectedRoot"),
-    startIndex: toWireInteger(value.startIndex, "startIndex", 1n, QUAD_CAPACITY),
+    expectedRoot: hash(value.expectedRoot),
+    startIndex: toWireInteger(BigInt(value.startIndex), "startIndex", 1n, QUAD_CAPACITY),
     limit: toWireInteger(BigInt(value.limit), "limit", 1n, BigInt(MAX_RING_MEMBER_BATCH)),
-  };
-}
+  }),
+  decodeResponse: (value) => {
+    const row = object(value, "$", ["context", "root", "records", "nextLeafIndex"]);
+    const root = storageRoot(row["root"], "root");
+    const records = servedRecords(row["records"], QUAD_HEIGHT);
+    const nextLeafIndex = row["nextLeafIndex"];
+    return Object.freeze({
+      context: context(row["context"], "context"),
+      root,
+      records,
+      nextLeafIndex:
+        nextLeafIndex === null
+          ? undefined
+          : Number(wireInteger(nextLeafIndex, "nextLeafIndex", 1n, root.nextIndex)),
+    });
+  },
+};
 
-function memberRecord(value: unknown, path: string): RingMemberRecordView {
-  const record = object(value, path, ["member", "next", "lists", "mintPolicy"]);
-  return {
-    member: checkedHash(record["member"], `${path}.member`),
-    next: checkedHash(record["next"], `${path}.next`),
-    lists: u64(record["lists"], `${path}.lists`),
-    mintPolicy: decodeMintPolicy(record["mintPolicy"]),
-  };
-}
-
-/** `index` then `levels` levels of 3 siblings, leaf level first. */
-function recordPath(value: unknown, path: string, levels = QUAD_HEIGHT): RingRecordPathView {
-  const row = object(value, path, ["index", "siblings"]);
-  const siblings = array(row["siblings"], `${path}.siblings`, (level, levelPath) => {
-    const hashes = array(level, levelPath, checkedHash);
-    if (hashes.length !== QUAD_ARITY - 1)
-      return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", levelPath, "3 siblings", level);
-    return hashes;
-  });
-  if (siblings.length !== levels)
-    return schemaFailure(
-      "INDEXER_SCHEMA_INVALID_TYPE",
-      `${path}.siblings`,
-      `${String(levels)} levels`,
-      row["siblings"],
+/** Rust `GetStorageRecordPoolRequest` and `GetStorageRecordPoolResponse`. */
+export const getStorageRecordPoolMethod: MethodDescriptor<
+  StorageRecordPoolRequest,
+  StorageRecordPool
+> = {
+  name: "getStorageRecordPool",
+  encodeRequest: (value) => {
+    const wire = openingsRequest(value);
+    const openings = toWireInteger(
+      BigInt(value.openings),
+      "openings",
+      1n,
+      BigInt(MAX_RING_MEMBER_BATCH),
     );
-  return {
-    index: wireInteger(row["index"], `${path}.index`, 0n, QUAD_CAPACITY - 1n),
-    siblings,
-  };
-}
+    if (value.members.length > openings)
+      return schemaFailure(
+        "INDEXER_SCHEMA_INVALID_TYPE",
+        "$.members",
+        `at most ${String(openings)} members`,
+        value.members,
+      );
+    return { ...wire, openings };
+  },
+  decodeResponse: (value) => {
+    const row = object(value, "$", ["context", "root", "records", "canopy", "subjects"]);
+    const canopy = array(row["canopy"], "canopy", field);
+    const levels = canopyLevels(canopy.length, QUAD_HEIGHT);
+    if (canopy.length !== QUAD_ARITY ** levels)
+      return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", "canopy", "a power of 4", row["canopy"]);
+    const records = servedRecords(row["records"], QUAD_HEIGHT - levels);
+    return Object.freeze({
+      context: context(row["context"], "context"),
+      root: storageRoot(row["root"], "root"),
+      records,
+      canopy: Object.freeze(canopy),
+      subjects: Object.freeze(
+        array(row["subjects"], "subjects", (index, path) =>
+          Number(wireInteger(index, path, 0n, BigInt(MAX_RING_MEMBER_BATCH - 1))),
+        ),
+      ),
+    });
+  },
+};
 
-function storageRoot(value: unknown, path: string): StorageRootView {
-  const row = object(value, path, ["root", "revision", "nextIndex"]);
-  return {
-    root: checkedHash(row["root"], `${path}.root`),
-    revision: u64(row["revision"], `${path}.revision`),
-    nextIndex: wireInteger(row["nextIndex"], `${path}.nextIndex`, 1n, QUAD_CAPACITY),
-  };
-}
-
-function memberOpening(value: unknown, path: string): RingMemberOpeningView {
-  const row = object(value, path, ["present", "record", "path"]);
-  return {
-    present: boolean(row["present"], `${path}.present`),
-    record: memberRecord(row["record"], `${path}.record`),
-    path: recordPath(row["path"], `${path}.path`),
-  };
-}
-
-/** Rust `GetStorageMemberOpeningsRequest`. */
-export function encodeStorageMemberOpeningsRequest(
-  value: StorageMemberOpeningsRequest,
-): WireObject {
-  return { registry: checkedAddress(value.registry, "registry"), ...openingsFields(value) };
-}
-
-function openingsFields(value: Readonly<{ members: readonly Hash[]; expectedRoot: Hash }>) {
+function openingsRequest(value: StorageOpeningsRequest): WireObject {
   const members: unknown = value.members;
   if (!Array.isArray(members) || members.length < 1 || members.length > MAX_RING_MEMBER_BATCH)
     return schemaFailure(
@@ -120,117 +147,82 @@ function openingsFields(value: Readonly<{ members: readonly Hash[]; expectedRoot
       members,
     );
   return {
-    members: members.map((member, index) => checkedHash(member, `$.members[${String(index)}]`)),
-    expectedRoot: checkedHash(value.expectedRoot, "expectedRoot"),
+    registry: checkedAddress(value.registry, "registry"),
+    members: value.members.map((member) => hash(member)),
+    expectedRoot: hash(value.expectedRoot),
   };
 }
 
-/** Rust `GetStorageMemberOpeningsResponse`. */
-export function decodeStorageMemberOpenings(value: unknown): StorageMemberOpeningsResponse {
-  return decodeOpenings(value, storageRoot);
+function memberRecord(value: unknown, path: string): MemberRecord {
+  const record = object(value, path, ["member", "next", "lists", "mintPolicy"]);
+  return Object.freeze({
+    member: field(record["member"], `${path}.member`),
+    next: field(record["next"], `${path}.next`),
+    lists: u64(record["lists"], `${path}.lists`),
+    mintPolicy: decodeMintPolicy(record["mintPolicy"]),
+  });
 }
 
-function decodeOpenings<Root>(value: unknown, root: (value: unknown, path: string) => Root) {
-  const row = object(value, "$", ["context", "root", "openings"]);
-  return {
-    context: context(row["context"], "context"),
-    root: root(row["root"], "root"),
-    openings: array(row["openings"], "openings", memberOpening),
-  };
+/** `index` then `levels` levels of 3 siblings, leaf level first. */
+function recordPath(value: unknown, path: string, levels = QUAD_HEIGHT): QuadPath {
+  const row = object(value, path, ["index", "siblings"]);
+  const siblings = array(row["siblings"], `${path}.siblings`, (level, levelPath) => {
+    const hashes = array(level, levelPath, field);
+    if (hashes.length !== QUAD_ARITY - 1)
+      return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", levelPath, "3 siblings", level);
+    return Object.freeze(hashes);
+  });
+  if (siblings.length !== levels)
+    return schemaFailure(
+      "INDEXER_SCHEMA_INVALID_TYPE",
+      `${path}.siblings`,
+      `${String(levels)} levels`,
+      row["siblings"],
+    );
+  return Object.freeze({
+    index: Number(wireInteger(row["index"], `${path}.index`, 0n, QUAD_CAPACITY - 1n)),
+    siblings: Object.freeze(siblings),
+  });
 }
 
-/** Rust `GetStorageRecordPoolRequest`. */
-export function encodeStorageRecordPoolRequest(value: StorageRecordPoolRequest): WireObject {
-  return { ...encodeStorageMemberOpeningsRequest(value), ...poolOpenings(value) };
+function storageRoot(value: unknown, path: string): StorageRoot {
+  const row = object(value, path, ["root", "revision", "nextIndex"]);
+  return Object.freeze({
+    root: field(row["root"], `${path}.root`),
+    revision: u64(row["revision"], `${path}.revision`),
+    nextIndex: wireInteger(row["nextIndex"], `${path}.nextIndex`, 1n, QUAD_CAPACITY),
+  });
 }
 
-function poolOpenings(value: Readonly<{ members: readonly Hash[]; openings: number }>) {
-  const openings = toWireInteger(
-    BigInt(value.openings),
-    "openings",
-    1n,
-    BigInt(MAX_RING_MEMBER_BATCH),
+function memberOpening(value: unknown, path: string): RingMemberOpening {
+  const row = object(value, path, ["present", "record", "path"]);
+  const present = boolean(row["present"], `${path}.present`);
+  const record = memberRecord(row["record"], `${path}.record`);
+  const proofPath = recordPath(row["path"], `${path}.path`);
+  return Object.freeze(
+    present
+      ? { kind: "present", record, path: proofPath }
+      : { kind: "absent", low: record, path: proofPath },
   );
-  if (value.members.length > openings)
-    return schemaFailure(
-      "INDEXER_SCHEMA_INVALID_TYPE",
-      "$.members",
-      `at most ${String(openings)} members`,
-      value.members,
-    );
-  return { openings };
 }
 
-/** Rust `GetStorageRecordPoolResponse`. */
-export function decodeStorageRecordPool(value: unknown): StorageRecordPoolResponse {
-  return decodeRecordPool(value, storageRoot);
-}
-
-function decodeRecordPool<Root>(value: unknown, root: (value: unknown, path: string) => Root) {
-  const row = object(value, "$", ["context", "root", "records", "canopy", "subjects"]);
-  const canopy = array(row["canopy"], "canopy", checkedHash);
-  const levels = canopyLevels(canopy.length, QUAD_HEIGHT);
-  if (canopy.length !== QUAD_ARITY ** levels)
-    return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", "canopy", "a power of 4", row["canopy"]);
-  const records = array(row["records"], "records", (entry, path) => {
+/** At most `MAX_RING_MEMBER_BATCH` leaves, each path `levels` deep. */
+function servedRecords(value: unknown, levels: number): readonly RingServedRecord[] {
+  const records = array(value, "records", (entry, path) => {
     const item = object(entry, path, ["record", "path"]);
-    return {
+    return Object.freeze({
       record: memberRecord(item["record"], `${path}.record`),
-      path: recordPath(item["path"], `${path}.path`, QUAD_HEIGHT - levels),
-    };
+      path: recordPath(item["path"], `${path}.path`, levels),
+    });
   });
   if (records.length > MAX_RING_MEMBER_BATCH)
     return schemaFailure(
       "INDEXER_SCHEMA_INVALID_TYPE",
       "records",
       `at most ${String(MAX_RING_MEMBER_BATCH)}`,
-      row["records"],
+      value,
     );
-  return {
-    context: context(row["context"], "context"),
-    root: root(row["root"], "root"),
-    records,
-    canopy,
-    subjects: array(row["subjects"], "subjects", (index, path) =>
-      Number(wireInteger(index, path, 0n, BigInt(MAX_RING_MEMBER_BATCH - 1))),
-    ),
-  };
-}
-
-/** Rust `GetStorageMemberRecordsResponse`. */
-export function decodeStorageMemberPage(value: unknown): StorageMemberPageResponse {
-  return decodeMemberPage(value, storageRoot);
-}
-
-function decodeMemberPage<Root extends Readonly<{ nextIndex: bigint }>>(
-  value: unknown,
-  decodeRoot: (value: unknown, path: string) => Root,
-) {
-  const row = object(value, "$", ["context", "root", "records", "nextLeafIndex"]);
-  const root = decodeRoot(row["root"], "root");
-  const records = array(row["records"], "records", (entry, path) => {
-    const item = object(entry, path, ["record", "path"]);
-    return {
-      record: memberRecord(item["record"], `${path}.record`),
-      path: recordPath(item["path"], `${path}.path`),
-    };
-  });
-  if (records.length > MAX_RING_MEMBER_BATCH)
-    return schemaFailure(
-      "INDEXER_SCHEMA_INVALID_TYPE",
-      "records",
-      `at most ${String(MAX_RING_MEMBER_BATCH)}`,
-      row["records"],
-    );
-  return {
-    context: context(row["context"], "context"),
-    root,
-    records,
-    nextLeafIndex:
-      row["nextLeafIndex"] === null
-        ? null
-        : wireInteger(row["nextLeafIndex"], "nextLeafIndex", 1n, root.nextIndex),
-  };
+  return Object.freeze(records);
 }
 
 /** Rust `GetStorageApplyProofInputsRequest`, each write in Rust `StorageWriteView` order. */

@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   decompileTransactionMessage,
   getBase58Decoder,
@@ -60,7 +61,6 @@ import {
 } from "../../../src/rpc/relay-message.js";
 import { BLOCKHASH, kitReads } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import {
-  hex,
   noteInput,
   PROOF_SERVICE,
   randomAddress,
@@ -451,8 +451,8 @@ describe("delegate sources", () => {
       });
       const message = messageOf(fixture, await proven.instruction());
       expect(checkRelayMessage(expected, message, delegate as never).signer).toBe(delegate);
-      const bootstrap = hex(bootstrapSlotTag(source.viewingPublicKey().u()));
-      const published = slotTags(proven.data).slice(0, 2).map(hex);
+      const bootstrap = bytesToHex(bootstrapSlotTag(source.viewingPublicKey().u()));
+      const published = slotTags(proven.data).slice(0, 2).map(bytesToHex);
       // An anonymous frame publishes the payment's tag on one change slot, equal tags would link two.
       if (mode === "anonymous")
         expect(published.filter((tag) => tag === bootstrap)).toHaveLength(1);
@@ -573,8 +573,8 @@ describe("delegate sources", () => {
     };
     // The frame publishes one address's bootstrap tag once, the match returns both payments.
     const twice = await moved([payment(payee, 4n), payment(payee, 3n)]);
-    const bootstrap = hex(bootstrapSlotTag(payee.viewingPublicKey().u()));
-    expect(twice.tags.map(hex).filter((tag) => tag === bootstrap)).toHaveLength(1);
+    const bootstrap = bytesToHex(bootstrapSlotTag(payee.viewingPublicKey().u()));
+    expect(twice.tags.map(bytesToHex).filter((tag) => tag === bootstrap)).toHaveLength(1);
     expect(
       await verdict(twice.message, [
         { recipient: payee, amount: 4n },

@@ -24,20 +24,19 @@ import {
   type RingReadTarget,
   targetLines,
   checkedReadTarget,
-  timestampOrNow,
-  freshNonce,
+  AttestationRequest,
   walletLines,
 } from "./signed-request.js";
 import { signMessage } from "../../protocol/ring-rpc/read-signer.js";
 import {
   encoder,
   base64Decoder,
-  checkedUnixTimestamp,
   requestBytes,
   base58Decoder,
   requestAddress,
   invalidRequest,
 } from "./wire.js";
+import { defined } from "../../protocol/defined.js";
 
 const AUTHORITY_TRANSFER_DOMAIN = "zolana/ring-rpc-authority-transfer";
 const LIST_SALT_DOMAIN = "zolana/ring-rpc-list-salt";
@@ -82,13 +81,13 @@ export function authorityTransferAttestation(
 }
 
 /** Mirrors Rust `AuthorityTransferRequest`, the ring delegate signs it. */
-export class RingAuthorityTransferRequest {
+export class RingAuthorityTransferRequest extends AttestationRequest {
   readonly #target: RingReadTarget;
   readonly #transfer: AuthorityTransfer;
-  #timestamp?: bigint;
   #txViewingKey?: Bytes32;
 
   private constructor(target: RingReadTarget, transfer: AuthorityTransfer) {
+    super();
     this.#target = checkedReadTarget(target);
     this.#transfer = transfer;
   }
@@ -100,12 +99,6 @@ export class RingAuthorityTransferRequest {
     return new RingAuthorityTransferRequest(target, transfer);
   }
 
-  /** Unix seconds, the RPC rejects a clock more than its skew away. */
-  at(timestamp: bigint): this {
-    this.#timestamp = checkedUnixTimestamp(timestamp, "timestamp");
-    return this;
-  }
-
   /** A fresh key when absent. */
   withTxViewingKey(txViewingKey: Bytes32): this {
     this.#txViewingKey = requestBytes(txViewingKey, 32, "txViewingKey") as Bytes32;
@@ -113,8 +106,7 @@ export class RingAuthorityTransferRequest {
   }
 
   async sign(delegate: MessagePartialSigner): Promise<PrepareAuthorityTransferRequest> {
-    const timestamp = timestampOrNow(this.#timestamp);
-    const nonce = freshNonce();
+    const { timestamp, nonce } = this.stamp();
     const signature = await signMessage(
       delegate,
       authorityTransferAttestation({
@@ -170,12 +162,12 @@ export function listSaltAttestation(
 }
 
 /** Mirrors Rust `ListSaltRequest`, a writer of the ring's salted lists signs it. */
-export class RingListSaltRequest {
+export class RingListSaltRequest extends AttestationRequest {
   readonly #target: RingReadTarget;
   readonly #owner: Address;
-  #timestamp?: bigint;
 
   private constructor(target: RingReadTarget, owner: Address) {
+    super();
     this.#target = checkedReadTarget(target);
     this.#owner = requestAddress(owner, "owner");
   }
@@ -184,15 +176,8 @@ export class RingListSaltRequest {
     return new RingListSaltRequest(target, owner);
   }
 
-  /** Unix seconds, the RPC rejects a clock more than its skew away. */
-  at(timestamp: bigint): this {
-    this.#timestamp = checkedUnixTimestamp(timestamp, "timestamp");
-    return this;
-  }
-
   async sign(writer: MessagePartialSigner): Promise<GetListSaltRequest> {
-    const timestamp = timestampOrNow(this.#timestamp);
-    const nonce = freshNonce();
+    const { timestamp, nonce } = this.stamp();
     const signature = await signMessage(
       writer,
       listSaltAttestation({
@@ -239,12 +224,12 @@ export function readerGrantAttestation(
 }
 
 /** Mirrors Rust `ReaderGrantRequest`, the service takes a ring-wide grant only from the ring's policy authority. */
-export class RingReaderGrantRequest {
+export class RingReaderGrantRequest extends AttestationRequest {
   readonly #target: RingReadTarget;
   readonly #grant: RingReaderGrant;
-  #timestamp?: bigint;
 
   private constructor(target: RingReadTarget, grant: RingReaderGrant) {
+    super();
     this.#target = checkedReadTarget(target);
     if (grant.wallet !== undefined) addressBytes(grant.wallet, "wallet");
     this.#grant = Object.freeze({
@@ -257,17 +242,10 @@ export class RingReaderGrantRequest {
     return new RingReaderGrantRequest(target, grant);
   }
 
-  /** Unix seconds, the RPC rejects a clock more than its skew away. */
-  at(timestamp: bigint): this {
-    this.#timestamp = checkedUnixTimestamp(timestamp, "timestamp");
-    return this;
-  }
-
   async sign(signer: MessagePartialSigner): Promise<SetReaderGrantRequest> {
     const { wallet, reader, action } = this.#grant;
     if (wallet !== undefined && signer.address !== wallet) throw invalidRequest("signer");
-    const timestamp = timestampOrNow(this.#timestamp);
-    const nonce = freshNonce();
+    const { timestamp, nonce } = this.stamp();
     const signature = await signMessage(
       signer,
       readerGrantAttestation({
@@ -279,7 +257,7 @@ export class RingReaderGrantRequest {
     );
     return Object.freeze({
       ring: this.#target.ringProgramId,
-      ...(wallet === undefined ? {} : { wallet }),
+      ...defined({ wallet }),
       reader: base64Decoder.decode(readerKeyBytes(reader)) as indexerTypes.Base64String,
       action,
       timestamp,
@@ -314,12 +292,12 @@ export function mergeSettingsAttestation(
 }
 
 /** Mirrors Rust `MergeSettingsRequest`, the signer is the owner whose notes Ring RPC merges. */
-export class RingMergeSettingsRequest {
+export class RingMergeSettingsRequest extends AttestationRequest {
   readonly #target: RingReadTarget;
   readonly #settings: MergeSettings;
-  #timestamp?: bigint;
 
   private constructor(target: RingReadTarget, settings: MergeSettings) {
+    super();
     this.#target = checkedReadTarget(target);
     // The wire codec refuses a value the Rust request cannot carry before any signature.
     encodeMergeSettings(settings);
@@ -331,15 +309,8 @@ export class RingMergeSettingsRequest {
     return new RingMergeSettingsRequest(target, settings);
   }
 
-  /** Unix seconds, the RPC rejects a clock more than its skew away. */
-  at(timestamp: bigint): this {
-    this.#timestamp = checkedUnixTimestamp(timestamp, "timestamp");
-    return this;
-  }
-
   async sign(owner: MessagePartialSigner): Promise<SetMergeSettingsRequest> {
-    const timestamp = timestampOrNow(this.#timestamp);
-    const nonce = freshNonce();
+    const { timestamp, nonce } = this.stamp();
     const signature = await signMessage(
       owner,
       mergeSettingsAttestation({

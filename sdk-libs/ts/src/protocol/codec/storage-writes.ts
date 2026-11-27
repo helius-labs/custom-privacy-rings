@@ -10,6 +10,7 @@ import {
   type MintPolicy,
 } from "../membership/mint-policy.js";
 import { memberOfIdentity, type Member } from "../membership/policy.js";
+import { defined } from "../defined.js";
 
 /** Rust `RecordWriteData::SIZE`. */
 const RECORD_LENGTH = 145;
@@ -71,6 +72,6 @@ function recordWrite(reader: Reader): StorageWrite {
 function invalid(offset: number, cause?: unknown): RingError {
   return new RingError("RING_STORAGE_WRITE_INVALID", {
     details: { offset },
-    ...(cause === undefined ? {} : { cause }),
+    ...defined({ cause }),
   });
 }

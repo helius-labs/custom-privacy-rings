@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { address, getBase58Decoder, type Address, type Signature } from "@solana/kit";
+import {
+  address,
+  getBase58Decoder,
+  getBase58Encoder,
+  type Address,
+  type Signature,
+} from "@solana/kit";
 import { encodeRingTransactInstructionData } from "../../../src/protocol/proof/circuit.js";
 
 import {
@@ -537,6 +543,23 @@ describe("confirmedRingWithdrawals", () => {
       [poolInstruction([{ kind: "solWithdrawal", amount: 7n }], [SOL_INTERFACE, RECIPIENT])],
     );
     expect(confirmedRingWithdrawals(transaction, RING)).toEqual([SOL_LEG]);
+  });
+
+  it("refuses an interface transfer of an unknown kind", () => {
+    const pool = poolInstruction(
+      [{ kind: "solWithdrawal", amount: 7n }],
+      [SOL_INTERFACE, RECIPIENT],
+    ) as Readonly<{ data: string }>;
+    const data = getBase58Encoder().encode(pool.data).slice();
+    // The tag, expiry, viewing key, salt and transfer count precede the kind.
+    data[1 + 8 + 33 + 16 + 1] = 4;
+    const transaction = settlementTransaction(
+      [callerInstruction(RING)],
+      [{ ...pool, data: getBase58Decoder().decode(data) }],
+    );
+    expect(() => confirmedRingWithdrawals(transaction, RING)).toThrow(
+      expect.objectContaining({ code: "RING_ORIGIN_DECODE" }),
+    );
   });
 
   it("leaves a SOL deposit out", () => {

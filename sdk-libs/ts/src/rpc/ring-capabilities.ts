@@ -9,6 +9,7 @@ import {
   RING_PROVING_KEY_SHA256S,
   type RingKeyCircuit,
 } from "../protocol/proof/proving-keys.js";
+import { defined } from "../protocol/defined.js";
 
 export const RING_FEATURES = ["transfer", "deposit", "merge", "enroll", "applyRecords"] as const;
 export type RingFeature = (typeof RING_FEATURES)[number];
@@ -143,7 +144,7 @@ function unavailable(
     available: false,
     reason,
     keyNames: Object.freeze([...keyNames]),
-    ...(code === undefined ? {} : { code }),
+    ...defined({ code }),
   });
 }
 

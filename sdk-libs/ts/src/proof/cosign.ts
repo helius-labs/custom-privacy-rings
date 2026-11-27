@@ -57,7 +57,7 @@ export interface RingCoSignerAccounts {
 export const NO_DEMAND: CoSignDemand = Object.freeze({ classes: 0 });
 
 /** Rust `ApprovalMask::classes`. */
-export function approvalClasses(approval: number): number {
+function approvalClasses(approval: number): number {
   return (
     ((approval & ApprovalMask.outflow) !== 0 ? RING_COSIGN_APPROVE_OUTFLOW : 0) |
     ((approval & ApprovalMask.withdrawal) !== 0 ? RING_COSIGN_APPROVE_WITHDRAWAL : 0)
@@ -83,7 +83,7 @@ export function publicLegClasses(transfers: readonly Readonly<{ isDeposit: boole
   );
 }
 
-/** Rust `CoSignDemand::requirement`, a class with no record drops out, an approval class never does. */
+/** Rust `CoSignScope::requirement`, a class with no record drops out, an approval class never does. */
 export function demandRequirement(
   demand: CoSignDemand,
   ring: Pick<RingPolicy, "coSignerClasses">,
@@ -93,7 +93,7 @@ export function demandRequirement(
 }
 
 /** Rust `CoSignRequirement::cover`, a record covering no new class is refused. */
-export function coverRequirement(
+function coverRequirement(
   requirement: CoSignRequirement,
   record: Pick<RingCoSigner, "scope" | "signer">,
 ): CoSignRequirement | undefined {
