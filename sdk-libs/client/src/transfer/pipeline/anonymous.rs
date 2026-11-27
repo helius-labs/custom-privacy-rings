@@ -638,22 +638,24 @@ impl TaggedPayments<'_> {
             payments,
             tags,
         } = self;
-        // 1. An entry spends default-ring notes alone. A core scan that reads their spend ahead of
-        // the ring sync hands the transaction to no later sync, so only the sender tag finds the
+        // 1. An entry spends the sender's default-ring notes and no ring note of its own. A core
+        // scan that reads their spend ahead of the ring sync hands the transaction to no later sync,
+        // and a co-owner's ring note leads only its own sync, so only the sender tag finds the
         // change. A deposit spends a dummy and returns no change.
-        let mut notes = transaction
+        let mut own_notes = transaction
             .inputs()
             .iter()
-            .filter(|input| input.is_note())
+            .filter(|input| input.is_note() && input.utxo.owner == sender.signing_pubkey)
             .peekable();
-        let entry =
-            notes.peek().is_some() && notes.all(|input| input.utxo.ring_program_id.is_none());
-        if tags.is_none() && entry {
-            return Err(RingError::SenderTagRequired);
-        }
+        let entry = own_notes.peek().is_some()
+            && own_notes.all(|input| input.utxo.ring_program_id.is_none());
         // 2. Change takes the sender tag only under the key the tags derive from, a deposit's
         // fresh sender holds another key and its change takes a random tag.
-        let plan = match tags.filter(|tags| tags.viewing_pubkey() == sender.viewing_pubkey) {
+        let sender_tags = tags.filter(|tags| tags.viewing_pubkey() == sender.viewing_pubkey);
+        if entry && sender_tags.is_none() {
+            return Err(RingError::SenderTagRequired);
+        }
+        let plan = match sender_tags {
             Some(tags) => AnonymousPlan::new().with_sender_tag(tags.sender()),
             None => AnonymousPlan::new(),
         };

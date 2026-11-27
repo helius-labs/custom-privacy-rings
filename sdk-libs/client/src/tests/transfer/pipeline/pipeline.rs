@@ -598,6 +598,63 @@ async fn an_entry_without_the_sender_tag_is_refused() {
     assert!(matches!(selection, Err(RingError::SenderTagRequired)));
 }
 
+/// Tags of another key leave the entry's change under a random tag the sender's sync never lists.
+#[tokio::test]
+async fn an_entry_tagged_under_another_key_is_refused() {
+    use crate::tests::support::keypair;
+    let (sender, payee) = (keypair(1), keypair(2));
+    let transfer = owner_transfer(
+        &sender,
+        ring_transaction(vec![default_ring_utxo(&sender, 10, 0)]),
+    )
+    .with_anonymous_signer(&sender.signing_key)
+    .with_tags(fresh_wallet_tags(&payee))
+    .with_payment(payment(&ring_address(&payee), 4))
+    .unwrap();
+    let staged = stage_anonymous(&transfer, &enrolled(&[&sender, &payee]))
+        .await
+        .map(drop);
+    assert!(
+        matches!(staged, Err(RingError::SenderTagRequired)),
+        "{staged:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_entry_beside_a_co_owners_ring_note_needs_the_sender_tag() {
+    use crate::tests::support::keypair;
+    let (sender, payee, co_owner) = (keypair(1), keypair(2), keypair(3));
+    let chain = enrolled(&[&sender, &payee, &co_owner]);
+    let mixed = || {
+        owner_transfer(
+            &sender,
+            ring_transaction(vec![
+                default_ring_utxo(&sender, 10, 0),
+                ring_utxo(&co_owner, Mint::SOL, 10, 1),
+            ]),
+        )
+        .with_anonymous_signer(&sender.signing_key)
+        .with_co_owner(CoOwner {
+            owner: co_owner
+                .shielded_address()
+                .unwrap()
+                .solana_address()
+                .unwrap(),
+            nullifier_key: &co_owner.nullifier_key,
+        })
+        .with_payment(payment(&ring_address(&payee), 4))
+        .unwrap()
+    };
+    let untagged = stage_anonymous(&mixed(), &chain).await.map(drop);
+    assert!(
+        matches!(untagged, Err(RingError::SenderTagRequired)),
+        "{untagged:?}"
+    );
+    stage_anonymous(&mixed().with_tags(fresh_wallet_tags(&sender)), &chain)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn an_own_data_note_beside_change_publishes_the_sender_tag_once() {
     use crate::tests::support::keypair;
