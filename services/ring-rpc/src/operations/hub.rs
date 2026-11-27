@@ -565,7 +565,8 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
             reader_grants: self.reader_grants,
             grant_rows: self.grant_rows,
         }
-        .build()?;
+        .build()
+        .await?;
         let shared = Arc::new(shared);
         let co_signer = CoSignPolicyInit {
             signer: self.co_signer,

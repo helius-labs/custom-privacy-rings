@@ -45,7 +45,7 @@ use ring_writer::record_writer::SaltedOwner;
 use crate::{
     error::{GrantRefusal, RingAuditError, ServiceError},
     frame_repairs::RepairBook,
-    grant_rows::{GrantPair, GrantRow},
+    grant_rows::GrantRow,
     grants::{GrantQuery, Grants, ReadScope},
     projection_lease::{LeaseClaim, ProjectionLease},
     projection_reads::EnrollmentKey,
@@ -692,15 +692,17 @@ impl<S: TransactionSource> AuditService<S> {
                 }
             })
             .await?;
-        rows.write(GrantRow {
-            pair: GrantPair {
+        rows.write(
+            GrantQuery {
                 ring: self.ring,
                 wallet,
                 reader,
             },
-            action: request.action,
-            timestamp: request.timestamp,
-        })
+            GrantRow {
+                action: request.action,
+                timestamp: request.timestamp,
+            },
+        )
         .await
     }
 

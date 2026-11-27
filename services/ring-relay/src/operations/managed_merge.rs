@@ -665,7 +665,7 @@ pub(crate) mod tests {
         signer_lamports: 1_000_000,
     };
 
-    fn shared(
+    async fn shared(
         source: EscrowRingSource,
         auditor: X25519Keypair,
         store: Store,
@@ -686,7 +686,7 @@ pub(crate) mod tests {
             reader_grants: ReaderGrantStore::Tree,
             grant_rows: None,
         };
-        Arc::new(init.build().expect("shared"))
+        Arc::new(init.build().await.expect("shared"))
     }
 
     pub(crate) struct Fixture {
@@ -754,7 +754,7 @@ pub(crate) mod tests {
                 Some(relay) => relay.store.clone(),
                 None => Store::open("sqlite::memory:", 1).await.expect("store"),
             };
-            let shared = shared(source, auditor, store.clone());
+            let shared = shared(source, auditor, store.clone()).await;
             let co_signer = CoSignPolicyInit {
                 signer: Some(Arc::new(Keypair::new())),
                 shared: shared.clone(),
@@ -1189,7 +1189,7 @@ pub(crate) mod tests {
             origins: Mutex::new(HashMap::new()),
             tracking: TrackingLedger::default(),
         };
-        let shared = shared(source, X25519Keypair::new(), store.clone());
+        let shared = shared(source, X25519Keypair::new(), store.clone()).await;
         let wallet = Keypair::new_from_array([11; 32]);
         let signed = SignedRequest::new(MergeSettingsAttestation {
             target: ReadTarget {

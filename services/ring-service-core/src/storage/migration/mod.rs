@@ -3,6 +3,7 @@ use sea_orm_migration::prelude::*;
 
 #[path = "../migration_cosign.rs"]
 mod cosign;
+mod grant_scopes;
 mod wallet_snapshots;
 
 pub struct Migrator;
@@ -10,7 +11,11 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(Schema), Box::new(cosign::WalletFunders)]
+        vec![
+            Box::new(Schema),
+            Box::new(cosign::WalletFunders),
+            Box::new(grant_scopes::GrantScopes),
+        ]
     }
 }
 
