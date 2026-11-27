@@ -129,7 +129,7 @@ Invariants that hold for more than one instruction. Each entry lists the instruc
   - Partial coverage: `program-tests/custom-ring/tests/rules/operator_rules.rs` `the_delegate_signs_its_appointment_and_no_data_names_it`, `update_authority_needs_the_new_keys_signature` (`InvalidSigner`) (LiteSVM). No test covers `NotEnoughAccountKeys` or `AccountNotMutable`.
   - Kind: state
   - Affects: Initialize, UpdateAuthority, UpdatePolicy, SetPaused, SetCoSigner, ClearCoSigner, SetDelegate, ApproveTransfer, EnrollBatch, Merge
-  - Statement: a missing account returns `AccountError::NotEnoughAccountKeys` (20014), an unsigned signer slot `AccountError::InvalidSigner` (20009) and a read-only writable slot `AccountError::AccountNotMutable` (20002). `Transfer`, `AuthorityTransfer` and the merge's forwarded list return the built-in `ProgramError::NotEnoughAccountKeys` for a missing account.
+  - Statement: a missing account returns `AccountError::NotEnoughAccountKeys` (20014), an unsigned signer slot `AccountError::InvalidSigner` (20009) and a read-only writable slot `AccountError::AccountNotMutable` (20002). `Transfer`, `AuthorityTransfer` and the merge's forwarded list return the built-in `ProgramError::NotEnoughAccountKeys` for a missing account. `Initialize` without its records account returns the built-in `ProgramError::NotEnoughAccountKeys` (`configuration/setup/initialize.rs:177`). `Initialize` and `UpdatePolicy` return `InvalidSource` for a source past the trailing curators (`verification/policy_binding.rs:80`) and `MissingRegistry` for a named registry absent from the accounts (`verification/policy_binding.rs:107`).
   - Location: `zolana/program-libs/account-checks/src/account_iterator.rs:142-235`, `programs/custom-ring/src/instructions/transfer/processor.rs:35, 54` (`fn process_transfer_ix`)
   - Severity: Medium
   - Suggested test: negative per slot kind, harness: LiteSVM
@@ -216,11 +216,11 @@ Invariants that hold for more than one instruction. Each entry lists the instruc
   - Severity: Critical (a forged registry would prove any wallet absent)
   - Suggested test: negative per slot, harness: LiteSVM
 
-- [ ] **INV-XC-21: no instruction deserializes an account twice**
+- [ ] **INV-XC-21: an instruction loads each account slot once**
   - Not covered.
   - Kind: state
   - Affects: Transfer, AuthorityTransfer, Merge, Initialize, UpdatePolicy
-  - Statement: every instruction loads the ring account once, `RegistrySlots::load` loads each registry slot once, and `ProposedSources::check` loads each distinct registry address once.
+  - Statement: every instruction loads the ring account once, `RegistrySlots::load` loads each registry slot once, and `ProposedSources::check` loads each distinct registry address once. A curator slot that names the ring's own records reads that account through both slots (`accounts/loader.rs:201-202`).
   - Location: `programs/custom-ring/src/instructions/transfer/processor.rs:33-36`, `programs/custom-ring/src/instructions/accounts/loader.rs:176-210`, `programs/custom-ring/src/instructions/verification/policy_binding.rs:96-116` (`fn ProposedSources::check`, the `checked` list)
   - Severity: Medium
   - Suggested test: review only, harness: none

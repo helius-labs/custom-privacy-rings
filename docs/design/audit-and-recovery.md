@@ -111,7 +111,7 @@ History-only calls do not preserve a wallet recovery session. A paused Rust `fet
 - Two devices on one seed keep separate counters and take the same indices. Equal sender tags then link their transfers in public, and both devices mint the same request tags. A sync finds every transfer under a repeated tag.
 - A wallet restored from its seed alone starts each counter at zero. Its sync stops at the first 64 unpaid requests in a row and finds no later one. `ViewingHistory::with_request_count` states how many requests the key minted, and the list then covers them. The CLI states that count with `address --request-count <n>`. The recovery scan finds the notes without it.
 - A member's bootstrap tag is public, so anyone can publish a slot under it. The wallet pays the trial opens of that transaction, each ring body under each held key.
-- The sync checks no commitment against the tree, the wallet trusts its indexer. An indexer that holds a member's address can return a slot that opens under the member's key with a listed tag. Each such round moves that counter one window, and the note it opens is on no chain.
+- The sync checks no commitment against the tree, the wallet trusts its indexer. An indexer that holds a member's address can return a slot that opens under the member's key with a listed tag. Each such round moves that counter one window, a sync runs rounds with no bound, and the stored history keeps the moved counters. The note such a slot opens is on no chain.
 - A transfer with the sender tag needs the wallet's stored counters, since the tag takes its index from them. A wallet that sends from stale counters repeats an index, as two devices do.
 
 ## Deposits and merges
