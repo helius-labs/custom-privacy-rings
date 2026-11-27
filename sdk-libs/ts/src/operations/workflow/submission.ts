@@ -4,6 +4,7 @@ import {
   assertIsTransactionWithinSizeLimit,
   getSignatureFromTransaction,
   isSolanaError,
+  partiallySignTransactionWithSigners,
   sendTransactionWithoutConfirmingFactory,
   signTransactionWithSigners,
   SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM,
@@ -36,6 +37,7 @@ import type {
 } from "../../rpc/ports.js";
 import { fetchRingPolicy, fetchStorageRegistry } from "../../protocol/membership/config.js";
 import { RingError, RingProgramError } from "../../protocol/error.js";
+import { signsLast } from "../../rpc/ring-rpc-co-signer.js";
 import { fetchTrackingRegistry } from "../../rpc/tracking-resolver.js";
 import { ringComputeUnitLimit } from "../management/admin.js";
 import type { OwnerDebit } from "../../protocol/membership/owner-debits.js";
@@ -570,13 +572,15 @@ export function createKitRingSubmissionTransport(
   return {
     // The kit refuses a signer the message does not name.
     sign: async (transaction, context) =>
-      runKitRpc("signTransaction", context, (abortSignal) =>
-        signTransactionWithSigners(
-          heldSigners.filter((signer) => signer.address in transaction.signatures),
+      runKitRpc("signTransaction", context, async (abortSignal) => {
+        const named = heldSigners.filter((signer) => signer.address in transaction.signatures);
+        const signed = await partiallySignTransactionWithSigners(
+          named.filter((signer) => !signsLast(signer)),
           transaction,
           { abortSignal },
-        ),
-      ),
+        );
+        return signTransactionWithSigners(named.filter(signsLast), signed, { abortSignal });
+      }),
     send: async (transaction, context) => {
       assertIsFullySignedTransaction(transaction);
       assertIsTransactionWithinSizeLimit(transaction);

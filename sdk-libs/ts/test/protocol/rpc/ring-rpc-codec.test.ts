@@ -14,14 +14,20 @@ import {
   createKeyPairSignerFromPrivateKeyBytes,
   getBase58Decoder,
   getBase58Encoder,
+  getBase64EncodedWireTransaction,
 } from "@solana/kit";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { SPL_TOKEN_PROGRAM_ID } from "@heliuslabs/spr/interface";
 import type { Address, Bytes32, Bytes33, Signature } from "@heliuslabs/spr/interface";
-import { addressBytes, type indexerTypes } from "@heliuslabs/spr/internal";
+import {
+  addressBytes,
+  compileUnsignedTransaction,
+  type indexerTypes,
+} from "@heliuslabs/spr/internal";
 import { SOL_MINT } from "@heliuslabs/spr/transaction";
+import { BLOCKHASH } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import { ShieldedKeypair, SigningKey, ViewingKey } from "@heliuslabs/spr/keypair";
 import {
   decodeCoSignListEntry,
@@ -379,9 +385,16 @@ describe("policy authority requests", () => {
         vector.listAfter.wire,
       );
       expect(JSON.stringify(encodeRefuseListApprovalRequest(refuse))).toBe(vector.refuse.wire);
+      const creation = JSON.parse(
+        readFileSync(
+          new URL("../../../../../test-vectors/rpc/records_creation_message.json", import.meta.url),
+          "utf8",
+        ),
+      ) as { message: string };
       const createRecords = await signCreateRecordsRegistryRequest(
         target,
         authority,
+        Uint8Array.from(Buffer.from(creation.message, "hex")),
         1_700_000_000n,
       );
       expect(JSON.stringify(encodeCreateRecordsRegistryRequest(createRecords))).toBe(
@@ -622,19 +635,19 @@ describe("co-sign", () => {
   it("encodes each request in the Rust field order", () => {
     expect(
       JSON.stringify(
-        encodeCoSignTransactionRequest({ ring, message: "AwQF" as indexerTypes.Base64String }),
+        encodeCoSignTransactionRequest({ ring, transaction: "AwQF" as indexerTypes.Base64String }),
       ),
-    ).toBe(`{"ring":"${ring}","message":"AwQF"}`);
+    ).toBe(`{"ring":"${ring}","transaction":"AwQF"}`);
     expect(
       JSON.stringify(
         encodeCoSignTransactionRequest({
           ring,
-          message: "AwQF" as indexerTypes.Base64String,
+          transaction: "AwQF" as indexerTypes.Base64String,
           approvedTransfer: { data: "NwcI" as indexerTypes.Base64String, accounts: [ring] },
         }),
       ),
     ).toBe(
-      `{"ring":"${ring}","message":"AwQF","approvedTransfer":{"data":"NwcI","accounts":["${ring}"]}}`,
+      `{"ring":"${ring}","transaction":"AwQF","approvedTransfer":{"data":"NwcI","accounts":["${ring}"]}}`,
     );
     expect(
       JSON.stringify(
@@ -672,7 +685,7 @@ describe("co-sign", () => {
       }),
     ).toThrow();
     expect(() =>
-      encodeCoSignTransactionRequest({ ring, message: "*" as indexerTypes.Base64String }),
+      encodeCoSignTransactionRequest({ ring, transaction: "*" as indexerTypes.Base64String }),
     ).toThrow();
   });
 
@@ -793,16 +806,24 @@ describe("co-sign", () => {
     const sent: unknown[] = [];
     const coSignerSecret = new Uint8Array(32).fill(8);
     const signer = base58.decode(ed25519.getPublicKey(coSignerSecret)) as Address;
-    const message = "AwQF" as indexerTypes.Base64String;
-    const messageBytes = Uint8Array.from(Buffer.from(message, "base64"));
+    const unsigned = compileUnsignedTransaction({
+      feePayer: filled(2, 32) as Address,
+      lifetime: BLOCKHASH,
+      instructions: [{ programAddress: ring, data: Uint8Array.of(1) }],
+      computeUnitLimit: 1_000,
+    });
+    const transaction = getBase64EncodedWireTransaction(
+      unsigned,
+    ) as string as indexerTypes.Base64String;
+    const messageBytes = new Uint8Array(unsigned.messageBytes);
     const signature = base58.decode(ed25519.sign(messageBytes, coSignerSecret)) as Signature;
     await expect(
-      answering({ result: { signer, signature } }, sent).coSignTransaction({ ring, message }),
+      answering({ result: { signer, signature } }, sent).coSignTransaction({ ring, transaction }),
     ).resolves.toEqual({ signer, signature });
     await expect(
       answering({ result: { signer, signature: filled(6, 64) as Signature } }).coSignTransaction({
         ring,
-        message,
+        transaction,
       }),
     ).rejects.toMatchObject({
       code: "RING_RPC",
@@ -824,14 +845,14 @@ describe("co-sign", () => {
       }),
     ).resolves.toEqual({ entries: [entry], nextCursor: entry });
     expect(sent).toMatchObject([
-      { method: "coSignTransaction", params: { ring, message } },
+      { method: "coSignTransaction", params: { ring, transaction } },
       { method: "editCoSignList", params: { ring, edit: "set", list: "allow", kind: "asset" } },
       { method: "getCoSignLists", params: { ring } },
     ]);
     await expect(
       answering({ error: { code: -32168, message: "blocked" } }).coSignTransaction({
         ring,
-        message,
+        transaction,
       }),
     ).rejects.toMatchObject({
       code: "RING_RPC_REFUSED",
@@ -851,10 +872,15 @@ describe("ring rpc refusals", () => {
     ]);
   });
 
-  it("names -32176 to -32178 as the co-sign simulation, blockhash and reservation refusals", () => {
+  it("names -32176 to -32179 as the co-sign simulation, blockhash, reservation and signature refusals", () => {
     expect(ringRpcRefusalName(-32176)).toBe("approvedCallNotOnce");
     expect(ringRpcRefusalName(-32177)).toBe("staleBlockhash");
     expect(ringRpcRefusalName(-32178)).toBe("inputReserved");
+    expect(ringRpcRefusalName(-32179)).toBe("missingSignature");
+  });
+
+  it("names -32261 as a records creation the service did not build and frees -32260", () => {
+    expect([-32260, -32261].map(ringRpcRefusalName)).toEqual([undefined, "recordsMessageMismatch"]);
   });
 
   it("names -32227 and -32228 as delegate notes outside the requested sources", () => {

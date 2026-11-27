@@ -11,7 +11,11 @@ import {
   indexerScalars,
 } from "@heliuslabs/spr/internal";
 import { ed25519 } from "@noble/curves/ed25519.js";
-import type { MessagePartialSigner } from "@solana/kit";
+import {
+  getCompiledTransactionMessageDecoder,
+  getTransactionDecoder,
+  type MessagePartialSigner,
+} from "@solana/kit";
 import type { Address, Bytes32, RequestContext } from "@heliuslabs/spr/interface";
 import { initializePoseidon } from "@heliuslabs/spr";
 import { ringIdField } from "../../crypto/derivation/ring-stream.js";
@@ -398,11 +402,15 @@ export class RingRpc {
     );
   }
 
-  /** The service's signature over `message`, for a wallet sending the transaction itself. */
+  /** The service's signature over the message of `transaction`, for a wallet sending it itself. */
   async coSignTransaction(
     request: CoSignTransactionRequest,
     context?: RequestContext,
   ): Promise<CoSignTransactionResponse> {
+    const { messageBytes } = getTransactionDecoder().decode(
+      indexerScalars.base64Bytes(request.transaction),
+    );
+    const message = new Uint8Array(messageBytes);
     const response = decodeCoSignTransactionResponse(
       await this.#call(
         RingRpcMethod.coSignTransaction,
@@ -410,7 +418,6 @@ export class RingRpc {
         context,
       ),
     );
-    const message = indexerScalars.base64Bytes(request.message);
     const sig = new Uint8Array(base58Encoder.encode(response.signature));
     if (
       sig.length !== 64 ||
@@ -446,11 +453,13 @@ export class RingRpc {
     );
   }
 
-  /** Idempotent, the ring's records under the service's storage authority. */
+  /** The ring's records under the service's storage authority, its signature over the request message while they do not exist. */
   async createRecordsRegistry(
     request: CreateRecordsRegistryRequest,
     context?: RequestContext,
   ): Promise<RecordsRegistry> {
+    const message = indexerScalars.base64Bytes(request.message);
+    const { header, staticAccounts } = getCompiledTransactionMessageDecoder().decode(message);
     const records = decodeRecordsRegistry(
       await this.#call(
         RingRpcMethod.createRecordsRegistry,
@@ -458,14 +467,24 @@ export class RingRpc {
         context,
       ),
     );
-    if (records.registry !== (await ringRecordsAddress(request.ring, records.storageAuthority))) {
-      throw new RingError("RING_RPC", {
-        details: {
-          method: RingRpcMethod.createRecordsRegistry,
-          reason: "registry is not the ring records under storageAuthority",
-        },
+    const refused = (reason: string) =>
+      new RingError("RING_RPC", {
+        details: { method: RingRpcMethod.createRecordsRegistry, reason },
       });
-    }
+    const { storageAuthority, signature } = records;
+    if (records.registry !== (await ringRecordsAddress(request.ring, storageAuthority)))
+      throw refused("registry is not the ring records under storageAuthority");
+    if (!staticAccounts.slice(1, header.numSignerAccounts).includes(storageAuthority))
+      throw refused("storageAuthority does not create");
+    if (signature === undefined) return records;
+    const signatureBytes = new Uint8Array(base58Encoder.encode(signature));
+    if (
+      signatureBytes.length !== 64 ||
+      !ed25519.verify(signatureBytes, message, addressBytes(storageAuthority, "storageAuthority"), {
+        zip215: false,
+      })
+    )
+      throw refused("invalid storage authority signature");
     return records;
   }
 

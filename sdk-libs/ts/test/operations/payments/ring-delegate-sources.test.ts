@@ -377,7 +377,7 @@ describe("delegate sources", () => {
 
       const unchecked = {
         checkSources: () => undefined,
-        countsSpends: () => true,
+        checkSpends: () => ({ debit: () => undefined, checkChange: () => undefined }),
       } as unknown as AllowedNullifiers;
       const outputsOnly = await expectedDelegate({ ...asked, allowed: unchecked });
       expect(checkRelayMessage(outputsOnly, message, delegate as never).signer).toBe(delegate);
@@ -390,6 +390,50 @@ describe("delegate sources", () => {
       });
       expect(() => checkRelayMessage(expected, message, delegate as never)).toThrow(
         expect.objectContaining({ details: { mismatch: "SpendsUnrequestedNote" } }),
+      );
+    });
+
+    it("refuses change to a requested source that spends nothing of the frame", async () => {
+      const [spender, idle, payee] = [
+        ShieldedKeypair.generate(),
+        ShieldedKeypair.generate(),
+        ShieldedKeypair.generate(),
+      ];
+      const { fixture, delegate } = await moveRing(mode, [spender, idle, payee]);
+      const spent = noteInput(spender, 10n, fixture.ringProgramId);
+      const held = noteInput(idle, 10n, fixture.ringProgramId);
+      // The change of the spender's note returns to the idle source.
+      const transfer = DelegateTransfer.new({
+        ringProgramId: fixture.ringProgramId,
+        delegate: delegate as never,
+        payer: fixture.authority,
+        source: idle.shieldedAddress(),
+        sourceProofs: walletKeys(idle),
+        inputs: [spent],
+        outputs: [payment(payee, 4n)],
+        assets,
+      })
+        .withCoSource({
+          owner: spender.shieldedAddress().solanaAddress(),
+          nullifierKey: spender.nullifierKey(),
+        })
+        .withTxViewingKey(TX_VIEWING_KEY);
+      const message = messageOf(
+        fixture,
+        await (await transfer.prove(fixture.client)).instruction(),
+      );
+      const expected = await expectedDelegate({
+        request: requestFor(fixture, delegate, [spender, idle], payee, 4n),
+        quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+        config: await policyOf(fixture),
+        outputTreeId: fixture.client.treeId,
+        allowed: allowedOf([
+          { owner: spender, notes: [spent] },
+          { owner: idle, notes: [held] },
+        ]),
+      });
+      expect(() => checkRelayMessage(expected, message, delegate as never)).toThrow(
+        expect.objectContaining({ details: { mismatch: "ChangeExceedsSpend" } }),
       );
     });
 
@@ -475,7 +519,11 @@ describe("delegate sources", () => {
       ShieldedKeypair.generate(),
     ];
     const { fixture, delegate } = await moveRing("anonymous", [sender, other, payee]);
-    const notes = [other, sender].map((source) => noteInput(source, 10n, fixture.ringProgramId));
+    // The change returns to the sender, within what its note spends.
+    const notes = [
+      noteInput(other, 4n, fixture.ringProgramId),
+      noteInput(sender, 10n, fixture.ringProgramId),
+    ];
     const moved = async (outputs: readonly DelegateOutput[]) => {
       const proven = await DelegateTransfer.new({
         ringProgramId: fixture.ringProgramId,

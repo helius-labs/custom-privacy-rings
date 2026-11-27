@@ -3,9 +3,11 @@ export * from "./relay-message/check.js";
 export {
   type RelayMessageMismatch,
   AllowedNullifiers,
+  SourceSpends,
   type ExpectedDelegate,
   type RelayTransferTerms,
   type RelayFunderTerms,
+  type SlotCommitment,
   type PublicLeg,
   type SlotOpening,
   type TokenAccountCreate,

@@ -1,8 +1,11 @@
 import { readFileSync } from "node:fs";
 
+import { ed25519 } from "@noble/curves/ed25519.js";
 import {
+  AccountRole,
   address,
   generateKeyPairSigner,
+  getBase58Decoder,
   signTransactionWithSigners,
   type Address,
 } from "@solana/kit";
@@ -19,6 +22,8 @@ import {
   type RingSubmissionAttempt,
 } from "../../../src/operations/workflow/submission.js";
 import { ringPolicyPda } from "../../../src/protocol/pda/index.js";
+import type { CoSignTransactionRequest } from "../../../src/protocol/ring-rpc/ring-rpc-types.js";
+import { ringRpcCoSigner } from "../../../src/rpc/ring-rpc-co-signer.js";
 import { BLOCKHASH, kitReads } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
 import type { RpcAccount } from "@heliuslabs/spr/client";
 import {
@@ -122,6 +127,53 @@ async function fixture(roots?: RingSubmissionAttempt["roots"]) {
 }
 
 describe("ring submission ownership", () => {
+  it("asks a Ring RPC co-signer last, its request carries the other signature", async () => {
+    const base58 = getBase58Decoder();
+    const payer = await generateKeyPairSigner();
+    const secretKey = new Uint8Array(32).fill(8);
+    const coSignerAddress = base58.decode(ed25519.getPublicKey(secretKey)) as Address;
+    const transaction = compileUnsignedTransaction({
+      feePayer: payer.address,
+      lifetime: BLOCKHASH,
+      instructions: [
+        {
+          programAddress: MEMO,
+          accounts: [{ address: coSignerAddress, role: AccountRole.READONLY_SIGNER }],
+          data: Uint8Array.of(1),
+        },
+      ],
+      computeUnitLimit: 1_000,
+    });
+    const message = new Uint8Array(transaction.messageBytes);
+    const requests: CoSignTransactionRequest[] = [];
+    const coSigner = ringRpcCoSigner({
+      rpc: {
+        coSignTransaction: async (request) => {
+          requests.push(request);
+          return {
+            signer: coSignerAddress,
+            signature: base58.decode(ed25519.sign(message, secretKey)) as never,
+          };
+        },
+      },
+      ring: MEMO,
+      signer: coSignerAddress,
+    });
+    const transport = createKitRingSubmissionTransport(kitReads({ solanaRpc: {} }), [
+      coSigner,
+      payer,
+    ]);
+
+    const signed = await transport.sign(transaction);
+
+    const payerSignature = signed.signatures[payer.address];
+    if (payerSignature == null) throw new Error("no payer signature");
+    expect(Buffer.from(requests[0]?.transaction ?? "", "base64")).toEqual(
+      Buffer.from([...message, ...payerSignature, ...new Uint8Array(64)]),
+    );
+    expect(signed.signatures[coSignerAddress]).toEqual(ed25519.sign(message, secretKey));
+  });
+
   it("signs only an attempt its charged outflows were read from", async () => {
     const f = await fixture();
     const submission = new RingTransactionSubmission({ first: await f.build(), build: f.build });

@@ -137,16 +137,18 @@ export async function signRefuseListApprovalRequest(
   });
 }
 
-/** Rust `CreateRecordsRegistryRequest::create` signed by the policy authority, or the upgrade authority before `Initialize`. */
+/** Rust `CreateRecordsRegistryRequest::create` signed by the policy authority, or the upgrade authority before `Initialize`, the signed line names no message. */
 export async function signCreateRecordsRegistryRequest(
   target: RingReadTarget,
   authority: MessagePartialSigner,
+  message: Uint8Array,
   timestamp?: bigint,
 ): Promise<CreateRecordsRegistryRequest> {
   const checked = checkedReadTarget(target);
   return Object.freeze({
     ring: checked.ringProgramId,
     auth: await policyAuthorityAuth(checked, authority, { kind: "createRecords" }, timestamp),
+    message: base64Decoder.decode(message) as indexerTypes.Base64String,
   });
 }
 

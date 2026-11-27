@@ -537,13 +537,22 @@ describe("syncRingWallet", () => {
     expect(slotRead?.[0].filters).toBeUndefined();
   });
 
-  it("reads delivered history after ring derivation keys become available", async () => {
+  it("refuses keys without ring derivations before the core sync reads, ring keys then read the history", async () => {
     const recipient = ShieldedKeypair.generate();
     const ring = ringWallet(recipient);
     const { wallet } = ring;
     const client = syncClient([ringBody(recipient)]);
-    await syncRingWallet({ wallet: ring, keys: LocalShieldedKeys.fromKeypair(recipient), client });
-    expect(wallet.utxos()).toEqual([]);
+    const revision = wallet._revision;
+    await expect(
+      syncRingWallet({
+        wallet: ring,
+        keys: LocalShieldedKeys.fromKeypair(recipient) as never,
+        client,
+      }),
+    ).rejects.toMatchObject({ code: "RING_KEYS_REQUIRED" });
+    expect(client.getShieldedTransactionsByTags).not.toHaveBeenCalled();
+    expect(client.getEncryptedUtxosByTags).not.toHaveBeenCalled();
+    expect(wallet._revision).toBe(revision);
 
     const report = await syncRingWallet({
       wallet: ring,
@@ -802,7 +811,7 @@ describe("tag streams", () => {
     const client = syncClient([
       taggedBody(recipient, third, 2),
       taggedBody(recipient, sender, 4),
-      // A tag proves no ownership, a body another key opens moves the counter and credits nothing.
+      // A tag proves no ownership, a body another key opens moves no counter and credits nothing.
       taggedBody(stranger, fifth, 6),
     ]);
 
@@ -812,9 +821,36 @@ describe("tag streams", () => {
     expect(ring.wallet.utxos().map((entry) => entry.utxo.amount)).toEqual([AMOUNT, AMOUNT]);
     const { tx, request, tagPosition } = ring.history().current();
     expect([tx.next, tx.scanned]).toEqual([1n, 1n]);
-    expect([request.next, request.scanned]).toEqual([6n, 6n]);
+    expect([request.next, request.scanned]).toEqual([4n, 4n]);
     expect(tagPosition).toBe(20n);
-    expect(ring.toJson()).toContain('"tx":{"next":1,"scanned":1},"request":{"next":6,"scanned":6}');
+    expect(ring.toJson()).toContain('"tx":{"next":1,"scanned":1},"request":{"next":4,"scanned":4}');
+  });
+
+  it("moves no counter on a row under the highest listed tag that opens under no held key, the sync reads one round", async () => {
+    const { recipient, keys, ring } = fresh();
+    const stranger = ShieldedKeypair.generate();
+    const client = syncClient([]);
+    // Each of the first three ring reads answers a stranger's body under its last tag.
+    const answer = client.getShieldedTransactionsByTags.getMockImplementation();
+    if (answer === undefined) throw new Error("no tag read");
+    const echoed: Bytes32[] = [];
+    let calls = 0;
+    client.getShieldedTransactionsByTags.mockImplementation(async (request, ...rest) => {
+      const tag = request.tags.at(-1);
+      calls += 1;
+      if (calls > 1 && tag !== undefined && echoed.length < 3) {
+        echoed.push(tag);
+        client.rows.push(taggedBody(stranger, tag, 10 + echoed.length));
+      }
+      return answer(request, ...rest);
+    });
+
+    await syncRingWallet({ wallet: ring, keys, client });
+
+    const { tx, request } = ring.history().current();
+    expect([tx.next, tx.scanned, request.next, request.scanned]).toEqual([0n, 0n, 0n, 0n]);
+    expect(echoed).toEqual(streamTags(recipient, "request", 63, 64));
+    expect(ringReads(client)).toHaveLength(1);
   });
 
   it("lists the window past each counter and the next window in the same sync once a tag is found", async () => {

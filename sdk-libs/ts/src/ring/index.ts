@@ -60,6 +60,7 @@ export {
   RingInstructionTag,
   clearRingCoSignerInstruction,
   initializeRingInstruction,
+  recordsCreationTransaction,
   ringComputeUnitLimit,
   setRingCoSignerInstruction,
   setRingDelegateInstruction,
@@ -76,6 +77,10 @@ export type {
   RingSharedSource,
 } from "../operations/management/admin.js";
 export { buildRingUpdatePolicyTransaction } from "../operations/management/policy-admin.js";
+export {
+  createRingRecords,
+  type RingRecordsClient,
+} from "../operations/management/ring-records.js";
 export type {
   RingPolicyAdminClient,
   RingUpdatePolicyTransactionParams,
@@ -260,6 +265,7 @@ export type {
 } from "../protocol/membership/approval-totals.js";
 export {
   AllowedNullifiers,
+  SourceSpends,
   VerifiedRelayMessage,
   decodeApprovalOpening,
   decodeRelayFunderTerms,
@@ -275,6 +281,7 @@ export {
   type RelayFunderTerms,
   type RelayTransferTerms,
   type RequestedAuthorityTransfer,
+  type SlotCommitment,
   type SlotOpening,
   type TokenAccountCreate,
 } from "../rpc/relay-message.js";

@@ -29,7 +29,8 @@ omitted.
 viewing key's listed tags. It stores in an `AnonymousWallet` each Ring note whose
 commitment `decryptTransactions` rebuilds. It makes no read by Ring, the read by
 Ring is the recovery scan of `AnonymousSync`.
-Only keys that are also `RingKeys` open Ring notes. A note or merge output of a
+It takes `RingKeys` and refuses other keys with `RING_KEYS_REQUIRED` before any
+read, since only they open a Ring note. A note or merge output of a
 mint the registry lacks waits in `pendingOpenings()`, and the first sync that sees
 the mint registered moves it to the notes. Each viewing key's
 `tagPosition` resumes the next sync where the last one stopped, so store the
@@ -162,11 +163,12 @@ tag once. A slot that would repeat a tag takes random bytes.
 
 A spend of Ring notes without `tags` publishes random bytes on its change.
 `syncRingWallet` reads the transaction that spends a note the wallet holds
-unspent and opens each body in it. A `syncWallet` run on the same wallet, or a
-sync without `RingKeys`, that reads the spend first marks the Ring note spent.
-No lead to that change is then left short of a recovery scan. An entry spends
-default-ring notes alone, and the SDK refuses it without `tags` with
-`RING_SENDER_TAG_REQUIRED`. A core sync that reads that spend before
+unspent and opens each body in it. A `syncWallet` run on the same wallet that
+reads the spend first marks the Ring note spent.
+No lead to that change is then left short of a recovery scan. In an entry the
+sender spends default-ring notes and no Ring note of its own. The SDK refuses it
+with `RING_SENDER_TAG_REQUIRED` unless its `tags` derive from the sender's
+viewing key. A core sync that reads that spend before
 `syncRingWallet` leaves the sender tag as the one lead to the change short of a
 recovery scan.
 
@@ -183,8 +185,8 @@ payments.
 `syncRingWallet` finds the wallet's notes by tag. It lists the bootstrap tag of
 each held key. It also lists the sender and request tags from index 0 to
 `TAG_WINDOW`, 64, past each stored counter. It reads the exact matches of the
-listed tags from the indexer. A found tag moves its counter. The same sync lists
-the next window. A wallet with stored counters lists past every unused index.
+listed tags from the indexer. A tag moves its counter only at a slot that opens
+under the key that lists it. The same sync lists the next window. A wallet with stored counters lists past every unused index.
 A wallet restored from its seed alone starts both counters at zero.
 `TAG_WINDOW` unused sender indices in a row then hide every later sender tag.
 `TAG_WINDOW` unpaid requests in a row hide every later request, until

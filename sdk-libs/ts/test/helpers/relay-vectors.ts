@@ -23,6 +23,7 @@ const MISMATCHES: Readonly<Record<RelayMessageMismatch, true>> = {
   Legs: true,
   SpendsUnnamedNote: true,
   SpendsUnrequestedNote: true,
+  ChangeExceedsSpend: true,
   Unrequested: true,
   Signer: true,
 };

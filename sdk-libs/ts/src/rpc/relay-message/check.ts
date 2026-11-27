@@ -39,6 +39,7 @@ import { isAnonymousFrame, RingTransactData } from "../../protocol/transaction/t
 import {
   coSignerPairs,
   isDepositLeg,
+  isSolLeg,
   knownPrefixEndingAt,
   mintAccountPosition,
   RING_TRANSACT_RING_CONFIG_INDEX,
@@ -286,7 +287,7 @@ function checkFrame(
   const { layout } = decoded;
   switch (expected.kind) {
     case "funder":
-      return checkFunder(expected, envelope, decoded);
+      return checkFunder(expected, frame, envelope, decoded);
     case "delegate":
       checkMoved(expected, frame, decoded);
       return checkSoleSigner(
@@ -319,8 +320,7 @@ function checkMoved(
   if (frame.hasData || frame.ringData) throw mismatch("Data");
   checkLegs(expected.withdrawals, decoded.legs, decoded.accounts);
   // 2. Matching outputs bind no input, every proven spend answers to the requested openings.
-  if (expected.allowed?.countsSpends(envelope.realInputs, frame.nullifiers) === false)
-    throw mismatch("SpendsUnrequestedNote");
+  const spends = expected.allowed?.checkSpends(envelope.realInputs, frame.nullifiers);
   const records = frameRecords(expected.txViewingKey, frame, recipientKeys);
   // 3. Each live record pays one requested payment or returns change to a requested source,
   // sealed to that owner's viewing key so the owner can open it. A ring output's record names no
@@ -370,6 +370,7 @@ function checkMoved(
         ? expected.sources.find((owner) => owns(owner, record) && sealedTo(owner))
         : undefined;
     if (source === undefined) throw mismatch("Recipients");
+    spends?.debit(source, record.mint, record.amount);
     // An anonymous source finds its change by the note it spent.
     if (anonymous) return;
     // A confidential source finds its change by the tag.
@@ -377,6 +378,8 @@ function checkMoved(
       throw mismatch("Recipients");
   });
   if (unpaid.length !== 0) throw mismatch("Recipients");
+  // 4. A mint's permanent delegate holds no notes to weigh the change against.
+  spends?.checkChange();
 }
 
 /** Rust `swap_remove`, the order decides the equal payment a later record takes. */
@@ -510,24 +513,13 @@ function checkOpenings(
   const { terms, knownNullifiers } = expected;
   // 1. One opening per published slot in slot order, a missing or repeated slot could hide an
   // output the signature approves.
-  if (
-    terms.slots.length !== frame.outputs.length ||
-    terms.slots.some((opening, slot) => opening.slot !== slot)
-  )
-    throw mismatch("UnopenedOutput");
+  if (terms.slots.some((opening, slot) => opening.slot !== slot)) throw mismatch("UnopenedOutput");
   // 2. Each opening rebuilds the commitment published at its slot, so the signer reads each owner,
-  // amount and data hash the proof commits, and the tag a non-exit slot publishes.
-  terms.slots.forEach((opening, slot) => {
-    const published = frame.outputs[slot];
-    if (published === undefined) throw mismatch("Recipients");
-    const exit = published.body.kind === "exit";
-    // An exit commits no ring, a ring id here would refuse every exit.
-    const rebuilt = withMismatch("Recipients", () =>
-      openingHash(opening, exit ? undefined : terms.ring),
-    );
-    const tagged = opening.tag !== undefined && equalBytes(opening.tag, published.ownerTag);
-    if (!equalBytes(rebuilt, published.hash) || (!exit && !tagged)) throw mismatch("Recipients");
-  });
+  // amount and data hash the proof commits, and the tag a non-exit slot publishes. An exit commits
+  // no ring, a ring id there would refuse every exit.
+  checkPublished(frame, terms.slots, (opening, exit) =>
+    openingHash(opening, exit ? undefined : terms.ring),
+  );
   const among = (list: readonly Uint8Array[], nullifier: Uint8Array): boolean =>
     list.some((held) => equalBytes(held, nullifier));
   // 3. A named note the wallet cannot place means no list stood behind the check.
@@ -545,6 +537,23 @@ function checkOpenings(
     throw mismatch("SpendsUnnamedNote");
   // 4. Every public leg is one the terms name, a leg moves funds the proof alone does not show the signer.
   checkLegs(terms.legs, decoded.legs, decoded.accounts);
+}
+
+/** One named slot per published output in slot order, each with its commitment and off an exit its tag. */
+function checkPublished<Slot extends Readonly<{ tag?: Bytes32 }>>(
+  frame: RingTransactData,
+  slots: readonly Slot[],
+  commitment: (slot: Slot, exit: boolean) => Bytes32,
+): void {
+  if (slots.length !== frame.outputs.length) throw mismatch("UnopenedOutput");
+  slots.forEach((named, slot) => {
+    const published = frame.outputs[slot];
+    if (published === undefined) throw mismatch("Recipients");
+    const exit = published.body.kind === "exit";
+    const hash = withMismatch("Recipients", () => commitment(named, exit));
+    const tagged = named.tag !== undefined && equalBytes(named.tag, published.ownerTag);
+    if (!equalBytes(hash, published.hash) || (!exit && !tagged)) throw mismatch("Recipients");
+  });
 }
 
 function checkCoSigner(
@@ -627,20 +636,29 @@ function checkExactApproval(exact: ExactApproval, frame: RingTransactData): void
   }
 }
 
-/** A run entry would authorize data outputs and spent notes the funder's terms never name. */
-function checkFunder(expected: ExpectedFunder, envelope: Envelope, decoded: FrameAccounts): void {
+/** A relayed deposit's proof holds no owner signature, the funder's binds every output and leg. */
+function checkFunder(
+  expected: ExpectedFunder,
+  frame: RingTransactData,
+  envelope: Envelope,
+  decoded: FrameAccounts,
+): void {
   const { terms } = expected;
+  // 1. Each published output is the one the sealing wallet stated at its slot.
+  checkPublished(frame, terms.slots, (named) => named.hash);
+  // 2. The frame moves public funds through the legs the terms name and no other, a withdrawal
+  // has no funder to refuse it.
+  checkLegs(terms.legs, decoded.legs, decoded.accounts);
+  // 3. A run entry would authorize data outputs and spent notes the funder's terms never name.
   const funded = decoded.legs.filter(
     (leg) => leg.funder !== undefined && decoded.accounts[leg.funder]?.address === terms.signer,
   );
-  checkLegs(terms.legs, funded, decoded.accounts);
   // SPP debits the funder of a SOL leg, one write bit covers every slot of the key.
-  const solFunded = terms.legs.some((leg) => leg.mint === null);
   checkSignerSlots(
     envelope,
     decoded,
     funded.flatMap((leg) => (leg.funder === undefined ? [] : [leg.funder])),
-    solFunded ? "accepted" : "refused",
+    funded.some((leg) => isSolLeg(leg.transfer)) ? "accepted" : "refused",
   );
 }
 

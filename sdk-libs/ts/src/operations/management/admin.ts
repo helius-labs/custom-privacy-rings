@@ -1,9 +1,13 @@
 import type { AccountMeta, Address, Instruction } from "@solana/kit";
 
+import { initializePoseidon } from "@heliuslabs/spr";
+
 import {
   SYSTEM_PROGRAM,
+  compileUnsignedTransaction,
   meta,
   signerAddress,
+  type LatestBlockhash,
   type SignerAccount,
   Writer,
   addressBytes,
@@ -11,18 +15,25 @@ import {
   ZERO_32,
   equalBytes,
 } from "@heliuslabs/spr/internal";
-import { SHIELDED_POOL_PROGRAM_ID, type Bytes32 } from "@heliuslabs/spr/interface";
+import {
+  SHIELDED_POOL_PROGRAM_ID,
+  type Bytes32,
+  type Transaction,
+} from "@heliuslabs/spr/interface";
 import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
 import {
   ringAuthAddress,
   ringCoSignerAddress,
   ringPolicyAddress,
+  ringRecordsAddress,
   STORAGE_PROGRAM_ID,
   trackingRegistryPda,
 } from "../../protocol/pda/index.js";
+import { ringIdField } from "../../crypto/derivation/ring-stream.js";
 import { isSmallOrder } from "../../crypto/keys/x25519.js";
 
 import {
+  GRACE_SLOTS,
   isZeroAddress,
   registryCurator,
   RING_COSIGN_SCOPE_MASK,
@@ -53,6 +64,10 @@ const ACCOUNT_UNITS = 50_000;
 const POLICY_UNITS = 150_000;
 /** A ring proof, most also CPI into SPP and its own proof. */
 const PROOF_UNITS = 1_400_000;
+/** Rust `CREATE_COMPUTE_UNITS`. */
+const RECORDS_CREATION_UNITS = 100_000;
+/** Rust `storage::tag::INITIALIZE`. */
+const STORAGE_INITIALIZE_TAG = 0;
 
 /** Rust `compute_unit_limit`, the budget one instruction of `tag` declares. */
 export function ringComputeUnitLimit(tag: RingInstructionTag): number {
@@ -140,6 +155,48 @@ export async function initializeRingInstruction(
   const instruction = ringInstruction(input.ringProgramId, writer.finish(), accounts);
   checkFits(input.payer, instruction, ringComputeUnitLimit(RingInstructionTag.initialize));
   return instruction;
+}
+
+/** Rust `RecordsCreation::message`, Ring RPC's storage authority signs only these bytes and the payer sends them. */
+export async function recordsCreationTransaction(
+  input: Readonly<{
+    ringProgramId: Address;
+    payer: Address;
+    storageAuthority: Address;
+    lifetime: LatestBlockhash;
+  }>,
+): Promise<Transaction> {
+  const { ringProgramId, payer, storageAuthority } = input;
+  await initializePoseidon();
+  const [registry, [tracking]] = await Promise.all([
+    ringRecordsAddress(ringProgramId, storageAuthority),
+    trackingRegistryPda(ringProgramId),
+  ]);
+  // Every ring pins its tracking registry at creation, an unpinned source refuses a private list.
+  const data = new Writer()
+    .u8(STORAGE_INITIALIZE_TAG, "tag")
+    .bytes(addressBytes(ringProgramId, "ringProgramId"), 32, "registryId")
+    .u64(GRACE_SLOTS, "graceSlots")
+    .bytes(ringIdField(ringProgramId), 32, "ringId")
+    .bytes(addressBytes(tracking, "trackingRegistry"), 32, "trackingRegistry")
+    .finish();
+  return compileUnsignedTransaction({
+    feePayer: payer,
+    lifetime: input.lifetime,
+    instructions: [
+      {
+        programAddress: STORAGE_PROGRAM_ID,
+        accounts: [
+          meta(payer, true, true),
+          meta(storageAuthority, true, false),
+          meta(registry, false, true),
+          meta(SYSTEM_PROGRAM, false, false),
+        ],
+        data,
+      },
+    ],
+    computeUnitLimit: RECORDS_CREATION_UNITS,
+  });
 }
 
 /** Rust `UpdateAuthority`, the admin and the new key sign so a mistyped address cannot strand the role. */

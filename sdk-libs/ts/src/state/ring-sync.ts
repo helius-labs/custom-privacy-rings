@@ -56,11 +56,16 @@ export type RingNoteCodecInput = Readonly<{
 
 /** Rust `RingNoteCodec`, each ring body tried under every held key. */
 export function ringNoteCodec(input: RingNoteCodecInput): RingCodec {
-  return claimingCodec(input, []);
+  return claimingCodec(input, { claims: [], openedUnder: new WeakMap() });
 }
 
-/** The reply of each slot a held key rebuilt lands in `claims`, core has not checked its note yet. */
-function claimingCodec(input: RingNoteCodecInput, claims: SenderClaim[]): RingCodec {
+/** What each slot a held key rebuilt leaves, core has not checked its note yet. */
+type SlotReads = Readonly<{
+  claims: SenderClaim[];
+  openedUnder: WeakMap<OutputSlot, X25519PublicKey>;
+}>;
+
+function claimingCodec(input: RingNoteCodecInput, reads: SlotReads): RingCodec {
   return {
     ringProgramId: input.ringProgramId,
     open: async (event, context) => {
@@ -94,12 +99,13 @@ function claimingCodec(input: RingNoteCodecInput, claims: SenderClaim[]): RingCo
         context,
       );
       const openings: RingOpening[] = [];
-      for (const [{ site }, secret] of answered(requests, secrets)) {
+      for (const [{ site, request }, secret] of answered(requests, secrets)) {
         const opened = openedSlot(input, site, secret);
         if (opened === undefined) continue;
         const { utxo, nullifierPublicKey, dataHash, ringDataHash } = opened.note;
+        reads.openedUnder.set(site.slot, request.viewingPublicKey);
         if (opened.claim !== undefined)
-          claims.push({ utxoHash: site.slot.outputContext.hash, claim: opened.claim });
+          reads.claims.push({ utxoHash: site.slot.outputContext.hash, claim: opened.claim });
         openings.push({
           slotIndex: site.slotIndex,
           nullifierPublicKey,
@@ -129,8 +135,8 @@ function* sitesOf(tx: IndexedShieldedTransaction): Generator<Site> {
   }
 }
 
-export type RingSyncInput = Omit<SyncWalletInput, "wallet"> &
-  Readonly<{ wallet: AnonymousWallet; client: RingSyncClient }>;
+export type RingSyncInput = Omit<SyncWalletInput, "wallet" | "keys"> &
+  Readonly<{ wallet: AnonymousWallet; keys: RingKeys; client: RingSyncClient }>;
 
 /** Notes, positions, claims and merge retries commit together after every read succeeds, Rust `RingWalletSync::sync`. */
 export async function syncRingWallet(
@@ -139,6 +145,8 @@ export async function syncRingWallet(
 ): Promise<SyncReport> {
   const { wallet: ring, keys } = input;
   const { wallet } = ring;
+  // A core sync marks a held note spent, the ring change of that spend then opens to no later sync.
+  if (!isRingKeys(keys)) throw new RingError("RING_KEYS_REQUIRED", { details: { reason: "sync" } });
   return wallet._withSyncLock(async () => {
     const revision = wallet._revision;
     // 1. The core sync resumes from its checkpoints on a copy, nothing reaches the wallet before step 4.
@@ -146,10 +154,7 @@ export async function syncRingWallet(
     const reads = new RingReads(input, staging, context);
     const report = await syncWallet({ ...input, wallet: staging, client: reads.client }, context);
     // 2. Core opens the rows under each held key's listed tags past its position.
-    // Only ring keys open a body, a sync without them leaves every position for one with them.
-    const ringKeys = isRingKeys(keys) ? keys : undefined;
-    const tagged: TagRead =
-      ringKeys === undefined ? { foundTags: [] } : await reads.tagged(ringKeys, ring.history());
+    const tagged = await reads.tagged(keys, ring.history());
     if (ring.pendingOpenings().some((note) => isPendingNote(staging.registry, note)))
       await reads.refreshRegistry();
     // 3. The core sync read the spends of held notes. A note new to the wallet or promoted and a stored retry still need theirs.
@@ -183,7 +188,7 @@ export async function syncRingWallet(
         context,
       );
       // A spend can return change no listed tag names, under a random tag or from a delegate's move.
-      const returned = ringKeys === undefined ? [] : await reads.open(ringKeys, rows);
+      const returned = await reads.open(keys, rows);
       const next = [...merged.utxos, ...returned].filter((note) => unseen(held, outputKey(note)));
       if (next.length === 0) break;
       fresh.push(...next);
@@ -254,8 +259,10 @@ interface Site {
   readonly txViewingPublicKey: X25519PublicKey;
   readonly salt: NonNullable<IndexedShieldedTransaction["salt"]>;
   readonly slotIndex: number;
-  readonly slot: IndexedShieldedTransaction["outputSlots"][number];
+  readonly slot: OutputSlot;
 }
+
+type OutputSlot = IndexedShieldedTransaction["outputSlots"][number];
 
 function outputKey(note: WalletUtxo): string {
   return bytesKey(note.outputContext.hash);
@@ -437,9 +444,17 @@ class TagListing {
     );
   }
 
-  /** The stream tags `row` publishes, a tag proves no ownership. */
-  found(row: IndexedShieldedTransaction): readonly FoundTag[] {
-    return row.outputSlots.flatMap((slot) => this.#streamTags.get(bytesKey(slot.viewTag)) ?? []);
+  /** The stream tags `row` publishes on a slot opened under the key each was listed for. */
+  found(
+    row: IndexedShieldedTransaction,
+    openedUnder: WeakMap<OutputSlot, X25519PublicKey>,
+  ): readonly FoundTag[] {
+    return row.outputSlots.flatMap((slot) => {
+      const listed = this.#streamTags.get(bytesKey(slot.viewTag));
+      return listed !== undefined && openedUnder.get(slot)?.equals(listed.viewingPublicKey) === true
+        ? [listed]
+        : [];
+    });
   }
 }
 
@@ -448,6 +463,7 @@ class RingReads {
   readonly notes: WalletUtxo[] = [];
   /** Unchecked until its note is among `notes`. */
   readonly claims: SenderClaim[] = [];
+  readonly #openedUnder = new WeakMap<OutputSlot, X25519PublicKey>();
   readonly #staging: Wallet;
   readonly #context: RequestContext | undefined;
   readonly #rpcConfig: IndexerRpcConfig;
@@ -500,7 +516,6 @@ class RingReads {
     const holds = (entry: ViewingKeyEntry): boolean =>
       held.some((key) => key.equals(entry.viewingPublicKey));
     const listing = new TagListing();
-    const rows: IndexedShieldedTransaction[] = [];
     const seen = new Set<string>();
     const foundTags: FoundTag[] = [];
     let counted = history;
@@ -517,17 +532,15 @@ class RingReads {
         ])
           if (slot !== undefined)
             covered = covered === undefined || slot < covered ? slot : covered;
-      // 3. Every row moves the counters whatever its ring.
-      for (const row of read) {
-        if (!unseen(seen, eventKey(row))) continue;
-        for (const found of listing.found(row)) {
-          counted = counted._withFound(found.viewingPublicKey, found.stream, found.index);
-          foundTags.push(found);
-        }
-        rows.push(row);
+      // 3. A tag proves no ownership, each row opens once here and a row that opens nothing moves
+      // no counter.
+      const fresh = read.filter((row) => unseen(seen, eventKey(row)));
+      await this.open(keys, fresh);
+      for (const found of fresh.flatMap((row) => listing.found(row, this.#openedUnder))) {
+        counted = counted._withFound(found.viewingPublicKey, found.stream, found.index);
+        foundTags.push(found);
       }
     }
-    await this.open(keys, rows);
     return {
       ...(covered === undefined ? {} : { tagPosition: { keys: held, afterSlot: covered } }),
       foundTags,
@@ -583,7 +596,7 @@ class RingReads {
             transactions: events.filter((row) => row.ringProgramId === ringProgramId),
             ring: claimingCodec(
               { ringProgramId, keys, assets: this.#staging.registry },
-              this.claims,
+              { claims: this.claims, openedUnder: this.#openedUnder },
             ),
           },
           this.#context,

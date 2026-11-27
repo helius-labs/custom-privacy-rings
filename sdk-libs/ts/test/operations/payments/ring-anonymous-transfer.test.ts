@@ -556,6 +556,45 @@ describe("anonymous ring payment", () => {
     noProofs(fixture);
   });
 
+  it("refuses an entry under another key's tags and beside a co-owner's ring note without the sender tag", async () => {
+    const fixture = await anonymousRing();
+    const sender = anonymousSender();
+    const bob = ShieldedKeypair.generate();
+    const to = await addressOf(fixture, bob);
+    const payment = { to, asset: SOL_MINT, amount: 400n, reply: null };
+    await expect(
+      rail({
+        fixture,
+        sender,
+        transfer: spend(fixture, sender, { ring: "default" }),
+        tags: await freshWalletTags(bob),
+      })
+        .withPayment(payment)
+        .prove(fixture.client),
+    ).rejects.toThrow(ringError("RING_SENDER_TAG_REQUIRED"));
+    const coOwner = ShieldedKeypair.generate();
+    fixture.enroll(coOwner.shieldedAddress());
+    const transfer = ringSpendTransfer({
+      owner: sender.keypair.shieldedAddress(),
+      inputs: [
+        noteInput(sender.keypair, 5_000n),
+        noteInput(coOwner, 5_000n, fixture.ringProgramId),
+      ],
+      feePayer: fixture.authority,
+    });
+    transfer.withShape({ inputs: 2, outputs: 2 });
+    await expect(
+      rail({ fixture, sender, transfer })
+        .withCoOwner({
+          owner: coOwner.shieldedAddress().solanaAddress(),
+          nullifierKey: coOwner.nullifierKey(),
+        })
+        .withPayment(payment)
+        .prove(fixture.client),
+    ).rejects.toThrow(ringError("RING_SENDER_TAG_REQUIRED"));
+    noProofs(fixture);
+  });
+
   it("finds an entry's change through its spend row, a core sync that reads the spend first leaves the ring sync none", async () => {
     const fixture = await anonymousRing();
     const sender = anonymousSender();

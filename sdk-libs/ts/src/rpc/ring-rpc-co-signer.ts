@@ -1,7 +1,7 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   getBase58Encoder,
-  getBase64Decoder,
+  getBase64EncodedWireTransaction,
   type SignatureBytes,
   type TransactionPartialSigner,
 } from "@solana/kit";
@@ -14,7 +14,9 @@ import { RingRpcMethod, type ApprovedTransfer } from "../protocol/ring-rpc/ring-
 import type { RingRpc } from "./ring-rpc.js";
 
 const base58Encoder = getBase58Encoder();
-const base64Decoder = getBase64Decoder();
+
+/** Kit asks partial signers at once, a submission asks these after every other signer. */
+const SIGNS_LAST = new WeakSet<TransactionPartialSigner>();
 
 export interface RingRpcCoSignerInput {
   readonly rpc: Pick<RingRpc, "coSignTransaction">;
@@ -25,27 +27,37 @@ export interface RingRpcCoSignerInput {
   readonly approvedTransfer?: ApprovedTransfer;
 }
 
-/** Ring RPC as a co-signer of a transaction the wallet sends, refused unless `signer` signed the message. */
+/** Ring RPC as the last signer of a transaction the wallet sends, refused unless `signer` signed the message. */
 export function ringRpcCoSigner(input: RingRpcCoSignerInput): TransactionPartialSigner {
   const { rpc, ring, signer } = input;
   const publicKey = addressBytes(signer, "signer");
   const approvedTransfer =
     input.approvedTransfer === undefined ? {} : { approvedTransfer: input.approvedTransfer };
-  return Object.freeze({
+  const coSigner: TransactionPartialSigner = Object.freeze({
     address: signer,
     signTransactions: (transactions, config) =>
       Promise.all(
         transactions.map(async (transaction) => {
-          const message = new Uint8Array(transaction.messageBytes);
+          // Ring RPC simulates and reserves only for a transaction every other signer signed.
+          if (
+            Object.entries(transaction.signatures).some(
+              ([address, signature]) => address !== signer && signature === null,
+            )
+          )
+            throw refused("a required signature is missing");
           const answer = await rpc.coSignTransaction(
             {
               ring,
-              message: base64Decoder.decode(message) as indexerTypes.Base64String,
+              transaction: getBase64EncodedWireTransaction({
+                ...transaction,
+                signatures: { ...transaction.signatures, [signer]: null },
+              }) as string as indexerTypes.Base64String,
               ...approvedTransfer,
             },
             config?.abortSignal === undefined ? undefined : { signal: config.abortSignal },
           );
           if (answer.signer !== signer) throw refused("signer is not the expected co-signer");
+          const message = new Uint8Array(transaction.messageBytes);
           const signature = new Uint8Array(base58Encoder.encode(answer.signature));
           if (
             signature.length !== 64 ||
@@ -56,6 +68,13 @@ export function ringRpcCoSigner(input: RingRpcCoSignerInput): TransactionPartial
         }),
       ),
   });
+  SIGNS_LAST.add(coSigner);
+  return coSigner;
+}
+
+/** @internal */
+export function signsLast(signer: TransactionPartialSigner): boolean {
+  return SIGNS_LAST.has(signer);
 }
 
 function refused(reason: string): RingError {

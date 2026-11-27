@@ -68,6 +68,7 @@ import {
   expectedDelegate,
   expectedFunder,
   expectedPublicOwner,
+  mismatch,
   openingHash,
   ZERO_ADDRESS,
   type ExpectedRelayMessage,
@@ -210,8 +211,14 @@ function pinnedAllowed({ request, cases }: Vector<DelegateRequest>): AllowedNull
   );
   return {
     checkSources: () => undefined,
-    countsSpends: (spent: number, published: Iterable<Bytes32>) =>
-      [...published].filter((nullifier) => honest.has(encodeBase58(nullifier))).length === spent,
+    // The vector holds no amounts, every change of a counted spend passes.
+    checkSpends: (spent: number, published: Iterable<Bytes32>) => {
+      if (
+        [...published].filter((nullifier) => honest.has(encodeBase58(nullifier))).length !== spent
+      )
+        throw mismatch("SpendsUnrequestedNote");
+      return { debit: () => undefined, checkChange: () => undefined };
+    },
   } as unknown as AllowedNullifiers;
 }
 
@@ -544,7 +551,9 @@ describe("relay message check", () => {
         config: vectorRingPolicy(delegates),
         allowed: {
           checkSources: () => undefined,
-          countsSpends: () => false,
+          checkSpends: () => {
+            throw mismatch("SpendsUnrequestedNote");
+          },
         } as unknown as AllowedNullifiers,
         outputTreeId: 0,
       });
@@ -1084,6 +1093,7 @@ describe("relay message check", () => {
           ring: RING,
           feePayer: PAYER,
           signer: SIGNER,
+          slots: funderFrame.outputs.map(({ hash, ownerTag }) => ({ hash, tag: ownerTag })),
           legs: [{ direction: "deposit", mint: null, amount: 5n, accounts: [key(30), SIGNER] }],
           setup: [setup],
         },

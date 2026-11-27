@@ -16,10 +16,19 @@ const base58 = getBase58Decoder();
 const secretKey = new Uint8Array(32).fill(8);
 const signer = base58.decode(ed25519.getPublicKey(secretKey)) as Address;
 const ring = base58.decode(new Uint8Array(32).fill(7)) as Address;
-const messageBytes = Uint8Array.of(0x81, 1, 2, 3, 4);
+const payer = base58.decode(new Uint8Array(32).fill(6)) as Address;
+/** A v1 message names its signer count in its second byte, the fee payer and the co-signer. */
+const messageBytes = Uint8Array.of(0x81, 2, 2, 3, 4);
+const payerSignature = new Uint8Array(64).fill(5);
 
 type Transaction = Parameters<TransactionPartialSigner["signTransactions"]>[0][number];
-const transaction = { messageBytes, signatures: { [signer]: null } } as unknown as Transaction;
+const transaction = {
+  messageBytes,
+  signatures: { [payer]: payerSignature, [signer]: null },
+} as unknown as Transaction;
+const wire = Buffer.from([...messageBytes, ...payerSignature, ...new Uint8Array(64)]).toString(
+  "base64",
+);
 
 function answering(
   answer: (message: Uint8Array) => CoSignTransactionResponse,
@@ -29,7 +38,8 @@ function answering(
   const rpc = {
     coSignTransaction: async (request: CoSignTransactionRequest) => {
       requests.push(request);
-      return answer(new Uint8Array(getBase64Encoder().encode(request.message)));
+      const sent = new Uint8Array(getBase64Encoder().encode(request.transaction));
+      return answer(sent.subarray(0, messageBytes.length));
     },
   };
   return {
@@ -48,7 +58,7 @@ function signedBy(key: Uint8Array, message: Uint8Array): Signature {
 }
 
 describe("ringRpcCoSigner", () => {
-  it("returns the service's signature over the message bytes", async () => {
+  it("sends the transaction with every other signature and returns the service's signature over the message bytes", async () => {
     const { requests, coSigner } = answering((message) => ({
       signer,
       signature: signedBy(secretKey, message),
@@ -56,7 +66,23 @@ describe("ringRpcCoSigner", () => {
     expect(coSigner.address).toBe(signer);
     const [signatures] = await coSigner.signTransactions([transaction]);
     expect(signatures?.[signer]).toEqual(ed25519.sign(messageBytes, secretKey));
-    expect(requests).toEqual([{ ring, message: "gQECAwQ=" }]);
+    expect(requests).toEqual([{ ring, transaction: wire }]);
+  });
+
+  it("refuses a transaction another required signer has not signed before any call", async () => {
+    const { requests, coSigner } = answering((message) => ({
+      signer,
+      signature: signedBy(secretKey, message),
+    }));
+    const unsigned = {
+      messageBytes,
+      signatures: { [payer]: null, [signer]: null },
+    } as unknown as Transaction;
+    await expect(coSigner.signTransactions([unsigned])).rejects.toMatchObject({
+      code: "RING_RPC",
+      details: { method: "coSignTransaction", reason: "a required signature is missing" },
+    });
+    expect(requests).toEqual([]);
   });
 
   it("names the transfer a program calls beside the message", async () => {
@@ -69,7 +95,7 @@ describe("ringRpcCoSigner", () => {
       approvedTransfer,
     );
     await coSigner.signTransactions([transaction]);
-    expect(requests).toEqual([{ ring, message: "gQECAwQ=", approvedTransfer }]);
+    expect(requests).toEqual([{ ring, transaction: wire, approvedTransfer }]);
   });
 
   it("refuses a signature from another signer", async () => {
