@@ -30,7 +30,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use ring_service_core::kms::KmsArgs;
+use ring_service_core::{database::is_memory_url, kms::KmsArgs};
 use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection};
 use sea_orm_migration::MigratorTrait;
 use solana_address::Address;
@@ -111,6 +111,9 @@ pub struct Args {
 }
 
 pub async fn run(args: Args) -> Result<()> {
+    if is_memory_url(&args.db_url) {
+        bail!("the database URL names an in-memory SQLite database");
+    }
     let db = Arc::new(connect(&args.db_url, args.max_db_connections).await?);
     Migrator::up(db.as_ref(), None)
         .await

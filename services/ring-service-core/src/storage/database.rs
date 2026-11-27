@@ -43,7 +43,7 @@ pub enum ServiceStore {
 impl Store {
     /// `url` is a `postgres://` or `sqlite://` URL.
     pub async fn open(url: &str, max_connections: u32) -> Result<Self, ServiceError> {
-        let db = if url.starts_with("sqlite:") && !url.contains(":memory:") {
+        let db = if url.starts_with("sqlite:") && !is_memory_url(url) {
             let options = url
                 .parse::<SqliteConnectOptions>()
                 .map_err(|error| DbErr::Conn(RuntimeErr::SqlxError(error)))?
@@ -133,6 +133,11 @@ impl ServiceStore {
             Self::Internal(_) => None,
         }
     }
+}
+
+/// SQLite keeps a memory database only while a pool connection holds it.
+pub fn is_memory_url(url: &str) -> bool {
+    url.starts_with("sqlite:") && (url.contains(":memory:") || url.contains("mode=memory"))
 }
 
 #[cfg(any(test, feature = "test-fixtures"))]

@@ -23,6 +23,7 @@ use crate::{client_rate::ClientLimitArgs, server::BindPolicy};
 use ring_audit::wallet_snapshots::WalletSnapshotLimits;
 use ring_cosigner::{cosign::ApproveClass, cosign_limits::ExitCap};
 use ring_service_core::{
+    database::is_memory_url,
     keys::KeySource,
     keys::{GrantRowsSecret, RootSecret},
     kms::{KmsArgs, MissingRegion},
@@ -236,12 +237,16 @@ pub enum CustodyConfigError {
     AuditorRing,
     #[error("local KMS requires a loopback bind address and Solana RPC URL")]
     RemoteCluster,
+    #[error("the store URL names an in-memory SQLite database")]
+    MemoryStore,
     #[error("the store and its storage authority must be configured together")]
     StorageAuthority,
     #[error("configure a prover for a store or an enrollment applier")]
     Prover,
     #[error("the co-signer and fee payer require a store")]
     SigningStore,
+    #[error("the co-signer requires a fee payer")]
+    CoSignerFeePayer,
     #[error("approval classes require a co-signer")]
     Approval,
     #[error("exit caps require a co-signer")]
@@ -406,6 +411,9 @@ impl ServeArgs {
     }
 
     fn validate(&self, manifest: &RpcCustody) -> Result<(), CustodyConfigError> {
+        if self.store_url.as_deref().is_some_and(is_memory_url) {
+            return Err(CustodyConfigError::MemoryStore);
+        }
         let store = self.store_url.is_some();
         let applier = manifest.enrollment_applier.is_some();
         if store != manifest.storage_authority.is_some() {
@@ -416,6 +424,10 @@ impl ServeArgs {
         }
         if !store && (manifest.co_signer.is_some() || manifest.fee_payer.is_some()) {
             return Err(CustodyConfigError::SigningStore);
+        }
+        // Only the relay serves `coSignTransaction`.
+        if manifest.co_signer.is_some() && manifest.fee_payer.is_none() {
+            return Err(CustodyConfigError::CoSignerFeePayer);
         }
         if !self.co_signer_approve.is_empty() && manifest.co_signer.is_none() {
             return Err(CustodyConfigError::Approval);
@@ -478,8 +490,9 @@ mod tests {
     use solana_signer::Signer;
 
     use super::*;
+    use ring_relay::relay_services::RelayServicesInit;
     use ring_service_core::{
-        database::{ServiceStore, Store},
+        database::{fixture::StoreDirectory, ServiceStore, Store},
         upstream::{ChainSource, Upstreams},
     };
 
@@ -494,7 +507,7 @@ mod tests {
     const LOCAL_KMS: [&str; 2] = ["--localnet-kms", "127.0.0.1:4566"];
     const STORE: [&str; 4] = [
         "--store-url",
-        "sqlite::memory:",
+        "sqlite://ring-rpc.sqlite",
         "--prover-url",
         UNREACHABLE,
     ];
@@ -562,6 +575,28 @@ mod tests {
         let stored = |flags: &[&'static str]| [&STORE[..], flags].concat();
         let cases: Vec<(&str, Vec<&str>, String, CustodyConfigError)> = vec![
             (
+                "an in-memory store URL",
+                vec![
+                    "--store-url",
+                    "sqlite::memory:",
+                    "--prover-url",
+                    UNREACHABLE,
+                ],
+                custody(&[("storage_authority", 2)]),
+                MemoryStore,
+            ),
+            (
+                "a store URL in memory mode",
+                vec![
+                    "--store-url",
+                    "sqlite://ring-rpc.sqlite?mode=memory",
+                    "--prover-url",
+                    UNREACHABLE,
+                ],
+                custody(&[("storage_authority", 2)]),
+                MemoryStore,
+            ),
+            (
                 "a store without a storage authority",
                 stored(&[]),
                 custody(&[]),
@@ -598,6 +633,12 @@ mod tests {
                 SigningStore,
             ),
             (
+                "a co-signer without a fee payer",
+                stored(&[]),
+                custody(&[("storage_authority", 2), ("co_signer", 3)]),
+                CoSignerFeePayer,
+            ),
+            (
                 "approval classes without a co-signer",
                 vec!["--co-signer-approve", "transfers"],
                 custody(&[]),
@@ -612,7 +653,7 @@ mod tests {
             (
                 "an exit cap naming its mint twice",
                 [&STORE[..], &["--co-signer-exit-cap", &twice]].concat(),
-                custody(&[("storage_authority", 2), ("co_signer", 3)]),
+                custody(&[("storage_authority", 2), ("co_signer", 3), ("fee_payer", 4)]),
                 RepeatedExitCap,
             ),
             (
@@ -671,7 +712,7 @@ mod tests {
             (
                 "two roles pinning one address",
                 stored(&[]),
-                custody(&[("storage_authority", 2), ("co_signer", 2)]),
+                custody(&[("storage_authority", 2), ("co_signer", 2), ("fee_payer", 4)]),
                 SharedAddress,
             ),
             (
@@ -904,9 +945,9 @@ mod tests {
 
     #[tokio::test]
     async fn each_role_signs_with_the_identity_the_hub_was_given() {
-        let [service, storage, co_signer] =
-            [1, 2, 3].map(|seed| Keypair::new_from_array([seed; 32]));
-        let addresses = [&service, &storage, &co_signer].map(Signer::pubkey);
+        let [service, storage, co_signer, fee_payer] =
+            [1, 2, 3, 5].map(|seed| Keypair::new_from_array([seed; 32]));
+        let addresses = [&service, &storage, &co_signer, &fee_payer].map(Signer::pubkey);
         let upstreams = Upstreams {
             indexer_url: UNREACHABLE,
             rpc_url: UNREACHABLE,
@@ -917,12 +958,21 @@ mod tests {
             genesis_hash: [1; 32],
             service: Arc::new(service),
         };
+        let directory = StoreDirectory::new("role-identities");
+        let store = Store::open(&directory.url(), 1).await.expect("store");
+        let relay = RelayServicesInit {
+            fee_payer: Arc::new(fee_payer),
+            store: store.clone(),
+            upstreams,
+            prover_url: UNREACHABLE,
+        }
+        .build()
+        .expect("relay services");
         let hub = Hub::builder(ChainSource::connect(upstreams).expect("source"), identity)
-            .with_store(ServiceStore::Durable(
-                Store::open("sqlite::memory:", 1).await.expect("store"),
-            ))
+            .with_store(ServiceStore::Durable(store))
             .with_storage_chain(Arc::new(chain), Arc::new(storage))
             .with_co_signer(Arc::new(co_signer))
+            .with_relay(relay)
             .derived(RootSecret::from_bytes([4; 32]).expect("root"))
             .await
             .expect("hub");
@@ -932,6 +982,7 @@ mod tests {
                 Some(hub.service_pubkey()),
                 Some(hub.record_writer().expect("writer").authority()),
                 hub.co_signer().signer(),
+                hub.relay().map(|relay| relay.fee_payer()),
             ],
             addresses.map(Some)
         );

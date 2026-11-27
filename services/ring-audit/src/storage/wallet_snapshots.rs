@@ -435,7 +435,8 @@ struct SnapshotAdmission {
 }
 
 impl WalletSnapshotCleanup<'_> {
-    pub(crate) async fn run(self) -> Result<usize, RingAuditError> {
+    /// True when the run removed a row.
+    pub(crate) async fn run(&self) -> Result<bool, RingAuditError> {
         let transaction = self.db.begin().await?;
         let row = sql::Query::new(
             "SELECT id FROM wallet_snapshots WHERE expires_at<=$1 ORDER BY expires_at,id LIMIT 1",
@@ -445,10 +446,10 @@ impl WalletSnapshotCleanup<'_> {
         .await?;
         let Some(row) = row else {
             transaction.commit().await?;
-            return Ok(0);
+            return Ok(false);
         };
         let id = row.try_get::<Vec<u8>>("", "id")?;
-        let deleted = sql::Query::new(
+        let notes = sql::Query::new(
             "DELETE FROM wallet_snapshot_notes WHERE snapshot_id=$1 AND note_tag IN \
              (SELECT note_tag FROM wallet_snapshot_notes WHERE snapshot_id=$1 ORDER BY \
              note_tag LIMIT $2)",
@@ -456,7 +457,7 @@ impl WalletSnapshotCleanup<'_> {
         )
         .execute(&transaction)
         .await?;
-        sql::Query::new(
+        let snapshots = sql::Query::new(
             "DELETE FROM wallet_snapshots WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM \
              wallet_snapshot_notes WHERE snapshot_id=$1)",
             vec![id.into()],
@@ -464,7 +465,6 @@ impl WalletSnapshotCleanup<'_> {
         .execute(&transaction)
         .await?;
         transaction.commit().await?;
-        usize::try_from(deleted)
-            .map_err(|_| RingAuditError::Service(ServiceError::StateUnavailable))
+        Ok(notes > 0 || snapshots > 0)
     }
 }

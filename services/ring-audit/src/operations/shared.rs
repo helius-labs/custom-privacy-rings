@@ -209,12 +209,11 @@ impl<S> Shared<S> {
     }
 
     pub async fn cleanup_wallet_snapshots(&self) -> Result<(), RingAuditError> {
-        WalletSnapshotCleanup {
+        let cleanup = WalletSnapshotCleanup {
             db: self.database.store().connection(),
             now: self.clock.now()?,
-        }
-        .run()
-        .await?;
+        };
+        while cleanup.run().await? {}
         Ok(())
     }
 }
@@ -316,17 +315,15 @@ mod tests {
 
     use super::*;
     use crate::{error::ServiceError, utxos::WalletStatusQuery};
+    use ring_service_core::sql;
 
-    #[tokio::test]
-    async fn a_ring_whose_seal_does_not_derive_answers_state_unavailable() {
-        let served = Address::new_from_array([8; 32]);
-        let other = Address::new_from_array([9; 32]);
-        let shared = SharedInit {
+    async fn shared() -> Shared<()> {
+        SharedInit {
             source: (),
             genesis_hash: [1; 32],
             service: Address::default(),
             keys: KeySource::Local {
-                ring: served,
+                ring: Address::new_from_array([8; 32]),
                 auditor: X25519Keypair::from_bytes(&[0x41; 32]),
             },
             clock: Clock::Fixed(1_000),
@@ -338,7 +335,13 @@ mod tests {
             grant_rows: None,
         }
         .build()
-        .expect("shared");
+        .expect("shared")
+    }
+
+    #[tokio::test]
+    async fn a_ring_whose_seal_does_not_derive_answers_state_unavailable() {
+        let other = Address::new_from_array([9; 32]);
+        let shared = shared().await;
         let owner = Address::new_from_array([7; 32]);
 
         let refusal = shared
@@ -357,5 +360,51 @@ mod tests {
             refusal,
             Err(RingAuditError::Service(ServiceError::StateUnavailable))
         ));
+    }
+
+    #[tokio::test]
+    async fn one_cleanup_removes_every_released_and_expired_snapshot() {
+        let shared = shared().await;
+        let db = shared.database.store().connection();
+        for (seed, expires_at) in [(1_u8, 0_u64), (2, 999), (3, 1_000), (4, 1_001)] {
+            sql::Query::new(
+                "INSERT INTO wallet_snapshots(id,ring,scope_tag,expires_at,sealed) \
+                 VALUES($1,$2,$3,$4,$5)",
+                vec![
+                    sql::bytes(&[seed; 32]),
+                    sql::bytes(&[8; 32]),
+                    sql::bytes(&[seed; 32]),
+                    sql::integer(expires_at).expect("expiry"),
+                    sql::bytes(&[]),
+                ],
+            )
+            .execute(db)
+            .await
+            .expect("snapshot");
+            for note in [1_u8, 2] {
+                sql::Query::new(
+                    "INSERT INTO wallet_snapshot_notes(snapshot_id,note_tag,sealed) \
+                     VALUES($1,$2,$3)",
+                    vec![
+                        sql::bytes(&[seed; 32]),
+                        sql::bytes(&[note; 32]),
+                        sql::bytes(&[]),
+                    ],
+                )
+                .execute(db)
+                .await
+                .expect("note");
+            }
+        }
+
+        shared.cleanup_wallet_snapshots().await.expect("cleanup");
+        let kept: Vec<Vec<u8>> = sql::Query::new("SELECT id FROM wallet_snapshots", Vec::new())
+            .all(db)
+            .await
+            .expect("snapshots")
+            .iter()
+            .map(|row| row.try_get("", "id").expect("id"))
+            .collect();
+        assert_eq!(kept, [vec![4; 32]]);
     }
 }

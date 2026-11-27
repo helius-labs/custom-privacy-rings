@@ -226,7 +226,7 @@ fn the_announcement_signs_with_a_pinned_kms_key_alone() {
         let base = [
             "ring-indexer",
             "--db-url",
-            "sqlite::memory:",
+            "sqlite://ring-indexer.db",
             "--photon-url",
             "http://127.0.0.1:8784",
             "--photon-registry-url",

@@ -1842,14 +1842,16 @@ async fn wallet_snapshot_cleanup_keeps_capacity_until_all_rows_are_removed() {
             book.wallet_status(read).await,
             Err(RingAuditError::WalletSnapshotCapacity)
         ));
-        let remaining = crate::wallet_snapshots::WalletSnapshotCleanup {
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM wallet_snapshot_notes").await,
+            1
+        );
+        let cleanup = crate::wallet_snapshots::WalletSnapshotCleanup {
             db: store.connection(),
             now: NOW,
-        }
-        .run()
-        .await
-        .expect("cleanup");
-        assert_eq!(remaining, 1);
+        };
+        assert!(cleanup.run().await.expect("cleanup"));
+        assert!(!cleanup.run().await.expect("nothing left"));
         book.wallet_status(read).await.expect("capacity reclaimed");
     }
 }
