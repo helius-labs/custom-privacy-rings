@@ -5437,11 +5437,10 @@ dependencies = [
  "solana-account-decoder-client-types",
  "solana-address 2.7.0",
  "solana-clock 3.2.1",
- "solana-keypair",
+ "solana-hash",
  "solana-rpc-client",
  "solana-rpc-client-api",
  "solana-signature",
- "solana-signer",
  "solana-transaction",
  "solana-transaction-status-client-types",
  "spr-client",
@@ -5454,11 +5453,11 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "tracing-subscriber",
+ "zolana-operator-custody",
  "zolana-ring-client",
  "zolana-ring-indexer",
  "zolana-ring-member-registry",
  "zolana-ring-policy",
- "zolana-secret-file",
 ]
 
 [[package]]
@@ -5517,6 +5516,7 @@ dependencies = [
  "base64 0.22.1",
  "bs58",
  "bytemuck",
+ "clap",
  "custom-ring-interface",
  "hex",
  "hkdf",

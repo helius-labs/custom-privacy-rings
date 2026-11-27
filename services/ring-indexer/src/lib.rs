@@ -25,18 +25,17 @@ mod tracking_registry;
 
 use std::{
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
     sync::Arc,
 };
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use ring_service_core::kms::KmsArgs;
 use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection};
 use sea_orm_migration::MigratorTrait;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
+use solana_address::Address;
 use spr_rpc_http::{announce::Announcer, forward::UpstreamUrl};
-use zolana_secret_file::{read_key32, Access};
+use zolana_operator_custody::{KeyArn, SignerRef};
 
 pub use error::RingApiError;
 pub use indexer::{Readiness, StartSlot};
@@ -63,16 +62,23 @@ pub struct Args {
     pub photon_url: UpstreamUrl,
 
     /// Photon's private registry, set to have Photon forward the ring methods here.
-    #[arg(long, requires_all = ["public_url", "service_key_file"])]
+    #[arg(long, requires_all = ["public_url", "service_key_arn", "service_address"])]
     pub photon_registry_url: Option<UpstreamUrl>,
 
     /// The indexer URL Photon connects to.
     #[arg(long, requires = "photon_registry_url")]
     pub public_url: Option<UpstreamUrl>,
 
-    /// Lowercase hex Ed25519 seed, the Photon operator approves its public key.
+    /// The KMS key that signs the announcement.
     #[arg(long, requires = "photon_registry_url")]
-    pub service_key_file: Option<PathBuf>,
+    pub service_key_arn: Option<KeyArn>,
+
+    /// The address the key must hold, the Photon operator approves it.
+    #[arg(long, requires = "photon_registry_url")]
+    pub service_address: Option<Address>,
+
+    #[command(flatten)]
+    pub kms: KmsArgs,
 
     #[arg(long, env = "RING_INDEXER_BIND", default_value = "127.0.0.1")]
     pub bind: IpAddr,
@@ -124,7 +130,7 @@ pub async fn run(args: Args) -> Result<()> {
     let indexing = indexer.spawn();
     let (address, server) = Server {
         db,
-        rpc,
+        rpc: rpc.clone(),
         photon: args.photon_url,
         readiness,
         max_connections: args.max_connections,
@@ -132,19 +138,29 @@ pub async fn run(args: Args) -> Result<()> {
     .start(SocketAddr::new(args.bind, args.port))
     .await?;
     log::info!("ring indexer listens on {address}");
-    if let (Some(registry), Some(url), Some(key_file)) = (
+    if let (Some(registry), Some(url), Some(key_arn), Some(service_address)) = (
         args.photon_registry_url,
         args.public_url,
-        &args.service_key_file,
+        args.service_key_arn,
+        args.service_address,
     ) {
-        let service = Keypair::new_from_array(*read_key32(key_file, Access::OwnerOnly)?);
+        let genesis = rpc.genesis_hash().await?;
+        let kms = args.kms.endpoint()?.connect(&genesis).await?;
+        let pin = SignerRef {
+            key_arn,
+            address: service_address,
+        };
+        let service = kms.signer(&pin).await?;
         Announcer {
             registry,
             url,
             methods: RING_METHODS.map(str::to_owned).into(),
-            pubkey: service.pubkey(),
+            pubkey: service.address(),
         }
-        .spawn(move |message| service.sign_message(message));
+        .spawn_with(move |message| {
+            let service = service.clone();
+            async move { service.sign(&message).await }
+        });
     }
     tokio::select! {
         () = server.stopped() => bail!("the ring indexer server stopped"),

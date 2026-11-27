@@ -210,6 +210,55 @@ fn start_slots_parse_a_slot_or_latest() {
     assert!("soon".parse::<StartSlot>().is_err());
 }
 
+#[test]
+fn the_announcement_signs_with_a_pinned_kms_key_alone() {
+    use clap::{error::ErrorKind, Parser};
+    use zolana_operator_custody::{KeyArn, KmsEndpoint};
+
+    const KEY_ARN: &str =
+        "arn:aws:kms:us-east-1:123456789012:key/1a2b3c4d-0000-4000-8000-000000000000";
+    let service = Address::new_from_array([7; 32]);
+    let service_text = service.to_string();
+    let parse = |flags: &[&str]| {
+        let base = [
+            "ring-indexer",
+            "--db-url",
+            "sqlite::memory:",
+            "--photon-url",
+            "http://127.0.0.1:8784",
+            "--photon-registry-url",
+            "http://127.0.0.1:8790",
+            "--public-url",
+            "http://127.0.0.1:8786",
+        ];
+        crate::Args::try_parse_from(base.iter().chain(flags))
+    };
+
+    let seed = parse(&["--service-key-file", "service.seed"]).unwrap_err();
+    assert_eq!(seed.kind(), ErrorKind::UnknownArgument);
+    let unpinned = parse(&["--service-key-arn", KEY_ARN]).unwrap_err();
+    assert_eq!(unpinned.kind(), ErrorKind::MissingRequiredArgument);
+
+    let pinned = parse(&[
+        "--service-key-arn",
+        KEY_ARN,
+        "--service-address",
+        &service_text,
+        "--localnet-kms",
+        "127.0.0.1:4566",
+    ])
+    .unwrap();
+    assert_eq!(
+        pinned.service_key_arn,
+        Some(KEY_ARN.parse::<KeyArn>().unwrap())
+    );
+    assert_eq!(pinned.service_address, Some(service));
+    assert_eq!(
+        pinned.kms.endpoint(),
+        Ok(KmsEndpoint::Localnet("127.0.0.1:4566".parse().unwrap()))
+    );
+}
+
 #[tokio::test]
 async fn storage_shaped_instructions_of_other_programs_cost_no_queries() {
     let mut db = database().await;

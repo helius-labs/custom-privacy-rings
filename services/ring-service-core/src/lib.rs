@@ -14,6 +14,8 @@ mod finalized_history;
 pub mod keyed_tasks;
 #[path = "security/keys.rs"]
 pub mod keys;
+#[path = "config/kms.rs"]
+pub mod kms;
 #[path = "rpc/landing.rs"]
 pub mod landing;
 #[path = "config/limits.rs"]
