@@ -19,6 +19,7 @@ import {
 } from "../membership/tracking.js";
 import { MAX_RING_MEMBER_BATCH } from "./indexer-codec.js";
 import { schemaWire } from "../wire-primitives.js";
+import { defined } from "../defined.js";
 
 const { array, context, object, wireInteger } = indexerCodec;
 const { u64 } = schemaWire;
@@ -135,7 +136,7 @@ function opening(value: unknown, path: string): ServedTrackingOpening {
   const proofPath = quadPath(row["path"], `${path}.path`);
   return Object.freeze(
     present
-      ? { kind: "present", record, path: proofPath, ...(seal === undefined ? {} : { seal }) }
+      ? { kind: "present", record, path: proofPath, ...defined({ seal }) }
       : { kind: "absent", low: record, path: proofPath },
   );
 }

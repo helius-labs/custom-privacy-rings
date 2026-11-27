@@ -99,13 +99,12 @@ impl<K: ShieldedKeys + ?Sized> FittedMerge<'_, K> {
                 Err(refusal) => return Err(refusal),
             }
         }
-        let merge = match count == self.inputs.len() {
-            true => whole,
-            false => {
-                let mut inputs = self.inputs;
-                inputs.truncate(count);
-                CustomRingMerge::new(self.ring, inputs, None)?
-            }
+        let merge = if count == self.inputs.len() {
+            whole
+        } else {
+            let mut inputs = self.inputs;
+            inputs.truncate(count);
+            CustomRingMerge::new(self.ring, inputs, None)?
         }
         .with_output_tree_id(self.output_tree_id);
         let prepared = merge.encrypt(self.keys)?;
@@ -228,10 +227,10 @@ impl PreparedCustomRingMerge {
 
     fn check_width(&self) -> Result<(), RingError> {
         let width = self.inner.input_utxos.len();
-        match MERGE_SUPPORTED_INPUT_COUNTS.contains(&width) {
-            true => Ok(()),
-            false => Err(RingError::MergeTooWide { width }),
-        }
+        MERGE_SUPPORTED_INPUT_COUNTS
+            .contains(&width)
+            .then_some(())
+            .ok_or(RingError::MergeTooWide { width })
     }
 
     /// The instruction under zeroed proofs, the size of the proven one.

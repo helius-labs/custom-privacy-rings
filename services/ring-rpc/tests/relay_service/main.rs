@@ -1,14 +1,12 @@
 //! A wallet relays a sealed transfer, deposit or merge, Ring RPC proves, pays and sends it.
 
-#[path = "relay_service/attempts.rs"]
 mod attempts;
-#[path = "common/relay.rs"]
+#[path = "../common/relay.rs"]
 mod relay_fixture;
-#[path = "../../ring-relay/tests/common/store.rs"]
+#[path = "../../../ring-relay/tests/common/store.rs"]
 mod store_fixture;
-#[path = "relay_service/transitions.rs"]
 mod transitions;
-#[path = "common/wide_frame.rs"]
+#[path = "../common/wide_frame.rs"]
 mod wide_frame;
 
 use std::sync::{atomic::Ordering, Arc, LazyLock};
@@ -18,7 +16,7 @@ use jsonrpsee::RpcModule;
 use ring_relay::relay::{Relay, RelayError, RelayParts, ServedRings, ABANDONED_AFTER_SLOTS};
 use ring_relay::relay_reservations::RelayBudget;
 use ring_relay::RingRelayError;
-use ring_service_core::database::{Store, STORE_CONNECTIONS};
+use ring_service_core::database::{ServiceStore, Store, STORE_CONNECTIONS};
 use ring_service_core::landing::ChainOutcome;
 use ring_service_core::migration::Migrator;
 use ring_service_core::upstream::{
@@ -194,10 +192,10 @@ struct OneRing(Address);
 #[async_trait]
 impl ServedRings for OneRing {
     async fn check(&self, ring: Address) -> Result<(), RingRelayError> {
-        match ring == self.0 {
-            true => Ok(()),
-            false => Err(RelayError::RingNotServed.into()),
+        if ring != self.0 {
+            return Err(RelayError::RingNotServed.into());
         }
+        Ok(())
     }
 
     async fn delegate(&self, _ring: Address) -> Result<Option<Address>, RingRelayError> {
@@ -246,7 +244,7 @@ impl Fixture {
             service: Arc::new(service_key()),
         };
         let hub = Hub::builder(source, identity)
-            .with_store(store.clone())
+            .with_store(ServiceStore::Durable(store.clone()))
             .with_relay(RelayParts {
                 store: store.clone(),
                 prover: prover.clone(),
@@ -255,6 +253,7 @@ impl Fixture {
             })
             .with_relay_budget(budget)
             .local(RING, auditor)
+            .await
             .expect("hub");
         let hub = Arc::new(hub);
         Self {
@@ -805,17 +804,15 @@ async fn a_failed_relay_returns_what_the_chain_did_not_take() {
         assert_eq!(fixture.outstanding().await, FUNDED_LAMPORTS as i64);
         assert_eq!(fixture.committed().await, FUNDED_LAMPORTS as i64);
 
-        match reverted {
-            true => {
-                *fixture.chain.outcome.lock().expect("outcome") =
-                    Some(Some(ChainOutcome::Failed {
-                        reason: "custom program error".to_owned(),
-                    }));
-            }
-            false => fixture
+        if reverted {
+            *fixture.chain.outcome.lock().expect("outcome") = Some(Some(ChainOutcome::Failed {
+                reason: "custom program error".to_owned(),
+            }));
+        } else {
+            fixture
                 .chain
                 .height
-                .store(LAST_VALID_BLOCK_HEIGHT + 1, Ordering::Relaxed),
+                .store(LAST_VALID_BLOCK_HEIGHT + 1, Ordering::Relaxed);
         }
         let status = fixture.status(step).await;
         assert!(matches!(status, RelayStatus::Failed { .. }), "{status:?}");

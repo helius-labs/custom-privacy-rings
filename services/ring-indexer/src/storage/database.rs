@@ -20,7 +20,11 @@ use zolana_ring_indexer::tree::{
     IndexedLeaf, IndexedRecord, MemberRecord, NodePosition, TrackingRecord,
 };
 
-use crate::{block::BlockMetadata, indexer::Quarantine};
+use ring_service_core::sql::{
+    bytes, integer, read_bytes, read_integer, statement, Query, KEYS_PER_STATEMENT,
+};
+
+use crate::block::BlockMetadata;
 
 mod tracking;
 
@@ -99,9 +103,9 @@ impl StoredLeaf for MemberRecord {
 
     fn from_row(row: &QueryResult) -> Result<Self> {
         Ok(Self {
-            member: field(row, "member")?,
-            next: field(row, "next_member")?,
-            lists: uint(row, "lists")?,
+            member: read_bytes(row, "member")?,
+            next: read_bytes(row, "next_member")?,
+            lists: read_integer(row, "lists")?,
             mint_policy: read_mint_policy(row)?.unwrap_or_default(),
         })
     }
@@ -110,7 +114,7 @@ impl StoredLeaf for MemberRecord {
         Ok(vec![
             bytes(&self.member),
             bytes(&self.next),
-            int(self.lists)?,
+            integer(self.lists)?,
             serde_json::to_string(&self.mint_policy)?.into(),
         ])
     }
@@ -123,12 +127,12 @@ impl StoredLeaf for TrackingRecord {
 
     fn from_row(row: &QueryResult) -> Result<Self> {
         Ok(Self {
-            member: field(row, "member")?,
-            next: field(row, "next_member")?,
-            nullifier_pk: field(row, "nullifier_pk")?,
-            ct_hash: field(row, "ct_hash")?,
-            list_tag: field(row, "list_tag")?,
-            viewing_hash: field(row, "viewing_hash")?,
+            member: read_bytes(row, "member")?,
+            next: read_bytes(row, "next_member")?,
+            nullifier_pk: read_bytes(row, "nullifier_pk")?,
+            ct_hash: read_bytes(row, "ct_hash")?,
+            list_tag: read_bytes(row, "list_tag")?,
+            viewing_hash: read_bytes(row, "viewing_hash")?,
         })
     }
 
@@ -268,13 +272,14 @@ pub(crate) async fn begin_read(
 
 pub(crate) async fn cursor<C: ConnectionTrait>(conn: &C) -> Result<Option<RingCursor>> {
     let sql = "SELECT state FROM ring_cursor WHERE id=1";
-    read_json(conn, sql, vec![]).await
+    read_json(conn, Query::new(sql, vec![])).await
 }
 
 pub(crate) async fn save_cursor<C: ConnectionTrait>(conn: &C, value: &RingCursor) -> Result<()> {
     let sql = "INSERT INTO ring_cursor(id,state) VALUES(1,$1) \
                ON CONFLICT(id) DO UPDATE SET state=excluded.state";
-    exec(conn, sql, vec![json(value)?]).await
+    Query::new(sql, vec![json(value)?]).execute(conn).await?;
+    Ok(())
 }
 
 pub(crate) async fn journal<C: ConnectionTrait>(
@@ -282,7 +287,7 @@ pub(crate) async fn journal<C: ConnectionTrait>(
     slot: u64,
 ) -> Result<Option<BlockJournal>> {
     let sql = "SELECT state FROM ring_blocks WHERE slot=$1";
-    read_json(conn, sql, vec![int(slot)?]).await
+    read_json(conn, Query::new(sql, vec![integer(slot)?])).await
 }
 
 pub(crate) async fn save_journal<C: ConnectionTrait>(
@@ -291,17 +296,21 @@ pub(crate) async fn save_journal<C: ConnectionTrait>(
 ) -> Result<()> {
     let sql = "INSERT INTO ring_blocks(slot,state) VALUES($1,$2) \
                ON CONFLICT(slot) DO UPDATE SET state=excluded.state";
-    exec(conn, sql, vec![int(journal.metadata.slot)?, json(journal)?]).await
+    Query::new(sql, vec![integer(journal.metadata.slot)?, json(journal)?])
+        .execute(conn)
+        .await?;
+    Ok(())
 }
 
 /// Blocks below `below` never roll back.
 pub(crate) async fn prune<C: ConnectionTrait>(conn: &C, below: u64) -> Result<()> {
-    exec(
-        conn,
+    Query::new(
         "DELETE FROM ring_blocks WHERE slot<$1",
-        vec![int(below)?],
+        vec![integer(below)?],
     )
-    .await
+    .execute(conn)
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn rollback(tx: &DatabaseTransaction, cursor: &mut RingCursor) -> Result<()> {
@@ -316,8 +325,10 @@ pub(crate) async fn rollback(tx: &DatabaseTransaction, cursor: &mut RingCursor) 
     for undo in journal.undo.tracking.iter().rev() {
         TrackingStore::new(tx, undo.registry).restore(undo).await?;
     }
-    let slot = vec![int(journal.metadata.slot)?];
-    exec(tx, "DELETE FROM ring_blocks WHERE slot=$1", slot).await?;
+    let slot = vec![integer(journal.metadata.slot)?];
+    Query::new("DELETE FROM ring_blocks WHERE slot=$1", slot)
+        .execute(tx)
+        .await?;
     cursor.tip = journal.previous_tip;
     cursor.scanned_slot = cursor.tip_slot();
     cursor.suspend(tx).await
@@ -350,7 +361,7 @@ impl<'c, C: ConnectionTrait, L: StoredLeaf> RegistryStore<'c, C, L> {
             L::COLUMNS,
             L::TABLE
         );
-        let values = vec![bytes(member), int(applied)?];
+        let values = vec![bytes(member), integer(applied)?];
         let row = self.query_one(&sql, values).await?;
         row.as_ref().map(stored_record).transpose()
     }
@@ -362,7 +373,7 @@ impl<'c, C: ConnectionTrait, L: StoredLeaf> RegistryStore<'c, C, L> {
             L::COLUMNS,
             L::TABLE
         );
-        let values = vec![bytes(member), int(applied)?];
+        let values = vec![bytes(member), integer(applied)?];
         let row = self.query_one(&sql, values).await?;
         stored_record(&row.context("member registry has no sentinel")?)
     }
@@ -380,14 +391,18 @@ impl<'c, C: ConnectionTrait, L: StoredLeaf> RegistryStore<'c, C, L> {
              FROM {table} AS m WHERE m.program=r.program AND m.leaf_index=r.leaf_index \
              AND m.applied<=$4) ORDER BY leaf_index"
         );
-        let values = vec![int(leaves.start)?, int(leaves.end)?, int(applied)?];
+        let values = vec![
+            integer(leaves.start)?,
+            integer(leaves.end)?,
+            integer(applied)?,
+        ];
         let rows = self.query_all(&sql, values).await?;
         rows.iter().map(stored_record).collect()
     }
 
     pub async fn save_records(&self, records: &[IndexedRecord<L>], applied: u64) -> Result<()> {
         for indexed in records {
-            let mut values = vec![int(indexed.index)?, int(applied)?];
+            let mut values = vec![integer(indexed.index)?, integer(applied)?];
             values.extend(indexed.record.values()?);
             let params = (1..=values.len() + 1)
                 .map(|param| format!("${param}"))
@@ -408,13 +423,11 @@ impl<'c, C: ConnectionTrait, L: StoredLeaf> RegistryStore<'c, C, L> {
         keys: &BTreeSet<NodePosition>,
         applied: u64,
     ) -> Result<BTreeMap<NodePosition, [u8; 32]>> {
-        const BATCH_LIMIT: usize = 256;
-
-        let applied = int(applied)?;
+        let applied = integer(applied)?;
         let mut keys = keys.iter();
         let mut nodes = BTreeMap::new();
         loop {
-            let batch: Vec<_> = keys.by_ref().take(BATCH_LIMIT).collect();
+            let batch: Vec<_> = keys.by_ref().take(KEYS_PER_STATEMENT).collect();
             if batch.is_empty() {
                 return Ok(nodes);
             }
@@ -424,8 +437,8 @@ impl<'c, C: ConnectionTrait, L: StoredLeaf> RegistryStore<'c, C, L> {
                     continue;
                 };
                 let at = NodePosition {
-                    level: usize::try_from(uint(&row, "level")?)?,
-                    position: uint(&row, "position")?,
+                    level: usize::try_from(read_integer(&row, "level")?)?,
+                    position: read_integer(&row, "position")?,
                 };
                 nodes.insert(
                     at,
@@ -445,9 +458,9 @@ impl<'c, C: ConnectionTrait, L: StoredLeaf> RegistryStore<'c, C, L> {
             let sql = "INSERT INTO ring_record_nodes(program,level,position,applied,hash) \
                        VALUES($1,$2,$3,$4,$5)";
             let values = vec![
-                int(u64::try_from(at.level)?)?,
-                int(at.position)?,
-                int(applied)?,
+                integer(u64::try_from(at.level)?)?,
+                integer(at.position)?,
+                integer(applied)?,
                 bytes(hash),
             ];
             self.exec(sql, values).await?;
@@ -459,8 +472,8 @@ impl<'c, C: ConnectionTrait, L: StoredLeaf> RegistryStore<'c, C, L> {
         let mut values = vec![applied];
         let mut requested = Vec::with_capacity(keys.len());
         for (index, at) in keys.iter().enumerate() {
-            values.push(int(u64::try_from(at.level)?)?);
-            values.push(int(at.position)?);
+            values.push(integer(u64::try_from(at.level)?)?);
+            values.push(integer(at.position)?);
             let level_param = index * 2 + 3;
             let position_param = level_param + 1;
             requested.push(format!(
@@ -535,13 +548,13 @@ impl<'c, C: ConnectionTrait, A: ProjectedAccount> ProjectedStore<'c, C, A> {
     pub async fn root(&self, revision: u64) -> Result<Option<StorageRoot>> {
         let sql = "SELECT root, revision, next_index FROM storage_roots \
                    WHERE registry=$1 AND revision=$2";
-        let row = self.tree.query_one(sql, vec![int(revision)?]).await?;
+        let row = self.tree.query_one(sql, vec![integer(revision)?]).await?;
         row.as_ref()
             .map(|row| {
                 Ok(StorageRoot {
-                    root: field(row, "root")?,
-                    revision: uint(row, "revision")?,
-                    next_index: uint(row, "next_index")?,
+                    root: read_bytes(row, "root")?,
+                    revision: read_integer(row, "revision")?,
+                    next_index: read_integer(row, "next_index")?,
                 })
             })
             .transpose()
@@ -551,9 +564,9 @@ impl<'c, C: ConnectionTrait, A: ProjectedAccount> ProjectedStore<'c, C, A> {
         let sql = "INSERT INTO storage_roots(registry,revision,root,next_index) \
                    VALUES($1,$2,$3,$4)";
         let values = vec![
-            int(root.revision)?,
+            integer(root.revision)?,
             bytes(&root.root),
-            int(root.next_index)?,
+            integer(root.next_index)?,
         ];
         self.tree.exec(sql, values).await
     }
@@ -571,7 +584,7 @@ impl<'c, C: ConnectionTrait, A: ProjectedAccount> ProjectedStore<'c, C, A> {
             }
             return Ok(());
         };
-        let revision = vec![int(StorageRoot::current(&*before.account).revision)?];
+        let revision = vec![integer(StorageRoot::current(&*before.account).revision)?];
         for sql in [
             format!("DELETE FROM {leaves} AND applied>$2"),
             "DELETE FROM ring_record_nodes WHERE program=$1 AND applied>$2".into(),
@@ -581,13 +594,8 @@ impl<'c, C: ConnectionTrait, A: ProjectedAccount> ProjectedStore<'c, C, A> {
         }
         self.save_state(before).await
     }
-}
 
-impl<C: ConnectionTrait, A: ProjectedAccount> Quarantine for ProjectedStore<'_, C, A> {
-    type State = RegistryState<A>;
-    type Undo = RegistryUndo<A>;
-
-    fn undo(&self, before: Option<RegistryState<A>>) -> RegistryUndo<A> {
+    pub(crate) fn undo(&self, before: Option<RegistryState<A>>) -> RegistryUndo<A> {
         RegistryUndo {
             registry: self.tree.program,
             before,
@@ -595,7 +603,7 @@ impl<C: ConnectionTrait, A: ProjectedAccount> Quarantine for ProjectedStore<'_, 
     }
 
     /// Stops the registry's projection, a rollback of the block resumes it.
-    async fn quarantine(
+    pub(crate) async fn quarantine(
         &self,
         before: RegistryState<A>,
         reason: String,
@@ -615,48 +623,20 @@ impl<C: ConnectionTrait, A: ProjectedAccount> Quarantine for ProjectedStore<'_, 
 
 fn stored_record<L: StoredLeaf>(row: &QueryResult) -> Result<IndexedRecord<L>> {
     Ok(IndexedRecord {
-        index: uint(row, "leaf_index")?,
+        index: read_integer(row, "leaf_index")?,
         record: L::from_row(row)?,
     })
-}
-
-fn field<const N: usize>(row: &QueryResult, column: &str) -> Result<[u8; N]> {
-    row.try_get::<Vec<u8>>("", column)?
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("{column} is not 32 bytes"))
-}
-
-fn uint(row: &QueryResult, column: &str) -> Result<u64> {
-    Ok(u64::try_from(row.try_get::<i64>("", column)?)?)
-}
-
-fn statement<C: ConnectionTrait>(conn: &C, sql: &str, values: Vec<Value>) -> Statement {
-    Statement::from_sql_and_values(conn.get_database_backend(), sql, values)
-}
-
-async fn exec<C: ConnectionTrait>(conn: &C, sql: &str, values: Vec<Value>) -> Result<()> {
-    conn.execute(statement(conn, sql, values)).await?;
-    Ok(())
-}
-
-fn bytes<const N: usize>(value: &[u8; N]) -> Value {
-    value.to_vec().into()
 }
 
 fn json<T: Serialize>(value: &T) -> Result<Value> {
     Ok(serde_json::to_string(value)?.into())
 }
 
-fn int(value: u64) -> Result<Value> {
-    Ok(i64::try_from(value)?.into())
-}
-
-async fn read_json<T: DeserializeOwned, C: ConnectionTrait>(
-    conn: &C,
-    sql: &str,
-    values: Vec<Value>,
+async fn read_json<T: DeserializeOwned>(
+    conn: &impl ConnectionTrait,
+    query: Query,
 ) -> Result<Option<T>> {
-    let row = conn.query_one(statement(conn, sql, values)).await?;
+    let row = query.one(conn).await?;
     row.as_ref().map(stored_state).transpose()
 }
 
@@ -778,7 +758,7 @@ mod tests {
             .await
             .unwrap();
         let mut query = store
-            .node_statement(&keys.iter().collect::<Vec<_>>(), int(7).unwrap())
+            .node_statement(&keys.iter().collect::<Vec<_>>(), integer(7).unwrap())
             .unwrap();
         query.sql.insert_str(0, "EXPLAIN QUERY PLAN ");
         let plan: Vec<String> = db
@@ -838,7 +818,9 @@ mod tests {
             .map(|position| NodePosition { level: 0, position })
             .collect();
         let plan_keys: Vec<_> = keys.iter().take(2).collect();
-        let mut query = store.node_statement(&plan_keys, int(31).unwrap()).unwrap();
+        let mut query = store
+            .node_statement(&plan_keys, integer(31).unwrap())
+            .unwrap();
         query.sql.insert_str(0, "EXPLAIN (COSTS OFF) ");
         let plan: Vec<String> = db
             .query_all(query)

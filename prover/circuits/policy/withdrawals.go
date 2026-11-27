@@ -8,8 +8,6 @@
 // The program builds the digest from u64 settlement amounts alone, so a leg amount at or past 2^64 opens no
 // digest the program accepts, a Poseidon collision aside.
 //
-// Read after policy/screen.go. Read before policy/rules.go.
-//
 // Properties:
 // 1. WithdrawalHash opens to WithdrawalCount legs, the program's policy_withdrawal_hash over them in order.
 // 2. A live leg holds a nonzero asset and a nonzero amount, a leg past the count is zero.

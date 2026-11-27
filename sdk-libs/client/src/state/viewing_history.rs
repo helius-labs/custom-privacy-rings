@@ -1,6 +1,6 @@
 //! The anonymous rail's wallet state, spec `ViewingKeyEntry` per retained viewing key.
 
-use std::{collections::BTreeMap, fmt, ops::Range};
+use std::{collections::BTreeMap, ops::Range};
 
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -56,14 +56,6 @@ pub struct AdvancedTag<T> {
 }
 
 impl StreamCounter {
-    pub fn next(&self) -> u64 {
-        self.next
-    }
-
-    pub fn scanned(&self) -> u64 {
-        self.scanned
-    }
-
     /// Every index taken and [`TAG_WINDOW`] past them, `zolana/docs/spec.md` First Time Sync Wallet.
     pub(crate) fn listed(&self) -> Range<u64> {
         0..self.next.saturating_add(TAG_WINDOW)
@@ -180,14 +172,10 @@ impl ViewingKeyEntry {
     }
 }
 
-impl fmt::Debug for ViewingKeyEntry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ViewingKeyEntry")
-            .field("created_at", &self.created_at)
-            .field("tx", &self.tx)
-            .finish_non_exhaustive()
-    }
-}
+zolana_ring_keys::redacted_debug!(ViewingKeyEntry {
+    shown: [created_at, tx],
+    hidden: [viewing_pubkey, request, ring_positions, tag_position],
+});
 
 impl ViewingHistory {
     /// A wallet whose one viewing key never paid or was paid.
@@ -354,13 +342,7 @@ impl ViewingHistory {
     }
 }
 
-impl fmt::Debug for ViewingHistory {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ViewingHistory")
-            .field("entries", &self.entries)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(ViewingHistory { shown: [entries] });
 
 /// The persisted form, keys in hex.
 #[derive(Serialize, Deserialize)]
@@ -407,21 +389,40 @@ impl TryFrom<CounterJson> for StreamCounter {
     type Error = AnonymousError;
 
     fn try_from(stored: CounterJson) -> Result<Self, AnonymousError> {
-        match stored.scanned <= stored.next {
-            true => Ok(Self {
-                next: stored.next,
-                scanned: stored.scanned,
-            }),
-            false => Err(invalid("a scan watermark passes its next index")),
+        if stored.scanned > stored.next {
+            return Err(invalid("a scan watermark passes its next index"));
         }
+        Ok(Self {
+            next: stored.next,
+            scanned: stored.scanned,
+        })
     }
 }
 
-impl ViewingHistory {
-    /// Stored only inside `AnonymousWallet`, its positions and watermarks cover the wallet's notes.
-    pub(crate) fn to_json_value(&self) -> serde_json::Value {
-        let history = HistoryJson {
-            viewing_history: self
+/// Stored only inside `AnonymousWallet`, its positions and watermarks cover the wallet's notes.
+pub(crate) mod stored {
+    use serde::{de::Error, Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::{HistoryJson, ViewingHistory};
+
+    pub(crate) fn serialize<S: Serializer>(
+        history: &ViewingHistory,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        HistoryJson::from(history).serialize(serializer)
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<ViewingHistory, D::Error> {
+        ViewingHistory::try_from(HistoryJson::deserialize(deserializer)?).map_err(D::Error::custom)
+    }
+}
+
+impl From<&ViewingHistory> for HistoryJson {
+    fn from(history: &ViewingHistory) -> Self {
+        Self {
+            viewing_history: history
                 .entries
                 .iter()
                 .map(|entry| EntryJson {
@@ -440,14 +441,15 @@ impl ViewingHistory {
                     tag_position: entry.tag_position,
                 })
                 .collect(),
-        };
-        serde_json::to_value(&history)
-            .expect("a struct of strings, integers and vectors serializes")
+        }
     }
+}
 
-    pub(crate) fn from_json_value(value: serde_json::Value) -> Result<Self, AnonymousError> {
-        let entries = HistoryJson::deserialize(&value)
-            .map_err(unparsed)?
+impl TryFrom<HistoryJson> for ViewingHistory {
+    type Error = AnonymousError;
+
+    fn try_from(stored: HistoryJson) -> Result<Self, AnonymousError> {
+        let entries = stored
             .viewing_history
             .into_iter()
             .map(entry_of)
@@ -506,16 +508,6 @@ fn invalid(reason: &str) -> AnonymousError {
     AnonymousError::ViewingHistory(reason.to_owned())
 }
 
-/// A serde message can quote the value it refused, the position alone names the fault.
-fn unparsed(error: serde_json::Error) -> AnonymousError {
-    AnonymousError::ViewingHistory(format!(
-        "{:?} at line {} column {}",
-        error.classify(),
-        error.line(),
-        error.column()
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -524,6 +516,17 @@ mod tests {
     use spr_keypair::{ShieldedKeypair, ViewingKey};
 
     use super::*;
+
+    const PASSES_NEXT: &str =
+        "viewing history does not parse because a scan watermark passes its next index";
+
+    fn to_stored(history: &ViewingHistory) -> serde_json::Value {
+        stored::serialize(history, serde_json::value::Serializer).unwrap()
+    }
+
+    fn refusal(document: serde_json::Value) -> String {
+        stored::deserialize(document).unwrap_err().to_string()
+    }
 
     #[test]
     fn each_selection_takes_the_next_sender_index() {
@@ -625,12 +628,9 @@ mod tests {
     #[test]
     fn a_stored_watermark_past_its_next_index_is_refused() {
         let history = ViewingHistory::new(ViewingKey::new().pubkey(), 0);
-        let mut stored = history.to_json_value();
-        stored["viewingHistory"][0]["tx"]["scanned"] = 1.into();
-        assert!(matches!(
-            ViewingHistory::from_json_value(stored),
-            Err(AnonymousError::ViewingHistory(_))
-        ));
+        let mut document = to_stored(&history);
+        document["viewingHistory"][0]["tx"]["scanned"] = 1.into();
+        assert_eq!(refusal(document), PASSES_NEXT);
     }
 
     #[test]
@@ -644,24 +644,61 @@ mod tests {
             next: 9,
             scanned: 7,
         };
-        let mut stored = history.to_json_value();
-        let entry = &stored["viewingHistory"][0];
+        let mut document = to_stored(&history);
+        let entry = &document["viewingHistory"][0];
         assert_eq!(entry["tx"], serde_json::json!({ "next": 5, "scanned": 3 }));
         assert_eq!(
             entry["request"],
             serde_json::json!({ "next": 9, "scanned": 7 })
         );
+        assert_eq!(stored::deserialize(document.clone()).unwrap(), history);
+        document["viewingHistory"][0]["request"]["scanned"] = 9.into();
+        assert!(stored::deserialize(document.clone()).is_ok());
+        document["viewingHistory"][0]["request"]["scanned"] = 10.into();
+        assert_eq!(refusal(document), PASSES_NEXT);
+    }
+
+    #[test]
+    fn a_stored_history_holds_at_least_one_key_each_once_and_oldest_first() {
+        let history = ViewingHistory::new(ViewingKey::new().pubkey(), 10)
+            .with_rotated_key(ViewingKey::new().pubkey(), 20)
+            .unwrap();
+        let document = to_stored(&history);
+        let out_of_order =
+            "viewing history does not parse because viewing keys repeat or are not oldest first";
+        let mut empty = document.clone();
+        empty["viewingHistory"] = serde_json::json!([]);
         assert_eq!(
-            ViewingHistory::from_json_value(stored.clone()).unwrap(),
-            history
+            refusal(empty),
+            "viewing history does not parse because holds no viewing key"
         );
-        stored["viewingHistory"][0]["request"]["scanned"] = 9.into();
-        assert!(ViewingHistory::from_json_value(stored.clone()).is_ok());
-        stored["viewingHistory"][0]["request"]["scanned"] = 10.into();
-        assert!(matches!(
-            ViewingHistory::from_json_value(stored),
-            Err(AnonymousError::ViewingHistory(_))
-        ));
+        let mut repeated = document.clone();
+        repeated["viewingHistory"][1]["viewingPubkey"] =
+            document["viewingHistory"][0]["viewingPubkey"].clone();
+        assert_eq!(refusal(repeated), out_of_order);
+        for created_at in [10, 5] {
+            let mut unordered = document.clone();
+            unordered["viewingHistory"][1]["createdAt"] = created_at.into();
+            assert_eq!(refusal(unordered), out_of_order);
+        }
+    }
+
+    #[test]
+    fn debug_prints_no_request_count_or_scan_position() {
+        let ring = Address::new_from_array([0x77; 32]);
+        let mut history = ViewingHistory::new(ViewingKey::new().pubkey(), 3)
+            .with_request_count(4_242_424_242)
+            .with_ring(ring, Some(6_464_646_464));
+        history.entries_mut()[0].set_tag_position(5_353_535_353);
+        let printed = format!("{history:?} {:?}", history.current());
+        for hidden in [
+            "4242424242".to_owned(),
+            "5353535353".to_owned(),
+            "6464646464".to_owned(),
+            ring.to_string(),
+        ] {
+            assert!(!printed.contains(&hidden), "{printed}");
+        }
     }
 
     #[test]

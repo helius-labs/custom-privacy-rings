@@ -7,7 +7,10 @@ use spr_indexer_api::{Base64String, Hash, SerializablePubkey, SerializableSignat
 use spr_keypair::{KeypairError, ShieldedAddress, ViewingKey};
 use zeroize::Zeroizing;
 
-use super::{base64, relay_id, Attestation, ReadTarget, RelayId, RequestBuildError, SignedRequest};
+use super::{
+    base64, relay_id, Attestation, ReadTarget, RelayId, RequestBuildError, RequestSignature,
+    SignedRequest,
+};
 
 const AUTHORITY_TRANSFER_DOMAIN: &str = "zolana/ring-rpc-authority-transfer";
 
@@ -194,17 +197,18 @@ impl AuthorityTransferRequest {
         delegate: &S,
         tx_viewing_key: &ViewingKey,
     ) -> Result<PrepareAuthorityTransferRequest, RequestBuildError> {
-        let (timestamp, message) = self.message()?;
-        let signature = delegate
-            .try_sign_message(&message)
-            .map_err(RequestBuildError::Signature)?;
+        let RequestSignature {
+            timestamp,
+            nonce,
+            signature,
+        } = self.signed_by(delegate)?;
         Ok(PrepareAuthorityTransferRequest {
             ring: self.attestation.target.ring.into(),
             delegate: self.attestation.delegate.into(),
             transfer: self.attestation.transfer,
             tx_viewing_key: TxViewingSecret::from(tx_viewing_key),
             timestamp,
-            nonce: self.nonce.to_vec().into(),
+            nonce,
             signature: signature.into(),
         })
     }

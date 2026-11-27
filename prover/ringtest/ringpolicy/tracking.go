@@ -7,7 +7,6 @@ import (
 	"github.com/consensys/gnark/frontend"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
-	circuitregistry "github.com/helius-labs/zolana-custom-rings/prover/circuits/registry"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringregistry"
 )
@@ -35,35 +34,9 @@ func Enroll(t testing.TB, tree *ringregistry.Tracking, owner, nullifierPk *big.I
 // FillTracking opens each live member once and fills the pool cyclically.
 func FillTracking(t testing.TB, target *policy.Tracking, tree *ringregistry.Tracking, rows, outputs []frontend.Variable, p *policy.Policy, payments []frontend.Variable, voucher frontend.Variable) {
 	t.Helper()
-	var (
-		records     []circuitregistry.TrackingRecord
-		indices     []uint64
-		subjects    []policy.PoolSubject
-		seenRecords = map[uint64]int{}
-		seenMembers = map[string]int{}
-	)
-	add := func(member frontend.Variable) int {
-		identity := ringtest.AsBigInt(member)
-		if entry, ok := seenMembers[identity.String()]; ok {
-			return entry
-		}
-		opening := tree.Opening(identity)
-		record, ok := seenRecords[opening.Path.Index]
-		if !ok {
-			record = len(records)
-			seenRecords[opening.Path.Index] = record
-			records = append(records, opening.Record.Wires())
-			indices = append(indices, opening.Path.Index)
-		}
-		seenMembers[identity.String()] = len(subjects)
-		subjects = append(subjects, policy.PoolSubject{Member: member, RecordIndex: record})
-		return len(subjects) - 1
-	}
+	pool := trackingCollector(tree)
 	entry := func(member frontend.Variable) frontend.Variable {
-		if ringtest.AsBigInt(member).Sign() == 0 {
-			return 0
-		}
-		return add(member)
+		return pool.add(member, ringtest.AsBigInt(member).Sign() != 0)
 	}
 	for j, member := range rows {
 		target.RowEntries[j] = entry(member)
@@ -87,24 +60,9 @@ func FillTracking(t testing.TB, target *policy.Tracking, tree *ringregistry.Trac
 		}
 	}
 	// The sentinel fills a pool nothing live opened.
-	if len(subjects) == 0 {
-		add(big.NewInt(0))
-	}
-	if len(subjects) > len(target.TrackingSubjects) {
-		t.Fatalf("tracking needs %d subjects with capacity %d", len(subjects), len(target.TrackingSubjects))
+	if len(pool.subjects) == 0 {
+		pool.add(big.NewInt(0), true)
 	}
 	target.TrackingRoot = tree.Root()
-	filled := make([]uint64, len(target.TrackingRecords))
-	for i := range target.TrackingRecords {
-		filled[i] = indices[i%len(indices)]
-		target.TrackingRecords[i] = records[i%len(records)]
-	}
-	for i := range target.TrackingSubjects {
-		target.TrackingSubjects[i] = subjects[i%len(subjects)]
-	}
-	proof, err := tree.SharedProof(filled)
-	if err != nil {
-		t.Fatal(err)
-	}
-	target.TrackingProof = proof
+	target.TrackingProof = pool.fill(t, target.TrackingRecords, target.TrackingSubjects)
 }

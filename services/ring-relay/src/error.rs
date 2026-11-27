@@ -1,5 +1,4 @@
 use jsonrpsee::types::{error::ErrorCode, ErrorObjectOwned};
-use log::error;
 use spr_transaction::TransactionError;
 use thiserror::Error;
 
@@ -9,8 +8,9 @@ pub use ring_cosigner::cosign::CoSignError;
 pub use ring_cosigner::RingCosignerError;
 pub use ring_service_core::ServiceError;
 use ring_service_core::{service_faults, upstream::ScopeUnreadable};
-use ring_writer::{record_update::RecordUpdateRefusal, WriterError};
-use zolana_ring_indexer::redact::redacted;
+use ring_writer::{
+    enrollment_applier::EnrollmentRefusal, record_update::RecordUpdateRefusal, WriterError,
+};
 
 use crate::{authority_transfer::AuthorityTransferError, relay::RelayError};
 
@@ -34,8 +34,6 @@ pub enum RingRelayError {
     MergeSettingsUnavailable,
     #[error("stored merge settings are signed at the same time or later")]
     StaleMergeSettings,
-    #[error("merge build failed because {0}")]
-    MergeBuild(Box<zolana_ring_client::RingError>),
 }
 
 const MERGE_SETTINGS_UNAVAILABLE: i32 = -32170;
@@ -45,14 +43,22 @@ service_faults!(RingRelayError);
 
 #[cfg(any(test, feature = "test-fixtures"))]
 impl RingRelayError {
-    pub fn codes() -> Vec<i32> {
-        let relay = RelayError::CODES.iter().copied();
-        let transfers = AuthorityTransferError::ALL
+    pub fn codes() -> Vec<ring_service_core::error::RefusalCode> {
+        use ring_service_core::error::RefusalCode;
+        let own = [
+            RefusalCode {
+                code: MERGE_SETTINGS_UNAVAILABLE,
+                name: "RingRelayError::MergeSettingsUnavailable",
+            },
+            RefusalCode {
+                code: STALE_MERGE_SETTINGS,
+                name: "RingRelayError::StaleMergeSettings",
+            },
+        ];
+        RelayError::codes()
             .into_iter()
-            .map(AuthorityTransferError::code);
-        relay
-            .chain(transfers)
-            .chain([MERGE_SETTINGS_UNAVAILABLE, STALE_MERGE_SETTINGS])
+            .chain(AuthorityTransferError::codes())
+            .chain(own)
             .collect()
     }
 }
@@ -90,6 +96,12 @@ impl From<RingCosignerError> for RingRelayError {
 
 impl From<RecordUpdateRefusal> for RingRelayError {
     fn from(refusal: RecordUpdateRefusal) -> Self {
+        Self::Writer(refusal.into())
+    }
+}
+
+impl From<EnrollmentRefusal> for RingRelayError {
+    fn from(refusal: EnrollmentRefusal) -> Self {
         Self::Writer(refusal.into())
     }
 }
@@ -140,14 +152,6 @@ impl From<&RingRelayError> for ErrorObjectOwned {
                 failure.to_string(),
                 None::<()>,
             ),
-            MergeBuild(_) => {
-                error!("managed merge failed {}", redacted(failure));
-                ErrorObjectOwned::owned(
-                    ErrorCode::InternalError.code(),
-                    "managed merge failed",
-                    None::<()>,
-                )
-            }
         }
     }
 }

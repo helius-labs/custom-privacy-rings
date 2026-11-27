@@ -9,6 +9,7 @@ import {
   signTransactionWithSigners,
   SOLANA_ERROR__INSTRUCTION_ERROR__CUSTOM,
   SOLANA_ERROR__JSON_RPC__SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
+  SOLANA_ERROR__TRANSACTION_ERROR__ALREADY_PROCESSED,
   SOLANA_ERROR__TRANSACTION_ERROR__BLOCKHASH_NOT_FOUND,
   type Address,
   type Signature,
@@ -52,6 +53,7 @@ import {
   type RingBoundState,
   type RingTransactionFrame,
 } from "./pipeline.js";
+import { defined } from "../../protocol/defined.js";
 
 /** Keeps the signed intent and validity bounds of one transaction attempt. */
 export interface RingSubmissionAttempt extends RingBoundState {
@@ -219,7 +221,7 @@ export class RingTransactionSubmission {
       first,
       build,
       wallet: input.wallet,
-      ...(input.registry === undefined ? {} : { registry: input.registry }),
+      ...defined({ registry: input.registry }),
       ...(retry.reservation === undefined
         ? {}
         : {
@@ -640,6 +642,12 @@ function preflightRefusal(cause: unknown): RingSubmissionStatus | undefined {
   )
     return undefined;
   const refusal: unknown = cause.cause;
+  // The transaction can have landed, its status read settles it.
+  if (
+    refusal === undefined ||
+    isSolanaError(refusal, SOLANA_ERROR__TRANSACTION_ERROR__ALREADY_PROCESSED)
+  )
+    return undefined;
   // A blockhash past its window rebuilds as Rust `reproof_fixes` does.
   if (isSolanaError(refusal, SOLANA_ERROR__TRANSACTION_ERROR__BLOCKHASH_NOT_FOUND))
     return { kind: "expired" };

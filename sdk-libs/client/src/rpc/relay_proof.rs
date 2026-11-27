@@ -757,14 +757,13 @@ impl SpendWire {
         let utxo = &input.utxo;
         let spent_by_sender = utxo.owner == sender.signing_pubkey
             && input.nullifier_pubkey == sender.nullifier_pubkey;
-        let co_owner = match spent_by_sender {
-            true => None,
-            false => {
-                let named = Address::new_from_array(utxo.owner.as_ed25519().ok()?);
-                let held = co_owners.iter().find(|co_owner| co_owner.owner == named)?;
-                (held.nullifier_key.pubkey().ok()? == input.nullifier_pubkey).then_some(named)?;
-                Some(named)
-            }
+        let co_owner = if spent_by_sender {
+            None
+        } else {
+            let named = Address::new_from_array(utxo.owner.as_ed25519().ok()?);
+            let held = co_owners.iter().find(|co_owner| co_owner.owner == named)?;
+            (held.nullifier_key.pubkey().ok()? == input.nullifier_pubkey).then_some(named)?;
+            Some(named)
         };
         Some(Self {
             asset: utxo.asset.asset,
@@ -1006,10 +1005,9 @@ fn legs(
                 },
                 _ => return Err(RelayProofInputsError::Settlement { index }),
             };
-            match wire.settlement().1 == *accounts {
-                true => Ok(wire),
-                false => Err(RelayProofInputsError::Settlement { index }),
-            }
+            (wire.settlement().1 == *accounts)
+                .then_some(wire)
+                .ok_or(RelayProofInputsError::Settlement { index })
         })
         .collect()
 }
@@ -1018,10 +1016,9 @@ fn check_nullifier_key(
     sender: &ShieldedAddress,
     nullifier_key: &NullifierKey,
 ) -> Result<(), RelayProofInputsError> {
-    match nullifier_key.pubkey()? == sender.nullifier_pubkey {
-        true => Ok(()),
-        false => Err(RelayProofInputsError::NullifierKey),
-    }
+    (nullifier_key.pubkey()? == sender.nullifier_pubkey)
+        .then_some(())
+        .ok_or(RelayProofInputsError::NullifierKey)
 }
 
 fn check_merge_nullifier_key(

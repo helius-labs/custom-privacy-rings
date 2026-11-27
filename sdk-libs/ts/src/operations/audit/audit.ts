@@ -76,6 +76,7 @@ import {
   type OwnerNullifierKey,
   type RegisteredKeysClient,
 } from "./owner-keys.js";
+import { defined } from "../../protocol/defined.js";
 
 /**
  * Rust `AuditedUtxo`, a proven record under its published commitment. The ring proof binds every
@@ -462,10 +463,10 @@ export function openRingTransfer(input: TransactionAuditInput): OpenedRingAudit 
         outputCommitments: Object.freeze(
           transaction.outputSlots.map((slot) => slot.outputContext.hash),
         ),
-        ...(sender === undefined ? {} : { sender }),
+        ...defined({ sender }),
         inputs: Object.freeze(inputs),
         entries,
-        ...(voucher === undefined ? {} : { voucher }),
+        ...defined({ voucher }),
       }),
     });
   } finally {
@@ -651,14 +652,14 @@ export async function auditRing(
         pageSize: input.pageSize ?? DEFAULT_PAGE_SIZE,
         maxPages: input.maxPages ?? DEFAULT_MAX_PAGES,
       }),
-      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      ...defined({ cursor: input.cursor }),
     },
     (confirmed) => history.push(confirmed),
     context,
   );
   const known = new KnownUtxoIndex([], {
     ...(input.knownUtxos === undefined ? {} : { fallback: input.knownUtxos }),
-    ...(input.secrets === undefined ? {} : { secrets: input.secrets }),
+    ...defined({ secrets: input.secrets }),
   });
   // 1. Decrypt every row, each output joins the index as it opens.
   const opened = openedHistory({
@@ -689,7 +690,7 @@ export async function auditRing(
   return Object.freeze({
     transactions,
     skipped: Object.freeze(rows.skipped),
-    ...(nextCursor === undefined ? {} : { nextCursor }),
+    ...defined({ nextCursor }),
   });
 }
 
@@ -764,7 +765,7 @@ function settledHistory(
       const sender = senderNamed
         ? (audited.sender ?? senderOfKnown(inputs, known))
         : audited.sender;
-      return Object.freeze({ ...audited, ...(sender === undefined ? {} : { sender }), inputs });
+      return Object.freeze({ ...audited, ...defined({ sender }), inputs });
     }),
   );
 }
@@ -1005,7 +1006,7 @@ function ringInput(utxo: KnownUtxo): InputOpening {
   return Object.freeze({
     kind: "opened",
     asset: utxo.asset,
-    ...(utxo.mint === undefined ? {} : { mint: utxo.mint }),
+    ...defined({ mint: utxo.mint }),
     amount: utxo.amount,
     blinding: utxo.blinding,
   });

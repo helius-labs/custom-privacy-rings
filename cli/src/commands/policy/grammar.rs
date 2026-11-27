@@ -3,6 +3,7 @@
 use std::{cmp::Ordering, collections::BTreeMap, fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
+use serde_with::{DeserializeFromStr, SerializeDisplay};
 use solana_address::Address;
 use thiserror::Error;
 use zolana_ring_client::CustomRing;
@@ -13,7 +14,7 @@ use zolana_ring_policy::{
 
 use crate::{
     config::{Base58Address, PerCluster, Target},
-    macros::{named_enum, serde_via_str},
+    macros::named_enum,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -75,7 +76,7 @@ pub enum Alternative {
 }
 
 /// An authority-written list, spelled as in `ring.toml` and on the command line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, SerializeDisplay, DeserializeFromStr)]
 pub struct ListName(ListId);
 
 named_enum! {
@@ -181,11 +182,9 @@ struct RawAlternative {
     forbid: Option<ListName>,
 }
 
-serde_via_str!(ListName);
-
 impl ListName {
     /// The authority-written lists in `ListId::ALL` order, a lib test pins the set.
-    pub const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 8] = [
         Self(ListId::Allow),
         Self(ListId::Block),
         Self(ListId::Frozen),
@@ -196,7 +195,7 @@ impl ListName {
         Self(ListId::PrivateFrozen),
     ];
     /// The lists a rule reads in `ListId::ALL` order, a lib test pins the set.
-    pub const POLICY: [Self; 7] = [
+    pub(crate) const POLICY: [Self; 7] = [
         Self(ListId::Allow),
         Self(ListId::Block),
         Self(ListId::Frozen),
@@ -206,11 +205,11 @@ impl ListName {
         Self(ListId::PrivateFrozen),
     ];
 
-    pub const fn id(self) -> ListId {
+    pub(crate) const fn id(self) -> ListId {
         self.0
     }
 
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         self.0.name()
     }
 
@@ -477,9 +476,11 @@ impl PolicySpec {
             .sources
             .get(cluster)
             .iter()
-            .map(|(&list, curator)| match referenced.contains(list.id()) {
-                true => Ok((list.id(), CustomRing::new(curator.0))),
-                false => Err(PolicyError::UnreferencedSource { list, cluster }),
+            .map(|(&list, curator)| {
+                referenced
+                    .contains(list.id())
+                    .then_some((list.id(), CustomRing::new(curator.0)))
+                    .ok_or(PolicyError::UnreferencedSource { list, cluster })
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(CompiledPolicy {
@@ -498,10 +499,6 @@ impl PolicySpec {
 }
 
 impl CompiledPolicy {
-    pub fn shared_sources(&self) -> Vec<(ListId, CustomRing)> {
-        self.shared_sources.clone()
-    }
-
     /// The curator a referenced list reads, `None` for the ring's own registry.
     pub fn curator(&self, list_id: ListId) -> Option<CustomRing> {
         self.shared_sources
@@ -581,18 +578,6 @@ pub(crate) fn compile_rows(rows: &PolicyRows) -> Result<RuleTable, PolicyError> 
                 .unwrap_or(rows.rules.len().saturating_sub(1)),
             message: error.message(),
         })
-}
-
-/// One sentence per outflow limit, the wording every listing shares.
-pub fn describe_limit(limit: &OutflowLimit) -> String {
-    let asset = hex::encode(&limit.asset()[..4]);
-    match (limit.cap, limit.cosign_above) {
-        (0, cosign) => format!("asset {asset}.. needs the co-signer above {cosign} per transfer"),
-        (cap, 0) => format!("asset {asset}.. is capped at {cap} per transfer"),
-        (cap, cosign) => format!(
-            "asset {asset}.. is capped at {cap} per transfer and needs the co-signer above {cosign}"
-        ),
-    }
 }
 
 /// One sentence per row, the wording every listing shares.
@@ -735,14 +720,6 @@ limits = [{{ asset = "{MINT}" }}]
             PolicyError::LimitsRefused { message }
                 if message == "an outflow limit needs a cap or a cosign threshold"
         ));
-    }
-
-    #[test]
-    fn the_description_names_each_bound() {
-        let capped = OutflowLimit::of(&Member::from_bytes([3u8; 32]).unwrap()).with_cap(1000);
-        assert!(describe_limit(&capped).contains("capped at 1000 per transfer"));
-        let cosigned = capped.with_cosign_above(400);
-        assert!(describe_limit(&cosigned).contains("co-signer above 400"));
     }
 
     #[test]

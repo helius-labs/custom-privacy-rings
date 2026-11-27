@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { getBase58Decoder, type Address, type Signature } from "@solana/kit";
 
 import {
@@ -73,10 +74,6 @@ export function signature(leaf: bigint): Signature {
   return getBase58Decoder().decode(bytes) as Signature;
 }
 
-export function hex(value: Uint8Array): string {
-  return Buffer.from(value).toString("hex");
-}
-
 /** Serves the by-ring read as Photon does, ordered by `(slot, signature)`, `limit` counting transactions. */
 export class ScanIndexer {
   readonly transactions: IndexedShieldedTransaction[] = [];
@@ -118,13 +115,13 @@ export class ScanIndexer {
       },
       getEncryptedUtxosByTags: async () => ({ context, paginationToken: null, data: [] }),
       getShieldedTransactionsByNullifiers: async (request: GetByNullifiersRequest) => {
-        const wanted = new Set(request.nullifiers.map(hex));
+        const wanted = new Set(request.nullifiers.map(bytesToHex));
         return {
           context,
           paginationToken: null,
           data: transactionItems(
             this.transactions.filter((tx) =>
-              tx.nullifiers.some((nullifier) => wanted.has(hex(nullifier))),
+              tx.nullifiers.some((nullifier) => wanted.has(bytesToHex(nullifier))),
             ),
           ),
         };
@@ -354,7 +351,7 @@ export function output(tx: IndexedShieldedTransaction, position: number): Bytes3
 }
 
 export function found(scan: Pick<AnonymousScan, "found">): readonly string[] {
-  return scan.found.map((utxo) => hex(utxo.utxoHash));
+  return scan.found.map((utxo) => bytesToHex(utxo.utxoHash));
 }
 
 /** A ring note's record sealed to `owner` under `slotSecret`, the body a reader opens. */

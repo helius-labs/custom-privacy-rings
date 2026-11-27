@@ -2,8 +2,6 @@
 // amount as a field value, a ring also shows it to the auditor as bytes. A number too
 // large for its byte length fails the proof, so each amount has exactly one byte
 // form and the auditor reads the value SPP bound.
-//
-// Read first. Read before shared/disclosure.go, shared/envelope.go, audit/record.go.
 
 // Package ringgadget holds the generic gadgets the ring circuits add to zolana's gadget package.
 package ringgadget

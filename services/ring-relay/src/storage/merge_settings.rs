@@ -1,4 +1,4 @@
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, QueryResult};
+use sea_orm::{DatabaseConnection, DbErr, QueryResult};
 use solana_address::Address;
 use zolana_ring_client::rpc::MergeSettings;
 
@@ -53,19 +53,12 @@ impl<'a> MergeSettingsBook<'a> {
             sql::bytes(&signed.settings.min_average_amount.to_be_bytes()),
             sql::integer(signed.signed_at)?,
         ];
-        let result = self
-            .db
-            .execute(sql::statement(self.db, upsert, values))
-            .await?;
-        Ok(result.rows_affected() == 1)
+        Ok(sql::Query::new(upsert, values).execute(self.db).await? == 1)
     }
 
     pub(crate) async fn rings(&self) -> Result<Vec<Address>, RingRelayError> {
         let select = "SELECT DISTINCT ring FROM merge_settings WHERE target_note_count > 0";
-        let rows = self
-            .db
-            .query_all(sql::statement(self.db, select, vec![]))
-            .await?;
+        let rows = sql::Query::new(select, vec![]).all(self.db).await?;
         Ok(rows
             .iter()
             .map(|row| sql::read_address(row, "ring"))
@@ -78,14 +71,9 @@ impl<'a> MergeSettingsBook<'a> {
     ) -> Result<Vec<WalletMergeSettings>, RingRelayError> {
         let select =
             "SELECT owner, mint, target_note_count, min_average_amount FROM merge_settings \
-                      WHERE ring=$1 AND target_note_count > 0";
-        let rows = self
-            .db
-            .query_all(sql::statement(
-                self.db,
-                select,
-                vec![sql::bytes(ring.as_ref())],
-            ))
+             WHERE ring=$1 AND target_note_count > 0";
+        let rows = sql::Query::new(select, vec![sql::bytes(ring.as_ref())])
+            .all(self.db)
             .await?;
         Ok(rows.iter().map(wallet_settings).collect::<Result<_, _>>()?)
     }

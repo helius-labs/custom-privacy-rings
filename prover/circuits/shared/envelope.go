@@ -36,9 +36,6 @@
 //  2. The agreement is the one between EphSk and AuditorPk. The auditor's secret opens it from eph_u
 //     when eph_u is EphSk's key, SealStream derives that key and a SealSalted caller holds it.
 //  3. Auditor and Eph hold the packed keys that schedule read.
-//
-// Read after shared/disclosure.go, ringgadget/bytes.go, shared/derivation.go.
-// Read before audit/audit.go, merge.go, registry/register_key.go.
 
 package shared
 

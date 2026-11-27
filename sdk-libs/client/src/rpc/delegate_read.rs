@@ -10,9 +10,8 @@ use zeroize::Zeroize;
 
 use super::{
     base64, Attestation, GetWalletStatusResponse, ReadBuildError, ReadTarget, RequestBuildError,
-    SignedRequest, WalletNote,
+    RequestSignature, SignedRequest, WalletNote,
 };
-use crate::REDACTED;
 
 pub const GET_DELEGATE_NOTES: &str = "getDelegateNotes";
 pub const RELEASE_DELEGATE_SNAPSHOT: &str = "releaseDelegateSnapshot";
@@ -42,21 +41,10 @@ pub struct GetDelegateNotesResponse {
     pub status: GetWalletStatusResponse,
 }
 
-impl core::fmt::Debug for GetDelegateNotesResponse {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            nullifier_secret,
-            status,
-        } = self;
-        f.debug_struct("GetDelegateNotesResponse")
-            .field(
-                "nullifier_secret",
-                &nullifier_secret.as_ref().map(|_| REDACTED),
-            )
-            .field("status", status)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(GetDelegateNotesResponse {
+    shown: [status],
+    present: [nullifier_secret],
+});
 
 impl Drop for GetDelegateNotesResponse {
     fn drop(&mut self) {
@@ -98,10 +86,7 @@ pub struct DelegateSnapshotReleaseAttestation {
     pub cursor: Base64String,
 }
 
-#[must_use]
-pub struct DelegateSnapshotReleaseRequest {
-    signed: SignedRequest<DelegateSnapshotReleaseAttestation>,
-}
+pub type DelegateSnapshotReleaseRequest = SignedRequest<DelegateSnapshotReleaseAttestation>;
 
 struct DelegateNotesMessage<'a> {
     domain: &'a str,
@@ -111,13 +96,6 @@ struct DelegateNotesMessage<'a> {
     cursor: &'a [u8],
     timestamp: u64,
     nonce: &'a [u8; 32],
-}
-
-struct DelegateRequestSigning {
-    attestation: DelegateNotesAttestation,
-    timestamp: u64,
-    nonce: [u8; 32],
-    message: Vec<u8>,
 }
 
 impl Attestation for DelegateNotesAttestation {
@@ -151,37 +129,21 @@ impl Attestation for DelegateSnapshotReleaseAttestation {
 }
 
 impl DelegateSnapshotReleaseRequest {
-    pub fn new(attestation: DelegateSnapshotReleaseAttestation) -> Result<Self, ReadBuildError> {
-        super::wallet_snapshot::validate_snapshot_cursor(&attestation.cursor)?;
-        Ok(Self {
-            signed: SignedRequest::new(attestation),
-        })
-    }
-
-    pub fn at(self, timestamp: u64) -> Self {
-        Self {
-            signed: self.signed.at(timestamp),
-        }
-    }
-
+    /// Refuses a cursor of another length before it is signed.
     pub fn sign<S: Signer + ?Sized>(
         self,
         delegate: &S,
-    ) -> Result<GetDelegateNotesRequest, RequestBuildError> {
-        let (timestamp, message) = self.signed.message()?;
-        let attestation = self.signed.attestation;
-        DelegateRequestSigning {
-            attestation: DelegateNotesAttestation {
-                target: attestation.target,
-                delegate: attestation.delegate,
-                owner: attestation.owner,
-                cursor: Some(attestation.cursor),
-            },
-            timestamp,
-            nonce: self.signed.nonce,
-            message,
+    ) -> Result<GetDelegateNotesRequest, ReadBuildError> {
+        super::wallet_snapshot::validate_snapshot_cursor(&self.attestation.cursor)?;
+        let signed = self.signed_by(delegate)?;
+        let release = self.attestation;
+        Ok(DelegateNotesAttestation {
+            target: release.target,
+            delegate: release.delegate,
+            owner: release.owner,
+            cursor: Some(release.cursor),
         }
-        .sign(delegate)
+        .request(signed))
     }
 }
 
@@ -191,14 +153,22 @@ impl DelegateNotesRequest {
         self,
         delegate: &S,
     ) -> Result<GetDelegateNotesRequest, RequestBuildError> {
-        let (timestamp, message) = self.message()?;
-        DelegateRequestSigning {
-            attestation: self.attestation,
-            timestamp,
-            nonce: self.nonce,
-            message,
+        let signed = self.signed_by(delegate)?;
+        Ok(self.attestation.request(signed))
+    }
+}
+
+impl DelegateNotesAttestation {
+    fn request(self, signed: RequestSignature) -> GetDelegateNotesRequest {
+        GetDelegateNotesRequest {
+            ring: self.target.ring.into(),
+            delegate: self.delegate.into(),
+            owner: self.owner.into(),
+            cursor: self.cursor,
+            timestamp: signed.timestamp,
+            nonce: signed.nonce,
+            signature: signed.signature.into(),
         }
-        .sign(delegate)
     }
 }
 
@@ -218,33 +188,69 @@ impl DelegateNotesMessage<'_> {
     }
 }
 
-impl DelegateRequestSigning {
-    fn sign<S: Signer + ?Sized>(
-        self,
-        delegate: &S,
-    ) -> Result<GetDelegateNotesRequest, RequestBuildError> {
-        let signature = delegate
-            .try_sign_message(&self.message)
-            .map_err(RequestBuildError::Signature)?;
-        Ok(GetDelegateNotesRequest {
-            ring: self.attestation.target.ring.into(),
-            delegate: self.attestation.delegate.into(),
-            owner: self.attestation.owner.into(),
-            cursor: self.attestation.cursor,
-            timestamp: self.timestamp,
-            nonce: self.nonce.to_vec().into(),
-            signature: signature.into(),
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use solana_signature::Signature;
     use spr_hasher::primitives::right_align;
+    use zolana_ring_keys::REDACTED;
 
     use super::*;
-    use crate::rpc::{WalletEnrollment, WalletNoteStatus};
+    use crate::rpc::{WalletEnrollment, WalletNoteStatus, WALLET_SNAPSHOT_CURSOR_LEN};
+
+    #[test]
+    fn a_delegate_signs_its_read_and_its_release_each_under_its_own_domain() {
+        let delegate = solana_keypair::Keypair::new();
+        let target = ReadTarget {
+            cluster: [1; 32],
+            service: Address::new_from_array([2; 32]),
+            ring: Address::new_from_array([3; 32]),
+        };
+        let owner = Address::new_from_array([4; 32]);
+        let cursor = Base64String(vec![5; WALLET_SNAPSHOT_CURSOR_LEN]);
+        let read = DelegateNotesAttestation {
+            target,
+            delegate: delegate.pubkey(),
+            owner,
+            cursor: Some(cursor.clone()),
+        };
+        let release = DelegateSnapshotReleaseAttestation {
+            target,
+            delegate: delegate.pubkey(),
+            owner,
+            cursor: cursor.clone(),
+        };
+        let signed_read = DelegateNotesRequest::new(read.clone())
+            .at(1)
+            .sign(&delegate)
+            .unwrap();
+        let signed_release = DelegateSnapshotReleaseRequest::new(release.clone())
+            .at(1)
+            .sign(&delegate)
+            .unwrap();
+        let verifies = |request: &GetDelegateNotesRequest, attestation: &dyn Attestation| {
+            let nonce: [u8; 32] = request.nonce.0.as_slice().try_into().unwrap();
+            request.signature.0.verify(
+                delegate.pubkey().as_ref(),
+                &attestation.message(request.timestamp, &nonce),
+            )
+        };
+        for (request, own, other) in [
+            (
+                &signed_read,
+                &read as &dyn Attestation,
+                &release as &dyn Attestation,
+            ),
+            (&signed_release, &release, &read),
+        ] {
+            assert_eq!(request.ring, target.ring.into());
+            assert_eq!(request.delegate, delegate.pubkey().into());
+            assert_eq!(request.owner, owner.into());
+            assert_eq!(request.cursor, Some(cursor.clone()));
+            assert_eq!(request.timestamp, 1);
+            assert!(verifies(request, own));
+            assert!(!verifies(request, other));
+        }
+    }
 
     fn note(nullifier_pk: [u8; 32]) -> WalletNote {
         WalletNote {
@@ -294,7 +300,10 @@ mod tests {
         assert!(read.nullifier_key(&note(foreign)).is_none());
         let rendered = format!("{read:?}");
         assert!(rendered.contains(REDACTED), "{rendered}");
-        assert!(!rendered.contains("7, 7, 7"), "{rendered}");
+        assert!(
+            !rendered.contains(&Hash(right_align(&registered.secret())).to_base58()),
+            "{rendered}"
+        );
         let unread = GetDelegateNotesResponse {
             nullifier_secret: None,
             status: read.status.clone(),

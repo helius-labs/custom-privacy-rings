@@ -1,5 +1,3 @@
-use core::fmt;
-
 #[cfg(feature = "rpc")]
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -16,7 +14,7 @@ use spr_transaction::{
     OutputContext,
 };
 
-use crate::{AuditError, REDACTED};
+use crate::AuditError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuditedTransaction {
@@ -361,54 +359,29 @@ impl UtxoOwner {
     }
 }
 
-impl fmt::Debug for AuditedUtxo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self {
-            owner_key,
-            owner,
-            asset,
-            mint,
-            amount,
-            blinding: _,
-            data_hash,
-            ring_data_hash,
-        } = self;
-        f.debug_struct("AuditedUtxo")
-            .field("owner_key", owner_key)
-            .field("owner", owner)
-            .field("asset", asset)
-            .field("mint", mint)
-            .field("amount", amount)
-            .field("blinding", &REDACTED)
-            .field("data_hash", data_hash)
-            .field("ring_data_hash", ring_data_hash)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(AuditedUtxo {
+    shown: [
+        owner_key,
+        owner,
+        asset,
+        mint,
+        amount,
+        data_hash,
+        ring_data_hash
+    ],
+    hidden: [blinding],
+});
 
-impl fmt::Debug for KnownUtxo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self {
-            owner_key,
-            owner,
-            asset,
-            mint,
-            amount,
-            blinding: _,
-            data_hash,
-            ring_data_hash,
-            tree_id,
-        } = self;
-        f.debug_struct("KnownUtxo")
-            .field("owner_key", owner_key)
-            .field("owner", owner)
-            .field("asset", asset)
-            .field("mint", mint)
-            .field("amount", amount)
-            .field("blinding", &REDACTED)
-            .field("data_hash", data_hash)
-            .field("ring_data_hash", ring_data_hash)
-            .field("tree_id", tree_id)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(KnownUtxo {
+    shown: [
+        owner_key,
+        owner,
+        asset,
+        mint,
+        amount,
+        data_hash,
+        ring_data_hash,
+        tree_id
+    ],
+    hidden: [blinding],
+});

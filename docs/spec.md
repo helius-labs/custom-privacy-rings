@@ -125,6 +125,8 @@ Ring RPC co-signs only within limits the policy authority writes to each asset's
 2. **Volume limit:** what the ring transfers, takes in and pays out of the asset within a window.
 3. **Deposit and withdrawal limits:** what the ring takes in and pays out in public deposits and withdrawals, each with its own window.
 
+Ring RPC's operator can also set an exit limit per asset. It caps what one owner moves out of the ring of the asset within a window, through exits and withdrawals, and no record or proof holds it.
+
 These limits bind only the operations the ring requires co-signing for. Ring RPC enforces them when it decides whether to co-sign, and the ring program checks only that the co-signer signed. Ring RPC refuses to co-sign an operation that moves an asset with no record. A limit binds every operation of a class, for example Transfers, only when Ring RPC is the one co-signer that covers that class. Otherwise a transfer below the co-sign bound, or one that another co-signer signs, can pass uncounted. The per-transfer cap and co-sign bound of 1.5 hold either way.
 
 ## Components and ownership

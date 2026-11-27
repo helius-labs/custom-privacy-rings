@@ -1,22 +1,3 @@
-/// Serde through `Display` and `FromStr`, the spelling `ring.toml` and the command line share.
-macro_rules! serde_via_str {
-    ($($name:ty),+ $(,)?) => {$(
-        impl serde::Serialize for $name {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                serializer.collect_str(self)
-            }
-        }
-
-        impl<'de> serde::Deserialize<'de> for $name {
-            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                <String as serde::Deserialize>::deserialize(deserializer)?
-                    .parse()
-                    .map_err(serde::de::Error::custom)
-            }
-        }
-    )+};
-}
-
 /// A fieldless enum spelled by name, `ALL` in declaration order.
 macro_rules! named_enum {
     ($(#[$meta:meta])* $vis:vis enum $name:ident($kind:literal) {
@@ -24,6 +5,7 @@ macro_rules! named_enum {
     }) => {
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(serde_with::SerializeDisplay, serde_with::DeserializeFromStr)]
         $vis enum $name {
             $($(#[$doc])* $variant),+
         }
@@ -68,11 +50,10 @@ macro_rules! named_enum {
             }
         }
 
-        $crate::macros::serde_via_str!($name);
     };
 }
 
-pub(crate) use {named_enum, serde_via_str};
+pub(crate) use named_enum;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unknown {kind} {name}")]

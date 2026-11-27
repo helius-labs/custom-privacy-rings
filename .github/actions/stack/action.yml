@@ -1,5 +1,5 @@
 name: Localnet stack
-description: Restore the prebuilt localnet stack, surfpool, the Squads program and the pinned proving keys.
+description: Restore the prebuilt localnet stack and the pinned proving keys.
 runs:
   using: composite
   steps:
@@ -27,29 +27,6 @@ runs:
       with:
         name: ring_tools
         mode: restore
-    - id: surfpool
-      shell: bash
-      working-directory: zolana
-      run: echo "tag=$(just --evaluate surfpool-release-tag)" >> "$GITHUB_OUTPUT"
-    - id: surfpool-cache
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: zolana/target/tools/surfpool
-        key: surfpool-${{ runner.os }}-${{ steps.surfpool.outputs.tag }}
-    - if: steps.surfpool-cache.outputs.cache-hit != 'true'
-      shell: bash
-      working-directory: zolana
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: just install-surfpool
-    - id: squads
-      shell: bash
-      working-directory: zolana
-      run: echo "sha256=$(just --evaluate smart-account-sha256)" >> "$GITHUB_OUTPUT"
-    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: zolana/target/deploy/squads_smart_account_program.so
-        key: squads-smart-account-${{ steps.squads.outputs.sha256 }}
-    - shell: bash
-      run: just zolana::ensure-smart-account
     - uses: ./.github/actions/proving-keys
+      with:
+        mode: restore

@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   AccountRole,
   getBase58Decoder,
@@ -55,7 +56,6 @@ import {
 import {
   filled,
   freshWalletTags,
-  hex,
   noteInput,
   pdaKeys,
   randomAddress,
@@ -83,7 +83,7 @@ function ownerRail(fixture: Fixture, owner: ShieldedKeypair, note: ProofInputUtx
 }
 
 const blindings = (outputs: readonly ProofOutputUtxo[]) =>
-  outputs.map((output) => hex(output.blinding));
+  outputs.map((output) => bytesToHex(output.blinding));
 
 describe("program transfer", () => {
   beforeAll(initializePoseidon);
@@ -280,10 +280,10 @@ describe("program transfer", () => {
     ].map((leg) => ({ kind: "spl" as const, splInterfaceBump: 0, ...leg }));
     const privateTxHash = small(5);
     expect(transactionHash(privateTxHash, [])).toEqual(privateTxHash);
-    expect(hex(transactionHash(privateTxHash, legs.slice(0, 1)))).toBe(
+    expect(bytesToHex(transactionHash(privateTxHash, legs.slice(0, 1)))).toBe(
       "1946fea3144a0e0c44ac91af3195b7810a9d4d42c65266ad02bbf205cb73da12",
     );
-    expect(hex(transactionHash(privateTxHash, legs))).toBe(
+    expect(bytesToHex(transactionHash(privateTxHash, legs))).toBe(
       "1fc63988477be7e64c70cadc6e4c05c14b72aefffafaec6d194dd3cac0c59d54",
     );
   });
@@ -331,9 +331,11 @@ describe("builder lines", () => {
       const paid = (outputs: readonly ProofOutputUtxo[]) =>
         outputs
           .filter((output) => output.ownerAddress !== undefined)
-          .map((output) => hex(output.ownerAddress?.toBytes() ?? new Uint8Array()))
-          .filter((address) => address !== hex(owner.shieldedAddress().toBytes()));
-      const recipients = [alice, bob].map((keypair) => hex(keypair.shieldedAddress().toBytes()));
+          .map((output) => bytesToHex(output.ownerAddress?.toBytes() ?? new Uint8Array()))
+          .filter((address) => address !== bytesToHex(owner.shieldedAddress().toBytes()));
+      const recipients = [alice, bob].map((keypair) =>
+        bytesToHex(keypair.shieldedAddress().toBytes()),
+      );
       const live = toAlice.withPayment(pay(bob));
       await expect(toAlice.prove(fixture.client)).rejects.toThrow(superseded);
       const plan = await live.planForProgram(fixture.client);
@@ -394,9 +396,9 @@ describe("builder steps", () => {
       }),
     ).toThrow(ringError("RING_TRANSFER_SUPERSEDED"));
     const plan = await paying.planForProgram(fixture.client);
-    expect(plan.outputs.map((output) => hex(output.dataHash ?? new Uint8Array(32)))).toContain(
-      hex(application.hash),
-    );
+    expect(
+      plan.outputs.map((output) => bytesToHex(output.dataHash ?? new Uint8Array(32))),
+    ).toContain(bytesToHex(application.hash));
   });
 
   it.each(["public", "hidden"] as const)(
@@ -429,9 +431,9 @@ describe("builder steps", () => {
       const proven = await salted.withPayment(payment).prove(fixture.client);
       const owners = proven.outputs
         .filter((output) => output.ownerAddress !== undefined && output.amount > 0n)
-        .map((output) => hex(output.ownerAddress?.toBytes() ?? new Uint8Array()));
+        .map((output) => bytesToHex(output.ownerAddress?.toBytes() ?? new Uint8Array()));
       expect(owners).toEqual(
-        [owner, held, paid].map((keypair) => hex(keypair.shieldedAddress().toBytes())),
+        [owner, held, paid].map((keypair) => bytesToHex(keypair.shieldedAddress().toBytes())),
       );
       expect(proven.outputs.map((output) => output.amount).filter((amount) => amount > 0n)).toEqual(
         [2n, 4n, 4n],
@@ -456,7 +458,10 @@ describe("ring transfer adapters", () => {
       outputTreeId: prepared.outputTreeId,
       paid: prepared.outputs
         .slice(prepared.senderOutputCount)
-        .map((output) => [hex(output.ownerAddress?.toBytes() ?? new Uint8Array()), output.amount]),
+        .map((output) => [
+          bytesToHex(output.ownerAddress?.toBytes() ?? new Uint8Array()),
+          output.amount,
+        ]),
     };
   };
 
@@ -548,7 +553,7 @@ describe("ring transfer adapters", () => {
     await expect(
       ownerRingTransfers({ ...ring, client: client(fixture) }).proveRingTransfer(request),
     ).rejects.toThrow(ringError("RING_TRANSFER_SUPERSEDED"));
-    expect(recipients(transfer).paid).toEqual([[hex(bob.shieldedAddress().toBytes()), 2n]]);
+    expect(recipients(transfer).paid).toEqual([[bytesToHex(bob.shieldedAddress().toBytes()), 2n]]);
   });
 });
 
@@ -605,7 +610,9 @@ describe("payment address list salts", () => {
       await built.prove(fixture.client);
       const request = fixture.ringRequests.at(-1);
       if (request?.kind !== "transfer") throw new Error("a transfer request");
-      expect(request.ownerEntries.map((entry) => hex(entry.listSalt))).toContain(hex(paidSalt));
+      expect(request.ownerEntries.map((entry) => bytesToHex(entry.listSalt))).toContain(
+        bytesToHex(paidSalt),
+      );
 
       expect(() => transfer([{ owner: member(paid), salt: filled(9) }])).toThrow(
         ringError("RING_ADDRESS_MISMATCH"),

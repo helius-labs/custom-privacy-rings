@@ -98,9 +98,10 @@ pub fn run(ctx: &Context, args: InitArgs) -> Result<()> {
             let authority = upgrade_authority
                 .as_deref()
                 .context(NEEDS_UPGRADE_AUTHORITY)?;
-            let trust = ctx.trust(match args.trust_ring_rpc {
-                true => Trust::Unpinned,
-                false => Trust::Refuse,
+            let trust = ctx.trust(if args.trust_ring_rpc {
+                Trust::Unpinned
+            } else {
+                Trust::Refuse
             })?;
             ctx.ring_rpc()?
                 .release_auditor_key(

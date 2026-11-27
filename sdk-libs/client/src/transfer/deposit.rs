@@ -1,7 +1,5 @@
 //! A ring deposit is a transfer frame that spends only dummies. Public deposit legs fund one ring
 //! output per recipient, and every check of the transfer statement runs on it.
-//!
-//! Read after `transfer/pipeline/mod.rs`. Read before `transfer/pipeline/relay.rs`.
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -9,7 +7,7 @@ use std::sync::{
 };
 
 use custom_ring_interface::{
-    cosign::{ApprovalMask, CoSignDemand, CoSignOperation},
+    cosign::{ApprovalMask, CoSignOperation},
     stream::slot_tag,
     CoSignScope, RingMode,
 };
@@ -462,7 +460,7 @@ impl PreparedRingDeposit {
         self.terms.cosigner
     }
 
-    pub fn co_sign_demand(&self) -> CoSignDemand {
+    pub fn co_sign_demand(&self) -> CoSignScope {
         deposit_demand()
     }
 
@@ -644,7 +642,7 @@ impl DepositLeg {
     }
 }
 
-fn deposit_demand() -> CoSignDemand {
+fn deposit_demand() -> CoSignScope {
     CoSignOperation {
         spends_note: false,
         public_legs: CoSignScope::DEPOSITS,

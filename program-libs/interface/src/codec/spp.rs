@@ -2,9 +2,6 @@
 //!
 //! SPP reads its lists by position and folds its legs in one order. A wrong index or stride here
 //! would verify the ring proof against accounts SPP does not settle.
-//!
-//! Read after `program-libs/interface/src/lib.rs`. Read before `program-libs/interface/src/instructions/withdrawals.rs`,
-//! `programs/custom-ring/src/instructions/verification/public_legs.rs`.
 
 use arrayvec::ArrayVec;
 use spr_hasher::{
@@ -169,18 +166,20 @@ impl PublicSlot {
             .filter(|net| u64::try_from(net.unsigned_abs()).is_ok())
             .ok_or(PublicSlotError::AmountOverflow { asset: self.asset })?;
         // A u128 sum of u64 legs never overflows.
-        let gross = match amount.is_negative() {
-            true => self.gross + amount.unsigned_abs(),
-            false => self.gross,
+        let gross = if amount.is_negative() {
+            self.gross + amount.unsigned_abs()
+        } else {
+            self.gross
         };
         Ok(Self { net, gross, ..self })
     }
 }
 
 pub const fn leg_class(transfer: &InterfaceTransfer) -> CoSignScope {
-    match transfer.is_deposit() {
-        true => CoSignScope::DEPOSITS,
-        false => CoSignScope::WITHDRAWALS,
+    if transfer.is_deposit() {
+        CoSignScope::DEPOSITS
+    } else {
+        CoSignScope::WITHDRAWALS
     }
 }
 

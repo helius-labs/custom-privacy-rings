@@ -11,6 +11,7 @@ import type { CacheAccess, InterfaceTransfer } from "@heliuslabs/spr/interface";
 import { ringRootRegistries, type RingPolicy } from "../codec/ring-codecs.js";
 import { RingError } from "../error.js";
 import { isDelegateRail, type RingRail, type RingTransactData } from "./transact.js";
+import { defined } from "../defined.js";
 
 /** Rust `TRANSACT_PAYER_INDEX`. */
 const TRANSACT_PAYER_INDEX = 0;
@@ -82,7 +83,7 @@ export function mintAccountPosition(transfer: InterfaceTransfer): number | undef
 }
 
 /** Rust `funder_account_position`, a withdrawal names no funder. */
-export function funderAccountPosition(transfer: InterfaceTransfer): number | undefined {
+function funderAccountPosition(transfer: InterfaceTransfer): number | undefined {
   switch (transfer.kind) {
     case "solDeposit":
       return 1;
@@ -159,8 +160,7 @@ export function transferLayout(
   return Object.freeze({
     registries,
     coSigners,
-    ...(delegate === undefined ? {} : { delegate }),
-    ...(mint === undefined ? {} : { mint }),
+    ...defined({ delegate, mint }),
     spp,
     payer: spp + TRANSACT_PAYER_INDEX,
     ringConfig: spp + RING_TRANSACT_RING_CONFIG_INDEX,

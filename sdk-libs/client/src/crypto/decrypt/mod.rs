@@ -213,12 +213,10 @@ fn parse_message<'a>(
 }
 
 fn check_published(layout: AuditStreamLayout, tx: &ShieldedTransaction) -> Result<(), AuditError> {
-    let consistent =
-        layout.outputs == tx.output_slots.len() && layout.inputs == tx.nullifiers.len();
-    match consistent {
-        true => Ok(()),
-        false => Err(AuditError::DisclosureLayout),
+    if layout.outputs != tx.output_slots.len() || layout.inputs != tx.nullifiers.len() {
+        return Err(AuditError::DisclosureLayout);
     }
+    Ok(())
 }
 
 /// The program keeps the auditor message last, the tag of any earlier message is free frame bytes.
@@ -333,17 +331,18 @@ impl Transfer {
         };
         let rebuilds = published.is_none()
             || opened.commitment(slot.tree_id(), ring)? == Some(slot.commitment());
-        let (utxo, error) = match rebuilds {
-            true => (opened, None),
+        let (utxo, error) = if rebuilds {
+            (opened, None)
+        } else {
             // The record stands under its key, hashes of no commitment stay out of it.
-            false => (
+            (
                 AuditedUtxo {
                     data_hash: None,
                     ring_data_hash: None,
                     ..opened
                 },
                 Some(OutputPayloadErrorKind::Commitment),
-            ),
+            )
         };
         Ok(SlotRead {
             opening: Some(match ring {
@@ -365,12 +364,12 @@ impl Transfer {
             ..ProofInputUtxo::default()
         }
         .hash()?;
-        Ok(match commitment == slot.commitment() {
-            true => SlotRead {
-                opening: Some(OutputOpening::Dummy),
-                error: None,
-            },
-            false => SlotRead::refused(OutputPayloadErrorKind::Commitment),
+        if commitment != slot.commitment() {
+            return Ok(SlotRead::refused(OutputPayloadErrorKind::Commitment));
+        }
+        Ok(SlotRead {
+            opening: Some(OutputOpening::Dummy),
+            error: None,
         })
     }
 

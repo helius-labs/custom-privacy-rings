@@ -1,10 +1,10 @@
 //! The compact transact data a proven transfer owns, and its instruction.
 
 use custom_ring_interface::{
-    cosign::ApprovalMask, storage::Revision, tag, AnonymousProofData, AppMessage, CustomRingError,
-    CustomRingProof, FrameExtensions, InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof,
-    Replies, RingOutput, RingPolicy, RingRail, RingTransactData, RootRead, SlotBody,
-    TransferApproval, TransferLayout, MAX_SPP_CPI_ACCOUNTS,
+    cosign::ApprovalMask, storage::Revision, tag, AppMessage, CustomRingError, CustomRingProof,
+    FrameExtensions, InputTrees, NamedRoots, PlainGroth16Proof, RailAuthorization, Replies,
+    RingOutput, RingPolicy, RingRail, RingTransactData, RootRead, SlotBody, TransferApproval,
+    TransferLayout, MAX_SPP_CPI_ACCOUNTS,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -110,34 +110,18 @@ impl OwnedExtensions {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct OwnedInProofOwner {
-    pub owner: [u8; 32],
-    pub commitment: [u8; 32],
-    pub commitment_pok: [u8; 32],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct OwnedAnonymousProofData {
-    pub commitment: [u8; 32],
-    pub commitment_pok: [u8; 32],
-    pub default_owner_tag: Option<[u8; 32]>,
-}
-
 /// [`RingTransactData`] with every borrowed part owned.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TransactParts {
-    pub rail: RingRail,
+    pub authorization: RailAuthorization,
     pub n_in: u8,
     pub n_out: u8,
     pub proof: CustomRingProof,
     pub tracking_revision: Revision,
-    pub own_revision: Option<Revision>,
-    pub policy: Option<PolicyProof>,
+    pub named_roots: NamedRoots,
     pub spl_withdrawal_owners: Vec<[u8; 32]>,
     pub approval: ApprovalMask,
     pub no_spend: bool,
-    pub public_owners: bool,
     pub expiry_unix_ts: u32,
     pub tx_viewing_u: [u8; 32],
     pub salt: [u8; 16],
@@ -155,8 +139,6 @@ pub(crate) struct TransactParts {
     /// One sealed recipient key per published slot, then the voucher's under `vouched`.
     pub recipient_keys: Vec<u8>,
     pub private_tx_hash: [u8; 32],
-    pub anonymous: Option<OwnedAnonymousProofData>,
-    pub in_proof_owner: Option<OwnedInProofOwner>,
     pub spp_proof: PlainGroth16Proof,
     pub nullifiers: Vec<[u8; 32]>,
     pub input_trees: InputTrees,
@@ -181,17 +163,15 @@ impl TransactParts {
     /// Refuses a reply region the parser refuses.
     pub fn data(&self) -> Result<RingTransactData<'_>, CustomRingError> {
         Ok(RingTransactData {
-            rail: self.rail,
+            authorization: self.authorization,
             n_in: self.n_in,
             n_out: self.n_out,
             proof: &self.proof,
             tracking_revision: self.tracking_revision,
-            own_revision: self.own_revision,
-            policy: self.policy,
+            named_roots: self.named_roots,
             spl_withdrawal_owners: &self.spl_withdrawal_owners,
             approval: self.approval,
             no_spend: self.no_spend,
-            public_owners: self.public_owners,
             expiry_unix_ts: self.expiry_unix_ts,
             tx_viewing_u: &self.tx_viewing_u,
             salt: &self.salt,
@@ -211,16 +191,6 @@ impl TransactParts {
             recipient_keys: &self.recipient_keys,
             vouched: self.vouched,
             private_tx_hash: &self.private_tx_hash,
-            anonymous: self.anonymous.as_ref().map(|anonymous| AnonymousProofData {
-                commitment: &anonymous.commitment,
-                commitment_pok: &anonymous.commitment_pok,
-                default_owner_tag: anonymous.default_owner_tag.as_ref(),
-            }),
-            in_proof_owner: self.in_proof_owner.as_ref().map(|owner| InProofOwner {
-                owner: &owner.owner,
-                commitment: &owner.commitment,
-                commitment_pok: &owner.commitment_pok,
-            }),
             spp_proof: &self.spp_proof,
             nullifiers: &self.nullifiers,
             input_trees: self.input_trees,
@@ -319,7 +289,7 @@ impl TransactAccounts {
     ) -> Result<Instruction, RingError> {
         let data = parts.data()?;
         let expanded = data.transact_ix_data(config, TransactProof::zeroed())?;
-        let spp = match parts.rail {
+        let spp = match parts.authorization.rail() {
             RingRail::Delegate | RingRail::AnonymousDelegate => {
                 RingAuthorityTransact {
                     payer: self.payer,
@@ -357,7 +327,10 @@ impl TransactAccounts {
         let mut accounts = vec![AccountMeta::new_readonly(ring.policy_pda(), false)];
         accounts.extend(
             config
-                .root_registries(RootRead::transfer(config, parts.rail.is_delegate()))
+                .root_registries(RootRead::transfer(
+                    config,
+                    parts.authorization.rail().is_delegate(),
+                ))
                 .map(|registry| AccountMeta::new_readonly(registry, false)),
         );
         accounts.extend(
@@ -389,9 +362,10 @@ impl TransactAccounts {
                 .filter(|meta| !meta.pubkey.is_on_curve())
                 .for_each(|meta| meta.is_signer = false);
         }
-        let mut bytes = vec![match parts.rail.is_delegate() {
-            true => tag::AUTHORITY_TRANSFER,
-            false => tag::TRANSFER,
+        let mut bytes = vec![if parts.authorization.rail().is_delegate() {
+            tag::AUTHORITY_TRANSFER
+        } else {
+            tag::TRANSFER
         }];
         bytes.extend(data.encode()?);
         Ok(Instruction {

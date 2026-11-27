@@ -7,10 +7,12 @@ use std::future::Future;
 use async_trait::async_trait;
 use solana_address::Address;
 
-pub use self::{
-    admin::{co_sign_lists, edit_co_sign_list},
-    decision::{List, ListDecision, ListEntry, Lists, Parties, Subject, SubjectKind},
-    store::{ListStore, StoredLists},
+pub use self::admin::{co_sign_lists, edit_co_sign_list};
+#[cfg(test)]
+pub(crate) use self::decision::{List, ListEntry};
+pub(crate) use self::{
+    decision::{ListDecision, Parties, Subject},
+    store::StoredLists,
 };
 use super::rule::{CoSignRule, Operation, Verdict};
 use crate::{
@@ -19,13 +21,13 @@ use crate::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FrameParties {
+pub(crate) enum FrameParties {
     /// The ring demands no co-signer of its delegate, no list reads the move.
     Delegate,
     Transfer(Parties),
 }
 
-pub trait PartySource: Send + Sync {
+pub(crate) trait PartySource: Send + Sync {
     /// Read without the input notes wherever the frame names its senders.
     fn parties(
         &self,
@@ -34,19 +36,19 @@ pub trait PartySource: Send + Sync {
     ) -> impl Future<Output = Result<FrameParties, RingCosignerError>> + Send;
 }
 
-pub struct ListRule<P, S> {
+pub(crate) struct ListRule<P> {
     parties: P,
-    lists: S,
+    lists: StoredLists,
 }
 
-impl<P: PartySource, S: ListStore> ListRule<P, S> {
-    pub(crate) const fn new(parties: P, lists: S) -> Self {
+impl<P: PartySource> ListRule<P> {
+    pub(crate) const fn new(parties: P, lists: StoredLists) -> Self {
         Self { parties, lists }
     }
 }
 
 #[async_trait]
-impl<P: PartySource, S: ListStore> CoSignRule for ListRule<P, S> {
+impl<P: PartySource> CoSignRule for ListRule<P> {
     async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingCosignerError> {
         let parties = match operation.flows {
             CoSignFlows::Frame => match self

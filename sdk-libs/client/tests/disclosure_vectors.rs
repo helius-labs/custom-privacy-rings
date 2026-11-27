@@ -79,10 +79,10 @@ fn every_stream_rebuilds_its_published_hashes_with_no_mint_registry() {
                     tree_id,
                     leaf_index: leaf as u64,
                 },
-                payload: match is_exit(leaf) {
-                    true => encode_confidential_output(&[0xe0; CONFIDENTIAL_DATA_FREE_BODY_LEN])
-                        .unwrap(),
-                    false => encode_ring_body_output(&records[leaf], &[]).unwrap(),
+                payload: if is_exit(leaf) {
+                    encode_confidential_output(&[0xe0; CONFIDENTIAL_DATA_FREE_BODY_LEN]).unwrap()
+                } else {
+                    encode_ring_body_output(&records[leaf], &[]).unwrap()
                 },
             })
             .collect();

@@ -12,10 +12,6 @@
 //!
 //! A ring pins its tracking registry's address, `ring_id` and the seeds authenticate nothing.
 //!
-//! Read after `docs/design/records-and-roots.md`, `program-libs/interface/src/accounts/storage.rs`.
-//! Read before `programs/storage/src/instructions/apply_enrollments.rs`,
-//! `prover/circuits/registry/tracking.go`, `prover/circuits/policy/tracking.go`.
-//!
 //! Invariants:
 //! 1. A row's nullifier key, ciphertext hash and list tag never move after insert. A later entry of its owner moves only `viewing_hash`, and an owner holds one row.
 //! 2. Enrollment refuses `ZERO_NULLIFIER_PUBKEY` and proves every key a Poseidon output, so a present row's key is nonzero, and the policy circuit reads presence from the literal zero an absent query returns.

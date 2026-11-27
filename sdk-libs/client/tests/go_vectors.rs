@@ -133,9 +133,10 @@ fn transfer_statements_reach_the_go_public_inputs() {
             .map(|(record, output)| RingOutput {
                 hash: &zero_hash,
                 owner_tag: zero_tag,
-                body: match output.exit {
-                    true => SlotBody::Exit(&[]),
-                    false => SlotBody::Recipient(record),
+                body: if output.exit {
+                    SlotBody::Exit(&[])
+                } else {
+                    SlotBody::Recipient(record)
                 },
                 record,
             })

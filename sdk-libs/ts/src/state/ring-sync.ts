@@ -47,6 +47,7 @@ import type { SenderClaim } from "./anonymous-sync.js";
 import type { AnonymousWallet, FoundTag, SyncCommit } from "./anonymous-wallet.js";
 import type { ViewingHistory, ViewingKeyEntry } from "./viewing-history.js";
 import { RingError } from "../protocol/error.js";
+import { defined } from "../protocol/defined.js";
 
 export type RingNoteCodecInput = Readonly<{
   ringProgramId: Address;
@@ -113,8 +114,7 @@ function claimingCodec(input: RingNoteCodecInput, reads: SlotReads): RingCodec {
           amount: utxo.amount,
           blinding: utxo.blinding,
           data: utxo.data,
-          ...(dataHash === undefined ? {} : { dataHash }),
-          ...(ringDataHash === undefined ? {} : { ringDataHash }),
+          ...defined({ dataHash, ringDataHash }),
         });
       }
       return openings;
@@ -274,7 +274,7 @@ function eventKey(row: IndexedShieldedTransaction): string {
 }
 
 /** A merge publishes no transaction key or salt. */
-export function isRingMergeRow(tx: IndexedShieldedTransaction): boolean {
+function isRingMergeRow(tx: IndexedShieldedTransaction): boolean {
   return (
     tx.ringProgramId !== undefined &&
     !tx.proofless &&
@@ -321,7 +321,7 @@ async function openedByCore(
     wallet: opened,
     keys,
     transactions,
-    ...(ring === undefined ? {} : { ring }),
+    ...defined({ ring }),
     context,
   });
   return { report, utxos: opened._state().utxos };
@@ -482,9 +482,11 @@ class RingReads {
     const limit = config?.pageLimit ?? 1_000;
     this.#pageLimit = new HalvingPageLimit(limit);
     this.client = {
-      ...(client.solanaRpc === undefined ? {} : { solanaRpc: client.solanaRpc }),
-      ...(client.commitment === undefined ? {} : { commitment: client.commitment }),
-      ...(client.indexerConfig === undefined ? {} : { indexerConfig: client.indexerConfig }),
+      ...defined({
+        solanaRpc: client.solanaRpc,
+        commitment: client.commitment,
+        indexerConfig: client.indexerConfig,
+      }),
       getEncryptedUtxosByTags: (request, rpcConfig, context) =>
         client.getEncryptedUtxosByTags(request, rpcConfig, context),
       getShieldedTransactionsByTags: (request, rpcConfig, context) =>

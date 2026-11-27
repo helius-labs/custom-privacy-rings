@@ -11,8 +11,8 @@ use super::{
     DelegateSnapshotReleaseRequest, GetDelegateNotesRequest, GetDelegateNotesResponse,
     GetWalletStatusRequest, GetWalletStatusResponse, ReadBuildError, ReadSigner, ReadTarget,
     RequestBuildError, WalletSnapshotReleaseAttestation, WalletSnapshotReleaseRequest,
-    WalletStatusRequest, GET_DELEGATE_NOTES, GET_WALLET_STATUS, RELEASE_DELEGATE_SNAPSHOT,
-    RELEASE_WALLET_SNAPSHOT, WALLET_SNAPSHOT_CURSOR_LEN,
+    WalletStatusAttestation, WalletStatusRequest, GET_DELEGATE_NOTES, GET_WALLET_STATUS,
+    RELEASE_DELEGATE_SNAPSHOT, RELEASE_WALLET_SNAPSHOT, WALLET_SNAPSHOT_CURSOR_LEN,
 };
 
 pub struct WalletSnapshotScope<'a> {
@@ -122,13 +122,12 @@ impl<'a> WalletSnapshot<'a> {
         };
         let accepted = match &self.reader {
             SnapshotReader::Wallet(scope) => {
-                let request =
-                    WalletSnapshotReleaseRequest::new(WalletSnapshotReleaseAttestation {
-                        target: scope.target,
-                        wallet: scope.wallet,
-                        cursor,
-                    })?
-                    .sign(scope.signer)?;
+                let request = WalletSnapshotReleaseRequest::new(WalletSnapshotReleaseAttestation {
+                    target: scope.target,
+                    wallet: scope.wallet,
+                    cursor,
+                })
+                .sign(scope.signer)?;
                 api.call::<ReleaseWallet>(request).await?
             }
             SnapshotReader::Delegate(scope) => {
@@ -138,7 +137,7 @@ impl<'a> WalletSnapshot<'a> {
                         delegate: scope.delegate.pubkey(),
                         owner: scope.owner,
                         cursor,
-                    })?
+                    })
                     .sign(scope.delegate)?;
                 api.call::<ReleaseDelegate>(request).await?
             }
@@ -168,7 +167,11 @@ impl<'a> WalletSnapshot<'a> {
     async fn read_page(&self, api: &SprApi) -> Result<WalletSnapshotPage, WalletSnapshotError> {
         Ok(match &self.reader {
             SnapshotReader::Wallet(scope) => {
-                let mut request = WalletStatusRequest::new(scope.target, scope.wallet);
+                let mut request = WalletStatusRequest::new(WalletStatusAttestation {
+                    target: scope.target,
+                    wallet: scope.wallet,
+                    cursor: None,
+                });
                 if let Some(cursor) = &self.state.cursor {
                     request = request.with_cursor(cursor.clone())?;
                 }
@@ -257,10 +260,9 @@ impl SnapshotState {
 }
 
 pub(crate) fn validate_snapshot_cursor(cursor: &Base64String) -> Result<(), ReadBuildError> {
-    match cursor.0.len() == WALLET_SNAPSHOT_CURSOR_LEN {
-        true => Ok(()),
-        false => Err(ReadBuildError::Cursor),
-    }
+    (cursor.0.len() == WALLET_SNAPSHOT_CURSOR_LEN)
+        .then_some(())
+        .ok_or(ReadBuildError::Cursor)
 }
 
 impl RpcMethod for ReadWallet {
@@ -379,7 +381,6 @@ mod tests {
             cursor: cursor(1),
         };
         let request = WalletSnapshotReleaseRequest::new(release.clone())
-            .unwrap()
             .at(1)
             .sign(&signer)
             .unwrap();
@@ -404,15 +405,43 @@ mod tests {
         let mut long = cursor(1);
         long.0.push(1);
         for cursor in [long, vec![].into()] {
-            assert!(
+            assert!(matches!(
                 WalletSnapshotReleaseRequest::new(WalletSnapshotReleaseAttestation {
                     target: target(),
                     wallet: Address::new_from_array([4; 32]),
                     cursor,
                 })
-                .is_err()
-            );
+                .sign(&Keypair::new()),
+                Err(ReadBuildError::Cursor)
+            ));
         }
+    }
+
+    #[tokio::test]
+    async fn a_release_under_a_cursor_of_another_length_is_refused_before_it_is_sent() {
+        let http = Canned::new(Vec::new());
+        let api = SprApi::with_client("http://ring", http.clone());
+        let signer = Keypair::new();
+        let mut short = cursor(1);
+        short.0.pop();
+        let wallet = WalletSnapshot::new_wallet(WalletSnapshotScope {
+            target: target(),
+            wallet: signer.pubkey(),
+            signer: &signer,
+        });
+        let delegate = WalletSnapshot::new_delegate(DelegateSnapshotScope {
+            target: target(),
+            owner: signer.pubkey(),
+            delegate: &signer,
+        });
+        for mut snapshot in [wallet, delegate] {
+            snapshot.state.release_cursor = Some(short.clone());
+            assert!(matches!(
+                snapshot.close(&api).await,
+                Err(WalletSnapshotError::Read(ReadBuildError::Cursor))
+            ));
+        }
+        assert!(http.methods.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

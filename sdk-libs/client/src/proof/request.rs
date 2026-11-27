@@ -16,7 +16,7 @@ use zolana_ring_member_registry::{
 use zolana_ring_policy::{AssetLimits, EncodedRuleTable, SourceMap, MAX_SOURCES};
 use zolana_ring_transaction::ClassifiedInput;
 
-use crate::{prover::fe, RingError, REDACTED};
+use crate::{prover::fe, RingError};
 
 #[cfg(test)]
 #[path = "../tests/proof/request.rs"]
@@ -48,34 +48,20 @@ pub(crate) struct Opening {
     pub ring_program_id: [u8; 32],
 }
 
-impl core::fmt::Debug for Opening {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            domain,
-            tree_id,
-            owner_pk_hash,
-            nullifier_pk,
-            asset,
-            amount,
-            blinding: _,
-            data_hash,
-            ring_data_hash,
-            ring_program_id,
-        } = self;
-        f.debug_struct("Opening")
-            .field("domain", domain)
-            .field("tree_id", tree_id)
-            .field("owner_pk_hash", owner_pk_hash)
-            .field("nullifier_pk", nullifier_pk)
-            .field("asset", asset)
-            .field("amount", amount)
-            .field("blinding", &REDACTED)
-            .field("data_hash", data_hash)
-            .field("ring_data_hash", ring_data_hash)
-            .field("ring_program_id", ring_program_id)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(Opening {
+    shown: [
+        domain,
+        tree_id,
+        owner_pk_hash,
+        nullifier_pk,
+        asset,
+        amount,
+        data_hash,
+        ring_data_hash,
+        ring_program_id
+    ],
+    hidden: [blinding],
+});
 
 impl Opening {
     pub fn output(output: &SppProofOutputUtxo, tree_id: u16) -> Result<Self, RingError> {
@@ -96,13 +82,15 @@ impl Opening {
         let real = input.is_note();
         Ok(Self::with_owner(
             ProofInputUtxo::try_from(input)?,
-            match real {
-                true => input.utxo.owner.owner_proof_input_hash()?,
-                false => [0; 32],
+            if real {
+                input.utxo.owner.owner_proof_input_hash()?
+            } else {
+                [0; 32]
             },
-            match real {
-                true => input.nullifier_pubkey,
-                false => [0; 32],
+            if real {
+                input.nullifier_pubkey
+            } else {
+                [0; 32]
             },
         ))
     }

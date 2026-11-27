@@ -10,7 +10,7 @@ use zolana_ring_policy::ListSet;
 
 use ring_service_core::{
     landing::Attempt,
-    sql::{bytes, count, integer, placeholders, read_address, read_bytes, read_integer, statement},
+    sql::{self, bytes, count, integer, placeholders, read_address, read_bytes, read_integer},
 };
 
 use crate::record_update::{
@@ -29,8 +29,6 @@ const PENDING_APPROVAL_COLUMNS: &str = "id, signer, member, writes, awaited, val
 const HEAD_COLUMNS: &str =
     "u.seq, u.id, u.ring, u.registry, u.writes, u.signer, u.role, u.queued_slot, \
                             u.valid_until_slot, u.unregistered";
-/// Keys bound into one delete, under every backend's parameter ceiling.
-const KEYS_PER_DELETE: usize = 256;
 /// One update past a full batch, the planner reads whether more wallet updates wait behind it.
 const OLDEST_HEADS: usize = APPLY_BATCH + 1;
 const EXPIRY_HEADS_PER_STATUS: usize = APPLY_BATCH;
@@ -107,7 +105,11 @@ impl<'a> UpdateQueue<'a> {
         Ok(self.query_one(sql, vec![bytes(id)]).await?.is_some())
     }
 
-    pub async fn merge_unregistered(&self, id: &[u8; 32], owners: &[Address]) -> Result<(), DbErr> {
+    pub(crate) async fn merge_unregistered(
+        &self,
+        id: &[u8; 32],
+        owners: &[Address],
+    ) -> Result<(), DbErr> {
         if owners.is_empty() {
             return Ok(());
         }
@@ -118,13 +120,12 @@ impl<'a> UpdateQueue<'a> {
             }
             _ => "SELECT unregistered FROM records_updates WHERE id=$1 AND status IN ($2,$3)",
         };
-        let Some(row) = transaction
-            .query_one(statement(
-                &transaction,
-                select,
-                vec![bytes(id), QUEUED.into(), PENDING_APPROVAL.into()],
-            ))
-            .await?
+        let Some(row) = sql::Query::new(
+            select,
+            vec![bytes(id), QUEUED.into(), PENDING_APPROVAL.into()],
+        )
+        .one(&transaction)
+        .await?
         else {
             return transaction.commit().await;
         };
@@ -139,18 +140,17 @@ impl<'a> UpdateQueue<'a> {
             let encoded: Vec<u8> = merged.iter().flat_map(|owner| owner.to_bytes()).collect();
             let update =
                 "UPDATE records_updates SET unregistered=$2 WHERE id=$1 AND status IN ($3,$4)";
-            transaction
-                .execute(statement(
-                    &transaction,
-                    update,
-                    vec![
-                        bytes(id),
-                        encoded.into(),
-                        QUEUED.into(),
-                        PENDING_APPROVAL.into(),
-                    ],
-                ))
-                .await?;
+            sql::Query::new(
+                update,
+                vec![
+                    bytes(id),
+                    encoded.into(),
+                    QUEUED.into(),
+                    PENDING_APPROVAL.into(),
+                ],
+            )
+            .execute(&transaction)
+            .await?;
         }
         transaction.commit().await
     }
@@ -196,8 +196,8 @@ impl<'a> UpdateQueue<'a> {
                 .collect::<Vec<u8>>()
                 .into(),
         ];
-        let inserted: Option<i64> = transaction
-            .query_one(statement(&transaction, sql, values))
+        let inserted: Option<i64> = sql::Query::new(sql, values)
+            .one(&transaction)
             .await?
             .map(|row| row.try_get("", "seq"))
             .transpose()?;
@@ -212,12 +212,8 @@ impl<'a> UpdateQueue<'a> {
             .map_err(|refusal| DbErr::Custom(refusal.to_string()))?;
         for member in &members {
             let sql = "INSERT INTO records_update_members(seq,registry,member) VALUES($1,$2,$3)";
-            transaction
-                .execute(statement(
-                    &transaction,
-                    sql,
-                    vec![seq.into(), registry.clone(), bytes(member)],
-                ))
+            sql::Query::new(sql, vec![seq.into(), registry.clone(), bytes(member)])
+                .execute(&transaction)
                 .await?;
         }
         let approves = new.approves;
@@ -232,10 +228,8 @@ impl<'a> UpdateQueue<'a> {
                 registry.clone(),
                 bytes(new.request.update.ring.0.as_array()),
             ];
-            let joined = transaction
-                .execute(statement(&transaction, sql, values))
-                .await?;
-            if joined.rows_affected() != 1 {
+            let joined = sql::Query::new(sql, values).execute(&transaction).await?;
+            if joined != 1 {
                 transaction.rollback().await?;
                 return Err(corrupt("pending approval scope"));
             }
@@ -244,9 +238,7 @@ impl<'a> UpdateQueue<'a> {
         if !approves.is_empty() {
             let sql = "UPDATE records_updates SET valid_until_slot=(SELECT MIN(valid_until_slot) \
                        FROM records_updates WHERE id=$1 OR joined=$1) WHERE id=$1";
-            transaction
-                .execute(statement(&transaction, sql, vec![id]))
-                .await?;
+            sql::Query::new(sql, vec![id]).execute(&transaction).await?;
         }
         transaction.commit().await
     }
@@ -292,7 +284,7 @@ impl<'a> UpdateQueue<'a> {
         .collect()
     }
 
-    pub async fn open_batch(&self, registry: Address) -> Result<Option<OpenBatch>, DbErr> {
+    pub(crate) async fn open_batch(&self, registry: Address) -> Result<Option<OpenBatch>, DbErr> {
         let sql = "SELECT id, signature, last_valid_block_height FROM records_batches \
                    WHERE registry=$1 AND status=$2";
         let values = vec![bytes(registry.as_array()), SUBMITTED.into()];
@@ -428,7 +420,7 @@ impl<'a> UpdateQueue<'a> {
             .collect()
     }
 
-    pub async fn pending_approvals(
+    pub(crate) async fn pending_approvals(
         &self,
         query: ApprovalCandidates<'_>,
     ) -> Result<Vec<PendingApproval>, DbErr> {
@@ -472,7 +464,7 @@ impl<'a> UpdateQueue<'a> {
             .collect()
     }
 
-    pub async fn pending_approval_page(
+    pub(crate) async fn pending_approval_page(
         &self,
         page: PendingApprovalPage,
     ) -> Result<Option<Vec<PendingApproval>>, DbErr> {
@@ -510,7 +502,7 @@ impl<'a> UpdateQueue<'a> {
             .map(Some)
     }
 
-    pub async fn refuse_pending_approval(
+    pub(crate) async fn refuse_pending_approval(
         &self,
         scope: ApprovalScope,
         id: &[u8; 32],
@@ -537,18 +529,17 @@ impl<'a> UpdateQueue<'a> {
             let sql = "SELECT id, ring, registry FROM records_updates \
                        WHERE registry=$1 AND status=$2 AND joined IS NULL AND valid_until_slot<$3 \
                        ORDER BY valid_until_slot, seq LIMIT $4";
-            let heads = transaction
-                .query_all(statement(
-                    &transaction,
-                    sql,
-                    vec![
-                        bytes(registry.as_array()),
-                        status.into(),
-                        integer(slot)?,
-                        count(EXPIRY_HEADS_PER_STATUS)?,
-                    ],
-                ))
-                .await?;
+            let heads = sql::Query::new(
+                sql,
+                vec![
+                    bytes(registry.as_array()),
+                    status.into(),
+                    integer(slot)?,
+                    count(EXPIRY_HEADS_PER_STATUS)?,
+                ],
+            )
+            .all(&transaction)
+            .await?;
             for head in heads {
                 let scope = ApprovalScope::from_row(&head)?;
                 let sql = "UPDATE records_updates SET status=$1, reason=$2 \
@@ -575,9 +566,7 @@ impl<'a> UpdateQueue<'a> {
             let sql =
                 "UPDATE records_updates SET status=$1, joined=NULL WHERE joined=$2 AND status=$3";
             let values = vec![PENDING_APPROVAL.into(), bytes(id), QUEUED.into()];
-            transaction
-                .execute(statement(&transaction, sql, values))
-                .await?;
+            sql::Query::new(sql, values).execute(&transaction).await?;
         }
         let sql = "UPDATE records_updates SET status=$2, reason=$3 \
                    WHERE (id=$1 OR joined=$1) AND status=$4";
@@ -592,7 +581,7 @@ impl<'a> UpdateQueue<'a> {
     }
 
     /// Recorded before the transaction is sent, a restart settles it by its signature.
-    pub async fn record_batch(&self, batch: NewBatch<'_>) -> Result<(), DbErr> {
+    pub(crate) async fn record_batch(&self, batch: NewBatch<'_>) -> Result<(), DbErr> {
         let transaction = self.db.begin().await?;
         let sql =
             "INSERT INTO records_batches(registry,signature,revision,last_valid_block_height,\
@@ -604,8 +593,8 @@ impl<'a> UpdateQueue<'a> {
             integer(batch.attempt.last_valid_block_height)?,
             SUBMITTED.into(),
         ];
-        let id: i64 = transaction
-            .query_one(statement(&transaction, sql, values))
+        let id: i64 = sql::Query::new(sql, values)
+            .one(&transaction)
             .await?
             .ok_or_else(|| corrupt("batch id"))?
             .try_get("", "id")?;
@@ -625,9 +614,7 @@ impl<'a> UpdateQueue<'a> {
                 bytes(update.registry.as_array()),
                 bytes(update.ring.as_array()),
             ];
-            let claimed = transaction
-                .query_all(statement(&transaction, sql, values))
-                .await?;
+            let claimed = sql::Query::new(sql, values).all(&transaction).await?;
             let mut matches = claimed.len() == update.joined.len() + 1;
             for row in claimed {
                 let member = read_bytes::<32>(&row, "id")?;
@@ -654,12 +641,8 @@ impl<'a> UpdateQueue<'a> {
         };
         let transaction = self.db.begin().await?;
         let sql = "UPDATE records_batches SET status=$1 WHERE id=$2";
-        transaction
-            .execute(statement(
-                &transaction,
-                sql,
-                vec![batch_status.into(), batch.into()],
-            ))
+        sql::Query::new(sql, vec![batch_status.into(), batch.into()])
+            .execute(&transaction)
             .await?;
         match outcome {
             BatchOutcome::Applied => {
@@ -678,12 +661,8 @@ impl<'a> UpdateQueue<'a> {
                 finish_updates(&transaction, sql, values).await?;
                 let sql = "UPDATE records_updates SET status=$1, batch=NULL, \
                            attempts=attempts+1 WHERE batch=$2";
-                transaction
-                    .execute(statement(
-                        &transaction,
-                        sql,
-                        vec![QUEUED.into(), batch.into()],
-                    ))
+                sql::Query::new(sql, vec![QUEUED.into(), batch.into()])
+                    .execute(&transaction)
                     .await?;
             }
         }
@@ -691,11 +670,11 @@ impl<'a> UpdateQueue<'a> {
     }
 
     async fn query_one(&self, sql: &str, values: Vec<Value>) -> Result<Option<QueryResult>, DbErr> {
-        self.db.query_one(statement(self.db, sql, values)).await
+        sql::Query::new(sql, values).one(self.db).await
     }
 
     async fn query_all(&self, sql: &str, values: Vec<Value>) -> Result<Vec<QueryResult>, DbErr> {
-        let rows = self.db.query_all(statement(self.db, sql, values)).await?;
+        let rows = sql::Query::new(sql, values).all(self.db).await?;
         #[cfg(test)]
         self.read
             .fetch_add(rows.len(), std::sync::atomic::Ordering::Relaxed);
@@ -719,26 +698,20 @@ async fn finish_updates<C: ConnectionTrait>(
     sql: &str,
     values: Vec<Value>,
 ) -> Result<usize, DbErr> {
-    let finished = connection
-        .query_all(statement(
-            connection,
-            format!("{sql} RETURNING seq"),
-            values,
-        ))
+    let finished = sql::Query::new(format!("{sql} RETURNING seq"), values)
+        .all(connection)
         .await?;
     let seqs = finished
         .iter()
         .map(|row| row.try_get::<i64>("", "seq"))
         .collect::<Result<Vec<_>, _>>()?;
-    for chunk in seqs.chunks(KEYS_PER_DELETE) {
+    for chunk in seqs.chunks(sql::KEYS_PER_STATEMENT) {
         let sql = format!(
             "DELETE FROM records_update_members WHERE seq IN ({})",
             placeholders(1, chunk.len())
         );
         let values = chunk.iter().map(|seq| Value::from(*seq)).collect();
-        connection
-            .execute(statement(connection, &sql, values))
-            .await?;
+        sql::Query::new(&sql, values).execute(connection).await?;
     }
     Ok(seqs.len())
 }
@@ -777,14 +750,14 @@ fn stored_owners(row: &QueryResult) -> Result<Vec<Address>, DbErr> {
         .try_get::<Option<Vec<u8>>>("", "unregistered")?
         .unwrap_or_default();
     let (owners, rest) = stored.as_chunks::<32>();
-    match rest.is_empty() {
-        true => Ok(owners
-            .iter()
-            .copied()
-            .map(Address::new_from_array)
-            .collect()),
-        false => Err(corrupt("unregistered")),
+    if !rest.is_empty() {
+        return Err(corrupt("unregistered"));
     }
+    Ok(owners
+        .iter()
+        .copied()
+        .map(Address::new_from_array)
+        .collect())
 }
 
 fn stored_writes(row: &QueryResult) -> Result<Vec<RecordWriteData>, DbErr> {
@@ -907,18 +880,16 @@ mod tests {
             1,
             UpdateSigner::PolicyAuthority(Address::new_from_array([2; 32])),
         );
-        queue
-            .db
-            .execute(statement(
-                queue.db,
-                "UPDATE records_updates SET registry=$1 WHERE id=$2",
-                vec![
-                    bytes(Address::new_from_array([3; 32]).as_array()),
-                    bytes(&pending.update.id.0 .0),
-                ],
-            ))
-            .await
-            .expect("change scope");
+        sql::Query::new(
+            "UPDATE records_updates SET registry=$1 WHERE id=$2",
+            vec![
+                bytes(Address::new_from_array([3; 32]).as_array()),
+                bytes(&pending.update.id.0 .0),
+            ],
+        )
+        .execute(queue.db)
+        .await
+        .expect("change scope");
         assert!(approval
             .insert(&queue, &[pending.update.id.0 .0])
             .await
@@ -949,18 +920,16 @@ mod tests {
             .await
             .expect("approval");
         let batch = queue.plan(REGISTRY, 0).await.expect("plan").expect("batch");
-        queue
-            .db
-            .execute(statement(
-                queue.db,
-                "UPDATE records_updates SET registry=$1 WHERE id=$2",
-                vec![
-                    bytes(Address::new_from_array([3; 32]).as_array()),
-                    bytes(&pending.update.id.0 .0),
-                ],
-            ))
-            .await
-            .expect("change scope");
+        sql::Query::new(
+            "UPDATE records_updates SET registry=$1 WHERE id=$2",
+            vec![
+                bytes(Address::new_from_array([3; 32]).as_array()),
+                bytes(&pending.update.id.0 .0),
+            ],
+        )
+        .execute(queue.db)
+        .await
+        .expect("change scope");
         assert!(queue.plan(REGISTRY, 0).await.is_err());
         assert!(queue
             .record_batch(NewBatch {
@@ -1096,16 +1065,10 @@ mod tests {
             let winner_pid = backend_pid(&transaction).await;
             match winner {
                 QueueWinner::Claim => {
-                    let claimed_batch: i64 = transaction.query_one(statement(&transaction,
-                        "INSERT INTO records_batches(registry,signature,revision,last_valid_block_height,status) \
-                         VALUES($1,$2,0,20,$3) RETURNING id",
-                        vec![bytes(registry.as_array()), bytes(Signature::default().as_ref()), SUBMITTED.into()],
-                    )).await.expect("winning batch").expect("batch row").try_get("", "id").expect("batch id");
-                    let claimed = transaction.execute(statement(&transaction,
-                        "UPDATE records_updates SET status=$1,batch=$2 WHERE registry=$3 AND status=$4",
-                        vec![SUBMITTED.into(), claimed_batch.into(), bytes(registry.as_array()), QUEUED.into()],
-                    )).await.expect("winning claim");
-                    assert_eq!(claimed.rows_affected(), 2);
+                    let claimed_batch: i64 = sql::Query::new("INSERT INTO records_batches(registry,signature,revision,last_valid_block_height,status) \
+                         VALUES($1,$2,0,20,$3) RETURNING id", vec![bytes(registry.as_array()), bytes(Signature::default().as_ref()), SUBMITTED.into()]).one(&transaction).await.expect("winning batch").expect("batch row").try_get("", "id").expect("batch id");
+                    let claimed = sql::Query::new("UPDATE records_updates SET status=$1,batch=$2 WHERE registry=$3 AND status=$4", vec![SUBMITTED.into(), claimed_batch.into(), bytes(registry.as_array()), QUEUED.into()]).execute(&transaction).await.expect("winning claim");
+                    assert_eq!(claimed, 2);
                 }
                 QueueWinner::Expiry => {
                     let expired = finish_updates(&transaction,
@@ -1138,17 +1101,16 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 loop {
                     let observer = observer_store.connection();
-                    let blocked: bool = observer
-                        .query_one(statement(
-                            observer,
-                            "SELECT $1 = ANY(pg_blocking_pids($2)) AS blocked",
-                            vec![winner_pid.into(), contender_pid.into()],
-                        ))
-                        .await
-                        .expect("lock wait")
-                        .expect("lock row")
-                        .try_get("", "blocked")
-                        .expect("blocked");
+                    let blocked: bool = sql::Query::new(
+                        "SELECT $1 = ANY(pg_blocking_pids($2)) AS blocked",
+                        vec![winner_pid.into(), contender_pid.into()],
+                    )
+                    .one(observer)
+                    .await
+                    .expect("lock wait")
+                    .expect("lock row")
+                    .try_get("", "blocked")
+                    .expect("blocked");
                     if blocked {
                         break;
                     }
@@ -1239,9 +1201,8 @@ mod tests {
                 "DELETE FROM records_updates WHERE registry=$1",
                 "DELETE FROM records_batches WHERE registry=$1",
             ] {
-                queue
-                    .db
-                    .execute(statement(queue.db, sql, vec![bytes(registry.as_array())]))
+                sql::Query::new(sql, vec![bytes(registry.as_array())])
+                    .execute(queue.db)
                     .await
                     .expect("remove fixture rows");
             }
@@ -1305,12 +1266,8 @@ mod tests {
     }
 
     async fn backend_pid(connection: &impl ConnectionTrait) -> i32 {
-        connection
-            .query_one(statement(
-                connection,
-                "SELECT pg_backend_pid() AS pid",
-                Vec::new(),
-            ))
+        sql::Query::new("SELECT pg_backend_pid() AS pid", Vec::new())
+            .one(connection)
             .await
             .expect("backend pid")
             .expect("pid row")
@@ -1404,7 +1361,7 @@ mod tests {
             // Each update writes one record, an applied update keeps no member row.
             let queued = 2 * UPDATES as usize - (flush + 1) * APPLY_BATCH;
             assert_eq!(
-                member_rows(&queue).await,
+                registry_member_rows(&queue, REGISTRY).await,
                 i64::try_from(queued).expect("count")
             );
         }

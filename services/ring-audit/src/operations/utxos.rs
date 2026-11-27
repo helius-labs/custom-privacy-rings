@@ -3,13 +3,10 @@
 //! A wallet read takes its rows and its history slot from one snapshot, never older rows with newer
 //! coverage.
 //!
-//! Beside a database the mirror is a bounded cache only commits and reloads fill.
-//!
-//! Read before `operations/page_work.rs`, it records and replays a page against the store.
+//! The mirror is a bounded cache only commits and reloads fill.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    ops::Bound,
     sync::{PoisonError, RwLock},
     time::Duration,
 };
@@ -24,18 +21,15 @@ use tokio::sync::Mutex as AsyncMutex;
 use zolana_ring_client::{
     history::HistoryPosition,
     rpc::{
-        AuditedUtxoView, GetSpendCoverageResponse, GetWalletStatusResponse, SpendCoverageTotals,
-        WalletBalance, WalletEnrollment, WalletNote, WalletNoteStatus,
+        AuditedUtxoView, GetSpendCoverageResponse, GetWalletStatusResponse, WalletBalance,
+        WalletEnrollment, WalletNote, WalletNoteStatus,
     },
     AuditedMergeOutput, ConfirmedMerge, KnownUtxo, UtxoOwner,
 };
 use zolana_ring_policy::Member;
 use zolana_ring_transaction::RingAssets;
 
-use ring_service_core::{
-    bounded_map::{BoundedMap, Cached},
-    database::Store,
-};
+use ring_service_core::{bounded_map::BoundedMap, database::Store};
 
 use crate::{
     error::{RingAuditError, ServiceError},
@@ -44,17 +38,12 @@ use crate::{
     owner_notes::{OwnerNotesPage, OWNER_ROW_BATCH},
     projection_lease::ProjectionLease,
     projection_reads::{EnrollmentKey, ProjectionReads},
-    spend_coverage::{CoverageCursor, CoverageDetails},
+    spend_coverage::CoverageCursor,
     spend_machine::{NoteRead, SpendRow, SpendState},
-    spent_index::{
-        read_snapshot, state_name, Checkpoint, CommittedPage, HistoryScope, LoadedSpends, NoteSeal,
-    },
-    tracking::{
-        EnrollmentAdmission, HeldEnrollment, HeldEnrollments, TrackingCursor, TrackingRefusal,
-    },
+    spent_index::{read_snapshot, Checkpoint, CommittedPage, LoadedSpends, NoteSeal},
+    tracking::{EnrollmentAdmission, HeldEnrollment, HeldEnrollments, TrackingCursor},
     wallet_snapshots::{
-        MemoryCapture, SharedWalletSnapshots, SnapshotPage, WalletSnapshotLimits,
-        WalletSnapshotRelease, WalletSnapshots,
+        SnapshotPage, WalletSnapshotLimits, WalletSnapshotRelease, WalletSnapshots,
     },
 };
 
@@ -76,11 +65,10 @@ pub const UTXO_BACKFILL_INTERVAL: Duration = Duration::from_secs(30);
 /// Pages one backfill run reads, the next run resumes from its position.
 pub(crate) const MAX_BACKFILL_PAGES: usize = 64;
 
-/// Entries the mirror keeps of each history map beside a database, the rest read from storage.
+/// Per map of the mirror.
 pub(crate) const MAX_CACHED_ENTRIES: usize = 65_536;
 
 /// The guards are never held across an await, a commit writes the mirror after its transaction.
-#[derive(Default)]
 pub struct AuditStore {
     /// A note whose record publishes no key rebuilds under this ring's program id.
     pub(crate) ring: Address,
@@ -94,15 +82,10 @@ pub struct AuditStore {
     /// One backfill and key refresh at a time.
     pub(crate) backfill: AsyncMutex<Backfill>,
     backing: Backing,
-    wallet_snapshots: SharedWalletSnapshots,
     snapshot_limits: WalletSnapshotLimits,
 }
 
-#[derive(Default)]
 pub(crate) enum Backing {
-    /// No database, the mirror is the only copy.
-    #[default]
-    Memory,
     Database {
         store: Store,
         ring: Address,
@@ -124,17 +107,12 @@ pub(crate) struct Backfill {
     pub writer: Option<ProjectionLease>,
 }
 
-/// The three history maps hold every entry without a database and a bounded cache beside one.
-#[derive(Default)]
 struct SpendBook {
     notes: BoundedMap<[u8; 32], StoredUtxo>,
     /// The note index, a late secret fills it for that owner's notes.
     by_nullifier: BoundedMap<[u8; 32], [u8; 32]>,
     rows: BoundedMap<[u8; 32], SpendRow>,
-    /// Kept only by a complete mirror, a database holds the owner index of a cache.
-    active: ActiveIndex,
-    unread: BTreeSet<CreatedIn>,
-    faults: Vec<SpendRow>,
+    first_unread: Option<CreatedIn>,
     context: Context,
     position_slot: Option<u64>,
     /// The projection revision every cached entry is current at, `None` before the first load.
@@ -160,13 +138,6 @@ pub struct PageDelta {
     first_unread: Option<Option<CreatedIn>>,
 }
 
-/// The keys of each owner's live notes and of spends past the pruned slot.
-#[derive(Default)]
-struct ActiveIndex {
-    by_owner: HashMap<[u8; 32], BTreeMap<[u8; 32], Option<u64>>>,
-    settling: BTreeSet<(u64, [u8; 32], [u8; 32])>,
-}
-
 /// One note's whole index row as a page leaves it, keyed by its owner's member tag.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct OwnerChange {
@@ -174,7 +145,7 @@ pub(crate) struct OwnerChange {
     pub note: IndexedNote,
 }
 
-/// `key` orders a wallet page and names its cursor, the commitment in memory and the note tag on disk.
+/// `key` orders a wallet page and names its cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct IndexedNote {
     pub key: [u8; 32],
@@ -319,33 +290,19 @@ impl SpendBook {
             notes: BoundedMap::bounded(capacity),
             by_nullifier: BoundedMap::bounded(capacity),
             rows: BoundedMap::bounded(capacity),
-            ..Self::default()
+            first_unread: None,
+            context: Context::default(),
+            position_slot: None,
+            revision: None,
         }
-    }
-
-    const fn is_complete(&self) -> bool {
-        self.notes.is_complete()
     }
 
     fn absorb(&mut self, delta: PageDelta) {
-        if self.is_complete() {
-            self.active.apply(&delta.owners, delta.prune_through);
-        }
         self.notes.extend(delta.notes);
         self.by_nullifier.extend(delta.by_nullifier);
         self.rows.extend(delta.rows);
-        if self.is_complete() {
-            for frame in delta.read {
-                self.unread.remove(&frame);
-            }
-            self.unread.extend(delta.unread);
-            for fault in delta.faults {
-                if !self.faults.contains(&fault) {
-                    self.faults.push(fault);
-                }
-            }
-        } else if let Some(first_unread) = delta.first_unread {
-            self.unread = first_unread.into_iter().collect();
+        if let Some(first_unread) = delta.first_unread {
+            self.first_unread = first_unread;
         }
         if let Some(checkpoint) = delta.checkpoint {
             self.position_slot = checkpoint.position.checkpoint();
@@ -359,42 +316,7 @@ impl SpendBook {
     }
 
     fn history_through(&self) -> u64 {
-        history_through(
-            self.unread.first().map(|frame| frame.slot),
-            self.context.slot,
-        )
-    }
-
-    fn history_scope(&self) -> HistoryScope {
-        if self.is_complete() {
-            HistoryScope::Everything
-        } else {
-            HistoryScope::Cold
-        }
-    }
-
-    fn owner_page(&self, range: OwnerRange) -> OwnerPage {
-        let Some(keys) = self.active.by_owner.get(&range.member) else {
-            return OwnerPage::default();
-        };
-        let lower = range.after.map_or(Bound::Unbounded, Bound::Excluded);
-        let mut rows = keys.range::<[u8; 32], _>((lower, Bound::Unbounded));
-        let notes = rows
-            .by_ref()
-            .take(range.limit)
-            .filter_map(|(commitment, spent_at)| {
-                Some(IndexedNote {
-                    key: *commitment,
-                    commitment: *commitment,
-                    note: *self.notes.get(commitment)?,
-                    spent_at: *spent_at,
-                })
-            })
-            .collect();
-        OwnerPage {
-            notes,
-            more: rows.next().is_some(),
-        }
+        history_through(self.first_unread.map(|frame| frame.slot), self.context.slot)
     }
 }
 
@@ -403,37 +325,6 @@ pub(crate) fn history_through(first_unread_slot: Option<u64>, context_slot: u64)
     first_unread_slot.map_or(context_slot, |slot| {
         context_slot.min(slot.saturating_sub(1))
     })
-}
-
-impl ActiveIndex {
-    fn apply(&mut self, changes: &[OwnerChange], prune_through: u64) {
-        for change in changes {
-            let IndexedNote {
-                commitment,
-                spent_at,
-                ..
-            } = change.note;
-            self.by_owner
-                .entry(change.member)
-                .or_default()
-                .insert(commitment, spent_at);
-            if let Some(slot) = spent_at {
-                self.settling.insert((slot, change.member, commitment));
-            }
-        }
-        while let Some(&(slot, member, commitment)) = self.settling.first() {
-            if slot > prune_through {
-                break;
-            }
-            self.settling.pop_first();
-            if let Some(keys) = self.by_owner.get_mut(&member) {
-                keys.remove(&commitment);
-                if keys.is_empty() {
-                    self.by_owner.remove(&member);
-                }
-            }
-        }
-    }
 }
 
 impl IndexedNote {
@@ -568,21 +459,19 @@ impl PageDelta {
 
 impl AuditStore {
     pub(crate) fn new(ring: Address, backing: Backing) -> Self {
-        let (book, enrollments) = match &backing {
-            Backing::Database { capacity, .. } => (
-                SpendBook::bounded(*capacity),
-                HeldEnrollments::bounded(*capacity),
-            ),
-            Backing::Memory | Backing::Unavailable => {
-                (SpendBook::default(), HeldEnrollments::default())
-            }
+        let capacity = match &backing {
+            Backing::Database { capacity, .. } => *capacity,
+            Backing::Unavailable => 0,
         };
         Self {
             ring,
-            book: RwLock::new(book),
-            enrollments: RwLock::new(enrollments),
+            book: RwLock::new(SpendBook::bounded(capacity)),
+            enrollments: RwLock::new(HeldEnrollments::bounded(capacity)),
+            assets: RwLock::default(),
+            late_owners: RwLock::default(),
+            backfill: AsyncMutex::default(),
             backing,
-            ..Self::default()
+            snapshot_limits: WalletSnapshotLimits::default(),
         }
     }
 
@@ -590,37 +479,26 @@ impl AuditStore {
         self.book.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// `None` for a complete mirror, it never misses.
-    fn reads(&self) -> Result<Option<ProjectionReads<'_>>, RingAuditError> {
+    fn reads(&self) -> Result<ProjectionReads<'_>, RingAuditError> {
         match &self.backing {
-            Backing::Memory => Ok(None),
             Backing::Database {
                 store, ring, seal, ..
-            } => Ok(Some(ProjectionReads {
+            } => Ok(ProjectionReads {
                 db: store.connection(),
                 ring: *ring,
                 seal,
-            })),
+            }),
             Backing::Unavailable => Err(RingAuditError::Service(ServiceError::StateUnavailable)),
         }
     }
 
-    pub(crate) fn history_scope(&self) -> HistoryScope {
-        self.read_book().history_scope()
-    }
-
-    /// Takes one snapshot's rows, unread frames and faults replaced whole.
     pub(crate) fn refresh(&self, loaded: LoadedSpends, revision: i64) {
         let LoadedSpends {
             checkpoint,
-            notes,
-            rows,
-            unread,
-            faults,
+            first_unread,
         } = loaded;
-        let unread: BTreeSet<CreatedIn> = unread.into_iter().collect();
         let mut book = self.book.write().unwrap_or_else(PoisonError::into_inner);
-        if !book.is_complete() && book.revision != Some(revision) {
+        if book.revision != Some(revision) {
             book.notes.clear();
             book.by_nullifier.clear();
             book.rows.clear();
@@ -629,29 +507,12 @@ impl AuditStore {
                 .unwrap_or_else(PoisonError::into_inner)
                 .clear();
         }
-
-        let mut delta = PageDelta {
-            by_nullifier: notes
-                .iter()
-                .filter_map(|(commitment, note)| Some((note.nullifier?, *commitment)))
-                .collect(),
-            notes: notes.into_iter().collect(),
-            rows: rows.into_iter().map(|row| (row.nullifier, row)).collect(),
-            prune_through: history_through(
-                unread.first().map(|frame| frame.slot),
-                checkpoint.through.slot,
-            ),
+        book.absorb(PageDelta {
             checkpoint: Some(checkpoint),
             revision: Some(revision),
+            first_unread: Some(first_unread),
             ..PageDelta::default()
-        };
-        // A complete mirror rebuilds its owner index from the notes and rows it loaded.
-        if book.is_complete() {
-            delta.owners = owner_changes_of(&delta);
-        }
-        book.absorb(delta);
-        book.unread = unread;
-        book.faults = faults;
+        });
     }
 
     /// Runs after the page's transaction commits, a crash before it replays the page.
@@ -678,9 +539,10 @@ impl AuditStore {
         &self,
         commitments: &[[u8; 32]],
     ) -> Result<HashMap<[u8; 32], StoredUtxo>, RingAuditError> {
-        let (mut found, unknown) = self.cached(commitments, |book, key| book.notes.cached(key));
-        if let Some(reads) = self.reads()?.filter(|_| !unknown.is_empty()) {
-            found.extend(reads.notes(&unknown).await?);
+        let (mut found, unknown) =
+            self.cached(commitments, |book, key| book.notes.get(key).copied());
+        if !unknown.is_empty() {
+            found.extend(self.reads()?.notes(&unknown).await?);
         }
         Ok(found)
     }
@@ -690,25 +552,24 @@ impl AuditStore {
         nullifiers: &[[u8; 32]],
     ) -> Result<HashMap<[u8; 32], ([u8; 32], StoredUtxo)>, RingAuditError> {
         let (commitments, unknown) =
-            self.cached(nullifiers, |book, key| book.by_nullifier.cached(key));
+            self.cached(nullifiers, |book, key| book.by_nullifier.get(key).copied());
         let (mut found, evicted) = {
             let book = self.read_book();
             let mut found = HashMap::new();
             let mut evicted = Vec::new();
             for (nullifier, commitment) in commitments {
-                match book.notes.cached(&commitment) {
-                    Cached::Hit(note) => {
-                        found.insert(nullifier, (commitment, note));
+                match book.notes.get(&commitment) {
+                    Some(note) => {
+                        found.insert(nullifier, (commitment, *note));
                     }
-                    Cached::Absent => {}
-                    Cached::Unknown => evicted.push(nullifier),
+                    None => evicted.push(nullifier),
                 }
             }
             (found, evicted)
         };
         let unknown: Vec<[u8; 32]> = unknown.into_iter().chain(evicted).collect();
-        if let Some(reads) = self.reads()?.filter(|_| !unknown.is_empty()) {
-            for (commitment, note) in reads.notes_by_nullifier(&unknown).await? {
+        if !unknown.is_empty() {
+            for (commitment, note) in self.reads()?.notes_by_nullifier(&unknown).await? {
                 if let Some(nullifier) = note.nullifier {
                     found.insert(nullifier, (commitment, note));
                 }
@@ -730,10 +591,10 @@ impl AuditStore {
         &self,
         nullifiers: &[[u8; 32]],
     ) -> Result<HashMap<[u8; 32], SpendRow>, RingAuditError> {
-        let (mut found, unknown) = self.cached(nullifiers, |book, key| book.rows.cached(key));
-        if let Some(reads) = self.reads()?.filter(|_| !unknown.is_empty()) {
+        let (mut found, unknown) = self.cached(nullifiers, |book, key| book.rows.get(key).copied());
+        if !unknown.is_empty() {
             found.extend(
-                reads
+                self.reads()?
                     .rows(&unknown)
                     .await?
                     .into_iter()
@@ -746,7 +607,7 @@ impl AuditStore {
     fn cached<V>(
         &self,
         keys: &[[u8; 32]],
-        lookup: impl Fn(&SpendBook, &[u8; 32]) -> Cached<V>,
+        lookup: impl Fn(&SpendBook, &[u8; 32]) -> Option<V>,
     ) -> (HashMap<[u8; 32], V>, Vec<[u8; 32]>) {
         let book = self.read_book();
         split_cached(keys, |key| lookup(&book, key))
@@ -760,28 +621,18 @@ impl AuditStore {
     /// One bounded range of the owner's live notes and unsettled spends, never another owner's
     /// row or a settled spend.
     pub(crate) async fn owner_page(&self, range: OwnerRange) -> Result<OwnerPage, RingAuditError> {
-        match &self.backing {
-            Backing::Memory => Ok(self.read_book().owner_page(range)),
-            Backing::Database {
-                store, ring, seal, ..
-            } => Ok(OwnerNotesPage {
-                ring: *ring,
-                seal,
-                range,
-            }
-            .read(store.connection())
-            .await?),
-            Backing::Unavailable => Err(RingAuditError::Service(ServiceError::StateUnavailable)),
+        let reads = self.reads()?;
+        Ok(OwnerNotesPage {
+            ring: reads.ring,
+            seal: reads.seal,
+            range,
         }
+        .read(reads.db)
+        .await?)
     }
 
     #[must_use]
-    pub(crate) fn with_wallet_snapshots(
-        mut self,
-        shared: SharedWalletSnapshots,
-        limits: WalletSnapshotLimits,
-    ) -> Self {
-        self.wallet_snapshots = shared;
+    pub(crate) const fn with_snapshot_limits(mut self, limits: WalletSnapshotLimits) -> Self {
         self.snapshot_limits = limits;
         self
     }
@@ -791,7 +642,7 @@ impl AuditStore {
         query: WalletStatusQuery,
     ) -> Result<GetWalletStatusResponse, RingAuditError> {
         query.validate_scope()?;
-        let Ok(member) = Member::owner_tag(query.wallet.as_array()) else {
+        if Member::owner_tag(query.wallet.as_array()).is_err() {
             if query.after.is_some() {
                 return Err(RingAuditError::InvalidCursor);
             }
@@ -803,50 +654,12 @@ impl AuditStore {
                 cursor: None,
                 snapshot_expires_at: None,
             });
-        };
-        let page = match &self.backing {
-            Backing::Memory => {
-                if query.after.is_some() {
-                    self.wallet_snapshots
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .read(query)?
-                } else {
-                    let book = self.read_book();
-                    self.wallet_snapshots
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .capture(
-                            MemoryCapture {
-                                query,
-                                through: book.history_through(),
-                                member: *member.as_bytes(),
-                                limits: self.snapshot_limits,
-                            },
-                            |range| book.owner_page(range),
-                        )?
-                }
-            }
-            Backing::Database {
-                store, ring, seal, ..
-            } => {
-                if query.ring != *ring {
-                    return Err(RingAuditError::InvalidCursor);
-                }
-                let snapshots = WalletSnapshots {
-                    db: store.connection(),
-                    seal,
-                    limits: self.snapshot_limits,
-                };
-                if query.after.is_some() {
-                    snapshots.read(query).await?
-                } else {
-                    snapshots.capture(query).await?
-                }
-            }
-            Backing::Unavailable => {
-                return Err(RingAuditError::Service(ServiceError::StateUnavailable))
-            }
+        }
+        let snapshots = self.snapshots(query.ring)?;
+        let page = if query.after.is_some() {
+            snapshots.read(query).await?
+        } else {
+            snapshots.capture(query).await?
         };
         Ok(page.response(query))
     }
@@ -856,66 +669,26 @@ impl AuditStore {
         release: WalletSnapshotRelease,
     ) -> Result<(), RingAuditError> {
         release.validate()?;
-        match &self.backing {
-            Backing::Memory => self
-                .wallet_snapshots
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .release(release),
-            Backing::Database {
-                store, ring, seal, ..
-            } => {
-                if release.ring != *ring {
-                    return Err(RingAuditError::InvalidCursor);
-                }
-                WalletSnapshots {
-                    db: store.connection(),
-                    seal,
-                    limits: self.snapshot_limits,
-                }
-                .release(release)
-                .await
-            }
-            Backing::Unavailable => Err(RingAuditError::Service(ServiceError::StateUnavailable)),
+        self.snapshots(release.ring)?.release(release).await
+    }
+
+    fn snapshots(&self, ring: Address) -> Result<WalletSnapshots<'_>, RingAuditError> {
+        let reads = self.reads()?;
+        if ring != reads.ring {
+            return Err(RingAuditError::InvalidCursor);
         }
+        Ok(WalletSnapshots {
+            db: reads.db,
+            seal: reads.seal,
+            limits: self.snapshot_limits,
+        })
     }
 
     pub(crate) async fn spend_coverage(
         &self,
         cursor: CoverageCursor,
     ) -> Result<GetSpendCoverageResponse, RingAuditError> {
-        if let Some(reads) = self.reads()? {
-            return Ok(reads.coverage(cursor).await?);
-        }
-        let book = self.read_book();
-        let mut response = GetSpendCoverageResponse {
-            position_slot: book.position_slot,
-            history_through: book.history_through(),
-            ..GetSpendCoverageResponse::default()
-        };
-        if cursor.is_first() {
-            let mut counts: HashMap<String, u64> = HashMap::new();
-            for row in book.rows.values() {
-                *counts.entry(state_name(row.state).to_owned()).or_default() += 1;
-            }
-            let count = |state: SpendState| counts.get(state_name(state)).copied().unwrap_or(0);
-            response.totals = Some(SpendCoverageTotals {
-                observed: count(SpendState::Observed),
-                padding: count(SpendState::Padding),
-                resolved: count(SpendState::Resolved { note: [0; 32] }),
-            });
-        }
-        let mut details = CoverageDetails::new(cursor);
-        details.unresolved(
-            book.rows
-                .values()
-                .filter(|row| matches!(row.state, SpendState::Unclassified))
-                .copied(),
-        );
-        details.unread(book.unread.iter().copied());
-        details.faults(book.faults.iter().copied());
-        details.apply(&mut response);
-        Ok(response)
+        Ok(self.reads()?.coverage(cursor).await?)
     }
 
     pub(crate) async fn due_repairs(
@@ -923,18 +696,10 @@ impl AuditStore {
         repairs: &mut RepairBook,
         now: u64,
     ) -> Result<Vec<CreatedIn>, RingAuditError> {
-        if let Some(reads) = self.reads()? {
-            let due = reads.due_repairs(now).await?;
-            let frames = due.iter().map(|(frame, _)| *frame).collect();
-            *repairs = due.into_iter().collect();
-            Ok(frames)
-        } else {
-            Ok(repairs.due(self.unread_frames(), now))
-        }
-    }
-
-    pub(crate) fn unread_frames(&self) -> Vec<CreatedIn> {
-        self.read_book().unread.iter().copied().collect()
+        let due = self.reads()?.due_repairs(now).await?;
+        let frames = due.iter().map(|(frame, _)| *frame).collect();
+        *repairs = due.into_iter().collect();
+        Ok(frames)
     }
 
     pub async fn visit_spendable_notes(
@@ -943,24 +708,10 @@ impl AuditStore {
         mut visit: impl FnMut(WalletUtxo),
     ) -> Result<(), RingAuditError> {
         let scan = SpendableScan::new(notes)?;
-        match &self.backing {
-            Backing::Memory => scan.visit_memory(&self.read_book(), visit),
-            Backing::Database {
-                store, ring, seal, ..
-            } => {
-                let snapshot = read_snapshot(store.connection()).await?;
-                let reads = ProjectionReads {
-                    db: &snapshot,
-                    ring: *ring,
-                    seal,
-                };
-                scan.visit_database(&reads, &mut visit).await?;
-                snapshot.commit().await?;
-            }
-            Backing::Unavailable => {
-                return Err(RingAuditError::Service(ServiceError::StateUnavailable))
-            }
-        }
+        let reads = self.reads()?;
+        let snapshot = read_snapshot(reads.db).await?;
+        scan.visit(&reads.at(&snapshot), &mut visit).await?;
+        snapshot.commit().await?;
         Ok(())
     }
 
@@ -971,40 +722,16 @@ impl AuditStore {
     ) -> Result<HashMap<Address, Vec<WalletUtxo>>, RingAuditError> {
         let scan = SpendableScan::new(notes)?;
         let mut totals = MergeTotals::new(targets);
-        let selections = match &self.backing {
-            Backing::Memory => {
-                let book = self.read_book();
-                scan.visit_memory(&book, |note| totals.record(note));
-                let mut selected = totals.select();
-                if !selected.is_empty() {
-                    scan.visit_memory(&book, |note| selected.record(note));
-                }
-                selected
-            }
-            Backing::Database {
-                store, ring, seal, ..
-            } => {
-                let snapshot = read_snapshot(store.connection()).await?;
-                let reads = ProjectionReads {
-                    db: &snapshot,
-                    ring: *ring,
-                    seal,
-                };
-                scan.visit_database(&reads, |note| totals.record(note))
-                    .await?;
-                let mut selected = totals.select();
-                if !selected.is_empty() {
-                    scan.visit_database(&reads, |note| selected.record(note))
-                        .await?;
-                }
-                snapshot.commit().await?;
-                selected
-            }
-            Backing::Unavailable => {
-                return Err(RingAuditError::Service(ServiceError::StateUnavailable))
-            }
-        };
-        Ok(selections.finish())
+        let reads = self.reads()?;
+        let snapshot = read_snapshot(reads.db).await?;
+        let reads = reads.at(&snapshot);
+        scan.visit(&reads, |note| totals.record(note)).await?;
+        let mut selected = totals.select();
+        if !selected.is_empty() {
+            scan.visit(&reads, |note| selected.record(note)).await?;
+        }
+        snapshot.commit().await?;
+        Ok(selected.finish())
     }
 
     /// The cache answers first, storage answers each key the cache may have evicted.
@@ -1020,9 +747,9 @@ impl AuditStore {
                 EnrollmentKey::ListKey => cache.by_list_key(value),
             })
         };
-        if let Some(reads) = self.reads()?.filter(|_| !unknown.is_empty()) {
+        if !unknown.is_empty() {
             found.extend(
-                reads
+                self.reads()?
                     .enrollments(key, &unknown)
                     .await?
                     .into_iter()
@@ -1050,34 +777,12 @@ impl AuditStore {
         Ok(HeldEnrollments::admission(found, &held)?)
     }
 
-    /// Runs after the page commits, a new owner's notes derive on the next page.
-    pub fn admit_enrollments(&self, admission: EnrollmentAdmission) -> Result<(), TrackingRefusal> {
-        let mut pending = matches!(&self.backing, Backing::Memory).then(|| {
-            self.late_owners
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-        });
-        if let Some(pending) = pending.as_ref() {
-            let added = admission
-                .rows()
-                .iter()
-                .filter(|held| !pending.contains_key(&held.owner_key))
-                .count();
-            if pending.len().saturating_add(added) > MAX_CACHED_ENTRIES {
-                return Err(TrackingRefusal::Incomplete);
-            }
-        }
-        let owners = self
-            .enrollments
+    /// Runs after the page commits, `pending_derivations` queues each new owner's notes.
+    pub fn admit_enrollments(&self, admission: EnrollmentAdmission) {
+        self.enrollments
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(admission.rows().iter().copied());
-        if let Some(pending) = pending.as_mut() {
-            for owner in owners {
-                pending.entry(owner).or_insert(None);
-            }
-        }
-        Ok(())
     }
 
     pub(crate) fn replace_late_owners(&self, owners: Vec<LateOwner>) {
@@ -1103,21 +808,12 @@ impl AuditStore {
         }
     }
 
-    /// Rows a reload read from storage, their notes derived when the row first committed.
-    pub(crate) fn cache_enrollments(&self, rows: Vec<HeldEnrollment>) {
-        self.enrollments
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(rows);
-    }
-
     /// The held enrollment's key, `None` on a cache miss, the replay then resolves the note.
     pub(crate) fn registered_key(&self, owner_key: &[u8; 32]) -> Option<[u8; 32]> {
         let member = Member::owner_tag(owner_key).ok()?;
-        match self.read_enrollments().by_member(member.as_bytes()) {
-            Cached::Hit(held) => Some(held.nullifier_pk),
-            Cached::Absent | Cached::Unknown => None,
-        }
+        self.read_enrollments()
+            .by_member(member.as_bytes())
+            .map(|held| held.nullifier_pk)
     }
 
     fn read_enrollments(&self) -> std::sync::RwLockReadGuard<'_, HeldEnrollments> {
@@ -1208,30 +904,6 @@ impl InputParties {
     }
 }
 
-/// Every loaded note as an owner row, for a complete mirror rebuilding its index.
-fn owner_changes_of(delta: &PageDelta) -> Vec<OwnerChange> {
-    delta
-        .notes
-        .iter()
-        .filter(|(_, note)| note.ring_note)
-        .filter_map(|(commitment, note)| {
-            let member = Member::owner_tag(&note.utxo.owner_key).ok()?;
-            Some(OwnerChange {
-                member: *member.as_bytes(),
-                note: IndexedNote {
-                    key: *commitment,
-                    commitment: *commitment,
-                    note: *note,
-                    spent_at: note
-                        .nullifier
-                        .and_then(|nullifier| delta.rows.get(&nullifier))
-                        .map(|row| row.frame.slot),
-                },
-            })
-        })
-        .collect()
-}
-
 impl StoredUtxo {
     fn wallet_note(&self, commitment: &[u8; 32], status: WalletNoteStatus) -> WalletNote {
         let utxo = &self.utxo;
@@ -1315,33 +987,7 @@ impl<'a> SpendableScan<'a> {
         })
     }
 
-    fn visit_memory(&self, book: &SpendBook, mut visit: impl FnMut(WalletUtxo)) {
-        let Some(mut range) = self.range else {
-            return;
-        };
-        loop {
-            let page = book.owner_page(range);
-            let last = page.notes.last().map(|note| note.key);
-            for note in page
-                .notes
-                .iter()
-                .filter_map(|indexed| self.candidate(indexed))
-            {
-                if book.rows.get(&note.nullifier).is_none() {
-                    visit(note);
-                }
-            }
-            if !page.more {
-                break;
-            }
-            let Some(last) = last else {
-                break;
-            };
-            range.after = Some(last);
-        }
-    }
-
-    async fn visit_database(
+    async fn visit(
         &self,
         reads: &ProjectionReads<'_, sea_orm::DatabaseTransaction>,
         mut visit: impl FnMut(WalletUtxo),
@@ -1390,17 +1036,16 @@ impl<'a> SpendableScan<'a> {
 /// Splits keys into cache hits and keys only storage can answer.
 fn split_cached<V>(
     keys: &[[u8; 32]],
-    lookup: impl Fn(&[u8; 32]) -> Cached<V>,
+    lookup: impl Fn(&[u8; 32]) -> Option<V>,
 ) -> (HashMap<[u8; 32], V>, Vec<[u8; 32]>) {
     let mut found = HashMap::new();
     let mut unknown = Vec::new();
     for key in keys {
         match lookup(key) {
-            Cached::Hit(value) => {
+            Some(value) => {
                 found.insert(*key, value);
             }
-            Cached::Absent => {}
-            Cached::Unknown => unknown.push(*key),
+            None => unknown.push(*key),
         }
     }
     (found, unknown)
@@ -1412,8 +1057,7 @@ fn split_cached<V>(
 pub(crate) struct StoreDump {
     pub notes: BTreeMap<[u8; 32], StoredUtxo>,
     pub rows: BTreeMap<[u8; 32], SpendRow>,
-    pub unread: BTreeSet<CreatedIn>,
-    pub faults: BTreeSet<([u8; 32], CreatedIn)>,
+    pub first_unread: Option<CreatedIn>,
     pub context: Context,
     pub position_slot: Option<u64>,
 }
@@ -1434,37 +1078,54 @@ impl AuditStore {
         self.commit_fixture(delta).await;
     }
 
-    /// A store with a database reads wallets from its tables, the page writes them first.
-    async fn commit_fixture(&self, delta: PageDelta) {
-        if let Backing::Database {
+    pub async fn on_internal_database(ring: Address, auditor: &spr_keypair::X25519Keypair) -> Self {
+        Self::new(
+            ring,
+            Backing::Database {
+                store: Store::in_memory().await.expect("internal store"),
+                ring,
+                seal: Box::new(NoteSeal::derive(auditor, ring).expect("seal")),
+                capacity: MAX_CACHED_ENTRIES,
+            },
+        )
+    }
+
+    pub(crate) async fn fixture_writer(&self) -> crate::spent_index::ProjectionWriter<'_> {
+        let Backing::Database {
             store, ring, seal, ..
         } = &self.backing
-        {
-            let clock = ring_service_core::clock::Clock::System;
-            let lease = crate::projection_lease::LeaseClaim {
-                db: store.connection(),
-                ring: *ring,
-                holder: store.lease_holder(),
-                now: clock.now().expect("clock"),
-            }
-            .claim()
+        else {
+            panic!("a fixture store holds a database");
+        };
+        let clock = ring_service_core::clock::Clock::System;
+        let lease = crate::projection_lease::LeaseClaim {
+            db: store.connection(),
+            ring: *ring,
+            holder: store.lease_holder(),
+            now: clock.now().expect("clock"),
+        }
+        .claim()
+        .await
+        .expect("claim")
+        .expect("the fixture replica holds the lease");
+        crate::spent_index::ProjectionWriter {
+            db: store.connection(),
+            ring: *ring,
+            seal,
+            lease,
+            clock,
+        }
+    }
+
+    /// The store reads wallets from its tables, the page writes them first.
+    async fn commit_fixture(&self, delta: PageDelta) {
+        let revision = self
+            .fixture_writer()
             .await
-            .expect("claim")
-            .expect("the fixture replica holds the lease");
-            let revision = crate::spent_index::ProjectionWriter {
-                db: store.connection(),
-                ring: *ring,
-                seal,
-                lease,
-                clock,
-            }
             .commit_page(&delta)
             .await
             .expect("fixture page");
-            self.commit(delta.at_commit(revision));
-            return;
-        }
-        self.commit(delta);
+        self.commit(delta.at_commit(revision));
     }
 
     /// Published rows with no frame the test reads.
@@ -1513,25 +1174,11 @@ impl AuditStore {
         StoreDump {
             notes: book.notes.iter().map(|(key, note)| (*key, *note)).collect(),
             rows: book.rows.iter().map(|(key, row)| (*key, *row)).collect(),
-            unread: book.unread.clone(),
-            faults: book
-                .faults
-                .iter()
-                .map(|fault| (fault.nullifier, fault.frame))
-                .collect(),
+            first_unread: book.first_unread,
             context: book.context,
             position_slot: book.position_slot,
         }
     }
-}
-
-/// Runs a page future from a sync test, a complete mirror never awaits storage.
-#[cfg(any(test, feature = "test-fixtures"))]
-pub fn block_on<T>(work: impl std::future::Future<Output = T>) -> T {
-    tokio::runtime::Builder::new_current_thread()
-        .build()
-        .expect("runtime")
-        .block_on(work)
 }
 
 #[cfg(test)]

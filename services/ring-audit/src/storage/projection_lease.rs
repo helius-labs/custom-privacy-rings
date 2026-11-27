@@ -4,9 +4,9 @@
 //! or when its expiry passed, and every new instance moves the fencing token. Every projection
 //! transaction first renews the row by replica and token.
 //! The row lock orders that write against a concurrent claim, so a writer whose token moved
-//! commits nothing. Read before `storage/spent_index.rs`.
+//! commits nothing.
 
-use sea_orm::{ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, TransactionTrait};
+use sea_orm::{DatabaseConnection, DatabaseTransaction, DbErr, TransactionTrait};
 use solana_address::Address;
 
 use ring_service_core::{database::LeaseHolder, sql};
@@ -42,35 +42,29 @@ impl LeaseClaim<'_> {
         let transaction = db.begin().await?;
         // 1. The same instance renews in place. A restart of its replica takes the lease at once and
         //    any other replica only after expiry, both bump the token every older commit names.
-        transaction
-            .execute(sql::statement(
-                &transaction,
-                "INSERT INTO projection_leases(ring,holder,instance,token,expires_at) \
-                 VALUES($1,$2,$3,1,$4) ON CONFLICT(ring) DO UPDATE SET \
-                 token=CASE WHEN projection_leases.holder=excluded.holder \
-                 AND projection_leases.instance=excluded.instance \
-                 THEN projection_leases.token ELSE projection_leases.token+1 END, \
-                 holder=excluded.holder, instance=excluded.instance, \
-                 expires_at=excluded.expires_at \
-                 WHERE projection_leases.holder=excluded.holder OR projection_leases.expires_at<=$5",
-                vec![
+        sql::Query::new("INSERT INTO projection_leases(ring,holder,instance,token,expires_at) \
+                         VALUES($1,$2,$3,1,$4) ON CONFLICT(ring) DO UPDATE SET \
+                         token=CASE WHEN projection_leases.holder=excluded.holder \
+                         AND projection_leases.instance=excluded.instance \
+                         THEN projection_leases.token ELSE projection_leases.token+1 END, \
+                         holder=excluded.holder, instance=excluded.instance, \
+                         expires_at=excluded.expires_at \
+                         WHERE projection_leases.holder=excluded.holder OR projection_leases.expires_at<=$5", vec![
                     sql::bytes(ring.as_ref()),
                     sql::bytes(&holder.replica),
                     sql::bytes(&holder.instance),
                     sql::integer(now.saturating_add(PROJECTION_LEASE_TTL))?,
                     sql::integer(now)?,
-                ],
-            ))
+                ]).execute(&transaction)
             .await?;
         // 2. The row read back names the holder, a refused update leaves the other holder in it.
-        let row = transaction
-            .query_one(sql::statement(
-                &transaction,
-                "SELECT holder,instance,token FROM projection_leases WHERE ring=$1",
-                vec![sql::bytes(ring.as_ref())],
-            ))
-            .await?
-            .ok_or_else(|| DbErr::Custom("projection lease row is missing".into()))?;
+        let row = sql::Query::new(
+            "SELECT holder,instance,token FROM projection_leases WHERE ring=$1",
+            vec![sql::bytes(ring.as_ref())],
+        )
+        .one(&transaction)
+        .await?
+        .ok_or_else(|| DbErr::Custom("projection lease row is missing".into()))?;
         transaction.commit().await?;
         let held = row.try_get::<Vec<u8>>("", "holder")? == holder.replica
             && row.try_get::<Vec<u8>>("", "instance")? == holder.instance;
@@ -89,21 +83,19 @@ impl ProjectionLease {
         transaction: &DatabaseTransaction,
         now: u64,
     ) -> Result<(), DbErr> {
-        let renewed = transaction
-            .execute(sql::statement(
-                transaction,
-                "UPDATE projection_leases SET expires_at=$1 WHERE ring=$2 AND holder=$3 \
-                 AND token=$4 AND expires_at>$5",
-                vec![
-                    sql::integer(now.saturating_add(PROJECTION_LEASE_TTL))?,
-                    sql::bytes(self.ring.as_ref()),
-                    sql::bytes(&self.holder.replica),
-                    self.token.into(),
-                    sql::integer(now)?,
-                ],
-            ))
-            .await?
-            .rows_affected();
+        let renewed = sql::Query::new(
+            "UPDATE projection_leases SET expires_at=$1 WHERE ring=$2 AND holder=$3 \
+             AND token=$4 AND expires_at>$5",
+            vec![
+                sql::integer(now.saturating_add(PROJECTION_LEASE_TTL))?,
+                sql::bytes(self.ring.as_ref()),
+                sql::bytes(&self.holder.replica),
+                self.token.into(),
+                sql::integer(now)?,
+            ],
+        )
+        .execute(transaction)
+        .await?;
         if renewed != 1 {
             return Err(DbErr::Custom(
                 "the projection lease expired or moved to another replica".into(),

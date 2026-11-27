@@ -9,6 +9,7 @@ mod keys;
 mod labels;
 mod list_salt;
 mod output_body;
+mod redacted_debug;
 pub mod ring_address;
 mod slot_secret;
 mod stream_cipher;
@@ -31,6 +32,7 @@ pub use list_salt::{ListSaltHolder, LIST_SALT_LABEL};
 pub use output_body::{
     encode_confidential_output, encode_ring_body_output, encrypted_output, ring_body_output,
 };
+pub use redacted_debug::REDACTED;
 pub use ring_address::{RingAddress, RingPaymentRequest};
 pub use slot_secret::{bootstrap_slot_tag, DeliveredSlot, SlotSecret, StreamError};
 pub use stream_cipher::{symmetric_apply_audit, RingStream};

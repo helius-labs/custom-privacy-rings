@@ -27,11 +27,15 @@ var Pinned = func() map[string]int {
 // Compile takes the compress threshold of the zolana ring prover.
 func Compile(t testing.TB, circuit frontend.Circuit) constraint.ConstraintSystem {
 	t.Helper()
-	cs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit, frontend.WithCompressThreshold(300))
+	cs, err := R1CS(circuit)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return cs
+}
+
+func R1CS(circuit frontend.Circuit) (constraint.ConstraintSystem, error) {
+	return frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit, frontend.WithCompressThreshold(300))
 }
 
 func RequirePinned(t testing.TB, name string, cs constraint.ConstraintSystem) {

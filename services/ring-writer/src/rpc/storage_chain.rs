@@ -6,8 +6,6 @@ use custom_ring_interface::{
 };
 use solana_account::Account;
 use solana_address::Address;
-use solana_signature::Signature;
-use solana_transaction::versioned::VersionedTransaction;
 use spr_client::{AsyncProverClient, AsyncRpc, AsyncSolanaRpc, AsyncSprClient, AsyncSprIndexer};
 use zolana_ring_client::{
     AsyncRingIndexer, AuditError, CustomRing, EnrollBatch, ProvenEnrollBatch, RegisteredKeys,
@@ -20,7 +18,7 @@ use zolana_ring_indexer::rpc::{
 use zolana_ring_member_registry::ApplyProofInputs;
 
 use ring_service_core::{
-    landing::{ChainOutcome, ChainSubmit, LatestBlockhash, Simulation, SolanaChain},
+    landing::{ChainSubmit, SolanaChain},
     upstream::{
         timed_indexer, timed_rpc, ChainSource, OpeningFetch, RingConfiguration, TransactionSource,
         Upstreams,
@@ -31,7 +29,9 @@ use ring_service_core::{
 use crate::error::WriterError;
 
 #[async_trait]
-pub trait StorageChain: ChainSubmit {
+pub trait StorageChain: Send + Sync {
+    fn submit(&self) -> &dyn ChainSubmit;
+
     async fn account(&self, address: Address) -> Result<Option<Account>, WriterError>;
 
     async fn ring_config(&self, ring: Address) -> Result<Option<RingConfiguration>, WriterError>;
@@ -109,6 +109,10 @@ impl LiveStorageChain {
             submit: SolanaChain::with_timeout(upstreams.rpc_url, upstreams.timeout),
         })
     }
+
+    pub fn client(&self) -> &RingClient<AsyncSolanaRpc, AsyncSprIndexer> {
+        &self.client
+    }
 }
 
 pub fn live_ring_client(
@@ -127,58 +131,11 @@ pub fn live_ring_client(
 }
 
 #[async_trait]
-impl ChainSubmit for LiveStorageChain {
-    async fn account_data(&self, address: Address) -> Result<Option<Vec<u8>>, ServiceError> {
-        self.submit.account_data(address).await
-    }
-
-    async fn rent_exempt_lamports(&self, data_len: usize) -> Result<u64, ServiceError> {
-        self.submit.rent_exempt_lamports(data_len).await
-    }
-
-    async fn slot(&self) -> Result<u64, ServiceError> {
-        self.submit.slot().await
-    }
-
-    async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
-        self.submit.latest_blockhash().await
-    }
-
-    async fn block_height(&self) -> Result<u64, ServiceError> {
-        self.submit.block_height().await
-    }
-
-    async fn send(&self, transaction: &VersionedTransaction) -> Result<(), ServiceError> {
-        self.submit.send(transaction).await
-    }
-
-    async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, ServiceError> {
-        self.submit.outcome(signature).await
-    }
-
-    async fn simulate(
-        &self,
-        message: &solana_message::VersionedMessage,
-    ) -> Result<Simulation, ServiceError> {
-        self.submit.simulate(message).await
-    }
-
-    async fn blockhash_expiry(
-        &self,
-        blockhash: solana_hash::Hash,
-    ) -> Result<Option<u64>, ServiceError> {
-        self.submit.blockhash_expiry(blockhash).await
-    }
-
-    async fn finalized_tip(
-        &self,
-    ) -> Result<ring_service_core::landing::FinalizedTip, ServiceError> {
-        self.submit.finalized_tip().await
-    }
-}
-
-#[async_trait]
 impl StorageChain for LiveStorageChain {
+    fn submit(&self) -> &dyn ChainSubmit {
+        &self.submit
+    }
+
     async fn account(&self, address: Address) -> Result<Option<Account>, WriterError> {
         Ok(self.client.get_account(address).await?)
     }

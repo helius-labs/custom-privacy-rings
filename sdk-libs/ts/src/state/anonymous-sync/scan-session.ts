@@ -36,6 +36,7 @@ import {
   ringBodies,
   type Body,
 } from "./body-read.js";
+import { defined } from "../../protocol/defined.js";
 
 export class Scan {
   readonly #unopened = new Map<string, Bytes32>();
@@ -457,7 +458,7 @@ export class Scan {
         ringProgramId: ring,
         limits: this.#sync.limits,
         ...(afterSlot === null ? {} : { afterSlot }),
-        ...(this.#sync.config === undefined ? {} : { config: this.#sync.config }),
+        ...defined({ config: this.#sync.config }),
       },
       async (rows) => {
         // 1. Each page opens before the next arrives, the scan keeps no ring row past its page.

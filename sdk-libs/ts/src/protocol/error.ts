@@ -193,6 +193,7 @@ export const RING_ERROR_CODES = [
 ] as const;
 import { extractCauseCodes, hideCause, sanitizeDetails } from "@heliuslabs/spr/internal";
 import type { ErrorEnvelope } from "@heliuslabs/spr";
+import { defined } from "./defined.js";
 
 export type RingErrorCode = (typeof RING_ERROR_CODES)[number];
 
@@ -249,9 +250,6 @@ export const RingProgramError = Object.freeze({
   unexpectedApproval: 8241,
   invalidSettlementAccounts: 8242,
   tooManyPublicLegs: 8243,
-  anonymousExitTokenAccountShared: 8247,
-  anonymousExitAccountHasData: 8248,
-  anonymousExitTokenAccountOnCurve: 8249,
   anonymousExitTokenAccountInvalid: 8250,
   outputBodyLength: 8253,
   outputCountOutOfRange: 8257,
@@ -351,9 +349,7 @@ export class RingError extends Error {
     return {
       name: this.name,
       code: this.code,
-      ...(this.details === undefined ? {} : { details: this.details }),
-      ...(this.causeCode === undefined ? {} : { causeCode: this.causeCode }),
-      ...(this.causeCodes === undefined ? {} : { causeCodes: this.causeCodes }),
+      ...defined({ details: this.details, causeCode: this.causeCode, causeCodes: this.causeCodes }),
     };
   }
 }
@@ -368,7 +364,7 @@ export function wrapRingError(
   const chain = extractCauseCodes(cause);
   return new RingError(code, {
     ...(chain.length === 0 ? {} : { causeCode: chain[0], causeCodes: chain }),
-    ...(details === undefined ? {} : { details }),
+    ...defined({ details }),
     cause,
   });
 }

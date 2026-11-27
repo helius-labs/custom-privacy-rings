@@ -14,13 +14,12 @@ use spr_client::{fetch_spl_asset_registrations, ClientError, Rpc, SolanaRpc};
 use spr_interface::{
     pda, SPL_TOKEN_2022_PROGRAM_ID, SPL_TOKEN_ACCOUNT_INITIALIZED, SPL_TOKEN_PROGRAM_ID,
 };
-use spr_transaction::{AssetRegistry, SOL_MINT};
+use spr_transaction::SOL_MINT;
 use zolana_ring_client::{DepositAsset, DepositSplAccounts};
 use zolana_ring_transaction::RingAssets;
 
 pub struct ResolvedAsset {
     pub mint: Address,
-    pub registry: AssetRegistry,
     pub assets: RingAssets,
     /// The token program and the fee schedule of an SPL mint.
     token: Option<(Address, Option<TransferFeeConfig>)>,
@@ -29,15 +28,13 @@ pub struct ResolvedAsset {
 /// The registry is read strictly, one invalid entry fails the whole read.
 pub fn resolve(rpc: &SolanaRpc, mint: Address) -> Result<ResolvedAsset> {
     let assets = ring_assets(rpc)?;
-    let registry = assets.registry().clone();
     ensure!(
-        registry.asset_id(&mint).is_ok(),
+        assets.registry().asset_id(&mint).is_ok(),
         "mint {mint} is not registered with SPP"
     );
     let token = (mint != SOL_MINT).then(|| token(rpc, mint)).transpose()?;
     Ok(ResolvedAsset {
         mint,
-        registry,
         assets,
         token,
     })
@@ -59,14 +56,11 @@ fn token(rpc: &SolanaRpc, mint: Address) -> Result<(Address, Option<TransferFeeC
         })
         .ok_or_else(unsupported)?;
     let types = state.get_extension_types().map_err(|_| unsupported())?;
-    let fee = match types.contains(&ExtensionType::TransferFeeConfig) {
-        true => Some(
-            *state
-                .get_extension::<TransferFeeConfig>()
-                .map_err(|_| unsupported())?,
-        ),
-        false => None,
-    };
+    let fee = types
+        .contains(&ExtensionType::TransferFeeConfig)
+        .then(|| state.get_extension::<TransferFeeConfig>().copied())
+        .transpose()
+        .map_err(|_| unsupported())?;
     Ok((account.owner, fee))
 }
 

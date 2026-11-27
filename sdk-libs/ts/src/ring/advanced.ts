@@ -294,8 +294,6 @@ export {
 } from "../protocol/indexer/indexer-codec.js";
 export type {
   RingListWriteView,
-  RingMemberRecordView,
-  RingRecordPathView,
   RingRecordWriteView,
   StorageApplyProofInputsRequest,
   StorageApplyProofInputsResponse,

@@ -5,9 +5,6 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark/test"
-
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/audit"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
@@ -137,7 +134,7 @@ func TestExitCarriesNoRingData(t *testing.T) {
 	c.RequireSolved(t, s.Circuit(t))
 	s.Outputs[exit].Utxo.RingDataHash = big.NewInt(0x5ca1e)
 	c.Refuse(t, s.Circuit(t))
-	ringtest.RequireRefused(t, test.IsSolved(ringaudit.NewSectionCircuit(plainShape), s.Circuit(t), ecc.BN254.ScalarField()), "audit.LayoutFlags.assertHashes")
+	ringtest.RequireUnsolved(t, ringaudit.NewSectionCircuit(plainShape), s.Circuit(t), "audit.LayoutFlags.assertHashes")
 }
 
 // The record chain hashes each slot's published length, a key tail added, dropped or replaced names bytes the proof never bound.
@@ -254,7 +251,7 @@ func TestRecordsAreSealedToTheSealedRecipientKey(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			circuit := s.Circuit(t)
 			ringtest.SetBytes(circuit.Outputs[0].RecipientKey[:], key[:])
-			ringtest.RequireRefused(t, test.IsSolved(ringaudit.NewSectionCircuit(plainShape), circuit, ecc.BN254.ScalarField()), "shared.SlotSeal.Seal")
+			ringtest.RequireUnsolved(t, ringaudit.NewSectionCircuit(plainShape), circuit, "shared.SlotSeal.Seal")
 		})
 	}
 }

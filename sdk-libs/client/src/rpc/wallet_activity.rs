@@ -91,35 +91,32 @@ impl WalletActivity {
             .collect();
         let own_notes = spent.len() + default_inputs.len();
         let spent_own = own_notes > 0;
-        let view = match spent_own || spenders.into_iter().any(names) {
-            true => {
-                // A named spender of no input signed only its own outputs.
-                let sole_owner = spent_own && own_notes == usize::from(real_inputs);
-                WalletView::Sender {
-                    spent,
-                    default_inputs,
-                    outputs: outputs
-                        .into_iter()
-                        .filter(|output| sole_owner || output.owner_key().is_some_and(names))
-                        .collect(),
-                    withdrawals,
-                }
-            }
-            false => {
-                let outputs: Vec<_> = outputs
+        let view = if spent_own || spenders.into_iter().any(names) {
+            // A named spender of no input signed only its own outputs.
+            let sole_owner = spent_own && own_notes == usize::from(real_inputs);
+            WalletView::Sender {
+                spent,
+                default_inputs,
+                outputs: outputs
                     .into_iter()
-                    .filter(|output| output.owner_key().is_some_and(names))
-                    .collect();
-                if outputs.is_empty() {
-                    return None;
-                }
-                WalletView::Recipient {
-                    outputs,
-                    withdrawals: withdrawals
-                        .into_iter()
-                        .filter(|leg| names(leg.recipient) || leg.screened_owner.is_some_and(names))
-                        .collect(),
-                }
+                    .filter(|output| sole_owner || output.owner_key().is_some_and(names))
+                    .collect(),
+                withdrawals,
+            }
+        } else {
+            let outputs: Vec<_> = outputs
+                .into_iter()
+                .filter(|output| output.owner_key().is_some_and(names))
+                .collect();
+            if outputs.is_empty() {
+                return None;
+            }
+            WalletView::Recipient {
+                outputs,
+                withdrawals: withdrawals
+                    .into_iter()
+                    .filter(|leg| names(leg.recipient) || leg.screened_owner.is_some_and(names))
+                    .collect(),
             }
         };
         Some(Self {

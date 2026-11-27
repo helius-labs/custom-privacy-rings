@@ -6,6 +6,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use solana_address::Address;
+use solana_signature::Signature;
 use solana_signer::{Signer, SignerError};
 use spr_client::{AsyncRpc, ClientError};
 use spr_indexer_api::{
@@ -52,7 +53,7 @@ pub use wallet_status::*;
 use crate::{
     AuditError, AuditedEntryInput, AuditedMergeOutput, AuditedOutput, AuditedTransaction,
     AuditedUtxo, KnownUtxo, OutputOpening, OutputPayloadErrorKind, ReaderKey, ReaderKeyError,
-    RingOwnerTag, RingWithdrawal, UtxoOwner, REDACTED,
+    RingOwnerTag, RingWithdrawal, UtxoOwner,
 };
 
 pub const HEALTH: &str = "health";
@@ -491,30 +492,18 @@ pub struct DecryptedUtxo {
     pub ring_data_hash: Option<Hash>,
 }
 
-impl core::fmt::Debug for DecryptedUtxo {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            owner_key,
-            nullifier_pk,
-            asset,
-            mint,
-            amount,
-            blinding: _,
-            data_hash,
-            ring_data_hash,
-        } = self;
-        f.debug_struct("DecryptedUtxo")
-            .field("owner_key", owner_key)
-            .field("nullifier_pk", nullifier_pk)
-            .field("asset", asset)
-            .field("mint", mint)
-            .field("amount", amount)
-            .field("blinding", &REDACTED)
-            .field("data_hash", data_hash)
-            .field("ring_data_hash", ring_data_hash)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(DecryptedUtxo {
+    shown: [
+        owner_key,
+        nullifier_pk,
+        asset,
+        mint,
+        amount,
+        data_hash,
+        ring_data_hash
+    ],
+    hidden: [blinding],
+});
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -537,32 +526,19 @@ pub struct DecryptedKnownUtxo {
     pub tree_id: u16,
 }
 
-impl core::fmt::Debug for DecryptedKnownUtxo {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            owner_key,
-            nullifier_pk,
-            asset,
-            mint,
-            amount,
-            blinding: _,
-            data_hash,
-            ring_data_hash,
-            tree_id,
-        } = self;
-        f.debug_struct("DecryptedKnownUtxo")
-            .field("owner_key", owner_key)
-            .field("nullifier_pk", nullifier_pk)
-            .field("asset", asset)
-            .field("mint", mint)
-            .field("amount", amount)
-            .field("blinding", &REDACTED)
-            .field("data_hash", data_hash)
-            .field("ring_data_hash", ring_data_hash)
-            .field("tree_id", tree_id)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(DecryptedKnownUtxo {
+    shown: [
+        owner_key,
+        nullifier_pk,
+        asset,
+        mint,
+        amount,
+        data_hash,
+        ring_data_hash,
+        tree_id
+    ],
+    hidden: [blinding],
+});
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -662,6 +638,13 @@ pub struct SignedRequest<A> {
     attestation: A,
     timestamp: Option<u64>,
     nonce: [u8; 32],
+}
+
+/// The timestamp and nonce are the ones the signature covers.
+struct RequestSignature {
+    timestamp: u64,
+    nonce: Base64String,
+    signature: Signature,
 }
 
 pub type ReadRequest = SignedRequest<ReadAttestation>;
@@ -1021,21 +1004,36 @@ impl<A: Attestation> SignedRequest<A> {
         self
     }
 
-    fn message(&self) -> Result<(u64, Vec<u8>), RequestBuildError> {
-        let timestamp = self.timestamp.map_or_else(unix_now, Ok)?;
-        Ok((timestamp, self.attestation.message(timestamp, &self.nonce)))
+    fn signing_time(&self) -> Result<u64, RequestBuildError> {
+        self.timestamp.map_or_else(unix_now, Ok)
+    }
+
+    fn signed_by<S: Signer + ?Sized>(
+        &self,
+        signer: &S,
+    ) -> Result<RequestSignature, RequestBuildError> {
+        let timestamp = self.signing_time()?;
+        let signature = signer
+            .try_sign_message(&self.attestation.message(timestamp, &self.nonce))
+            .map_err(RequestBuildError::Signature)?;
+        Ok(RequestSignature {
+            timestamp,
+            nonce: self.nonce.to_vec().into(),
+            signature,
+        })
     }
 
     /// The reader's signature over the attestation, a passkey's with its assertion.
     fn read_auth<S: ReadSigner + ?Sized>(&self, signer: &S) -> Result<ReadAuth, ReadBuildError> {
-        let (timestamp, message) = self.message()?;
-        let (signature, webauthn) = match signer.sign(&message)? {
-            ReadSignature::Ed25519(raw) => (raw.to_vec(), None),
-            ReadSignature::WebAuthn {
-                signature_der,
-                assertion,
-            } => (signature_der, Some(assertion)),
-        };
+        let timestamp = self.signing_time()?;
+        let (signature, webauthn) =
+            match signer.sign(&self.attestation.message(timestamp, &self.nonce))? {
+                ReadSignature::Ed25519(raw) => (raw.to_vec(), None),
+                ReadSignature::WebAuthn {
+                    signature_der,
+                    assertion,
+                } => (signature_der, Some(assertion)),
+            };
         Ok(ReadAuth {
             reader: signer.reader()?.to_bytes().to_vec().into(),
             timestamp,
@@ -1121,10 +1119,11 @@ impl AuditorKeyRequest {
         self,
         authority: &S,
     ) -> Result<CreateAuditorKeyRequest, RequestBuildError> {
-        let (timestamp, message) = self.message()?;
-        let signature = authority
-            .try_sign_message(&message)
-            .map_err(RequestBuildError::Signature)?;
+        let RequestSignature {
+            timestamp,
+            nonce,
+            signature,
+        } = self.signed_by(authority)?;
         let AuditorKeyAttestation { ring, genesis_hash } = self.attestation;
         Ok(CreateAuditorKeyRequest {
             ring_program_id: ring.to_bytes().into(),
@@ -1132,7 +1131,7 @@ impl AuditorKeyRequest {
                 authority: authority.pubkey().to_bytes().into(),
                 genesis_hash: Hash(genesis_hash),
                 timestamp,
-                nonce: self.nonce.to_vec().into(),
+                nonce,
                 signature: signature.as_ref().to_vec().into(),
             },
         })

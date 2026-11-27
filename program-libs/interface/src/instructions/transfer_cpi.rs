@@ -2,9 +2,6 @@
 //!
 //! The ring takes an owner by its signature alone, a PDA signs only through its program's call.
 //! `RingTransferCpi` raises that one PDA to a signer and forwards no tag but `TRANSFER`.
-//!
-//! Read after `program-libs/interface/src/instructions/transfer_approval.rs`. Read before
-//! `examples/enrollment-vault/src/lib.rs`.
 
 use spr_interface::instruction::InterfaceTransfer;
 
@@ -243,11 +240,14 @@ mod cpi {
         ) -> ProgramResult {
             let data = self.data;
             self.invoke_under(
-                |mode| match core::ptr::eq(frame.data(), data)
-                    && frame.parsed.data().rail == RingRail::transfer(mode)
-                {
-                    true => Ok(frame),
-                    false => Err(CustomRingError::InvalidInstructionData),
+                |mode| {
+                    if core::ptr::eq(frame.data(), data)
+                        && frame.parsed.data().rail() == RingRail::transfer(mode)
+                    {
+                        Ok(frame)
+                    } else {
+                        Err(CustomRingError::InvalidInstructionData)
+                    }
                 },
                 signer,
             )

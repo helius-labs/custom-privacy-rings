@@ -36,12 +36,12 @@ func applyBatch(t *testing.T, members *ringregistry.Registry, n int, chainStart 
 	c.OldRoot, c.OldNextIndex, c.ChainStart, c.Count = members.Root(), new(big.Int).SetUint64(members.NextIndex()), chainStart, len(entries)
 	b := &batch{circuit: c, chain: []*big.Int{chainStart}}
 	for i := range c.Writes {
-		c.Writes[i] = zeroWrite()
+		c.Writes[i] = ringregistry.ZeroWrite().Wires()
 	}
 	for i, e := range entries {
 		w := members.Apply(t, e)
 		b.writes = append(b.writes, w)
-		c.Writes[i] = writeWires(w)
+		c.Writes[i] = w.Wires()
 		b.chain = append(b.chain, ringtest.MustPoseidonHash(t, b.chain[i], e.Hash(t)))
 	}
 	c.NewRoot, c.NewNextIndex, c.ChainEnd = members.Root(), new(big.Int).SetUint64(members.NextIndex()), b.chain[len(entries)]
@@ -65,39 +65,6 @@ func (b *batch) bindAs(t *testing.T, restrictive int64) {
 	}
 	statement = append(statement, big.NewInt(restrictive))
 	c.PublicInputHash = spptest.MustHashChain4(t, statement)
-}
-
-func writeWires(w ringregistry.Write) registry.RecordWriteProofInput {
-	e := w.Entry
-	exists := 0
-	if w.Exists {
-		exists = 1
-	}
-	return registry.RecordWriteProofInput{
-		Entry:  registry.RecordWrite{Member: e.Member, Mask: e.Mask, Value: e.Value, MintPolicy: policyValue(e.MintPolicy), WithdrawalThreshold: policyValue(e.WithdrawalThreshold), AssetLimits: e.AssetLimits.Wires()},
-		Exists: exists,
-		Old: registry.RecordBody{
-			Next: w.OldNext, Lists: w.OldLists, MintPolicy: policyValue(w.OldMintPolicy),
-			WithdrawalThreshold: policyValue(w.OldWithdrawalThreshold), AssetLimits: w.OldAssetLimits.Wires(),
-		},
-		Slot:    w.Slot.Wires(),
-		Low:     w.Low.Wires(),
-		LowSlot: w.LowPath.Wires(),
-	}
-}
-
-func zeroWrite() registry.RecordWriteProofInput {
-	zero := ringregistry.Write{
-		Entry:   entry(0, 0, 0),
-		OldNext: big.NewInt(0), OldLists: big.NewInt(0),
-		Low: ringregistry.Record{Member: big.NewInt(0), Next: big.NewInt(0), Lists: big.NewInt(0)},
-	}
-	for level := range zero.Slot.Siblings {
-		for k := range zero.Slot.Siblings[level] {
-			zero.Slot.Siblings[level][k], zero.LowPath.Siblings[level][k] = big.NewInt(0), big.NewInt(0)
-		}
-	}
-	return writeWires(zero)
 }
 
 func solve(t *testing.T, c *registry.ApplyRecordsCircuit) error {
@@ -182,7 +149,7 @@ func TestApplyRecordsRefusals(t *testing.T) {
 			sentinel := members.Opening(big.NewInt(1))
 			duplicate := ringregistry.Write{Entry: b.writes[0].Entry, OldNext: big.NewInt(0x10), OldLists: big.NewInt(0),
 				Slot: members.Path(members.NextIndex()), Low: sentinel.Record, LowPath: sentinel.Path}
-			b.circuit.Writes[0] = writeWires(duplicate)
+			b.circuit.Writes[0] = duplicate.Wires()
 			b.circuit.NewRoot = duplicate.Slot.Root(t, newRecord(duplicate, ringregistry.BlockBit).Hash(t))
 			b.circuit.NewNextIndex = new(big.Int).SetUint64(members.NextIndex() + 1)
 			b.bind(t)
@@ -211,7 +178,7 @@ func TestApplyRecordsRefusals(t *testing.T) {
 		{"an absent member claimed present", seeded, 1, []ringregistry.Entry{insert}, func(t *testing.T, b *batch) {
 			w := b.writes[0]
 			w.Exists, w.Slot = true, seeded(t).Path(w.Slot.Index)
-			b.circuit.Writes[0] = writeWires(w)
+			b.circuit.Writes[0] = w.Wires()
 			b.circuit.NewRoot, b.circuit.NewNextIndex = w.Slot.Root(t, newRecord(w, ringregistry.AllowBit).Hash(t)), b.circuit.OldNextIndex
 			b.bind(t)
 		}, gate},
@@ -241,7 +208,7 @@ func TestApplyRecordsRefusals(t *testing.T) {
 		}, define},
 		{"an empty record is inserted", seeded, 1, []ringregistry.Entry{entry(0x40, ringregistry.AllowBit, 0)}, func(t *testing.T, b *batch) {
 			forged := seeded(t)
-			b.circuit.Writes[0] = writeWires(forged.Insert(t, b.writes[0].Entry))
+			b.circuit.Writes[0] = forged.Insert(t, b.writes[0].Entry).Wires()
 			b.circuit.NewRoot, b.circuit.NewNextIndex = forged.Root(), new(big.Int).SetUint64(forged.NextIndex())
 			b.bind(t)
 		}, define},
@@ -363,11 +330,4 @@ func applyCircuit(t *testing.T, writes int) *registry.ApplyRecordsCircuit {
 		t.Fatal(err)
 	}
 	return c
-}
-
-func policyValue(value *big.Int) *big.Int {
-	if value == nil {
-		return big.NewInt(0)
-	}
-	return value
 }

@@ -19,6 +19,10 @@ func (r TrackingRecord) Hash(t testing.TB) *big.Int {
 	return ringtest.MustPoseidonHash(t, big.NewInt(shared.TrackingLeafDomain), r.Member, r.Next, r.NullifierPk, r.CtHash, r.ListTag, copied(r.ViewingHash))
 }
 
+func (r TrackingRecord) member() *big.Int {
+	return r.Member
+}
+
 func (r TrackingRecord) Wires() registry.TrackingRecord {
 	return registry.TrackingRecord{Member: copied(r.Member), Next: copied(r.Next), NullifierPk: copied(r.NullifierPk), CtHash: copied(r.CtHash), ListTag: copied(r.ListTag), ViewingHash: copied(r.ViewingHash)}
 }
@@ -105,26 +109,16 @@ func ZeroTrackingWrite() TrackingWrite {
 	return TrackingWrite{Entry: entry, Low: record, LowPath: zeroTrackingPath(), Slot: zeroTrackingPath()}
 }
 
-// Tracking keeps the sentinel at index 0 and appends every insert.
 type Tracking struct {
-	records []TrackingRecord
-	tree    quadTree
+	sortedTree[TrackingRecord]
 }
 
 func NewTracking(t testing.TB) *Tracking {
 	t.Helper()
-	r := &Tracking{tree: newQuadTree(t, registry.TrackingHeight)}
+	r := &Tracking{sortedTree[TrackingRecord]{tree: newQuadTree(t, registry.TrackingHeight)}}
 	zero := big.NewInt(0)
 	r.set(t, 0, TrackingRecord{Member: zero, Next: fieldMax, NullifierPk: zero, CtHash: zero, ListTag: zero, ViewingHash: zero})
 	return r
-}
-
-func (r *Tracking) Root() *big.Int {
-	return r.tree.root()
-}
-
-func (r *Tracking) NextIndex() uint64 {
-	return uint64(len(r.records))
 }
 
 func (r *Tracking) Opening(member *big.Int) TrackingOpening {
@@ -162,51 +156,13 @@ func (r *Tracking) Apply(t testing.TB, e TrackingEntry) TrackingWrite {
 }
 
 func (r *Tracking) SharedProof(indices []uint64) (registry.SharedQuadProof, error) {
-	proof, err := registry.NewTrackingProof(len(indices))
-	if err != nil {
-		return registry.SharedQuadProof{}, err
-	}
-	depth := len(proof.Paths[0].Siblings)
-	for i := range proof.Canopy {
-		proof.Canopy[i] = new(big.Int).Set(r.tree.node(depth, uint64(i)))
-	}
-	for i, index := range indices {
-		path := r.Path(index).Wires()
-		proof.Paths[i].Index = index
-		copy(proof.Paths[i].Siblings, path.Siblings[:])
-	}
-	return proof, nil
+	return r.sharedProof(registry.NewTrackingProof, indices)
 }
 
 func (r *Tracking) Path(index uint64) TrackingPath {
 	p := TrackingPath{Index: index}
 	copy(p.Siblings[:], r.tree.siblings(index))
 	return p
-}
-
-func (r *Tracking) find(member *big.Int) (uint64, bool) {
-	low := uint64(0)
-	for i, record := range r.records {
-		switch record.Member.Cmp(member) {
-		case 0:
-			return uint64(i), true
-		case -1:
-			if record.Member.Cmp(r.records[low].Member) > 0 {
-				low = uint64(i)
-			}
-		}
-	}
-	return low, false
-}
-
-func (r *Tracking) set(t testing.TB, index uint64, record TrackingRecord) {
-	t.Helper()
-	if index == uint64(len(r.records)) {
-		r.records = append(r.records, record)
-	} else {
-		r.records[index] = record
-	}
-	r.tree.setLeaf(t, index, record.Hash(t))
 }
 
 func entryRecord(e TrackingEntry, next *big.Int) TrackingRecord {

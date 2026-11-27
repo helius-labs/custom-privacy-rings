@@ -42,7 +42,7 @@ impl OperatorManifest {
         Ok(manifest)
     }
 
-    pub fn load_for(path: &Path, program_id: Address) -> Result<Self> {
+    pub(crate) fn load_for(path: &Path, program_id: Address) -> Result<Self> {
         let manifest = Self::load(path)?;
         ensure!(
             manifest.program.address == program_id,
@@ -63,14 +63,14 @@ impl OperatorManifest {
     }
 
     /// Relative to the directory of the manifest at `manifest_path`.
-    pub fn rpc_custody_path(&self, manifest_path: &Path) -> Result<Option<PathBuf>> {
+    pub(crate) fn rpc_custody_path(&self, manifest_path: &Path) -> Result<Option<PathBuf>> {
         self.rpc_custody
             .as_deref()
             .map(|path| expanded(&config_root(manifest_path), path))
             .transpose()
     }
 
-    pub fn role(&self, role: RingRole) -> &SignerRef {
+    pub(crate) fn role(&self, role: RingRole) -> &SignerRef {
         match role {
             RingRole::Admin => &self.admin,
             RingRole::Policy => &self.policy,

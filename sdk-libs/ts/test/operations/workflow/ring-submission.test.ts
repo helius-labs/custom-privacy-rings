@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   AccountRole,
+  SOLANA_ERROR__JSON_RPC__SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
   address,
   generateKeyPairSigner,
   getBase58Decoder,
+  getSolanaErrorFromJsonRpcError,
   signTransactionWithSigners,
   type Address,
 } from "@solana/kit";
@@ -300,6 +302,39 @@ describe("ring submission ownership", () => {
     expect(status).not.toHaveBeenCalled();
     expect(f.build).toHaveBeenCalledTimes(3);
     expect(f.release).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { refusal: "already processed", data: { err: "AlreadyProcessed" } },
+    { refusal: "with no transaction error", data: {} },
+  ])("confirms a transaction its preflight refuses $refusal by its status", async ({ data }) => {
+    const f = await fixture();
+    const sendTransaction = vi.fn(async () => {
+      throw getSolanaErrorFromJsonRpcError({
+        code: SOLANA_ERROR__JSON_RPC__SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
+        message: "Transaction simulation failed",
+        data: { accounts: null, logs: [], unitsConsumed: 0n, ...data },
+      });
+    });
+    const client = kitReads({
+      solanaRpc: {
+        sendTransaction: () => ({ send: sendTransaction }),
+        getSignatureStatuses: () => ({
+          send: async () => ({
+            context: { slot: 100n },
+            value: [{ slot: 99n, confirmations: 1n, err: null, confirmationStatus: "confirmed" }],
+          }),
+        }),
+      },
+    });
+    const result = await f.submission.send({
+      ...createKitRingSubmissionTransport(client, []),
+      sign: f.sign,
+    });
+    expect(result).toMatchObject({ kind: "confirmed", slot: 99n, attempts: 1 });
+    expect(sendTransaction).toHaveBeenCalledTimes(1);
+    expect(f.build).toHaveBeenCalledTimes(1);
+    expect(f.release).not.toHaveBeenCalled();
   });
 
   it("does not retry the same numeric error from a different instruction", async () => {

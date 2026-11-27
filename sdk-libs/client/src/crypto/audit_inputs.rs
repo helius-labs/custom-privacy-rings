@@ -251,12 +251,14 @@ impl AuditSection<'_> {
     /// One per input class slot on an entry key in note order, zero off a default-ring note.
     pub fn entry_openings(&self, class: usize) -> Result<Vec<EntryOpening>, RingError> {
         let mut openings = spent_notes(self.inputs)
-            .map(|input| match is_default_ring(input) {
-                true => owner_key(&input.utxo.owner).map(|key| EntryOpening {
+            .map(|input| {
+                if !is_default_ring(input) {
+                    return Ok(EntryOpening::default());
+                }
+                owner_key(&input.utxo.owner).map(|key| EntryOpening {
                     owner_key: key,
                     mint_chunks: mint_chunks(&input.utxo.asset),
-                }),
-                false => Ok(EntryOpening::default()),
+                })
             })
             .collect::<Result<Vec<_>, _>>()?;
         openings.resize(class, EntryOpening::default());

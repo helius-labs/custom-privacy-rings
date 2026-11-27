@@ -84,6 +84,7 @@ import {
 } from "./transfer-rails.js";
 import { checkHiddenParties, payeeOf, paymentTag, type PaymentPayee } from "./anonymous.js";
 import { assetLabel, type RingTransferClient } from "./transfer.js";
+import { defined } from "../../protocol/defined.js";
 
 const base58 = getBase58Decoder();
 const base64 = getBase64Decoder();
@@ -309,12 +310,10 @@ export class PreparedRingDeposit {
         {
           asset,
           depositor: funder,
-          ...(params.splTokenAccount === undefined
-            ? {}
-            : { splTokenAccount: params.splTokenAccount }),
-          ...(params.splTokenProgram === undefined
-            ? {}
-            : { splTokenProgram: params.splTokenProgram }),
+          ...defined({
+            splTokenAccount: params.splTokenAccount,
+            splTokenProgram: params.splTokenProgram,
+          }),
         },
         () => new RingError("RING_BUILD_DEPOSIT", { details: { reason: "missing token account" } }),
       ),
@@ -367,7 +366,7 @@ export class PreparedRingDeposit {
       assets: await depositAssets(client, asset, context),
       deposits: [deposit],
       listSalts: paid.listSalts,
-      ...(params.coSigners === undefined ? {} : { coSigners: params.coSigners }),
+      ...defined({ coSigners: params.coSigners }),
     };
     // 3. A confidential ring delivers to the recipient's tag, an anonymous ring pays a plan slot on
     //    the public owner rail, whose empty owner run the payer authorizes.

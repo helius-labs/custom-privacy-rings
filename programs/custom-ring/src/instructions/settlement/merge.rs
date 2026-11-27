@@ -13,8 +13,6 @@
 //! No list, guard, cap or co-signer rule applies, a merge keeps one owner's value in one asset.
 //!
 //! The instruction relies on SPP for the merge proof, the nullifiers, and the activation and pause of `RingConfig`.
-//!
-//! Read after `instructions/accounts/loader.rs`. Read before `prover/circuits/merge.go`.
 
 use custom_ring_interface::{
     key_catalog::RingCircuit, CustomRingError, CustomRingMergeIxDataRef, MergePublicInput,

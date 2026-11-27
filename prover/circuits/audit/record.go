@@ -37,9 +37,6 @@
 //     the input section opened. Every other position has a zero default bit and a zero record.
 //  6. A live transfer record's two last fields are the opened slot's nullifier key and data hash on an
 //     exit, and its data hash or ring data hash and its ring data hash otherwise.
-//
-// Read after audit/audit.go, audit/layout.go, shared/utxo.go, transfer/input.go.
-// Read before merge.go.
 
 package audit
 
@@ -141,7 +138,7 @@ func (o identityOpening) open(api frontend.API) rawIdentity {
 	mint := assertMint(api, o.Live, o.Asset, o.MintChunks)
 	// SolanaOwnerIdentity bounds every owner key byte, the reader rebuilds the owner from the key.
 	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: o.Live, A: o.OwnerPkHash, B: gadget.SolanaOwnerIdentity(api, o.OwnerKey)})
-	return rawIdentity{ownerKey: masked(api, o.Live, o.OwnerKey[:]), mint: masked(api, o.Live, mint)}
+	return rawIdentity{ownerKey: ringgadget.Masked(api, o.Live, o.OwnerKey[:]), mint: ringgadget.Masked(api, o.Live, mint)}
 }
 
 // assertMint holds a live asset to the raw mint the record carries, the auditor needs no mint registry.

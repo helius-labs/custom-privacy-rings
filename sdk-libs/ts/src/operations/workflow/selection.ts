@@ -20,6 +20,7 @@ import type { Wallet, WalletUtxo } from "@heliuslabs/spr/transaction";
 import { recoveryAllows, type RecoveryWallet } from "../../state/recovery-session.js";
 import { RingError } from "../../protocol/error.js";
 import { ringTreeIdResolver } from "../../protocol/membership/trees.js";
+import { defined } from "../../protocol/defined.js";
 
 export interface Cover {
   readonly asset: Address;
@@ -120,8 +121,7 @@ export function ringProofInput(
     nullifierPublicKey: noteNullifierPublicKey(entry, owner, client.treeId),
     nullifier: entry.nullifier,
     treeId: client.treeId,
-    ...(entry.dataHash === undefined ? {} : { dataHash: entry.dataHash }),
-    ...(entry.ringDataHash === undefined ? {} : { ringDataHash: entry.ringDataHash }),
+    ...defined({ dataHash: entry.dataHash, ringDataHash: entry.ringDataHash }),
   });
 }
 

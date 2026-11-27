@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { getAddressDecoder, getAddressEncoder } from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -16,7 +17,7 @@ import {
 import { RingAddress } from "../../../src/crypto/keys/ring-address.js";
 import { CustomRingTransfer } from "../../../src/operations/payments/transfer-rails.js";
 import plans from "../../../../../test-vectors/proof/ring-transfer-plans.json" with { type: "json" };
-import { filled, hex, pdaKeys, ringFixture, walletKeys } from "../../helpers/ring-pipeline.js";
+import { filled, pdaKeys, ringFixture, walletKeys } from "../../helpers/ring-pipeline.js";
 
 const bytes = (encoded: string) => Uint8Array.from(Buffer.from(encoded, "hex"));
 const address = (encoded: string) => getAddressDecoder().decode(bytes(encoded));
@@ -26,19 +27,19 @@ const assets = new AssetRegistry();
 /** Owner, mint, amount, ring and data hash per slot, a dummy by its blinding alone. */
 const slots = (outputs: readonly ProofOutputUtxo[], blinded: boolean) =>
   outputs.map((output) => ({
-    owner: output.ownerAddress === undefined ? null : hex(output.ownerAddress.toBytes()),
+    owner: output.ownerAddress === undefined ? null : bytesToHex(output.ownerAddress.toBytes()),
     ...(output.ownerAddress === undefined
       ? {}
       : {
-          mint: hex(new Uint8Array(getAddressEncoder().encode(output.asset))),
+          mint: bytesToHex(new Uint8Array(getAddressEncoder().encode(output.asset))),
           amount: Number(output.amount),
           ring: output.ringProgramId !== undefined,
           dataHash:
             output.dataHash === undefined || output.dataHash.every((byte) => byte === 0)
               ? null
-              : hex(output.dataHash),
+              : bytesToHex(output.dataHash),
         }),
-    ...(blinded ? { blinding: hex(output.blinding) } : {}),
+    ...(blinded ? { blinding: bytesToHex(output.blinding) } : {}),
   }));
 
 // Rust `every_pinned_transfer_seals_to_the_plan_both_sdks_share` writes the file.
@@ -125,8 +126,8 @@ describe("shared transfer plans", () => {
       .prove(fixture.client);
     const staged = fixture.sppCalls.at(-1)?.proofInputs;
     expect(slots(staged?.outputs ?? [], true)).toEqual(pinned.outputs);
-    expect(hex(staged?.blindingSeed ?? new Uint8Array())).toBe(pinned.blindingSeed);
-    expect(hex(staged?.firstNullifier() ?? new Uint8Array())).toBe(pinned.firstNullifier);
+    expect(bytesToHex(staged?.blindingSeed ?? new Uint8Array())).toBe(pinned.blindingSeed);
+    expect(bytesToHex(staged?.firstNullifier() ?? new Uint8Array())).toBe(pinned.firstNullifier);
 
     await rail().prove(fixture.client);
     expect(slots(fixture.sppCalls.at(-1)?.proofInputs.outputs ?? [], false)).toEqual(

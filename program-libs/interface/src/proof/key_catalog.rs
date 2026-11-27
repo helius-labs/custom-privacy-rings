@@ -2,9 +2,6 @@
 //!
 //! A frame names its key by shape, and a key's widths fix its statement chains, its stream and its
 //! record pools. A frame off the catalog has no key and `RingShapeUnkeyed` refuses it.
-//!
-//! Read after `program-libs/interface/src/codec/stream.rs`. Read before `program-libs/interface/src/proof/verification.rs`,
-//! `programs/custom-ring/src/instructions/verification/verifier.rs`.
 
 use crate::{
     audit_stream::AuditKey, member_registry::APPLY_BATCH, storage_instruction::ENROLLMENT_BATCH,

@@ -172,9 +172,10 @@ impl AnonymousPlan {
     /// returns every slot of the transaction and equal tags would show two slots share an owner.
     pub(crate) fn tags(&self, slots: &[AnonymousSlot]) -> Vec<Option<ViewTag>> {
         let mut published: Vec<ViewTag> = Vec::new();
-        let mut once = |tag: ViewTag| match published.contains(&tag) {
-            true => random_slot_tag(),
-            false => {
+        let mut once = |tag: ViewTag| {
+            if published.contains(&tag) {
+                random_slot_tag()
+            } else {
                 published.push(tag);
                 tag
             }
@@ -233,18 +234,20 @@ pub(crate) fn lead_change(
         .zip(declared)
         .all(|(sealed, declared)| note_of(sealed) == note_of(declared));
     // SPP appends its change today, a builder that leads with it keeps the same frame.
-    let first = match appended {
-        true => declared.len(),
-        false => 0,
-    };
+    let first = if appended { declared.len() } else { 0 };
     let added = first..first + live(&inputs.output_utxos).saturating_sub(live(declared));
     let rank = |index: usize| {
         let output = &inputs.output_utxos[index];
-        match added.contains(&index) {
-            true if output.asset != Mint::SOL => 0,
-            true => 1,
-            false if is_change(output, sender) => 2,
-            false => 3,
+        if added.contains(&index) {
+            if output.asset != Mint::SOL {
+                0
+            } else {
+                1
+            }
+        } else if is_change(output, sender) {
+            2
+        } else {
+            3
         }
     };
     let mut order: Vec<usize> = (0..inputs.output_utxos.len()).collect();

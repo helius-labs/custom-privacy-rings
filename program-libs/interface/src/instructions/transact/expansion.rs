@@ -1,7 +1,4 @@
 //! Compact ring frames expand into canonical SPP bytes for settlement and external data hashing.
-//!
-//! Read after `program-libs/interface/src/instructions/transact.rs` and `program-libs/interface/src/codec/output.rs`.
-//! Read before `programs/custom-ring/src/instructions/transfer/processor.rs`.
 
 use spr_interface::instruction::{
     InputUtxo, MessageData, OwnerTag, TransactIxData, TransactOutput, TransactProof,
@@ -62,7 +59,7 @@ impl RingTransactData<'_> {
         let expanded = self.transact_ix_data_validated(ring, proof)?;
         let len = wincode::serialized_size(&expanded).map_err(invalid)?;
         let mut data = Vec::with_capacity(usize::try_from(len).map_err(invalid)?.saturating_add(1));
-        data.push(self.rail.spp_tag());
+        data.push(self.rail().spp_tag());
         wincode::serialize_into(&mut data, &expanded).map_err(invalid)?;
         Ok(data)
     }

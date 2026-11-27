@@ -279,17 +279,18 @@ impl Store {
             ..ApplyRecordsIxData::zeroed()
         };
         let private = ListSet::PRIVATE_LISTS.contains(list);
+        let writes = [RecordWriteData {
+            member: allow_write().member,
+            lists: WriteRecordsIxData {
+                mask: list.record_bit().to_le_bytes(),
+                value: list.record_bit().to_le_bytes(),
+            },
+            mint_policy: mint_policy_write(None),
+        }];
         let data = StorageUpdateIxData {
             revision: revision.into(),
-            writes: vec![RecordWriteData {
-                member: allow_write().member,
-                lists: WriteRecordsIxData {
-                    mask: list.record_bit().to_le_bytes(),
-                    value: list.record_bit().to_le_bytes(),
-                },
-                mint_policy: mint_policy_write(None),
-            }],
-            asset_writes: Vec::new(),
+            writes: &writes,
+            asset_writes: &[],
             tracking_revision: private.then(Revision::default),
             apply: &apply,
         };
@@ -327,8 +328,8 @@ impl Store {
         };
         let data = StorageUpdateIxData {
             revision: revision.into(),
-            writes,
-            asset_writes: Vec::new(),
+            writes: &writes,
+            asset_writes: &[],
             tracking_revision: None,
             apply: &apply,
         };
@@ -1135,6 +1136,67 @@ fn a_curator_initializes_without_a_ring() {
         store.send_as_authority(store.initialize_instruction(curator, &data)),
         refusal(StorageError::AlreadyInitialized)
     );
+}
+
+#[test]
+fn a_registry_takes_its_canonical_address_and_loads_owned_writable_and_initialized() {
+    let mut store = Store::new();
+    let data = InitializeIxData {
+        registry_id: REGISTRY_ID,
+        grace_slots: GRACE.to_le_bytes(),
+        ring_id: RING_ID,
+        tracking_registry: Address::default(),
+    };
+    let misplaced = InitializeIxData {
+        registry_id: CURATOR_ID,
+        ..data
+    };
+    assert_eq!(
+        store.send_as_authority(store.initialize_instruction(store.registry, &misplaced)),
+        refusal(StorageError::InvalidRegistry)
+    );
+    let mut read_only = store.initialize_instruction(store.registry, &data);
+    read_only.accounts[2].is_writable = false;
+    assert_eq!(
+        store.send_as_authority(read_only),
+        refusal(StorageError::InvalidRegistry)
+    );
+    store.initialize(GRACE);
+    assert_eq!(
+        store.registry(),
+        StorageRegistry::new(store.authority.pubkey(), &data)
+    );
+    let mut read_only = store.zero_proof_update(0, ListId::Reader);
+    read_only.accounts[1].is_writable = false;
+    assert_eq!(
+        store.send_as_authority(read_only),
+        refusal(StorageError::ReadOnlyRegistry)
+    );
+    // The owner precedes the write flag and the write flag precedes the bytes.
+    store.initialize_tracking();
+    let stranger = Address::new_unique();
+    for (registry, refused) in [
+        (
+            AccountMeta::new(stranger, false),
+            StorageError::InvalidRegistry,
+        ),
+        (
+            AccountMeta::new_readonly(stranger, false),
+            StorageError::InvalidRegistry,
+        ),
+        (
+            AccountMeta::new(store.tracking, false),
+            StorageError::InvalidRegistry,
+        ),
+        (
+            AccountMeta::new_readonly(store.tracking, false),
+            StorageError::ReadOnlyRegistry,
+        ),
+    ] {
+        let mut update = store.zero_proof_update(0, ListId::Reader);
+        update.accounts[1] = registry;
+        assert_eq!(store.send_as_authority(update), refusal(refused));
+    }
 }
 
 #[test]

@@ -56,9 +56,10 @@ pub(crate) fn assign_nullifiers<K: ShieldedKeys + ?Sized>(
     let zero_secret = NullifierKey::from_secret([0; 31]);
     for (input, nullifier) in utxos.iter_mut().zip(nullifiers) {
         // A zero-key note spends under secret zero, never the wallet's.
-        input.nullifier = match is_zero_key(input) {
-            true => zero_secret.nullifier(&input.utxo_hash, &input.utxo.blinding)?,
-            false => nullifier,
+        input.nullifier = if is_zero_key(input) {
+            zero_secret.nullifier(&input.utxo_hash, &input.utxo.blinding)?
+        } else {
+            nullifier
         };
     }
     Ok(())
@@ -84,9 +85,26 @@ pub struct RingNoteCodec<'a, K: ?Sized> {
 
 /// One ring body a held key rebuilt, with the secret its reply opens under.
 pub(crate) struct OpenedSlot {
+    pub slot_index: u32,
     pub viewing_pubkey: X25519Pubkey,
     pub secret: SlotSecret,
-    pub opening: RingOpening,
+    pub body: OpenedBody,
+}
+
+impl OpenedSlot {
+    fn opening(self) -> RingOpening {
+        let (OpenedBody::Note(note) | OpenedBody::UnknownMint(note)) = self.body;
+        RingOpening {
+            slot_index: self.slot_index,
+            nullifier_pubkey: note.nullifier_pk,
+            mint: note.utxo.asset.asset,
+            amount: note.utxo.amount,
+            blinding: note.utxo.blinding,
+            data: note.utxo.data,
+            data_hash: note.data_hash,
+            ring_data_hash: note.ring_data_hash,
+        }
+    }
 }
 
 impl<K: ShieldedKeys + RingKeys + ?Sized> RingCodec for RingNoteCodec<'_, K> {
@@ -98,9 +116,9 @@ impl<K: ShieldedKeys + RingKeys + ?Sized> RingCodec for RingNoteCodec<'_, K> {
 
     fn open(&self, event: &ShieldedTransaction) -> Result<Vec<RingOpening>, AnonymousError> {
         Ok(self
-            .opened(event)?
+            .opened(event, &self.keys.viewing_public_keys())?
             .into_iter()
-            .map(|slot| slot.opening)
+            .map(OpenedSlot::opening)
             .collect())
     }
 }
@@ -110,6 +128,7 @@ impl<K: ShieldedKeys + RingKeys + ?Sized> RingNoteCodec<'_, K> {
     pub(crate) fn opened(
         &self,
         event: &ShieldedTransaction,
+        viewing_keys: &[X25519Pubkey],
     ) -> Result<Vec<OpenedSlot>, AnonymousError> {
         let Some(context) = RingDeliveryContext::of(event) else {
             return Ok(Vec::new());
@@ -121,11 +140,9 @@ impl<K: ShieldedKeys + RingKeys + ?Sized> RingNoteCodec<'_, K> {
             .map(|(position, _)| position)
             .collect();
         // One key's requests run together, the holder agrees once per key.
-        let requests: Vec<RingDeliveryRequest> = self
-            .keys
-            .viewing_public_keys()
-            .into_iter()
-            .flat_map(|viewing_pubkey| {
+        let requests: Vec<RingDeliveryRequest> = viewing_keys
+            .iter()
+            .flat_map(|&viewing_pubkey| {
                 bodies.iter().map(move |&output_index| RingDeliveryRequest {
                     viewing_pubkey,
                     tx_viewing_pk: context.tx_viewing_pk,
@@ -147,24 +164,14 @@ impl<K: ShieldedKeys + RingKeys + ?Sized> RingNoteCodec<'_, K> {
                 slot_index: request.output_index,
                 slot_secret: SlotSecret::new(secret)?,
             };
-            let Some(OpenedBody::Note(note) | OpenedBody::UnknownMint(note)) =
-                open_recipient_candidate(&address, self.assets, &candidate)?
-            else {
+            let Some(body) = open_recipient_candidate(&address, self.assets, &candidate)? else {
                 continue;
             };
             opened.push(OpenedSlot {
+                slot_index: request.output_index,
                 viewing_pubkey: request.viewing_pubkey,
                 secret: candidate.slot_secret,
-                opening: RingOpening {
-                    slot_index: request.output_index,
-                    nullifier_pubkey: note.nullifier_pk,
-                    mint: note.utxo.asset.asset,
-                    amount: note.utxo.amount,
-                    blinding: note.utxo.blinding,
-                    data: note.utxo.data,
-                    data_hash: note.data_hash,
-                    ring_data_hash: note.ring_data_hash,
-                },
+                body,
             });
         }
         Ok(opened)

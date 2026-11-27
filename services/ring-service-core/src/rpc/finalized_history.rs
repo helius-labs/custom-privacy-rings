@@ -1300,7 +1300,7 @@ mod tests {
         assert_eq!(untouched.data[0].signature, ascending[4_000].signature);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_slow_page_does_not_block_another_page_of_the_snapshot() {
         let history = FinalizedHistory::default();
         let mut source = Source::new(&[entry(1), entry(2), entry(3)]);
@@ -1333,7 +1333,7 @@ mod tests {
         assert_eq!(slow.unwrap().data[0].slot, 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn continuations_waiting_on_one_refresh_reuse_it() {
         let history = FinalizedHistory::default();
         let source = Source::new(&[entry(1), entry(2), entry(3)]);

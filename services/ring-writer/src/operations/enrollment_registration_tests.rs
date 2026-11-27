@@ -52,8 +52,8 @@ fn store_url(label: &str) -> (PathBuf, String) {
 async fn stored(chain: &Arc<StubChain>, url: &str, payer: Keypair) -> EnrollmentApplier {
     EnrollmentApplierParts {
         payer: Arc::new(payer),
-        store: Some(Store::open(url, STORE_CONNECTIONS).await.expect("store")),
-        ..parts(chain)
+        store: Store::open(url, STORE_CONNECTIONS).await.expect("store"),
+        ..parts(chain).await
     }
     .applier()
     .await
@@ -88,7 +88,7 @@ async fn a_full_ring_set_refuses_the_next_registration() {
     ring_naming(&chain, ELSEWHERE, payer().pubkey());
     let applier = EnrollmentApplierParts {
         max_rings: 1,
-        ..parts(&chain)
+        ..parts(&chain).await
     }
     .applier()
     .await
@@ -154,7 +154,7 @@ async fn one_ring_spends_only_its_share_of_the_budget() {
     chain.enrolled([3, 4]);
     let applier = EnrollmentApplierParts {
         ring_budget_lamports: signature_fees(2),
-        ..parts(&chain)
+        ..parts(&chain).await
     }
     .applier()
     .await

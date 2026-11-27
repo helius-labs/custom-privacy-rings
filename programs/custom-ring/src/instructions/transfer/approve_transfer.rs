@@ -2,8 +2,6 @@
 //!
 //! The instruction writes nothing. A transfer reads the approval from the instructions sysvar, and
 //! the sysvar lists top-level instructions alone, each with the signer flags of the transaction.
-//!
-//! Read after `program-libs/interface/src/instructions/transfer_approval.rs`. Read before `instructions/accounts/loader.rs`.
 
 use custom_ring_interface::{CoSigner, CustomRingError, RingPolicy, TransferApproval};
 use pinocchio::{AccountView, Address, ProgramResult};

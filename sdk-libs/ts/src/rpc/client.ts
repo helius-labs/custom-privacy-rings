@@ -34,6 +34,7 @@ import type {
 import { CustomRingProver } from "./prover/client.js";
 import { customRingProof } from "./prover/proof.js";
 import type { RingProofRequest } from "../protocol/proof/ring-proof-requests.js";
+import { defined } from "../protocol/defined.js";
 
 export type CustomRingClientConfig = Omit<SprClientConfig, "provingKeys"> & {
   readonly provingKeys?: never;
@@ -75,8 +76,7 @@ export class CustomRingClient extends SprClient implements RingProver, RingRecor
     this.#ringIndexer = new RingIndexer(
       new SprApi({
         url,
-        ...(config.apiKey === undefined ? {} : { apiKey: config.apiKey }),
-        ...(config.fetch === undefined ? {} : { fetch: config.fetch }),
+        ...defined({ apiKey: config.apiKey, fetch: config.fetch }),
       }),
     );
   }

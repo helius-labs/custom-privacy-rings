@@ -3,6 +3,7 @@ import type { RequestContext } from "@heliuslabs/spr/interface";
 
 import { RingError } from "../protocol/error.js";
 import type { RingWalletStatusPage } from "./ring-rpc.js";
+import { defined } from "../protocol/defined.js";
 
 /** Rust `WALLET_SNAPSHOT_CURSOR_LEN`, ring, wallet, snapshot and position at 32 bytes each. */
 export const SNAPSHOT_CURSOR_LENGTH = 128;
@@ -49,9 +50,7 @@ export async function* snapshotPages<Page>(
         captured = {
           historyThrough: status.historyThrough,
           enrollment: status.enrollment,
-          ...(status.snapshotExpiresAt === undefined
-            ? {}
-            : { snapshotExpiresAt: status.snapshotExpiresAt }),
+          ...defined({ snapshotExpiresAt: status.snapshotExpiresAt }),
         };
       } else if (
         status.historyThrough !== captured.historyThrough ||

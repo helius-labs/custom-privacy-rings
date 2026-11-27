@@ -6,7 +6,6 @@ import (
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/transfer"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
-	"github.com/helius-labs/zolana/prover/server/prover-test/spp/spptest"
 )
 
 type Rail int
@@ -22,13 +21,6 @@ type Confidential struct {
 	World
 	Shape transfer.Shape
 	Rail  Rail
-}
-
-// Built is a confidential witness with the fixtures it was derived from.
-type Built struct {
-	Assembled
-	Circuit *transfer.TransferCircuit
-	World   Confidential
 }
 
 // Signed is a policy ring transfer on the signer rail of shape.
@@ -58,40 +50,7 @@ func (w Confidential) Build(t testing.TB) Built {
 	if w.Rail == InProof {
 		c.Sender = sender
 	}
-	b := Built{Circuit: c, World: w, Assembled: w.fill(t, &c.Sections, a, w.Rail == Delegate, run)}
+	b := Built{Circuit: c, World: w.World, Assembled: w.fill(t, &c.Sections, a, w.Rail == Delegate, run)}
 	b.Rehash(t)
 	return b
-}
-
-// Refill reopens the policy and tracking pools after a test edits the rows.
-func (b Built) Refill(t testing.TB) {
-	t.Helper()
-	b.World.World.reopen(t, &b.Circuit.Sections, b.Assembled)
-	b.Rehash(t)
-}
-
-// Rehash recomputes private_tx_hash from the fixture slots and inputs, then the public input.
-func (b Built) Rehash(t testing.TB) {
-	t.Helper()
-	b.World.World.rehash(t, &b.Circuit.Sections, b.Audit)
-	b.Rebind(t)
-}
-
-// Rebind recomputes the public input after a statement value changes.
-func (b Built) Rebind(t testing.TB) {
-	t.Helper()
-	b.Circuit.WithdrawalHash = withdrawalHash(t, &b.Circuit.Policy)
-	b.Circuit.Voucher = b.Audit.VoucherWires(t, ringtest.AsBigInt(b.Circuit.PrivateTxHash), ringtest.AsBigInt(b.Circuit.WithdrawalHash))
-	b.Circuit.PublicInputHash = spptest.MustHashChain4(t, b.Statement(t))
-}
-
-func (b Built) Statement(t testing.TB) []*big.Int {
-	t.Helper()
-	return b.Values(t).Elements(t)
-}
-
-// Values is what the program holds for the statement.
-func (b Built) Values(t testing.TB) Statement {
-	t.Helper()
-	return railValues(t, b.Circuit, b.Assembled)
 }

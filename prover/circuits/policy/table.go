@@ -5,8 +5,6 @@
 // hash alone, so the proof carries the table as private wires and every rule section reads the decoded
 // view. A table other than the hashed one would let a prover pick its own rules.
 //
-// Read after policy/screen.go. Read before policy/subjects.go, policy/rules.go.
-//
 // Properties:
 // 1. While screened, the table is the preimage of policy_hash under the CRTB domain, in EncodedRuleTable::fields order.
 // 2. The first PolicyLen rows are active, a count past NRules has no solution.

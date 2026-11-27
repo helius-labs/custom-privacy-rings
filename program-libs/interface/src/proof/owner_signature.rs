@@ -6,9 +6,6 @@
 //! the writes it applies. A descriptor that points into another instruction would let the key or the
 //! message come from bytes the program never compares, so every descriptor here points into the
 //! precompile instruction itself.
-//!
-//! Read after `program-libs/interface/src/instructions/storage.rs`. Read before
-//! `programs/storage/src/instructions/apply_enrollments.rs`.
 
 use bytemuck::{Pod, Zeroable};
 use solana_address::Address;
@@ -84,9 +81,10 @@ impl<'a> Ed25519Signatures<'a> {
             usize::from(field(offsets.message_data_size)),
         )
         .ok_or(mismatch)?;
-        match key == owner.as_ref() && signed == message {
-            true => Ok(()),
-            false => Err(mismatch),
+        if key == owner.as_ref() && signed == message {
+            Ok(())
+        } else {
+            Err(mismatch)
         }
     }
 }

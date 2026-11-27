@@ -96,16 +96,13 @@ spr-transaction = { workspace = true, features = ["serde"] }
 custom-ring-interface = { workspace = true, features = ["cpi"] }
 http = { workspace = true }
 bs58 = { workspace = true }
-solana-hash = { workspace = true }
 num-bigint = { workspace = true }
 solana-keypair = { workspace = true }
 solana-message = { workspace = true }
-solana-rpc-client = { workspace = true }
 solana-system-interface = { workspace = true }
 solana-program-error = { workspace = true }
 solana-signature = { workspace = true, features = ["verify"] }
 spl-token-2022-interface = { workspace = true }
 solana-transaction-status-client-types = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
-x25519-dalek = { workspace = true }
 zolana-ring-client = { path = ".", features = ["operations", "solana-rpc"] }

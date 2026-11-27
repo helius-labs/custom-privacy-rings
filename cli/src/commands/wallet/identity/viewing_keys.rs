@@ -1,8 +1,6 @@
 //! `key rotate`, a new viewing key handed to ring rpc for the member's tracking leaf, and the key holder every
 //! wallet command loads.
 //!
-//! Read before `wallet`. Read after `zolana_ring_client::RotateViewingKey`.
-//!
 //! Each rotated key is an owner-only `<n>.key` file, never overwritten, the newest current and every
 //! earlier one retained. The anonymous wallet store stays keyed by the identity key.
 

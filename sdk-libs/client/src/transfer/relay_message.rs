@@ -38,7 +38,7 @@ use crate::{
     pipeline::refused_delegate,
     rpc::{AuthorityWithdrawal, RelayId, TxViewingSecret},
     sole_mint, AuditEnvelope, CoSignerPairs, CustomRing, CustomRingConfig, DelegateRequester,
-    OpenedAudit, PendingSignature, RequestedAuthorityTransfer, RingError, REDACTED,
+    OpenedAudit, PendingSignature, RequestedAuthorityTransfer, RingError,
 };
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -181,34 +181,20 @@ pub struct SlotOpening {
     pub tag: Option<Hash>,
 }
 
-impl core::fmt::Debug for SlotOpening {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            slot,
-            owner,
-            nullifier_pk,
-            mint,
-            amount,
-            blinding: _,
-            tree_id,
-            data_hash,
-            ring_data_hash,
-            tag,
-        } = self;
-        f.debug_struct("SlotOpening")
-            .field("slot", slot)
-            .field("owner", owner)
-            .field("nullifier_pk", nullifier_pk)
-            .field("mint", mint)
-            .field("amount", amount)
-            .field("blinding", &REDACTED)
-            .field("tree_id", tree_id)
-            .field("data_hash", data_hash)
-            .field("ring_data_hash", ring_data_hash)
-            .field("tag", tag)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(SlotOpening {
+    shown: [
+        slot,
+        owner,
+        nullifier_pk,
+        mint,
+        amount,
+        tree_id,
+        data_hash,
+        ring_data_hash,
+        tag
+    ],
+    hidden: [blinding],
+});
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -235,20 +221,10 @@ pub struct ApprovalOpening {
     pub public: Vec<PublicTotalsOpening>,
 }
 
-impl core::fmt::Debug for ApprovalOpening {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            blinder: _,
-            outputs,
-            public,
-        } = self;
-        f.debug_struct("ApprovalOpening")
-            .field("blinder", &REDACTED)
-            .field("outputs", outputs)
-            .field("public", public)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(ApprovalOpening {
+    shown: [outputs, public],
+    hidden: [blinder],
+});
 
 /// Amounts are decimal text, a `u128` does not survive every JSON reader.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,20 +265,10 @@ pub struct ExactApproval {
     pub seen_blinders: Vec<Hash>,
 }
 
-impl core::fmt::Debug for ExactApproval {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            opening,
-            limits,
-            seen_blinders: _,
-        } = self;
-        f.debug_struct("ExactApproval")
-            .field("opening", opening)
-            .field("limits", limits)
-            .field("seen_blinders", &REDACTED)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(ExactApproval {
+    shown: [opening, limits],
+    hidden: [seen_blinders],
+});
 
 /// `peak` bounds one owner's outflow, `outflow` the sum over owners, `gross` each public row's
 /// withdrawals with no deposit subtracted.
@@ -497,9 +463,10 @@ impl<'a> DecodedTransfer<'a> {
 
 impl LegDirection {
     pub(crate) fn of(transfer: InterfaceTransfer) -> Self {
-        match transfer.is_deposit() {
-            true => Self::Deposit,
-            false => Self::Withdrawal,
+        if transfer.is_deposit() {
+            Self::Deposit
+        } else {
+            Self::Withdrawal
         }
     }
 }
@@ -575,9 +542,10 @@ fn check_legs<'l>(
             .next()
             .is_some_and(|term| term.binds(leg, decoded.group(leg)))
     });
-    match bound && terms.next().is_none() {
-        true => Ok(()),
-        false => Err(MessageMismatch::Legs),
+    if bound && terms.next().is_none() {
+        Ok(())
+    } else {
+        Err(MessageMismatch::Legs)
     }
 }
 
@@ -703,9 +671,10 @@ fn check_signer(
             .map(|(index, _)| index)
             .eq(allowed.iter().copied())
         && named.all(|(_, meta)| meta.is_signer && (writable || !meta.is_writable));
-    match valid {
-        true => Ok(()),
-        false => Err(MessageMismatch::Accounts),
+    if valid {
+        Ok(())
+    } else {
+        Err(MessageMismatch::Accounts)
     }
 }
 
@@ -739,6 +708,9 @@ impl ExpectedDelegate {
                 allowed.check_sources(transfer.sources.iter().map(|source| &source.0))?;
             }
             DelegateRequester::Mint(mint) => {
+                if config.delegate == Some(request.delegate.0) {
+                    return Err(RingError::RingDelegateAsMintRequester);
+                }
                 if sole_mint(transfer.mints()) != Some(*mint) {
                     return Err(CustomRingError::UnauthorizedDelegate.into());
                 }
@@ -845,7 +817,7 @@ impl ExpectedDelegate {
         // 3. Each live record pays one requested payment or returns change to a requested source,
         // sealed to that owner's viewing key.
         let records = open_records(parsed, &self.tx_viewing_key, &opened)?;
-        let anonymous = data.rail.anonymous_frame();
+        let anonymous = data.rail().anonymous_frame();
         // An anonymous frame publishes each tag once, a match returns every slot of the transaction.
         let published: Vec<ViewTag> = data
             .outputs
@@ -864,9 +836,10 @@ impl ExpectedDelegate {
             };
             // A payment no published tag finds is lost to its recipient's sync.
             let paid = unpaid.iter().position(|payment| {
-                let tagged = match anonymous && payment.kind == RecordKind::Ring {
-                    true => published.contains(&payment.tag),
-                    false => payment.tag == output.owner_tag,
+                let tagged = if anonymous && payment.kind == RecordKind::Ring {
+                    published.contains(&payment.tag)
+                } else {
+                    payment.tag == output.owner_tag
                 };
                 payment.matches(&record) && tagged && sealed_to(&payment.owner)
             });
@@ -1630,15 +1603,14 @@ impl Envelope {
 fn requests_write(message: &v1::Message, index: usize) -> bool {
     let header = message.header;
     let signers = usize::from(header.num_required_signatures);
-    match index < signers {
-        true => message.is_signer_writable(index),
-        false => {
-            index
-                < message
-                    .account_keys
-                    .len()
-                    .saturating_sub(usize::from(header.num_readonly_unsigned_accounts))
-        }
+    if index < signers {
+        message.is_signer_writable(index)
+    } else {
+        index
+            < message
+                .account_keys
+                .len()
+                .saturating_sub(usize::from(header.num_readonly_unsigned_accounts))
     }
 }
 
@@ -1646,6 +1618,7 @@ fn requests_write(message: &v1::Message, index: usize) -> bool {
 mod tests {
     use solana_message::Hash as Blockhash;
     use spr_client::{compile_message, ComputeBudgetConfig};
+    use zolana_ring_keys::REDACTED;
 
     use super::*;
 

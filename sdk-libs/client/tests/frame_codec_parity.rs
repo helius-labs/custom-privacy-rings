@@ -82,7 +82,7 @@ fn assert_owned_parity(data: &RingTransactData<'_>, ring: &RingPolicy) {
         .unwrap()
         .serialize()
         .unwrap();
-    let tag = [data.rail.spp_tag()];
+    let tag = [data.rail().spp_tag()];
     let actual = data
         .spp_instruction_data_under(ring, TransactProof::zeroed())
         .unwrap();

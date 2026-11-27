@@ -46,7 +46,7 @@ export function invalid(path: string): RingError {
   });
 }
 
-export const { record, list, string, address, signature, signedInteger, base64, base58 } =
+export const { record, list, string, address, boolean, signature, signedInteger, base64, base58 } =
   wireDecoder(invalid);
 export const { u64, count, hash } = wirePrimitives((path) => {
   throw invalid(path);

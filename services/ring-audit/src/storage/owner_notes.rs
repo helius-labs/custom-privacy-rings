@@ -5,9 +5,7 @@
 //! A read therefore touches the owner's live notes and the spends of at most one commit beyond the
 //! history slot, and never a settled spend. A read selects one bounded range in note tag order and
 //! opens only the rows of that range.
-//!
-//! Read after `storage/spent_index.rs`, its page commit runs these writes in its transaction.
-//! Read before `operations/utxos.rs`, the wallet reads page over these rows.
+//! The writes run in the transaction of the page commit.
 
 use hkdf::Hkdf;
 use sea_orm::{ConnectionTrait, DbErr, QueryResult, Value};
@@ -126,8 +124,7 @@ impl OwnerNoteWrites<'_> {
                 Some(slot) => sql::integer(slot)?,
                 None => Value::BigInt(None),
             };
-            db.execute(sql::statement(
-                db,
+            sql::Query::new(
                 "INSERT INTO owner_notes(ring,owner_tag,note_tag,sealed,spent_slot) \
                  VALUES($1,$2,$3,$4,$5) ON CONFLICT(ring,owner_tag,note_tag) DO UPDATE SET \
                  sealed=excluded.sealed,spent_slot=excluded.spent_slot",
@@ -138,16 +135,17 @@ impl OwnerNoteWrites<'_> {
                     sealed_row(seal, &note_tag, &change.note)?.into(),
                     spent_slot,
                 ],
-            ))
+            )
+            .execute(db)
             .await?;
         }
         // 2. The history slot before the page bounds the deletion, a read holding that slot or a
         //    later one never counts the change of a note it no longer finds.
-        db.execute(sql::statement(
-            db,
+        sql::Query::new(
             "DELETE FROM owner_notes WHERE ring=$1 AND spent_slot<=$2",
             vec![ring_value(), sql::integer(delta.prune_through())?],
-        ))
+        )
+        .execute(db)
         .await?;
         // 3. A late owner keeps its pending row until a page derives its last note. The resume tag
         //    lets a restart continue past the notes a committed page derived.
@@ -155,19 +153,17 @@ impl OwnerNoteWrites<'_> {
             let member = Member::owner_tag(owner)
                 .map_err(|_| DbErr::Custom("owner tag is invalid".into()))?;
             let member = sql::bytes(member.as_bytes());
-            let statement = match progress {
-                LateProgress::Done => sql::statement(
-                    db,
+            let query = match progress {
+                LateProgress::Done => sql::Query::new(
                     "DELETE FROM pending_derivations WHERE ring=$1 AND member=$2",
                     vec![ring_value(), member],
                 ),
-                LateProgress::After(tag) => sql::statement(
-                    db,
+                LateProgress::After(tag) => sql::Query::new(
                     "UPDATE pending_derivations SET after_tag=$3 WHERE ring=$1 AND member=$2",
                     vec![ring_value(), member, sql::bytes(tag)],
                 ),
             };
-            db.execute(statement).await?;
+            query.execute(db).await?;
         }
         Ok(())
     }
@@ -202,16 +198,15 @@ impl OwnerNotesPage<'_> {
             }
             None => "",
         };
-        let rows = db
-            .query_all(sql::statement(
-                db,
-                format!(
-                    "SELECT note_tag,sealed,spent_slot FROM owner_notes WHERE ring=$1 AND \
-                     owner_tag=$2{after_clause} ORDER BY note_tag LIMIT $3"
-                ),
-                values,
-            ))
-            .await?;
+        let rows = sql::Query::new(
+            format!(
+                "SELECT note_tag,sealed,spent_slot FROM owner_notes WHERE ring=$1 AND \
+                 owner_tag=$2{after_clause} ORDER BY note_tag LIMIT $3"
+            ),
+            values,
+        )
+        .all(db)
+        .await?;
         Ok(OwnerPage {
             more: rows.len() > limit,
             notes: rows
@@ -252,18 +247,14 @@ pub(crate) async fn snapshot_history_through(
     db: &impl ConnectionTrait,
     ring: Address,
 ) -> Result<u64, DbErr> {
-    let query = |select: &str| sql::statement(db, select, vec![sql::bytes(ring.as_ref())]);
-    let checkpoint = db
-        .query_one(query(
-            "SELECT through_slot FROM spend_checkpoints WHERE ring=$1",
-        ))
+    let query = |select: &str| sql::Query::new(select, vec![sql::bytes(ring.as_ref())]);
+    let checkpoint = query("SELECT through_slot FROM spend_checkpoints WHERE ring=$1")
+        .one(db)
         .await?
         .map(|row| sql::read_integer(&row, "through_slot"))
         .transpose()?;
-    let first_unread = db
-        .query_one(query(
-            "SELECT MIN(slot) AS slot FROM spend_unread_frames WHERE ring=$1",
-        ))
+    let first_unread = query("SELECT MIN(slot) AS slot FROM spend_unread_frames WHERE ring=$1")
+        .one(db)
         .await?
         .map(|row| sql::read_optional_integer(&row, "slot"))
         .transpose()?

@@ -3,7 +3,10 @@ use solana_address::Address;
 use solana_signer::Signer;
 use spr_indexer_api::{Base64String, SerializablePubkey, SerializableSignature};
 
-use super::{base64, wallet_line, Attestation, ReadTarget, RequestBuildError, SignedRequest};
+use super::{
+    base64, wallet_line, Attestation, ReadTarget, RequestBuildError, RequestSignature,
+    SignedRequest,
+};
 use crate::ReaderKey;
 
 const READER_GRANT_DOMAIN: &str = "zolana/ring-rpc-reader-grant";
@@ -70,10 +73,11 @@ impl ReaderGrantRequest {
         self,
         signer: &S,
     ) -> Result<SetReaderGrantRequest, RequestBuildError> {
-        let (timestamp, message) = self.message()?;
-        let signature = signer
-            .try_sign_message(&message)
-            .map_err(RequestBuildError::Signature)?;
+        let RequestSignature {
+            timestamp,
+            nonce,
+            signature,
+        } = self.signed_by(signer)?;
         let ReaderGrantAttestation {
             target,
             wallet,
@@ -86,7 +90,7 @@ impl ReaderGrantRequest {
             reader: reader.to_bytes().to_vec().into(),
             action,
             timestamp,
-            nonce: self.nonce.to_vec().into(),
+            nonce,
             signature: signature.into(),
         })
     }

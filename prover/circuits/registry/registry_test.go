@@ -77,8 +77,7 @@ func TestQuadPathRejectsAnotherIndex(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := opening.Path.Wires()
 			path.Index = tc.index
-			err := test.IsSolved(&rootCircuit{}, &rootCircuit{Root: members.Root(), Leaf: opening.Record.Hash(t), Path: path}, ecc.BN254.ScalarField())
-			ringtest.RequireRefused(t, err, tc.frames...)
+			ringtest.RequireUnsolved(t, &rootCircuit{}, &rootCircuit{Root: members.Root(), Leaf: opening.Record.Hash(t), Path: path}, tc.frames...)
 		})
 	}
 }

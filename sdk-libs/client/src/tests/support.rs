@@ -14,8 +14,10 @@ use custom_ring_interface::{
     CoSignScope, CoSigner, CoSignerCounts, NewRing, PolicyUpdate, RingMode, RingPolicy, RingRoles,
     SourceSlot, CO_SIGNER, N_SOURCE_SLOTS, RING_POLICY_PDA_SEED, STORAGE_PROGRAM_ID,
 };
+use http::{HeaderMap, StatusCode};
 use solana_account::Account;
 use solana_address::Address;
+use spr_api::{HttpClient, HttpFuture, HttpRequest, HttpResponse};
 use spr_client::{
     rpc::STATE_TREE_HEIGHT, AsyncProverClient, AsyncRpc, AsyncSprClient, AsyncWitnessReader,
     ClientError, Context, GetMerkleProofsResponse, IndexerRpcConfig, InputWitnesses, MerkleContext,
@@ -50,6 +52,7 @@ use zolana_ring_indexer::{
         RingTrackingRecordView, RingTrackingSealView,
     },
 };
+use zolana_ring_keys::REDACTED;
 use zolana_ring_member_registry::{
     Canopy, MemberRecord, MemberRegistryTree, RecordOpening, RecordTree, TrackingOpening,
     TrackingRecord, TrackingTree,
@@ -59,7 +62,6 @@ use zolana_ring_policy::{Member, RuleTable};
 use crate::{
     client::RingClient, trees::PoolTree, AsyncRingIndexer, CustomRing, NullifierKeyEnvelope,
     RingIndexerError, SealedNullifierKey, TrackingRegistryHost, TransferTags, ViewingHistory,
-    REDACTED,
 };
 
 pub(crate) const SLOT: u64 = 2_359_301;
@@ -462,8 +464,28 @@ impl Chain {
     }
 
     fn client_on(self, source: ProofDataSource) -> RingClient<Chain, Chain> {
-        let prover = || AsyncProverClient::local().with_proof_data_source(source);
+        let prover = || unavailable_prover().with_proof_data_source(source);
         RingClient::new(AsyncSprClient::new(self.clone(), self, prover()), prover())
+    }
+}
+
+/// Answers every request with a status a proof request does not retry.
+pub(crate) fn unavailable_prover() -> AsyncProverClient {
+    AsyncProverClient::with_client("http://127.0.0.1:1".to_owned(), UnavailableProver)
+}
+
+#[derive(Debug)]
+struct UnavailableProver;
+
+impl HttpClient for UnavailableProver {
+    fn send<'a>(&'a self, _request: HttpRequest) -> HttpFuture<'a> {
+        Box::pin(async {
+            Ok(HttpResponse {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                headers: HeaderMap::new(),
+                body: Vec::new(),
+            })
+        })
     }
 }
 
@@ -1059,6 +1081,15 @@ where
     if std::env::var_os("UPDATE_RELAY_MESSAGES").is_some() {
         let json = serde_json::to_string_pretty(&fresh).unwrap();
         std::fs::write(&path, json + "\n").unwrap();
+    }
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// `UPDATE_PROVER_JSON=1` rewrites `path` under the crate from `fresh`, the committed file is the one read.
+pub(crate) fn pinned_request(path: &str, fresh: &serde_json::Value) -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(fresh).unwrap() + "\n").unwrap();
     }
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }

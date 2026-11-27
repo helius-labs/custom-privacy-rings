@@ -21,11 +21,11 @@ pub fn run(ctx: &mut Context, args: DeployArgs) -> Result<()> {
         // A hosted service that cannot serve the ring must fail before `init` pins the auditor for good.
         ring_rpc::run_check(ctx)?;
     }
-    init::run(ctx, defaults::<InitArgs>())?;
+    init::run(ctx, defaults::<InitArgs>()?)?;
     if !hosted {
         // Started before `deploy`, it may have died since.
         let base = &ctx.config.urls().ring_rpc;
-        let http = probe::http(HEALTH_TIMEOUT, HEALTH_TIMEOUT);
+        let http = probe::http(HEALTH_TIMEOUT, HEALTH_TIMEOUT)?;
         let url = crate::config::redact_url(base);
         probe::check(&http, &probe::service_url(base, "/health"))
             .with_context(|| format!("no ring rpc answers at {url}, run `zolana-ring localnet`"))?;
@@ -37,7 +37,7 @@ pub fn run(ctx: &mut Context, args: DeployArgs) -> Result<()> {
         ctx,
         TransactArgs {
             enrol_allow: ctx.config.target == Target::Localnet,
-            ..defaults()
+            ..defaults()?
         },
     )
 }

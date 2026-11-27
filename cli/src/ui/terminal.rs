@@ -16,7 +16,6 @@ pub mod icon {
     pub const POLICY: &str = "📜";
     pub const LISTS: &str = "🗂";
     pub const CURATOR: &str = "🤝";
-    pub const TREE: &str = "🌳";
     pub const PIN: &str = "🔏";
     pub const AUDITOR: &str = "🧾";
     pub const PAUSE: &str = "⏸";
@@ -38,7 +37,6 @@ pub trait Ask {
         check: Check<'_>,
     ) -> Result<String>;
     fn pick(&mut self, prompt: &str, items: &[String], default: usize) -> Result<usize>;
-    fn pick_many(&mut self, prompt: &str, items: &[String]) -> Result<Vec<usize>>;
     fn confirm(&mut self, prompt: &str, default: bool) -> Result<bool>;
 }
 
@@ -54,10 +52,6 @@ pub fn ask_for(silent: bool) -> Box<dyn Ask> {
     } else {
         Box::new(Defaults)
     }
-}
-
-pub fn accept(_answer: &str) -> Result<(), String> {
-    Ok(())
 }
 
 /// The aligned label of every status line, an outcome word takes its tone.
@@ -161,14 +155,6 @@ impl Ask for Terminal {
             .with_context(|| unread(prompt))
     }
 
-    fn pick_many(&mut self, prompt: &str, items: &[String]) -> Result<Vec<usize>> {
-        dialoguer::MultiSelect::with_theme(&prompt_theme())
-            .with_prompt(prompt)
-            .items(items)
-            .interact()
-            .with_context(|| unread(prompt))
-    }
-
     fn confirm(&mut self, prompt: &str, default: bool) -> Result<bool> {
         dialoguer::Confirm::with_theme(&prompt_theme())
             .with_prompt(prompt)
@@ -204,10 +190,6 @@ impl Ask for Defaults {
         Ok(default)
     }
 
-    fn pick_many(&mut self, _prompt: &str, _items: &[String]) -> Result<Vec<usize>> {
-        Ok(Vec::new())
-    }
-
     fn confirm(&mut self, _prompt: &str, default: bool) -> Result<bool> {
         Ok(default)
     }
@@ -232,7 +214,6 @@ mod scripted {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum Answer {
         Text(String),
-        Many(Vec<String>),
         Yes(bool),
     }
 
@@ -299,16 +280,6 @@ mod scripted {
             index_of(items, &label, prompt)
         }
 
-        fn pick_many(&mut self, prompt: &str, items: &[String]) -> Result<Vec<usize>> {
-            let Answer::Many(labels) = self.next(prompt)? else {
-                bail!("the scripted answer to {prompt} has the wrong kind");
-            };
-            labels
-                .iter()
-                .map(|label| index_of(items, label, prompt))
-                .collect()
-        }
-
         fn confirm(&mut self, prompt: &str, _default: bool) -> Result<bool> {
             match self.next(prompt)? {
                 Answer::Yes(answer) => Ok(answer),
@@ -328,12 +299,6 @@ mod scripted {
             Self::Yes(yes)
         }
     }
-
-    impl<const N: usize> From<[&str; N]> for Answer {
-        fn from(labels: [&str; N]) -> Self {
-            Self::Many(labels.iter().map(|label| (*label).to_owned()).collect())
-        }
-    }
 }
 
 #[cfg(test)]
@@ -346,16 +311,10 @@ mod tests {
 
     #[test]
     fn a_script_answers_in_order_and_refuses_past_its_end() {
-        let mut ask = Scripted::new([
-            Answer::from("x"),
-            Answer::from("block"),
-            Answer::from(["allow"]),
-            Answer::from(true),
-        ]);
-        assert_eq!(ask.text("t", None, false, &accept).expect("text"), "x");
+        let mut ask = Scripted::new([Answer::from("x"), Answer::from("block"), Answer::from(true)]);
+        assert_eq!(ask.text("t", None, false, &|_| Ok(())).expect("text"), "x");
         let items = items();
         assert_eq!(ask.pick("p", &items, 0).expect("pick"), 1);
-        assert_eq!(ask.pick_many("m", &items).expect("many"), vec![0]);
         assert!(ask.confirm("c", false).expect("confirm"));
         assert!(ask.is_drained());
         let error = ask.confirm("c", false).expect_err("drained");
@@ -387,9 +346,8 @@ mod tests {
         assert!(!ask.interactive());
         let items = items();
         assert_eq!(ask.pick("p", &items, 1).expect("default index"), 1);
-        assert!(ask.pick_many("m", &items).expect("nothing").is_empty());
         assert!(!ask.confirm("c", false).expect("default"));
-        assert!(ask.text("t", None, false, &accept).is_err());
+        assert!(ask.text("t", None, false, &|_| Ok(())).is_err());
     }
 
     #[test]

@@ -137,6 +137,10 @@ impl ChainSubmit for StubChain {
 
 #[async_trait::async_trait]
 impl StorageChain for StubChain {
+    fn submit(&self) -> &dyn ChainSubmit {
+        self
+    }
+
     async fn account(&self, address: Address) -> Result<Option<Account>, WriterError> {
         Ok(self.accounts.lock().unwrap().get(&address).cloned())
     }
@@ -310,11 +314,12 @@ impl RecordsSetup<'_> {
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
         let hub = Hub::builder(self.source, identity(GENESIS))
             .with_origins(origins())
-            .with_store(store)
+            .with_store(ServiceStore::Durable(store))
             .with_storage_chain(chain.clone(), Arc::new(storage_authority()))
             .with_reader_grants(self.reader_grants)
             .with_grant_rows_key(grant_rows_key())
             .local(RING, self.fixture.auditor.clone())
+            .await
             .expect("hub");
         let writer = hub.record_writer().expect("writer").clone();
         let registry = StorageRegistry::new(writer.authority(), &initialize_records());
@@ -417,7 +422,8 @@ impl Records {
         let (mode, update) = data[0].split_first().expect("update tag");
         let writes = StorageUpdateIxData::parse(update)
             .expect("update data")
-            .writes;
+            .writes
+            .to_vec();
         Flushed {
             accounts: message.static_account_keys().to_vec(),
             signature: transaction.signatures[0],
@@ -1624,7 +1630,7 @@ async fn create_records_registry_signs_only_the_creation_it_builds_and_sends_not
     );
     assert!(matches!(
         records.hub.create_records_registry(&foreign_local).await,
-        Err(RingRpcError::Audit(RingAuditError::RingNotServed))
+        Err(RingRelayError::Audit(RingAuditError::RingNotServed))
     ));
 
     let fixture = Fixture::new();
@@ -1662,9 +1668,10 @@ async fn create_records_registry_signs_only_the_creation_it_builds_and_sends_not
     let signer = FaultySigner::new(storage_authority());
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
     let hub = Hub::builder(source, identity(GENESIS))
-        .with_store(store)
+        .with_store(ServiceStore::Durable(store))
         .with_storage_chain(chain.clone(), signer.clone())
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .await
         .expect("hub");
     let target = |ring| ReadTarget {
         cluster: GENESIS,
@@ -1675,7 +1682,7 @@ async fn create_records_registry_signs_only_the_creation_it_builds_and_sends_not
     let foreign_auditor = request(target(RING), &authority(), &honest);
     assert!(matches!(
         hub.create_records_registry(&foreign_auditor).await,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
+        Err(RingRelayError::Service(ServiceError::Unauthorized(
             Unauthorized::AuditorKeyMismatch
         )))
     ));
@@ -1704,7 +1711,7 @@ async fn create_records_registry_signs_only_the_creation_it_builds_and_sends_not
         assert!(matches!(
             hub.create_records_registry(&request(target(ring_one), &deployer(), &hostile))
                 .await,
-            Err(RingRpcError::Writer(WriterError::RecordUpdate(
+            Err(RingRelayError::Writer(WriterError::RecordUpdate(
                 RecordUpdateRefusal::RecordsMessageMismatch
             )))
         ));

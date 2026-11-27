@@ -69,11 +69,20 @@ service_faults!(RingAuditError);
 
 #[cfg(any(test, feature = "test-fixtures"))]
 impl RingAuditError {
-    pub fn codes() -> Vec<i32> {
-        GrantRefusal::ALL
+    pub fn codes() -> Vec<ring_service_core::error::RefusalCode> {
+        use ring_service_core::error::RefusalCode;
+        GrantRefusal::codes()
             .into_iter()
-            .map(GrantRefusal::code)
-            .chain([WALLET_SNAPSHOT_EXPIRED, WALLET_SNAPSHOT_CAPACITY])
+            .chain([
+                RefusalCode {
+                    code: WALLET_SNAPSHOT_EXPIRED,
+                    name: "RingAuditError::WalletSnapshotExpired",
+                },
+                RefusalCode {
+                    code: WALLET_SNAPSHOT_CAPACITY,
+                    name: "RingAuditError::WalletSnapshotCapacity",
+                },
+            ])
             .collect()
     }
 }

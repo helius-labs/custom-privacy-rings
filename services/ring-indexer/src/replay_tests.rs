@@ -270,8 +270,8 @@ impl StorageReplay {
             [creator, registry],
             &StorageUpdateIxData {
                 revision: Revision::default(),
-                writes,
-                asset_writes: vec![],
+                writes: &writes,
+                asset_writes: &[],
                 tracking_revision: None,
                 apply: &apply_data(&inputs),
             },
@@ -420,8 +420,8 @@ impl PolicySource {
         let tracking_revision = (mask & PRIVATE_MASK != 0).then(|| Revision::from(tracking));
         let data = StorageUpdateIxData {
             revision,
-            writes: vec![write],
-            asset_writes: vec![],
+            writes: &[write],
+            asset_writes: &[],
             tracking_revision,
             apply: &apply_data(&inputs),
         };

@@ -1,6 +1,7 @@
 package ringpolicy
 
 import (
+	"math/big"
 	"slices"
 	"testing"
 
@@ -13,11 +14,12 @@ import (
 	transaction "github.com/helius-labs/zolana/prover/server/circuits/spp_transaction/shared"
 )
 
-type recordCollector struct {
-	tree           *ringregistry.Registry
-	records        []circuitregistry.Record
-	leafIndices    []uint64
-	indices        map[uint64]int
+type poolCollector[R any] struct {
+	open           func(member *big.Int) (leaf uint64, record R)
+	prove          func(leaves []uint64) (circuitregistry.SharedQuadProof, error)
+	records        []R
+	leaves         []uint64
+	recordIndices  map[uint64]int
 	subjects       []policy.PoolSubject
 	subjectIndices map[string]int
 }
@@ -32,7 +34,7 @@ func (b Witness) OwnRecord(entry policy.PoolEntry) *circuitregistry.Record {
 // FillPools opens each live subject and record once and fills the pools cyclically to capacity.
 func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []shared.UtxoWires, senders []frontend.Variable, voucher frontend.Variable, ownTree, curatorTree *ringregistry.Registry, tracking *ringregistry.Tracking) {
 	t.Helper()
-	own, curator := newCollector(ownTree), newCollector(curatorTree)
+	own, curator := registryCollector(ownTree), registryCollector(curatorTree)
 	foreign, saltedOwn, saltedCurated := false, false, false
 	saltedLists := ringtest.AsBigInt(policyWitness.Salted)
 	for i, source := range policyWitness.Sources {
@@ -97,34 +99,49 @@ func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []sha
 	policyWitness.CuratorProof = curator.fill(t, policyWitness.CuratorRecords, policyWitness.CuratorSubjects)
 }
 
-func newCollector(tree *ringregistry.Registry) *recordCollector {
-	return &recordCollector{tree: tree, indices: map[uint64]int{}, subjectIndices: map[string]int{}}
+func registryCollector(tree *ringregistry.Registry) *poolCollector[circuitregistry.Record] {
+	open := func(member *big.Int) (uint64, circuitregistry.Record) {
+		opening := tree.Opening(member)
+		return opening.Path.Index, opening.Record.Wires()
+	}
+	return newCollector(open, tree.SharedProof)
 }
 
-func (c *recordCollector) add(member frontend.Variable, active bool) int {
+func trackingCollector(tree *ringregistry.Tracking) *poolCollector[circuitregistry.TrackingRecord] {
+	open := func(member *big.Int) (uint64, circuitregistry.TrackingRecord) {
+		opening := tree.Opening(member)
+		return opening.Path.Index, opening.Record.Wires()
+	}
+	return newCollector(open, tree.SharedProof)
+}
+
+func newCollector[R any](open func(*big.Int) (uint64, R), prove func([]uint64) (circuitregistry.SharedQuadProof, error)) *poolCollector[R] {
+	return &poolCollector[R]{open: open, prove: prove, recordIndices: map[uint64]int{}, subjectIndices: map[string]int{}}
+}
+
+func (c *poolCollector[R]) add(member frontend.Variable, active bool) int {
 	if !active {
 		return 0
 	}
-	subjectKey := ringtest.AsBigInt(member).String()
-	if index, ok := c.subjectIndices[subjectKey]; ok {
+	identity := ringtest.AsBigInt(member)
+	if index, ok := c.subjectIndices[identity.String()]; ok {
 		return index
 	}
-	opening := c.tree.Opening(ringtest.AsBigInt(member))
-	key := opening.Path.Index
-	recordIndex, ok := c.indices[key]
+	leaf, record := c.open(identity)
+	recordIndex, ok := c.recordIndices[leaf]
 	if !ok {
 		recordIndex = len(c.records)
-		c.indices[key] = recordIndex
-		c.records = append(c.records, opening.Record.Wires())
-		c.leafIndices = append(c.leafIndices, opening.Path.Index)
+		c.recordIndices[leaf] = recordIndex
+		c.records = append(c.records, record)
+		c.leaves = append(c.leaves, leaf)
 	}
 	index := len(c.subjects)
-	c.subjectIndices[subjectKey] = index
+	c.subjectIndices[identity.String()] = index
 	c.subjects = append(c.subjects, policy.PoolSubject{Member: member, RecordIndex: recordIndex})
 	return index
 }
 
-func (c *recordCollector) fill(t testing.TB, target []circuitregistry.Record, subjects []policy.PoolSubject) circuitregistry.SharedQuadProof {
+func (c *poolCollector[R]) fill(t testing.TB, target []R, subjects []policy.PoolSubject) circuitregistry.SharedQuadProof {
 	t.Helper()
 	if len(c.records) > len(target) {
 		t.Fatalf("pool needs %d records with capacity %d", len(c.records), len(target))
@@ -135,12 +152,12 @@ func (c *recordCollector) fill(t testing.TB, target []circuitregistry.Record, su
 	for i := range subjects {
 		subjects[i] = c.subjects[i%len(c.subjects)]
 	}
-	indices := make([]uint64, len(target))
+	leaves := make([]uint64, len(target))
 	for i := range target {
 		target[i] = c.records[i%len(c.records)]
-		indices[i] = c.leafIndices[i%len(c.leafIndices)]
+		leaves[i] = c.leaves[i%len(c.leaves)]
 	}
-	proof, err := c.tree.SharedProof(indices)
+	proof, err := c.prove(leaves)
 	if err != nil {
 		t.Fatal(err)
 	}

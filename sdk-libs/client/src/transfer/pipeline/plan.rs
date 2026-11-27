@@ -4,9 +4,6 @@
 //! and the size check read one `PlannedTransfer` and never select a key again. Only a record read
 //! can change the key, and it keeps the seal only where both streams open alike. Otherwise the
 //! owner seals again and signs the new message, the stream never moves under a signature.
-//!
-//! Read after `program-libs/interface/src/proof/key_catalog.rs` and `Prepared` in `mod.rs`. Read
-//! before `policy.rs`, `audit.rs`, `relay.rs`.
 
 use custom_ring_interface::{
     key_catalog::{RecordPools, RingCircuit, TransferSpend},
@@ -28,9 +25,10 @@ pub enum SealRow {
 
 impl SealRow {
     pub const fn of(wide: bool) -> Self {
-        match wide {
-            true => Self::Wide,
-            false => Self::Narrow,
+        if wide {
+            Self::Wide
+        } else {
+            Self::Narrow
         }
     }
 
@@ -53,11 +51,12 @@ impl PlannedTransfer {
     pub fn rekeyed(self, read: Self) -> Result<Self, RingError> {
         let opens_alike = self.stream.first_key_counter() == read.stream.first_key_counter()
             && (!self.spans_capacity || self.stream.capacity == read.stream.capacity);
-        match opens_alike {
-            true => Ok(read),
-            false => Err(RingError::ResealRequired {
+        if opens_alike {
+            Ok(read)
+        } else {
+            Err(RingError::ResealRequired {
                 row: SealRow::of(read.key.wide),
-            }),
+            })
         }
     }
 }

@@ -1,6 +1,4 @@
 //! The instruction processors, grouped on disk by layer under one flat module namespace.
-//!
-//! Read after `lib.rs`. Read before `instructions/transfer/processor.rs`.
 
 #[path = "tracking/enroll_batch.rs"]
 mod enroll_batch;

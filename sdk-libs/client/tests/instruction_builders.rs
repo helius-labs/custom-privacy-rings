@@ -2,10 +2,9 @@
 
 use curve25519_dalek::constants::{ED25519_BASEPOINT_POINT, EIGHT_TORSION};
 use custom_ring_interface::{
-    tracking::TrackingRegistry, InitializeIxData, PolicyBindingIxData, PolicySourceIxData,
-    RingPolicy, RingRole, RingRoles, SetCoSignerRecordIxData, SetPausedIxData, SourceSlot,
-    SourceSpec, UpdateAuthorityIxData, UpdatePolicyIxData, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN,
-    STORAGE_PROGRAM_ID,
+    tracking::TrackingRegistry, InitializeIxData, RingPolicy, RingRole, RingRoles,
+    SetCoSignerRecordIxData, SetPausedIxData, SourceSlot, SourceSpec, UpdateAuthorityIxData,
+    UpdatePolicyIxData, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, STORAGE_PROGRAM_ID,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -28,7 +27,7 @@ use zolana_ring_client::{
     SourceOwner, UpdateAuthority, UpdatePolicy,
 };
 use zolana_ring_policy::{
-    ListId, PolicyTableError, Rule, RuleTable, RuleTableError, Subject, TableParts,
+    EncodedRuleTable, ListId, PolicyTableError, Rule, RuleTable, RuleTableError, Subject,
 };
 
 /// The system program is the all-zero address.
@@ -195,7 +194,7 @@ fn initialize_runs_under_the_upgrade_authority_and_appends_the_records_only_with
         .concat()
     );
     let (_, body) = split(&with_policy);
-    let PolicyBindingIxData { table } = parse::<InitializeIxData>(body).policy.unwrap();
+    let table = parse::<InitializeIxData>(body).policy.unwrap();
     assert_eq!(
         table.sources,
         [SourceSpec {
@@ -368,7 +367,7 @@ fn a_policy_source_names_a_curator_registry_only_when_shared() {
         assert_eq!(ix_tag, tag::UPDATE_POLICY);
         assert_eq!(
             parse::<UpdatePolicyIxData>(body),
-            UpdatePolicyIxData::Source(PolicySourceIxData {
+            UpdatePolicyIxData::Source(SourceSpec {
                 list_id: ListId::Allow as u8,
                 source,
             })
@@ -478,7 +477,7 @@ fn a_policy_table_names_its_curator_once_and_reproduces_the_pinned_table() {
             }
         })
     );
-    let stored = TableParts { rows: &table.rules }.encode().unwrap();
+    let stored = EncodedRuleTable::from_rows(&table.rules).unwrap();
     assert_eq!(stored, rules.encode());
 }
 

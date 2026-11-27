@@ -8,7 +8,6 @@ import (
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/test"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/registry"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
@@ -89,13 +88,9 @@ func TestSharedQuadProofMillionMembers(t *testing.T) {
 					}
 				}
 			}
-			if err := test.IsSolved(sharedCircuit(t, len(circuit.Leaves)), circuit, ecc.BN254.ScalarField()); err != nil {
-				t.Fatal(err)
-			}
+			ringtest.RequireSolved(t, sharedCircuit(t, len(circuit.Leaves)), circuit)
 			circuit.Leaves[0] = frontend.Variable(0)
-			if err := test.IsSolved(sharedCircuit(t, len(circuit.Leaves)), circuit, ecc.BN254.ScalarField()); err == nil {
-				t.Fatal("missing populated record accepted")
-			}
+			ringtest.RequireUnsolved(t, sharedCircuit(t, len(circuit.Leaves)), circuit)
 		})
 	}
 }

@@ -5,9 +5,6 @@
 // key opens one of these leaves under the tracking root. The tree stands apart because
 // a storage update names a revision, on one tree enrollment traffic would fail the
 // restrictive policy writes it raced.
-//
-// Read after registry/registry.go, registry/register_key.go. Read before
-// registry/apply_enrollments.go, policy/tracking.go, merge.go.
 
 package registry
 

@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use super::*;
 use crate::history::RecoveryWindow;
@@ -29,7 +28,8 @@ pub(crate) enum RecoveryUpdate {
 pub(crate) struct RecoverySession {
     scope: RecoveryScope,
     pub(crate) target_slot: Option<u64>,
-    working_history: Value,
+    #[serde(with = "crate::viewing_history::stored")]
+    working_history: ViewingHistory,
     tasks: VecDeque<DiscoveryTask>,
     queue: VecDeque<[u8; 32]>,
     known: BTreeSet<[u8; 32]>,
@@ -45,7 +45,8 @@ struct RecoveryScope {
     keys: Vec<String>,
     full_scan: Option<Address>,
     from_start: bool,
-    starting_history: Value,
+    #[serde(with = "crate::viewing_history::stored")]
+    starting_history: ViewingHistory,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,16 +56,7 @@ enum DiscoveryTask {
         ring: Address,
         entries: Vec<usize>,
         window: RecoveryWindow,
-        offset: PageOffset,
     },
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct PageOffset {
-    row: usize,
-    entry: usize,
-    site: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,28 +66,14 @@ struct SpendBatch {
     window: RecoveryWindow,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PageProgress {
-    More,
-    Done,
-    Paused,
-}
-
 struct DiscoveryStep<'s> {
     task: &'s mut DiscoveryTask,
     session: &'s mut RecoverySession,
 }
 
-struct BodyWork<'a, 't> {
-    entry: usize,
-    body: &'a Body<'t>,
-    secret: &'a SlotSecret,
-}
-
 impl RecoverySession {
     pub(crate) fn validate(&self) -> Result<(), AnonymousError> {
-        let starting = ViewingHistory::from_json_value(self.scope.starting_history.clone())?;
-        let working = ViewingHistory::from_json_value(self.working_history.clone())?;
+        let (starting, working) = (&self.scope.starting_history, &self.working_history);
         if self.target_slot.is_none()
             || starting.entries().len() != working.entries().len()
             || starting
@@ -157,9 +135,6 @@ impl RecoverySession {
                 entries, window, ..
             } = task;
             if entries.iter().any(|entry| !valid_entry(*entry))
-                || window
-                    .page_limit
-                    .is_some_and(|limit| limit == 0 || limit > PAGE_LIMIT)
                 || window.target_slot != self.target_slot
             {
                 return Err(AnonymousError::RecoveryScopeChanged);
@@ -220,14 +195,14 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
             keys,
             full_scan,
             from_start: self.from == ScanFrom::Start,
-            starting_history: wallet.history().to_json_value(),
+            starting_history: wallet.history().clone(),
         };
         let mut session = if let Some(session) = wallet.recovery_session() {
             session.validate()?;
             if session.scope != scope {
                 return Err(AnonymousError::RecoveryScopeChanged);
             }
-            scan.history = ViewingHistory::from_json_value(session.working_history.clone())?;
+            scan.history = session.working_history.clone();
             session.clone()
         } else {
             let mut tasks = VecDeque::new();
@@ -236,7 +211,6 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
                     ring,
                     entries: held.clone(),
                     window: RecoveryWindow::default(),
-                    offset: PageOffset::default(),
                 });
             } else {
                 for read in scan.ring_reads(&held) {
@@ -247,14 +221,13 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
                             after_slot: read.position.checkpoint(),
                             ..RecoveryWindow::default()
                         },
-                        offset: PageOffset::default(),
                     });
                 }
             }
             RecoverySession {
                 scope,
                 target_slot: None,
-                working_history: wallet.history().to_json_value(),
+                working_history: wallet.history().clone(),
                 tasks,
                 queue: VecDeque::new(),
                 known: BTreeSet::new(),
@@ -312,24 +285,20 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
             if session.active.is_some() || !session.queue.is_empty() {
                 scan.recovery_spends(&mut session).await?;
             } else if let Some(mut task) = session.tasks.pop_front() {
-                let progress = scan
+                let done = scan
                     .recovery_discovery(DiscoveryStep {
                         task: &mut task,
                         session: &mut session,
                     })
                     .await?;
-                if progress != PageProgress::Done {
+                if !done {
                     session.tasks.push_front(task);
-                }
-                if progress == PageProgress::Paused {
-                    scan.queue_found(&mut session)?;
-                    break;
                 }
             }
             scan.queue_found(&mut session)?;
             pages += 1;
         }
-        session.working_history = scan.history.to_json_value();
+        session.working_history = scan.history.clone();
         let complete = session.complete();
         if !complete {
             scan.history = wallet.history().clone();
@@ -475,14 +444,13 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan
     async fn recovery_discovery(
         &mut self,
         step: DiscoveryStep<'_>,
-    ) -> Result<PageProgress, AnonymousError> {
+    ) -> Result<bool, AnonymousError> {
         let DiscoveryStep { task, session } = step;
         match task {
             DiscoveryTask::Ring {
                 ring,
                 entries,
                 window,
-                offset,
             } => {
                 let (page, limit) = self.reads.recovery_ring_page(*ring, *window).await?;
                 let mut next = *window;
@@ -499,41 +467,27 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan
                 if rows
                     .iter()
                     .any(|row| row.ring_program_id.is_some_and(|id| id != *ring))
-                    || offset.row > rows.len()
                 {
                     return Err(AnonymousError::RecoveryScopeChanged);
                 }
-                window.page_limit = Some(limit);
-                for (row_index, row) in rows.iter().enumerate().skip(offset.row) {
-                    if offset.entry > entries.len()
-                        || entries
-                            .iter()
-                            .any(|entry| *entry >= self.history.entries().len())
+                let codec = RingNoteCodec {
+                    ring: *ring,
+                    keys: self.sync.keys,
+                    assets: self.sync.assets,
+                };
+                for row in &rows {
+                    if entries
+                        .iter()
+                        .any(|entry| *entry >= self.history.entries().len())
                     {
                         return Err(AnonymousError::RecoveryScopeChanged);
                     }
-                    for (entry_offset, &entry) in entries.iter().enumerate().skip(offset.entry) {
+                    for &entry in entries.iter() {
                         let key = self.history.entries()[entry].viewing_pubkey();
-                        let candidates = self.body_secrets(key, Body::every(row))?;
-                        if offset.site > candidates.len() {
-                            return Err(AnonymousError::RecoveryScopeChanged);
-                        }
-                        for (site, (body, secret)) in
-                            candidates.iter().enumerate().skip(offset.site)
-                        {
-                            let work = BodyWork {
-                                entry,
-                                body,
-                                secret,
-                            };
-                            if self.recovery_body(work).await? == PageProgress::Paused {
-                                return Ok(PageProgress::Paused);
-                            }
-                            offset.site = site + 1;
+                        for opened in codec.opened(row, &[key])? {
+                            self.open_recipient(row, opened)?;
                         }
                         self.list_sent(entry, row).await?;
-                        offset.entry = entry_offset + 1;
-                        offset.site = 0;
                     }
                     if session.scope.full_scan.is_some() {
                         self.open_ring_merges(vec![row.clone()])?;
@@ -550,13 +504,8 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan
                             }
                         }
                     }
-                    offset.row = row_index + 1;
-                    offset.entry = 0;
-                    offset.site = 0;
                 }
-                next.page_limit = None;
                 *window = next;
-                *offset = PageOffset::default();
                 if done {
                     let target = session
                         .target_slot
@@ -565,25 +514,8 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan
                         self.entry_mut(entry).set_ring_position(*ring, target);
                     }
                 }
-                Ok(if done {
-                    PageProgress::Done
-                } else {
-                    PageProgress::More
-                })
+                Ok(done)
             }
         }
-    }
-
-    async fn recovery_body(
-        &mut self,
-        work: BodyWork<'_, '_>,
-    ) -> Result<PageProgress, AnonymousError> {
-        let BodyWork {
-            entry,
-            body,
-            secret,
-        } = work;
-        self.open_recipient(entry, body, body.position, secret)?;
-        Ok(PageProgress::Done)
     }
 }

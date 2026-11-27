@@ -10,17 +10,17 @@ pub(crate) struct NonceBook<'a, C> {
 
 impl<C: ConnectionTrait> NonceBook<'_, C> {
     /// False when any process sharing the store already spent the nonce.
-    pub async fn spend(&self, check: &ReplayCheck, last_pruned: &AtomicU64) -> Result<bool, DbErr> {
+    pub(crate) async fn spend(
+        &self,
+        check: &ReplayCheck,
+        last_pruned: &AtomicU64,
+    ) -> Result<bool, DbErr> {
         if claim_prune(last_pruned, check.now) {
             // A replica whose clock lags by up to one skew still finds the nonce.
             let expired = check.now.saturating_sub(2 * AUTH_SKEW.as_secs());
             let prune = "DELETE FROM replay_nonces WHERE signed_at<$1";
-            self.conn
-                .execute(sql::statement(
-                    self.conn,
-                    prune,
-                    vec![sql::integer(expired)?],
-                ))
+            sql::Query::new(prune, vec![sql::integer(expired)?])
+                .execute(self.conn)
                 .await?;
         }
         let insert = "INSERT INTO replay_nonces(ring,nonce,signed_at) VALUES($1,$2,$3) \
@@ -30,11 +30,7 @@ impl<C: ConnectionTrait> NonceBook<'_, C> {
             sql::bytes(&check.nonce),
             sql::integer(check.timestamp)?,
         ];
-        let inserted = self
-            .conn
-            .execute(sql::statement(self.conn, insert, values))
-            .await?;
-        Ok(inserted.rows_affected() == 1)
+        Ok(sql::Query::new(insert, values).execute(self.conn).await? == 1)
     }
 }
 
@@ -95,19 +91,17 @@ mod tests {
 
         let stale_at = 1_000u64;
         let within = 1_000 + skew - 1;
-        store
-            .connection()
-            .execute(sql::statement(
-                store.connection(),
-                "INSERT INTO replay_nonces(ring,nonce,signed_at) VALUES($1,$2,$3)",
-                vec![
-                    sql::bytes(RING.as_ref()),
-                    sql::bytes(&[99u8; 32]),
-                    Value::from(100i64),
-                ],
-            ))
-            .await
-            .expect("stale");
+        sql::Query::new(
+            "INSERT INTO replay_nonces(ring,nonce,signed_at) VALUES($1,$2,$3)",
+            vec![
+                sql::bytes(RING.as_ref()),
+                sql::bytes(&[99u8; 32]),
+                Value::from(100i64),
+            ],
+        )
+        .execute(store.connection())
+        .await
+        .expect("stale");
 
         assert!(book
             .spend(&check(2, within, within), &last_pruned)

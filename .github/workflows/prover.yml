@@ -5,24 +5,30 @@ on:
     branches: [main]
     paths:
       - "prover/**"
-      - "program-libs/interface/**"
+      - "test-vectors/**"
+      - "program-libs/**"
       - "programs/custom-ring/**"
       - "sdk-libs/client/**"
+      - "sdk-libs/keys/**"
       - "sdk-libs/ts/src/**"
       - "tools/*ring_keys.py"
       - "zolana"
       - ".github/workflows/prover.yml"
+      - ".github/actions/proving-keys/**"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "prover/**"
-      - "program-libs/interface/**"
+      - "test-vectors/**"
+      - "program-libs/**"
       - "programs/custom-ring/**"
       - "sdk-libs/client/**"
+      - "sdk-libs/keys/**"
       - "sdk-libs/ts/src/**"
       - "tools/*ring_keys.py"
       - "zolana"
       - ".github/workflows/prover.yml"
+      - ".github/actions/proving-keys/**"
   workflow_dispatch:
 
 concurrency:
@@ -34,10 +40,21 @@ permissions:
 
 jobs:
   go-tests:
-    name: prover / go test
+    name: prover / go test / ${{ matrix.name }}
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      # Each package named here also goes in the exclusion filter of `rest`.
+      matrix:
+        include:
+          - name: transfer circuits
+            packages: ./circuits/transfer
+          - name: policy circuits
+            packages: ./circuits/policy
+          - name: rest
+            packages: ""
     defaults:
       run:
         working-directory: prover
@@ -49,9 +66,46 @@ jobs:
         with:
           go-version-file: prover/go.mod
           cache-dependency-path: prover/go.sum
-      - run: test -z "$(gofmt -l .)"
-      - run: go vet ./...
-      - run: go test -p 1 ./... -timeout 50m
+      - if: matrix.name == 'rest'
+        run: test -z "$(gofmt -l .)"
+      - if: matrix.name == 'rest'
+        run: go vet ./...
+      # The tests read vectors and goldens outside the module, `-count=1` keeps a cached result from hiding their change.
+      - env:
+          PACKAGES: ${{ matrix.packages }}
+        run: |
+          if [[ -z "$PACKAGES" ]]; then
+            all="$(go list ./...)"
+            PACKAGES="$(grep -v -E '/circuits/(transfer|policy)$' <<<"$all")"
+          fi
+          # shellcheck disable=SC2086
+          go test -p 1 -count=1 -timeout 50m $PACKAGES
+
+  ring-keys:
+    name: prover / committed verifiers
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: true
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: prover/go.mod
+          cache-dependency-path: prover/go.sum
+      - uses: ./zolana/.github/actions/setup-rust
+        with:
+          shared-key: ring-proving-keys
+          install-go: "false"
+          private-libs-token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
+      - uses: ./.github/actions/proving-keys
+        with:
+          mode: restore
+      - name: Verify every committed verifier against its pinned proving key
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: just check-custom-ring-keys
 
   installed-keys:
     name: prover / installed keys
@@ -65,19 +119,19 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           submodules: true
-      - uses: ./.github/actions/free-runner-disk
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: prover/go.mod
           cache-dependency-path: prover/go.sum
-      - uses: ./zolana/.github/actions/setup-rust
+      - uses: ./.github/actions/install-tools
         with:
-          shared-key: ring-proving-keys
-          install-go: "false"
-          private-libs-token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
+          tool: just@1.56.0
       - uses: ./.github/actions/proving-keys
-      - name: Verify every committed verifier against its pinned proving key
-        run: just check-custom-ring-keys
+        with:
+          mode: restore
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: just fetch-custom-ring-keys
       - name: Compile, prove and verify every catalog shape with installed keys
         working-directory: prover
-        run: go test ./ring -run 'TestRingKeysCarryTheCompiledCircuits|TestCatalogRequestsProveWithTheInstalledKeys|TestGoldenRequestsProveWithTheInstalledKeys|TestInstalledAnonymousTagPredicates' -timeout 75m
+        run: go test ./ring -count=1 -run 'TestRingKeysCarryTheCompiledCircuits|TestCatalogRequestsProveWithTheInstalledKeys|TestGoldenRequestsProveWithTheInstalledKeys|TestAnApplyProofOverAssetLimitsVerifies' -timeout 75m

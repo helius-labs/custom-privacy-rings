@@ -13,7 +13,7 @@ use crate::{
     RingOutputRail, RingRailError, Slot,
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct PublishedSlot<'a> {
     pub output: &'a SppProofOutputUtxo,
     pub hash: &'a [u8; 32],
@@ -27,6 +27,11 @@ pub struct PublishedSlot<'a> {
     /// The sealed reply beside a recipient body, empty without reply metadata.
     pub reply: &'a [u8],
 }
+
+zolana_ring_keys::redacted_debug!(PublishedSlot<'_> {
+    shown: [hash, owner_tag, body, record, record_len, anonymous, reply],
+    hidden: [output],
+});
 
 impl<'a> PublishedSlot<'a> {
     /// [`SlotBody::record_len`] bytes under the frame's form.

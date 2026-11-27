@@ -60,16 +60,8 @@ for port in "$ZOLANA_LOCALNET_RPC_PORT" "$((ZOLANA_LOCALNET_RPC_PORT + 1))" \
   fi
 done
 
-# The ring keys are verified in place, the transfer keys download beside them once.
-lock="prover/ring/proving-keys.lock"
-keys_dir="${ZOLANA_SPP_KEYS_DIR:-$repo_root/zolana/prover/server/proving-keys}"
-for key in $(jq -r '.keys | keys[] | select(startswith("custom_ring_"))' "$lock"); do
-  file="$keys_dir/$key"
-  expected="$(jq -er --arg name "$key" '.keys[$name].sha256' "$lock")"
-  actual="$(shasum -a 256 "$file" | awk '{print $1}')"
-  [[ "$actual" == "$expected" ]] || { echo "$file does not match the key manifest" >&2; exit 1; }
-done
-export ZOLANA_PROVER_KEYS_DIR="$keys_dir"
+# The recipe's `fetch-custom-ring-keys` holds each key to its lockfile digest.
+export ZOLANA_PROVER_KEYS_DIR="${ZOLANA_SPP_KEYS_DIR:-$repo_root/zolana/prover/server/proving-keys}"
 
 # Under the scope dir, --stop signals only recorded receipts.
 source tools/localnet-kms-start.sh
@@ -92,16 +84,9 @@ trap cleanup EXIT
 
 ring_cli_bin="$repo_root/target/debug/zolana-ring"
 export RING_RPC_BIN="$repo_root/target/debug/ring-rpc"
-if [[ -n "${ZOLANA_PREBUILT:-}" ]]; then
-  for binary in "$ZOLANA_PHOTON_BIN" "$RING_INDEXER_BIN" "$ring_cli_bin" "$RING_RPC_BIN"; do
-    [[ -x "$binary" ]] || { echo "Missing prebuilt executable $binary, unset ZOLANA_PREBUILT to build it" >&2; exit 1; }
-  done
-else
-  cargo build --locked --manifest-path zolana/Cargo.toml -p photon-indexer --bin photon \
-    --features surfpool-fixture --target-dir target
-  cargo build --locked -p ring-indexer --features surfpool-fixture
-  cargo build --locked -p custom-ring-cli -p zolana-ring-rpc --features zolana-ring-rpc/surfpool-fixture
-fi
+for binary in "$ZOLANA_PHOTON_BIN" "$RING_INDEXER_BIN" "$ring_cli_bin" "$RING_RPC_BIN"; do
+  [[ -x "$binary" ]] || { echo "Missing executable $binary, run just build-photon build-ring-tools" >&2; exit 1; }
+done
 start_localnet_kms "$ZOLANA_PROCESS_SCOPE_DIR/kms.addr"
 program="$(tools/localnet-custody.sh signer)"
 upgrade="$(tools/localnet-custody.sh signer)"

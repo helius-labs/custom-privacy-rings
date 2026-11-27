@@ -1,8 +1,6 @@
 // Sizes a transfer key. Each axis bounds what a key can prove and never what it checks, a transfer
 // past an axis needs a larger key and passes no predicate on a smaller one.
 //
-// Read after transfer/transfer.go. Read before prover/ring/keys.go.
-//
 // Properties:
 // 1. Every shape a key compiles from is a row of TRANSFER_SHAPES, the program selects its verifying key by that row.
 // 2. Pool limits include input assets independently of output assets.

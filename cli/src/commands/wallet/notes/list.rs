@@ -263,10 +263,6 @@ impl MemberList {
     /// In `ListId::ALL` order.
     pub const ALL: [Self; 1] = [Self(ListId::RingViewing)];
 
-    pub const fn id(self) -> ListId {
-        self.0
-    }
-
     fn write(self, ctx: &Context, change: ListChange) -> Result<()> {
         let list_id = self.0;
         let sender = ctx.sender()?;
@@ -456,7 +452,7 @@ impl EntryArgs {
         let (source, reads) = match pinned.account.registry_for(list_id) {
             Some(ListRegistry::Curator(registry)) => (
                 format!("curator registry {registry}"),
-                records::read_curator(ctx, &pinned.account, &members)?,
+                records::read_curator(&ctx.zolana, &pinned.account, &members)?,
             ),
             _ => (
                 format!("own records {}", pinned.account.records),
@@ -481,9 +477,10 @@ impl EntryArgs {
         for row in rows {
             line("member", format_args!("{} {}", list_id.name(), row.label));
             line("listed", row.listed);
-            let record = match row.record_present {
-                true => "present",
-                false => "absent",
+            let record = if row.record_present {
+                "present"
+            } else {
+                "absent"
             };
             line("record", record);
         }
@@ -963,7 +960,7 @@ mod tests {
 
     #[test]
     fn the_member_lists_are_the_lists_a_member_writes() {
-        let lists: Vec<ListId> = MemberList::ALL.into_iter().map(MemberList::id).collect();
+        let lists: Vec<ListId> = MemberList::ALL.into_iter().map(|list| list.0).collect();
         let written: Vec<ListId> = ListId::ALL
             .into_iter()
             .filter(|list_id| ListSet::MEMBER_WRITES.contains(*list_id))

@@ -3,10 +3,6 @@
 //! The tree is off chain. Each write here runs in the order the apply circuit proves its steps, so the
 //! proof input it returns opens the running root the circuit folds. A leaf type supplies its hash, the
 //! fields a write moves and the entry the program chains.
-//!
-//! Read after `program-libs/member-registry/src/lib.rs`, `program-libs/member-registry/src/path.rs`.
-//! Read before `program-libs/member-registry/src/memory.rs`, `program-libs/member-registry/src/record.rs`,
-//! `prover/circuits/registry/apply_records.go`, `prover/circuits/registry/apply_enrollments.go`.
 
 use core::marker::PhantomData;
 

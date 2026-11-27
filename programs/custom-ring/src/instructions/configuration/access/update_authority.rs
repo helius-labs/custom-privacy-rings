@@ -1,8 +1,6 @@
 //! Rotates one ring role to a new key.
 //!
 //! One key may hold several roles. The delegate holds none.
-//!
-//! Read after `instructions/accounts/loader.rs`. Read before `instructions/configuration/access/set_cosigner.rs`.
 
 use custom_ring_interface::{RingRole, UpdateAuthorityIxData};
 use pinocchio::{AccountView, Address, ProgramResult};

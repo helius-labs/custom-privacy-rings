@@ -27,7 +27,12 @@ type Bound struct {
 // Bind compiles circuit and locates the public input binding with the honest assignment.
 func Bind(t testing.TB, circuit, honest frontend.Circuit) *Bound {
 	t.Helper()
-	b := &Bound{CS: Compile(t, circuit)}
+	return BindCompiled(t, Compile(t, circuit), honest)
+}
+
+func BindCompiled(t testing.TB, cs constraint.ConstraintSystem, honest frontend.Circuit) *Bound {
+	t.Helper()
+	b := &Bound{CS: cs}
 	b.RequireSolved(t, honest)
 	publicInput := reflect.ValueOf(honest).Elem().FieldByName("PublicInputHash")
 	moved := new(big.Int).Add(ringtest.AsBigInt(publicInput.Interface()), big.NewInt(1))

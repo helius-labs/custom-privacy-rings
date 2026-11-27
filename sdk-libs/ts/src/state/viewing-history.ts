@@ -6,6 +6,7 @@ import { addressBytes, U64_MAX } from "@heliuslabs/spr/internal";
 import { X25519PublicKey, type ViewTag } from "@heliuslabs/spr/keypair";
 
 import { RingError } from "../protocol/error.js";
+import { parseExactJson } from "../protocol/wire-primitives.js";
 import { exactlyOne } from "./batch.js";
 import type { RingKeys, ViewTagRequest, ViewTagStream } from "./ring-keys.js";
 
@@ -569,16 +570,10 @@ function storedCounter(value: unknown, name: string): StreamCounter {
   });
 }
 
-/** Integer literals parse to exact bigints, a runtime without source access refuses an unsafe one. */
 export function parseExact(text: string): unknown {
   if (typeof text !== "string") throw invalid("is not JSON text");
   try {
-    return JSON.parse(text, (_key: string, value: unknown, context?: { source?: string }) => {
-      if (typeof value !== "number") return value;
-      const source = context?.source;
-      if (source !== undefined && /^-?[0-9]+$/.test(source)) return BigInt(source);
-      return Number.isSafeInteger(value) ? BigInt(value) : value;
-    });
+    return parseExactJson(text, BigInt);
   } catch (cause) {
     throw new RingError("RING_VIEWING_HISTORY_INVALID", {
       details: { reason: "does not parse as JSON" },

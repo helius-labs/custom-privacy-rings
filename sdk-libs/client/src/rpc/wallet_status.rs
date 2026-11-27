@@ -5,7 +5,6 @@ use solana_address::Address;
 use spr_indexer_api::{Base64String, Hash, SerializablePubkey, SerializableSignature};
 
 use super::{base64, Attestation, ReadAuth, ReadBuildError, ReadSigner, ReadTarget, SignedRequest};
-use crate::REDACTED;
 
 pub const WALLET_SNAPSHOT_EXPIRED: i32 = -32172;
 pub const WALLET_SNAPSHOT_CAPACITY: i32 = -32173;
@@ -90,44 +89,25 @@ pub struct WalletNote {
     pub slot_index: u32,
 }
 
-impl core::fmt::Debug for WalletNote {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            utxo_hash,
-            status,
-            nullifier_pk,
-            asset,
-            mint,
-            amount,
-            blinding: _,
-            data_hash,
-            ring_data_hash,
-            tree_id,
-            leaf_index,
-            slot,
-            tx_signature,
-            event_index,
-            slot_index,
-        } = self;
-        f.debug_struct("WalletNote")
-            .field("utxo_hash", utxo_hash)
-            .field("status", status)
-            .field("nullifier_pk", nullifier_pk)
-            .field("asset", asset)
-            .field("mint", mint)
-            .field("amount", amount)
-            .field("blinding", &REDACTED)
-            .field("data_hash", data_hash)
-            .field("ring_data_hash", ring_data_hash)
-            .field("tree_id", tree_id)
-            .field("leaf_index", leaf_index)
-            .field("slot", slot)
-            .field("tx_signature", tx_signature)
-            .field("event_index", event_index)
-            .field("slot_index", slot_index)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(WalletNote {
+    shown: [
+        utxo_hash,
+        status,
+        nullifier_pk,
+        asset,
+        mint,
+        amount,
+        data_hash,
+        ring_data_hash,
+        tree_id,
+        leaf_index,
+        slot,
+        tx_signature,
+        event_index,
+        slot_index
+    ],
+    hidden: [blinding],
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -147,10 +127,7 @@ pub struct WalletStatusAttestation {
     pub cursor: Option<Base64String>,
 }
 
-#[must_use]
-pub struct WalletStatusRequest {
-    signed: SignedRequest<WalletStatusAttestation>,
-}
+pub type WalletStatusRequest = SignedRequest<WalletStatusAttestation>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalletSnapshotReleaseAttestation {
@@ -159,10 +136,7 @@ pub struct WalletSnapshotReleaseAttestation {
     pub cursor: Base64String,
 }
 
-#[must_use]
-pub struct WalletSnapshotReleaseRequest {
-    signed: SignedRequest<WalletSnapshotReleaseAttestation>,
-}
+pub type WalletSnapshotReleaseRequest = SignedRequest<WalletSnapshotReleaseAttestation>;
 
 struct WalletStatusMessage<'a> {
     domain: &'a str,
@@ -202,29 +176,18 @@ impl Attestation for WalletSnapshotReleaseAttestation {
 }
 
 impl WalletSnapshotReleaseRequest {
-    pub fn new(attestation: WalletSnapshotReleaseAttestation) -> Result<Self, ReadBuildError> {
-        super::wallet_snapshot::validate_snapshot_cursor(&attestation.cursor)?;
-        Ok(Self {
-            signed: SignedRequest::new(attestation),
-        })
-    }
-
-    pub fn at(self, timestamp: u64) -> Self {
-        Self {
-            signed: self.signed.at(timestamp),
-        }
-    }
-
+    /// Refuses a cursor of another length before it is signed.
     pub fn sign<S: ReadSigner + ?Sized>(
         self,
         signer: &S,
     ) -> Result<GetWalletStatusRequest, ReadBuildError> {
-        let auth = self.signed.read_auth(signer)?;
+        super::wallet_snapshot::validate_snapshot_cursor(&self.attestation.cursor)?;
+        let auth = self.read_auth(signer)?;
         let WalletSnapshotReleaseAttestation {
             target,
             wallet,
             cursor,
-        } = self.signed.attestation;
+        } = self.attestation;
         Ok(WalletStatusAttestation {
             target,
             wallet,
@@ -235,25 +198,9 @@ impl WalletSnapshotReleaseRequest {
 }
 
 impl WalletStatusRequest {
-    pub fn new(target: ReadTarget, wallet: Address) -> Self {
-        Self {
-            signed: SignedRequest::new(WalletStatusAttestation {
-                target,
-                wallet,
-                cursor: None,
-            }),
-        }
-    }
-
-    pub fn at(self, timestamp: u64) -> Self {
-        Self {
-            signed: self.signed.at(timestamp),
-        }
-    }
-
     pub fn with_cursor(mut self, cursor: Base64String) -> Result<Self, ReadBuildError> {
         super::wallet_snapshot::validate_snapshot_cursor(&cursor)?;
-        self.signed.attestation.cursor = Some(cursor);
+        self.attestation.cursor = Some(cursor);
         Ok(self)
     }
 
@@ -261,8 +208,8 @@ impl WalletStatusRequest {
         self,
         signer: &S,
     ) -> Result<GetWalletStatusRequest, ReadBuildError> {
-        let auth = self.signed.read_auth(signer)?;
-        Ok(self.signed.attestation.request(auth))
+        let auth = self.read_auth(signer)?;
+        Ok(self.attestation.request(auth))
     }
 }
 

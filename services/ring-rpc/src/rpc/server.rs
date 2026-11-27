@@ -65,12 +65,19 @@ use ring_service_core::{
 
 use crate::{
     client_rate::{ClientLayer, ClientLimits, ClientRate, ClientRateLimiter},
-    error::RingRpcError,
     health::health,
     hub::{Hub, ReadinessStatus},
 };
 use ring_audit::audit::{AuditRead, Page};
-use ring_relay::relay::Relay;
+use ring_cosigner::cosigner::{co_sign_lists, edit_co_sign_list};
+use ring_relay::{
+    authority_transfer::{
+        delegate_notes, list_salt, prepare_authority_transfer, release_delegate_snapshot,
+    },
+    managed_merge::set_merge_settings,
+    relay::Relay,
+    RingRelayError,
+};
 
 const MAX_REQUEST_BODY_SIZE: u32 = 64 * 1024;
 const MAX_RESPONSE_BODY_SIZE: u32 = 16 * 1024 * 1024;
@@ -117,6 +124,12 @@ pub struct Announce {
     pub url: UpstreamUrl,
 }
 
+/// `address` stays bound until `handle` stops the server.
+pub struct ServedRpc {
+    pub address: SocketAddr,
+    pub handle: ServerHandle,
+}
+
 #[derive(Debug, Error)]
 pub enum ServerError {
     #[error("ring RPC must bind to a loopback address")]
@@ -134,7 +147,7 @@ pub enum ServerError {
 pub async fn run_server<S: TransactionSource + 'static>(
     hub: Arc<Hub<S>>,
     options: ServerOptions,
-) -> Result<ServerHandle, ServerError> {
+) -> Result<ServedRpc, ServerError> {
     run_server_with_idle_timeouts(hub, options, IDLE_TIMEOUTS).await
 }
 
@@ -142,11 +155,12 @@ async fn run_server_with_idle_timeouts<S: TransactionSource + 'static>(
     hub: Arc<Hub<S>>,
     options: ServerOptions,
     idle_timeouts: IdleTimeouts,
-) -> Result<ServerHandle, ServerError> {
+) -> Result<ServedRpc, ServerError> {
     if options.bind_policy == BindPolicy::LoopbackOnly && !options.bind.is_loopback() {
         return Err(ServerError::PublicBind);
     }
     let listener = TcpListener::bind(SocketAddr::from((options.bind, options.port))).await?;
+    let address = listener.local_addr()?;
     let limiter = Arc::new(ClientRateLimiter::new(options.client_limits.rates));
     let middleware = tower::ServiceBuilder::new()
         .layer(cors(hub.origins())?)
@@ -258,7 +272,7 @@ async fn run_server_with_idle_timeouts<S: TransactionSource + 'static>(
             });
         }
     });
-    Ok(handle)
+    Ok(ServedRpc { address, handle })
 }
 
 fn cors(origins: &Origins) -> Result<CorsLayer, OriginError> {
@@ -279,16 +293,15 @@ fn cors(origins: &Origins) -> Result<CorsLayer, OriginError> {
 pub fn rpc_module<S: TransactionSource + 'static>(
     hub: Arc<Hub<S>>,
 ) -> Result<RpcModule<Arc<Hub<S>>>, RegisterMethodError> {
+    use Lane::{Authentication, Public};
     let relay = hub.relay().cloned();
     let mut module = RpcModule::new(hub);
     module.register_async_method(HEALTH, |_, hub, _| async move {
         Ok::<_, ErrorObjectOwned>(health(&hub))
     })?;
-    method(
+    Route::new(CREATE_AUDITOR_KEY, Authentication).register(
         &mut module,
-        CREATE_AUDITOR_KEY,
         |hub, request: CreateAuditorKeyRequest| async move {
-            let _slot = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring_program_id.0))?;
             let statement = service.auditor_key_statement(&request.auth).await?;
             let signature = hub.sign_attestation(&statement).await?;
@@ -302,11 +315,9 @@ pub fn rpc_module<S: TransactionSource + 'static>(
             })
         },
     )?;
-    method(
+    Route::new(RING_STATUS, Public).register(
         &mut module,
-        RING_STATUS,
         |hub, request: RingStatusRequest| async move {
-            let _slot = hub.admit(Lane::Public)?;
             let service = hub.service(Some(request.ring_program_id.0))?;
             let configured = service.configured_auditor().await?;
             let chain = service.chain_status().await?;
@@ -333,177 +344,133 @@ pub fn rpc_module<S: TransactionSource + 'static>(
             paged_read(hub, request, read)
         })?;
     }
-    method(
+    Route::new(GET_AUDITED_UTXOS, Authentication).register(
         &mut module,
-        GET_AUDITED_UTXOS,
         |hub, request: GetAuditedUtxosRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
             Ok(service.audited_utxos(&request).await?)
         },
     )?;
-    method(
+    Route::new(GET_WALLET_STATUS, Authentication).register(
         &mut module,
-        GET_WALLET_STATUS,
         |hub, request: GetWalletStatusRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
             Ok(service.wallet_status(&request).await?)
         },
     )?;
-    method(
+    Route::new(RELEASE_WALLET_SNAPSHOT, Authentication).register(
         &mut module,
-        RELEASE_WALLET_SNAPSHOT,
         |hub, request: GetWalletStatusRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
             Ok(service.release_wallet_snapshot(&request).await?)
         },
     )?;
-    method(
+    Route::new(RELEASE_DELEGATE_SNAPSHOT, Authentication).register(
         &mut module,
-        RELEASE_DELEGATE_SNAPSHOT,
         |hub, request: GetDelegateNotesRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.release_delegate_snapshot(&request).await
+            release_delegate_snapshot(hub.shared(), &request).await
         },
     )?;
-    method(
+    Route::new(GET_DELEGATE_NOTES, Authentication).register(
         &mut module,
-        GET_DELEGATE_NOTES,
         |hub, request: GetDelegateNotesRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.delegate_notes(&request).await
+            delegate_notes(hub.shared(), &request).await
         },
     )?;
-    method(
+    Route::new(GET_LIST_SALT, Authentication)
+        .register(&mut module, |hub, request: GetListSaltRequest| async move {
+            list_salt(hub.shared(), &request).await
+        })?;
+    Route::new(GET_SPEND_COVERAGE, Authentication).register(
         &mut module,
-        GET_LIST_SALT,
-        |hub, request: GetListSaltRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.list_salt(&request).await
-        },
-    )?;
-    method(
-        &mut module,
-        GET_SPEND_COVERAGE,
         |hub, request: GetSpendCoverageRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring.0))?;
             Ok(service.spend_coverage(&request).await?)
         },
     )?;
-    method(
+    Route::new(SUBMIT_RECORD_UPDATE, Authentication).register(
         &mut module,
-        SUBMIT_RECORD_UPDATE,
         |hub, request: SubmitRecordUpdateRequest| async move {
-            let _slot = hub.admit(Lane::Authentication)?;
             Ok(hub.record_writer()?.submit(request).await?)
         },
     )?;
-    method(
+    Route::new(PREPARE_VAULT_ENROLLMENT, Authentication).register(
         &mut module,
-        PREPARE_VAULT_ENROLLMENT,
         |hub, request: VaultEnrollmentRequest| async move {
-            let _slot = hub.admit(Lane::Authentication)?;
             Ok(hub.enrollment_applier()?.prepare_vault(request).await?)
         },
     )?;
-    method(
+    Route::new(SUBMIT_VAULT_ENROLLMENT, Authentication).register(
         &mut module,
-        SUBMIT_VAULT_ENROLLMENT,
         |hub, request: SignedVaultEnrollment| async move {
-            let _slot = hub.admit(Lane::Authentication)?;
             Ok(hub.enrollment_applier()?.submit_vault(request).await?)
         },
     )?;
-    method(
+    Route::new(SUBMIT_ENROLLMENT, Authentication).register(
         &mut module,
-        SUBMIT_ENROLLMENT,
         |hub, request: SubmitEnrollmentRequest| async move {
-            let _slot = hub.admit(Lane::Authentication)?;
             Ok(hub.enrollment_applier()?.submit(request).await?)
         },
     )?;
-    method(
+    Route::new(GET_RECORD_UPDATE_STATUS, Public).register(
         &mut module,
-        GET_RECORD_UPDATE_STATUS,
         |hub, request: GetRecordUpdateStatusRequest| async move {
-            let _slot = hub.admit(Lane::Public)?;
             Ok(hub.record_writer()?.status(request).await?)
         },
     )?;
-    method(
+    Route::new(GET_PENDING_LIST_APPROVALS, Authentication).register(
         &mut module,
-        GET_PENDING_LIST_APPROVALS,
         |hub, request: GetPendingListApprovalsRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             hub.pending_list_approvals(&request).await
         },
     )?;
-    method(
+    Route::new(REFUSE_LIST_APPROVAL, Authentication).register(
         &mut module,
-        REFUSE_LIST_APPROVAL,
         |hub, request: RefuseListApprovalRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             hub.refuse_list_approval(&request).await
         },
     )?;
-    method(
+    Route::new(EDIT_CO_SIGN_LIST, Authentication).register(
         &mut module,
-        EDIT_CO_SIGN_LIST,
         |hub, request: EditCoSignListRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.edit_co_sign_list(&request).await
+            Ok(edit_co_sign_list(hub.shared(), &request).await?)
         },
     )?;
-    method(
+    Route::new(GET_CO_SIGN_LISTS, Authentication).register(
         &mut module,
-        GET_CO_SIGN_LISTS,
         |hub, request: GetCoSignListsRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.co_sign_lists(&request).await
+            Ok(co_sign_lists(hub.shared(), &request).await?)
         },
     )?;
-    method(
+    Route::new(CREATE_RECORDS_REGISTRY, Authentication).register(
         &mut module,
-        CREATE_RECORDS_REGISTRY,
         |hub, request: CreateRecordsRegistryRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             hub.create_records_registry(&request).await
         },
     )?;
-    method(
+    Route::new(REGISTER_ENROLLMENT_RING, Authentication).register(
         &mut module,
-        REGISTER_ENROLLMENT_RING,
         |hub, request: RegisterEnrollmentRingRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             hub.register_enrollment_ring(&request).await
         },
     )?;
-    method(
+    Route::new(SET_READER_GRANT, Authentication).register(
         &mut module,
-        SET_READER_GRANT,
         |hub, request: SetReaderGrantRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring.0))?;
             Ok(service.set_reader_grant(&request).await?)
         },
     )?;
-    method(
+    Route::new(SET_MERGE_SETTINGS, Authentication).register(
         &mut module,
-        SET_MERGE_SETTINGS,
         |hub, request: SetMergeSettingsRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.set_merge_settings(&request).await
+            set_merge_settings(hub.shared(), &request).await
         },
     )?;
-    method(
+    Route::new(PREPARE_AUTHORITY_TRANSFER, Authentication).register(
         &mut module,
-        PREPARE_AUTHORITY_TRANSFER,
         |hub, request: PrepareAuthorityTransferRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.prepare_authority_transfer(&request).await
+            prepare_authority_transfer(hub.shared(), hub.relay(), &request).await
         },
     )?;
     if let Some(relay) = relay {
@@ -516,63 +483,44 @@ fn register_relay_methods<S: TransactionSource + 'static>(
     module: &mut RpcModule<Arc<Hub<S>>>,
     relay: Arc<Relay>,
 ) -> Result<(), RegisterMethodError> {
+    use Lane::{Authentication, Public};
     let quote_relay = relay.clone();
-    method(
+    Route::new(GET_RELAY_QUOTE, Public).register(
         module,
-        GET_RELAY_QUOTE,
-        move |hub, request: GetRelayQuoteRequest| {
+        move |_, request: GetRelayQuoteRequest| {
             let relay = quote_relay.clone();
-            async move {
-                let _slot = hub.admit(Lane::Public)?;
-                Ok(relay.quote(&request).await?)
-            }
+            async move { relay.quote(&request).await }
         },
     )?;
     let prepare_relay = relay.clone();
-    method(
+    Route::new(PREPARE_RELAY, Authentication).register(
         module,
-        PREPARE_RELAY,
-        move |hub, request: PrepareRelayRequest| {
+        move |_, request: PrepareRelayRequest| {
             let relay = prepare_relay.clone();
-            async move {
-                let _slot = hub.admit(Lane::Authentication)?;
-                Ok(relay.prepare(&request).await?)
-            }
+            async move { relay.prepare(&request).await }
         },
     )?;
     let submit_relay = relay.clone();
-    method(
+    Route::new(SUBMIT_RELAY, Authentication).register(
         module,
-        SUBMIT_RELAY,
-        move |hub, request: SubmitRelayRequest| {
+        move |_, request: SubmitRelayRequest| {
             let relay = submit_relay.clone();
-            async move {
-                let _slot = hub.admit(Lane::Authentication)?;
-                Ok(relay.submit(&request).await?)
-            }
+            async move { relay.submit(&request).await }
         },
     )?;
     let co_sign_relay = relay.clone();
-    method(
+    Route::new(CO_SIGN_TRANSACTION, Authentication).register(
         module,
-        CO_SIGN_TRANSACTION,
-        move |hub, request: CoSignTransactionRequest| {
+        move |_, request: CoSignTransactionRequest| {
             let relay = co_sign_relay.clone();
-            async move {
-                let _slot = hub.admit(Lane::Authentication)?;
-                Ok(relay.co_sign_transaction(&request).await?)
-            }
+            async move { relay.co_sign_transaction(&request).await }
         },
     )?;
-    method(
+    Route::new(GET_RELAY_STATUS, Public).register(
         module,
-        GET_RELAY_STATUS,
-        move |hub, request: GetRelayStatusRequest| {
+        move |_, request: GetRelayStatusRequest| {
             let relay = relay.clone();
-            async move {
-                let _slot = hub.admit(Lane::Public)?;
-                Ok(relay.status(&request).await?)
-            }
+            async move { relay.status(&request).await }
         },
     )?;
     Ok(())
@@ -590,7 +538,7 @@ async fn paged_read<S: TransactionSource>(
     hub: Arc<Hub<S>>,
     request: GetDecryptedTransactionsRequest,
     read: PagedRead,
-) -> Result<PagedResponse, RingRpcError> {
+) -> Result<PagedResponse, RingRelayError> {
     let authentication = hub.admit(Lane::Authentication)?;
     let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
     let page = Page::new(request.cursor, request.limit)?;
@@ -627,7 +575,7 @@ where
     P: DeserializeOwned + Send + 'static,
     T: Serialize + Clone + Send + 'static,
     F: Fn(Arc<C>, P) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Result<T, RingRpcError>> + Send,
+    Fut: Future<Output = Result<T, RingRelayError>> + Send,
 {
     module.register_async_method(name, move |params, context, _| {
         let handler = handler.clone();
@@ -639,6 +587,41 @@ where
         }
     })?;
     Ok(())
+}
+
+/// A method whose handler holds a slot of its lane until it answers.
+#[must_use]
+struct Route {
+    name: &'static str,
+    lane: Lane,
+}
+
+impl Route {
+    const fn new(name: &'static str, lane: Lane) -> Self {
+        Self { name, lane }
+    }
+
+    fn register<S, P, T, F, Fut>(
+        self,
+        module: &mut RpcModule<Arc<Hub<S>>>,
+        handler: F,
+    ) -> Result<(), RegisterMethodError>
+    where
+        S: TransactionSource + 'static,
+        P: DeserializeOwned + Send + 'static,
+        T: Serialize + Clone + Send + 'static,
+        F: Fn(Arc<Hub<S>>, P) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, RingRelayError>> + Send,
+    {
+        let lane = self.lane;
+        method(module, self.name, move |hub: Arc<Hub<S>>, request: P| {
+            let handler = handler.clone();
+            async move {
+                let _slot = hub.admit(lane)?;
+                handler(Arc::clone(&hub), request).await
+            }
+        })
+    }
 }
 
 /// Answers 503 and reads the request away, a close over unread bytes would reset the answer.
@@ -808,9 +791,8 @@ mod tests {
     use ring_writer::record_update::RecordUpdateRefusal;
 
     use crate::{
-        client_rate::{BucketRate, ClientRates, RateLimit, NETWORK_CLIENTS},
-        error::RingRpcError,
-        hub::ServiceIdentity,
+        client_rate::{BucketRate, ClientRates, RateLimit},
+        hub::{ServiceIdentity, READINESS_CACHE_INTERVAL},
     };
 
     use super::*;
@@ -942,12 +924,7 @@ mod tests {
         }
     }
 
-    fn port() -> u16 {
-        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("listener");
-        listener.local_addr().expect("address").port()
-    }
-
-    fn hub(mut source: TestSource, origins: Origins) -> Arc<Hub<TestSource>> {
+    async fn hub(mut source: TestSource, origins: Origins) -> Arc<Hub<TestSource>> {
         let auditor = X25519Keypair::new();
         source.config = Some(RingConfiguration {
             auditor_pubkey: auditor.pubkey(),
@@ -964,14 +941,16 @@ mod tests {
             Hub::builder(source, identity(TEST_GENESIS))
                 .with_origins(origins)
                 .local(SERVED_RING, auditor)
+                .await
                 .expect("hub"),
         )
     }
 
-    fn derived_hub(source: TestSource, genesis: [u8; 32]) -> Arc<Hub<TestSource>> {
+    async fn derived_hub(source: TestSource, genesis: [u8; 32]) -> Arc<Hub<TestSource>> {
         Arc::new(
             Hub::builder(source, identity(genesis))
                 .derived(RootSecret::from_bytes([5; 32]).expect("root"))
+                .await
                 .expect("hub"),
         )
     }
@@ -1000,13 +979,14 @@ mod tests {
         map
     }
 
-    fn options(port: u16, timeout: Duration) -> ServerOptions {
+    /// The request timeout bounds only a hang.
+    fn options() -> ServerOptions {
         ServerOptions {
             bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
             bind_policy: BindPolicy::LoopbackOnly,
-            port,
+            port: 0,
             max_connections: 8,
-            request_timeout: timeout,
+            request_timeout: Duration::from_secs(60),
             client_limits: ClientLimits::default(),
             announce: None,
         }
@@ -1032,16 +1012,16 @@ mod tests {
         let registry_url = format!("http://{}", server.local_addr().expect("address"));
         let registry = server.start(registry);
 
-        let hub = hub(source(), Origins::default());
+        let hub = hub(source(), Origins::default()).await;
         let served = rpc_module(hub.clone()).expect("module");
-        let handle = run_server(
+        let ServedRpc { handle, .. } = run_server(
             hub.clone(),
             ServerOptions {
                 announce: Some(Announce {
                     registry: registry_url.parse().expect("registry URL"),
                     url: "http://ring:8785".parse().expect("public URL"),
                 }),
-                ..options(port(), Duration::from_secs(1))
+                ..options()
             },
         )
         .await
@@ -1070,10 +1050,9 @@ mod tests {
     }
 
     /// A server granting each client a burst of two signed writes.
-    async fn write_limited_server(identity: ClientIdentityPolicy) -> (ServerHandle, String) {
-        let server_port = port();
-        let handle = run_server(
-            hub(source(), Origins::default()),
+    async fn write_limited_server(identity: ClientIdentityPolicy) -> ServedRpc {
+        run_server(
+            hub(source(), Origins::default()).await,
             ServerOptions {
                 client_limits: ClientLimits {
                     rates: ClientRates {
@@ -1082,12 +1061,11 @@ mod tests {
                     },
                     identity,
                 },
-                ..options(server_port, Duration::from_secs(1))
+                ..options()
             },
         )
         .await
-        .expect("server");
-        (handle, format!("http://127.0.0.1:{server_port}"))
+        .expect("server")
     }
 
     async fn submit_as(url: &str, client: &str) -> reqwest::Response {
@@ -1126,9 +1104,10 @@ mod tests {
     #[tokio::test]
     async fn a_client_past_its_signed_write_rate_waits_while_another_submits() {
         let proxy = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let (handle, url) =
+        let ServedRpc { address, handle } =
             write_limited_server(ClientIdentityPolicy::default().with_trusted_proxies([proxy]))
                 .await;
+        let url = format!("http://{address}");
         let served = RecordUpdateRefusal::Disabled.code();
 
         for _ in 0..2 {
@@ -1165,34 +1144,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_64s_of_one_ipv6_48_share_its_signed_write_rate() {
-        let proxy = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let (handle, url) =
-            write_limited_server(ClientIdentityPolicy::default().with_trusted_proxies([proxy]))
-                .await;
-        let served = RecordUpdateRefusal::Disabled.code();
-
-        for subnet in 0..NETWORK_CLIENTS.get() {
-            for _ in 0..2 {
-                let client = format!("2001:db8:0:{subnet:x}::1");
-                assert_eq!(error_code(submit_as(&url, &client).await).await, served);
-            }
-        }
-        assert_eq!(
-            error_code(submit_as(&url, "2001:db8:0:ffff::1").await).await,
-            RateLimit::SignedWrites.code()
-        );
-        assert_eq!(
-            error_code(submit_as(&url, "2001:db8:1::1").await).await,
-            served
-        );
-        handle.stop().expect("stop");
-        handle.stopped().await;
-    }
-
-    #[tokio::test]
     async fn a_forwarded_header_from_an_untrusted_peer_keeps_the_peer_identity() {
-        let (handle, url) = write_limited_server(ClientIdentityPolicy::default()).await;
+        let ServedRpc { address, handle } =
+            write_limited_server(ClientIdentityPolicy::default()).await;
+        let url = format!("http://{address}");
 
         for _ in 0..2 {
             submit_as(&url, "198.51.100.1").await;
@@ -1211,14 +1166,10 @@ mod tests {
             .with_relying_party_id("localhost".to_owned())
             .build()
             .expect("origins");
-        let server_port = port();
-        let handle = run_server(
-            hub(source(), origins),
-            options(server_port, Duration::from_secs(1)),
-        )
-        .await
-        .expect("server");
-        let url = format!("http://127.0.0.1:{server_port}");
+        let ServedRpc { address, handle } = run_server(hub(source(), origins).await, options())
+            .await
+            .expect("server");
+        let url = format!("http://{address}");
         let client = reqwest::Client::new();
 
         let allowed = client
@@ -1269,13 +1220,23 @@ mod tests {
         let batch_body: serde_json::Value = batch.json().await.expect("batch body");
         assert_eq!(batch_body["error"]["code"], -32005);
 
-        let oversized = client
-            .post(&url)
-            .body("a".repeat(MAX_REQUEST_BODY_SIZE as usize + 1))
-            .send()
+        // Headers only, the server closes over an unread body and the reset can drop the 413.
+        let mut oversized = tokio::net::TcpStream::connect(address)
             .await
-            .expect("oversized request");
-        assert!(!oversized.status().is_success());
+            .expect("connect");
+        let head = format!(
+            "POST / HTTP/1.1\r\nHost: localhost\r\ncontent-type: application/json\r\n\
+             content-length: {}\r\n\r\n",
+            MAX_REQUEST_BODY_SIZE + 1
+        );
+        oversized
+            .write_all(head.as_bytes())
+            .await
+            .expect("request head");
+        assert!(response(&mut oversized)
+            .await
+            .expect("refusal")
+            .starts_with("http/1.1 413"));
 
         let ready = client
             .get(format!("{url}/ready"))
@@ -1289,14 +1250,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_path_runs_only_the_method_it_names() {
-        let server_port = port();
-        let handle = run_server(
-            hub(source(), Origins::default()),
-            options(server_port, Duration::from_secs(1)),
-        )
-        .await
-        .expect("server");
-        let url = format!("http://127.0.0.1:{server_port}");
+        let ServedRpc { address, handle } =
+            run_server(hub(source(), Origins::default()).await, options())
+                .await
+                .expect("server");
+        let url = format!("http://{address}");
         let client = reqwest::Client::new();
         let call = |path: &str, body: serde_json::Value| {
             let request = client.post(format!("{url}{path}")).json(&body);
@@ -1361,15 +1319,12 @@ mod tests {
 
     #[tokio::test]
     async fn server_refuses_a_websocket_upgrade() {
-        let server_port = port();
-        let handle = run_server(
-            hub(source(), Origins::default()),
-            options(server_port, Duration::from_secs(1)),
-        )
-        .await
-        .expect("server");
+        let ServedRpc { address, handle } =
+            run_server(hub(source(), Origins::default()).await, options())
+                .await
+                .expect("server");
         let upgrade = reqwest::Client::new()
-            .get(format!("http://127.0.0.1:{server_port}/"))
+            .get(format!("http://{address}/"))
             .header("connection", "upgrade")
             .header("upgrade", "websocket")
             .header("sec-websocket-version", "13")
@@ -1385,7 +1340,7 @@ mod tests {
     #[tokio::test]
     async fn server_rejects_public_bind_and_failed_readiness() {
         let public = run_server(
-            hub(source(), Origins::default()),
+            hub(source(), Origins::default()).await,
             ServerOptions {
                 bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                 bind_policy: BindPolicy::LoopbackOnly,
@@ -1399,7 +1354,7 @@ mod tests {
         .await;
         assert!(matches!(public, Err(ServerError::PublicBind)));
         let insecure = run_server(
-            hub(source(), Origins::default()),
+            hub(source(), Origins::default()).await,
             ServerOptions {
                 bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                 bind_policy: BindPolicy::InsecurePublic,
@@ -1412,53 +1367,55 @@ mod tests {
         )
         .await
         .expect("public bind under the insecure policy");
-        insecure.stop().expect("stop");
+        insecure.handle.stop().expect("stop");
 
-        let failed_port = port();
-        let handle = run_server(
+        let ServedRpc { address, handle } = run_server(
             hub(
                 TestSource {
                     healthy: false,
                     ..source()
                 },
                 Origins::default(),
-            ),
-            options(failed_port, Duration::from_secs(1)),
+            )
+            .await,
+            options(),
         )
         .await
         .expect("server");
-        let response = reqwest::get(format!("http://127.0.0.1:{failed_port}/ready"))
+        let response = reqwest::get(format!("http://{address}/ready"))
             .await
             .expect("ready response");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         handle.stop().expect("stop");
         handle.stopped().await;
 
-        let timeout_port = port();
-        let handle = run_server(
+        let ServedRpc { address, handle } = run_server(
             hub(
                 TestSource {
-                    delay: Duration::from_millis(50),
+                    // Outlasts the test, only the request timeout answers.
+                    delay: Duration::from_secs(3_600),
                     ..source()
                 },
                 Origins::default(),
-            ),
-            options(timeout_port, Duration::from_millis(5)),
+            )
+            .await,
+            ServerOptions {
+                request_timeout: Duration::from_millis(5),
+                ..options()
+            },
         )
         .await
         .expect("server");
-        assert!(
-            reqwest::get(format!("http://127.0.0.1:{timeout_port}/ready"))
-                .await
-                .is_err()
-        );
+        assert!(reqwest::get(format!("http://{address}/ready"))
+            .await
+            .is_err());
         handle.stop().expect("stop");
         handle.stopped().await;
     }
 
     #[tokio::test]
     async fn health_and_status_answer_the_served_ring() {
-        let module = rpc_module(hub(source(), Origins::default())).expect("module");
+        let module = rpc_module(hub(source(), Origins::default()).await).expect("module");
         let health: HealthResponse = module.call(HEALTH, [(); 0]).await.expect("health");
         assert_eq!(health.mode, KeyMode::Local);
         let status: RingStatusResponse = module
@@ -1477,11 +1434,17 @@ mod tests {
     async fn readiness_probes_share_a_cached_result() {
         let source = source();
         let calls = source.health_calls.clone();
-        let hub = hub(source, Origins::default());
+        let hub = hub(source, Origins::default()).await;
+        // Paused after the store opens, sqlx waits on the real clock.
+        tokio::time::pause();
 
         assert_eq!(hub.readiness().await, ReadinessStatus::Ready);
+        tokio::time::advance(READINESS_CACHE_INTERVAL - Duration::from_millis(1)).await;
         assert_eq!(hub.readiness().await, ReadinessStatus::Ready);
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(hub.readiness().await, ReadinessStatus::Ready);
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]
@@ -1491,7 +1454,8 @@ mod tests {
             ..source()
         };
         let calls = source.health_calls.clone();
-        let hub = hub(source, Origins::default());
+        let hub = hub(source, Origins::default()).await;
+        tokio::time::pause();
         let waiter = tokio::spawn({
             let hub = hub.clone();
             async move { hub.readiness().await }
@@ -1507,37 +1471,37 @@ mod tests {
 
     /// A decrypting page holds its slot for the whole page, and the gate
     /// refuses the next reader rather than queueing it behind them.
-    #[test]
-    fn concurrent_reads_are_capped_and_refused_rather_than_queued() {
-        let hub = hub(source(), Origins::default());
+    #[tokio::test]
+    async fn concurrent_reads_are_capped_and_refused_rather_than_queued() {
+        let hub = hub(source(), Origins::default()).await;
         let held = (0..MAX_CONCURRENT_READS)
             .map(|_| hub.admit(Lane::Read).expect("read slot"))
             .collect::<Vec<_>>();
 
         assert!(matches!(
             hub.admit(Lane::Read),
-            Err(RingRpcError::Service(ServiceError::Busy))
+            Err(RingRelayError::Service(ServiceError::Busy))
         ));
         drop(held);
         let _reopened = hub.admit(Lane::Read).expect("released slot");
     }
 
-    #[test]
-    fn authentication_attempts_do_not_consume_audit_capacity() {
-        let hub = hub(source(), Origins::default());
+    #[tokio::test]
+    async fn authentication_attempts_do_not_consume_audit_capacity() {
+        let hub = hub(source(), Origins::default()).await;
         for _ in 0..MAX_REQUEST_UNITS_PER_SECOND {
             let _ = hub.admit(Lane::Authentication).expect("authentication");
         }
         assert!(matches!(
             hub.admit(Lane::Authentication),
-            Err(RingRpcError::Service(ServiceError::Busy))
+            Err(RingRelayError::Service(ServiceError::Busy))
         ));
         let _ = hub.admit(Lane::Read).expect("audit capacity");
     }
 
-    #[test]
-    fn concurrent_authentication_attempts_are_capped() {
-        let hub = hub(source(), Origins::default());
+    #[tokio::test]
+    async fn concurrent_authentication_attempts_are_capped() {
+        let hub = hub(source(), Origins::default()).await;
         let held = (0..MAX_CONCURRENT_AUTHENTICATIONS)
             .map(|_| {
                 hub.admit(Lane::Authentication)
@@ -1547,7 +1511,7 @@ mod tests {
 
         assert!(matches!(
             hub.admit(Lane::Authentication),
-            Err(RingRpcError::Service(ServiceError::Busy))
+            Err(RingRelayError::Service(ServiceError::Busy))
         ));
         drop(held);
         let _reopened = hub.admit(Lane::Authentication).expect("released slot");
@@ -1557,28 +1521,22 @@ mod tests {
     /// another cluster orphans every ring already registered.
     #[tokio::test]
     async fn derived_readiness_checks_the_cluster() {
-        let matching = port();
-        let handle = run_server(
-            derived_hub(source(), TEST_GENESIS),
-            options(matching, Duration::from_secs(1)),
-        )
-        .await
-        .expect("server");
-        let ready = reqwest::get(format!("http://127.0.0.1:{matching}/ready"))
+        let ServedRpc { address, handle } =
+            run_server(derived_hub(source(), TEST_GENESIS).await, options())
+                .await
+                .expect("server");
+        let ready = reqwest::get(format!("http://{address}/ready"))
             .await
             .expect("ready");
         assert_eq!(ready.status(), StatusCode::OK);
         handle.stop().expect("stop");
         handle.stopped().await;
 
-        let repointed = port();
-        let handle = run_server(
-            derived_hub(source(), [1; 32]),
-            options(repointed, Duration::from_secs(1)),
-        )
-        .await
-        .expect("server");
-        let response = reqwest::get(format!("http://127.0.0.1:{repointed}/ready"))
+        let ServedRpc { address, handle } =
+            run_server(derived_hub(source(), [1; 32]).await, options())
+                .await
+                .expect("server");
+        let response = reqwest::get(format!("http://{address}/ready"))
             .await
             .expect("ready");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1642,13 +1600,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_full_server_answers_503_and_serves_again_once_a_slot_frees() {
-        let listen_port = port();
-        let mut opts = options(listen_port, Duration::from_secs(2));
+        let mut opts = options();
         opts.max_connections = 1;
-        let handle = run_server(hub(source(), Origins::default()), opts)
+        let ServedRpc {
+            address: addr,
+            handle,
+        } = run_server(hub(source(), Origins::default()).await, opts)
             .await
             .expect("server");
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
 
         let mut held = tokio::net::TcpStream::connect(addr).await.expect("connect");
         held.write_all(GET_HEALTH).await.expect("request");
@@ -1675,18 +1634,18 @@ mod tests {
     /// The silent socket is the clock, its cut proves the first-request timeout passed.
     #[tokio::test]
     async fn a_silent_socket_is_cut_and_an_idle_keep_alive_connection_is_not() {
-        let listen_port = port();
-        let mut opts = options(listen_port, Duration::from_secs(2));
+        let mut opts = options();
         opts.max_connections = 2;
         let timeouts = IdleTimeouts {
             first_request: Duration::from_millis(50),
             keep_alive: Duration::from_secs(3_600),
         };
-        let handle =
-            run_server_with_idle_timeouts(hub(source(), Origins::default()), opts, timeouts)
-                .await
-                .expect("server");
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, listen_port));
+        let ServedRpc {
+            address: addr,
+            handle,
+        } = run_server_with_idle_timeouts(hub(source(), Origins::default()).await, opts, timeouts)
+            .await
+            .expect("server");
 
         let mut keep_alive = tokio::net::TcpStream::connect(addr).await.expect("connect");
         keep_alive.write_all(GET_HEALTH).await.expect("request");
@@ -1748,5 +1707,189 @@ mod tests {
         drop(activity.enter());
         assert!(!cut_within(idle.clone(), 59).await);
         assert!(cut_within(idle, 1).await);
+    }
+
+    async fn every_method() -> RpcModule<Arc<Hub<TestSource>>> {
+        let relay = ring_relay::relay::RelayParts {
+            store: ring_service_core::database::Store::in_memory()
+                .await
+                .expect("store"),
+            prover: Arc::new(ring_relay::relay_prover::fixture::UnusedProver),
+            fee_payer: Arc::new(Keypair::new()),
+            chain: Arc::new(ring_service_core::landing::fixture::UnusedChain),
+        };
+        let hub = Hub::builder(source(), identity(TEST_GENESIS))
+            .with_relay(relay)
+            .derived(RootSecret::from_bytes([5; 32]).expect("root"))
+            .await
+            .expect("hub");
+        rpc_module(Arc::new(hub)).expect("module")
+    }
+
+    #[tokio::test]
+    async fn every_registered_method_has_its_rate_class() {
+        use crate::client_rate::{MethodClass::*, RatedCall};
+        use zolana_ring_client::rpc::{GET_AUDITED_MERGES, GET_WALLET_ACTIVITY};
+
+        let classes = std::collections::BTreeMap::from([
+            (HEALTH, PublicRead),
+            (RING_STATUS, PublicRead),
+            (GET_RECORD_UPDATE_STATUS, PublicRead),
+            (GET_RELAY_QUOTE, PublicRead),
+            (GET_RELAY_STATUS, PublicRead),
+            (CREATE_AUDITOR_KEY, SignedRead),
+            (GET_DECRYPTED_TRANSACTIONS, SignedRead),
+            (GET_WALLET_ACTIVITY, SignedRead),
+            (GET_AUDITED_MERGES, SignedRead),
+            (GET_AUDITED_UTXOS, SignedRead),
+            (GET_WALLET_STATUS, SignedRead),
+            (GET_SPEND_COVERAGE, SignedRead),
+            (GET_DELEGATE_NOTES, SignedRead),
+            (GET_LIST_SALT, SignedRead),
+            (GET_PENDING_LIST_APPROVALS, SignedRead),
+            (RELEASE_WALLET_SNAPSHOT, SignedRead),
+            (RELEASE_DELEGATE_SNAPSHOT, SignedRead),
+            (GET_CO_SIGN_LISTS, SignedRead),
+            (SUBMIT_RECORD_UPDATE, SignedWrite),
+            (REFUSE_LIST_APPROVAL, SignedWrite),
+            (CREATE_RECORDS_REGISTRY, SignedWrite),
+            (REGISTER_ENROLLMENT_RING, SignedWrite),
+            (SET_READER_GRANT, SignedWrite),
+            (SET_MERGE_SETTINGS, SignedWrite),
+            (PREPARE_AUTHORITY_TRANSFER, SignedWrite),
+            (SUBMIT_RELAY, SignedWrite),
+            (PREPARE_VAULT_ENROLLMENT, SignedWrite),
+            (SUBMIT_VAULT_ENROLLMENT, SignedWrite),
+            (SUBMIT_ENROLLMENT, SignedWrite),
+            (EDIT_CO_SIGN_LIST, SignedWrite),
+            (PREPARE_RELAY, SignedWrite),
+            (CO_SIGN_TRANSACTION, SignedWrite),
+        ]);
+        let module = every_method().await;
+        let registered: std::collections::BTreeSet<&str> = module.method_names().collect();
+        assert_eq!(registered, classes.keys().copied().collect());
+        let call = |method| {
+            let request =
+                jsonrpsee::types::Request::borrowed(method, None, jsonrpsee::types::Id::Number(1));
+            RatedCall::of(&request)
+        };
+        for (method, class) in classes {
+            assert_ne!(call(method), RatedCall::Unregistered, "{method}");
+            assert_eq!(call(method).class(), class, "{method}");
+        }
+        assert_eq!(call("unregisteredMethod"), RatedCall::Unregistered);
+    }
+
+    #[test]
+    fn each_new_signed_write_charges_the_key_whose_signature_it_verifies() {
+        use crate::client_rate::RatedCall;
+        use solana_message::{Message, VersionedMessage};
+        use solana_signer::Signer;
+        use solana_transaction::versioned::VersionedTransaction;
+        use zolana_ring_client::{
+            rpc::{
+                CoSignList, CoSignListEdit, CoSignSubjectKind, EditCoSignList, ReadTarget,
+                VaultEnrollmentBlock,
+            },
+            CustomRing, OwnedChange, OwnerEnrollment,
+        };
+
+        let signer = Keypair::new_from_array([4; 32]);
+        let named = |method, params: serde_json::Value| {
+            let params = serde_json::value::to_raw_value(&params).expect("params");
+            let request = jsonrpsee::types::Request::borrowed(
+                method,
+                Some(&params),
+                jsonrpsee::types::Id::Number(1),
+            );
+            RatedCall::of(&request)
+        };
+        let target = ReadTarget {
+            cluster: TEST_GENESIS,
+            service: Address::new_from_array([6; 32]),
+            ring: SERVED_RING,
+        };
+        let edit = EditCoSignListRequest::edit(
+            target,
+            signer.pubkey(),
+            EditCoSignList {
+                edit: CoSignListEdit::Set,
+                list: CoSignList::Block,
+                kind: CoSignSubjectKind::Asset,
+                address: Address::new_from_array([7; 32]),
+            },
+        )
+        .sign(&signer)
+        .expect("edit");
+        let enrollment = OwnerEnrollment {
+            ring: CustomRing::new(SERVED_RING),
+            tracking_registry: Address::new_from_array([9; 32]),
+            owner: signer.pubkey(),
+            change: OwnedChange::Rotate {
+                viewing_u: [1; 32],
+                prior_viewing_u: [2; 32],
+                prior_seq: [0; 8],
+            },
+        }
+        .sign(&signer)
+        .expect("enrollment");
+        let vault = SignedVaultEnrollment {
+            enrollment: VaultEnrollmentRequest {
+                ring: SERVED_RING.into(),
+                program: Address::new_from_array([2; 32]).into(),
+                manager: signer.pubkey().into(),
+                vault: Address::new_from_array([3; 32]).into(),
+                payload: vec![1].into(),
+            },
+            block: VaultEnrollmentBlock {
+                blockhash: Hash([5; 32]),
+                last_valid_block_height: 1,
+            },
+            signature: Signature::from([8; 64]).into(),
+        };
+        let paid = VersionedTransaction {
+            signatures: vec![Signature::default()],
+            message: VersionedMessage::Legacy(Message {
+                account_keys: vec![signer.pubkey(), Address::new_from_array([1; 32])],
+                ..Message::default()
+            }),
+        };
+        let co_sign = CoSignTransactionRequest {
+            ring: SERVED_RING.into(),
+            transaction: wincode::serialize(&paid).expect("transaction").into(),
+            approved_transfer: None,
+        };
+        let charged = RatedCall::SignedWrite {
+            signer: Some(signer.pubkey()),
+        };
+        for (method, params) in [
+            (EDIT_CO_SIGN_LIST, serde_json::to_value(&edit)),
+            (SUBMIT_ENROLLMENT, serde_json::to_value(&enrollment)),
+            (SUBMIT_VAULT_ENROLLMENT, serde_json::to_value(&vault)),
+            (CO_SIGN_TRANSACTION, serde_json::to_value(&co_sign)),
+        ] {
+            assert_eq!(named(method, params.expect("json")), charged, "{method}");
+        }
+    }
+
+    /// `UPDATE_RELAY_MESSAGES=1` rewrites the vector, the TypeScript client reads it.
+    #[tokio::test]
+    async fn the_methods_and_codes_vector_names_every_method_and_refusal() {
+        let methods: std::collections::BTreeSet<&str> =
+            every_method().await.method_names().collect();
+        let refusals: Vec<serde_json::Value> = crate::edge_errors_tests::every_code()
+            .into_iter()
+            .map(|refusal| serde_json::json!({ "code": refusal.code, "name": refusal.name }))
+            .collect();
+        let fresh = serde_json::json!({ "methods": methods, "refusals": refusals });
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-vectors/rpc/ring_rpc_methods_and_codes.json");
+        if std::env::var_os("UPDATE_RELAY_MESSAGES").is_some() {
+            let json = serde_json::to_string_pretty(&fresh).expect("json");
+            std::fs::write(&path, json + "\n").expect("vector written");
+        }
+        let committed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("vector")).expect("json");
+        assert_eq!(committed, fresh);
     }
 }

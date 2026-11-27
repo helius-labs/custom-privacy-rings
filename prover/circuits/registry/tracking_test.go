@@ -153,13 +153,9 @@ func TestTrackingHashesMatchRustVector(t *testing.T) {
 		t.Fatalf("chain %x, Rust %s", chain, v.ChainFromZero)
 	}
 	gadgets := &listDerivationCircuit{Salt: ringtest.VectorField(t, v.ListSalt), Tag: ringtest.VectorField(t, v.SecretListTag)}
-	if err := test.IsSolved(&listDerivationCircuit{}, gadgets, ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, &listDerivationCircuit{}, gadgets)
 	entryGadget := &trackingEntryCircuit{Entry: entry.Wires(), Hash: hash}
-	if err := test.IsSolved(&trackingEntryCircuit{}, entryGadget, ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, &trackingEntryCircuit{}, entryGadget)
 }
 
 type listDerivationCircuit struct {

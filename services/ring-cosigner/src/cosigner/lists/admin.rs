@@ -62,11 +62,11 @@ pub async fn edit_co_sign_list<S: TransactionSource>(
     request: &EditCoSignListRequest,
 ) -> Result<CoSignListEntry, RingCosignerError> {
     let ring = request.ring.0;
-    let lists = co_sign_lists_of(shared, ring, &request.auth, request.action()).await?;
     let entry = ListEntry {
         list: request.list,
         subject: Subject::named(request.kind, request.address.0)?,
     };
+    let lists = co_sign_lists_of(shared, ring, &request.auth, request.action()).await?;
     match request.edit {
         CoSignListEdit::Set => lists.set(ring, entry).await?,
         CoSignListEdit::Remove => lists.remove(ring, entry).await?,
@@ -106,7 +106,8 @@ async fn co_sign_lists_of<S: TransactionSource, A: PolicyAuthorityAction>(
 ) -> Result<StoredLists, RingCosignerError> {
     let store = shared
         .database
-        .clone()
+        .durable()
+        .cloned()
         .ok_or(RingCosignerError::CoSignerStoreMissing)?;
     let service = shared.service(Some(ring))?;
     PolicyAction {

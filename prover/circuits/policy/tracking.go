@@ -6,8 +6,6 @@
 // transfer/owners.go and the salted read in policy/subjects.go each treat an absent owner apart from an
 // enrolled one.
 //
-// Read after policy/record_pool.go, registry/tracking.go. Read before transfer/owners.go, policy/subjects.go.
-//
 // Properties:
 // 1. Every record row is a leaf under TrackingRoot on every rail, the gate of a policy pool does not apply.
 // 2. A row query reads the member's key and list tag, or zeros with a leaf link proving the member absent.
@@ -49,7 +47,9 @@ type TrackingPool struct {
 	subjects subjectPool
 }
 
-const trackingColumns = 2
+var trackingColumns = recordColumns[registry.TrackingRecord]{width: 2, row: func(record registry.TrackingRecord) []frontend.Variable {
+	return []frontend.Variable{record.Member, record.Next, record.NullifierPk, record.ListTag}
+}}
 
 // NewTracking also sizes for the key's withdrawal owners, a salted list reads each owner's row.
 func NewTracking(rows, outputs, withdrawals int) (Tracking, error) {
@@ -86,13 +86,7 @@ func (t *Tracking) TrackingPoolSize() int {
 
 func (t *Tracking) OpenTracking(api frontend.API) TrackingPool {
 	// The pool's gate is the constant one, a frame cannot skip the tree its owner predicates read.
-	records := newRecordPool(api, 1, trackingColumns)
-	leaves := make([]frontend.Variable, len(t.TrackingRecords))
-	for i, record := range t.TrackingRecords {
-		leaves[i] = record.Hash(api)
-		records.table.Insert([]frontend.Variable{record.Member, record.Next, record.NullifierPk, record.ListTag})
-	}
-	t.TrackingProof.AssertLeaves(api, t.TrackingRoot, leaves)
+	records := openRecordPool(api, 1, t.TrackingRoot, t.TrackingRecords, t.TrackingProof, trackingColumns)
 	return TrackingPool{subjects: openSubjectPool(api, records, t.TrackingSubjects)}
 }
 

@@ -33,14 +33,11 @@ impl From<Box<dyn CarriedFault>> for WriterError {
 
 #[cfg(any(test, feature = "test-fixtures"))]
 impl WriterError {
-    pub fn codes() -> Vec<i32> {
-        let updates = RecordUpdateRefusal::ALL
+    pub fn codes() -> Vec<ring_service_core::error::RefusalCode> {
+        RecordUpdateRefusal::codes()
             .into_iter()
-            .map(RecordUpdateRefusal::code);
-        let enrollments = EnrollmentRefusal::ALL
-            .into_iter()
-            .map(|refusal| refusal as i32);
-        updates.chain(enrollments).collect()
+            .chain(EnrollmentRefusal::codes())
+            .collect()
     }
 }
 

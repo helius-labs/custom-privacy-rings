@@ -29,7 +29,7 @@ impl KnownPrefix {
         ring: &RingPolicy,
         spp: usize,
     ) -> Result<Self, CustomRingError> {
-        let delegate = frame.rail.is_delegate();
+        let delegate = frame.rail().is_delegate();
         let slots = spp.checked_sub(
             1 + ring
                 .root_registries(RootRead::transfer(ring, delegate))
@@ -99,6 +99,16 @@ impl CoSignerPairs for TransferLayout {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum AnonymousExitRefusal {
+    #[error("withdrawal token account {0} has a delegate or a close authority")]
+    TokenAccountShared(Address),
+    #[error("withdrawal token account {0} is at a keypair address, SPP takes an ATA or a PDA")]
+    TokenAccountOnCurve(Address),
+    #[error("withdrawal destination {0} is not a system account without data")]
+    AccountHasData(Address),
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum AnonymousExitDestination<'a> {
     Sol {
@@ -114,7 +124,7 @@ pub enum AnonymousExitDestination<'a> {
 
 impl<'a> AnonymousExitDestination<'a> {
     /// The key the anonymous audit proof proves apart from the hidden owner.
-    pub fn named_key(self) -> Result<&'a [u8; 32], CustomRingError> {
+    pub fn named_key(self) -> Result<&'a [u8; 32], AnonymousExitRefusal> {
         match self {
             // Data or a program owner could name a second key.
             Self::Sol {
@@ -125,21 +135,21 @@ impl<'a> AnonymousExitDestination<'a> {
                 if *owner == SYSTEM_PROGRAM_ID && data_len == 0 {
                     Ok(recipient.as_array())
                 } else {
-                    Err(CustomRingError::AnonymousExitAccountHasData)
+                    Err(AnonymousExitRefusal::AccountHasData(*recipient))
                 }
             }
             // The proof binds the owner only, a keypair address could be the hidden owner's.
             Self::Spl { token_account, .. } if token_account.is_on_curve() => {
-                Err(CustomRingError::AnonymousExitTokenAccountOnCurve)
+                Err(AnonymousExitRefusal::TokenAccountOnCurve(*token_account))
             }
             Self::Spl {
                 control: TokenAccountControl::SoleOwner(owner),
                 ..
             } => Ok(owner),
             Self::Spl {
+                token_account,
                 control: TokenAccountControl::Shared(_),
-                ..
-            } => Err(CustomRingError::AnonymousExitTokenAccountShared),
+            } => Err(AnonymousExitRefusal::TokenAccountShared(*token_account)),
         }
     }
 }

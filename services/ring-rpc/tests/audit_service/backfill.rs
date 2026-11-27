@@ -11,7 +11,7 @@ async fn audited_utxos_answer_in_request_order_with_null_for_an_unseen_hash() {
         .source()
         .with_transactions(vec![fixture.audited.clone()]);
     source.next_cursor = None;
-    let hub = Arc::new(fixture.hub(source));
+    let hub = Arc::new(fixture.hub(source).await);
     let service = hub.service(None).expect("service");
     service.backfill_utxos().await.expect("backfill");
     let outputs: Vec<[u8; 32]> = fixture
@@ -61,6 +61,7 @@ async fn audited_utxos_refuse_an_ungranted_reader_a_bad_count_a_changed_hash_and
     let fixture = Fixture::new();
     let service = fixture
         .hub(fixture.source())
+        .await
         .service(None)
         .expect("service");
     let hashes = vec![Hash([0x77; 32])];
@@ -116,7 +117,7 @@ async fn a_confirmed_merge_tag_collision_does_not_poison_an_audit_page() {
     let source = fixture
         .source()
         .with_transactions(vec![fixture.audited.clone(), merge]);
-    let service = fixture.hub(source).service(None).unwrap();
+    let service = fixture.hub(source).await.service(None).unwrap();
     let response = service
         .read(AuditRead {
             read: PagedRead::DecryptedTransactions,
@@ -140,7 +141,7 @@ async fn a_backfill_stops_at_its_page_budget() {
     let mut source = fixture.source();
     source.pages = long_history(&fixture, None, 1);
     let reads = source.history_reads.clone();
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("bounded backfill");
     assert!(reads.load(Ordering::Relaxed) < HISTORY_READ_CAP);
 }
@@ -156,7 +157,7 @@ async fn the_utxo_context_moves_only_at_the_scan_frontier() {
             paged(vec![outside_row(&fixture)], Some(1), None),
         ),
     ]);
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     assert!(matches!(
         service.backfill_utxos().await,
         Err(RingAuditError::Service(
@@ -178,7 +179,7 @@ async fn an_unconfigured_ring_backfills_nothing() {
     let mut source = fixture.source();
     source.configs.clear();
     let reads = source.history_reads.clone();
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("unconfigured ring");
     assert_eq!(reads.load(Ordering::Relaxed), 0);
 }
@@ -200,7 +201,7 @@ async fn a_row_whose_origin_does_not_decode_is_skipped_and_the_backfill_goes_pas
         .lock()
         .unwrap()
         .insert(utxos.entry.tx_signature);
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("backfill");
     let found = service
         .audited_utxos(&utxos_request(vec![utxos.commitment.into()]))
@@ -228,7 +229,7 @@ async fn a_failed_origin_read_stops_the_backfill_at_its_position() {
         ],
     );
     source.origins.clear();
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     assert!(service.backfill_utxos().await.is_err());
     assert!(read_at_result(&service, None).await.is_err());
 }
@@ -256,7 +257,7 @@ async fn a_permanently_invalid_row_passes_the_cursor() {
         (Some(vec![1]), paged(Vec::new(), None, Some(1))),
     ]);
     let probe = source.clone();
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("backfill");
     assert_eq!(stored_amount(&service, &hash).await, Some(500));
     service.backfill_utxos().await.expect("backfill");
@@ -275,7 +276,7 @@ async fn a_lost_auditor_message_holds_the_backfill_and_lists_on_a_read() {
     let mut source = fixture.source().with_transactions(rows.clone());
     source.pages = HashMap::from([(None, paged(rows, None, Some(1)))]);
     let probe = source.clone();
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     assert!(service.backfill_utxos().await.is_err());
     assert!(service.backfill_utxos().await.is_err());
     assert_eq!(cursors(&probe), [None, None]);
@@ -295,7 +296,7 @@ async fn a_faulty_call_stack_stops_the_backfill_and_the_read() {
     source.pages = HashMap::from([(None, paged(rows, None, Some(1)))]);
     source.stack_faults.insert(fixture.audited.tx_signature);
     let probe = source.clone();
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     assert!(service.backfill_utxos().await.is_err());
     assert!(service.backfill_utxos().await.is_err());
     assert_eq!(cursors(&probe), [None, None]);
@@ -329,9 +330,13 @@ fn long_history(
 }
 
 async fn history_through(service: &AuditService<StaticSource>) -> u64 {
-    let request = WalletStatusRequest::new(target(RING), Address::new_from_array([1; 32]))
-        .sign(&delegate())
-        .expect("signed status read");
+    let request = WalletStatusRequest::new(WalletStatusAttestation {
+        target: target(RING),
+        wallet: Address::new_from_array([1; 32]),
+        cursor: None,
+    })
+    .sign(&delegate())
+    .expect("signed status read");
     service
         .wallet_status(&request)
         .await
@@ -344,7 +349,7 @@ async fn an_empty_history_claims_only_its_terminal_slot() {
     let fixture = Fixture::new();
     let mut source = fixture.source();
     source.pages = HashMap::from([(None, paged(Vec::new(), None, Some(1)))]);
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     assert_eq!(history_through(&service).await, 0, "no pass reached a page");
     service.backfill_utxos().await.expect("backfill");
     assert_eq!(history_through(&service).await, 99);
@@ -356,7 +361,7 @@ async fn a_capped_pass_keeps_the_history_slot_until_a_later_terminal_page() {
     let mut source = fixture.source();
     source.pages = long_history(&fixture, Some(vec![1]), 2);
     source.pages.insert(None, paged(Vec::new(), None, Some(1)));
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("first pass");
     let first = history_through(&service).await;
     service.backfill_utxos().await.expect("capped pass");
@@ -376,7 +381,7 @@ async fn a_failed_pass_keeps_the_history_slot_and_the_position() {
     source.pages = HashMap::from([(None, paged(Vec::new(), None, Some(1)))]);
     let down = source.history_down.clone();
     let probe = source.clone();
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("first pass");
     let through = history_through(&service).await;
 
@@ -396,7 +401,7 @@ async fn a_snapshot_behind_the_floor_refuses_the_page_and_keeps_the_position() {
     source.pages = HashMap::from([(None, paged(Vec::new(), None, Some(1)))]);
     let context = source.forced_context.clone();
     let probe = source.clone();
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("first pass");
     let through = history_through(&service).await;
 
@@ -421,7 +426,7 @@ async fn a_retryable_row_keeps_the_position_and_claims_nothing() {
     let mut source = fixture.source().with_transactions(rows.clone());
     source.pages = HashMap::from([(None, paged(rows, None, Some(1)))]);
     let probe = source.clone();
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     assert!(service.backfill_utxos().await.is_err());
     assert!(service.backfill_utxos().await.is_err());
     assert_eq!(cursors(&probe), [None, None]);
@@ -436,11 +441,15 @@ async fn a_restart_without_a_store_replays_from_the_start() {
     let mut source = fixture.source().with_transactions(rows.clone());
     source.pages = HashMap::from([(None, paged(rows, None, Some(1)))]);
     let probe = source.clone();
-    let before = fixture.hub(source.clone()).service(None).expect("service");
+    let before = fixture
+        .hub(source.clone())
+        .await
+        .service(None)
+        .expect("service");
     before.backfill_utxos().await.expect("first run");
     assert!(history_through(&before).await > 0);
 
-    let restarted = fixture.hub(source).service(None).expect("service");
+    let restarted = fixture.hub(source).await.service(None).expect("service");
     assert_eq!(
         history_through(&restarted).await,
         0,
@@ -468,6 +477,7 @@ async fn a_restart_over_a_store_resumes_at_the_durable_position_with_its_notes()
     let probe = source.clone();
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
     let before = stored_hub(&fixture, source.clone(), store.clone())
+        .await
         .service(None)
         .expect("service");
     before.backfill_utxos().await.expect("first run");
@@ -475,6 +485,7 @@ async fn a_restart_over_a_store_resumes_at_the_durable_position_with_its_notes()
     assert_eq!(stored_amount(&before, &hash).await, Some(500));
 
     let restarted = stored_hub(&fixture, source, store)
+        .await
         .service(None)
         .expect("service");
     restarted.backfill_utxos().await.expect("resume");
@@ -485,14 +496,6 @@ async fn a_restart_over_a_store_resumes_at_the_durable_position_with_its_notes()
         Some(&None),
         "the first page is not read again"
     );
-}
-
-fn stored_hub(fixture: &Fixture, source: StaticSource, store: Store) -> Hub<StaticSource> {
-    Hub::builder(source, identity(GENESIS))
-        .with_origins(origins())
-        .with_store(store)
-        .local(RING, fixture.auditor.clone())
-        .expect("hub")
 }
 
 /// The audited note on the first of more pages than one pass reads.
@@ -538,11 +541,13 @@ async fn restart_after_the_terminal_page(
     store: &Store,
 ) -> AuditService<StaticSource> {
     let before = stored_hub(fixture, source.clone(), store.clone())
+        .await
         .service(None)
         .expect("service");
     before.backfill_utxos().await.expect("capped pass");
     before.backfill_utxos().await.expect("terminal pass");
     stored_hub(fixture, source.clone(), store.clone())
+        .await
         .service(None)
         .expect("service")
 }
@@ -621,7 +626,7 @@ async fn a_backfill_fills_the_store_before_any_page_read() {
         Some(vec![9]),
         paged(vec![utxos.spent.clone()], None, Some(10)),
     );
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("backfill");
     let found = service
         .audited_utxos(&utxos_request(vec![utxos.commitment.into()]))
@@ -653,11 +658,15 @@ async fn an_enrolled_key_names_a_note_and_another_key_names_none() {
     let status = |source: StaticSource| {
         let fixture = &fixture;
         async move {
-            let service = fixture.hub(source).service(None).expect("service");
+            let service = fixture.hub(source).await.service(None).expect("service");
             service.backfill_utxos().await.expect("backfill");
-            let request = WalletStatusRequest::new(target(RING), Address::new_from_array(owner))
-                .sign(&delegate())
-                .expect("signed");
+            let request = WalletStatusRequest::new(WalletStatusAttestation {
+                target: target(RING),
+                wallet: Address::new_from_array(owner),
+                cursor: None,
+            })
+            .sign(&delegate())
+            .expect("signed");
             service.wallet_status(&request).await.expect("status")
         }
     };
@@ -742,11 +751,15 @@ async fn a_deposit_of_dummy_inputs_becomes_the_enrolled_owners_balance() {
     source
         .tracking
         .enroll(&owner, &key, &fixture.auditor.pubkey());
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("backfill");
-    let request = WalletStatusRequest::new(target(RING), Address::new_from_array(owner))
-        .sign(&delegate())
-        .expect("signed");
+    let request = WalletStatusRequest::new(WalletStatusAttestation {
+        target: target(RING),
+        wallet: Address::new_from_array(owner),
+        cursor: None,
+    })
+    .sign(&delegate())
+    .expect("signed");
     let read = service.wallet_status(&request).await.expect("status");
     assert_eq!(read.notes.len(), 1);
     assert_eq!(read.notes[0].status, WalletNoteStatus::Unspent);

@@ -23,8 +23,6 @@
 //  3. Range construction rejects an input capacity outside the entry bitmap.
 //  4. A clear data flag holds every slot's data hash to zero, a clear ring data flag every ring data hash,
 //     and an exit carries no ring data hash.
-//
-// Read after shared/envelope.go. Read before audit/audit.go, audit/record.go.
 
 package audit
 

@@ -161,7 +161,7 @@ export async function newestTrackingRoot(
 }
 
 /** The newest root, a registry with none refuses. */
-export function currentTrackingRoot(registry: TrackingRegistry): StorageRegistryRoot {
+function currentTrackingRoot(registry: TrackingRegistry): StorageRegistryRoot {
   const newest = registry.roots[0];
   if (newest === undefined)
     throw new RingError("RING_TRACKING_INVALID", { details: { reason: "no root" } });

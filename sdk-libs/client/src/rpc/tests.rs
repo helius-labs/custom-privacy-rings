@@ -4,7 +4,6 @@ use solana_keypair::Keypair;
 use solana_signature::Signature;
 use spr_keypair::{ShieldedAddress, ShieldedKeypair, SigningKey, ViewingKey};
 use spr_transaction::OutputContext;
-use zeroize::Zeroizing;
 
 use super::*;
 use crate::{
@@ -1269,16 +1268,10 @@ fn relay_deposit_inputs_encode_to_the_shared_vector() {
     assert_eq!(read.rail.operation(), RelayOperation::Deposit);
 }
 
-/// The TypeScript encoder writes the same merge payload.
-#[test]
-fn relay_merge_inputs_encode_to_the_shared_vector() {
-    let vector: PayloadVector = serde_json::from_str(include_str!(
-        "../../../../test-vectors/rpc/relay_merge_inputs.json"
-    ))
-    .expect("vector");
+fn relay_merge_inputs() -> RelayMergeInputs {
     let spends = relay_proof_inputs();
     let spend = &spends.inputs[0];
-    let inputs = RelayMergeInputs {
+    RelayMergeInputs {
         ring_program_id: spends.ring_program_id,
         sender: spends.sender,
         nullifier_key: spends.nullifier_key.clone(),
@@ -1297,7 +1290,17 @@ fn relay_merge_inputs_encode_to_the_shared_vector() {
             tx_signature: Signature::default(),
             slot_index: 0,
         }],
-    };
+    }
+}
+
+/// The TypeScript encoder writes the same merge payload.
+#[test]
+fn relay_merge_inputs_encode_to_the_shared_vector() {
+    let vector: PayloadVector = serde_json::from_str(include_str!(
+        "../../../../test-vectors/rpc/relay_merge_inputs.json"
+    ))
+    .expect("vector");
+    let inputs = relay_merge_inputs();
     let encoded = inputs.encode().expect("encode");
     let text = |bytes: &[u8]| {
         serde_json::to_value(Base64String::from(bytes.to_vec()))
@@ -1313,7 +1316,7 @@ fn relay_merge_inputs_encode_to_the_shared_vector() {
         &text(&vector.proof_inputs.0),
     );
     let read = RelayMergeInputs::decode(&encoded).expect("decode");
-    assert_eq!(read.inputs[0].nullifier, spend.nullifier);
+    assert_eq!(read.inputs[0].nullifier, inputs.inputs[0].nullifier);
 }
 
 /// The TypeScript `relayRequestAttestation` writes the same text. `UPDATE_RING_VECTORS=1` rewrites it.
@@ -1326,10 +1329,6 @@ fn relay_request_attestations_match_the_shared_vector() {
     let file = "relay_request_attestation.json";
     let vector: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../test-vectors/rpc/relay_request_attestation.json"
-    ))
-    .expect("vector");
-    let merge_vector: PayloadVector = serde_json::from_str(include_str!(
-        "../../../../test-vectors/rpc/relay_merge_inputs.json"
     ))
     .expect("vector");
     let stored = |pointer: &str| {
@@ -1396,7 +1395,7 @@ fn relay_request_attestations_match_the_shared_vector() {
     let merge = RelayRequestAttestation::merge(
         target,
         owner.pubkey(),
-        &ProofInputBytes::new(Zeroizing::new(merge_vector.proof_inputs.0)),
+        &ProofInputBytes::new(relay_merge_inputs().encode().expect("encode")),
     )
     .message();
     pinned(

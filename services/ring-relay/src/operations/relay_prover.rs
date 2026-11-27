@@ -82,6 +82,35 @@ pub trait RelayProver: Send + Sync {
     ) -> Result<RelayProofInputs, RingRelayError>;
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod fixture {
+    use async_trait::async_trait;
+    use zolana_ring_client::rpc::RelayProofInputs;
+
+    use super::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver};
+    use crate::error::RingRelayError;
+
+    pub struct UnusedProver;
+
+    #[async_trait]
+    impl RelayProver for UnusedProver {
+        async fn prove(
+            &self,
+            _request: RelayProofRequest<'_>,
+        ) -> Result<ProvenRelay, RingRelayError> {
+            unreachable!("unused prover")
+        }
+
+        async fn seal_delegate(
+            &self,
+            _seal: DelegateSeal<'_>,
+            _parties: RelayParties,
+        ) -> Result<RelayProofInputs, RingRelayError> {
+            unreachable!("unused prover")
+        }
+    }
+}
+
 pub struct SdkRelayProver<R, I> {
     client: RingClient<R, I>,
 }

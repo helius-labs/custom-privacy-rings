@@ -18,6 +18,7 @@ use spl_token_2022_interface::{
 use spr_client::compile_message;
 use spr_instruction::instruction::CreateAssociatedTokenAccount;
 use spr_interface::{SPL_TOKEN_ACCOUNT_LEN, SPL_TOKEN_PROGRAM_ID};
+use spr_keypair::{PublicKey, ShieldedAddress, ViewingKey};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
@@ -37,14 +38,15 @@ use zolana_ring_transaction::ClassifiedInput;
 use ring_service_core::{
     database::Store,
     landing::{signature_fees, Attempt, ChainOutcome, ChainSubmit, Landing, LatestBlockhash},
-    relay_submit::{presigned_transaction, CollectedSignature},
     upstream::TransactionSource,
 };
+use zolana_operator_custody::{presigned_transaction, CollectedSignature};
 use zolana_ring_indexer::redact::redacted;
 
 use crate::{
     authority_transfer::AuthorityTransferError,
     error::{RingAuditError, RingRelayError, ServiceError},
+    managed_merge::OwnerMerge,
     merge_inputs::{HoldInputs, MergeInputs},
     relay_prover::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver},
     relay_reservations::{
@@ -67,7 +69,7 @@ pub use ring_cosigner::{
     transfer_debits::deposit_flows,
 };
 
-pub const QUOTE_SLOTS: u64 = LEASE_SLOTS;
+pub(crate) const QUOTE_SLOTS: u64 = LEASE_SLOTS;
 pub const RELAY_TRACK_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_CONCURRENT_PROOFS: usize = 4;
 const EXPIRED: &str = "the relay message expired before it landed";
@@ -179,17 +181,6 @@ pub struct Relay {
     budget: RelayBudget,
 }
 
-/// Every signature except the fee payer's is collected.
-#[must_use]
-pub(crate) struct HeldMerge {
-    pub ring: Address,
-    pub owner: Address,
-    pub message: VersionedMessage,
-    pub last_valid_block_height: u64,
-    pub tree_fees: u64,
-    pub nullifiers: Vec<[u8; 32]>,
-}
-
 #[must_use]
 struct PrepareCheck<'a> {
     target: ReadTarget,
@@ -243,7 +234,7 @@ enum Applied {
 
 /// One table maps each variant to its code and lists the codes.
 macro_rules! relay_codes {
-    ($($refusal:pat => $code:expr,)+) => {
+    ($($name:ident: $refusal:pat => $code:expr,)+) => {
         pub const fn code(&self) -> i32 {
             match self {
                 $($refusal => $code,)+
@@ -251,37 +242,42 @@ macro_rules! relay_codes {
         }
 
         #[cfg(any(test, feature = "test-fixtures"))]
-        pub const CODES: &[i32] = &[$($code),+];
+        pub fn codes() -> Vec<ring_service_core::error::RefusalCode> {
+            vec![$(ring_service_core::error::RefusalCode {
+                code: $code,
+                name: concat!("RelayError::", stringify!($name)),
+            }),+]
+        }
     };
 }
 
 impl RelayError {
     relay_codes! {
-        Self::RingNotServed => -32100,
-        Self::QuoteFeePayer => -32101,
-        Self::QuoteExpired => -32102,
-        Self::QuoteWindow => -32103,
-        Self::ProofInputs(_) => -32104,
-        Self::RingMismatch => -32105,
-        Self::RailMismatch => -32106,
-        Self::OwnerSignature => -32107,
-        Self::Proof(_) => -32108,
-        Self::CoSignRefused => -32109,
-        Self::UnknownRelay => -32110,
-        Self::UnexpectedSigner => -32111,
-        Self::SignerSignature => -32112,
-        Self::TokenAccountSetup(_) => -32200,
-        Self::DepositorIsFeePayer => -32201,
-        Self::Budget => -32203,
-        Self::SignerBudget => -32204,
-        Self::DelegateSignature => -32206,
-        Self::Allowance => -32207,
-        Self::LiveAttempt => -32208,
-        Self::DepositorSignature => -32209,
-        Self::BudgetUnset => -32210,
-        Self::Reseal { row: SealRow::Narrow } => -32211,
-        Self::Reseal { row: SealRow::Wide } => -32212,
-        Self::Oversized { .. } => -32216,
+        RingNotServed: Self::RingNotServed => -32100,
+        QuoteFeePayer: Self::QuoteFeePayer => -32101,
+        QuoteExpired: Self::QuoteExpired => -32102,
+        QuoteWindow: Self::QuoteWindow => -32103,
+        ProofInputs: Self::ProofInputs(_) => -32104,
+        RingMismatch: Self::RingMismatch => -32105,
+        RailMismatch: Self::RailMismatch => -32106,
+        OwnerSignature: Self::OwnerSignature => -32107,
+        Proof: Self::Proof(_) => -32108,
+        CoSignRefused: Self::CoSignRefused => -32109,
+        UnknownRelay: Self::UnknownRelay => -32110,
+        UnexpectedSigner: Self::UnexpectedSigner => -32111,
+        SignerSignature: Self::SignerSignature => -32112,
+        TokenAccountSetup: Self::TokenAccountSetup(_) => -32200,
+        DepositorIsFeePayer: Self::DepositorIsFeePayer => -32201,
+        Budget: Self::Budget => -32203,
+        SignerBudget: Self::SignerBudget => -32204,
+        DelegateSignature: Self::DelegateSignature => -32206,
+        Allowance: Self::Allowance => -32207,
+        LiveAttempt: Self::LiveAttempt => -32208,
+        DepositorSignature: Self::DepositorSignature => -32209,
+        BudgetUnset: Self::BudgetUnset => -32210,
+        ResealNarrow: Self::Reseal { row: SealRow::Narrow } => -32211,
+        ResealWide: Self::Reseal { row: SealRow::Wide } => -32212,
+        Oversized: Self::Oversized { .. } => -32216,
     }
 
     /// A refused transfer is the caller's, an unreachable chain or prover is the service's.
@@ -318,10 +314,9 @@ impl<S: TransactionSource + 'static> ServedRings for SharedRings<S> {
             Err(RingAuditError::RingNotServed) => false,
             Err(error) => return Err(error.into()),
         };
-        match served {
-            true => Ok(()),
-            false => Err(RelayError::RingNotServed.into()),
-        }
+        served
+            .then_some(())
+            .ok_or_else(|| RelayError::RingNotServed.into())
     }
 
     async fn ring_salt(&self, ring: Address) -> Result<Option<[u8; 32]>, RingRelayError> {
@@ -550,10 +545,10 @@ impl Relay {
     }
 
     fn require_budget(&self) -> Result<(), RelayError> {
-        match self.budget.is_set() {
-            true => Ok(()),
-            false => Err(RelayError::BudgetUnset),
-        }
+        self.budget
+            .is_set()
+            .then_some(())
+            .ok_or(RelayError::BudgetUnset)
     }
 
     async fn fund(&self, fund: Fund) -> Result<Reservation, RingRelayError> {
@@ -694,6 +689,7 @@ impl Relay {
                 relay_id: &relay_id,
                 record: &record,
                 slot: self.chain.slot().await?,
+                hold: None,
             })
             .await;
         let write = match &stored {
@@ -730,13 +726,15 @@ impl Relay {
         Ok(step(relay_id, &row.record))
     }
 
-    /// The record and the row's binding commit together, a lost lease stores no message.
+    /// The record, a merge's held inputs and the row's binding commit together, a lost lease
+    /// stores no message.
     async fn store_attempt(&self, staged: StagedAttempt<'_>) -> Result<AttemptWrite, WriteError> {
         let StagedAttempt {
             lease,
             relay_id,
             record,
             slot,
+            hold,
         } = staged;
         let transaction = self
             .store
@@ -750,6 +748,9 @@ impl Relay {
                 .await?
             {
                 return Ok(AttemptWrite::Existing);
+            }
+            if let Some(hold) = hold {
+                MergeInputs { conn: &transaction }.hold(hold).await?;
             }
             let bound = RelayReservations::new(&transaction)
                 .bind(Bind {
@@ -913,12 +914,58 @@ impl Relay {
         }
     }
 
-    pub(crate) async fn send_merge(&self, merge: HeldMerge) -> Result<RelayId, RingRelayError> {
+    /// A merge demands no co-signer, its inputs stay held until the relay fails or the ring
+    /// history spends them.
+    pub(crate) async fn send_merge(
+        &self,
+        merge: OwnerMerge<'_>,
+    ) -> Result<RelayId, RingRelayError> {
+        let OwnerMerge {
+            ring,
+            owner,
+            nullifier_key,
+            inputs,
+        } = merge;
+        let nullifiers: Vec<[u8; 32]> = inputs.iter().map(|input| input.nullifier).collect();
+        // The merge output seals to a fresh viewing key, the proof reads the sender's other two.
+        let sender = ShieldedAddress {
+            signing_pubkey: PublicKey::from_ed25519(owner.as_array()),
+            nullifier_pubkey: nullifier_key.pubkey()?,
+            viewing_pubkey: ViewingKey::new().pubkey(),
+        };
+        let payload = RelayPayload::Merge(RelayMergeInputs {
+            ring_program_id: ring,
+            sender,
+            nullifier_key: nullifier_key.clone(),
+            inputs,
+        });
+        let proven = self
+            .prover
+            .prove(RelayProofRequest {
+                ring,
+                parties: self.parties(&[]),
+                payload: &payload,
+                owner_signature: None,
+                ring_salt: None,
+            })
+            .await?;
+        // The decoded secret zeroizes before the store and send awaits.
+        drop(payload);
+        let LatestBlockhash {
+            blockhash,
+            last_valid_block_height,
+        } = self.chain.latest_blockhash().await?;
+        let message = compile_message(
+            &self.fee_payer(),
+            &[proven.instruction],
+            blockhash,
+            proven.budget,
+        )?;
         let relay_id = RelayId(
             <[u8; 32]>::from(
                 Sha256::new()
                     .chain_update(MANAGED_MERGE_DOMAIN)
-                    .chain_update(merge.message.serialize())
+                    .chain_update(message.serialize())
                     .finalize(),
             )
             .into(),
@@ -930,17 +977,17 @@ impl Relay {
             .admit(Admit {
                 key: merge_key(&relay_id),
                 relay_id: &relay_id,
-                signer: merge.owner,
+                signer: owner,
                 slot: self.chain.slot().await?,
             })
             .await?;
         let lease = claim.lease;
         let staged = async {
-            self.hold(lease, &merge.message, merge.tree_fees).await?;
+            self.hold(lease, &message, proven.tree_fees).await?;
             // A merge awaits no wallet signer and demands no co-signer.
             let closing = Closing {
                 co_signature: None,
-                fee_payer: self.fee_payer_signature(&merge.message).await?,
+                fee_payer: self.fee_payer_signature(&message).await?,
             };
             let unsigned = Awaiting {
                 signatures: Vec::new(),
@@ -949,22 +996,21 @@ impl Relay {
             };
             let record = RelayRecord {
                 state: RelayState::open(unsigned, Some(closing))?,
-                message: merge.message,
-                last_valid_block_height: merge.last_valid_block_height,
+                message,
+                last_valid_block_height,
             };
-            let hold = HoldInputs {
-                ring: &merge.ring,
-                relay_id: &relay_id,
-                nullifiers: &merge.nullifiers,
-            };
-            let slot = self.chain.slot().await?;
-            let staged_merge = StagedMerge {
-                record: &record,
-                hold,
+            let staged_merge = StagedAttempt {
                 lease,
-                slot,
+                relay_id: &relay_id,
+                record: &record,
+                slot: self.chain.slot().await?,
+                hold: Some(HoldInputs {
+                    ring: &ring,
+                    relay_id: &relay_id,
+                    nullifiers: &nullifiers,
+                }),
             };
-            match self.store_merge(staged_merge).await {
+            match self.store_attempt(staged_merge).await {
                 Ok(AttemptWrite::Stored) => {}
                 Ok(AttemptWrite::Existing) => return Ok(relay_id),
                 Ok(AttemptWrite::Refused(refused)) => return Err(refused),
@@ -988,54 +1034,6 @@ impl Relay {
             Ok(relay_id)
         };
         self.under_lease(lease, staged).await
-    }
-
-    async fn store_merge(&self, staged: StagedMerge<'_>) -> Result<AttemptWrite, WriteError> {
-        let StagedMerge {
-            record,
-            hold,
-            lease,
-            slot,
-        } = staged;
-        let relay_id = hold.relay_id;
-        let transaction = self
-            .store
-            .connection()
-            .begin()
-            .await
-            .map_err(WriteError::Uncommitted)?;
-        let staged = async {
-            if !RelayStore::new(&transaction)
-                .insert(relay_id, record)
-                .await?
-            {
-                return Ok(AttemptWrite::Existing);
-            }
-            MergeInputs { conn: &transaction }.hold(hold).await?;
-            let bound = RelayReservations::new(&transaction)
-                .bind(Bind {
-                    lease,
-                    relay_id,
-                    fee: message_fee(&record.message),
-                    slot,
-                })
-                .await?;
-            Ok(match bound {
-                SpendCheck::Accepted => AttemptWrite::Stored,
-                SpendCheck::OverAllowance => AttemptWrite::Refused(RelayError::Allowance.into()),
-                SpendCheck::LeaseLost => AttemptWrite::Refused(RingRelayError::RelayProverBusy),
-            })
-        }
-        .await
-        .map_err(WriteError::Uncommitted)?;
-        match staged {
-            AttemptWrite::Stored => transaction.commit().await.map_err(WriteError::Committing)?,
-            _ => transaction
-                .rollback()
-                .await
-                .map_err(WriteError::Uncommitted)?,
-        }
-        Ok(staged)
     }
 
     pub(crate) fn merge_inputs(&self) -> MergeInputs<'_, DatabaseConnection> {
@@ -1068,12 +1066,13 @@ impl Relay {
                 return Err(RelayError::SignerSignature.into());
             }
             // 2. The last signature closes the relay, the co-signer reserves its allowance before the write.
-            let closing = match last {
-                true => Some(
+            let closing = if last {
+                Some(
                     self.closing(&row.record.message, awaiting.co_sign.as_ref())
                         .await?,
-                ),
-                false => None,
+                )
+            } else {
+                None
             };
             let event = RelayEvent::Signed {
                 signature,
@@ -1193,9 +1192,10 @@ impl Relay {
         message: &VersionedMessage,
         awaiting: Awaiting,
     ) -> Result<RelayState, RingRelayError> {
-        let closing = match awaiting.awaiting.is_empty() {
-            true => Some(self.closing(message, awaiting.co_sign.as_ref()).await?),
-            false => None,
+        let closing = if awaiting.awaiting.is_empty() {
+            Some(self.closing(message, awaiting.co_sign.as_ref()).await?)
+        } else {
+            None
         };
         Ok(RelayState::open(awaiting, closing)?)
     }
@@ -1493,14 +1493,7 @@ struct StagedAttempt<'a> {
     relay_id: &'a RelayId,
     record: &'a RelayRecord,
     slot: u64,
-}
-
-#[must_use]
-struct StagedMerge<'a> {
-    record: &'a RelayRecord,
-    hold: HoldInputs<'a>,
-    lease: Lease,
-    slot: u64,
+    hold: Option<HoldInputs<'a>>,
 }
 
 enum AttemptWrite {
@@ -1745,18 +1738,18 @@ impl PrepareCheck<'_> {
                 setup,
             });
         };
-        match proof_inputs
+        if !proof_inputs
             .sender
             .signing_pubkey
             .verify_message(&digest, &signature)
         {
-            true => Ok(Checked {
-                owner_signature: Some(signature),
-                signer: signer_address(&proof_inputs.sender.signing_pubkey),
-                setup,
-            }),
-            false => Err(RelayError::OwnerSignature.into()),
+            return Err(RelayError::OwnerSignature.into());
         }
+        Ok(Checked {
+            owner_signature: Some(signature),
+            signer: signer_address(&proof_inputs.sender.signing_pubkey),
+            setup,
+        })
     }
 }
 
@@ -2004,75 +1997,13 @@ mod tests {
 
     #[tokio::test]
     async fn co_sign_transaction_refuses_unserved_ring() {
-        struct UnusedProver;
-
-        #[async_trait]
-        impl RelayProver for UnusedProver {
-            async fn prove(
-                &self,
-                _request: RelayProofRequest<'_>,
-            ) -> Result<ProvenRelay, RingRelayError> {
-                unreachable!("unused")
-            }
-
-            async fn seal_delegate(
-                &self,
-                _seal: DelegateSeal<'_>,
-                _parties: RelayParties,
-            ) -> Result<RelayProofInputs, RingRelayError> {
-                unreachable!("unused")
-            }
-        }
-
-        struct UnusedChain;
-
-        #[async_trait]
-        impl ChainSubmit for UnusedChain {
-            async fn slot(&self) -> Result<u64, ServiceError> {
-                unreachable!("unused")
-            }
-            async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
-                unreachable!("unused")
-            }
-            async fn block_height(&self) -> Result<u64, ServiceError> {
-                unreachable!("unused")
-            }
-            async fn account_data(
-                &self,
-                _address: Address,
-            ) -> Result<Option<Vec<u8>>, ServiceError> {
-                unreachable!("unused")
-            }
-            async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
-                unreachable!("unused")
-            }
-            async fn send(
-                &self,
-                _transaction: &solana_transaction::versioned::VersionedTransaction,
-            ) -> Result<(), ServiceError> {
-                unreachable!("unused")
-            }
-            async fn outcome(
-                &self,
-                _signature: solana_signature::Signature,
-            ) -> Result<Option<ChainOutcome>, ServiceError> {
-                unreachable!("unused")
-            }
-            async fn simulate(
-                &self,
-                _message: &VersionedMessage,
-            ) -> Result<ring_service_core::landing::Simulation, ServiceError> {
-                unreachable!("unused")
-            }
-        }
-
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
         let relay = Relay::new(
             RelayParts {
                 store,
-                prover: Arc::new(UnusedProver),
+                prover: Arc::new(crate::relay_prover::fixture::UnusedProver),
                 fee_payer: Arc::new(solana_keypair::Keypair::new_from_array([1; 32])),
-                chain: Arc::new(UnusedChain),
+                chain: Arc::new(ring_service_core::landing::fixture::UnusedChain),
             },
             ServiceTarget {
                 cluster: [2; 32],
@@ -2159,25 +2090,6 @@ mod tests {
             }
         }
 
-        struct UnusedProver;
-
-        #[async_trait]
-        impl RelayProver for UnusedProver {
-            async fn prove(
-                &self,
-                _request: RelayProofRequest<'_>,
-            ) -> Result<ProvenRelay, RingRelayError> {
-                unreachable!("unused")
-            }
-            async fn seal_delegate(
-                &self,
-                _seal: DelegateSeal<'_>,
-                _parties: RelayParties,
-            ) -> Result<RelayProofInputs, RingRelayError> {
-                unreachable!("unused")
-            }
-        }
-
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
         let fee_payer = Arc::new(solana_keypair::Keypair::new_from_array([7; 32]));
         let chain = Arc::new(ConfirmingChain {
@@ -2186,7 +2098,7 @@ mod tests {
         let relay = Relay::new(
             RelayParts {
                 store: store.clone(),
-                prover: Arc::new(UnusedProver),
+                prover: Arc::new(crate::relay_prover::fixture::UnusedProver),
                 fee_payer: fee_payer.clone(),
                 chain: chain.clone(),
             },

@@ -1,8 +1,6 @@
 //! The byte cursor every frame parser reads through, a short read fails with the parser's own error.
-//!
-//! Read after `program-libs/interface/src/lib.rs`. Read before `program-libs/interface/src/instructions/transact.rs`.
 
-use spr_interface::instruction::{InterfaceTransfer, TreeContext};
+use spr_interface::instruction::InterfaceTransfer;
 use wincode::{config::DefaultConfig, containers, len::FixIntLen, SchemaRead};
 
 use crate::error::CustomRingError;
@@ -39,6 +37,19 @@ impl<'a, E: Copy> Bytes<'a, E> {
         bytemuck::try_from_bytes(self.take(core::mem::size_of::<T>())?).map_err(|_| self.short)
     }
 
+    pub fn pod_slice<T: bytemuck::Pod>(&mut self, count: usize) -> Result<&'a [T], E> {
+        const { assert!(core::mem::align_of::<T>() == 1) };
+        let len = count
+            .checked_mul(core::mem::size_of::<T>())
+            .ok_or(self.short)?;
+        bytemuck::try_cast_slice(self.take(len)?).map_err(|_| self.short)
+    }
+
+    /// `T`'s wincode image, a short or malformed read fails with `short`.
+    pub fn schema<T: SchemaRead<'a, DefaultConfig, Dst = T>>(&mut self) -> Result<T, E> {
+        T::get(&mut self.data).map_err(|_| self.short)
+    }
+
     pub const fn rest(self) -> &'a [u8] {
         self.data
     }
@@ -51,10 +62,6 @@ impl<'a> Bytes<'a> {
 
     pub fn u32(&mut self) -> Result<u32, CustomRingError> {
         Ok(u32::from_le_bytes(*self.array()?))
-    }
-
-    pub fn fields(&mut self, count: usize) -> Result<&'a [[u8; 32]], CustomRingError> {
-        Ok(self.take(count * 32)?.as_chunks::<32>().0)
     }
 
     /// `ceil(len / 8)` bytes, bit `i` at byte `i / 8` bit `i % 8`, no bit set past `len`.
@@ -80,9 +87,5 @@ impl<'a> Bytes<'a> {
             &mut self.data,
         )
         .map_err(|_| CustomRingError::InvalidInstructionData)
-    }
-
-    pub fn tree_context(&mut self) -> Result<TreeContext, CustomRingError> {
-        <TreeContext as SchemaRead<'a, DefaultConfig>>::get(&mut self.data).map_err(|_| self.short)
     }
 }

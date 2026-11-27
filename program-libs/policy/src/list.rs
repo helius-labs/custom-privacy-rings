@@ -2,8 +2,6 @@
 //!
 //! A bit position is a circuit constant. The writer split and `RuleTable::validate` keep a list its
 //! members write out of every rule, so an owner admits itself to nothing.
-//!
-//! Read after `program-libs/policy/src/lib.rs`. Read before `program-libs/policy/src/member.rs`, `program-libs/policy/src/rule_table/mod.rs`.
 
 use thiserror::Error;
 

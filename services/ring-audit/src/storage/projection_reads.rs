@@ -1,9 +1,9 @@
 //! Point reads of a ring's projection, where every miss of the bounded mirror lands.
 //!
 //! Each read sees committed rows only. The mirror never caches what these return, so a read racing
-//! a commit cannot leave a stale entry behind. Read after `storage/spent_index.rs`.
+//! a commit cannot leave a stale entry behind.
 
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement, Value};
+use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Value};
 use solana_address::Address;
 
 use crate::{
@@ -16,7 +16,7 @@ use crate::{
     tracking::HeldEnrollment,
     utxos::{CreatedIn, StoredUtxo},
 };
-use ring_service_core::sql;
+use ring_service_core::sql::{self, KEYS_PER_STATEMENT};
 
 /// The key an enrollment lookup names, each read through its own column.
 #[derive(Clone, Copy, Debug)]
@@ -26,9 +26,6 @@ pub(crate) enum EnrollmentKey {
     ListKey,
 }
 
-/// Keys bound into one statement, under every backend's parameter ceiling.
-const KEYS_PER_READ: usize = 256;
-
 #[must_use]
 pub(crate) struct ProjectionReads<'a, C = DatabaseConnection> {
     pub db: &'a C,
@@ -36,19 +33,36 @@ pub(crate) struct ProjectionReads<'a, C = DatabaseConnection> {
     pub seal: &'a NoteSeal,
 }
 
+impl<'a, C> ProjectionReads<'a, C> {
+    /// The same ring's reads on `db`, a snapshot then answers every read.
+    pub(crate) fn at<'b, T>(&self, db: &'b T) -> ProjectionReads<'b, T>
+    where
+        'a: 'b,
+    {
+        ProjectionReads {
+            db,
+            ring: self.ring,
+            seal: self.seal,
+        }
+    }
+}
+
 impl<C: ConnectionTrait> ProjectionReads<'_, C> {
     pub(crate) async fn due_repairs(
         &self,
         now: u64,
     ) -> Result<Vec<(CreatedIn, RepairAttempt)>, DbErr> {
-        self.db.query_all(self.ring_statement(
+        self.ring_query(
             "SELECT slot,tx_signature,event_index,attempts,retry_after FROM spend_unread_frames \
              WHERE ring=$1 AND retry_after<=$2 ORDER BY retry_after,slot,tx_signature,event_index \
-             LIMIT $3".into(),
+             LIMIT $3",
             vec![sql::integer(now)?, sql::count(MAX_REPAIRED_FRAMES)?],
-        )).await?.iter().map(|row| {
-            Ok((read_frame(row)?, read_repair_attempt(row)?))
-        }).collect()
+        )
+        .all(self.db)
+        .await?
+        .iter()
+        .map(|row| Ok((read_frame(row)?, read_repair_attempt(row)?)))
+        .collect()
     }
 
     pub(crate) async fn notes(
@@ -56,7 +70,7 @@ impl<C: ConnectionTrait> ProjectionReads<'_, C> {
         commitments: &[[u8; 32]],
     ) -> Result<Vec<([u8; 32], StoredUtxo)>, DbErr> {
         let mut notes = Vec::new();
-        for chunk in commitments.chunks(KEYS_PER_READ) {
+        for chunk in commitments.chunks(KEYS_PER_STATEMENT) {
             for row in self
                 .keyed(
                     &format!("SELECT {NOTE_COLUMNS} FROM finalized_notes"),
@@ -77,7 +91,7 @@ impl<C: ConnectionTrait> ProjectionReads<'_, C> {
         nullifiers: &[[u8; 32]],
     ) -> Result<Vec<([u8; 32], StoredUtxo)>, DbErr> {
         let mut notes = Vec::new();
-        for chunk in nullifiers.chunks(KEYS_PER_READ) {
+        for chunk in nullifiers.chunks(KEYS_PER_STATEMENT) {
             let tags = chunk
                 .iter()
                 .map(|nullifier| self.seal.tags.nullifier_tag(nullifier))
@@ -105,7 +119,7 @@ impl<C: ConnectionTrait> ProjectionReads<'_, C> {
 
     pub(crate) async fn rows(&self, nullifiers: &[[u8; 32]]) -> Result<Vec<SpendRow>, DbErr> {
         let mut rows = Vec::new();
-        for chunk in nullifiers.chunks(KEYS_PER_READ) {
+        for chunk in nullifiers.chunks(KEYS_PER_STATEMENT) {
             for row in self
                 .keyed(
                     &format!("SELECT {ROW_COLUMNS} FROM finalized_spent_nullifiers"),
@@ -132,7 +146,7 @@ impl<C: ConnectionTrait> ProjectionReads<'_, C> {
             EnrollmentKey::ListKey => "list_key_tag",
         };
         let mut found = Vec::new();
-        for chunk in values.chunks(KEYS_PER_READ) {
+        for chunk in values.chunks(KEYS_PER_STATEMENT) {
             let stored = chunk
                 .iter()
                 .map(|value| match key {
@@ -167,21 +181,62 @@ impl<C: ConnectionTrait> ProjectionReads<'_, C> {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
-        self.db
-            .query_all(self.ring_statement(
-                format!(
-                    "{select} WHERE ring=$1 AND {column} IN ({})",
-                    sql::placeholders(2, keys.len())
-                ),
-                keys.iter().map(|key| sql::bytes(key)).collect(),
-            ))
-            .await
+        self.ring_query(
+            &format!(
+                "{select} WHERE ring=$1 AND {column} IN ({})",
+                sql::placeholders(2, keys.len())
+            ),
+            keys.iter().map(|key| sql::bytes(key)).collect(),
+        )
+        .all(self.db)
+        .await
     }
 
-    fn ring_statement(&self, query: String, values: Vec<Value>) -> Statement {
+    pub(crate) fn ring_query(&self, query: &str, values: Vec<Value>) -> sql::Query {
         let mut bound = vec![sql::bytes(self.ring.as_ref())];
         bound.extend(values);
-        sql::statement(self.db, query, bound)
+        sql::Query::new(query, bound)
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct StoredRows {
+    pub notes: std::collections::BTreeMap<[u8; 32], StoredUtxo>,
+    pub rows: std::collections::BTreeMap<[u8; 32], SpendRow>,
+    pub unread: std::collections::BTreeMap<CreatedIn, RepairAttempt>,
+    pub faults: std::collections::BTreeSet<([u8; 32], CreatedIn)>,
+}
+
+#[cfg(test)]
+impl<C: ConnectionTrait> ProjectionReads<'_, C> {
+    pub(crate) async fn everything(&self) -> Result<StoredRows, DbErr> {
+        use crate::spent_index::read_repair_attempt;
+        let all = |select: String| self.ring_query(&select, Vec::new()).all(self.db);
+        let mut stored = StoredRows::default();
+        for row in all(format!(
+            "SELECT {NOTE_COLUMNS} FROM finalized_notes WHERE ring=$1"
+        ))
+        .await?
+        {
+            let (commitment, note) = read_note(&row, self.seal)?;
+            stored.notes.insert(commitment, note);
+        }
+        for row in all(format!(
+            "SELECT {ROW_COLUMNS} FROM finalized_spent_nullifiers WHERE ring=$1"
+        ))
+        .await?
+        {
+            let row = read_spend_row(&row, self.seal)?;
+            stored.rows.insert(row.nullifier, row);
+        }
+        for row in all("SELECT slot,tx_signature,event_index,attempts,retry_after FROM spend_unread_frames WHERE ring=$1".into()).await? {
+            stored.unread.insert(read_frame(&row)?, read_repair_attempt(&row)?);
+        }
+        for row in all("SELECT nullifier,slot,tx_signature,event_index FROM spend_integrity_faults WHERE ring=$1".into()).await? {
+            stored.faults.insert((sql::read_bytes(&row, "nullifier")?, read_frame(&row)?));
+        }
+        Ok(stored)
     }
 }
 

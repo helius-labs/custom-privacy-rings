@@ -24,8 +24,6 @@ pub mod limits;
 pub mod migration;
 #[path = "security/origins.rs"]
 pub mod origins;
-#[path = "rpc/relay_submit.rs"]
-pub mod relay_submit;
 #[path = "security/replay.rs"]
 pub mod replay;
 #[path = "storage/replay_nonces.rs"]

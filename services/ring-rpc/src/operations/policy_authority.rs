@@ -1,6 +1,4 @@
 //! The Ring RPC methods the ring policy authority signs.
-//! Read `record_update` after for the pending state, `record_writer` for how an approval lands, and
-//! `enrollment_applier` for the rings a registration serves.
 
 use solana_address::Address;
 use zolana_ring_client::rpc::{
@@ -15,7 +13,9 @@ use ring_writer::record_writer::RecordsCreationRequest;
 
 use ring_audit::policy_action::PolicyAction;
 
-use crate::{error::RingRpcError, hub::Hub};
+use ring_relay::RingRelayError;
+
+use crate::hub::Hub;
 
 impl<S: TransactionSource> Hub<S> {
     fn policy_action<'a, A>(
@@ -35,7 +35,7 @@ impl<S: TransactionSource> Hub<S> {
     pub async fn pending_list_approvals(
         &self,
         request: &GetPendingListApprovalsRequest,
-    ) -> Result<GetPendingListApprovalsResponse, RingRpcError> {
+    ) -> Result<GetPendingListApprovalsResponse, RingRelayError> {
         let ring = request.ring.0;
         let writer = self.record_writer()?;
         let action = ListPendingApprovals {
@@ -43,7 +43,7 @@ impl<S: TransactionSource> Hub<S> {
             cursor: request.cursor.clone(),
         };
         self.policy_action(ring, &request.auth, action)
-            .authorize::<_, _, RingRpcError, _, _>(|authority| {
+            .authorize::<_, _, RingRelayError, _, _>(|authority| {
                 writer.require_policy_authority(ring, authority)
             })
             .await?;
@@ -53,7 +53,7 @@ impl<S: TransactionSource> Hub<S> {
     pub async fn refuse_list_approval(
         &self,
         request: &RefuseListApprovalRequest,
-    ) -> Result<RecordUpdateStatus, RingRpcError> {
+    ) -> Result<RecordUpdateStatus, RingRelayError> {
         let ring = request.ring.0;
         let writer = self.record_writer()?;
         let action = RefuseListApproval {
@@ -61,7 +61,7 @@ impl<S: TransactionSource> Hub<S> {
             update_id: request.update_id.clone(),
         };
         self.policy_action(ring, &request.auth, action)
-            .authorize::<_, _, RingRpcError, _, _>(|authority| {
+            .authorize::<_, _, RingRelayError, _, _>(|authority| {
                 writer.require_policy_authority(ring, authority)
             })
             .await?;
@@ -72,11 +72,11 @@ impl<S: TransactionSource> Hub<S> {
     pub async fn create_records_registry(
         &self,
         request: &CreateRecordsRegistryRequest,
-    ) -> Result<CreateRecordsRegistryResponse, RingRpcError> {
+    ) -> Result<CreateRecordsRegistryResponse, RingRelayError> {
         let ring = request.ring.0;
         let writer = self.record_writer()?;
         self.policy_action(ring, &request.auth, request.action())
-            .authorize::<_, _, RingRpcError, _, _>(|authority| {
+            .authorize::<_, _, RingRelayError, _, _>(|authority| {
                 self.shared().require_ring_authority(ring, authority)
             })
             .await?;
@@ -90,17 +90,17 @@ impl<S: TransactionSource> Hub<S> {
     }
 
     /// The policy authority alone, the signed action names this service's enrollment writer.
-    pub async fn register_enrollment_ring(
+    pub(crate) async fn register_enrollment_ring(
         &self,
         request: &RegisterEnrollmentRingRequest,
-    ) -> Result<RegisterEnrollmentRingResponse, RingRpcError> {
+    ) -> Result<RegisterEnrollmentRingResponse, RingRelayError> {
         let ring = request.ring.0;
         let applier = self.enrollment_applier()?;
         let action = RegisterEnrollment {
             writer: applier.payer(),
         };
         self.policy_action(ring, &request.auth, action)
-            .authorize::<_, _, RingRpcError, _, _>(|authority| {
+            .authorize::<_, _, RingRelayError, _, _>(|authority| {
                 applier.authorize_registration(ring, authority)
             })
             .await?;
@@ -120,8 +120,8 @@ mod tests {
     use ring_service_core::{
         authorize::Unauthorized,
         clock::Clock,
+        database::Store,
         keys::RootSecret,
-        replay::ReplayGuard,
         upstream::{ChainSource, Upstreams},
     };
     use ring_writer::enrollment_applier::{EnrollmentApplier, EnrollmentApplierParts};
@@ -178,7 +178,7 @@ mod tests {
             budget_lamports: u64::MAX,
             ring_budget_lamports: u64::MAX,
             max_rings: 2,
-            store: None,
+            store: Store::in_memory().await.expect("store"),
         }
         .applier()
         .await
@@ -199,6 +199,7 @@ mod tests {
             .with_clock(Clock::Fixed(NOW))
             .with_enrollment_applier(Arc::new(applier().await))
             .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+            .await
             .expect("hub")
     }
 
@@ -222,7 +223,7 @@ mod tests {
         assert!(
             matches!(
                 other_writer,
-                Err(RingRpcError::Service(ServiceError::Unauthorized(
+                Err(RingRelayError::Service(ServiceError::Unauthorized(
                     Unauthorized::BadSignature
                 )))
             ),
@@ -236,7 +237,7 @@ mod tests {
         assert!(
             matches!(
                 replayed,
-                Err(RingRpcError::Service(ServiceError::Unauthorized(
+                Err(RingRelayError::Service(ServiceError::Unauthorized(
                     Unauthorized::Replay
                 )))
             ),
@@ -263,9 +264,9 @@ mod tests {
         .expect("signed");
 
         assert!(hub.register_enrollment_ring(&request).await.is_err());
-        let ReplayGuard::Local(nonces) = &hub.shared().replay else {
-            panic!("expected local nonces");
-        };
-        assert_eq!(nonces.ring_count(), 0);
+        let nonces = ring_service_core::replay::spent_nonces(hub.shared().database.store())
+            .await
+            .expect("rows");
+        assert_eq!(nonces, 0);
     }
 }

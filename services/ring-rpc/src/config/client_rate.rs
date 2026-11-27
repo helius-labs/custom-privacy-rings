@@ -28,28 +28,34 @@ use solana_address::Address;
 use thiserror::Error;
 use tower::{Layer, Service};
 
+use custom_ring_interface::storage_instruction::EnrollmentWrite;
 use zolana_ring_client::rpc::{
-    CreateRecordsRegistryRequest, PrepareAuthorityTransferRequest, RefuseListApprovalRequest,
-    RegisterEnrollmentRingRequest, SetMergeSettingsRequest, SetReaderGrantRequest,
-    SubmitRecordUpdateRequest, SubmitRelayRequest, CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY,
-    GET_AUDITED_MERGES, GET_AUDITED_UTXOS, GET_DECRYPTED_TRANSACTIONS, GET_DELEGATE_NOTES,
-    GET_LIST_SALT, GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS, GET_RELAY_QUOTE,
-    GET_RELAY_STATUS, GET_SPEND_COVERAGE, GET_WALLET_ACTIVITY, GET_WALLET_STATUS, HEALTH,
-    PREPARE_AUTHORITY_TRANSFER, REFUSE_LIST_APPROVAL, REGISTER_ENROLLMENT_RING, RING_STATUS,
-    SET_MERGE_SETTINGS, SET_READER_GRANT, SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
+    CoSignTransactionRequest, CreateRecordsRegistryRequest, EditCoSignListRequest,
+    PrepareAuthorityTransferRequest, RefuseListApprovalRequest, RegisterEnrollmentRingRequest,
+    SetMergeSettingsRequest, SetReaderGrantRequest, SignedVaultEnrollment, SubmitEnrollmentRequest,
+    SubmitRecordUpdateRequest, SubmitRelayRequest, CO_SIGN_TRANSACTION, CREATE_AUDITOR_KEY,
+    CREATE_RECORDS_REGISTRY, EDIT_CO_SIGN_LIST, GET_AUDITED_MERGES, GET_AUDITED_UTXOS,
+    GET_CO_SIGN_LISTS, GET_DECRYPTED_TRANSACTIONS, GET_DELEGATE_NOTES, GET_LIST_SALT,
+    GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS, GET_RELAY_QUOTE, GET_RELAY_STATUS,
+    GET_SPEND_COVERAGE, GET_WALLET_ACTIVITY, GET_WALLET_STATUS, HEALTH, PREPARE_AUTHORITY_TRANSFER,
+    PREPARE_RELAY, PREPARE_VAULT_ENROLLMENT, REFUSE_LIST_APPROVAL, REGISTER_ENROLLMENT_RING,
+    RELEASE_DELEGATE_SNAPSHOT, RELEASE_WALLET_SNAPSHOT, RING_STATUS, SET_MERGE_SETTINGS,
+    SET_READER_GRANT, SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
+    SUBMIT_VAULT_ENROLLMENT,
 };
+
+use ring_cosigner::cosigner::DirectCoSign;
 
 use ring_service_core::client_identity::{
     ApiKeyDigest, ClientIdentity, ClientIdentityPolicy, PeerAddress, UnknownApiKey,
 };
 
-use crate::error::RingRpcError;
 use ring_service_core::ServiceError;
 
 /// Past it the bucket nearest to full is dropped.
 const MAX_BUCKETS: usize = 65_536;
 /// An IPv6 /48 spends the rates of this many /64 clients.
-pub(crate) const NETWORK_CLIENTS: NonZeroU32 = NonZeroU32::new(16).unwrap();
+const NETWORK_CLIENTS: NonZeroU32 = NonZeroU32::new(16).unwrap();
 const UNKNOWN_API_KEY: i32 = -32254;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,7 +134,7 @@ pub struct ClientLimitArgs {
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 #[repr(i32)]
-pub enum RateLimit {
+pub(crate) enum RateLimit {
     #[error("client exceeds its public read rate")]
     PublicReads = -32250,
     #[error("client exceeds its signed read rate")]
@@ -153,7 +159,7 @@ enum Admission {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum MethodClass {
+pub(crate) enum MethodClass {
     PublicRead,
     SignedRead,
     SignedWrite,
@@ -161,13 +167,15 @@ enum MethodClass {
 
 #[must_use]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RatedCall {
+pub(crate) enum RatedCall {
     PublicRead,
     SignedRead,
     /// Claimed by the request, unverified until the answer succeeds.
     SignedWrite {
         signer: Option<Address>,
     },
+    /// A name no method registers, the server refuses it.
+    Unregistered,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -275,22 +283,27 @@ impl ClientLimitArgs {
 }
 
 impl RateLimit {
-    pub const fn code(self) -> i32 {
+    pub(crate) const fn code(self) -> i32 {
         self as i32
     }
 
     #[cfg(test)]
-    pub(crate) fn codes() -> Vec<i32> {
-        [
-            Self::PublicReads,
-            Self::SignedReads,
-            Self::SignedWrites,
-            Self::SigningKey,
+    pub(crate) fn codes() -> Vec<ring_service_core::error::RefusalCode> {
+        use ring_service_core::error::RefusalCode;
+        let code = |limit: Self, name| RefusalCode {
+            code: limit.code(),
+            name,
+        };
+        vec![
+            code(Self::PublicReads, "RateLimit::PublicReads"),
+            code(Self::SignedReads, "RateLimit::SignedReads"),
+            code(Self::SignedWrites, "RateLimit::SignedWrites"),
+            code(Self::SigningKey, "RateLimit::SigningKey"),
+            RefusalCode {
+                code: UNKNOWN_API_KEY,
+                name: "UnknownApiKey",
+            },
         ]
-        .into_iter()
-        .map(Self::code)
-        .chain([UNKNOWN_API_KEY])
-        .collect()
     }
 }
 
@@ -436,10 +449,9 @@ impl Admission {
                 refused.extensions_mut().insert(limited);
                 refused
             }
-            Self::Unavailable => MethodResponse::error(
-                id,
-                ErrorObjectOwned::from(RingRpcError::Service(ServiceError::StateUnavailable)),
-            ),
+            Self::Unavailable => {
+                MethodResponse::error(id, ErrorObjectOwned::from(ServiceError::StateUnavailable))
+            }
         }
     }
 }
@@ -512,22 +524,22 @@ where
 }
 
 impl RatedCall {
-    fn class(self) -> MethodClass {
+    pub(crate) fn class(self) -> MethodClass {
         match self {
             Self::PublicRead => MethodClass::PublicRead,
             Self::SignedRead => MethodClass::SignedRead,
-            Self::SignedWrite { .. } => MethodClass::SignedWrite,
+            Self::SignedWrite { .. } | Self::Unregistered => MethodClass::SignedWrite,
         }
     }
 
     fn signer(self) -> Option<Address> {
         match self {
             Self::SignedWrite { signer } => signer,
-            Self::PublicRead | Self::SignedRead => None,
+            Self::PublicRead | Self::SignedRead | Self::Unregistered => None,
         }
     }
 
-    fn of(request: &Request<'_>) -> Self {
+    pub(crate) fn of(request: &Request<'_>) -> Self {
         let params = request.params();
         let write = |signer: Option<Address>| Self::SignedWrite { signer };
         match request.method_name() {
@@ -542,10 +554,13 @@ impl RatedCall {
             | GET_AUDITED_MERGES
             | GET_AUDITED_UTXOS
             | GET_WALLET_STATUS
+            | RELEASE_WALLET_SNAPSHOT
             | GET_SPEND_COVERAGE
             | GET_DELEGATE_NOTES
+            | RELEASE_DELEGATE_SNAPSHOT
             | GET_LIST_SALT
-            | GET_PENDING_LIST_APPROVALS => Self::SignedRead,
+            | GET_PENDING_LIST_APPROVALS
+            | GET_CO_SIGN_LISTS => Self::SignedRead,
             SUBMIT_RECORD_UPDATE => write(
                 params
                     .parse::<SubmitRecordUpdateRequest>()
@@ -570,6 +585,12 @@ impl RatedCall {
                     .ok()
                     .map(|request| request.auth.authority.0),
             ),
+            EDIT_CO_SIGN_LIST => write(
+                params
+                    .parse::<EditCoSignListRequest>()
+                    .ok()
+                    .map(|request| request.auth.authority.0),
+            ),
             SET_READER_GRANT => write(
                 params
                     .parse::<SetReaderGrantRequest>()
@@ -589,14 +610,34 @@ impl RatedCall {
                     .ok()
                     .map(|request| request.delegate.0),
             ),
+            SUBMIT_ENROLLMENT => write(params.parse::<SubmitEnrollmentRequest>().ok().and_then(
+                |request| {
+                    EnrollmentWrite::parse(&request.write.0)
+                        .ok()
+                        .map(|(write, _)| *write.owner)
+                },
+            )),
+            SUBMIT_VAULT_ENROLLMENT => write(
+                params
+                    .parse::<SignedVaultEnrollment>()
+                    .ok()
+                    .map(|request| request.enrollment.manager.0),
+            ),
             SUBMIT_RELAY => write(
                 params
                     .parse::<SubmitRelayRequest>()
                     .ok()
                     .map(|request| request.signer.0),
             ),
-            // `prepareRelay` and every unlisted method charge only the client.
-            _ => write(None),
+            CO_SIGN_TRANSACTION => write(
+                params
+                    .parse::<CoSignTransactionRequest>()
+                    .ok()
+                    .and_then(|request| DirectCoSign::fee_payer(&request)),
+            ),
+            // The vault manager has not signed yet, the relay intent's signer sits in sealed inputs.
+            PREPARE_VAULT_ENROLLMENT | PREPARE_RELAY => write(None),
+            _ => Self::Unregistered,
         }
     }
 }
@@ -674,4 +715,40 @@ fn unknown_api_key() -> HttpResponse {
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_64s_of_one_ipv6_48_share_its_signed_write_rate() {
+        let limiter = ClientRateLimiter::new(ClientRates {
+            signed_writes: BucketRate::new(1, 2),
+            ..ClientRates::default()
+        });
+        let now = Instant::now();
+        let write = RatedCall::SignedWrite { signer: None };
+        let admit = |address: &str| {
+            let client = ClientIdentity::Address(address.parse().expect("IPv6 client"));
+            limiter.admit(client, write, now)
+        };
+
+        for subnet in 0..NETWORK_CLIENTS.get() {
+            for _ in 0..2 {
+                assert!(
+                    admit(&format!("2001:db8:0:{subnet:x}::")).is_ok(),
+                    "{subnet}"
+                );
+            }
+        }
+        assert!(matches!(
+            admit("2001:db8:0:ffff::"),
+            Err(Admission::Limited(RateLimited {
+                limit: RateLimit::SignedWrites,
+                ..
+            }))
+        ));
+        assert!(admit("2001:db8:1::").is_ok());
+    }
 }

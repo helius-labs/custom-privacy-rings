@@ -4,9 +4,6 @@
 // auditor bytes other than the value SPP hashed. They answer the same need as zolana's
 // gadget.FieldToBytesBE and gadget.AssertStrictlyOrderedFullField, through range checks,
 // and the ordering takes an enable flag for slots a fixed shape circuit leaves unused.
-//
-// Read first. Read before registry/apply_records.go, registry/tracking.go,
-// policy/record_pool.go, audit/record.go.
 
 package ringgadget
 

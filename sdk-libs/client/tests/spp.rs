@@ -148,9 +148,10 @@ fn public_amount_fields_match_the_spp_proof_inputs() {
 
 fn sol(amount: u64, deposit: bool) -> PublicLeg {
     PublicLeg {
-        transfer: match deposit {
-            true => InterfaceTransfer::SolDeposit { amount },
-            false => InterfaceTransfer::SolWithdrawal { amount },
+        transfer: if deposit {
+            InterfaceTransfer::SolDeposit { amount }
+        } else {
+            InterfaceTransfer::SolWithdrawal { amount }
         },
         mint: None,
     }
@@ -159,15 +160,16 @@ fn sol(amount: u64, deposit: bool) -> PublicLeg {
 fn spl(mint: [u8; 32], amount: u64, deposit: bool) -> PublicLeg {
     let spl_interface_bump = 0;
     PublicLeg {
-        transfer: match deposit {
-            true => InterfaceTransfer::SplDeposit {
+        transfer: if deposit {
+            InterfaceTransfer::SplDeposit {
                 amount,
                 spl_interface_bump,
-            },
-            false => InterfaceTransfer::SplWithdrawal {
+            }
+        } else {
+            InterfaceTransfer::SplWithdrawal {
                 amount,
                 spl_interface_bump,
-            },
+            }
         },
         mint: Some(mint),
     }

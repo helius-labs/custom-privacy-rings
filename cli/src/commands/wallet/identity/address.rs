@@ -22,10 +22,10 @@ pub fn run(ctx: &Context, args: AddressArgs) -> Result<()> {
     let held = ctx.ring_keys(&member)?;
     let address = RingAddress::enrolled(&held, ctx.ring.program_id())?;
     // The store takes the request's index before the tag is printed, a sync lists it from then on.
-    let tag = match args.bootstrap && args.request_count.is_none() {
-        true => None,
-        false => ctx
-            .anonymous_wallet_store(held.identity_viewing_pubkey())
+    let tag = if args.bootstrap && args.request_count.is_none() {
+        None
+    } else {
+        ctx.anonymous_wallet_store(held.identity_viewing_pubkey())
             .update(|wallet| {
                 let mut history = wallet
                     .history()
@@ -39,7 +39,7 @@ pub fn run(ctx: &Context, args: AddressArgs) -> Result<()> {
                 }
                 wallet.update_history(history)?;
                 Ok(tag)
-            })?,
+            })?
     };
     println!("{}", args.request(address, tag));
     Ok(())

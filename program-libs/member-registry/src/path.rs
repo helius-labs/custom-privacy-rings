@@ -3,9 +3,6 @@
 //!
 //! Each level folds four children, and the three siblings keep their ascending child order around the
 //! path's node. The circuit's one index decomposition places both the old and the new leaf of an update.
-//!
-//! Read after `program-libs/member-registry/src/lib.rs`. Read before
-//! `program-libs/member-registry/src/tree.rs`, `prover/circuits/registry/registry.go`.
 
 use custom_ring_interface::{tracking::TRACKING_QUAD_HEIGHT, QUAD_ARITY, QUAD_HEIGHT};
 use spr_hasher::{Hasher, HasherError, Poseidon};
@@ -110,12 +107,29 @@ impl<const H: usize> QuadPathOf<H> {
     /// The root `leaf` folds to at `index`.
     pub fn root(&self, leaf: [u8; 32]) -> Result<[u8; 32], RecordTreeError> {
         check_index(self.index, H)?;
-        let mut node = leaf;
-        for (level, siblings) in self.siblings.iter().enumerate() {
-            let digit = NodePosition::on_path(self.index, level).digit();
-            node = quad_node(&children(node, digit, siblings))?;
+        Ok(PathFold {
+            index: self.index,
+            siblings: &self.siblings,
         }
-        Ok(node)
+        .node(leaf)?)
+    }
+}
+
+/// Siblings run leaf level first, the caller checks the index.
+pub(crate) struct PathFold<'a> {
+    pub index: u64,
+    pub siblings: &'a [[[u8; 32]; QUAD_ARITY - 1]],
+}
+
+impl PathFold<'_> {
+    pub(crate) fn node(self, leaf: [u8; 32]) -> Result<[u8; 32], HasherError> {
+        self.siblings
+            .iter()
+            .enumerate()
+            .try_fold(leaf, |node, (level, siblings)| {
+                let digit = NodePosition::on_path(self.index, level).digit();
+                quad_node(&children(node, digit, siblings))
+            })
     }
 }
 

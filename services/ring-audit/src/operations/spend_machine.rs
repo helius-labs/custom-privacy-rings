@@ -87,9 +87,10 @@ impl Observation {
             SpendState::Unclassified => matches!(row.state, SpendState::Resolved { .. }),
             SpendState::Padding | SpendState::Resolved { .. } => false,
         };
-        match moves {
-            true => Transition::Write(row),
-            false => Transition::Unchanged,
+        if moves {
+            Transition::Write(row)
+        } else {
+            Transition::Unchanged
         }
     }
 }

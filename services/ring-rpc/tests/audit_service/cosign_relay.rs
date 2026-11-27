@@ -187,10 +187,10 @@ impl OperatorSigner for FaultySigner {
 
     async fn sign(&self, message: &[u8]) -> Result<Signature, CustodyError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        match self.unavailable.load(Ordering::Relaxed) {
-            true => Err(CustodyError::Signature),
-            false => Ok(self.keypair.sign_message(message)),
+        if self.unavailable.load(Ordering::Relaxed) {
+            return Err(CustodyError::Signature);
         }
+        Ok(self.keypair.sign_message(message))
     }
 }
 
@@ -268,7 +268,7 @@ impl CappedRelay {
         let fee_payer_key = FaultySigner::new(Keypair::new_from_array([31; 32]));
         let hub = Hub::builder(source, identity(GENESIS))
             .with_origins(origins())
-            .with_store(store.clone())
+            .with_store(ServiceStore::Durable(store.clone()))
             .with_co_signer(co_signer_key.clone())
             .with_co_signer_approval(CoSignerApproval::new([
                 ApproveClass::Transfers,
@@ -293,6 +293,7 @@ impl CappedRelay {
                 chain: chain.clone(),
             })
             .local(RING, fixture.auditor.clone())
+            .await
             .expect("hub");
         if note == SenderNote::Ingested {
             hub.service(None)
@@ -973,7 +974,7 @@ async fn a_derived_relay_refuses_a_ring_whose_auditor_key_it_does_not_hold() {
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
     let hub = Hub::builder(fixture.source(), identity(GENESIS))
         .with_origins(origins())
-        .with_store(store.clone())
+        .with_store(ServiceStore::Durable(store.clone()))
         .with_relay(RelayParts {
             store,
             prover: prover.clone(),
@@ -981,6 +982,7 @@ async fn a_derived_relay_refuses_a_ring_whose_auditor_key_it_does_not_hold() {
             chain: chain.clone(),
         })
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .await
         .expect("hub");
     let module = rpc_module(Arc::new(hub)).expect("module");
     let quote_request = as_object(GetRelayQuoteRequest {
@@ -1506,6 +1508,13 @@ async fn the_lists_decide_before_the_service_ingests_the_spent_note() {
     assert_eq!(refusal(relay.pays(2).await), CoSignError::Blocked.code());
 }
 
+async fn edit(
+    module: &jsonrpsee::RpcModule<Arc<Hub<StaticSource>>>,
+    request: &EditCoSignListRequest,
+) -> Result<CoSignListEntry, jsonrpsee::MethodsError> {
+    module.call(EDIT_CO_SIGN_LIST, as_object(request)).await
+}
+
 #[tokio::test]
 async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() {
     let relay = CappedRelay::new(|| RelayRail::Confidential).await;
@@ -1518,9 +1527,13 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
     let foreign_edit = EditCoSignListRequest::edit(foreign_target, deployer().pubkey(), action)
         .sign(&deployer())
         .expect("signed edit");
-    assert!(matches!(
-        relay.hub.edit_co_sign_list(&foreign_edit).await,
-        Err(RingRpcError::Audit(RingAuditError::RingNotServed))
+    let refused = |answer: Result<CoSignListEntry, jsonrpsee::MethodsError>, error| {
+        matches!(answer, Err(jsonrpsee::MethodsError::JsonRpc(object))
+            if object == jsonrpsee::types::ErrorObjectOwned::from(RingRelayError::from(error)))
+    };
+    assert!(refused(
+        edit(&relay.module, &foreign_edit).await,
+        RingAuditError::RingNotServed
     ));
 
     let fixture = Fixture::new();
@@ -1536,14 +1549,17 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
         .auditor_pubkey = X25519Keypair::new().pubkey();
     let store = Store::open("sqlite::memory:", 1).await.expect("store");
     let hub = Hub::builder(source, identity(GENESIS))
-        .with_store(store)
+        .with_store(ServiceStore::Durable(store))
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
+        .await
         .expect("hub");
+    let service = hub.service_pubkey();
+    let module = rpc_module(Arc::new(hub)).expect("module");
 
     let uninitialized_edit = EditCoSignListRequest::edit(
         ReadTarget {
             cluster: GENESIS,
-            service: hub.service_pubkey(),
+            service,
             ring: OTHER_RING,
         },
         deployer().pubkey(),
@@ -1551,17 +1567,15 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
     )
     .sign(&deployer())
     .expect("signed edit");
-    assert!(matches!(
-        hub.edit_co_sign_list(&uninitialized_edit).await,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
-            Unauthorized::NoConfig
-        )))
+    assert!(refused(
+        edit(&module, &uninitialized_edit).await,
+        RingAuditError::Service(Unauthorized::NoConfig.into())
     ));
 
     let foreign_auditor_edit = EditCoSignListRequest::edit(
         ReadTarget {
             cluster: GENESIS,
-            service: hub.service_pubkey(),
+            service,
             ring: RING,
         },
         authority().pubkey(),
@@ -1569,10 +1583,8 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
     )
     .sign(&authority())
     .expect("signed edit");
-    assert!(matches!(
-        hub.edit_co_sign_list(&foreign_auditor_edit).await,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
-            Unauthorized::AuditorKeyMismatch
-        )))
+    assert!(refused(
+        edit(&module, &foreign_auditor_edit).await,
+        RingAuditError::Service(Unauthorized::AuditorKeyMismatch.into())
     ));
 }

@@ -2,9 +2,9 @@
 
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, stream::slot_tag, AnonymousProofData, AppMessage,
-    CustomRingProof, FrameExtensions, InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof,
-    Replies, RingOutput, RingRail, RingTransactData, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN,
-    EXIT_RECORD_LEN, RING_RECORD_LEN, TRANSFER_RECORD_LEN,
+    CustomRingProof, FrameExtensions, InProofOwner, InputTrees, NamedRoots, PlainGroth16Proof,
+    RailAuthorization, Replies, RingOutput, RingRail, RingTransactData, SlotBody,
+    CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN, TRANSFER_RECORD_LEN,
 };
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
 use spr_interface::instruction::{InterfaceTransfer, TreeContext};
@@ -63,9 +63,12 @@ impl Fixture {
             keys: (0..512u32).map(|byte| byte as u8 ^ 0x71).collect(),
             tags: core::array::from_fn(|i| field(0xa0 + i as u8)),
             extended_bodies: core::array::from_fn(|i| {
-                core::array::from_fn(|byte| match byte < DATA_RING_RECORD_LEN {
-                    true => 0x80 + i as u8,
-                    false => byte as u8 ^ 0x3c,
+                core::array::from_fn(|byte| {
+                    if byte < DATA_RING_RECORD_LEN {
+                        0x80 + i as u8
+                    } else {
+                        byte as u8 ^ 0x3c
+                    }
                 })
             }),
             replies: (0..2048u32).map(|byte| byte as u8 ^ 0x17).collect(),
@@ -76,19 +79,31 @@ impl Fixture {
         }
     }
 
+    pub fn hidden(&self, default_owner_tag: Option<[u8; 32]>) -> RailAuthorization {
+        RailAuthorization::AnonymousHidden(AnonymousProofData {
+            commitment: self.bytes[20],
+            commitment_pok: self.bytes[21],
+            default_owner_tag,
+        })
+    }
+
     pub fn base(&self, rail: RingRail, n_in: u8, n_out: u8) -> RingTransactData<'_> {
+        let authorization = match rail {
+            RingRail::Confidential => RailAuthorization::ConfidentialSigner,
+            RingRail::Anonymous => self.hidden(None),
+            RingRail::Delegate => RailAuthorization::Delegate,
+            RingRail::AnonymousDelegate => RailAuthorization::AnonymousDelegate,
+        };
         RingTransactData {
-            rail,
+            authorization,
             n_in,
             n_out,
             proof: &self.proofs[0],
             tracking_revision: Revision::from(9),
-            own_revision: None,
-            policy: None,
+            named_roots: NamedRoots::TrackingOnly,
             spl_withdrawal_owners: &[],
             approval: ApprovalMask::default(),
             no_spend: false,
-            public_owners: false,
             expiry_unix_ts: 1_800_000_000,
             tx_viewing_u: &self.bytes[0],
             salt: &self.salt,
@@ -104,8 +119,6 @@ impl Fixture {
             recipient_keys: &[],
             vouched: false,
             private_tx_hash: &self.fields[0],
-            anonymous: None,
-            in_proof_owner: None,
             spp_proof: &self.spp_proof,
             nullifiers: &self.fields[1..1 + usize::from(n_in)],
             input_trees: InputTrees::One(TreeContext {
@@ -134,10 +147,10 @@ impl Fixture {
 
     pub fn confidential_policy(&self) -> RingTransactData<'_> {
         let mut data = self.base(RingRail::Confidential, 2, 2);
-        data.own_revision = Some(Revision::from(7));
-        data.policy = Some(PolicyProof {
-            curator_revision: Some(Revision::from(3)),
-        });
+        data.named_roots = NamedRoots::Policy {
+            own: Revision::from(7),
+            curator: Some(Revision::from(3)),
+        };
         data.approval = ApprovalMask::OUTFLOW;
         data.interface_transfers = vec![
             InterfaceTransfer::SolWithdrawal { amount: 5_000 },
@@ -164,10 +177,10 @@ impl Fixture {
     /// No owner signs, SPP's anonymous rail hides the owner the frame names.
     pub fn confidential_in_proof_owner(&self) -> RingTransactData<'_> {
         let mut data = self.base(RingRail::Confidential, 2, 4);
-        data.own_revision = Some(Revision::from(5));
-        data.policy = Some(PolicyProof {
-            curator_revision: None,
-        });
+        data.named_roots = NamedRoots::Policy {
+            own: Revision::from(5),
+            curator: None,
+        };
         data.interface_transfers = vec![InterfaceTransfer::SolWithdrawal { amount: 4_000 }];
         data.outputs = (0..4)
             .map(|slot| match slot {
@@ -175,10 +188,10 @@ impl Fixture {
                 _ => self.recipient(slot),
             })
             .collect();
-        data.in_proof_owner = Some(InProofOwner {
-            owner: &self.bytes[16],
-            commitment: &self.bytes[20],
-            commitment_pok: &self.bytes[21],
+        data.authorization = RailAuthorization::ConfidentialInProof(InProofOwner {
+            owner: self.bytes[16],
+            commitment: self.bytes[20],
+            commitment_pok: self.bytes[21],
         });
         self.with_audit_stream(data)
     }
@@ -197,7 +210,7 @@ impl Fixture {
     /// A ring with an own registry and no policy, the proof reads thresholds off the own root.
     pub fn confidential_thresholds(&self) -> RingTransactData<'_> {
         let mut data = self.confidential_delivered();
-        data.own_revision = Some(Revision::from(7));
+        data.named_roots = NamedRoots::Own(Revision::from(7));
         data.approval = ApprovalMask::WITHDRAWAL;
         data.interface_transfers = vec![InterfaceTransfer::SolWithdrawal { amount: 2_500 }];
         data
@@ -249,10 +262,10 @@ impl Fixture {
 
     pub fn anonymous(&self) -> RingTransactData<'_> {
         let mut data = self.base(RingRail::Anonymous, 3, 4);
-        data.own_revision = Some(Revision::from(31));
-        data.policy = Some(PolicyProof {
-            curator_revision: None,
-        });
+        data.named_roots = NamedRoots::Policy {
+            own: Revision::from(31),
+            curator: None,
+        };
         data.interface_transfers = vec![InterfaceTransfer::SolWithdrawal { amount: 9_999 }];
         data.outputs = (0..4)
             .map(|slot| match slot {
@@ -260,11 +273,7 @@ impl Fixture {
                 _ => self.tagged(slot),
             })
             .collect();
-        data.anonymous = Some(AnonymousProofData {
-            commitment: &self.bytes[20],
-            commitment_pok: &self.bytes[21],
-            default_owner_tag: Some(&self.bytes[22]),
-        });
+        data.authorization = self.hidden(Some(self.bytes[22]));
         self.with_audit_stream(data)
     }
 
@@ -272,11 +281,6 @@ impl Fixture {
         let mut data = self.base(RingRail::Anonymous, 2, 2);
         data.entry = true;
         data.outputs = vec![self.tagged(0), self.exit(1, &self.payload)];
-        data.anonymous = Some(AnonymousProofData {
-            commitment: &self.bytes[20],
-            commitment_pok: &self.bytes[21],
-            default_owner_tag: None,
-        });
         self.with_audit_stream(data)
     }
 
@@ -296,7 +300,7 @@ impl Fixture {
     /// Every live owner a published signer, SPP's confidential rail settles it on an anonymous ring.
     pub fn anonymous_public_owners(&self) -> RingTransactData<'_> {
         let mut data = self.base(RingRail::Anonymous, 2, 2);
-        data.public_owners = true;
+        data.authorization = RailAuthorization::AnonymousPublic;
         data.outputs = vec![self.tagged(0), self.tagged(1)];
         self.with_audit_stream(data)
     }
@@ -333,11 +337,6 @@ impl Fixture {
     pub fn anonymous_compact(&self) -> RingTransactData<'_> {
         let mut data = self.base(RingRail::Anonymous, 3, 4);
         data.outputs = vec![self.tagged(0), self.tagged(1)];
-        data.anonymous = Some(AnonymousProofData {
-            commitment: &self.bytes[20],
-            commitment_pok: &self.bytes[21],
-            default_owner_tag: None,
-        });
         self.with_audit_stream(data)
     }
 

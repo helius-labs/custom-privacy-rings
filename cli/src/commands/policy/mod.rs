@@ -6,8 +6,8 @@ pub mod grammar;
 pub mod render;
 
 pub use grammar::{
-    describe, describe_limit, Alternative, AssetLimitSpec, CompiledPolicy, LimitSpec, ListName,
-    PolicyError, PolicySpec, RuleSpec, SourceSpec, Sources, SubjectName,
+    describe, Alternative, AssetLimitSpec, CompiledPolicy, ListName, PolicySpec, RuleSpec,
+    SourceSpec, SubjectName,
 };
 pub use render::render;
 

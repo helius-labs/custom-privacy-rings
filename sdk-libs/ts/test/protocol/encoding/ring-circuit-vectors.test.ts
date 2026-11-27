@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 
 import bodies from "../../../../../test-vectors/audit/anonymous_bodies.json" with { type: "json" };
@@ -37,17 +38,13 @@ function field(value: string): Bytes32 {
   return bytes<Bytes32>(value, 32);
 }
 
-function hex(value: Uint8Array): string {
-  return Buffer.from(value).toString("hex");
-}
-
 describe("signer_set.json", () => {
   it.each(signerSet.cases.map((vector) => [vector.name, vector] as const))(
     "chains %s",
     (_, vector) => {
       const binding = signerBinding(vector.signers.map(field), vector.slots);
       expect(binding.count).toBe(vector.signers.length);
-      expect(hex(binding.chain)).toBe(vector.signer_chain);
+      expect(bytesToHex(binding.chain)).toBe(vector.signer_chain);
     },
   );
 
@@ -78,7 +75,7 @@ describe("anonymous_bodies.json", () => {
     });
     const txViewing = X25519Keypair.fromBytes(field(bodies.tx_viewing_sk));
     const { viewingPublicKey } = recipient.address();
-    expect(hex(viewingPublicKey.u())).toBe(recipientKey);
+    expect(bytesToHex(viewingPublicKey.u())).toBe(recipientKey);
     const secrets = await recipient.ringDeliverySecrets([
       {
         viewingPublicKey,
@@ -88,7 +85,7 @@ describe("anonymous_bodies.json", () => {
         firstNullifier,
       },
     ]);
-    expect(secrets.map(hex)).toEqual([bodies.body_slot_secret]);
+    expect(secrets.map(bytesToHex)).toEqual([bodies.body_slot_secret]);
     txViewing.destroy();
   });
 
@@ -96,7 +93,7 @@ describe("anonymous_bodies.json", () => {
     const txViewing = X25519Keypair.fromBytes(field(bodies.tx_viewing_sk));
     const recipientViewingKey = x25519FromU(field(recipientKey));
     expect(
-      hex(
+      bytesToHex(
         deliveredSlotSecret({
           agreement: txViewing.ecdh(recipientViewingKey),
           txViewingKey: txViewing.publicKey(),
@@ -158,7 +155,7 @@ describe("debit.json", () => {
 
 describe("zero_nullifier.json", () => {
   it("names the key of nullifier secret zero", () => {
-    expect(hex(ZERO_NULLIFIER_PK)).toBe(zeroNullifier.nullifier_pk);
-    expect(hex(poseidon([ZERO_32]))).toBe(zeroNullifier.nullifier_pk);
+    expect(bytesToHex(ZERO_NULLIFIER_PK)).toBe(zeroNullifier.nullifier_pk);
+    expect(bytesToHex(poseidon([ZERO_32]))).toBe(zeroNullifier.nullifier_pk);
   });
 });

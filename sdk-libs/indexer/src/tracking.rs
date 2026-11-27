@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
-use spr_indexer_api::{Base64String, Context, Hash, RpcMethod, SerializablePubkey};
+use spr_indexer_api::{Base64String, Hash, RpcMethod, SerializablePubkey};
 
-use crate::rpc::{RingRecordPathView, StorageRootView};
+use crate::rpc::{
+    RegistryApplyProofInputsResponse, RegistryOpeningsRequest, RegistryOpeningsResponse,
+    RegistryRecordPoolRequest, RegistryRecordPoolResponse, RegistryRecordsRequest,
+    RegistryRecordsResponse, RingIndexedRecordView, RingRecordOpening, RingRecordPathView,
+};
 
 pub mod method {
     use super::*;
@@ -67,52 +71,18 @@ pub struct RingTrackingSealView {
     pub ciphertext: Base64String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct RingTrackingOpening {
-    /// False proves the member holds no tracking row under `root`.
-    pub present: bool,
-    /// An absent member opens its low record.
-    pub record: RingTrackingRecordView,
-    pub path: RingRecordPathView,
-}
+pub type RingTrackingOpening = RingRecordOpening<RingTrackingRecordView>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct RingIndexedTrackingRecordView {
-    pub record: RingTrackingRecordView,
-    pub path: RingRecordPathView,
-}
+pub type RingIndexedTrackingRecordView = RingIndexedRecordView<RingTrackingRecordView>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetTrackingOpeningsRequest {
-    /// A `TrackingRegistry` account.
-    pub registry: SerializablePubkey,
-    pub members: Vec<Hash>,
-    pub expected_root: Hash,
-}
+pub type GetTrackingOpeningsRequest = RegistryOpeningsRequest;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetTrackingOpeningsResponse {
-    pub context: Context,
-    pub root: StorageRootView,
-    /// In request order.
-    pub openings: Vec<RingTrackingOpening>,
-}
+pub type GetTrackingOpeningsResponse = RegistryOpeningsResponse<RingTrackingRecordView>;
 
 /// Leaf 0 is the sentinel.
 pub const FIRST_TRACKING_LEAF: u64 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetTrackingRecordsRequest {
-    pub registry: SerializablePubkey,
-    pub expected_root: Hash,
-    pub start_index: u64,
-    pub limit: u64,
-}
+pub type GetTrackingRecordsRequest = RegistryRecordsRequest;
 
 impl GetTrackingRecordsRequest {
     /// The indexer serves a page only from an enrolled leaf no later than the root's next index.
@@ -121,36 +91,11 @@ impl GetTrackingRecordsRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetTrackingRecordsResponse {
-    pub context: Context,
-    pub root: StorageRootView,
-    pub records: Vec<RingIndexedTrackingRecordView>,
-    pub next_leaf_index: Option<u64>,
-}
+pub type GetTrackingRecordsResponse = RegistryRecordsResponse<RingTrackingRecordView>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetTrackingRecordPoolRequest {
-    pub registry: SerializablePubkey,
-    pub members: Vec<Hash>,
-    pub expected_root: Hash,
-    pub openings: u64,
-}
+pub type GetTrackingRecordPoolRequest = RegistryRecordPoolRequest;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetTrackingRecordPoolResponse {
-    pub context: Context,
-    pub root: StorageRootView,
-    /// Distinct leaves in first use order.
-    pub records: Vec<RingIndexedTrackingRecordView>,
-    /// The narrowest tree level at least `openings` nodes wide.
-    pub canopy: Vec<Hash>,
-    /// The `records` index opening each requested member, in request order.
-    pub subjects: Vec<u32>,
-}
+pub type GetTrackingRecordPoolResponse = RegistryRecordPoolResponse<RingTrackingRecordView>;
 
 /// One entry an `ApplyEnrollments` write hashes, `TrackingEntry` field for field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,18 +139,5 @@ pub struct RingTrackingWriteView {
     pub low_path: RingRecordPathView,
 }
 
-/// `chain_start` binds the registry and the revision `ApplyEnrollments` names.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetTrackingApplyProofInputsResponse {
-    pub context: Context,
-    pub revision: u64,
-    pub old_root: Hash,
-    pub new_root: Hash,
-    pub old_next_index: u64,
-    pub new_next_index: u64,
-    pub chain_start: Hash,
-    pub chain_end: Hash,
-    /// In request order.
-    pub writes: Vec<RingTrackingWriteView>,
-}
+pub type GetTrackingApplyProofInputsResponse =
+    RegistryApplyProofInputsResponse<RingTrackingWriteView>;

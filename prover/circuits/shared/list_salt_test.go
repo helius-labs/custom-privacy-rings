@@ -3,9 +3,7 @@ package shared_test
 import (
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/test"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
@@ -25,7 +23,5 @@ func TestListTagOpensTheVectorSalt(t *testing.T) {
 	}
 	ringtest.ReadVector(t, "registry/list_salt.json", &vector)
 	witness := &listTagCircuit{Salt: ringtest.VectorField(t, vector.ListSalt), Tag: ringtest.VectorField(t, vector.ListTag)}
-	if err := test.IsSolved(&listTagCircuit{}, witness, ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, &listTagCircuit{}, witness)
 }

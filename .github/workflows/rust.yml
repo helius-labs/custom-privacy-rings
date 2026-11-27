@@ -72,6 +72,8 @@ jobs:
               - '!**/*.md'
             ts:
               - 'sdk-libs/ts/**'
+              - 'test-vectors/**'
+              - 'prover/ring/testdata/**'
               - 'package.json'
               - 'package-lock.json'
               - 'zolana'
@@ -111,21 +113,22 @@ jobs:
           EVENT: ${{ github.event_name }}
           SCOPE: ${{ steps.gate.outputs.scope }}
           SWEEPS: ${{ inputs.sweeps || 'all' }}
-          MATRIX: |
+          # The key and withdrawal tests of `shapes` run inside the sweep jobs of the same run.
+          LIFECYCLE: not test(shapes::sweep_) and not test(/^shapes::(sanity_.*_keys|(wide|spl)_.*_withdrawals_settle)$/)
+          # Each sweep runs its shape loop in `shape_parts` jobs and the phases after it in one more.
+          COLUMNS: |
             [
-              {"name": "custom-ring lifecycle 1/3", "recipe": "test-custom-ring-validator 'not test(shapes::sweep_)' --partition slice:1/3"},
-              {"name": "custom-ring lifecycle 2/3", "recipe": "test-custom-ring-validator 'not test(shapes::sweep_)' --partition slice:2/3"},
-              {"name": "custom-ring lifecycle 3/3", "recipe": "test-custom-ring-validator 'not test(shapes::sweep_)' --partition slice:3/3"},
-              {"name": "confidential shapes", "recipe": "test-custom-ring-validator 'test(=shapes::sweep_confidential)'"},
-              {"name": "confidential policy shapes", "recipe": "test-custom-ring-validator 'test(=shapes::sweep_confidential_policy)'"},
-              {"name": "anonymous shapes", "recipe": "test-custom-ring-validator 'test(=shapes::sweep_anonymous)'"},
-              {"name": "anonymous policy shapes", "recipe": "test-custom-ring-validator 'test(=shapes::sweep_anonymous_policy)'"},
-              {"name": "delegate shapes", "recipe": "test-custom-ring-validator 'test(=shapes::sweep_delegate)'"},
-              {"name": "salted shapes", "recipe": "test-custom-ring-validator 'test(=shapes::sweep_salted)'"},
+              {"column": "confidential", "shape_parts": 2},
+              {"column": "confidential_policy", "shape_parts": 1},
+              {"column": "anonymous", "shape_parts": 2},
+              {"column": "anonymous_policy", "shape_parts": 3}
+            ]
+          SUITES: |
+            [
+              {"name": "delegate and salted shapes", "recipe": "test-custom-ring-validator 'test(=shapes::sweep_delegate) | test(=shapes::sweep_salted)'"},
               {"name": "custom-ring shared sources", "recipe": "test-custom-ring-shared"},
               {"name": "custom-ring policy rules", "recipe": "test-custom-ring-rules"},
-              {"name": "custom-ring policy re-pin", "recipe": "test-custom-ring-repin"},
-              {"name": "program update", "recipe": "test-custom-ring-program-update", "artifact": "zk_ring_circuits"}
+              {"name": "custom-ring policy re-pin", "recipe": "test-custom-ring-repin"}
             ]
           # Only a manual dispatch runs these, `validation=sweeps` runs them alone.
           WIDE_SWEEPS: |
@@ -146,7 +149,13 @@ jobs:
             *)
               wide='[]'
               if [[ "$EVENT" == workflow_dispatch ]]; then wide="$WIDE_SWEEPS"; fi
-              jobs="$(jq -c -n --argjson jobs "$MATRIX" --argjson wide "$wide" '$jobs + $wide')"
+              jobs="$(jq -c -n --arg lifecycle "$LIFECYCLE" --argjson sweeps "$COLUMNS" --argjson suites "$SUITES" --argjson wide "$wide" '
+                [range(1; 4) | {name: "custom-ring lifecycle \(.)/3", recipe: "test-custom-ring-validator \u0027\($lifecycle)\u0027 --partition slice:\(.)/3"}]
+                + [$sweeps[] | . as $sweep | ($sweep.column | gsub("_"; " ")) as $title
+                  | ([range(1; $sweep.shape_parts + 1) | {name: "\($title) shapes \(.)/\($sweep.shape_parts)", part: "\(.)/\($sweep.shape_parts)"}]
+                    + [{name: "\($title) keys", part: "keys"}])[]
+                  | . + {recipe: "test-custom-ring-validator \u0027test(=shapes::sweep_\($sweep.column))\u0027"}]
+                + $suites + $wide')"
               ;;
           esac
           echo "matrix=$(jq -c -n --argjson jobs "$jobs" '{include: $jobs}')" >> "$GITHUB_OUTPUT"
@@ -244,6 +253,37 @@ jobs:
           token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
       - run: just test-sdk-libs
 
+  test-postgres:
+    name: tests / ring rpc postgres
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      RING_RPC_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: true
+      - uses: ./.github/actions/setup
+        with:
+          rust: "true"
+          rust-cache: postgres
+          token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
+      - run: just test-ring-rpc-postgres
+
   test-program:
     name: tests / custom-ring program
     needs: [changes, programs]
@@ -300,7 +340,7 @@ jobs:
           solana: "true"
           sbf: "true"
       - if: steps.zolana.outputs.hit != 'true'
-        run: just build-spp-programs
+        run: just build-spp-programs ensure-smart-account
       - uses: ./.github/actions/artifact
         with:
           name: zolana_programs
@@ -327,7 +367,7 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/proving-keys
         with:
-          save: "true"
+          mode: fill
 
   zolana-tools:
     name: build / zolana cli
@@ -355,7 +395,7 @@ jobs:
           rust: "true"
           token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
       - if: steps.cached.outputs.hit != 'true'
-        run: just build-zolana-tools
+        run: just build-zolana-tools ensure-surfpool
       - uses: ./.github/actions/artifact
         with:
           name: zolana_tools
@@ -450,10 +490,39 @@ jobs:
           rust-cache: ring-tools
           token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
       - if: steps.cached.outputs.hit != 'true'
-        run: just build-ring-tools build-localnet-archives
+        run: just build-ring-tools build-localnet-archive
       - uses: ./.github/actions/artifact
         with:
           name: ring_tools
+          mode: save
+          cached: ${{ steps.cached.outputs.hit }}
+
+  ring-proofs:
+    name: build / proofs archive
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: true
+      - id: cached
+        uses: ./.github/actions/artifact
+        with:
+          name: ring_proofs_archive
+          mode: lookup
+      - if: steps.cached.outputs.hit != 'true'
+        uses: ./.github/actions/setup
+        with:
+          rust: "true"
+          rust-cache: ring-tools
+          token: ${{ secrets.PRIVATE_LIBS_TOKEN }}
+      - if: steps.cached.outputs.hit != 'true'
+        run: just build-localnet-proofs-archive
+      - uses: ./.github/actions/artifact
+        with:
+          name: ring_proofs_archive
           mode: save
           cached: ${{ steps.cached.outputs.hit }}
 
@@ -480,17 +549,45 @@ jobs:
           solana: "true"
           node: "true"
       - uses: ./.github/actions/stack
-      - if: matrix.artifact
-        uses: ./.github/actions/artifact
-        with:
-          name: ${{ matrix.artifact }}
-          mode: restore
-      - run: just ${{ matrix.recipe }}
-      - name: Show Photon and ring indexer logs on failure
-        if: failure()
+      - env:
+          PART: ${{ matrix.part }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          find "${TMPDIR:-/tmp}" -path '*/zolana-ring-tests.*/logs/photon.log' -print -exec tail -100 {} \; 2>/dev/null || echo "(no photon log)"
-          find . -name ring-indexer.log -print -exec tail -100 {} \; 2>/dev/null || echo "(no ring indexer log)"
+          if [[ -n "$PART" ]]; then export RING_SWEEP_PART="$PART"; fi
+          just ${{ matrix.recipe }}
+
+  # Outside the matrix, no other localnet job waits for the proofs archive.
+  localnet-proofs:
+    name: tests / localnet / program update
+    needs: [changes, programs, keys, zolana-tools, photon, prover, ring-tools, ring-proofs]
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.scope == 'full'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ZOLANA_PREBUILT: "1"
+      ZOLANA_XTASK_BIN: ${{ github.workspace }}/zolana/target/debug/xtask
+      ZOLANA_NEXTEST_ARCHIVE_DIR: target/nextest-archives
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: true
+      - uses: ./.github/actions/setup
+        with:
+          rust: "true"
+          solana: "true"
+          node: "true"
+      - uses: ./.github/actions/stack
+      - uses: ./.github/actions/artifact
+        with:
+          name: zk_ring_circuits
+          mode: restore
+      - uses: ./.github/actions/artifact
+        with:
+          name: ring_proofs_archive
+          mode: restore
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: just test-custom-ring-program-update
 
   ts-check:
     name: typescript / check
@@ -522,7 +619,7 @@ jobs:
           ring="$1"
           printf '{"private":true,"type":"module"}\n' > "$tmp/package.json"
           kit_range="$(node -p "require('./sdk-libs/ts/package.json').peerDependencies['@solana/kit']")"
-          npm --prefix "$tmp" install "$core" "$ring" "@solana/kit@$kit_range" --ignore-scripts
+          npm --prefix "$tmp" install "$core" "$ring" "@solana/kit@$kit_range" --ignore-scripts --before "$(git log -1 --format=%cI)"
           cat > "$tmp/smoke.mts" <<'TS'
           import type { SprClientConfig } from "@heliuslabs/spr";
           import { createCustomRingClient, type RingTransferClient } from "@heliuslabs/zolana-custom-rings";
@@ -571,7 +668,9 @@ jobs:
           node: "true"
       - uses: ./.github/actions/stack
       - run: npm ci
-      - run: just ${{ matrix.recipe }}
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: just ${{ matrix.recipe }}
       - name: Dump service logs on failure
         if: failure()
         run: |
@@ -588,6 +687,7 @@ jobs:
       - clippy
       - check
       - test-sdk-libs
+      - test-postgres
       - test-program
       - programs
       - keys
@@ -595,7 +695,9 @@ jobs:
       - photon
       - prover
       - ring-tools
+      - ring-proofs
       - localnet
+      - localnet-proofs
       - ts-check
       - e2e
     runs-on: ubuntu-latest

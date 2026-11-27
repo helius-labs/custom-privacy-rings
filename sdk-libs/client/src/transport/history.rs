@@ -53,7 +53,6 @@ pub enum HistoryCursorError {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct RecoveryWindow {
-    pub page_limit: Option<u32>,
     pub after_slot: Option<u64>,
     pub target_slot: Option<u64>,
     pub token: Option<PaginationToken>,

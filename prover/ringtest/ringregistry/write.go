@@ -26,6 +26,10 @@ func (w Write) Wires() registry.RecordWriteProofInput {
 	}
 }
 
+func ZeroWrite() Write {
+	return Write{Slot: zeroPath(), LowPath: zeroPath()}
+}
+
 // Restrictive mirrors the restrictive bit apply_records.go proves over the first count writes.
 func Restrictive(writes []registry.RecordWriteProofInput, count int) int64 {
 	for _, w := range writes[:count] {

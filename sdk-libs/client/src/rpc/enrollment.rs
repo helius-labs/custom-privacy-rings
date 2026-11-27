@@ -3,9 +3,6 @@
 //! The owner signs `EnrollmentWrite::signed`, and storage `ApplyEnrollments` checks that
 //! signature through the ed25519 precompile instruction ahead of the batch. The writer holds no key
 //! that could stand in for the owner, so a held write changes nothing the owner did not sign.
-//!
-//! Read after `program-libs/interface/src/instructions/storage.rs`.
-//! Read before `services/ring-writer/src/operations/enrollment_applier.rs`.
 
 use custom_ring_interface::storage_instruction::EnrollmentWrite;
 use serde::{Deserialize, Serialize};

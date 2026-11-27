@@ -6,7 +6,7 @@ mod resource_frames;
 use resource_frames::{MaximumPayload, Payload};
 use zolana_ring_client::FrameEncode;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use custom_ring_interface::{
     key_catalog::{FrameKey, TransferShape, TRANSFER_SHAPES},
@@ -194,9 +194,10 @@ fn cases() -> Vec<Wide> {
 }
 
 fn frame<'a>(fixture: &'a Fixture, owners: &'a [[u8; 32]], case: Wide) -> RingTransactData<'a> {
-    let mut data = match case.in_proof {
-        true => fixture.in_proof_owner(&IN_PROOF_OWNER, case.inputs, case.outputs, case.policy),
-        false => fixture.transfer(case.rail, case.inputs, case.outputs, case.policy),
+    let mut data = if case.in_proof {
+        fixture.in_proof_owner(&IN_PROOF_OWNER, case.inputs, case.outputs, case.policy)
+    } else {
+        fixture.transfer(case.rail, case.inputs, case.outputs, case.policy)
     };
     data.entry = case.entry;
     data.wide_owners = case.wide;
@@ -341,9 +342,12 @@ fn instruction(ring: &mut Ring, case: Wide) -> Option<Instruction> {
     })
 }
 
-fn send_widest(case: Wide) -> Option<(Wide, usize, Sent)> {
-    let mut ring = Ring::new(case.setup);
-    let instruction = instruction(&mut ring, case)?;
+/// A refused transfer changes only the fee payer's balance.
+fn send_widest(rings: &mut HashMap<Setup, Ring>, case: Wide) -> Option<(Wide, usize, Sent)> {
+    let ring = rings
+        .entry(case.setup)
+        .or_insert_with(|| Ring::new(case.setup));
+    let instruction = instruction(ring, case)?;
     let addresses = instruction
         .accounts
         .iter()
@@ -357,9 +361,10 @@ fn send_widest(case: Wide) -> Option<(Wide, usize, Sent)> {
 #[test]
 fn catalog_maxima_at_the_transaction_ceiling_reach_pairing_or_refuse_excess_addresses() {
     let pairing = InstructionError::Custom(CustomRingError::ProofVerificationFailed as u32);
+    let mut rings = HashMap::new();
     let missed: Vec<String> = cases()
         .into_iter()
-        .filter_map(send_widest)
+        .filter_map(|case| send_widest(&mut rings, case))
         .filter(|(_, addresses, sent)| {
             if *addresses > usize::from(v1::MAX_ADDRESSES) {
                 !matches!(sent, Err((TransactionError::SanitizeFailure, _)))

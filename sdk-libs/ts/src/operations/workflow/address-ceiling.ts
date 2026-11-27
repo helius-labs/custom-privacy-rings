@@ -25,6 +25,7 @@ import {
   transactionSize,
   type TransactionSize,
 } from "./compile.js";
+import { defined } from "../../protocol/defined.js";
 
 const ZERO_POLICY: RingTransactConfig = Object.freeze({
   auditorPubkey: new Uint8Array(33) as Bytes33,
@@ -115,15 +116,11 @@ export function decideAddressCeiling(
   const { inputs, instruction, payer } = input;
   const signers: FitSigners = {
     payer,
-    ...(input.setupInstructions === undefined
-      ? {}
-      : { setupInstructions: input.setupInstructions }),
+    ...defined({ setupInstructions: input.setupInstructions }),
   };
   const budget: FitBudget = {
     computeUnitLimit: input.computeUnitLimit,
-    ...(input.priorityFeeLamports === undefined
-      ? {}
-      : { priorityFeeLamports: input.priorityFeeLamports }),
+    ...defined({ priorityFeeLamports: input.priorityFeeLamports }),
   };
   try {
     const fit = TransactionFit.of(instruction, signers, budget);
@@ -182,9 +179,7 @@ function compiled(form: Instruction, signers: FitSigners, budget: FitBudget): Tr
   return transactionSize({
     ...budget,
     feePayer: signers.payer,
-    ...(signers.setupInstructions === undefined
-      ? {}
-      : { setupInstructions: signers.setupInstructions }),
+    ...defined({ setupInstructions: signers.setupInstructions }),
     instructions: [form],
   });
 }
@@ -236,7 +231,7 @@ function accept(
     signatures,
     bytes: size.bytes,
     addresses: size.addresses,
-    ...(cpiBytes === undefined ? {} : { cpiBytes }),
+    ...defined({ cpiBytes }),
     setup: setupEffect({ form, signers, budget, size, signatures }),
   });
 }
@@ -319,7 +314,7 @@ function mergeGroups(inputs: readonly SpentInput[], capacity: number): readonly 
           owner: head.owner,
           asset: head.asset,
           nullifierPublicKey: head.nullifierPublicKey,
-          ...(head.ringProgramId === undefined ? {} : { ringProgramId: head.ringProgramId }),
+          ...defined({ ringProgramId: head.ringProgramId }),
           treeId: head.treeId,
           inputs: Object.freeze(run),
         }),

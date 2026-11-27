@@ -3,8 +3,8 @@
 use bytemuck::Zeroable;
 use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, stream::slot_tag, AppMessage, CustomRingProof,
-    FrameExtensions, InputTrees, InstructionTag, PlainGroth16Proof, RingMode, RingOutput, RingRail,
-    RingTransactData, SlotBody, RING_RECORD_LEN,
+    FrameExtensions, InputTrees, InstructionTag, NamedRoots, PlainGroth16Proof, RailAuthorization,
+    RingMode, RingOutput, RingRail, RingTransactData, SlotBody, RING_RECORD_LEN,
 };
 use spr_interface::instruction::TreeContext;
 use zolana_ring_client::FrameEncode;
@@ -30,18 +30,20 @@ pub fn wide_frame(tag: u8) -> Vec<u8> {
         body: SlotBody::Recipient(&record),
         record: &record,
     };
+    let authorization = match rail {
+        RingRail::Delegate => RailAuthorization::Delegate,
+        _ => RailAuthorization::ConfidentialSigner,
+    };
     let mut data = RingTransactData {
-        rail,
+        authorization,
         n_in: 2,
         n_out: 2,
         proof: &proof,
         tracking_revision: Revision::from(1),
-        own_revision: None,
-        policy: None,
+        named_roots: NamedRoots::TrackingOnly,
         spl_withdrawal_owners: &[],
         approval: ApprovalMask::default(),
         no_spend: false,
-        public_owners: false,
         expiry_unix_ts: 1_800_000_000,
         tx_viewing_u: &field,
         salt: &salt,
@@ -62,8 +64,6 @@ pub fn wide_frame(tag: u8) -> Vec<u8> {
         recipient_keys: &keys,
         vouched: false,
         private_tx_hash: &field,
-        anonymous: None,
-        in_proof_owner: None,
         spp_proof: &spp_proof,
         nullifiers: &nullifiers,
         input_trees: InputTrees::One(TreeContext {

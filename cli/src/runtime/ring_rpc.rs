@@ -141,12 +141,12 @@ impl RingRpcClient {
         check_service_url(url)?;
         Ok(Self {
             url: url.to_owned(),
-            http: probe::http(probe::CONNECT_TIMEOUT, probe::TOTAL_TIMEOUT),
+            http: probe::http(probe::CONNECT_TIMEOUT, probe::TOTAL_TIMEOUT)?,
         })
     }
 
     /// Verified against the service key the response names, the caller decides whether to trust it.
-    pub fn release_auditor_key(
+    pub(crate) fn release_auditor_key(
         &self,
         ring: Address,
         genesis_hash: [u8; 32],
@@ -181,7 +181,7 @@ impl RingRpcClient {
     }
 
     /// The storage authority's signature over the request's creation message, `None` once the registry exists.
-    pub fn create_records_registry(
+    pub(crate) fn create_records_registry(
         &self,
         request: CreateRecordsRegistryRequest,
         expected: RecordsCreation,
@@ -211,18 +211,18 @@ impl RingRpcClient {
     }
 
     /// Unsigned, `release_auditor_key` is the attested path `init` pins from.
-    pub fn ring_status(&self, ring: Address) -> Result<RingStatusResponse> {
+    pub(crate) fn ring_status(&self, ring: Address) -> Result<RingStatusResponse> {
         let ring_program_id = ring.to_bytes().into();
         self.call(RING_STATUS, RingStatusRequest { ring_program_id })
     }
 
     /// The key a signed read binds.
-    pub fn service_pubkey(&self) -> Result<Address> {
+    pub(crate) fn service_pubkey(&self) -> Result<Address> {
         Ok(self.health()?.service_pubkey.0)
     }
 
     /// The creator of every ring's records the service writes.
-    pub fn storage_authority(&self) -> Result<Address> {
+    pub(crate) fn storage_authority(&self) -> Result<Address> {
         self.health()?
             .storage_authority_pubkey
             .map(|key| key.0)
@@ -234,7 +234,7 @@ impl RingRpcClient {
             })
     }
 
-    pub fn check_serves(&self, ring: Address) -> Result<()> {
+    pub(crate) fn check_serves(&self, ring: Address) -> Result<()> {
         ensure!(
             self.state(ring)? == RingState::Served,
             "the ring has no config yet, run `zolana-ring init` before `transact`"
@@ -243,7 +243,7 @@ impl RingRpcClient {
     }
 
     /// A failed read is retried, a transaction the service skipped ends the wait.
-    pub fn wait_for_decrypted(
+    pub(crate) fn wait_for_decrypted(
         &self,
         target: ReadTarget,
         reader: &dyn Signer,
@@ -264,7 +264,7 @@ impl RingRpcClient {
         })
     }
 
-    pub fn list_salt(
+    pub(crate) fn list_salt(
         &self,
         target: ReadTarget,
         owner: Address,
@@ -282,7 +282,7 @@ impl RingRpcClient {
     }
 
     /// The caller compares the answering signer with the ring's co-signer.
-    pub fn co_sign_transaction(
+    pub(crate) fn co_sign_transaction(
         &self,
         ring: Address,
         transaction: Vec<u8>,
@@ -306,7 +306,7 @@ impl RingRpcClient {
     }
 
     /// Blocks until the writer applies the update, a refusal fails.
-    pub fn apply_record_update(&self, request: SubmitRecordUpdateRequest) -> Result<u64> {
+    pub(crate) fn apply_record_update(&self, request: SubmitRecordUpdateRequest) -> Result<u64> {
         let update_id = request.verify()?;
         let submitted: SubmitRecordUpdateResponse = self.call(SUBMIT_RECORD_UPDATE, request)?;
         ensure!(
@@ -334,7 +334,7 @@ impl RingRpcClient {
     }
 
     /// Every page signed by the policy authority, oldest first.
-    pub fn pending_list_approvals(
+    pub(crate) fn pending_list_approvals(
         &self,
         scope: ListApprovalScope,
         authority: &dyn Signer,
@@ -540,13 +540,8 @@ mod tests {
 
     #[test]
     fn gateway_connection_failures_do_not_expose_the_key() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
-        let url = format!(
-            "http://{}/v1/zolana/ring?api-key=secret",
-            listener.local_addr().expect("address")
-        );
-        drop(listener);
-        let error = RingRpcClient::new(&url)
+        let url = "http://127.0.0.1:1/v1/zolana/ring?api-key=secret";
+        let error = RingRpcClient::new(url)
             .expect("client")
             .call::<bool>(RING_STATUS, json!({}))
             .expect_err("unreachable");

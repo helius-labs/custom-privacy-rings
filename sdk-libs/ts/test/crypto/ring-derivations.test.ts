@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 
 import secrets from "../../../../test-vectors/wallet/ring-secrets.json" with { type: "json" };
@@ -16,10 +17,6 @@ function bytes<T extends Uint8Array>(value: string, length: number): T {
   const decoded = Uint8Array.from(Buffer.from(value, "hex"));
   if (decoded.length !== length) throw new RangeError(`expected ${String(length)} bytes`);
   return decoded as T;
-}
-
-function hex(value: Uint8Array): string {
-  return Buffer.from(value).toString("hex");
 }
 
 function ascii(tag: string): number {
@@ -75,8 +72,8 @@ describe("ring-secrets.json", () => {
     try {
       expect(sender.publicKey().equals(txViewingKey)).toBe(true);
       expect(recipient.publicKey().equals(recipientViewingKey)).toBe(true);
-      expect(hex(sender.ecdh(recipientViewingKey))).toBe(secrets.agreement);
-      expect(hex(recipient.ecdh(txViewingKey))).toBe(secrets.agreement);
+      expect(bytesToHex(sender.ecdh(recipientViewingKey))).toBe(secrets.agreement);
+      expect(bytesToHex(recipient.ecdh(txViewingKey))).toBe(secrets.agreement);
     } finally {
       sender.destroy();
       recipient.destroy();
@@ -85,8 +82,8 @@ describe("ring-secrets.json", () => {
 
   it("derives the blinding seed, every slot secret and output blinding", () => {
     const blindingSeed = ringBlindingSeed(txSecret, salt);
-    expect(hex(blindingSeed)).toBe(secrets.blinding_seed);
-    expect(hex(outputBlindingSeed(firstNullifier, blindingSeed))).toBe(
+    expect(bytesToHex(blindingSeed)).toBe(secrets.blinding_seed);
+    expect(bytesToHex(outputBlindingSeed(firstNullifier, blindingSeed))).toBe(
       secrets.output_blinding_seed,
     );
     for (const output of secrets.outputs) {
@@ -99,8 +96,8 @@ describe("ring-secrets.json", () => {
         outputIndex,
         firstNullifier,
       });
-      expect(hex(delivered)).toBe(output.delivered_slot_secret);
-      expect(hex(ringOutputBlinding({ firstNullifier, blindingSeed, outputIndex }))).toBe(
+      expect(bytesToHex(delivered)).toBe(output.delivered_slot_secret);
+      expect(bytesToHex(ringOutputBlinding({ firstNullifier, blindingSeed, outputIndex }))).toBe(
         output.blinding,
       );
     }

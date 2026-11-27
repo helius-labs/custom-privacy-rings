@@ -32,10 +32,18 @@ pub struct Store {
     holder: LeaseHolder,
 }
 
+#[derive(Clone)]
+pub enum ServiceStore {
+    /// `--store-url`, the one store that turns on the parts it gates.
+    Durable(Store),
+    /// Lost at exit, it turns on nothing.
+    Internal(Store),
+}
+
 impl Store {
     /// `url` is a `postgres://` or `sqlite://` URL.
     pub async fn open(url: &str, max_connections: u32) -> Result<Self, ServiceError> {
-        let db = if url.starts_with("sqlite:") && !url.contains(":memory:") {
+        let db = if url.starts_with("sqlite:") && !is_memory_url(url) {
             let options = url
                 .parse::<SqliteConnectOptions>()
                 .map_err(|error| DbErr::Conn(RuntimeErr::SqlxError(error)))?
@@ -60,6 +68,28 @@ impl Store {
             )
             .await?
         };
+        Self::migrated(db).await
+    }
+
+    pub async fn in_memory() -> Result<Self, ServiceError> {
+        let options = "sqlite::memory:"
+            .parse::<SqliteConnectOptions>()
+            .map_err(|error| DbErr::Conn(RuntimeErr::SqlxError(error)))?
+            .disable_statement_logging();
+        // One connection for the process life, each connection to the URL opens another empty database.
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .acquire_timeout(POOL_ACQUIRE_TIMEOUT)
+            .connect_with(options)
+            .await
+            .map_err(|error| DbErr::Conn(RuntimeErr::SqlxError(error)))?;
+        Self::migrated(SqlxSqliteConnector::from_sqlx_sqlite_pool(pool)).await
+    }
+
+    async fn migrated(db: DatabaseConnection) -> Result<Self, ServiceError> {
         Migrator::up(&db, None).await?;
         Ok(Self {
             db,
@@ -86,20 +116,107 @@ impl Store {
     }
 }
 
+impl ServiceStore {
+    pub async fn internal() -> Result<Self, ServiceError> {
+        Store::in_memory().await.map(Self::Internal)
+    }
+
+    pub const fn store(&self) -> &Store {
+        match self {
+            Self::Durable(store) | Self::Internal(store) => store,
+        }
+    }
+
+    pub const fn durable(&self) -> Option<&Store> {
+        match self {
+            Self::Durable(store) => Some(store),
+            Self::Internal(_) => None,
+        }
+    }
+}
+
+/// SQLite keeps a memory database only while a pool connection holds it.
+pub fn is_memory_url(url: &str) -> bool {
+    url.starts_with("sqlite:") && (url.contains(":memory:") || url.contains("mode=memory"))
+}
+
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod fixture {
+    use std::path::PathBuf;
+
+    /// One directory per store, a removal takes the WAL files with the database.
+    pub struct StoreDirectory(PathBuf);
+
+    impl StoreDirectory {
+        /// `name` is unique among the stores of one test process.
+        pub fn new(name: &str) -> Self {
+            let directory =
+                std::env::temp_dir().join(format!("ring-store-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&directory);
+            std::fs::create_dir_all(&directory).expect("store directory");
+            Self(directory)
+        }
+
+        pub fn url(&self) -> String {
+            format!(
+                "sqlite://{}?mode=rwc",
+                self.0.join("store.sqlite").display()
+            )
+        }
+    }
+
+    impl Drop for StoreDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sql;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_internal_store_keeps_one_database_across_acquisitions() {
+        let store = Store::in_memory().await.expect("store");
+        let writer = store.clone();
+        tokio::spawn(async move {
+            sql::Query::new(
+                "INSERT INTO replay_nonces(ring,nonce,signed_at) VALUES($1,$2,$3)",
+                vec![sql::bytes(&[1; 32]), sql::bytes(&[2; 32]), 3_i64.into()],
+            )
+            .execute(writer.connection())
+            .await
+            .expect("insert");
+        })
+        .await
+        .expect("writer task");
+
+        let count = tokio::spawn(async move {
+            sql::Query::new("SELECT COUNT(*) AS rows FROM replay_nonces", Vec::new())
+                .one(store.connection())
+                .await
+                .expect("select")
+                .expect("row")
+                .try_get::<i64>("", "rows")
+                .expect("count")
+        })
+        .await
+        .expect("reader task");
+        assert_eq!(count, 1);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fresh_file_migrates_through_a_pool_and_reopens() {
-        let directory = std::env::temp_dir().join(format!("store-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).expect("directory");
         for attempt in 0..32 {
-            let path = directory.join(format!("{attempt}.sqlite"));
-            let url = format!("sqlite://{}?mode=rwc", path.display());
-            Store::open(&url, STORE_CONNECTIONS).await.expect("fresh");
-            Store::open(&url, STORE_CONNECTIONS).await.expect("restart");
+            let directory = fixture::StoreDirectory::new(&format!("fresh-{attempt}"));
+            Store::open(&directory.url(), STORE_CONNECTIONS)
+                .await
+                .expect("fresh");
+            Store::open(&directory.url(), STORE_CONNECTIONS)
+                .await
+                .expect("restart");
         }
-        let _ = std::fs::remove_dir_all(&directory);
     }
 }

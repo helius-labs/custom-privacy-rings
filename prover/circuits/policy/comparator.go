@@ -6,8 +6,6 @@
 // gaps and a zero product. The rules and the outflow section both read through these forms, a wrong bound
 // here would pass a total over any threshold or cap.
 //
-// Read after policy/rules.go. Read before policy/outflow.go.
-//
 // Properties:
 // 1. atMost returns total <= threshold over the integers, its caller bounding the difference below 2^width in magnitude.
 // 2. floorDiv returns the one quotient of numerator and divisor, its caller bounding both.

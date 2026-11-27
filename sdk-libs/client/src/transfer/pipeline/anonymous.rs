@@ -3,7 +3,7 @@
 use custom_ring_interface::{
     anonymous_exit::{TokenAccountControl, TokenAccountState},
     key_catalog::{RecordPools, TransferSpend},
-    CustomRingError, RingMode, RingRail,
+    RingMode, RingRail,
 };
 use solana_account::Account;
 use solana_address::Address;
@@ -208,9 +208,10 @@ pub enum OwnerExposure {
 
 impl OwnerExposure {
     pub(super) const fn of(owner_exposed: bool) -> Self {
-        match owner_exposed {
-            true => Self::Accepted,
-            false => Self::Refused,
+        if owner_exposed {
+            Self::Accepted
+        } else {
+            Self::Refused
         }
     }
 
@@ -471,9 +472,10 @@ impl HiddenOwner {
         self,
         signers: impl IntoIterator<Item = Address>,
     ) -> Result<(), RingError> {
-        match signers.into_iter().any(|signer| signer == self.0) {
-            true => Err(RingError::AnonymousPublicSignerLinksOwner),
-            false => Ok(()),
+        if signers.into_iter().any(|signer| signer == self.0) {
+            Err(RingError::AnonymousPublicSignerLinksOwner)
+        } else {
+            Ok(())
         }
     }
 }
@@ -594,12 +596,13 @@ pub(super) fn check_payment_ring(
     payment: &AnonymousPayment,
     ring: CustomRing,
 ) -> Result<(), RingError> {
-    match payment.to.ring_program_id == ring.program_id() {
-        true => Ok(()),
-        false => Err(RingError::ForeignRingAddress {
+    if payment.to.ring_program_id == ring.program_id() {
+        Ok(())
+    } else {
+        Err(RingError::ForeignRingAddress {
             address: payment.to.ring_program_id,
             ring: ring.program_id(),
-        }),
+        })
     }
 }
 
@@ -853,8 +856,7 @@ impl AnonymousExits<'_> {
             owner: &account.owner,
             data_len: account.data.len(),
         }
-        .named_key()
-        .map_err(|refusal| exit_refused(refusal, recipient))?;
+        .named_key()?;
         Ok(())
     }
 
@@ -908,8 +910,7 @@ impl AnonymousExits<'_> {
             token_account: &token_account,
             control: &control,
         }
-        .named_key()
-        .map_err(|refusal| exit_refused(refusal, token_account))?;
+        .named_key()?;
         Ok(owner)
     }
 }
@@ -925,22 +926,4 @@ fn token_account_state(account: &Account, mint: &Address) -> Option<TokenAccount
 
 fn is_token_program(program: &Address) -> bool {
     [SPL_TOKEN_PROGRAM_ID, SPL_TOKEN_2022_PROGRAM_ID].contains(program.as_array())
-}
-
-fn exit_refused(refusal: CustomRingError, destination: Address) -> RingError {
-    match refusal {
-        CustomRingError::AnonymousExitAccountHasData => {
-            RingError::AnonymousExitAccountHasData(destination)
-        }
-        CustomRingError::AnonymousExitTokenAccountOnCurve => {
-            RingError::AnonymousExitTokenAccountOnCurve(destination)
-        }
-        CustomRingError::AnonymousExitTokenAccountShared => {
-            RingError::AnonymousExitTokenAccountShared(destination)
-        }
-        refusal => RingError::AnonymousExitRefused {
-            destination,
-            refusal,
-        },
-    }
 }

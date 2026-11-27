@@ -2,9 +2,9 @@
 
 use custom_ring_interface::STORAGE_PROGRAM_ID;
 use custom_ring_interface::{
-    tag, CoSignScope, InitializeIxData, InstructionTag, PolicyBindingIxData, PolicySourceIxData,
-    PolicyTableIxData, RingKind, RingPolicy, RingRole, RingRoles, SetCoSignerRecordIxData,
-    SetPausedIxData, SourceSpec, UpdateAuthorityIxData, UpdatePolicyIxData,
+    tag, CoSignScope, InitializeIxData, InstructionTag, PolicyTableIxData, RingKind, RingPolicy,
+    RingRole, RingRoles, SetCoSignerRecordIxData, SetPausedIxData, SourceSpec,
+    UpdateAuthorityIxData, UpdatePolicyIxData,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -149,7 +149,7 @@ impl Initialize<'_> {
                 let TablePayload { data, curators } = table.payload()?;
                 accounts.push(AccountMeta::new_readonly(records, false));
                 accounts.extend(curators);
-                Some(PolicyBindingIxData { table: data })
+                Some(data)
             }
             None => None,
         };
@@ -241,7 +241,7 @@ impl UpdatePolicy<'_> {
                 if let SourceOwner::Curator(curator) = source {
                     accounts.push(AccountMeta::new_readonly(curator, false));
                 }
-                UpdatePolicyIxData::Source(PolicySourceIxData {
+                UpdatePolicyIxData::Source(SourceSpec {
                     list_id: list_id as u8,
                     source: u8::from(matches!(source, SourceOwner::Curator(_))),
                 })

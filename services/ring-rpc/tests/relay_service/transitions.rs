@@ -12,7 +12,8 @@ use zolana_ring_client::rpc::RelayId;
 
 use super::*;
 
-const PROGRESS: Duration = Duration::from_secs(5);
+/// Bounds a hang only, the gates decide each outcome.
+const PROGRESS: Duration = Duration::from_secs(60);
 
 /// Parks the first call after `arm` until `release`.
 #[derive(Default)]
@@ -102,10 +103,10 @@ impl ChainSubmit for WorkerChain {
 
     async fn send(&self, transaction: &VersionedTransaction) -> Result<(), ServiceError> {
         self.send_gate.pass().await;
-        match self.lost_sends {
-            true => Ok(()),
-            false => self.chain.send(transaction).await,
+        if self.lost_sends {
+            return Ok(());
         }
+        self.chain.send(transaction).await
     }
 
     async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, ServiceError> {

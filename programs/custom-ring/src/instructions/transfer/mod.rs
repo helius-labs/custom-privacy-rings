@@ -1,6 +1,4 @@
 //! `Transfer` and `AuthorityTransfer`.
-//!
-//! Read after `lib.rs`. Read before `instructions/transfer/processor.rs`.
 
 mod accounts;
 mod approve_transfer;

@@ -28,6 +28,7 @@ import { RingInstructionTag } from "../../protocol/transaction/instruction-tag.j
 import { ringRailOf, type RingRail } from "../../protocol/transaction/transact.js";
 import type { RingPolicy } from "../../protocol/codec/ring-codecs.js";
 import { RecordKind } from "../../protocol/codec/audit-stream.js";
+import { defined } from "../../protocol/defined.js";
 
 /** Rust `MessageMismatch`, the variant names the shared vectors carry. */
 export type RelayMessageMismatch =
@@ -80,8 +81,7 @@ export class AllowedNullifiers {
         throw delegateSourceRefusal("foreignNote", index);
       // 2. Rebuilt, not read, any carried nullifier passes under the shared zero key.
       const hashes = {
-        ...(note.dataHash === undefined ? {} : { dataHash: note.dataHash }),
-        ...(note.ringDataHash === undefined ? {} : { ringDataHash: note.ringDataHash }),
+        ...defined({ dataHash: note.dataHash, ringDataHash: note.ringDataHash }),
       };
       const rebuilt = ProofInputUtxo.fromNullifierKey(note.utxo, nullifierKey, hashes, note.treeId);
       if (!equalBytes(rebuilt.nullifier(), note.nullifier()))
@@ -374,9 +374,11 @@ export function openedSources({
   mint,
 }: RequestedAuthorityTransfer): AllowedNullifiers | undefined {
   const { transfer } = request;
-  const refused = (reason: "missing" | "unauthorized") =>
+  const refused = (reason: "missing" | "unauthorized" | "ringDelegateAsMintRequester") =>
     new RingError("RING_DELEGATE_INVALID", { details: { reason } });
   if (allowed === undefined) {
+    // The program binds no mint when the ring's own delegate signs.
+    if (config.delegate === request.delegate) throw refused("ringDelegateAsMintRequester");
     const legs = [...transfer.payments, ...transfer.exits, ...transfer.withdrawals];
     if (legs.length === 0 || legs.some((leg) => leg.mint !== mint)) throw refused("unauthorized");
     return undefined;

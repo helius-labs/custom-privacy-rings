@@ -26,6 +26,8 @@ import {
 } from "../../../src/protocol/ring-rpc/record-update.js";
 import type { RecordUpdateEntry } from "../../../src/protocol/ring-rpc/ring-rpc-types.js";
 import { encodeSubmitRecordUpdateRequest } from "../../../src/protocol/ring-rpc/ring-rpc-codec.js";
+import { EMPTY_MINT_POLICY } from "../../../src/protocol/membership/mint-policy.js";
+import { RingRpc } from "../../../src/rpc/ring-rpc.js";
 
 const base58 = getBase58Decoder();
 const decoder = new TextDecoder();
@@ -112,6 +114,43 @@ describe("submitRecordUpdate", () => {
     // The signature covers the slot bound, a later one names another statement.
     const extended = { ...signed, update: { ...signed.update, validUntilSlot: 4243n } };
     expect(() => verifyRecordUpdate(extended)).toThrow();
+  });
+});
+
+describe("exact u64", () => {
+  it("sends a mint policy cap and limit past 2^53 in their exact digits", async () => {
+    const u64Max = (1n << 64n) - 1n;
+    const wallet = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(7));
+    const signed = await signRecordUpdate(
+      update(wallet.address, [
+        {
+          kind: "write",
+          member: indexerScalars.hash(new Uint8Array(32).fill(5) as Bytes32),
+          mask: 0n,
+          value: 0n,
+          mintPolicy: {
+            ...EMPTY_MINT_POLICY,
+            cap: u64Max,
+            limits: { ...EMPTY_MINT_POLICY.limits, volumeCap: u64Max },
+          },
+        },
+      ]),
+      wallet,
+    );
+    const bodies: string[] = [];
+    const rpc = new RingRpc("http://ring.example", {
+      allowInsecureHttp: true,
+      fetch: (async (_url: unknown, init?: RequestInit) => {
+        bodies.push(String(init?.body));
+        const updateId = indexerScalars.hash(verifyRecordUpdate(signed));
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { updateId } }), {
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof globalThis.fetch,
+    });
+    await rpc.submitRecordUpdate(signed);
+    expect(bodies[0]).toContain('"threshold":0,"cap":18446744073709551615,"cosignAbove":0,');
+    expect(bodies[0]).toContain('"volumeCap":18446744073709551615,"volumeWindowSlots":0,');
   });
 });
 

@@ -21,8 +21,9 @@ use zolana_operator_custody::{
 
 use crate::{client_rate::ClientLimitArgs, server::BindPolicy};
 use ring_audit::wallet_snapshots::WalletSnapshotLimits;
-use ring_cosigner::cosign::ApproveClass;
+use ring_cosigner::{cosign::ApproveClass, cosign_limits::ExitCap};
 use ring_service_core::{
+    database::is_memory_url,
     keys::KeySource,
     keys::{GrantRowsSecret, RootSecret},
     kms::{KmsArgs, MissingRegion},
@@ -86,6 +87,13 @@ pub struct ServeArgs {
         value_delimiter = ','
     )]
     pub co_signer_approve: Vec<ApproveClass>,
+    /// The most each owner moves out of the ring of a mint in a window, as `<mint>:<cap>:<window slots>`.
+    #[arg(
+        long = "co-signer-exit-cap",
+        env = "RING_RPC_CO_SIGNER_EXIT_CAPS",
+        value_delimiter = ','
+    )]
+    pub co_signer_exit_caps: Vec<ExitCap>,
     #[arg(
         long = "allow-origin",
         env = "RING_RPC_ALLOW_ORIGINS",
@@ -229,14 +237,22 @@ pub enum CustodyConfigError {
     AuditorRing,
     #[error("local KMS requires a loopback bind address and Solana RPC URL")]
     RemoteCluster,
+    #[error("the store URL names an in-memory SQLite database")]
+    MemoryStore,
     #[error("the store and its storage authority must be configured together")]
     StorageAuthority,
     #[error("configure a prover for a store or an enrollment applier")]
     Prover,
     #[error("the co-signer and fee payer require a store")]
     SigningStore,
+    #[error("the co-signer requires a fee payer")]
+    CoSignerFeePayer,
     #[error("approval classes require a co-signer")]
     Approval,
+    #[error("exit caps require a co-signer")]
+    ExitCaps,
+    #[error("each exit cap names its own mint")]
+    RepeatedExitCap,
     #[error("relay budgets require a fee payer")]
     RelayBudget,
     #[error("enrollment options require an enrollment applier")]
@@ -395,6 +411,9 @@ impl ServeArgs {
     }
 
     fn validate(&self, manifest: &RpcCustody) -> Result<(), CustodyConfigError> {
+        if self.store_url.as_deref().is_some_and(is_memory_url) {
+            return Err(CustodyConfigError::MemoryStore);
+        }
         let store = self.store_url.is_some();
         let applier = manifest.enrollment_applier.is_some();
         if store != manifest.storage_authority.is_some() {
@@ -406,8 +425,23 @@ impl ServeArgs {
         if !store && (manifest.co_signer.is_some() || manifest.fee_payer.is_some()) {
             return Err(CustodyConfigError::SigningStore);
         }
+        // Only the relay serves `coSignTransaction`.
+        if manifest.co_signer.is_some() && manifest.fee_payer.is_none() {
+            return Err(CustodyConfigError::CoSignerFeePayer);
+        }
         if !self.co_signer_approve.is_empty() && manifest.co_signer.is_none() {
             return Err(CustodyConfigError::Approval);
+        }
+        if !self.co_signer_exit_caps.is_empty() && manifest.co_signer.is_none() {
+            return Err(CustodyConfigError::ExitCaps);
+        }
+        let mut mints = HashSet::new();
+        if !self
+            .co_signer_exit_caps
+            .iter()
+            .all(|cap| mints.insert(cap.mint))
+        {
+            return Err(CustodyConfigError::RepeatedExitCap);
         }
         if (self.relay_budget_lamports != 0 || self.relay_signer_budget_lamports != 0)
             && manifest.fee_payer.is_none()
@@ -456,8 +490,9 @@ mod tests {
     use solana_signer::Signer;
 
     use super::*;
+    use ring_relay::relay_services::RelayServicesInit;
     use ring_service_core::{
-        database::Store,
+        database::{fixture::StoreDirectory, ServiceStore, Store},
         upstream::{ChainSource, Upstreams},
     };
 
@@ -472,7 +507,7 @@ mod tests {
     const LOCAL_KMS: [&str; 2] = ["--localnet-kms", "127.0.0.1:4566"];
     const STORE: [&str; 4] = [
         "--store-url",
-        "sqlite::memory:",
+        "sqlite://ring-rpc.sqlite",
         "--prover-url",
         UNREACHABLE,
     ];
@@ -495,6 +530,17 @@ mod tests {
         manifest.to_string()
     }
 
+    /// No ambient variable reaches the parse.
+    fn parse_arguments<T: Into<std::ffi::OsString> + Clone>(
+        arguments: impl IntoIterator<Item = T>,
+    ) -> Result<Cli, clap::Error> {
+        use clap::{CommandFactory, FromArgMatches};
+        let matches = Cli::command()
+            .mut_subcommands(|command| command.mut_args(|arg| arg.env(None::<&str>)))
+            .try_get_matches_from(arguments)?;
+        Cli::from_arg_matches(&matches)
+    }
+
     fn serve(flags: &[&str], custody: &str) -> Result<ServeArgs, clap::Error> {
         let fixed = [
             "ring-rpc",
@@ -504,7 +550,7 @@ mod tests {
             "--custody-json",
             custody,
         ];
-        match Cli::try_parse_from(fixed.iter().chain(flags))?.command {
+        match parse_arguments(fixed.iter().chain(flags))?.command {
             Command::Serve(args) => Ok(*args),
             _ => panic!("serve parses as another command"),
         }
@@ -524,8 +570,32 @@ mod tests {
     fn each_role_option_without_its_counterpart_is_refused_by_name() {
         use CustodyConfigError::*;
         let ring = address(9);
+        let exit_cap = format!("{}:100:50", address(8));
+        let twice = format!("{exit_cap},{}:200:60", address(8));
         let stored = |flags: &[&'static str]| [&STORE[..], flags].concat();
         let cases: Vec<(&str, Vec<&str>, String, CustodyConfigError)> = vec![
+            (
+                "an in-memory store URL",
+                vec![
+                    "--store-url",
+                    "sqlite::memory:",
+                    "--prover-url",
+                    UNREACHABLE,
+                ],
+                custody(&[("storage_authority", 2)]),
+                MemoryStore,
+            ),
+            (
+                "a store URL in memory mode",
+                vec![
+                    "--store-url",
+                    "sqlite://ring-rpc.sqlite?mode=memory",
+                    "--prover-url",
+                    UNREACHABLE,
+                ],
+                custody(&[("storage_authority", 2)]),
+                MemoryStore,
+            ),
             (
                 "a store without a storage authority",
                 stored(&[]),
@@ -563,10 +633,28 @@ mod tests {
                 SigningStore,
             ),
             (
+                "a co-signer without a fee payer",
+                stored(&[]),
+                custody(&[("storage_authority", 2), ("co_signer", 3)]),
+                CoSignerFeePayer,
+            ),
+            (
                 "approval classes without a co-signer",
                 vec!["--co-signer-approve", "transfers"],
                 custody(&[]),
                 Approval,
+            ),
+            (
+                "exit caps without a co-signer",
+                vec!["--co-signer-exit-cap", &exit_cap],
+                custody(&[]),
+                ExitCaps,
+            ),
+            (
+                "an exit cap naming its mint twice",
+                [&STORE[..], &["--co-signer-exit-cap", &twice]].concat(),
+                custody(&[("storage_authority", 2), ("co_signer", 3), ("fee_payer", 4)]),
+                RepeatedExitCap,
             ),
             (
                 "a relay budget without a fee payer",
@@ -624,7 +712,7 @@ mod tests {
             (
                 "two roles pinning one address",
                 stored(&[]),
-                custody(&[("storage_authority", 2), ("co_signer", 2)]),
+                custody(&[("storage_authority", 2), ("co_signer", 2), ("fee_payer", 4)]),
                 SharedAddress,
             ),
             (
@@ -647,6 +735,7 @@ mod tests {
     #[test]
     fn a_manifest_with_every_role_and_its_options_is_accepted() {
         let ring = address(9);
+        let exit_caps = format!("{}:100:50,{}:200:60", address(7), address(8));
         let flags = [
             &STORE[..],
             &[
@@ -654,6 +743,8 @@ mod tests {
                 "replica-a",
                 "--co-signer-approve",
                 "transfers,deposits",
+                "--co-signer-exit-cap",
+                &exit_caps,
                 "--relay-budget-lamports",
                 "1000",
                 "--relay-signer-budget-lamports",
@@ -723,12 +814,13 @@ mod tests {
         ];
         for (flags, accepted) in cases {
             let checked = checked(&[&LOCAL_KMS, flags].concat(), &custody(&[]));
-            match accepted {
-                true => drop(checked.expect("a loopback deployment")),
-                false => assert!(
+            if accepted {
+                drop(checked.expect("a loopback deployment"));
+            } else {
+                assert!(
                     matches!(checked, Err(CustodyConfigError::RemoteCluster)),
                     "{flags:?}"
-                ),
+                );
             }
         }
         let remote = ["--bind", "0.0.0.0", "--rpc-url", "https://rpc.example"];
@@ -786,7 +878,7 @@ mod tests {
     fn a_manifest_comes_from_one_flag_and_a_missing_file_is_a_file_error() {
         let parse = |flags: &[&str]| {
             let fixed = ["ring-rpc", "serve", "--deployment", "test"];
-            Cli::try_parse_from(fixed.iter().chain(&AWS_KMS).chain(flags))
+            parse_arguments(fixed.iter().chain(&AWS_KMS).chain(flags))
         };
         assert!(parse(&[]).is_err());
         assert!(parse(&["--custody", "/custody.json", "--custody-json", "{}"]).is_err());
@@ -814,7 +906,7 @@ mod tests {
             "--genesis-hash",
             &genesis,
         ];
-        match Cli::try_parse_from(fixed.iter().chain(&AWS_KMS).chain(flags))?.command {
+        match parse_arguments(fixed.iter().chain(&AWS_KMS).chain(flags))?.command {
             Command::Provision(args) => Ok(args),
             _ => panic!("provision parses as another command"),
         }
@@ -853,9 +945,9 @@ mod tests {
 
     #[tokio::test]
     async fn each_role_signs_with_the_identity_the_hub_was_given() {
-        let [service, storage, co_signer] =
-            [1, 2, 3].map(|seed| Keypair::new_from_array([seed; 32]));
-        let addresses = [&service, &storage, &co_signer].map(Signer::pubkey);
+        let [service, storage, co_signer, fee_payer] =
+            [1, 2, 3, 5].map(|seed| Keypair::new_from_array([seed; 32]));
+        let addresses = [&service, &storage, &co_signer, &fee_payer].map(Signer::pubkey);
         let upstreams = Upstreams {
             indexer_url: UNREACHABLE,
             rpc_url: UNREACHABLE,
@@ -866,11 +958,23 @@ mod tests {
             genesis_hash: [1; 32],
             service: Arc::new(service),
         };
+        let directory = StoreDirectory::new("role-identities");
+        let store = Store::open(&directory.url(), 1).await.expect("store");
+        let relay = RelayServicesInit {
+            fee_payer: Arc::new(fee_payer),
+            store: store.clone(),
+            upstreams,
+            prover_url: UNREACHABLE,
+        }
+        .build()
+        .expect("relay services");
         let hub = Hub::builder(ChainSource::connect(upstreams).expect("source"), identity)
-            .with_store(Store::open("sqlite::memory:", 1).await.expect("store"))
+            .with_store(ServiceStore::Durable(store))
             .with_storage_chain(Arc::new(chain), Arc::new(storage))
             .with_co_signer(Arc::new(co_signer))
+            .with_relay(relay)
             .derived(RootSecret::from_bytes([4; 32]).expect("root"))
+            .await
             .expect("hub");
 
         assert_eq!(
@@ -878,6 +982,7 @@ mod tests {
                 Some(hub.service_pubkey()),
                 Some(hub.record_writer().expect("writer").authority()),
                 hub.co_signer().signer(),
+                hub.relay().map(|relay| relay.fee_payer()),
             ],
             addresses.map(Some)
         );

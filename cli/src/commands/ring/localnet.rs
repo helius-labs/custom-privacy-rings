@@ -21,7 +21,7 @@ use zolana_cli_common::{
 use zolana_operator_custody::{KmsEndpoint, RpcCustody};
 
 use crate::{
-    config::{parse_json, OperatorManifest, RingConfig, Target, Urls},
+    config::{parse_json, redact_url, OperatorManifest, RingConfig, Target, Urls},
     context, file, line, probe,
     release::{RingRelease, RING_KEYS},
     tool::{Tool, SOLANA_TEST_VALIDATOR, ZOLANA},
@@ -35,7 +35,7 @@ pub struct GenesisProgram {
     pub address: Address,
     /// Relative to the workspace root.
     pub path: &'static str,
-    pub release_section: &'static str,
+    pub(crate) release_section: &'static str,
 }
 
 /// Mirrored by ring-genesis-programs in justfile.
@@ -62,7 +62,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(300);
 const POLL: Duration = Duration::from_secs(2);
 
 /// The target is recorded first, a failed bring-up still leaves ring.toml on localnet.
-pub fn run(config_path: &Path, config: &RingConfig, args: LocalnetArgs) -> Result<()> {
+pub(crate) fn run(config_path: &Path, config: &RingConfig, args: LocalnetArgs) -> Result<()> {
     probe::print_urls(config);
     if !args.no_start {
         bring_up(config, &context::config_root(config_path), true)?;
@@ -72,7 +72,7 @@ pub fn run(config_path: &Path, config: &RingConfig, args: LocalnetArgs) -> Resul
 }
 
 /// Localnet only, `devnet` probes its services instead of starting them.
-pub fn ensure(ctx: &Context) -> Result<()> {
+pub(crate) fn ensure(ctx: &Context) -> Result<()> {
     if ctx.config.target == Target::Localnet {
         bring_up(&ctx.config, &ctx.root, false)?;
     }
@@ -98,7 +98,10 @@ fn bring_up(config: &RingConfig, root: &Path, replace: bool) -> Result<()> {
     let [rpc, photon, prover, ring_rpc] = ports(urls)?;
     let release = RingRelease::from_lock()?;
     if answers(local(rpc)) {
-        line("validator", format_args!("{} answers", urls.rpc));
+        line(
+            "validator",
+            format_args!("{} answers", redact_url(&urls.rpc)),
+        );
     } else {
         ZOLANA.check_installed()?;
         SOLANA_TEST_VALIDATOR.check_installed()?;
@@ -115,7 +118,10 @@ fn bring_up(config: &RingConfig, root: &Path, replace: bool) -> Result<()> {
         ZOLANA.named("zolana dev start").run(&mut start.command())?;
     }
     if !replace && answers(local(ring_rpc)) {
-        line("ring rpc", format_args!("{} answers", urls.ring_rpc));
+        line(
+            "ring rpc",
+            format_args!("{} answers", redact_url(&urls.ring_rpc)),
+        );
         return Ok(());
     }
     let (os, arch) = host_platform()?;
@@ -252,7 +258,7 @@ impl RingIndexer<'_> {
             .stderr(open()?);
         spawn_owned(scope, "ring-indexer", &mut command)?;
         let ready = probe::service_url(&self.urls.indexer, "/ready");
-        let http = probe::http(POLL, POLL);
+        let http = probe::http(POLL, POLL)?;
         let served = wait_until(READY_TIMEOUT, POLL, || {
             http.get(&ready)
                 .send()
@@ -263,7 +269,7 @@ impl RingIndexer<'_> {
             served,
             "the ring indexer did not answer on {addr} within {READY_TIMEOUT:?}, see {shown}"
         );
-        let (url, photon) = (&self.urls.indexer, self.photon);
+        let (url, photon) = (redact_url(&self.urls.indexer), self.photon);
         line(
             "indexer",
             format_args!("{url} in front of photon on port {photon}"),
@@ -277,7 +283,8 @@ fn answering<'a>(services: impl IntoIterator<Item = (u16, &'a String)>) -> Resul
         let next = "run `zolana-ring localnet` first";
         ensure!(
             answers(local(port)),
-            "local workspace service is unavailable at {url}, {next}"
+            "local workspace service is unavailable at {}, {next}",
+            redact_url(url)
         );
     }
     Ok(())
@@ -291,7 +298,7 @@ fn local(port: u16) -> SocketAddr {
 fn ports(urls: &Urls) -> Result<[u16; 4]> {
     let port = |url: &str| {
         let hint = "localnet URLs are http://127.0.0.1:<port>";
-        Urls::port(url).with_context(|| format!("{url} carries no port, {hint}"))
+        Urls::port(url).with_context(|| format!("{} carries no port, {hint}", redact_url(url)))
     };
     let [rpc, indexer, prover, ring_rpc] = [&urls.rpc, &urls.indexer, &urls.prover, &urls.ring_rpc];
     Ok([port(rpc)?, port(indexer)?, port(prover)?, port(ring_rpc)?])
@@ -476,7 +483,7 @@ fn start_ring_rpc(
         ready,
         "the ring rpc did not answer on {addr} within {READY_TIMEOUT:?}, see {shown}"
     );
-    let (url, program) = (&config.urls().ring_rpc, config.program_id);
+    let (url, program) = (redact_url(&config.urls().ring_rpc), config.program_id);
     line("ring rpc", format_args!("{url} serving {program}, {shown}"));
     Ok(())
 }
@@ -507,8 +514,7 @@ mod tests {
             "name = \"x\"\ntarget = \"localnet\"\nprogram_id = \"11111111111111111111111111111111\"\noperator_manifest = \"operator.json\"\n\n[localnet]\nrpc = \"r\"\nindexer = \"i\"\nprover = \"p\"\nring_rpc = \"http://{addr}\"\n\n[devnet]\nrpc = \"r\"\nindexer = \"i\"\nprover = \"p\"\nring_rpc = \"g\"\n"
         ))
         .expect("ring.toml");
-        let scope = env::temp_dir().join(format!("ring-localnet-scope-{}", std::process::id()));
-        file::create_dir_all(&scope).expect("scope");
+        let scope = scratch_dir("localnet-scope");
         let command = Command::new("/nonexistent/ring-rpc");
         let error =
             start_ring_rpc(command, &config, addr.port(), &scope).expect_err("foreign listener");

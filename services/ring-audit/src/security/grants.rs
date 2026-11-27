@@ -1,5 +1,3 @@
-use std::future::Future;
-
 use solana_address::Address;
 use zolana_ring_client::{
     rpc::{
@@ -26,7 +24,7 @@ pub(crate) struct GrantQuery {
     pub wallet: Option<Address>,
 }
 
-/// Fixed at startup, a read consults no other grant source.
+/// The store of the list grants, fixed at startup.
 pub enum Grants {
     Tree,
     Database(Box<GrantRows>),
@@ -43,14 +41,6 @@ pub(crate) enum ReadScope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct WalletScope {
     wallet: Address,
-}
-
-pub(crate) trait GrantSource {
-    /// A ring-wide grant covers every query, a wallet grant only a query naming that wallet.
-    fn grants(
-        &self,
-        query: GrantQuery,
-    ) -> impl Future<Output = Result<bool, RingAuditError>> + Send;
 }
 
 /// `Reader` lists of the ring's own storage tree, opened under its registry's newest root.
@@ -119,8 +109,8 @@ impl ReadScope {
     }
 }
 
-impl<S: TransactionSource> GrantSource for TreeGrants<'_, S> {
-    async fn grants(&self, query: GrantQuery) -> Result<bool, RingAuditError> {
+impl<S: TransactionSource> TreeGrants<'_, S> {
+    pub(crate) async fn grants(&self, query: GrantQuery) -> Result<bool, RingAuditError> {
         let mut members = vec![*query.reader.record_key()?.as_bytes()];
         if let Some(wallet) = query.wallet {
             let wallet = Member::owner_tag(wallet.as_array())?;

@@ -218,9 +218,10 @@ pub fn pause(ctx: &Context, paused: bool) -> Result<()> {
         (false, _) => {
             let payer = ctx.funded_authority()?;
             let pauser = ctx.role_signer(RingRole::Pauser)?;
-            let set = match paused {
-                true => ctx.ring.pause(pauser.address())?,
-                false => ctx.ring.resume(pauser.address())?,
+            let set = if paused {
+                ctx.ring.pause(pauser.address())?
+            } else {
+                ctx.ring.resume(pauser.address())?
             };
             ctx.send_operator(
                 Operators {
@@ -234,12 +235,13 @@ pub fn pause(ctx: &Context, paused: bool) -> Result<()> {
     };
     line("spp ring", outcome);
     let program = ctx.ring.program_id();
-    match paused {
-        true => ui::heading(
+    if paused {
+        ui::heading(
             icon::PAUSE,
             &format!("ring {program} refuses every operation"),
-        ),
-        false => ui::heading(icon::RESUME, &format!("ring {program} is open")),
+        );
+    } else {
+        ui::heading(icon::RESUME, &format!("ring {program} is open"));
     }
     Ok(())
 }

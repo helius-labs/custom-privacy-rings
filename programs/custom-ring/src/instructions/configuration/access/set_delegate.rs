@@ -10,8 +10,6 @@
 //! 1. The admin and the delegate both sign, a mistyped address cannot enable the rail.
 //! 2. No instruction replaces or clears a set delegate.
 //! 3. The delegate stays apart from every role, and `RingPolicy::rotate_role` keeps the split.
-//!
-//! Read after `instructions/transfer/accounts.rs`. Read before `instructions/configuration/access/set_paused.rs`.
 
 use custom_ring_interface::{CustomRingError, RingRole};
 use pinocchio::{AccountView, Address, ProgramResult};

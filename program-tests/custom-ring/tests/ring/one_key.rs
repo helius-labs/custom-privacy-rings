@@ -17,7 +17,7 @@ use custom_ring_interface::{
     verifying_key, RingProof, SignerSet, SlotBody, TransferBinding, TransferRoots,
     ANONYMOUS_PARTIES, PROVING_KEY_SHA256S, TAGGED_X25519_KEY_LEN,
 };
-use custom_ring_test_validator::policy::RELEASED;
+use custom_ring_test_validator::{policy::RELEASED, shared::localnet_rpc};
 use serde_json::Value;
 use solana_message::v1::MAX_ADDRESSES;
 use solana_transaction_status_client_types::EncodedConfirmedTransactionWithStatusMeta;
@@ -355,7 +355,7 @@ impl SeededChain<'_> {
             .with_proof_data_source(ProofDataSource::Client)
         };
         Ok(ZolanaServices {
-            rpc: SolanaRpc::new(self.env.rpc_url.clone()),
+            rpc: localnet_rpc(self.env.rpc_url.clone()),
             indexer: SeededIndexer {
                 indexer: SprIndexer::new(self.env.indexer_url.clone()),
                 notes: self.notes,
@@ -673,17 +673,17 @@ impl Landed<'_> {
             .as_u64()
             .context("the transaction's compute units")?;
         // Surfpool reports empty return data when no program sets one.
-        let returned = match confirmed["meta"]["returnData"]["data"][0].is_string() {
-            true => decode(&confirmed["meta"]["returnData"]["data"][0])?,
-            false => Vec::new(),
+        let returned = if confirmed["meta"]["returnData"]["data"][0].is_string() {
+            decode(&confirmed["meta"]["returnData"]["data"][0])?
+        } else {
+            Vec::new()
         };
-        let heap = match returned.is_empty() {
-            true => None,
-            false => {
-                Some(u64::from_le_bytes(returned.try_into().map_err(|_| {
-                    anyhow!("{label} returned no eight byte heap peak")
-                })?))
-            }
+        let heap = if returned.is_empty() {
+            None
+        } else {
+            Some(u64::from_le_bytes(returned.try_into().map_err(|_| {
+                anyhow!("{label} returned no eight byte heap peak")
+            })?))
         };
         ensure!(bytes <= MAX_TRANSACTION_SIZE, "{label} has {bytes} bytes");
         ensure!(

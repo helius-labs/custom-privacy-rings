@@ -92,6 +92,7 @@ import {
   N_PUBLIC_SLOTS,
   type PublicSlots,
 } from "../protocol/transaction/spp.js";
+import { defined } from "../protocol/defined.js";
 
 export type { BoundRoot } from "../rpc/registered-record.js";
 
@@ -196,7 +197,7 @@ const ABSENT_OWNER: PolicyOwnerEntry = Object.freeze({
 const PADDING_SUBJECT = Uint8Array.from({ length: 32 }, (_, at) => (at === 31 ? 1 : 0)) as Bytes32;
 
 /** Set on a ring with an own policy registry off the delegate rail, independent of `policy_hash`. */
-export function thresholdsActive(config: Pick<RingPolicy, "records">, rail: RingRail): boolean {
+function thresholdsActive(config: Pick<RingPolicy, "records">, rail: RingRail): boolean {
   return !isDelegateRail(rail) && !equalBytes(addressBytes(config.records, "records"), ZERO_32);
 }
 
@@ -212,7 +213,7 @@ export function policyLegs(
 }
 
 /** Rust `RootRead::transfer` is not `None`. */
-export function readsPolicyRoot(
+function readsPolicyRoot(
   config: Pick<RingPolicy, "records" | "hasPolicy">,
   rail: RingRail,
 ): boolean {
@@ -269,8 +270,7 @@ function policySubjects(
       : output.ownerAddress?.signingPublicKey.ownerProofInputHash(),
   );
   return {
-    ...(pinned === undefined ? {} : { pinned }),
-    ...(view === undefined ? {} : { view }),
+    ...defined({ pinned, view }),
     liveRows,
     owners,
     assets,
@@ -575,7 +575,7 @@ export async function readPolicy(
           table: policyTableProofInputs(pinned.table, pinned.sources, pinned.ringListTag),
           policyHash: pinned.policyHash,
         }),
-    ...(ringSalt === undefined ? {} : { ringSalt }),
+    ...defined({ ringSalt }),
     own,
     ...(curatorRoot === undefined ? {} : { curator: curatorRoot }),
     ownPool: ownPool.pool,
@@ -836,7 +836,7 @@ export function policyParams(policy: PolicyInputs, proving: PolicyProving): Poli
     curatorPool: policy.curatorPool ?? unopenedRecordPool(capacity.curator),
     senderEntries: policy.senderEntries,
     voucherEntry: policy.voucherEntry,
-    ...(policy.ringSalt === undefined ? {} : { ringSalt: policy.ringSalt }),
+    ...defined({ ringSalt: policy.ringSalt }),
     ownerEntries: pad(policy.ownerEntries, slots, ABSENT_OWNER),
     assetEntries: [
       ...pad(policy.assetEntries, slots, ABSENT_ENTRY),

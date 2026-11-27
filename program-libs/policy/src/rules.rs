@@ -5,9 +5,6 @@
 //! it spends a proof, where the circuit could only fail to solve. It mirrors the circuit's list
 //! screening. Caps, outflow and co-signing stay the circuit's, and a check missing here surfaces as a
 //! failed proof.
-//!
-//! Read after `program-libs/policy/src/rule_table/mod.rs`. Read before `prover/circuits/policy/rules.go`,
-//! `sdk-libs/client/src/transfer/pipeline/policy.rs`.
 
 use core::fmt;
 

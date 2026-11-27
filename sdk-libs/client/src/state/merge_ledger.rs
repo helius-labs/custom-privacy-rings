@@ -8,7 +8,7 @@ use spr_hasher::primitives::hash_bytes;
 
 use crate::{
     types::{CreatedUtxo, KnownUtxo, UtxoOwner},
-    AuditError, REDACTED,
+    AuditError,
 };
 
 /// `(tx_signature, event_index)`, one confirmed merge.
@@ -41,26 +41,10 @@ pub struct MergeRecordOutput {
     pub real_nullifiers: Vec<[u8; 32]>,
 }
 
-impl core::fmt::Debug for MergeRecordOutput {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            owner_key,
-            nullifier_pk,
-            mint,
-            amount,
-            blinding: _,
-            real_nullifiers,
-        } = self;
-        f.debug_struct("MergeRecordOutput")
-            .field("owner_key", owner_key)
-            .field("nullifier_pk", nullifier_pk)
-            .field("mint", mint)
-            .field("amount", amount)
-            .field("blinding", &REDACTED)
-            .field("real_nullifiers", real_nullifiers)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(MergeRecordOutput {
+    shown: [owner_key, nullifier_pk, mint, amount, real_nullifiers],
+    hidden: [blinding],
+});
 
 /// The fields a merge output inherits, an audit record and no wallet opening.
 #[derive(Clone, PartialEq, Eq)]
@@ -82,44 +66,25 @@ pub struct AuditedMergeOutput {
     pub(crate) blinding: [u8; 32],
 }
 
-impl core::fmt::Debug for AuditedMergeOutput {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            commitment,
-            slot,
-            tx_signature,
-            event_index,
-            tree_id,
-            leaf_index,
-            first_nullifier,
-            ring_data_hash,
-            owner_key,
-            owner,
-            asset,
-            mint,
-            amount,
-            real_nullifiers,
-            blinding: _,
-        } = self;
-        f.debug_struct("AuditedMergeOutput")
-            .field("commitment", commitment)
-            .field("slot", slot)
-            .field("tx_signature", tx_signature)
-            .field("event_index", event_index)
-            .field("tree_id", tree_id)
-            .field("leaf_index", leaf_index)
-            .field("first_nullifier", first_nullifier)
-            .field("ring_data_hash", ring_data_hash)
-            .field("owner_key", owner_key)
-            .field("owner", owner)
-            .field("asset", asset)
-            .field("mint", mint)
-            .field("amount", amount)
-            .field("real_nullifiers", real_nullifiers)
-            .field("blinding", &REDACTED)
-            .finish()
-    }
-}
+zolana_ring_keys::redacted_debug!(AuditedMergeOutput {
+    shown: [
+        commitment,
+        slot,
+        tx_signature,
+        event_index,
+        tree_id,
+        leaf_index,
+        first_nullifier,
+        ring_data_hash,
+        owner_key,
+        owner,
+        asset,
+        mint,
+        amount,
+        real_nullifiers
+    ],
+    hidden: [blinding],
+});
 
 /// Keeps one state per ring.
 #[derive(Clone, Debug, Default)]

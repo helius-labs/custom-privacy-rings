@@ -31,7 +31,6 @@ import { CUSTOM_RING_PROOF_LENGTH } from "../../src/protocol/codec/ring-codecs.j
 import { RingError } from "../../src/protocol/error.js";
 
 const hex = (value: string): Uint8Array => hexToBytes(value.replace(/^0x/, ""));
-const unhex = (bytes: Uint8Array): string => bytesToHex(bytes);
 
 describe("the merge record vector", () => {
   const auditor = (): X25519Keypair => X25519Keypair.fromBytes(hex(vector.auditor_sk) as Bytes32);
@@ -42,7 +41,7 @@ describe("the merge record vector", () => {
     it(`${testCase.name} seals the record and envelope under its ephemeral and opens for the auditor`, async () => {
       await initializePoseidon();
       const merge = decodeMergeRecord(hex(testCase.record));
-      expect(unhex(encodeMergeRecord(merge))).toBe(testCase.record.replace(/^0x/, ""));
+      expect(bytesToHex(encodeMergeRecord(merge))).toBe(testCase.record.replace(/^0x/, ""));
       const recipient = X25519PublicKey.fromBytes(Uint8Array.of(4, ...hex(request.recipientKey)));
       const { sealed } = sealMergeRecordWith({
         merge,
@@ -51,12 +50,12 @@ describe("the merge record vector", () => {
         firstNullifier: hex(request.firstNullifier) as Bytes32,
         ephemeral: X25519Keypair.fromBytes(hex(request.ephSk) as Bytes32),
       });
-      expect(unhex(sealed.record)).toBe(testCase.ciphertext.replace(/^0x/, ""));
-      expect(unhex(sealed.envelope)).toBe(testCase.envelope_ciphertext.replace(/^0x/, ""));
+      expect(bytesToHex(sealed.record)).toBe(testCase.ciphertext.replace(/^0x/, ""));
+      expect(bytesToHex(sealed.envelope)).toBe(testCase.envelope_ciphertext.replace(/^0x/, ""));
       expect(hex(testCase.envelope)).toEqual(
         Uint8Array.of(...hex(request.ephSk), ...hex(request.recipientKey)),
       );
-      expect(unhex(sealed.ephemeralPublicKey)).toBe(vector.eph_pk.replace(/^0x/, ""));
+      expect(bytesToHex(sealed.ephemeralPublicKey)).toBe(vector.eph_pk.replace(/^0x/, ""));
       expect(openMergeRecord(auditor(), sealed, hex(request.firstNullifier) as Bytes32)).toEqual(
         merge,
       );
@@ -86,10 +85,10 @@ describe("the merge record vector", () => {
       expect(testCase.output_ciphertext).toHaveLength(3);
       expect(testCase.elements).toHaveLength(16);
       expect(request.outputCiphertextSalt).toBe(testCase.output_ciphertext_salt);
-      expect(mergePublicInputElements(input).map((element) => `0x${unhex(element)}`)).toEqual(
+      expect(mergePublicInputElements(input).map((element) => `0x${bytesToHex(element)}`)).toEqual(
         testCase.elements,
       );
-      expect(`0x${unhex(mergePublicInputHash(input))}`).toBe(testCase.public_input_hash);
+      expect(`0x${bytesToHex(mergePublicInputHash(input))}`).toBe(testCase.public_input_hash);
       expect(request.publicInputHash).toBe(testCase.public_input_hash);
       expect(hashChain(testCase.elements.map((element) => hex(element) as Bytes32))).toEqual(
         mergePublicInputHash(input),

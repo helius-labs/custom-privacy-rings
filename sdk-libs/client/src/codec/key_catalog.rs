@@ -167,9 +167,10 @@ const NAME_PREFIX: &str = "custom-ring-";
 
 /// One `key` suffix, a name that already ends in key takes none.
 fn key_suffixed(name: &str, separator: &str) -> String {
-    match name.ends_with("key") {
-        true => name.to_owned(),
-        false => format!("{name}{separator}key"),
+    if name.ends_with("key") {
+        name.to_owned()
+    } else {
+        format!("{name}{separator}key")
     }
 }
 

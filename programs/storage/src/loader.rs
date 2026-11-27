@@ -1,9 +1,5 @@
 //! Account access of the Storage program, each account an instruction reads or writes loads here.
 //!
-//! Read after `programs/storage/src/lib.rs`, `program-libs/interface/src/accounts/storage.rs`,
-//! `program-libs/interface/src/accounts/tracking.rs`. Read before
-//! `programs/storage/src/instructions/update.rs`, `programs/storage/src/instructions/apply_enrollments.rs`.
-//!
 //! Guarantees:
 //! 1. A registry or grant loads only when the program owns it, at its exact size and under its discriminator.
 //! 2. A created account takes its canonical bump from the derivation, never from instruction data.
@@ -49,12 +45,9 @@ impl RegistryInit<'_> {
             invalid: StorageError::InvalidRegistry,
         }
         .create(account, StorageRegistry::SIZE)?;
-        account
-            .try_borrow_mut()?
-            .copy_from_slice(bytemuck::bytes_of(&StorageRegistry::new(
-                *self.creator,
-                self.ix,
-            )));
+        bytemuck::try_from_bytes_mut::<StorageRegistry>(&mut account.try_borrow_mut()?)
+            .map_err(|_| StorageError::InvalidRegistry)?
+            .init(*self.creator, self.ix);
         Ok(())
     }
 }
@@ -134,11 +127,11 @@ pub fn load_tracking_registry<'a>(
     program_id: &Address,
     account: &'a AccountView,
 ) -> Result<Ref<'a, TrackingRegistry>, ProgramError> {
-    if !account.owned_by(program_id) {
-        return Err(StorageError::InvalidTrackingRegistry.into());
+    ProgramAccount {
+        program_id,
+        invalid: StorageError::InvalidTrackingRegistry,
     }
-    Ref::filter_map(account.try_borrow()?, TrackingRegistry::from_data)
-        .map_err(|_| StorageError::InvalidTrackingRegistry.into())
+    .load(account, TrackingRegistry::from_data)
 }
 
 /// The pinned registry's root at `revision`, a row proven under another registry guards no salted read.
@@ -165,11 +158,12 @@ pub fn load_tracking_registry_mut<'a>(
     program_id: &Address,
     account: &'a mut AccountView,
 ) -> Result<RefMut<'a, TrackingRegistry>, ProgramError> {
-    if !account.owned_by(program_id) || !account.is_writable() {
-        return Err(StorageError::InvalidTrackingRegistry.into());
+    let invalid = StorageError::InvalidTrackingRegistry;
+    ProgramAccount {
+        program_id,
+        invalid,
     }
-    RefMut::filter_map(account.try_borrow_mut()?, TrackingRegistry::from_data_mut)
-        .map_err(|_| StorageError::InvalidTrackingRegistry.into())
+    .load_mut(account, invalid, TrackingRegistry::from_data_mut)
 }
 
 #[inline(always)]
@@ -177,12 +171,53 @@ pub fn load_registry_mut<'a>(
     program_id: &Address,
     account: &'a mut AccountView,
 ) -> Result<RefMut<'a, StorageRegistry>, ProgramError> {
-    if !account.owned_by(program_id) {
-        return Err(StorageError::InvalidRegistry.into());
+    ProgramAccount {
+        program_id,
+        invalid: StorageError::InvalidRegistry,
     }
-    check_writable(account)?;
-    RefMut::filter_map(account.try_borrow_mut()?, StorageRegistry::from_data_mut)
-        .map_err(|_| StorageError::InvalidRegistry.into())
+    .load_mut(
+        account,
+        StorageError::ReadOnlyRegistry,
+        StorageRegistry::from_data_mut,
+    )
+}
+
+/// The program's account with bytes `decode` accepts, `invalid` for any other.
+#[must_use]
+struct ProgramAccount<'a> {
+    program_id: &'a Address,
+    invalid: StorageError,
+}
+
+impl ProgramAccount<'_> {
+    #[inline(always)]
+    fn load<'b, T: ?Sized>(
+        self,
+        account: &'b AccountView,
+        decode: impl FnOnce(&[u8]) -> Option<&T>,
+    ) -> Result<Ref<'b, T>, ProgramError> {
+        if !account.owned_by(self.program_id) {
+            return Err(self.invalid.into());
+        }
+        Ref::filter_map(account.try_borrow()?, decode).map_err(|_| self.invalid.into())
+    }
+
+    /// `read_only` refuses a read-only account the program owns, ahead of its bytes.
+    #[inline(always)]
+    fn load_mut<'b, T: ?Sized>(
+        self,
+        account: &'b mut AccountView,
+        read_only: StorageError,
+        decode: impl FnOnce(&mut [u8]) -> Option<&mut T>,
+    ) -> Result<RefMut<'b, T>, ProgramError> {
+        if !account.owned_by(self.program_id) {
+            return Err(self.invalid.into());
+        }
+        if !account.is_writable() {
+            return Err(read_only.into());
+        }
+        RefMut::filter_map(account.try_borrow_mut()?, decode).map_err(|_| self.invalid.into())
+    }
 }
 
 #[inline(always)]
@@ -275,26 +310,18 @@ pub fn check_storage_program(
     program_id: &Address,
     account: &AccountView,
 ) -> Result<(), StorageError> {
-    match account.address() == program_id {
-        true => Ok(()),
-        false => Err(StorageError::InvalidStorageProgram),
+    if account.address() != program_id {
+        return Err(StorageError::InvalidStorageProgram);
     }
+    Ok(())
 }
 
 #[inline(always)]
 pub fn check_signer(account: &AccountView) -> Result<(), StorageError> {
-    match account.is_signer() {
-        true => Ok(()),
-        false => Err(StorageError::MissingSignature),
+    if !account.is_signer() {
+        return Err(StorageError::MissingSignature);
     }
-}
-
-#[inline(always)]
-fn check_writable(account: &AccountView) -> Result<(), StorageError> {
-    match account.is_writable() {
-        true => Ok(()),
-        false => Err(StorageError::ReadOnlyRegistry),
-    }
+    Ok(())
 }
 
 /// The PDA of `seeds`, `invalid` for another address or a read-only account.

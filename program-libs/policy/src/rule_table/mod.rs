@@ -6,9 +6,6 @@
 //! policy write and is the one place a table's meaning is checked. A table it refuses has no hash on
 //! the account, so no proof reads it.
 //!
-//! Read after `program-libs/policy/src/list.rs`, `docs/design/records-and-roots.md`. Read before
-//! `program-libs/policy/src/rules.rs`, `prover/circuits/policy/table.go`, `prover/circuits/policy/rules.go`.
-//!
 //! Named list semantics a stored table holds.
 //! 1. `Allow`, `Approval` and `PrivateAllow` are grant lists, read by presence. A rule over several passes on any one, within the rule the lists join with OR.
 //! 2. `Block`, `Frozen`, `PrivateBlock` and `PrivateFrozen` are deny lists, read by absence, one per rule. Rules join with AND, so a public and a private block are two rules.
@@ -256,9 +253,10 @@ impl Rule {
     }
 
     pub const fn primary_mode(&self) -> Mode {
-        match self.present.is_empty() {
-            true => Mode::Absent,
-            false => Mode::Present,
+        if self.present.is_empty() {
+            Mode::Absent
+        } else {
+            Mode::Present
         }
     }
 
@@ -595,29 +593,21 @@ pub struct EncodedRuleTable {
     pub rules: [[u8; 32]; MAX_RULES],
 }
 
-/// Wire parts of a table, `encode` checks the counts and `decode` the rest.
-#[must_use]
-#[derive(Clone, Copy, Debug)]
-pub struct TableParts<'a> {
-    pub rows: &'a [[u8; 32]],
-}
-
-impl TableParts<'_> {
-    pub fn encode(self) -> Result<EncodedRuleTable, RuleTableError> {
-        if self.rows.len() > MAX_RULES {
-            return Err(RuleTableError::TooManyRules);
-        }
-        let mut encoded = EncodedRuleTable {
-            rule_count: self.rows.len() as u8,
-            ..EncodedRuleTable::default()
-        };
-        encoded.rules[..self.rows.len()].copy_from_slice(self.rows);
-        Ok(encoded)
-    }
-}
-
 impl EncodedRuleTable {
     pub const SIZE: usize = core::mem::size_of::<Self>();
+
+    /// Checks the row count alone, `decode` checks the rows.
+    pub fn from_rows(rows: &[[u8; 32]]) -> Result<Self, RuleTableError> {
+        if rows.len() > MAX_RULES {
+            return Err(RuleTableError::TooManyRules);
+        }
+        let mut encoded = Self {
+            rule_count: rows.len() as u8,
+            ..Self::default()
+        };
+        encoded.rules[..rows.len()].copy_from_slice(rows);
+        Ok(encoded)
+    }
 
     pub fn decode(&self) -> Result<RuleTable, RuleTableError> {
         let rows = self

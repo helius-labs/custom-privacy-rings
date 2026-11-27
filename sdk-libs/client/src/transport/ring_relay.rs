@@ -180,10 +180,9 @@ impl RelaySent {
                 expected: None,
             }),
         };
-        match sent.relay_id() == expected {
-            true => Ok(sent),
-            false => Err(RingError::RelayIdMismatch),
-        }
+        (sent.relay_id() == expected)
+            .then_some(sent)
+            .ok_or(RingError::RelayIdMismatch)
     }
 
     fn expecting(self, expected: Option<ExpectedMessage>) -> Self {

@@ -48,7 +48,7 @@ pub fn host_platform() -> Result<(&'static str, &'static str)> {
     Ok((os, arch))
 }
 
-pub fn check_path_segment(value: &str, kind: &str) -> Result<()> {
+fn check_path_segment(value: &str, kind: &str) -> Result<()> {
     ensure!(
         !value.is_empty()
             && value != "."
@@ -59,7 +59,7 @@ pub fn check_path_segment(value: &str, kind: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn cache_dir(tag: &str) -> PathBuf {
+fn cache_dir(tag: &str) -> PathBuf {
     config_dir().join("cache").join(tag)
 }
 
@@ -245,6 +245,7 @@ mod tests {
     fn a_placeholder_checksum_is_refused_before_any_download() {
         assert!(verify(b"hello", &asset("")).is_err());
         let path = env::temp_dir().join(format!("zolana-placeholder-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
         let error = ensure_at("v0", &asset(""), &path).expect_err("placeholder");
         assert!(error.to_string().contains("placeholder"), "{error}");
         assert!(!path.exists());
@@ -253,6 +254,7 @@ mod tests {
     #[test]
     fn a_verified_file_is_used_without_a_download() {
         let dir = env::temp_dir().join(format!("zolana-release-cache-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
         let path = dir.join("test");
         replace(&path, b"hello", Visibility::Public).expect("write");
         ensure_at("v0", &asset(HELLO), &path).expect("cached file");

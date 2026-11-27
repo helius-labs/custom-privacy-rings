@@ -2,6 +2,8 @@
 pub mod history_page;
 #[path = "common/origin.rs"]
 mod origin_fixture;
+#[path = "common/page_window.rs"]
+mod page_window;
 #[path = "common/transfer.rs"]
 pub mod transfer;
 
@@ -32,6 +34,7 @@ use zolana_ring_client::{
 use zolana_ring_transaction::{carried_key, record_key, RingAssets};
 
 use history_page::EventsPage;
+use page_window::{page_window, MockPageWindow};
 use transfer::{field, x25519_u, Frame, Output, Publish, Rail, Transfer, UtxoFields};
 
 const RING: Address = Address::new_from_array([42; 32]);
@@ -475,25 +478,13 @@ impl AsyncRpc for History {
         assert_eq!(options.ring_program_id, RING);
         let mut rows = self.transactions.clone();
         rows.extend(self.additional_history.clone());
-        rows.sort_by_key(history_page::position);
-        rows.retain(|row| {
-            options
-                .pagination_token
-                .is_none_or(|token| history_page::position(row) > token)
-        });
-        let limit = options.limit.map_or(usize::MAX, |limit| limit as usize);
-        let more = rows.len() > limit;
-        rows.truncate(limit);
-        Ok(EventsPage {
-            context: Context {
-                block_time: 0,
-                slot: INDEXED,
+        Ok(page_window(
+            self.page(rows),
+            MockPageWindow {
+                token: options.pagination_token,
+                limit: options.limit.map_or(usize::MAX, |limit| limit as usize),
             },
-            output_tree_id: None,
-            rows,
-            more,
-        }
-        .response())
+        ))
     }
     async fn get_shielded_transactions_by_tags(
         &self,

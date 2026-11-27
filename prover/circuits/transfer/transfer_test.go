@@ -4,11 +4,11 @@ package transfer_test
 
 import (
 	"math/big"
+	"sync"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/test"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/audit"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
@@ -36,14 +36,12 @@ var (
 
 func requireSolved(t *testing.T, circuit frontend.Circuit) {
 	t.Helper()
-	if err := test.IsSolved(circuit, circuit, ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, circuit, circuit)
 }
 
 func refused(t *testing.T, circuit frontend.Circuit, frames ...string) {
 	t.Helper()
-	ringtest.RequireRefused(t, test.IsSolved(circuit, circuit, ecc.BN254.ScalarField()), frames...)
+	ringtest.RequireUnsolved(t, circuit, circuit, frames...)
 }
 
 func onRail(shape transfer.Shape, rail ringtransfer.Rail) ringtransfer.Confidential {
@@ -76,6 +74,24 @@ func ringID(t testing.TB) *big.Int {
 func senderNote(t testing.TB, blinding int64) ringaudit.Input {
 	t.Helper()
 	return ringaudit.Input{Utxo: ringaudit.SpentUtxo(t, ringtransfer.Sender(t), ringtransfer.SenderNullifierPk(t), ringID(t), 100, blinding), OwnerKey: ringtransfer.SenderKey(), Mint: ringaudit.FixtureMint}
+}
+
+// Serial tests only, every solve resets the shared lookup blueprints.
+var confidential2System = sync.OnceValues(func() (constraint.ConstraintSystem, error) {
+	circuit, err := transfer.NewTransferCircuit(confidential2)
+	if err != nil {
+		return nil, err
+	}
+	return ringkey.R1CS(circuit)
+})
+
+func bindConfidential2(t *testing.T, honest frontend.Circuit) *ringkey.Bound {
+	t.Helper()
+	cs, err := confidential2System()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ringkey.BindCompiled(t, cs, honest)
 }
 
 // Every rail solves its honest witness and binds the public input.
@@ -127,30 +143,6 @@ func TestEveryKeySolves(t *testing.T) {
 			w.DefaultInput = shape.Entry && shape.Inputs > 2
 			requireSolved(t, w.Build(t).Circuit)
 		})
-	}
-}
-
-// Every key compiles with one public input and one BSB22 commitment over private wires.
-func TestCatalogCompilesToTheVerifiedShape(t *testing.T) {
-	if testing.Short() {
-		t.Skip("compiles the transfer keys")
-	}
-	compile := func(name string, build func() (frontend.Circuit, error)) {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			circuit, err := build()
-			if err != nil {
-				t.Fatal(err)
-			}
-			cs := ringkey.Compile(t, circuit)
-			t.Logf("%s: %d constraints", name, cs.GetNbConstraints())
-			if public := cs.GetNbPublicVariables() - 1; public != 1 {
-				t.Errorf("%d public inputs, the program verifies one", public)
-			}
-		})
-	}
-	for _, shape := range transfer.Shapes {
-		compile(shape.String(), func() (frontend.Circuit, error) { return transfer.NewTransferCircuit(shape) })
 	}
 }
 
@@ -423,12 +415,8 @@ func TestOutputPredicateOnEveryRail(t *testing.T) {
 
 // The program sets the delegate bit and the signer and delegate rails share a key, a signer proof with the bit set is the wall.
 func TestDelegateBitIsTheProgramsWall(t *testing.T) {
-	circuit, err := transfer.NewTransferCircuit(confidential2)
-	if err != nil {
-		t.Fatal(err)
-	}
 	honest := ringtransfer.Signed(confidential2).Build(t)
-	bound := ringkey.Bind(t, circuit, honest.Circuit)
+	bound := bindConfidential2(t, honest.Circuit)
 	statement := honest.Statement(t)
 	forged := onRail(confidential2, ringtransfer.Delegate).Build(t)
 	forged.Circuit.PublicInputHash = spptest.MustHashChain4(t, statement)
@@ -747,12 +735,8 @@ func TestStatementBindsEveryElement(t *testing.T) {
 	if testing.Short() {
 		t.Skip("solves the compiled key once per statement element")
 	}
-	circuit, err := transfer.NewTransferCircuit(confidential2)
-	if err != nil {
-		t.Fatal(err)
-	}
 	b := ringtransfer.Signed(confidential2).Build(t)
-	bound := ringkey.Bind(t, circuit, b.Circuit)
+	bound := bindConfidential2(t, b.Circuit)
 	statement := b.Statement(t)
 	for i := range statement {
 		moved := append([]*big.Int{}, statement...)

@@ -56,6 +56,7 @@ import { BPF_LOADER_UPGRADEABLE_ID, ringProgramDataAddress } from "../membership
 import { decodeRingPolicy } from "../codec/ring-codecs.js";
 import { RingError, wrapRingError } from "../error.js";
 import { checkRingElf } from "../elf.js";
+import { defined } from "../defined.js";
 
 export const RENT_SYSVAR = address("SysvarRent111111111111111111111111111111111");
 export const CLOCK_SYSVAR = address("SysvarC1ock11111111111111111111111111111111");
@@ -715,9 +716,7 @@ function baseMessage(
     {
       computeUnitLimit: DEPLOY_COMPUTE_UNIT_LIMIT,
       loadedAccountsDataSizeLimit: LOADED_ACCOUNTS_DATA_SIZE_LIMIT,
-      ...(params.priorityFeeLamports === undefined
-        ? {}
-        : { priorityFeeLamports: params.priorityFeeLamports }),
+      ...defined({ priorityFeeLamports: params.priorityFeeLamports }),
     },
     setTransactionMessageFeePayerSigner(params.payer, createTransactionMessage({ version: 1 })),
   );
@@ -896,7 +895,7 @@ async function waitUntilUsable(
       (slot) => slot > deploySlot,
       {
         config: USABLE_POLL,
-        ...(context === undefined ? {} : { context }),
+        ...defined({ context }),
         onTimeout: () => stalled,
       },
     );

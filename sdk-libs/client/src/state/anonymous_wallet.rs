@@ -2,13 +2,9 @@
 //!
 //! [`AnonymousWallet::absorb`] stores a whole sync of either mode or refuses it, a crash before it loses only the read.
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
-    fmt,
-};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use solana_address::Address;
 use spr_keypair::{x25519::X25519_PUBKEY_LEN, X25519Pubkey};
 use spr_transaction::{DecryptionResult, Mint, WalletUtxo};
@@ -36,7 +32,7 @@ impl WalletRevision {
 }
 
 /// Notes stay listed once spent, their nullifiers mark them.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AnonymousWallet {
     revision: WalletRevision,
     recovery: Option<RecoverySession>,
@@ -48,6 +44,12 @@ pub struct AnonymousWallet {
     /// Spent by a merge whose output named an unregistered mint, each confidential sync reads the spend again.
     merge_retries: BTreeSet<[u8; 32]>,
 }
+
+zolana_ring_keys::redacted_debug!(AnonymousWallet {
+    shown: [revision, history],
+    present: [recovery],
+    hidden: [notes, spent_nullifiers, pending, claims, merge_retries],
+});
 
 /// One sync, stored whole by [`AnonymousWallet::absorb`] or not at all.
 pub struct ScanCommit {
@@ -136,9 +138,15 @@ mod sealed {
 }
 
 /// Rebuilt under a mint the registry does not name, only [`AnonymousWallet::resolve_pending`] makes it spendable.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PendingNote(WalletUtxo);
+
+impl core::fmt::Debug for PendingNote {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("PendingNote(..)")
+    }
+}
 
 impl PendingNote {
     pub(crate) const fn new(note: WalletUtxo) -> Self {
@@ -193,20 +201,18 @@ impl PendingClaim {
     }
 }
 
-impl fmt::Debug for PendingClaim {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PendingClaim")
-            .field("utxo_hash", &self.utxo_hash)
-            .finish_non_exhaustive()
-    }
-}
+zolana_ring_keys::redacted_debug!(PendingClaim {
+    shown: [utxo_hash],
+    hidden: [claimed_viewing_key, claimed_owner_key, claimed_nullifier_pk],
+});
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct WalletJson {
     revision: WalletRevision,
     recovery: Option<RecoverySession>,
-    history: Value,
+    #[serde(with = "crate::viewing_history::stored")]
+    history: ViewingHistory,
     notes: Vec<WalletUtxo>,
     spent_nullifiers: Vec<String>,
     pending_notes: Vec<PendingNote>,
@@ -421,7 +427,7 @@ impl AnonymousWallet {
         let wallet = WalletJson {
             revision: self.revision,
             recovery: self.recovery.clone(),
-            history: self.history.to_json_value(),
+            history: self.history.clone(),
             notes: self.notes.clone(),
             spent_nullifiers: self.spent_nullifiers.iter().map(hex::encode).collect(),
             pending_notes: self.pending.clone(),
@@ -476,7 +482,7 @@ impl AnonymousWallet {
         Ok(Self {
             revision: wallet.revision,
             recovery: wallet.recovery,
-            history: ViewingHistory::from_json_value(wallet.history)?,
+            history: wallet.history,
             notes: wallet.notes,
             spent_nullifiers,
             pending: wallet.pending_notes,

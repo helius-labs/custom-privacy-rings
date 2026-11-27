@@ -219,12 +219,12 @@ impl ChainSubmit for RecordingChain {
             });
         }
         self.sent.lock().expect("sent").push(transaction.clone());
-        match self.reply_lost.swap(false, Ordering::Relaxed) {
-            true => Err(ServiceError::Upstream(ClientError::Rpc(
+        if self.reply_lost.swap(false, Ordering::Relaxed) {
+            return Err(ServiceError::Upstream(ClientError::Rpc(
                 "the send reply was lost".to_owned(),
-            ))),
-            false => Ok(()),
+            )));
         }
+        Ok(())
     }
 
     async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, ServiceError> {
@@ -407,9 +407,11 @@ pub fn signed_request(quote: RelayQuote, proof_inputs: &RelayProofInputs) -> Pre
 
 pub fn signers_verify(transaction: &VersionedTransaction) -> bool {
     let message = transaction.message.serialize();
-    transaction
-        .signatures
-        .iter()
-        .zip(transaction.message.static_account_keys())
-        .all(|(signature, signer)| signature.verify(signer.as_ref(), &message))
+    let required = usize::from(transaction.message.header().num_required_signatures);
+    transaction.signatures.len() == required
+        && transaction
+            .signatures
+            .iter()
+            .zip(transaction.message.static_account_keys())
+            .all(|(signature, signer)| signature.verify(signer.as_ref(), &message))
 }

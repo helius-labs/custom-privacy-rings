@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { bn254 } from "@noble/curves/bn254.js";
 import {
   AccountRole,
@@ -155,10 +156,6 @@ export function small(value: number): Bytes32 {
   return bytes as Bytes32;
 }
 
-export function hex(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("hex");
-}
-
 export function itemAt<T>(values: readonly T[], index: number): T {
   const value = values[index];
   if (value === undefined) throw new Error(`no item at ${String(index)}`);
@@ -228,7 +225,7 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
   const authority = options.authority ?? randomAddress();
   const accounts = new Map<Address, RpcAccount>();
   const ownRecords = new Map(
-    (options.records ?? []).map((record) => [hex(record.member), record] as const),
+    (options.records ?? []).map((record) => [bytesToHex(record.member), record] as const),
   );
   let ownTree = recordTree([...ownRecords.values()]);
   const [ringAuth, registration] = await sppRingRegistration({
@@ -346,7 +343,7 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
   /** Applies the owner's enrollment, a repeat moves its leaf to the address's viewing key. */
   const enroll = (owner: ShieldedAddress, listTag: Bytes32 = ZERO_32): void => {
     const entry = trackingEntry(owner, listTag);
-    enrolled.set(hex(entry.member), entry);
+    enrolled.set(bytesToHex(entry.member), entry);
     publishTracking();
   };
   const slot = options.slot ?? 1n;
@@ -356,7 +353,7 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
   let proofs = 0;
   const treeAt = (registry: Address, expectedRoot: Bytes32) => {
     const served = trees.get(registry);
-    if (served === undefined || hex(served.tree.root) !== hex(expectedRoot))
+    if (served === undefined || bytesToHex(served.tree.root) !== bytesToHex(expectedRoot))
       throw new Error("openings under an unknown root");
     return served;
   };
@@ -381,7 +378,7 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
       };
     },
     getTrackingOpenings: async (request) => {
-      if (hex(request.expectedRoot) !== hex(tracked.root))
+      if (bytesToHex(request.expectedRoot) !== bytesToHex(tracked.root))
         throw new Error("tracking openings under an unknown root");
       return {
         slot,
@@ -391,7 +388,7 @@ export async function ringFixture(options: RingFixtureOptions = {}) {
       };
     },
     getTrackingRecordPool: async (request) => {
-      if (hex(request.expectedRoot) !== hex(tracked.root))
+      if (bytesToHex(request.expectedRoot) !== bytesToHex(tracked.root))
         throw new Error("tracking pool under an unknown root");
       return tracked.pool(request.members, request.openings);
     },
@@ -599,12 +596,12 @@ export async function expanded(fixture: Fixture, proven: ProvenRingTransfer, rai
   );
   const bytes = instruction.data?.subarray(1) ?? new Uint8Array();
   const data = RingTransactData.parse(bytes, rail);
-  expect(hex(RingTransactData.encode(data))).toBe(hex(bytes));
+  expect(bytesToHex(RingTransactData.encode(data))).toBe(bytesToHex(bytes));
   const call = fixture.sppCalls.at(-1);
   if (call === undefined) throw new Error("no SPP proof");
   const config = { auditorPubkey: fixture.auditor.publicKey().toBytes() };
-  expect(hex(encodeRingTransactInstructionData(RingTransactData.expand(data, config)))).toBe(
-    hex(encodeRingTransactInstructionData(call.data)),
+  expect(bytesToHex(encodeRingTransactInstructionData(RingTransactData.expand(data, config)))).toBe(
+    bytesToHex(encodeRingTransactInstructionData(call.data)),
   );
   expect(
     RingTransactData.externalDataHash(

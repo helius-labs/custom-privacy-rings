@@ -38,6 +38,7 @@ import {
   type KnownUtxos,
 } from "./audit.js";
 import { RowOrigins } from "./row-origins.js";
+import { defined } from "../../protocol/defined.js";
 
 export type RingMergeAuditReader = KitRpcAccess &
   Pick<IndexerReader, "getShieldedTransactionsByTags">;
@@ -99,7 +100,7 @@ export async function auditRingMerges(
       client: input.client,
       ringProgramId: input.ringProgramId,
       rows,
-      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      ...defined({ cursor: input.cursor }),
       limits: scanLimits(input),
     },
     (confirmed, eventIndex) => {
@@ -126,7 +127,7 @@ export async function auditRingMerges(
   return Object.freeze({
     merges: Object.freeze(merges),
     skipped: Object.freeze(rows.skipped),
-    ...(nextCursor === undefined ? {} : { nextCursor }),
+    ...defined({ nextCursor }),
   });
 }
 
@@ -205,7 +206,7 @@ export function openRingMerge(
               firstNullifier,
               nullifier,
               position,
-              ...(known === undefined ? {} : { known }),
+              ...defined({ known }),
             }),
           }),
         ),

@@ -30,20 +30,29 @@ use crate::{
     AnonymousError,
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct RingConfidentialNotes {
     pub owned: OwnedUtxos,
     /// Unspent zero-key notes, outside `owned` and every automatic path.
     pub exposed_if_spent: Vec<WalletUtxo>,
 }
 
+zolana_ring_keys::redacted_debug!(RingConfidentialNotes {
+    hidden: [owned, exposed_if_spent],
+});
+
 /// What a read of the whole ring opened with no tag read.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct RingFullScan {
     pub owned: RingOwnedUtxos,
     pub pending: Vec<PendingNote>,
     pub auditor_recovery: AuditorRecovery,
 }
+
+// The ring's bodies minus the unopened ones show the wallet's notes.
+zolana_ring_keys::redacted_debug!(RingFullScan {
+    hidden: [owned, pending, auditor_recovery],
+});
 
 /// Reads the spends of the notes it opens and the ring merges among them, the scanned transactions alone miss a spend without change.
 #[must_use]
@@ -270,10 +279,7 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
                 let fresh = *bound..counter.listed().end;
                 *bound = fresh.end;
                 // A later round lists only tags no stored sync read.
-                let read_before = match first {
-                    true => counter.read_before().end,
-                    false => 0,
-                };
+                let read_before = if first { counter.read_before().end } else { 0 };
                 let split = read_before.min(fresh.end).max(fresh.start);
                 let parts = [
                     (fresh.start..split, entry.tag_position()),
@@ -336,8 +342,8 @@ impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
             keys: self.keys,
             assets: self.assets,
         };
-        for opened in codec.opened(row)? {
-            let Some(slot) = usize::try_from(opened.opening.slot_index)
+        for opened in codec.opened(row, &self.keys.viewing_public_keys())? {
+            let Some(slot) = usize::try_from(opened.slot_index)
                 .ok()
                 .and_then(|position| row.output_slots.get(position))
             else {

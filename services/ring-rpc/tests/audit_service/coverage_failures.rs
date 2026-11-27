@@ -4,9 +4,13 @@ use zolana_ring_client::rpc::{
 };
 
 async fn status(service: &AuditService<StaticSource>, wallet: [u8; 32]) -> GetWalletStatusResponse {
-    let request = WalletStatusRequest::new(target(RING), Address::new_from_array(wallet))
-        .sign(&delegate())
-        .expect("signed read");
+    let request = WalletStatusRequest::new(WalletStatusAttestation {
+        target: target(RING),
+        wallet: Address::new_from_array(wallet),
+        cursor: None,
+    })
+    .sign(&delegate())
+    .expect("signed read");
     service.wallet_status(&request).await.expect("status read")
 }
 
@@ -29,7 +33,7 @@ async fn a_failed_config_read_moves_no_history_slot() {
     let mut source = fixture.source().with_transactions(Vec::new());
     source.next_cursor = None;
     let config_down = source.config_down.clone();
-    let service = fixture.hub(source).service(None).expect("service");
+    let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("first pass");
     let first = status(&service, [0xb0; 32]).await.history_through;
     assert!(first > 0);
@@ -65,7 +69,7 @@ async fn an_unreadable_frame_holds_the_history_slot_for_everyone_and_shows_only_
     source
         .confirmed_events
         .insert((merge_signature, 0), confirmed);
-    let hub = Arc::new(fixture.hub(source));
+    let hub = Arc::new(fixture.hub(source).await);
     let service = hub.service(None).expect("service");
     service.backfill_utxos().await.expect("terminal pass");
 
@@ -90,7 +94,7 @@ async fn an_unreadable_frame_holds_the_history_slot_for_everyone_and_shows_only_
 async fn an_unauthorized_caller_is_refused_the_operator_read() {
     let fixture = Fixture::new();
     let source = fixture.source().with_transactions(Vec::new());
-    let module = rpc_module(Arc::new(fixture.hub(source))).expect("module");
+    let module = rpc_module(Arc::new(fixture.hub(source).await)).expect("module");
     let call = |request| {
         let module = module.clone();
         async move {
@@ -119,7 +123,11 @@ async fn spend_coverage_refuses_upgrade_authority_and_foreign_auditor() {
     let fixture = Fixture::new();
     let mut uninitialized = fixture.source().with_transactions(Vec::new());
     uninitialized.configs.clear();
-    let service = fixture.hub(uninitialized).service(None).expect("service");
+    let service = fixture
+        .hub(uninitialized)
+        .await
+        .service(None)
+        .expect("service");
     assert!(matches!(
         service.spend_coverage(&coverage_request(&deployer())).await,
         Err(RingAuditError::Service(ServiceError::Unauthorized(
@@ -133,7 +141,7 @@ async fn spend_coverage_refuses_upgrade_authority_and_foreign_auditor() {
         .get_mut(&RING)
         .expect("config")
         .auditor_pubkey = X25519Keypair::new().pubkey();
-    let service = fixture.hub(foreign).service(None).expect("service");
+    let service = fixture.hub(foreign).await.service(None).expect("service");
     assert!(matches!(
         service
             .spend_coverage(&coverage_request(&authority()))
@@ -142,4 +150,54 @@ async fn spend_coverage_refuses_upgrade_authority_and_foreign_auditor() {
             Unauthorized::AuditorKeyMismatch
         )))
     ));
+}
+
+#[tokio::test]
+async fn a_refused_coverage_read_spends_no_nonce_and_a_repeat_reads_replay() {
+    let fixture = Fixture::new();
+    let store = Store::in_memory().await.expect("store");
+    let source = fixture.source().with_transactions(Vec::new());
+    let service = stored_hub(&fixture, source, store.clone())
+        .await
+        .service(None)
+        .expect("service");
+    assert!(matches!(
+        service.spend_coverage(&coverage_request(&deployer())).await,
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
+            Unauthorized::NotPolicyAuthority
+        )))
+    ));
+    assert_eq!(spent_nonces(&store).await.expect("rows"), 0);
+    let request = coverage_request(&authority());
+    service.spend_coverage(&request).await.expect("first read");
+    assert!(matches!(
+        service.spend_coverage(&request).await,
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
+            Unauthorized::Replay
+        )))
+    ));
+}
+
+#[tokio::test]
+async fn a_malformed_coverage_cursor_spends_no_nonce() {
+    let fixture = Fixture::new();
+    let store = Store::in_memory().await.expect("store");
+    let source = fixture.source().with_transactions(Vec::new());
+    let service = stored_hub(&fixture, source, store.clone())
+        .await
+        .service(None)
+        .expect("service");
+    let malformed = SpendCoverageRequest::new(SpendCoverageAttestation {
+        target: target(RING),
+        authority: authority().pubkey(),
+        cursor: Some(vec![1; 3].into()),
+    })
+    .at(unix_now().expect("clock"))
+    .sign(&authority())
+    .expect("signed coverage");
+    assert!(matches!(
+        service.spend_coverage(&malformed).await,
+        Err(RingAuditError::InvalidCursor)
+    ));
+    assert_eq!(spent_nonces(&store).await.expect("rows"), 0);
 }

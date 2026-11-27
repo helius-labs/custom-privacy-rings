@@ -6,7 +6,7 @@ import { RingError } from "../error.js";
 import { ANONYMOUS_PARTIES } from "../transaction/transact.js";
 
 /**
- * The co-signers in `CoSigners` account order, zero past the last, Rust `AnonymousParties`. The
+ * The co-signers in `CoSigners` account order, zero past the last, Rust `anonymous_party_identities`. The
  * proof holds the hidden owner apart from every cell, a hidden co-signer would approve its own outflow.
  */
 export function anonymousPartyIdentities(coSigners: readonly Address[]): readonly Bytes32[] {

@@ -1,8 +1,6 @@
 //! Ring output bodies in SPP's encrypted output framing, schemes SPP stores without parsing.
 //! Owned output buffers and borrowed SPP payloads share the same header and segment order.
 //! A ring body is the slot's proven record followed by its unproven payload, one stream.
-//!
-//! Read after `program-libs/interface/src/proof/disclosure.rs`. Read before `program-libs/interface/src/codec/stream.rs`.
 
 use spr_event::{OutputDataEncoding, CONFIDENTIAL_ENCRYPTED_SCHEME_TAG};
 

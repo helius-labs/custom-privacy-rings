@@ -5,9 +5,6 @@
 //! a present member by its leaf and an absent member by the leaf bracketing it, so no prover can leave
 //! out the record that convicts its subject. The sentinel and the strict member range make that
 //! bracket exist for every member.
-//!
-//! Read after `docs/design/records-and-roots.md`. Read before `program-libs/interface/src/accounts/storage.rs`,
-//! `program-libs/member-registry/src/tree.rs`, `prover/circuits/registry/apply_records.go`.
 
 use spr_hasher::{
     primitives::{right_align, BN254_SCALAR_MODULUS_BE},

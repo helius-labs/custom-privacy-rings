@@ -10,7 +10,7 @@ use zolana_ring_client::{
 use super::*;
 pub use ring_audit::{
     tracking::HeldEnrollment,
-    utxos::{block_on, CreatedIn, PageWork},
+    utxos::{CreatedIn, PageWork},
 };
 
 const ALICE: [u8; 32] = [0xa1; 32];
@@ -72,18 +72,19 @@ fn frame() -> CreatedIn {
     }
 }
 
-fn store_with(notes: &[CreatedUtxo]) -> AuditStore {
-    let store = AuditStore::default();
+async fn store_with(notes: &[CreatedUtxo]) -> AuditStore {
+    let store =
+        AuditStore::on_internal_database(RING, &X25519Keypair::from_bytes(&[0x41; 32])).await;
     let rows = notes
         .iter()
         .map(|note| HeldEnrollment::unsealed(note.utxo.owner_key, &key_of(&note.utxo.owner_key)))
         .collect();
-    let admission = block_on(store.enrollment_admission(rows)).expect("admission");
-    store.admit_enrollments(admission).expect("admitted");
+    let admission = store.enrollment_admission(rows).await.expect("admission");
+    store.admit_enrollments(admission);
     let opener = |held: &HeldEnrollment| Some(key_of(&held.owner_key));
     let mut work = PageWork::new(&store, &opener);
     work.open(frame(), notes.iter().copied());
-    store.commit(block_on(work.finish()).expect("page"));
+    store.commit(work.finish().await.expect("page"));
     store
 }
 
@@ -186,12 +187,12 @@ fn audited(inputs: Vec<Input>, outputs: Vec<AuditedOutput>) -> AuditedTransactio
     }
 }
 
-fn read(
+async fn read(
     store: &AuditStore,
     audited: &AuditedTransaction,
     public: Vec<PublicFlow>,
 ) -> Result<TransferRead, RingCosignerError> {
-    let notes = block_on(real_input_notes(store, audited))?;
+    let notes = real_input_notes(store, audited).await?;
     FrameFlows {
         audited,
         notes: &notes,
@@ -236,10 +237,10 @@ fn the_reservation_key_is_the_identity_a_deposit_and_the_circuit_hold() {
     );
 }
 
-#[test]
-fn change_returns_to_its_owner_and_a_credit_never_moves() {
+#[tokio::test]
+async fn change_returns_to_its_owner_and_a_credit_never_moves() {
     let (alice, bob) = (note(ALICE, 0x10, 30), note(BOB, 0x11, 10));
-    let store = store_with(&[alice, bob]);
+    let store = store_with(&[alice, bob]).await;
     let read = read(
         &store,
         &audited(
@@ -248,50 +249,54 @@ fn change_returns_to_its_owner_and_a_credit_never_moves() {
         ),
         Vec::new(),
     )
+    .await
     .expect("rows");
     assert_eq!(outflows(&read.flows), [(owner_identity(&ALICE), 25)]);
     assert!(read.spends_note);
 }
 
-#[test]
-fn an_exit_to_the_same_owner_counts_as_leaving() {
+#[tokio::test]
+async fn an_exit_to_the_same_owner_counts_as_leaving() {
     let alice = note(ALICE, 0x10, 30);
-    let store = store_with(&[alice]);
+    let store = store_with(&[alice]).await;
     let exit = slot(0, OutputOpening::Exit(utxo(ALICE, 30)));
     let read = read(
         &store,
         &audited(vec![spend(&alice)], vec![exit]),
         Vec::new(),
     )
+    .await
     .expect("rows");
     assert_eq!(outflows(&read.flows), [(owner_identity(&ALICE), 30)]);
 }
 
 /// A withdrawal of funds a deposit let the owner keep still leaves, the shared formula charges it.
-#[test]
-fn a_withdrawal_reads_the_statement_gross_and_never_an_empty_one() {
+#[tokio::test]
+async fn a_withdrawal_reads_the_statement_gross_and_never_an_empty_one() {
     let alice = note(ALICE, 0x10, 1000);
-    let store = store_with(&[alice]);
+    let store = store_with(&[alice]).await;
     let transaction = audited(vec![spend(&alice)], vec![ring_slot(0, ALICE, 1000)]);
-    let read_public = |public_flows| {
-        read(&store, &transaction, public_flows)
+    let (store, transaction) = (&store, &transaction);
+    let read_public = |public_flows| async move {
+        read(store, transaction, public_flows)
+            .await
             .expect("rows")
             .flows
     };
     assert_eq!(
-        outflows(&read_public(vec![public(999, 1000)])),
+        outflows(&read_public(vec![public(999, 1000)]).await),
         [(owner_identity(&ALICE), 999)]
     );
-    assert!(outflows(&read_public(Vec::new()))
+    assert!(outflows(&read_public(Vec::new()).await)
         .iter()
         .all(|(_, outflow)| *outflow == 0));
 }
 
 /// Of the 100 spent 25 and 5 exit and 40 stay in the ring, a public leg withdraws or deposits 30.
-#[test]
-fn what_leaves_is_each_exit_and_withdrawal_leg_and_never_a_deposit_or_a_ring_output() {
+#[tokio::test]
+async fn what_leaves_is_each_exit_and_withdrawal_leg_and_never_a_deposit_or_a_ring_output() {
     let alice = note(ALICE, 0x10, 100);
-    let store = store_with(&[alice]);
+    let store = store_with(&[alice]).await;
     let exits = audited(
         vec![spend(&alice)],
         vec![
@@ -301,20 +306,24 @@ fn what_leaves_is_each_exit_and_withdrawal_leg_and_never_a_deposit_or_a_ring_out
         ],
     );
     let stays = audited(vec![spend(&alice)], vec![ring_slot(0, BOB, 100)]);
-    let leaving = |transaction: &AuditedTransaction, public_flows| {
-        read(&store, transaction, public_flows)
+    let store = &store;
+    let exiting = async |transaction: &AuditedTransaction, public_flows: Vec<PublicFlow>| {
+        read(store, transaction, public_flows)
+            .await
             .expect("rows")
-            .leaving
+            .flows
+            .iter()
+            .map(|flow| (*flow.owner.as_bytes(), flow.flow.exiting))
+            .collect::<Vec<_>>()
     };
-    let of_the_mint = |amount: u128| BTreeMap::from([(mint_of_asset(), amount)]);
-    assert_eq!(leaving(&exits, vec![public(30, 0)]), of_the_mint(60));
-    assert_eq!(leaving(&exits, vec![public(0, 30)]), of_the_mint(30));
-    assert_eq!(leaving(&stays, vec![public(0, 30)]), BTreeMap::new());
+    let of_alice = |amount: u128| vec![(owner_identity(&ALICE), amount)];
+    assert_eq!(exiting(&exits, vec![public(30, 0)]).await, of_alice(60));
+    assert_eq!(exiting(&exits, vec![public(0, 30)]).await, of_alice(30));
+    assert_eq!(exiting(&stays, vec![public(0, 30)]).await, of_alice(0));
 }
 
-/// A deposit funds the exit of 15 and no note is spent, the rows ask the registry for no mint.
-#[test]
-fn a_deposit_funded_exit_and_an_exit_of_nothing_need_no_registry_mint() {
+#[tokio::test]
+async fn a_deposit_funded_exit_and_an_exit_of_nothing_need_no_registry_mint() {
     let no_mints = RingAssets::new([]).expect("assets");
     let of_no_mint = AuditedUtxo {
         asset: [9; 32],
@@ -327,7 +336,9 @@ fn a_deposit_funded_exit_and_an_exit_of_nothing_need_no_registry_mint() {
             slot(1, OutputOpening::Exit(of_no_mint)),
         ],
     );
-    let notes = block_on(real_input_notes(&store_with(&[]), &transaction)).expect("notes");
+    let notes = real_input_notes(&store_with(&[]).await, &transaction)
+        .await
+        .expect("notes");
     let read = FrameFlows {
         audited: &transaction,
         notes: &notes,
@@ -338,12 +349,12 @@ fn a_deposit_funded_exit_and_an_exit_of_nothing_need_no_registry_mint() {
     }
     .read(0)
     .expect("read");
-    assert_eq!(read.leaving, BTreeMap::from([(mint_of_asset(), 15)]));
+    assert!(read.flows.iter().all(|flow| flow.flow.exiting == 0));
 }
 
-#[test]
-fn a_dummy_input_and_a_dummy_slot_answer_for_nothing() {
-    let store = store_with(&[]);
+#[tokio::test]
+async fn a_dummy_input_and_a_dummy_slot_answer_for_nothing() {
+    let store = store_with(&[]).await;
     let read = read(
         &store,
         &audited(
@@ -352,59 +363,69 @@ fn a_dummy_input_and_a_dummy_slot_answer_for_nothing() {
         ),
         Vec::new(),
     )
+    .await
     .expect("rows");
     assert!(read.flows.is_empty());
     assert!(!read.spends_note);
 }
 
 /// A real input the index cannot name refuses until its note opens.
-#[test]
-fn an_unresolved_nullifier_refuses_the_signature_until_its_note_opens() {
+#[tokio::test]
+async fn an_unresolved_nullifier_refuses_the_signature_until_its_note_opens() {
     let alice = note(ALICE, 0x12, 40);
     let transaction = audited(vec![spend(&alice)], vec![ring_slot(0, BOB, 40)]);
-    assert!(refused(read(&store_with(&[]), &transaction, Vec::new())));
-    let store = store_with(&[alice]);
-    let read = read(&store, &transaction, Vec::new()).expect("opened");
+    assert!(refused(
+        read(&store_with(&[]).await, &transaction, Vec::new()).await
+    ));
+    let store = store_with(&[alice]).await;
+    let read = read(&store, &transaction, Vec::new())
+        .await
+        .expect("opened");
     assert_eq!(outflows(&read.flows), [(owner_identity(&ALICE), 40)]);
 }
 
 /// Default-ring evidence names its own owner, a co-signer signs an entry with no index row.
-#[test]
-fn an_external_input_answers_under_its_own_evidence() {
+#[tokio::test]
+async fn an_external_input_answers_under_its_own_evidence() {
     let transaction = audited(
         vec![entry(ALICE, 0x11, 30), entry(BOB, 0x12, 10)],
         vec![ring_slot(0, BOB, 40)],
     );
-    let read = read(&store_with(&[]), &transaction, Vec::new()).expect("rows");
+    let read = read(&store_with(&[]).await, &transaction, Vec::new())
+        .await
+        .expect("rows");
     assert_eq!(outflows(&read.flows), [(owner_identity(&ALICE), 30)]);
     assert!(read.spends_note);
 }
 
 /// One frame's `R` exceeds the notes the index and the entries name, the read refuses.
-#[test]
-fn a_spend_neither_the_index_nor_an_entry_names_refuses_the_read() {
+#[tokio::test]
+async fn a_spend_neither_the_index_nor_an_entry_names_refuses_the_read() {
     let alice = note(ALICE, 0x12, 40);
     let mut transaction = audited(
         vec![spend(&alice), entry(BOB, 0x22, 10)],
         vec![ring_slot(0, BOB, 50)],
     );
-    let store = store_with(&[alice]);
-    assert!(read(&store, &transaction, Vec::new()).is_ok());
+    let store = store_with(&[alice]).await;
+    assert!(read(&store, &transaction, Vec::new()).await.is_ok());
     transaction.real_inputs += 1;
-    assert!(refused(read(&store, &transaction, Vec::new())));
+    assert!(refused(read(&store, &transaction, Vec::new()).await));
 }
 
 /// A resolved spend names its owner, an unindexed spend stays another party's.
-#[test]
-fn a_resolved_spend_names_its_party_and_an_unresolved_spend_stays_another_party() {
+#[tokio::test]
+async fn a_resolved_spend_names_its_party_and_an_unresolved_spend_stays_another_party() {
     let resolved = note(ALICE, 0x12, 40);
     let unindexed = note(ALICE, 0x13, 25);
-    let store = store_with(&[resolved]);
+    let store = store_with(&[resolved]).await;
     let nullifiers = [spend(&resolved).nullifier(), spend(&unindexed).nullifier()];
-    block_on(store.spend(nullifiers));
+    store.spend(nullifiers).await;
     let published: Vec<Hash> = nullifiers.into_iter().map(Hash).collect();
     let wallet = Address::new_from_array(ALICE);
-    let parties = block_on(store.input_parties(&wallet, &published)).expect("parties");
+    let parties = store
+        .input_parties(&wallet, &published)
+        .await
+        .expect("parties");
     let owned: Vec<bool> = published
         .iter()
         .map(|nullifier| parties.owns(nullifier))
@@ -412,19 +433,19 @@ fn a_resolved_spend_names_its_party_and_an_unresolved_spend_stays_another_party(
     assert_eq!(owned, [true, false]);
 }
 
-#[test]
-fn an_unread_slot_or_an_unknown_mint_refuses_the_whole_read() {
+#[tokio::test]
+async fn an_unread_slot_or_an_unknown_mint_refuses_the_whole_read() {
     let alice = note(ALICE, 0x10, 30);
-    let store = store_with(&[alice]);
+    let store = store_with(&[alice]).await;
     let mut transaction = audited(vec![spend(&alice)], vec![ring_slot(0, BOB, 30)]);
     transaction.payload_errors.push(OutputPayloadError {
         slot_index: 1,
         kind: OutputPayloadErrorKind::Commitment,
     });
-    assert!(refused(read(&store, &transaction, Vec::new())));
+    assert!(refused(read(&store, &transaction, Vec::new()).await));
     let no_mints = RingAssets::new([]).expect("assets");
     let transaction = audited(vec![spend(&alice)], vec![ring_slot(0, BOB, 30)]);
-    let notes = block_on(real_input_notes(&store, &transaction)).expect("notes");
+    let notes = real_input_notes(&store, &transaction).await.expect("notes");
     assert!(refused(
         FrameFlows {
             audited: &transaction,
@@ -439,13 +460,14 @@ fn an_unread_slot_or_an_unknown_mint_refuses_the_whole_read() {
 }
 
 /// A no-spend frame sits on the ring's own tag, only ring caps read its legs.
-#[test]
-fn a_public_funded_transfer_with_no_sender_reads_as_no_spend() {
+#[tokio::test]
+async fn a_public_funded_transfer_with_no_sender_reads_as_no_spend() {
     let read = read(
-        &store_with(&[]),
+        &store_with(&[]).await,
         &audited(Vec::new(), vec![ring_slot(0, BOB, 15)]),
         vec![public(0, 15)],
     )
+    .await
     .expect("no spend");
     assert!(!read.spends_note);
     let [row] = read.flows.as_slice() else {
@@ -528,5 +550,96 @@ fn the_reserved_figure_matches_the_circuit_quantities() {
             })
             .collect();
         assert_eq!(reserved, circuit, "{}", case["name"]);
+    }
+}
+
+/// Each owner's identity starts with its byte.
+struct Moved {
+    inputs: Vec<DebitInput>,
+    outputs: Vec<DebitOutput>,
+    public: Vec<PublicFlow>,
+}
+
+impl Moved {
+    /// Each row's owner byte and its exit measure.
+    fn exiting(self) -> Vec<(u8, u128)> {
+        OwnerFlows {
+            inputs: &self.inputs,
+            outputs: &self.outputs,
+            owner_signers: &[],
+            public: &self.public,
+            no_spend_owner: Member::from_bytes([0xee; 32]).expect("tag"),
+        }
+        .rows(|_| Ok(mint_of_asset()))
+        .expect("rows")
+        .iter()
+        .map(|row| (row.owner.as_bytes()[0], row.flow.exiting))
+        .collect()
+    }
+}
+
+#[test]
+fn an_owner_exits_the_smaller_of_its_charge_and_what_leaves_its_asset() {
+    let spent = |owner: u8, amount| DebitInput {
+        owner: [owner; 32],
+        asset: asset_field(),
+        amount,
+    };
+    let paid = |owner: u8, amount| DebitOutput {
+        ring: true,
+        owner: [owner; 32],
+        asset: asset_field(),
+        amount,
+    };
+    let exited = |owner: u8, amount| DebitOutput {
+        ring: false,
+        ..paid(owner, amount)
+    };
+    let legs = |deposited, withdrawn| PublicFlow {
+        mint: mint_of_asset(),
+        asset: asset_field(),
+        deposited,
+        withdrawn,
+    };
+    let cases = [
+        // An exit and a withdrawal leave, a payment inside the ring does not.
+        (
+            vec![spent(7, 30)],
+            vec![exited(9, 30)],
+            vec![],
+            vec![(7, 30)],
+        ),
+        (vec![spent(7, 30)], vec![], vec![legs(0, 30)], vec![(7, 30)]),
+        (vec![spent(7, 30)], vec![paid(8, 30)], vec![], vec![(7, 0)]),
+        (
+            vec![spent(7, 100)],
+            vec![paid(8, 70), exited(9, 30)],
+            vec![],
+            vec![(7, 30)],
+        ),
+        // The frame names no payer of an exit, each owner counts up to all that leaves.
+        (
+            vec![spent(7, 10), spent(8, 50)],
+            vec![exited(1, 20), exited(2, 10), paid(3, 30)],
+            vec![],
+            vec![(7, 10), (8, 30)],
+        ),
+        // A spend returned to its owner beside a deposit funded exit counts by its charge.
+        (
+            vec![spent(7, 100)],
+            vec![paid(7, 100), exited(8, 100)],
+            vec![legs(100, 0)],
+            vec![(7, 100)],
+        ),
+        // A public leg alone spends no note and charges no owner.
+        (vec![], vec![], vec![legs(0, 30)], vec![(0xee, 0)]),
+    ];
+    for (inputs, outputs, public, expected) in cases {
+        let moved = Moved {
+            inputs,
+            outputs,
+            public,
+        };
+        assert_eq!(moved.exiting(), expected);
     }
 }

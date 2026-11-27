@@ -1,5 +1,6 @@
 use custom_ring_interface::{
-    AnonymousParties, CustomRingError, SettlementAccount, TokenAccountControl, TokenAccountState,
+    anonymous_party_identities, CustomRingError, SettlementAccount, TokenAccountControl,
+    TokenAccountState,
 };
 use solana_address::Address;
 use spl_token_2022_interface::pod::{PodAccount, PodCOption};
@@ -9,6 +10,7 @@ use spr_interface::{
     SPL_TOKEN_PROGRAM_ID,
 };
 use zolana_ring_client::AnonymousExitDestination;
+use zolana_ring_client::AnonymousExitRefusal;
 use zolana_ring_client::WithdrawalLeg;
 use zolana_ring_client::SYSTEM_PROGRAM_ID;
 
@@ -144,19 +146,19 @@ fn an_anonymous_exit_names_one_key_or_its_refusal() {
         (spl(&OFF_CURVE, &sole), Ok(OWNER)),
         (
             sol(&SYSTEM_PROGRAM_ID, 80),
-            Err(CustomRingError::AnonymousExitAccountHasData),
+            Err(AnonymousExitRefusal::AccountHasData(wallet)),
         ),
         (
             sol(&token_program, 0),
-            Err(CustomRingError::AnonymousExitAccountHasData),
+            Err(AnonymousExitRefusal::AccountHasData(wallet)),
         ),
         (
             spl(&ON_CURVE, &sole),
-            Err(CustomRingError::AnonymousExitTokenAccountOnCurve),
+            Err(AnonymousExitRefusal::TokenAccountOnCurve(ON_CURVE)),
         ),
         (
             spl(&OFF_CURVE, &shared),
-            Err(CustomRingError::AnonymousExitTokenAccountShared),
+            Err(AnonymousExitRefusal::TokenAccountShared(OFF_CURVE)),
         ),
     ] {
         assert_eq!(exit.named_key().copied(), named, "{exit:?}");
@@ -170,11 +172,8 @@ fn the_co_signers_fill_the_cells_in_order() {
         Address::new_from_array([8; 32]),
         Address::new_from_array([9; 32]),
     ];
-    let parties = AnonymousParties {
-        co_signers: &co_signers,
-    };
     assert_eq!(
-        parties.identities(),
+        anonymous_party_identities(&co_signers),
         Ok([
             solana_owner_identity(co_signers[0].as_array()).unwrap(),
             solana_owner_identity(co_signers[1].as_array()).unwrap(),
@@ -188,16 +187,9 @@ fn the_co_signers_fill_the_cells_in_order() {
 #[test]
 fn a_co_signer_past_the_fifth_is_refused() {
     let co_signers = [Address::new_from_array([8; 32]); 6];
-    assert!(AnonymousParties {
-        co_signers: &co_signers[..5],
-    }
-    .identities()
-    .is_ok());
+    assert!(anonymous_party_identities(&co_signers[..5]).is_ok());
     assert_eq!(
-        AnonymousParties {
-            co_signers: &co_signers,
-        }
-        .identities(),
+        anonymous_party_identities(&co_signers),
         Err(CustomRingError::TooManyAnonymousParties)
     );
 }

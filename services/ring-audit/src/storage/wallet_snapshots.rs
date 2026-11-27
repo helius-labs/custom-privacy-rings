@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeMap, VecDeque},
-    num::NonZeroUsize,
-    sync::{Arc, Mutex},
-};
+use std::num::NonZeroUsize;
 
 use sea_orm::{
     ConnectionTrait, DatabaseBackend, DatabaseConnection, DatabaseTransaction, IsolationLevel,
@@ -16,10 +12,7 @@ use crate::{
     error::{RingAuditError, ServiceError},
     owner_notes::{snapshot_history_through, OwnerNotesPage, OWNER_ROW_BATCH},
     spent_index::{read_revision, read_snapshot, NoteSeal},
-    utxos::{
-        Balances, IndexedNote, OwnerPage, OwnerRange, WalletCursor, WalletCursorScope,
-        WalletStatusQuery,
-    },
+    utxos::{Balances, OwnerPage, OwnerRange, WalletCursor, WalletCursorScope, WalletStatusQuery},
 };
 use ring_service_core::sql;
 
@@ -38,20 +31,6 @@ impl Default for WalletSnapshotLimits {
             principal_wallet: const { NonZeroUsize::new(2).expect("nonzero wallet snapshot limit") },
         }
     }
-}
-
-pub(crate) type SharedWalletSnapshots = Arc<Mutex<MemoryWalletSnapshots>>;
-
-#[derive(Default)]
-pub(crate) struct MemoryWalletSnapshots {
-    sessions: BTreeMap<[u8; 32], MemorySnapshot>,
-}
-
-struct MemorySnapshot {
-    ring: Address,
-    metadata: SnapshotMetadata,
-    chunks: VecDeque<Vec<IndexedNote>>,
-    released: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -107,18 +86,6 @@ impl SnapshotMetadata {
         })
     }
 
-    fn page_metadata(&self) -> Self {
-        Self {
-            principal: self.principal.clone(),
-            wallet: self.wallet,
-            expires_at: self.expires_at,
-            through: self.through,
-            revision: self.revision,
-            enrollment: self.enrollment,
-            balances: Vec::new(),
-        }
-    }
-
     fn authorize(&self, principal: &[u8; 34], wallet: &Address) -> Result<(), RingAuditError> {
         if self.principal != principal.as_slice() || self.wallet != wallet.to_bytes() {
             return Err(RingAuditError::InvalidCursor);
@@ -134,168 +101,6 @@ impl WalletSnapshotRelease {
             wallet: self.wallet,
         })
     }
-}
-
-impl MemoryWalletSnapshots {
-    pub(crate) fn read(&self, query: WalletStatusQuery) -> Result<SnapshotPage, RingAuditError> {
-        let cursor = query.after.ok_or(RingAuditError::InvalidCursor)?;
-        let session = self
-            .sessions
-            .get(&cursor.snapshot)
-            .ok_or(RingAuditError::WalletSnapshotExpired)?;
-        if session.ring != query.ring {
-            return Err(RingAuditError::InvalidCursor);
-        }
-        session
-            .metadata
-            .authorize(&query.principal, &query.wallet)?;
-        if session.released || session.metadata.expires_at <= query.now {
-            return Err(RingAuditError::WalletSnapshotExpired);
-        }
-        let start = session
-            .chunks
-            .partition_point(|chunk| chunk.last().is_some_and(|note| note.key <= cursor.after));
-        let mut notes: Vec<_> = session
-            .chunks
-            .iter()
-            .skip(start)
-            .flatten()
-            .filter(|note| note.key > cursor.after)
-            .take(query.limit.saturating_add(1))
-            .copied()
-            .collect();
-        let more = notes.len() > query.limit;
-        notes.truncate(query.limit);
-        Ok(SnapshotPage {
-            page: OwnerPage { notes, more },
-            metadata: session.metadata.page_metadata(),
-            id: Some(cursor.snapshot),
-        })
-    }
-
-    pub(crate) fn capture(
-        &mut self,
-        capture: MemoryCapture,
-        mut read: impl FnMut(OwnerRange) -> OwnerPage,
-    ) -> Result<SnapshotPage, RingAuditError> {
-        let MemoryCapture {
-            query,
-            through,
-            member,
-            limits,
-        } = capture;
-        let range = OwnerRange {
-            member,
-            after: None,
-            limit: query.limit,
-        };
-        let page = read(range);
-        let mut metadata = SnapshotMetadata::new(query, through)?;
-        let mut balances = Balances::default();
-        if !page.more {
-            for note in &page.notes {
-                balances.add(note, through);
-            }
-            metadata.balances = balances.into_values();
-            return Ok(SnapshotPage {
-                page,
-                metadata,
-                id: None,
-            });
-        }
-        let scope_count = self
-            .sessions
-            .values()
-            .filter(|session| {
-                session.ring == query.ring
-                    && session.metadata.principal == query.principal.as_slice()
-                    && session.metadata.wallet == query.wallet.to_bytes()
-            })
-            .count();
-        if self.sessions.len() >= limits.store.get() || scope_count >= limits.principal_wallet.get()
-        {
-            return Err(RingAuditError::WalletSnapshotCapacity);
-        }
-        let mut chunks = VecDeque::new();
-        let mut range = OwnerRange {
-            limit: OWNER_ROW_BATCH,
-            ..range
-        };
-        loop {
-            let captured = read(range);
-            for note in &captured.notes {
-                balances.add(note, through);
-            }
-            let last = captured.notes.last().map(|note| note.key);
-            if !captured.notes.is_empty() {
-                chunks.push_back(captured.notes);
-            }
-            if !captured.more {
-                break;
-            }
-            range.after =
-                Some(last.ok_or(RingAuditError::Service(ServiceError::StateUnavailable))?);
-        }
-        metadata.balances = balances.into_values();
-        let id = loop {
-            let id = rand::random();
-            if !self.sessions.contains_key(&id) {
-                break id;
-            }
-        };
-        self.sessions.insert(
-            id,
-            MemorySnapshot {
-                ring: query.ring,
-                metadata: metadata.clone(),
-                chunks,
-                released: false,
-            },
-        );
-        Ok(SnapshotPage {
-            page,
-            metadata,
-            id: Some(id),
-        })
-    }
-
-    pub(crate) fn release(&mut self, release: WalletSnapshotRelease) -> Result<(), RingAuditError> {
-        release.validate()?;
-        let Some(session) = self.sessions.get_mut(&release.cursor.snapshot) else {
-            return Ok(());
-        };
-        if session.ring != release.ring {
-            return Err(RingAuditError::InvalidCursor);
-        }
-        session
-            .metadata
-            .authorize(&release.principal, &release.wallet)?;
-        session.released = true;
-        self.cleanup(release.now);
-        Ok(())
-    }
-
-    pub(crate) fn cleanup(&mut self, now: u64) -> usize {
-        let expired = self.sessions.iter().find_map(|(id, session)| {
-            (session.released || session.metadata.expires_at <= now).then_some(*id)
-        });
-        let Some(id) = expired else { return 0 };
-        let Some(session) = self.sessions.get_mut(&id) else {
-            return 0;
-        };
-        let removed = session.chunks.pop_front().map_or(0, |chunk| chunk.len());
-        if session.chunks.is_empty() {
-            self.sessions.remove(&id);
-        }
-        removed
-    }
-}
-
-pub(crate) struct MemoryCapture {
-    pub query: WalletStatusQuery,
-    pub through: u64,
-    pub member: [u8; 32],
-    pub limits: WalletSnapshotLimits,
 }
 
 impl WalletSnapshots<'_> {
@@ -328,11 +133,17 @@ impl WalletSnapshots<'_> {
         };
         let fetched = i64::try_from(query.limit.saturating_add(1))
             .map_err(|_| RingAuditError::InvalidPage)?;
-        let rows = transaction.query_all(sql::statement(
-            &transaction,
-            "SELECT note_tag,sealed,spent_slot FROM wallet_snapshot_notes WHERE snapshot_id=$1 AND note_tag>$2 ORDER BY note_tag LIMIT $3",
-            vec![sql::bytes(&cursor.snapshot), sql::bytes(&cursor.after), fetched.into()],
-        )).await?;
+        let rows = sql::Query::new(
+            "SELECT note_tag,sealed,spent_slot FROM wallet_snapshot_notes WHERE \
+             snapshot_id=$1 AND note_tag>$2 ORDER BY note_tag LIMIT $3",
+            vec![
+                sql::bytes(&cursor.snapshot),
+                sql::bytes(&cursor.after),
+                fetched.into(),
+            ],
+        )
+        .all(&transaction)
+        .await?;
         let reader = OwnerNotesPage {
             ring: query.ring,
             seal: self.seal,
@@ -442,11 +253,19 @@ impl WalletSnapshots<'_> {
         )
         .await?;
         let id: [u8; 32] = rand::random();
-        transaction.execute(sql::statement(
-            &transaction,
-            "INSERT INTO wallet_snapshots(id,ring,scope_tag,expires_at,sealed) VALUES($1,$2,$3,$4,$5)",
-            vec![sql::bytes(&id), sql::bytes(query.ring.as_ref()), sql::bytes(&scope), sql::integer(metadata.expires_at)?, Vec::<u8>::new().into()],
-        )).await?;
+        sql::Query::new(
+            "INSERT INTO wallet_snapshots(id,ring,scope_tag,expires_at,sealed) \
+             VALUES($1,$2,$3,$4,$5)",
+            vec![
+                sql::bytes(&id),
+                sql::bytes(query.ring.as_ref()),
+                sql::bytes(&scope),
+                sql::integer(metadata.expires_at)?,
+                Vec::<u8>::new().into(),
+            ],
+        )
+        .execute(&transaction)
+        .await?;
         let owner_tag = self.seal.tags.owner_tag(&range.member)?;
         let mut batch = OwnerNotesPage {
             range: OwnerRange {
@@ -476,11 +295,16 @@ impl WalletSnapshots<'_> {
                 }
                 None => "",
             };
-            transaction.execute(sql::statement(
-                &transaction,
-                format!("INSERT INTO wallet_snapshot_notes(snapshot_id,note_tag,sealed,spent_slot) SELECT $1,note_tag,sealed,spent_slot FROM owner_notes WHERE ring=$2 AND owner_tag=$3 AND note_tag<=$4{after_clause}"),
+            sql::Query::new(
+                format!(
+                    "INSERT INTO wallet_snapshot_notes(snapshot_id,note_tag,sealed,spent_slot) \
+                     SELECT $1,note_tag,sealed,spent_slot FROM owner_notes WHERE ring=$2 AND \
+                     owner_tag=$3 AND note_tag<=$4{after_clause}"
+                ),
                 values,
-            )).await?;
+            )
+            .execute(&transaction)
+            .await?;
             if !captured.more {
                 break;
             }
@@ -491,13 +315,12 @@ impl WalletSnapshots<'_> {
             .map_err(|_| RingAuditError::Service(ServiceError::StateUnavailable))?;
         let key = self.seal.tags.snapshot_metadata(&id)?;
         let sealed = self.seal.seal(&key, &body)?;
-        transaction
-            .execute(sql::statement(
-                &transaction,
-                "UPDATE wallet_snapshots SET sealed=$2 WHERE id=$1",
-                vec![sql::bytes(&id), sealed.into()],
-            ))
-            .await?;
+        sql::Query::new(
+            "UPDATE wallet_snapshots SET sealed=$2 WHERE id=$1",
+            vec![sql::bytes(&id), sealed.into()],
+        )
+        .execute(&transaction)
+        .await?;
         transaction.commit().await?;
         Ok(SnapshotPage {
             page,
@@ -523,16 +346,15 @@ impl WalletSnapshots<'_> {
             .await?;
         if let Some(metadata) = metadata {
             metadata.authorize(&release.principal, &release.wallet)?;
-            transaction
-                .execute(sql::statement(
-                    &transaction,
-                    "UPDATE wallet_snapshots SET expires_at=0 WHERE id=$1 AND ring=$2",
-                    vec![
-                        sql::bytes(&release.cursor.snapshot),
-                        sql::bytes(release.ring.as_ref()),
-                    ],
-                ))
-                .await?;
+            sql::Query::new(
+                "UPDATE wallet_snapshots SET expires_at=0 WHERE id=$1 AND ring=$2",
+                vec![
+                    sql::bytes(&release.cursor.snapshot),
+                    sql::bytes(release.ring.as_ref()),
+                ],
+            )
+            .execute(&transaction)
+            .await?;
         }
         transaction.commit().await?;
         WalletSnapshotCleanup {
@@ -549,13 +371,12 @@ impl WalletSnapshots<'_> {
         db: &impl ConnectionTrait,
         lookup: SnapshotLookup,
     ) -> Result<Option<SnapshotMetadata>, RingAuditError> {
-        let row = db
-            .query_one(sql::statement(
-                db,
-                "SELECT expires_at,sealed FROM wallet_snapshots WHERE id=$1 AND ring=$2",
-                vec![sql::bytes(&lookup.id), sql::bytes(lookup.ring.as_ref())],
-            ))
-            .await?;
+        let row = sql::Query::new(
+            "SELECT expires_at,sealed FROM wallet_snapshots WHERE id=$1 AND ring=$2",
+            vec![sql::bytes(&lookup.id), sql::bytes(lookup.ring.as_ref())],
+        )
+        .one(db)
+        .await?;
         let Some(row) = row else { return Ok(None) };
         let stored_expiry = row.try_get::<i64>("", "expires_at")?;
         let key = self.seal.tags.snapshot_metadata(&lookup.id)?;
@@ -577,11 +398,17 @@ impl WalletSnapshots<'_> {
         db: &DatabaseTransaction,
         admission: SnapshotAdmission,
     ) -> Result<(), RingAuditError> {
-        let row = db.query_one(sql::statement(
-            db,
-            "SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ring=$1 AND scope_tag=$2 THEN 1 ELSE 0 END),0) AS scoped FROM wallet_snapshots",
-            vec![sql::bytes(admission.ring.as_ref()), sql::bytes(&admission.scope)],
-        )).await?.ok_or(RingAuditError::Service(ServiceError::StateUnavailable))?;
+        let row = sql::Query::new(
+            "SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN ring=$1 AND scope_tag=$2 \
+             THEN 1 ELSE 0 END),0) AS scoped FROM wallet_snapshots",
+            vec![
+                sql::bytes(admission.ring.as_ref()),
+                sql::bytes(&admission.scope),
+            ],
+        )
+        .one(db)
+        .await?
+        .ok_or(RingAuditError::Service(ServiceError::StateUnavailable))?;
         let total = row.try_get::<i64>("", "total")?;
         let scoped = row.try_get::<i64>("", "scoped")?;
         if usize::try_from(total)
@@ -608,30 +435,36 @@ struct SnapshotAdmission {
 }
 
 impl WalletSnapshotCleanup<'_> {
-    pub(crate) async fn run(self) -> Result<usize, RingAuditError> {
+    /// True when the run removed a row.
+    pub(crate) async fn run(&self) -> Result<bool, RingAuditError> {
         let transaction = self.db.begin().await?;
-        let row = transaction.query_one(sql::statement(
-            &transaction,
+        let row = sql::Query::new(
             "SELECT id FROM wallet_snapshots WHERE expires_at<=$1 ORDER BY expires_at,id LIMIT 1",
             vec![sql::integer(self.now)?],
-        )).await?;
+        )
+        .one(&transaction)
+        .await?;
         let Some(row) = row else {
             transaction.commit().await?;
-            return Ok(0);
+            return Ok(false);
         };
         let id = row.try_get::<Vec<u8>>("", "id")?;
-        let deleted = transaction.execute(sql::statement(
-            &transaction,
-            "DELETE FROM wallet_snapshot_notes WHERE snapshot_id=$1 AND note_tag IN (SELECT note_tag FROM wallet_snapshot_notes WHERE snapshot_id=$1 ORDER BY note_tag LIMIT $2)",
+        let notes = sql::Query::new(
+            "DELETE FROM wallet_snapshot_notes WHERE snapshot_id=$1 AND note_tag IN \
+             (SELECT note_tag FROM wallet_snapshot_notes WHERE snapshot_id=$1 ORDER BY \
+             note_tag LIMIT $2)",
             vec![id.clone().into(), sql::count(OWNER_ROW_BATCH)?],
-        )).await?.rows_affected();
-        transaction.execute(sql::statement(
-            &transaction,
-            "DELETE FROM wallet_snapshots WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM wallet_snapshot_notes WHERE snapshot_id=$1)",
+        )
+        .execute(&transaction)
+        .await?;
+        let snapshots = sql::Query::new(
+            "DELETE FROM wallet_snapshots WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM \
+             wallet_snapshot_notes WHERE snapshot_id=$1)",
             vec![id.into()],
-        )).await?;
+        )
+        .execute(&transaction)
+        .await?;
         transaction.commit().await?;
-        usize::try_from(deleted)
-            .map_err(|_| RingAuditError::Service(ServiceError::StateUnavailable))
+        Ok(notes > 0 || snapshots > 0)
     }
 }

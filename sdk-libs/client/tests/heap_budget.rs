@@ -20,8 +20,8 @@ use custom_ring_interface::{
     cosign::{ApprovalMask, CoSignOperation},
     key_catalog::{FrameKey, RecordPools, TransferShape, TransferSpend},
     storage::Revision,
-    AnonymousProofData, CustomRingError, InProofOwner, PolicyProof, PublicLeg, PublicSlots,
-    Replies, RingRail, RingTransactData, SlotBody, MIN_REPLY_LEN,
+    CustomRingError, InProofOwner, NamedRoots, PublicLeg, PublicSlots, RailAuthorization, Replies,
+    RingRail, RingTransactData, SlotBody, MIN_REPLY_LEN,
 };
 use frames::{Fixture, DATA_RING_RECORD_LEN};
 use ring_policy::config;
@@ -304,9 +304,10 @@ fn frame<'a>(fixture: &'a Fixture, pool: &'a Pool, case: Widest) -> Option<RingT
     }
     .fitted()
     .wide;
+    let own = Revision::from(7);
     if case.policy || case.thresholds {
         data.approval = ApprovalMask::OUTFLOW;
-        data.own_revision = Some(Revision::from(7));
+        data.named_roots = NamedRoots::Own(own);
     }
     data.interface_transfers = (0..case.legs)
         .map(|leg| {
@@ -320,16 +321,17 @@ fn frame<'a>(fixture: &'a Fixture, pool: &'a Pool, case: Widest) -> Option<RingT
             }
         })
         .collect();
-    if data.own_revision.is_some() {
+    if data.named_roots.own().is_some() {
         data.spl_withdrawal_owners = match case.kind {
             Legs::Sol => &[],
             Legs::Spl => &pool.owners[..case.legs],
         };
     }
     if case.policy {
-        data.policy = Some(PolicyProof {
-            curator_revision: (!anonymous).then(|| Revision::from(3)),
-        });
+        data.named_roots = NamedRoots::Policy {
+            own,
+            curator: (!anonymous).then(|| Revision::from(3)),
+        };
     }
     let exit_slot = (case.rail != RingRail::Delegate).then_some(case.outputs - 1);
     data.outputs = (0..case.outputs)
@@ -340,11 +342,7 @@ fn frame<'a>(fixture: &'a Fixture, pool: &'a Pool, case: Widest) -> Option<RingT
         })
         .collect();
     if anonymous {
-        data.anonymous = Some(AnonymousProofData {
-            commitment: &fixture.bytes[20],
-            commitment_pok: &fixture.bytes[21],
-            default_owner_tag: (!case.entry).then_some(&fixture.bytes[22]),
-        });
+        data.authorization = fixture.hidden((!case.entry).then_some(fixture.bytes[22]));
     }
     if case.replies {
         // Every slot but the exit carries a body.
@@ -358,10 +356,10 @@ fn frame<'a>(fixture: &'a Fixture, pool: &'a Pool, case: Widest) -> Option<RingT
         );
     }
     if case.in_proof {
-        data.in_proof_owner = Some(InProofOwner {
-            owner: &fixture.bytes[16],
-            commitment: &fixture.bytes[20],
-            commitment_pok: &fixture.bytes[21],
+        data.authorization = RailAuthorization::ConfidentialInProof(InProofOwner {
+            owner: fixture.bytes[16],
+            commitment: fixture.bytes[20],
+            commitment_pok: fixture.bytes[21],
         });
     }
     if case.payload != Payload::Base {
@@ -426,9 +424,7 @@ fn measure(compact: &[u8], rail: RingRail) -> Phases {
     let spp = Arena::used();
     Arena::stop();
     assert!(
-        demand.classes.bits() != 0
-            && slots.len() <= spr_interface::N_PUBLIC_SLOTS
-            && spp_data.len() > 1
+        demand.bits() != 0 && slots.len() <= spr_interface::N_PUBLIC_SLOTS && spp_data.len() > 1
     );
     Phases { parse, legs, spp }
 }
@@ -456,7 +452,7 @@ fn host_codec_allocations_cover_frames_up_to_the_transaction_ceiling() {
         .chain(widest.iter().map(|(name, data)| (name.clone(), data)))
     {
         let compact = data.encode().unwrap();
-        let phases = measure(&compact, data.rail);
+        let phases = measure(&compact, data.rail());
         report.push((name, compact.len(), phases));
     }
     for (name, bytes, phases) in &report {

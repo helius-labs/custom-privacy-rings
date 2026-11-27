@@ -32,14 +32,14 @@ impl<'a> Operation<'a> {
 
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
+pub(crate) enum Verdict {
     Admitted,
     Refused(CoSignRefusal),
 }
 
 /// One check of the co-signer, the only extension point.
 #[async_trait]
-pub trait CoSignRule: Send + Sync {
+pub(crate) trait CoSignRule: Send + Sync {
     async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingCosignerError>;
 
     /// Keeps or frees what `admit` reserved under the settled ticket.

@@ -3,9 +3,6 @@
 //! A frame carries SPP's merge body with `proof.b` compressed, and the program forwards it decompressed.
 //! SPP publishes no auditor message for a merge, so the auditor envelope and the record sealed to the
 //! owner's viewing key travel in the ring instruction alone and only the statement binds them.
-//!
-//! Read after `program-libs/interface/src/proof/statement.rs`. Read before
-//! `programs/custom-ring/src/instructions/settlement/merge.rs`, `prover/circuits/merge.go`.
 
 use crate::{
     bytes::Bytes, error::CustomRingError, storage::Revision, CustomRingProof, MERGE_ENVELOPE_LEN,

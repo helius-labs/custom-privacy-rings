@@ -42,7 +42,6 @@ import {
 } from "../../../src/protocol/transaction/transact.js";
 
 const field = (value: string): Bytes32 => hexToBytes(value) as Bytes32;
-const hex = (value: Uint8Array): string => bytesToHex(value);
 
 const RAILS: Readonly<Record<string, RingRail>> = {
   confidential: "confidential",
@@ -60,18 +59,18 @@ describe("ring-transact-expansion.json", () => {
     const rail = RAILS[vector.rail];
     if (rail === undefined) throw new Error(vector.rail);
     const data = RingTransactData.parse(hexToBytes(vector.compact), rail);
-    expect(hex(RingTransactData.encode(data))).toBe(vector.compact);
-    expect(hex(encodeRingTransactInstructionData(RingTransactData.expand(data, config)))).toBe(
-      vector.transact_ix_data,
-    );
-    expect(hex(RingTransactData.sppInstructionData(data, config))).toBe(
+    expect(bytesToHex(RingTransactData.encode(data))).toBe(vector.compact);
+    expect(
+      bytesToHex(encodeRingTransactInstructionData(RingTransactData.expand(data, config))),
+    ).toBe(vector.transact_ix_data);
+    expect(bytesToHex(RingTransactData.sppInstructionData(data, config))).toBe(
       vector.spp_instruction_data,
     );
     const settlements = vector.settlements.map(([asset, user]) => ({
       asset: encodeBase58(hexToBytes(asset as string)),
       user: encodeBase58(hexToBytes(user as string)),
     }));
-    expect(hex(RingTransactData.externalDataHash(data, config, settlements))).toBe(
+    expect(bytesToHex(RingTransactData.externalDataHash(data, config, settlements))).toBe(
       vector.external_data_hash,
     );
   });
@@ -89,17 +88,17 @@ describe("approval_totals_frame.json", () => {
       it("reads the digest under bit 4 of the extension byte", () => {
         expect(frame[entry.extension_offset]).toBe(entry.extension_byte);
         expect(entry.extension_byte & APPROVAL_TOTALS_BIT).toBe(APPROVAL_TOTALS_BIT);
-        expect(hex(frame.subarray(entry.digest_offset, entry.digest_offset + 32))).toBe(
+        expect(bytesToHex(frame.subarray(entry.digest_offset, entry.digest_offset + 32))).toBe(
           entry.digest,
         );
         const parsed = RingTransactData.parse(frame, "confidential");
-        expect(hex(parsed.extensions.approvalTotals as Uint8Array)).toBe(entry.digest);
+        expect(bytesToHex(parsed.extensions.approvalTotals as Uint8Array)).toBe(entry.digest);
       });
 
       it("writes the same bytes back", () => {
-        expect(hex(RingTransactData.encode(RingTransactData.parse(frame, "confidential")))).toBe(
-          entry.frame,
-        );
+        expect(
+          bytesToHex(RingTransactData.encode(RingTransactData.parse(frame, "confidential"))),
+        ).toBe(entry.frame);
       });
 
       it("adds the digest to the frame that has none", () => {
@@ -109,7 +108,7 @@ describe("approval_totals_frame.json", () => {
           ...base,
           extensions: { ...base.extensions, approvalTotals: digest as Bytes32 },
         });
-        expect(hex(written)).toBe(entry.frame);
+        expect(bytesToHex(written)).toBe(entry.frame);
       });
 
       it("refuses the next extension bit", () => {
@@ -140,7 +139,7 @@ describe("frame.hex", () => {
       const bytes = hexToBytes(line);
       const written = Object.values(RAILS).flatMap((rail) => {
         try {
-          return [hex(RingTransactData.encode(RingTransactData.parse(bytes, rail)))];
+          return [bytesToHex(RingTransactData.encode(RingTransactData.parse(bytes, rail)))];
         } catch {
           return [];
         }
@@ -201,15 +200,15 @@ describe("transfer_statement.json", () => {
       publicGross: vector.public_gross.map(field),
       withdrawalHash: field(vector.withdrawal_hash),
     };
-    expect(hex(statement.signers.chain)).toBe(vector.signer_chain);
+    expect(bytesToHex(statement.signers.chain)).toBe(vector.signer_chain);
     const withdrawals = vector.withdrawals.map((leg) => ({
       owner: field(leg.owner),
       asset: field(leg.asset),
       amount: BigInt(leg.amount),
     }));
-    expect(hex(policyWithdrawalHash(withdrawals))).toBe(vector.withdrawal_hash);
-    expect(transferStatementElements(statement).map(hex)).toEqual(vector.elements);
-    expect(hex(transferStatementHash(statement))).toBe(vector.public_input_hash);
+    expect(bytesToHex(policyWithdrawalHash(withdrawals))).toBe(vector.withdrawal_hash);
+    expect(transferStatementElements(statement).map(bytesToHex)).toEqual(vector.elements);
+    expect(bytesToHex(transferStatementHash(statement))).toBe(vector.public_input_hash);
   });
 });
 
@@ -303,17 +302,17 @@ describe("tracking-records.json", () => {
     for (const application of tracking.applications) {
       let chain = field(application.chain_start);
       for (const write of application.writes) {
-        expect(hex(trackingEntryHash(entryOf(write.entry))), application.name).toBe(
+        expect(bytesToHex(trackingEntryHash(entryOf(write.entry))), application.name).toBe(
           write.entry.entry_hash,
         );
-        expect(hex(trackingRecordHash(recordOf(write.low))), application.name).toBe(
+        expect(bytesToHex(trackingRecordHash(recordOf(write.low))), application.name).toBe(
           write.low.leaf_hash,
         );
         chain = chainLink(chain, trackingEntryHash(entryOf(write.entry)));
       }
-      expect(hex(chain), application.name).toBe(application.chain_end);
+      expect(bytesToHex(chain), application.name).toBe(application.chain_end);
       expect(
-        hex(
+        bytesToHex(
           applyEnrollmentsStatementHash({
             oldRoot: field(application.old_root),
             newRoot: field(application.new_root),

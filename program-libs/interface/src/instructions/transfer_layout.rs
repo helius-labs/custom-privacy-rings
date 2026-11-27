@@ -13,9 +13,6 @@
 //! 5. SPP's list forwarded whole, payer and `ring_config` in its prefix, then input trees, nullifier PDAs, owner run, settlement groups, cache accounts.
 //!
 //! `test-vectors/proof/transfer-layout.json` pins the windows, `sdk-libs/client/tests/transfer_layout.rs` writes it.
-//!
-//! Read after `program-libs/interface/src/instructions/cosign.rs`. Read before
-//! `program-libs/interface/src/instructions/transfer_cpi.rs`, `programs/custom-ring/src/instructions/transfer/accounts.rs`.
 
 use core::ops::Range;
 
@@ -77,7 +74,7 @@ impl TransferLayout {
         accounts: usize,
         prefix: &mut P,
     ) -> Result<Self, P::Error> {
-        let delegate_rail = frame.rail.is_delegate();
+        let delegate_rail = frame.rail().is_delegate();
         let read = RootRead::transfer(ring, delegate_rail);
         let registries = 1..1 + ring.root_registries(read).count();
         let pairs = prefix.co_signer_pairs(registries.end, frame.co_sign_requirement(ring))?;

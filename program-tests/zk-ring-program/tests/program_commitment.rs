@@ -327,9 +327,10 @@ impl Case {
             0 => None,
             paid => Some(self.pay(self.recipient, paid, SppProofOutputUtxo::default())),
         };
-        let payments: Vec<_> = match self.payment_first {
-            true => paid.into_iter().chain([state]).collect(),
-            false => [state].into_iter().chain(paid).collect(),
+        let payments: Vec<_> = if self.payment_first {
+            paid.into_iter().chain([state]).collect()
+        } else {
+            [state].into_iter().chain(paid).collect()
         };
         payments.into_iter().fold(
             CustomRingTransfer::new(CustomRingTransferInput {

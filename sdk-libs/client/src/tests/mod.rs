@@ -4,6 +4,9 @@ mod account;
 mod limits;
 #[path = "merge/builder.rs"]
 mod merge;
+#[path = "records/openings.rs"]
+mod openings;
+mod redaction;
 pub(crate) mod support;
 #[path = "state/pool_trees.rs"]
 mod trees;

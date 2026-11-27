@@ -31,6 +31,7 @@ import {
   freshNonce,
 } from "./signed-request.js";
 import { signMessage } from "../../protocol/ring-rpc/read-signer.js";
+import { defined } from "../../protocol/defined.js";
 
 const POLICY_AUTHORITY_DOMAIN = "zolana/ring-rpc-policy-authority";
 
@@ -106,11 +107,11 @@ export async function signPendingListApprovalsRequest(
 ): Promise<GetPendingListApprovalsRequest> {
   const checked = checkedReadTarget(target);
   const registry = address(target.registry, "registry");
-  const action = { kind: "list" as const, registry, ...(cursor === undefined ? {} : { cursor }) };
+  const action = { kind: "list" as const, registry, ...defined({ cursor }) };
   return Object.freeze({
     ring: checked.ringProgramId,
     registry,
-    ...(cursor === undefined ? {} : { cursor }),
+    ...defined({ cursor }),
     auth: await policyAuthorityAuth(checked, authority, action, timestamp),
   });
 }

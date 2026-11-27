@@ -1,8 +1,5 @@
 //! The tracking tree's leaf, one indexed tree per ring holding every enrolled key.
 //!
-//! Read after `program-libs/member-registry/src/tree.rs`, `program-libs/interface/src/accounts/tracking.rs`.
-//! Read before `prover/circuits/registry/tracking.go`, `prover/circuits/registry/apply_enrollments.go`.
-//!
 //! Invariants, `ApplyEnrollmentsCircuit` holds each.
 //! 1. A proven entry of an absent owner inserts, an unproven one changes nothing, so no rotation creates a row.
 //! 2. An entry of a present owner moves only `viewing_hash`, and only from the `prior_viewing_hash` it names. The nullifier key, ciphertext hash and list tag stay as first inserted, an auditor's opened secrets keep matching them, and an older rotation never replays over a newer one.
@@ -164,9 +161,10 @@ impl WritableLeaf for TrackingRecord {
             present: step.present,
             low: step.low,
             low_path: step.low_path,
-            slot: match insert {
-                true => step.slot,
-                false => TrackingPath::default(),
+            slot: if insert {
+                step.slot
+            } else {
+                TrackingPath::default()
             },
         }
     }

@@ -21,7 +21,10 @@ use crate::{
     api,
     block::{BlockInfo, BlockMetadata, Instruction, InstructionGroup, TransactionInfo},
     error::RingApiError,
-    indexer::{block_batch, Indexer, Readiness, RegistryCall, StartSlot, MIN_BLOCK_BATCH},
+    indexer::{
+        block_batch, from_storage, ApplyError, Indexer, Readiness, RegistryCall, StartSlot,
+        MIN_BLOCK_BATCH,
+    },
     migration::Migrator,
     rpc::SolanaRpc,
     storage::{
@@ -212,7 +215,7 @@ fn start_slots_parse_a_slot_or_latest() {
 
 #[test]
 fn the_announcement_signs_with_a_pinned_kms_key_alone() {
-    use clap::{error::ErrorKind, Parser};
+    use clap::{error::ErrorKind, CommandFactory, FromArgMatches};
     use zolana_operator_custody::{KeyArn, KmsEndpoint};
 
     const KEY_ARN: &str =
@@ -223,7 +226,7 @@ fn the_announcement_signs_with_a_pinned_kms_key_alone() {
         let base = [
             "ring-indexer",
             "--db-url",
-            "sqlite::memory:",
+            "sqlite://ring-indexer.db",
             "--photon-url",
             "http://127.0.0.1:8784",
             "--photon-registry-url",
@@ -231,7 +234,11 @@ fn the_announcement_signs_with_a_pinned_kms_key_alone() {
             "--public-url",
             "http://127.0.0.1:8786",
         ];
-        crate::Args::try_parse_from(base.iter().chain(flags))
+        // No ambient variable reaches the parse.
+        let matches = crate::Args::command()
+            .mut_args(|arg| arg.env(None::<&str>))
+            .try_get_matches_from(base.iter().chain(flags))?;
+        crate::Args::from_arg_matches(&matches)
     };
 
     let seed = parse(&["--service-key-file", "service.seed"]).unwrap_err();
@@ -312,6 +319,62 @@ async fn storage_shaped_instructions_of_other_programs_cost_no_queries() {
         costs.push(statements.load(Ordering::Relaxed) - before);
     }
     assert_eq!(costs[0], costs[1]);
+}
+
+#[tokio::test]
+async fn a_storage_call_under_another_program_moves_no_registry() {
+    let db = database().await;
+    let registry = [11; 32];
+    let before = create_registry(&db, registry).await;
+    let takeover = TransactionInfo {
+        signature: Signature::from([1; 64]),
+        error: None,
+        instruction_groups: vec![InstructionGroup {
+            outer_instruction: Instruction {
+                program_id: Address::new_from_array([0x55; 32]),
+                data: vec![tag::UPDATE_AUTHORITY],
+                accounts: vec![
+                    before.account.authority,
+                    Address::new_from_array([0x66; 32]),
+                    Address::new_from_array(registry),
+                ],
+                stack_height: Some(1),
+            },
+            inner_instructions: vec![],
+        }],
+    };
+    let block = BlockInfo {
+        metadata: BlockMetadata {
+            slot: 3,
+            blockhash: Hash(field(3)),
+            ..Default::default()
+        },
+        transactions: vec![takeover],
+    };
+
+    let tx = db.begin().await.unwrap();
+    indexer(&db, None)
+        .apply_block(&tx, &block, &mut RingCursor::new(0))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let after = StorageStore::new(&db, registry).state().await.unwrap();
+    assert_eq!(after, Some(before));
+}
+
+#[test]
+fn a_stored_value_the_codecs_refuse_faults_its_ring_and_a_database_failure_retries() {
+    let refused = ring_service_core::sql::integer(u64::MAX).unwrap_err();
+    assert!(matches!(
+        from_storage(anyhow::Error::from(refused).context("load")),
+        ApplyError::Fault(_)
+    ));
+    let failed = sea_orm::DbErr::RecordNotFound("row".into());
+    assert!(matches!(
+        from_storage(anyhow::Error::from(failed).context("load")),
+        ApplyError::Retry(_)
+    ));
 }
 
 #[test]

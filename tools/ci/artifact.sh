@@ -6,10 +6,11 @@ name="${1:?artifact name}"
 cd "$(git rev-parse --show-toplevel)"
 
 common=(justfile tools/ci/artifact.sh)
+rust_tree=(. ':!sdk-libs/ts' ':!docs' ':!.github' ':!*.md' ':!package.json' ':!package-lock.json')
 case "$name" in
   zolana_programs)
     inputs=(zolana)
-    paths=(zolana/target/deploy/shielded_pool_program.so zolana/target/deploy/spr_user_registry.so)
+    paths=(zolana/target/deploy/shielded_pool_program.so zolana/target/deploy/spr_user_registry.so zolana/target/deploy/squads_smart_account_program.so)
     ;;
   ring_program)
     inputs=(zolana Cargo.toml Cargo.lock rust-toolchain.toml .cargo programs program-libs examples/enrollment-vault program-tests/zk-ring-program)
@@ -21,7 +22,7 @@ case "$name" in
     ;;
   zolana_tools)
     inputs=(zolana rust-toolchain.toml .cargo)
-    paths=(zolana/target/debug/zolana zolana/target/debug/xtask)
+    paths=(zolana/target/debug/zolana zolana/target/debug/xtask zolana/target/tools/surfpool)
     ;;
   photon)
     inputs=(zolana rust-toolchain.toml .cargo)
@@ -32,8 +33,12 @@ case "$name" in
     paths=(target/prover-server)
     ;;
   ring_tools)
-    inputs=(. ':!sdk-libs/ts' ':!docs' ':!.github' ':!*.md' ':!package.json' ':!package-lock.json')
-    paths=(target/debug/ring-indexer target/debug/zolana-ring target/debug/ring-rpc target/nextest-archives)
+    inputs=("${rust_tree[@]}")
+    paths=(target/debug/ring-indexer target/debug/zolana-ring target/debug/ring-rpc target/nextest-archives/custom-ring-test-validator.tar.zst)
+    ;;
+  ring_proofs_archive)
+    inputs=("${rust_tree[@]}")
+    paths=(target/nextest-archives/proofs)
     ;;
   *)
     echo "unknown artifact $name" >&2

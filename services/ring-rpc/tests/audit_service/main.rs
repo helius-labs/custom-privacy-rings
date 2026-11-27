@@ -1,25 +1,17 @@
-#[path = "../../../sdk-libs/client/tests/common/origin.rs"]
+#[path = "../../../../sdk-libs/client/tests/common/origin.rs"]
 mod origin_fixture;
 
-#[path = "audit_service/audit_pages.rs"]
 mod audit_pages;
-#[path = "audit_service/authorization.rs"]
 mod authorization;
-#[path = "audit_service/backfill.rs"]
 mod backfill;
-#[path = "audit_service/cosign_relay.rs"]
 mod cosign_relay;
-#[path = "audit_service/coverage_failures.rs"]
 mod coverage_failures;
-#[path = "audit_service/frame_repairs.rs"]
 mod frame_repairs;
-#[path = "audit_service/reader_grants.rs"]
 mod reader_grants;
-#[path = "audit_service/record_updates.rs"]
 mod record_updates;
-#[path = "common/relay.rs"]
+#[path = "../common/relay.rs"]
 mod relay_fixture;
-#[path = "../../../sdk-libs/client/tests/common/transfer.rs"]
+#[path = "../../../../sdk-libs/client/tests/common/transfer.rs"]
 pub mod transfer;
 
 use custom_ring_interface::CoSignScope;
@@ -43,14 +35,16 @@ use zolana_ring_policy::{ListId, Member, MintPolicy};
 
 use p256::ecdsa::signature::hazmat::PrehashSigner;
 use ring_audit::audit::{AuditRead, AuditService, Page};
-use ring_audit::RingAuditError;
+use ring_audit::{error::GrantRefusal, RingAuditError};
 use ring_cosigner::cosign::{ApproveClass, CoSignerApproval};
+use ring_relay::RingRelayError;
 use ring_service_core::authorize::{ReadCheck, Unauthorized, AUTH_SKEW};
 use ring_service_core::clock::Clock;
-use ring_service_core::database::Store;
+use ring_service_core::database::{ServiceStore, Store};
 use ring_service_core::error::CarriedFault;
 use ring_service_core::keys::{GrantRowsSecret, RootSecret};
 use ring_service_core::origins::{OriginPolicy, Origins};
+use ring_service_core::replay::spent_nonces;
 use ring_service_core::upstream::{
     MergeAuditRequest, RecordsTip, RingConfiguration, RingFrame, RingHistoryPage, ScopeUnreadable,
     TransactionPage, TransactionSource,
@@ -80,9 +74,10 @@ use zolana_ring_client::{
         GetDecryptedTransactionsResponse, GetWalletActivityResponse, HealthResponse, KeyMode,
         PagedRead, ReadAttestation, ReadAuth, ReadBuildError, ReadSignature, ReadSigner,
         ReadTarget, ReaderGrantAction, ReaderGrantAttestation, ReaderGrantRequest, RingChainStatus,
-        SkippedReason, WalletActivity, WalletEnrollment, WalletStatusRequest, WalletView,
-        WebAuthnAssertion, AUDITED_UTXOS_LIMIT, CREATE_AUDITOR_KEY, GET_AUDITED_MERGES,
-        GET_AUDITED_UTXOS, GET_DECRYPTED_TRANSACTIONS, HEALTH, SET_READER_GRANT,
+        SkippedReason, WalletActivity, WalletEnrollment, WalletStatusAttestation,
+        WalletStatusRequest, WalletView, WebAuthnAssertion, AUDITED_UTXOS_LIMIT,
+        CREATE_AUDITOR_KEY, GET_AUDITED_MERGES, GET_AUDITED_UTXOS, GET_DECRYPTED_TRANSACTIONS,
+        HEALTH, SET_READER_GRANT,
     },
     AuditError, MergeAuditPage, P256ReaderKey, ReaderKey, RingIndexerError, RingOrigin,
     RingWithdrawal, StorageTip,
@@ -92,7 +87,7 @@ use zolana_ring_indexer::rpc::{
     GetStorageMemberRecordsRequest, GetStorageMemberRecordsResponse, RingIndexedMemberRecordView,
     RingMemberOpening, RingMemberRecordView, RingRecordPathView, StorageRootView,
 };
-use zolana_ring_rpc::{rpc_module, Hub, RingRpcError, ServiceIdentity};
+use zolana_ring_rpc::{rpc_module, Hub, ServiceIdentity};
 use zolana_ring_transaction::RingAssets;
 
 use transfer::{field, x25519_u, Disclosure, Frame, Output, Publish, Rail, Transfer, UtxoFields};
@@ -529,9 +524,10 @@ impl StaticSource {
             .max(position.token().map(|token| token.slot()))
             .unwrap_or_default();
         // A retry keeps the slots the first read gave, a real history never moves a row.
-        let first_slot = match marker.is_none() && position.token().is_none() {
-            true => 1,
-            false => floor + 1,
+        let first_slot = if marker.is_none() && position.token().is_none() {
+            1
+        } else {
+            floor + 1
         };
         let data: Vec<_> = (first_slot..)
             .zip(paged.transactions)
@@ -679,10 +675,10 @@ impl TransactionSource for StaticSource {
             .push(self.marker(request.position));
         let response = self.page_at(request.position, request.limit, None);
         async move {
-            match capped || down {
-                true => Err(ClientError::Rpc("history read cap".to_owned())),
-                false => Ok(response),
+            if capped || down {
+                return Err(ClientError::Rpc("history read cap".to_owned()));
             }
+            Ok(response)
         }
     }
 
@@ -1137,20 +1133,31 @@ impl Fixture {
         ])
     }
 
-    fn hub(&self, source: StaticSource) -> Hub<StaticSource> {
+    async fn hub(&self, source: StaticSource) -> Hub<StaticSource> {
         Hub::builder(source, identity(GENESIS))
             .with_origins(origins())
             .local(RING, self.auditor.clone())
+            .await
             .expect("hub")
     }
 
-    fn hub_at(&self, source: StaticSource, now: u64) -> Hub<StaticSource> {
+    async fn hub_at(&self, source: StaticSource, now: u64) -> Hub<StaticSource> {
         Hub::builder(source, identity(GENESIS))
             .with_origins(origins())
             .with_clock(Clock::Fixed(now))
             .local(RING, self.auditor.clone())
+            .await
             .expect("hub")
     }
+}
+
+async fn stored_hub(fixture: &Fixture, source: StaticSource, store: Store) -> Hub<StaticSource> {
+    Hub::builder(source, identity(GENESIS))
+        .with_origins(origins())
+        .with_store(ServiceStore::Durable(store))
+        .local(RING, fixture.auditor.clone())
+        .await
+        .expect("hub")
 }
 
 fn amounts(item: &DecryptedTransaction) -> Vec<u64> {

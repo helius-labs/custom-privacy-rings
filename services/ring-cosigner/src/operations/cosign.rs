@@ -47,7 +47,7 @@ pub enum Sender {
 }
 
 #[derive(Clone, Copy)]
-pub struct FrameSource<'a> {
+pub(crate) struct FrameSource<'a> {
     pub(crate) message: &'a VersionedMessage,
     pub(crate) approved_transfer: Option<&'a ApprovedCall>,
 }
@@ -74,6 +74,8 @@ pub struct AssetFlow {
     pub debit: u128,
     /// `debit` plus the owner's charge, compared with owner caps and `cosign_above`.
     pub charged_outflow: u128,
+    /// At most `charged_outflow`, and at most what the frame moves out of the ring of `asset`.
+    pub exiting: u128,
     /// A sum of u64 legs, past `u64::MAX` while the net stays a u64 magnitude.
     pub deposited: u128,
     pub withdrawn: u128,

@@ -1,7 +1,6 @@
 //! Checks a signed record update and plans its batches. Every update takes one lifecycle, pending list approval when it awaits lists, then queued, submitted, and applied or refused.
 //! Pending list approval is the wait for the policy authority to approve off chain, a KYC check for one, and is not an enrollment. The writer holds the wallet's writes until the authority's own update sets every awaited list, then sends both in one `Update`.
 //! It reserves no approval and binds the authority to nothing, an update past its valid until slot turns refused.
-//! Read `update_queue` after for the stored states and `record_writer` for the passes that move them.
 
 use std::collections::BTreeMap;
 
@@ -34,7 +33,7 @@ use crate::error::WriterError;
 
 pub use zolana_ring_client::rpc::BATCH_WINDOW_SLOTS;
 /// Failed or expired batches an update rides in before it turns refused.
-pub const MAX_BATCH_ATTEMPTS: u64 = 3;
+pub(crate) const MAX_BATCH_ATTEMPTS: u64 = 3;
 /// One day of 250 ms slots, the longest an update waits pending list approval.
 pub const MAX_LIST_APPROVAL_WINDOW_SLOTS: u64 = 4 * 60 * 60 * 24;
 /// Thirty days of 250 ms slots.
@@ -237,10 +236,7 @@ impl RecordUpdateRefusal {
     pub fn unless_committed(salt: &[u8; 32], ring_list_tag: &[u8; 32]) -> Result<(), Self> {
         let committed = *ring_list_tag != [0; 32]
             && domain::list_tag(salt).is_ok_and(|tag| tag == *ring_list_tag);
-        match committed {
-            true => Ok(()),
-            false => Err(Self::RingSaltNotCommitted),
-        }
+        committed.then_some(()).ok_or(Self::RingSaltNotCommitted)
     }
 }
 
@@ -322,7 +318,7 @@ impl RecordUpdateCheck<'_> {
 
 impl CheckedUpdate {
     /// Each member once, in write order.
-    pub fn written_members(&self) -> Result<Vec<[u8; 32]>, RecordUpdateRefusal> {
+    pub(crate) fn written_members(&self) -> Result<Vec<[u8; 32]>, RecordUpdateRefusal> {
         let mut members = Vec::new();
         for write in &self.writes {
             if !members.contains(&write.member) {
@@ -332,7 +328,7 @@ impl CheckedUpdate {
         Ok(members)
     }
 
-    pub fn approval_grants(&self) -> Result<Vec<ApprovalGrant>, RecordUpdateRefusal> {
+    pub(crate) fn approval_grants(&self) -> Result<Vec<ApprovalGrant>, RecordUpdateRefusal> {
         if self.awaited.is_some() {
             return Ok(Vec::new());
         }
@@ -352,7 +348,7 @@ impl CheckedUpdate {
             .collect())
     }
 
-    pub fn limited_assets(&self) -> Result<Vec<[u8; 32]>, RecordUpdateRefusal> {
+    pub(crate) fn limited_assets(&self) -> Result<Vec<[u8; 32]>, RecordUpdateRefusal> {
         Ok(self
             .entries
             .iter()
@@ -394,12 +390,12 @@ impl UpdateSigner {
         signer
     }
 
-    pub const fn is_authority(self) -> bool {
+    pub(crate) const fn is_authority(self) -> bool {
         matches!(self, Self::PolicyAuthority(_))
     }
 
     /// A wallet write outlives a policy rotation, an authority write lapses with the role.
-    pub fn holds_role(self, policy_authority: Address) -> bool {
+    pub(crate) fn holds_role(self, policy_authority: Address) -> bool {
         match self {
             Self::Wallet(_) => true,
             Self::PolicyAuthority(signer) => policy_authority == signer,

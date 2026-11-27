@@ -41,10 +41,7 @@ fn address(seed: u8) -> Address {
 fn ring(rail: RingRail) -> Box<RingPolicy> {
     let mut ring: Box<RingPolicy> = bytemuck::zeroed_box();
     ring.discriminator = RING_POLICY;
-    ring.mode = match rail.anonymous_frame() {
-        true => 2,
-        false => 0,
-    };
+    ring.mode = if rail.anonymous_frame() { 2 } else { 0 };
     ring.auditor_pubkey[0] = 4;
     ring.tracking = address(0x21);
     ring
@@ -165,10 +162,7 @@ fn cases(fixture: &Fixture) -> Vec<Case<'_>> {
         case.frame = fixture.delegate();
         case.owners = Vec::new();
         case.ring.delegate = address(0x31);
-        case.delegate = Some(match mint {
-            true => address(0x32),
-            false => address(0x31),
-        });
+        case.delegate = Some(if mint { address(0x32) } else { address(0x31) });
         case
     };
     [
@@ -201,7 +195,7 @@ impl Case<'_> {
 
     /// The ring prefix, then SPP's own builder for the forwarded list.
     fn accounts(&self) -> Vec<AccountMeta> {
-        let delegate_rail = self.frame.rail.is_delegate();
+        let delegate_rail = self.frame.rail().is_delegate();
         let mut accounts = vec![AccountMeta::new_readonly(address(0x20), false)];
         accounts.extend(
             self.ring
@@ -231,33 +225,30 @@ impl Case<'_> {
         let input_trees = (0..self.frame.input_trees.count())
             .map(|tree| address(0x80 + tree as u8))
             .collect();
-        let spp = match delegate_rail {
-            true => {
-                RingAuthorityTransact {
-                    payer: address(0x50),
-                    input_trees,
-                    output_tree: address(0x80),
-                    ring_program_id: RING_PROGRAM,
-                    interface_transfer_accounts: self.legs.clone(),
-                    data,
-                }
-                .instruction()
-                .accounts
+        let spp = if delegate_rail {
+            RingAuthorityTransact {
+                payer: address(0x50),
+                input_trees,
+                output_tree: address(0x80),
+                ring_program_id: RING_PROGRAM,
+                interface_transfer_accounts: self.legs.clone(),
+                data,
             }
-            false => {
-                let transact = RingTransact {
-                    payer: address(0x50),
-                    input_trees,
-                    output_tree: address(0x80),
-                    ring_program_id: RING_PROGRAM,
-                    owner_signers: self.owners.clone(),
-                    interface_transfer_accounts: self.legs.clone(),
-                    data,
-                };
-                match self.cache {
-                    Some(cache) => transact.instruction_with_cache_read(cache).accounts,
-                    None => transact.instruction().accounts,
-                }
+            .instruction()
+            .accounts
+        } else {
+            let transact = RingTransact {
+                payer: address(0x50),
+                input_trees,
+                output_tree: address(0x80),
+                ring_program_id: RING_PROGRAM,
+                owner_signers: self.owners.clone(),
+                interface_transfer_accounts: self.legs.clone(),
+                data,
+            };
+            match self.cache {
+                Some(cache) => transact.instruction_with_cache_read(cache).accounts,
+                None => transact.instruction().accounts,
             }
         };
         accounts.extend(spp.into_iter().map(|meta| AccountMeta {
@@ -318,13 +309,14 @@ fn compute_vector() -> Value {
         .map(|case| {
             let accounts = case.accounts();
             let layout = case.layout(accounts.len()).unwrap();
-            let ring_tag = match case.frame.rail.is_delegate() {
-                true => tag::AUTHORITY_TRANSFER,
-                false => tag::TRANSFER,
+            let ring_tag = if case.frame.rail().is_delegate() {
+                tag::AUTHORITY_TRANSFER
+            } else {
+                tag::TRANSFER
             };
             json!({
                 "name": case.name,
-                "rail": case.frame.rail.to_string(),
+                "rail": case.frame.rail().to_string(),
                 "data": hex::encode([&[ring_tag][..], &case.frame.encode().unwrap()].concat()),
                 "ring_policy": hex::encode(bytemuck::bytes_of(&*case.ring)),
                 "co_signer_pairs": case.pairs.len(),
@@ -461,7 +453,7 @@ fn every_window_holds_the_accounts_the_spp_builder_placed() {
         );
 
         // The records the program reads and the located SPP window give the same map.
-        if !case.frame.rail.is_delegate() {
+        if !case.frame.rail().is_delegate() {
             let covered = TransferLayout::new(
                 &case.frame,
                 &case.ring,
@@ -498,11 +490,11 @@ fn every_window_holds_the_accounts_the_spp_builder_placed() {
 fn the_windows_of_every_frame_tile_the_list() {
     let fixture = Fixture::new();
     for (name, frame) in fixture.cases() {
-        let ring = ring(frame.rail);
+        let ring = ring(frame.rail());
         for owners in [0, 3] {
             let mut prefix = KnownPrefix {
                 co_signer_pairs: 2,
-                delegate_mint: frame.rail.is_delegate(),
+                delegate_mint: frame.rail().is_delegate(),
             };
             let shortest = TransferLayout::new(&frame, &ring, usize::MAX, &mut prefix)
                 .unwrap()
@@ -516,12 +508,12 @@ fn the_windows_of_every_frame_tile_the_list() {
                 + frame.cache_accounts();
             let accounts = shortest + owners;
             let layout = TransferLayout::new(&frame, &ring, accounts, &mut prefix).unwrap();
-            let delegate = usize::from(frame.rail.is_delegate());
+            let delegate = usize::from(frame.rail().is_delegate());
             assert_eq!(layout.registries.start, TransferLayout::RING + 1, "{name}");
             assert_eq!(layout.co_signers.start, layout.registries.end, "{name}");
             assert_eq!(
                 layout.delegate.is_some(),
-                frame.rail.is_delegate(),
+                frame.rail().is_delegate(),
                 "{name}"
             );
             assert_eq!(layout.spp, layout.co_signers.end + 2 * delegate, "{name}");

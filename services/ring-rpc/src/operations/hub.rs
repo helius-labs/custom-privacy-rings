@@ -6,27 +6,22 @@ use std::{
 use async_trait::async_trait;
 use solana_address::Address;
 use solana_signature::Signature;
-use spr_client::{AsyncRpc, ClientError};
+use spr_client::ClientError;
 use spr_keypair::X25519Keypair;
 use thiserror::Error;
 use tokio::sync::{watch, Mutex as AsyncMutex, Semaphore, SemaphorePermit};
 use zolana_operator_custody::SigningIdentity;
 use zolana_ring_client::{
     auditor_view_tag,
-    rpc::{
-        CoSignListEntry, EditCoSignListRequest, GetCoSignListsRequest, GetCoSignListsResponse,
-        GetDelegateNotesRequest, GetDelegateNotesResponse, GetListSaltRequest, GetListSaltResponse,
-        KeyMode, PrepareAuthorityTransferRequest, RelayStep, ServiceTarget,
-        SetMergeSettingsRequest, SetMergeSettingsResponse,
-    },
-    PrivateStorageWrite, ProvenPrivateWrite, RingClient, RingError, RingIndexerBackend,
+    rpc::{KeyMode, ServiceTarget},
+    PrivateStorageWrite, ProvenPrivateWrite, RingError,
 };
 use zolana_ring_transaction::RingAssets;
 
 use ring_service_core::{
     authorize::Unauthorized,
     clock::Clock,
-    database::Store,
+    database::ServiceStore,
     error::CarriedFault,
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
     keys::{GrantRowsSecret, KeySource, RootSecret},
@@ -46,28 +41,23 @@ use ring_writer::{
     enrollment_applier::{EnrollmentApplier, EnrollmentRefusal},
     record_update::{ReaderGrantStore, RecordUpdateRefusal},
     record_writer::{PrivateWrites, RecordWriter, SaltedOwner, WriterParts, RECORD_FLUSH_INTERVAL},
-    storage_chain::StorageChain,
+    storage_chain::{LiveStorageChain, StorageChain},
 };
 
-use crate::error::RingRpcError;
 use ring_audit::RingAuditError;
 use ring_cosigner::{
     cosign::{CoSignPolicy, CoSignerApproval},
-    cosign_limits::CoSignPolicyInit,
-    cosigner::{co_sign_lists, edit_co_sign_list},
+    cosign_limits::{CoSignPolicyInit, ExitCap},
 };
 use ring_relay::{
-    authority_transfer::{
-        delegate_notes, list_salt, prepare_authority_transfer, release_delegate_snapshot,
-    },
-    managed_merge::{set_merge_settings, ManagedMerge, ManagedMergeInit},
+    managed_merge::{ManagedMerge, ManagedMergeInit},
     relay::{Relay, RelayParts, SharedRings, RELAY_TRACK_INTERVAL},
     relay_reservations::RelayBudget,
-    relay_services::{MergeParts, RelayServices},
+    RingRelayError,
 };
 use ring_service_core::ServiceError;
 
-const READINESS_CACHE_INTERVAL: Duration = Duration::from_secs(1);
+pub(crate) const READINESS_CACHE_INTERVAL: Duration = Duration::from_secs(1);
 
 pub struct Hub<S> {
     signer: SigningIdentity,
@@ -76,7 +66,6 @@ pub struct Hub<S> {
     enrollments: Option<Arc<EnrollmentApplier>>,
     co_signer: Arc<dyn CoSignPolicy>,
     relay: Option<Arc<Relay>>,
-    merge: Option<MergeParts>,
     lanes: [(RequestRate, Option<Semaphore>); 3],
     readiness: AsyncMutex<ReadinessCache>,
 }
@@ -126,21 +115,21 @@ pub struct HubBuilder<S> {
     assets: Option<RingAssets>,
     origins: Origins,
     clock: Clock,
-    store: Option<Store>,
+    store: Option<ServiceStore>,
     snapshot_limits: WalletSnapshotLimits,
     storage: Option<(Arc<dyn StorageChain>, SigningIdentity)>,
     reader_grants: ReaderGrantStore,
     grant_rows: Option<GrantRowsSecret>,
     co_signer: Option<SigningIdentity>,
     co_signer_approval: CoSignerApproval,
+    co_signer_exit_caps: Vec<ExitCap>,
     relay_budget: RelayBudget,
     relay: Option<RelayParts>,
-    merge: Option<MergeParts>,
     enrollments: Option<Arc<EnrollmentApplier>>,
 }
 
 struct ReadinessCache {
-    checked_at: Option<Instant>,
+    checked_at: Option<tokio::time::Instant>,
     status: ReadinessStatus,
     in_flight: Option<watch::Receiver<Option<ReadinessStatus>>>,
 }
@@ -160,15 +149,15 @@ impl<S: TransactionSource> Hub<S> {
             grant_rows: None,
             co_signer: None,
             co_signer_approval: CoSignerApproval::default(),
+            co_signer_exit_caps: Vec::new(),
             relay_budget: RelayBudget::default(),
             relay: None,
-            merge: None,
             enrollments: None,
         }
     }
 
     /// The rate unit is spent even when every slot is taken.
-    pub(crate) fn admit(&self, lane: Lane) -> Result<LanePermit<'_>, RingRpcError> {
+    pub(crate) fn admit(&self, lane: Lane) -> Result<LanePermit<'_>, RingRelayError> {
         let index = match lane {
             Lane::Public => 0,
             Lane::Authentication => 1,
@@ -181,7 +170,7 @@ impl<S: TransactionSource> Hub<S> {
             .map(|slots| {
                 slots
                     .try_acquire()
-                    .map_err(|_| RingRpcError::Service(ServiceError::Busy))
+                    .map_err(|_| RingRelayError::Service(ServiceError::Busy))
             })
             .transpose()?;
         Ok(LanePermit { _permit: permit })
@@ -198,13 +187,13 @@ impl<S: TransactionSource> Hub<S> {
         self.signer.address()
     }
 
-    pub fn record_writer(&self) -> Result<&Arc<RecordWriter>, RingRpcError> {
+    pub fn record_writer(&self) -> Result<&Arc<RecordWriter>, RingRelayError> {
         self.writer
             .as_ref()
             .ok_or_else(|| RecordUpdateRefusal::Disabled.into())
     }
 
-    pub fn enrollment_applier(&self) -> Result<&Arc<EnrollmentApplier>, RingRpcError> {
+    pub fn enrollment_applier(&self) -> Result<&Arc<EnrollmentApplier>, RingRelayError> {
         self.enrollments
             .as_ref()
             .ok_or_else(|| EnrollmentRefusal::NotServed.into())
@@ -218,7 +207,7 @@ impl<S: TransactionSource> Hub<S> {
     pub(crate) async fn sign_attestation(
         &self,
         attestation: &[u8],
-    ) -> Result<Signature, RingRpcError> {
+    ) -> Result<Signature, RingRelayError> {
         Ok(self.signer.sign(attestation).await?)
     }
 
@@ -230,17 +219,15 @@ impl<S: TransactionSource> Hub<S> {
         self.relay.as_ref()
     }
 
-    pub(crate) fn shared(&self) -> &Shared<S> {
+    pub(crate) fn shared(&self) -> &Arc<Shared<S>> {
         &self.shared
     }
 
-    /// Pays through the relay fee payer, `None` without relay services.
     pub fn managed_merge(self: &Arc<Self>) -> Option<ManagedMerge<S>> {
-        let (merge, relay) = self.merge.as_ref().zip(self.relay.as_ref())?;
+        let relay = self.relay.as_ref()?;
         Some(
             ManagedMergeInit {
                 shared: self.shared.clone(),
-                builder: merge.builder.clone(),
                 relay: relay.clone(),
             }
             .build(),
@@ -259,61 +246,8 @@ impl<S: TransactionSource> Hub<S> {
         self.shared.service(ring)
     }
 
-    /// A replay or a request not later than the stored one fails.
-    pub async fn set_merge_settings(
-        &self,
-        request: &SetMergeSettingsRequest,
-    ) -> Result<SetMergeSettingsResponse, RingRpcError> {
-        Ok(set_merge_settings(&self.shared, request).await?)
-    }
-
-    /// The chain names the delegate, only its signature reads a victim's secret and openings.
-    pub async fn delegate_notes(
-        &self,
-        request: &GetDelegateNotesRequest,
-    ) -> Result<GetDelegateNotesResponse, RingRpcError> {
-        Ok(delegate_notes(&self.shared, request).await?)
-    }
-
-    pub async fn release_delegate_snapshot(
-        &self,
-        request: &GetDelegateNotesRequest,
-    ) -> Result<bool, RingRpcError> {
-        Ok(release_delegate_snapshot(&self.shared, request).await?)
-    }
-
-    /// An owner dodging a block need not hand over an address.
-    pub async fn list_salt(
-        &self,
-        request: &GetListSaltRequest,
-    ) -> Result<GetListSaltResponse, RingRpcError> {
-        Ok(list_salt(&self.shared, request).await?)
-    }
-
-    /// A repeated request returns the stored relay step.
-    pub async fn prepare_authority_transfer(
-        &self,
-        request: &PrepareAuthorityTransferRequest,
-    ) -> Result<RelayStep, RingRpcError> {
-        Ok(prepare_authority_transfer(&self.shared, self.relay(), request).await?)
-    }
-
-    pub async fn edit_co_sign_list(
-        &self,
-        request: &EditCoSignListRequest,
-    ) -> Result<CoSignListEntry, RingRpcError> {
-        Ok(edit_co_sign_list(&self.shared, request).await?)
-    }
-
-    pub async fn co_sign_lists(
-        &self,
-        request: &GetCoSignListsRequest,
-    ) -> Result<GetCoSignListsResponse, RingRpcError> {
-        Ok(co_sign_lists(&self.shared, request).await?)
-    }
-
     /// Every `interval`, the first at once, backfills the local ring and every ring a read opened.
-    pub async fn run_utxo_backfill(self: Arc<Self>, interval: Duration)
+    pub(crate) async fn run_utxo_backfill(self: Arc<Self>, interval: Duration)
     where
         S: 'static,
     {
@@ -358,7 +292,7 @@ impl<S: TransactionSource> Hub<S> {
     }
 
     /// Local mode holds one key for one ring, so it also checks the config.
-    pub async fn probe_upstreams(&self) -> Result<(), NotReady> {
+    pub(crate) async fn probe_upstreams(&self) -> Result<(), NotReady> {
         let upstream = |error: ClientError| NotReady::Upstream(error.into());
         let source = &self.shared.source;
         source.health().await.map_err(upstream)?;
@@ -410,7 +344,7 @@ impl<S: TransactionSource> Hub<S> {
                             }
                         };
                         *hub.readiness.lock().await = ReadinessCache {
-                            checked_at: Some(Instant::now()),
+                            checked_at: Some(tokio::time::Instant::now()),
                             status,
                             in_flight: None,
                         };
@@ -432,18 +366,13 @@ impl<S: TransactionSource> Hub<S> {
 }
 
 /// Resolves salted owners from the enrollments the auditor key opens, proves through the ring SDK.
-struct HeldPrivateWrites<S, R, I> {
+struct HeldPrivateWrites<S> {
     shared: Arc<Shared<S>>,
-    client: RingClient<R, I>,
+    chain: Arc<LiveStorageChain>,
 }
 
 #[async_trait]
-impl<S, R, I> PrivateWrites for HeldPrivateWrites<S, R, I>
-where
-    S: TransactionSource + 'static,
-    R: AsyncRpc + Send + Sync + 'static,
-    I: RingIndexerBackend + Send + Sync + 'static,
-{
+impl<S: TransactionSource + 'static> PrivateWrites for HeldPrivateWrites<S> {
     async fn salted_owner(
         &self,
         ring: Address,
@@ -462,23 +391,19 @@ where
     }
 
     async fn prove(&self, write: PrivateStorageWrite<'_>) -> Result<ProvenPrivateWrite, RingError> {
-        write.prove(&self.client).await
+        write.prove(self.chain.client()).await
     }
 }
 
 impl<S: TransactionSource + 'static> Hub<S> {
     /// A record writer without it refuses every salted owner write.
-    pub fn serve_private_writes<R, I>(&self, client: RingClient<R, I>) -> Result<(), RingRpcError>
-    where
-        R: AsyncRpc + Send + Sync + 'static,
-        I: RingIndexerBackend + Send + Sync + 'static,
-    {
+    pub fn serve_private_writes(&self, chain: Arc<LiveStorageChain>) -> Result<(), RingRelayError> {
         self.record_writer()?
             .serve_private_writes(Arc::new(HeldPrivateWrites {
                 shared: self.shared.clone(),
-                client,
+                chain,
             }))
-            .map_err(|_| RingRpcError::Service(ServiceError::StateUnavailable))
+            .map_err(|_| RingRelayError::Service(ServiceError::StateUnavailable))
     }
 
     /// Every background worker except the managed merge, its caller picks the interval.
@@ -513,8 +438,9 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
+    /// Without it the hub keeps its rows in an internal store.
     #[must_use = "use the updated builder"]
-    pub fn with_store(mut self, store: Store) -> Self {
+    pub fn with_store(mut self, store: ServiceStore) -> Self {
         self.store = Some(store);
         self
     }
@@ -524,7 +450,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
-    /// The record writer runs only beside a store.
+    /// The record writer runs only beside a durable store.
     #[must_use = "use the updated builder"]
     pub fn with_storage_chain(
         mut self,
@@ -535,7 +461,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
-    /// `Database` needs a store and a grant rows key.
+    /// `Database` needs a durable store and a grant rows key.
     #[must_use = "use the updated builder"]
     pub fn with_reader_grants(mut self, store: ReaderGrantStore) -> Self {
         self.reader_grants = store;
@@ -548,7 +474,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
-    /// The hub refuses to build without a store.
+    /// The hub refuses to build without a durable store.
     #[must_use = "use the updated builder"]
     pub fn with_co_signer(mut self, signer: SigningIdentity) -> Self {
         self.co_signer = Some(signer);
@@ -559,6 +485,12 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
     #[must_use = "use the updated builder"]
     pub fn with_co_signer_approval(mut self, approval: CoSignerApproval) -> Self {
         self.co_signer_approval = approval;
+        self
+    }
+
+    #[must_use = "use the updated builder"]
+    pub fn with_co_signer_exit_caps(mut self, exit_caps: Vec<ExitCap>) -> Self {
+        self.co_signer_exit_caps = exit_caps;
         self
     }
 
@@ -582,28 +514,29 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
-    #[must_use = "use the updated builder"]
-    pub fn with_relay_services(mut self, services: RelayServices) -> Self {
-        self.relay = Some(services.parts);
-        self.merge = Some(services.merge);
-        self
+    pub async fn local(
+        self,
+        ring: Address,
+        auditor: X25519Keypair,
+    ) -> Result<Hub<S>, RingRelayError> {
+        self.build(KeySource::Local { ring, auditor }).await
     }
 
-    pub fn local(self, ring: Address, auditor: X25519Keypair) -> Result<Hub<S>, RingRpcError> {
-        self.build(KeySource::Local { ring, auditor })
+    pub async fn derived(self, root: RootSecret) -> Result<Hub<S>, RingRelayError> {
+        self.build(KeySource::Derived(root)).await
     }
 
-    pub fn derived(self, root: RootSecret) -> Result<Hub<S>, RingRpcError> {
-        self.build(KeySource::Derived(root))
-    }
-
-    fn build(self, keys: KeySource) -> Result<Hub<S>, RingRpcError> {
+    async fn build(self, keys: KeySource) -> Result<Hub<S>, RingRelayError> {
         let ServiceIdentity {
             genesis_hash,
             service: signer,
         } = self.identity;
-        let writer = self
-            .store
+        let store = match self.store {
+            Some(store) => store,
+            None => ServiceStore::internal().await?,
+        };
+        let durable = store.durable().cloned();
+        let writer = durable
             .clone()
             .zip(self.storage)
             .map(|(store, (chain, authority))| {
@@ -627,7 +560,7 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
             clock: self.clock,
             assets: self.assets,
             origins: self.origins,
-            store: self.store.clone(),
+            store,
             snapshot_limits: self.snapshot_limits,
             reader_grants: self.reader_grants,
             grant_rows: self.grant_rows,
@@ -637,8 +570,9 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         let co_signer = CoSignPolicyInit {
             signer: self.co_signer,
             shared: shared.clone(),
-            store: self.store,
+            store: durable,
             approval: self.co_signer_approval,
+            exit_caps: self.co_signer_exit_caps,
         }
         .build()?;
         let relay = self.relay.map(|parts| {
@@ -662,7 +596,6 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
             enrollments: self.enrollments,
             co_signer,
             relay,
-            merge: self.merge,
             lanes: [
                 (RequestRate::default(), None),
                 lane(MAX_CONCURRENT_AUTHENTICATIONS),
@@ -674,5 +607,65 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
                 in_flight: None,
             }),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ring_cosigner::RingCosignerError;
+    use ring_relay::role_pins::fixture::RingAccounts;
+    use ring_service_core::upstream::{ChainSource, Upstreams};
+    use solana_keypair::Keypair;
+
+    use super::*;
+
+    fn builder() -> HubBuilder<ChainSource> {
+        let upstreams = Upstreams {
+            indexer_url: "http://127.0.0.1:1",
+            rpc_url: "http://127.0.0.1:1",
+            timeout: Duration::from_secs(1),
+        };
+        let identity = ServiceIdentity {
+            genesis_hash: [1; 32],
+            service: Arc::new(Keypair::new_from_array([12; 32])),
+        };
+        Hub::builder(ChainSource::connect(upstreams).expect("source"), identity)
+    }
+
+    fn root() -> RootSecret {
+        RootSecret::from_bytes([7; 32]).expect("root")
+    }
+
+    #[tokio::test]
+    async fn a_hub_without_a_store_url_turns_on_no_store_gated_part() {
+        let co_signer = builder()
+            .with_co_signer(Arc::new(Keypair::new_from_array([3; 32])))
+            .derived(root())
+            .await;
+        assert!(matches!(
+            co_signer.err(),
+            Some(RingRelayError::Cosigner(
+                RingCosignerError::CoSignerStoreMissing
+            ))
+        ));
+        let grants = builder()
+            .with_reader_grants(ReaderGrantStore::Database)
+            .with_grant_rows_key(GrantRowsSecret::from_bytes([5; 32]))
+            .derived(root())
+            .await;
+        assert!(matches!(
+            grants.err(),
+            Some(RingRelayError::Audit(RingAuditError::GrantStoreMissing))
+        ));
+        let hub = builder()
+            .with_storage_chain(
+                Arc::new(RingAccounts(None)),
+                Arc::new(Keypair::new_from_array([4; 32])),
+            )
+            .derived(root())
+            .await
+            .expect("hub");
+        assert!(hub.record_writer().is_err());
+        assert!(hub.relay().is_none());
     }
 }

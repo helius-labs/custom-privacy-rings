@@ -71,6 +71,7 @@ pub const PROTOCOL_VAULT_AIRDROP: u64 = 5_000_000_000;
 pub const ACTOR_AIRDROP: u64 = 10_000_000_000;
 /// The bring-up registers USDC first.
 pub const USDC_ASSET_ID: u64 = SplAssetCounter::FIRST_ASSET_ID;
+const CONFIRMATION_POLL: Duration = Duration::from_millis(25);
 /// A live localnet with the protocol bootstrapped and two funded actors. The
 /// custom-ring program's own config account is NOT created here: that is the
 /// first step of the lifecycle under test.
@@ -126,7 +127,7 @@ impl TestEnv {
     /// Allocate and register a second SPP tree owned by the shielded pool.
     pub fn create_registered_tree(&self) -> Result<Address> {
         let rpc = self.client.rpc();
-        SolanaRpc::new(self.rpc_url.clone()).airdrop(&self.payer.pubkey(), PAYER_AIRDROP)?;
+        localnet_rpc(self.rpc_url.clone()).airdrop(&self.payer.pubkey(), PAYER_AIRDROP)?;
         let params = nullifier_tree_params();
         let creation = create_tree_instructions(
             rpc,
@@ -179,7 +180,7 @@ impl TestEnv {
     /// The same services behind `prover`.
     pub fn client_with(&self, prover: impl Fn() -> AsyncProverClient) -> Zolana {
         ZolanaServices {
-            rpc: SolanaRpc::new(self.rpc_url.clone()),
+            rpc: localnet_rpc(self.rpc_url.clone()),
             indexer: SprIndexer::new(self.indexer_url.clone()),
             prover: prover(),
             ring_prover: prover(),
@@ -473,10 +474,16 @@ pub fn prover_url() -> String {
     }
 }
 
+pub fn localnet_rpc(url: impl Into<String>) -> SolanaRpc {
+    SolanaRpc::new(url).with_poll_interval(CONFIRMATION_POLL)
+}
+
 /// Bound the exhaustive shape sweep's key cache without resetting chain state.
 /// Only the prover recorded by the isolated test harness may be stopped.
 pub fn restart_prover() -> Result<()> {
-    let scope = PathBuf::from(std::env::var_os("ZOLANA_PROCESS_SCOPE_DIR").context("test scope")?);
+    let scope = PathBuf::from(
+        std::env::var_os(crate::ring_indexer::PROCESS_SCOPE_ENV).context("test scope")?,
+    );
     let receipt = std::fs::read_to_string(scope.join("prover-server.owner"))?;
     let pid = receipt.lines().next().context("prover ownership receipt")?;
     let port = crate::ring_indexer::port(&prover_url())?;
@@ -622,7 +629,7 @@ fn bring_up(extra_ring_programs: &[Address], programs: &[(Address, &str)]) -> Re
 
     let rpc_url = localnet_rpc_url();
     let indexer_url = localnet_indexer_url();
-    let mut rpc = SolanaRpc::new(rpc_url.clone());
+    let mut rpc = localnet_rpc(rpc_url.clone());
     let indexer = SprIndexer::new(indexer_url.clone());
 
     let authority = ProtocolSigners::new();
@@ -630,14 +637,24 @@ fn bring_up(extra_ring_programs: &[Address], programs: &[(Address, &str)]) -> Re
     let merge_authority = Keypair::new();
     let tree_creation_authority = Keypair::new();
     let ring_creation_authority = Keypair::new();
-    rpc.airdrop(&payer.pubkey(), PAYER_AIRDROP)?;
-    for member in authority.pubkeys() {
-        rpc.airdrop(&member, SIGNER_AIRDROP)?;
-    }
-    rpc.airdrop(&forester_authority.pubkey(), SIGNER_AIRDROP)?;
-    rpc.airdrop(&merge_authority.pubkey(), SIGNER_AIRDROP)?;
-    rpc.airdrop(&tree_creation_authority.pubkey(), SIGNER_AIRDROP)?;
-    rpc.airdrop(&ring_creation_authority.pubkey(), SIGNER_AIRDROP)?;
+    let sender_keys = ShieldedKeypair::new_ed25519()?;
+    let recipient_keys = ShieldedKeypair::new_ed25519()?;
+    let signers = authority.pubkeys().into_iter().chain([
+        forester_authority.pubkey(),
+        merge_authority.pubkey(),
+        tree_creation_authority.pubkey(),
+        ring_creation_authority.pubkey(),
+    ]);
+    airdrop_all(
+        &rpc,
+        [
+            (payer.pubkey(), PAYER_AIRDROP),
+            (sender_keys.pubkey(), ACTOR_AIRDROP),
+            (recipient_keys.pubkey(), ACTOR_AIRDROP),
+        ]
+        .into_iter()
+        .chain(signers.map(|signer| (signer, SIGNER_AIRDROP))),
+    )?;
 
     for ix in accounts.create_ixs(
         &payer.pubkey(),
@@ -741,8 +758,8 @@ fn bring_up(extra_ring_programs: &[Address], programs: &[(Address, &str)]) -> Re
     let mut assets = AssetRegistry::default();
     assets.insert(USDC_ASSET_ID, usdc_mint)?;
 
-    let sender = new_actor(&mut rpc, &assets)?;
-    let recipient = new_actor(&mut rpc, &assets)?;
+    let sender = new_actor(sender_keys, &assets)?;
+    let recipient = new_actor(recipient_keys, &assets)?;
 
     let client = ZolanaServices {
         rpc,
@@ -787,15 +804,33 @@ fn ring_artifacts() -> WorkspaceArtifacts {
 
 /// A fresh eddsa actor: one keypair funded on chain, its shielded address,
 /// and an empty wallet over the shared asset registry.
-fn new_actor(rpc: &mut SolanaRpc, assets: &AssetRegistry) -> Result<TestWallet> {
-    let keypair = ShieldedKeypair::new_ed25519()?;
-    rpc.airdrop(&keypair.pubkey(), ACTOR_AIRDROP)?;
+fn new_actor(keypair: ShieldedKeypair, assets: &AssetRegistry) -> Result<TestWallet> {
     let address = keypair
         .shielded_address()
         .map_err(|e| anyhow!("actor address failed {e:?}"))?;
     let wallet =
         Wallet::new(address, assets.clone()).map_err(|e| anyhow!("actor wallet failed {e:?}"))?;
     Ok(TestWallet { wallet, keypair })
+}
+
+/// Requested before any wait, independent airdrops confirm together.
+fn airdrop_all(rpc: &SolanaRpc, airdrops: impl IntoIterator<Item = (Address, u64)>) -> Result<()> {
+    let requested = airdrops
+        .into_iter()
+        .map(|(recipient, lamports)| {
+            rpc.client()
+                .request_airdrop(&recipient, lamports)
+                .with_context(|| format!("request an airdrop to {recipient}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for signature in requested {
+        rpc.client().poll_for_signature(&signature)?;
+        ensure!(
+            rpc.client().confirm_transaction(&signature)?,
+            "airdrop {signature} failed"
+        );
+    }
+    Ok(())
 }
 
 /// Send instructions as a transaction **v1** message paid and signed by

@@ -50,6 +50,7 @@ import {
 import { AnonymousPlan } from "../transaction/anonymous-plan.js";
 import type { RingListSalt } from "../membership/policy.js";
 import { RingError } from "../error.js";
+import { defined } from "../defined.js";
 
 /** Rust `RelayRail`. */
 export type RelayRail =
@@ -306,7 +307,7 @@ export async function decodeRelayProofInputs(
       assets,
       listSalts,
       coOwners: Object.freeze(coOwners),
-      ...(approvalBlinder === undefined ? {} : { approvalBlinder }),
+      ...defined({ approvalBlinder }),
     });
   } catch (error) {
     nullifierKey?.destroy();
@@ -536,7 +537,7 @@ function optionalAddress(writer: Writer, address: Address | undefined, name: str
 
 function refused(reason: string, index?: number): RingError {
   return new RingError("RING_RELAY_PROOF_INPUTS", {
-    details: { reason, ...(index === undefined ? {} : { index }) },
+    details: { reason, ...defined({ index }) },
   });
 }
 
@@ -580,7 +581,7 @@ function readRail(reader: WireReader): RelayRail {
       return Object.freeze({
         kind: "anonymous",
         plan,
-        ...(exitTokenOwner === undefined ? {} : { exitTokenOwner }),
+        ...defined({ exitTokenOwner }),
         ownerExposed: ownerExposed === 1,
       });
     }
@@ -589,11 +590,11 @@ function readRail(reader: WireReader): RelayRail {
     case 2: {
       const delegate = reader.address("delegate");
       const plan = reader.option("plan", () => readPlan(reader));
-      return Object.freeze({ kind: "delegate", delegate, ...(plan === undefined ? {} : { plan }) });
+      return Object.freeze({ kind: "delegate", delegate, ...defined({ plan }) });
     }
     case 3: {
       const plan = reader.option("plan", () => readPlan(reader));
-      return Object.freeze({ kind: "deposit", ...(plan === undefined ? {} : { plan }) });
+      return Object.freeze({ kind: "deposit", ...defined({ plan }) });
     }
     default:
       throw refused("rail", tag);
@@ -643,7 +644,7 @@ function readInput(
       amount,
       blinding,
       data,
-      ...(ringProgramId === undefined ? {} : { ringProgramId }),
+      ...defined({ ringProgramId }),
     });
     const nullifierPublicKey = key.publicKey();
     const utxoHash = utxo.proofInput(nullifierPublicKey, treeId, dataHash, ringDataHash).hash();
@@ -652,8 +653,7 @@ function readInput(
       nullifierPublicKey,
       nullifier: utxo.nullifier(utxoHash, key),
       treeId,
-      ...(dataHash === undefined ? {} : { dataHash }),
-      ...(ringDataHash === undefined ? {} : { ringDataHash }),
+      ...defined({ dataHash, ringDataHash }),
     });
   };
   return { input, leafIndex };
@@ -682,11 +682,7 @@ function readOutput(reader: WireReader): ProofOutputUtxo {
     amount,
     blinding,
     data,
-    ...(ringProgramId === undefined ? {} : { ringProgramId }),
-    ...(ringDataHash === undefined ? {} : { ringDataHash }),
-    ...(dataHash === undefined ? {} : { dataHash }),
-    ...(ownerAddress === undefined ? {} : { ownerAddress }),
-    ...(ownerTag === undefined ? {} : { ownerTag }),
+    ...defined({ ringProgramId, ringDataHash, dataHash, ownerAddress, ownerTag }),
     ...(compact ? { compact } : {}),
   });
 }
@@ -709,7 +705,7 @@ function readExternalData(reader: WireReader): Readonly<{
     const utxoHash = reader.hash("output.utxoHash");
     const ownerTag = readOwnerTag(reader);
     const data = reader.option("output.data", () => reader.byteVector("output.data"));
-    return { utxoHash, ownerTag, ...(data === undefined ? {} : { data }) };
+    return { utxoHash, ownerTag, ...defined({ data }) };
   });
   const resolvedOwnerTags = reader.list("resolvedOwnerTags", () => reader.hash("resolvedOwnerTag"));
   const messages = reader.list("messages", () => ({
@@ -720,8 +716,7 @@ function readExternalData(reader: WireReader): Readonly<{
     fields: {
       instructionDiscriminator,
       expiryUnixTs,
-      ...(dataHash === undefined ? {} : { dataHash }),
-      ...(ringDataHash === undefined ? {} : { ringDataHash }),
+      ...defined({ dataHash, ringDataHash }),
       txViewingPublicKey,
       salt,
       outputs,

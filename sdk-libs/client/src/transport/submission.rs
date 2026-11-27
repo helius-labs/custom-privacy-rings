@@ -29,7 +29,7 @@ use crate::{
     compute_unit_limit,
     heap::boxed,
     AnonymousTransfer, CustomRing, CustomRingTransfer, DelegateTransfer, PreparedRingDeposit,
-    PublicOwnerTransfer, RingError, RingMergeOperation, SignatureHistory,
+    ProvenRingTransfer, PublicOwnerTransfer, RingError, RingMergeOperation, SignatureHistory,
 };
 
 #[cfg(test)]
@@ -507,14 +507,15 @@ impl<'a> RingSubmission<'a> {
             // 4. Failed or expired is final, the transaction can no longer land.
             let observed = match observed {
                 Outcome::Failed(error) => {
-                    match attempt
+                    if attempt
                         .proved
                         .bound
                         .reproof_fixes(&error, client.zolana())
                         .await?
                     {
-                        true => Outcome::Stale(error),
-                        false => Outcome::Failed(error),
+                        Outcome::Stale(error)
+                    } else {
+                        Outcome::Failed(error)
                     }
                 }
                 observed => observed,
@@ -709,55 +710,30 @@ impl RingOperation<'_> {
             bound,
             charged_outflows: Vec::new(),
         };
-        let charged = |proved: Proved, charged_outflows| Proved {
-            charged_outflows,
-            ..proved
+        let transfer = |proven: ProvenRingTransfer, tag| -> Result<Proved, RingError> {
+            let unpaid = proved(proven.instruction()?, tag, proven.bound());
+            Ok(Proved {
+                charged_outflows: proven.charged_outflows,
+                ..unpaid
+            })
         };
         Ok(match self {
-            Self::Transfer(transfer) => {
-                let proven = boxed(|| transfer.prove(client)).await?;
-                charged(
-                    proved(
-                        proven.instruction()?,
-                        InstructionTag::Transfer,
-                        proven.bound(),
-                    ),
-                    proven.charged_outflows,
-                )
-            }
-            Self::Anonymous(transfer) => {
-                let proven = boxed(|| transfer.prove(client)).await?;
-                charged(
-                    proved(
-                        proven.instruction()?,
-                        InstructionTag::Transfer,
-                        proven.bound(),
-                    ),
-                    proven.charged_outflows,
-                )
-            }
-            Self::PublicOwners(transfer) => {
-                let proven = boxed(|| transfer.prove(client)).await?;
-                charged(
-                    proved(
-                        proven.instruction()?,
-                        InstructionTag::Transfer,
-                        proven.bound(),
-                    ),
-                    proven.charged_outflows,
-                )
-            }
-            Self::Delegate(transfer) => {
-                let proven = boxed(|| transfer.prove(client)).await?;
-                charged(
-                    proved(
-                        proven.instruction()?,
-                        InstructionTag::AuthorityTransfer,
-                        proven.bound(),
-                    ),
-                    proven.charged_outflows,
-                )
-            }
+            Self::Transfer(operation) => transfer(
+                boxed(|| operation.prove(client)).await?,
+                InstructionTag::Transfer,
+            )?,
+            Self::Anonymous(operation) => transfer(
+                boxed(|| operation.prove(client)).await?,
+                InstructionTag::Transfer,
+            )?,
+            Self::PublicOwners(operation) => transfer(
+                boxed(|| operation.prove(client)).await?,
+                InstructionTag::Transfer,
+            )?,
+            Self::Delegate(operation) => transfer(
+                boxed(|| operation.prove(client)).await?,
+                InstructionTag::AuthorityTransfer,
+            )?,
             Self::Merge(operation) => {
                 let proven = boxed(|| {
                     operation
@@ -775,17 +751,10 @@ impl RingOperation<'_> {
                     },
                 )
             }
-            Self::Deposit(deposit) => {
-                let proven = boxed(|| deposit.prove_transfer(client)).await?;
-                charged(
-                    proved(
-                        proven.instruction()?,
-                        InstructionTag::Transfer,
-                        proven.bound(),
-                    ),
-                    proven.charged_outflows,
-                )
-            }
+            Self::Deposit(deposit) => transfer(
+                boxed(|| deposit.prove_transfer(client)).await?,
+                InstructionTag::Transfer,
+            )?,
             Self::Instruction(instruction) => {
                 let tag = instruction
                     .data

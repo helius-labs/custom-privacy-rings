@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { RingListSaltRequest, RingRpc, listSaltAttestation } from "../../../src/rpc/ring-rpc.js";
 import {
   RingMergeSettingsRequest,
@@ -100,7 +101,6 @@ describe("relay_enroll_inputs.json", () => {
       "utf8",
     ),
   ) as Readonly<Record<string, string>>;
-  const hex = (value: Uint8Array) => Buffer.from(value).toString("hex");
   const request = (intent: RelayIntent) => ({
     ring: filled(1, 32) as Address,
     quote: { feePayer: filled(2, 32) as Address, validUntilSlot: 4242n },
@@ -135,8 +135,8 @@ describe("relay_enroll_inputs.json", () => {
 
   it("hashes the digests a depositor and an owner sign as Rust", () => {
     const encoded = Uint8Array.of(3, 4, 5);
-    expect(hex(depositRequestDigest(encoded))).toBe(vector["deposit_request_digest"]);
-    expect(hex(mergeRequestDigest(encoded))).toBe(vector["merge_request_digest"]);
+    expect(bytesToHex(depositRequestDigest(encoded))).toBe(vector["deposit_request_digest"]);
+    expect(bytesToHex(mergeRequestDigest(encoded))).toBe(vector["merge_request_digest"]);
   });
 
   it("refuses an intent with no signature", () => {
@@ -589,6 +589,35 @@ describe("setMergeSettings", () => {
       code: "RING_RPC_REFUSED",
       details: { method: "setMergeSettings", refusal: "staleMergeSettings" },
     });
+  });
+
+  it("sends and reads a u64 past 2^53 in its exact digits", async () => {
+    const u64Max = (1n << 64n) - 1n;
+    const owner = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(8));
+    const request = await RingMergeSettingsRequest.forSettings(target, {
+      ...settings,
+      minAverageAmount: u64Max,
+    })
+      .at(timestamp)
+      .sign(owner);
+    const bodies: string[] = [];
+    const rpc = new RingRpc("http://ring.example", {
+      allowInsecureHttp: true,
+      fetch: (async (_url: unknown, init?: RequestInit) => {
+        bodies.push(String(init?.body));
+        return new Response(
+          `{"jsonrpc":"2.0","id":1,"result":{"mint":"${SOL_MINT}","targetNoteCount":4,"minAverageAmount":18446744073709551615}}`,
+          { headers: { "content-type": "application/json" } },
+        );
+      }) as typeof globalThis.fetch,
+    });
+    await expect(rpc.setMergeSettings(request)).resolves.toEqual({
+      ...settings,
+      minAverageAmount: u64Max,
+    });
+    expect(bodies[0]).toContain(
+      `"settings":{"mint":"${SOL_MINT}","targetNoteCount":4,"minAverageAmount":18446744073709551615},"timestamp":1700000000,`,
+    );
   });
 
   it("refuses settings the Rust request cannot carry before any signature", () => {

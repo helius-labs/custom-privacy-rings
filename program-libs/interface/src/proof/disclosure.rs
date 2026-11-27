@@ -1,6 +1,4 @@
 //! The audit layout element and the packing of a ciphertext into statement fields, mirror of `prover/circuits/audit/layout.go`.
-//!
-//! Read after `program-libs/interface/src/proof/audit_stream.rs`. Read before `program-libs/interface/src/codec/output.rs`.
 
 use spr_hasher::primitives::PACK_BE_CHUNK_BYTES;
 
@@ -29,17 +27,18 @@ impl AuditLayout {
 
     /// `None` on a vouched region shorter than one key.
     pub fn split_keys(self, sealed: &[u8]) -> Option<SealedKeys<'_>> {
-        match self.vouched {
-            false => Some(SealedKeys {
-                slots: sealed,
-                voucher: None,
-            }),
-            true => sealed
+        if self.vouched {
+            sealed
                 .split_last_chunk()
                 .map(|(slots, voucher)| SealedKeys {
                     slots,
                     voucher: Some(voucher),
-                }),
+                })
+        } else {
+            Some(SealedKeys {
+                slots: sealed,
+                voucher: None,
+            })
         }
     }
 }

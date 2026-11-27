@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { encodeRingBodyOutput } from "../../src/protocol/transaction/output.js";
 import { describe, expect, it, vi } from "vitest";
 
@@ -23,7 +24,6 @@ import { ClientError } from "@heliuslabs/spr/client";
 import {
   ASSETS,
   found,
-  hex,
   keypair,
   output,
   RING,
@@ -79,7 +79,7 @@ function unknownMintPayment(indexer: ScanIndexer, reader: ScanWallet, mint: Addr
     proofless: false,
     ringProgramId: RING,
   });
-  return hex(utxoHash);
+  return bytesToHex(utxoHash);
 }
 
 function anonymousWallet(owner: ScanWallet, history: ViewingHistory): AnonymousWallet {
@@ -126,7 +126,7 @@ describe("ring scan position", () => {
     const next = await bob.sync(indexer, first.history);
     expect(indexer.ringReads.at(-1)?.filters).toEqual({ slot: { gt: 40n } });
     expect(indexer.ringReads.at(-1)?.paginationToken).toBeUndefined();
-    expect(found(next)).toEqual([hex(output(late, 1))]);
+    expect(found(next)).toEqual([bytesToHex(output(late, 1))]);
   });
 
   it("keeps a final page's context below an earlier page's, and never lowers a stored position", async () => {
@@ -196,7 +196,7 @@ describe("ring scan position", () => {
     const history = ViewingHistory.create(bob.viewingKey, 0n).withRing(RING, 10n);
     const scan = await bob.sync(indexer, history);
     expect(indexer.ringReads[0]?.filters).toEqual({ slot: { gt: 10n } });
-    expect(found(scan)).toEqual([hex(output(paid, 1))]);
+    expect(found(scan)).toEqual([bytesToHex(output(paid, 1))]);
   });
 
   it("restarts from stored state with the same notes and no repeat", async () => {
@@ -230,7 +230,7 @@ describe("atomic progress", () => {
     expect(position(wallet.history())).toBe(9n);
     expect(wallet.notes().map((note) => note.utxo.amount)).toEqual([7n]);
     const after = await wallet.history().requestTag(bob.keys);
-    expect(hex(after.tag)).not.toBe(hex(during.tag));
+    expect(bytesToHex(after.tag)).not.toBe(bytesToHex(during.tag));
   });
 
   it("keeps a key added during a scan, unread for the next sync", async () => {
@@ -315,7 +315,7 @@ describe("atomic progress", () => {
     ];
     for (const { take, count } of streams) {
       const tags = await Promise.all([take(bob.keys), take(bob.keys)]);
-      expect(new Set(tags.map(hex)).size).toBe(2);
+      expect(new Set(tags.map(bytesToHex)).size).toBe(2);
       expect(count()).toBe(2n);
       await expect(take(failing)).rejects.toThrow("holder offline");
       expect(count()).toBe(3n);
@@ -408,7 +408,9 @@ describe("atomic progress", () => {
     );
     await wallet.absorb(scan);
     expect(wallet.notes()).toEqual([]);
-    expect(wallet.pendingOpenings().map((note) => hex(note.outputContext.hash))).toEqual([hash]);
+    expect(wallet.pendingOpenings().map((note) => bytesToHex(note.outputContext.hash))).toEqual([
+      hash,
+    ]);
     expect(await wallet.promotePending()).toEqual([]);
     const back = AnonymousWallet.fromJson(wallet.toJson());
     expect(back.pendingOpenings()).toHaveLength(1);
@@ -417,7 +419,7 @@ describe("atomic progress", () => {
     const reads = indexer.ringReads.length;
     expect((await back.promotePending()).map((note) => note.utxo.amount)).toEqual([7n]);
     expect(back.pendingOpenings()).toEqual([]);
-    expect(back.notes().map((note) => hex(note.outputContext.hash))).toEqual([hash]);
+    expect(back.notes().map((note) => bytesToHex(note.outputContext.hash))).toEqual([hash]);
     expect(indexer.ringReads).toHaveLength(reads);
   });
 
@@ -457,7 +459,7 @@ describe("viewing keys", () => {
       indexer.client(),
       history,
     );
-    expect(found(scan)).toEqual([hex(output(paid, 1))]);
+    expect(found(scan)).toEqual([bytesToHex(output(paid, 1))]);
     expect(indexer.ringReads).toHaveLength(1);
     expect(history.withRing(RING, 20n).entries.map((entry) => entry.ringPosition(RING))).toEqual([
       null,
@@ -501,7 +503,7 @@ describe("viewing keys", () => {
     expect(indexer.ringReads.map((read) => read.filters?.slot?.gt)).toEqual(
       expect.arrayContaining([undefined, 30n]),
     );
-    expect(found(scan)).toContain(hex(output(paid, 1)));
+    expect(found(scan)).toContain(bytesToHex(output(paid, 1)));
     expect(scan.history.entry(added.publicKey())?.ringPosition(RING)).toBe(35n);
     expect(scan.history.entry(bob.viewingKey)?.ringPosition(RING)).toBe(35n);
   });
@@ -553,9 +555,9 @@ describe("viewing keys", () => {
       RING,
     );
     expect(recovered.utxos.map((note) => note.utxo.amount)).toEqual([1n, 2n]);
-    expect(recovered.found.map((note) => hex(note.viewingPublicKey.toBytes()))).toEqual([
-      hex(bob.viewingKey.toBytes()),
-      hex(added.publicKey().toBytes()),
+    expect(recovered.found.map((note) => bytesToHex(note.viewingPublicKey.toBytes()))).toEqual([
+      bytesToHex(bob.viewingKey.toBytes()),
+      bytesToHex(added.publicKey().toBytes()),
     ]);
   });
 
@@ -604,7 +606,7 @@ describe("page too large", () => {
     ];
     indexer.responseLimit = 1;
     const scan = await bob.sync(indexer, bob.fresh());
-    expect(found(scan)).toEqual(paid.map((tx) => hex(output(tx, 1))));
+    expect(found(scan)).toEqual(paid.map((tx) => bytesToHex(output(tx, 1))));
     const asked = indexer.ringReads.map((read) => read.limit);
     expect(asked.slice(0, 2)).toEqual([1000, 500]);
     expect(asked.filter((limit) => limit === 1)).toHaveLength(2);

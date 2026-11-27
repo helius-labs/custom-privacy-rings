@@ -4,9 +4,10 @@ on:
   push:
     branches: [main]
     paths:
-      - "services/ring-indexer/**"
+      - "services/**"
       - "program-libs/**"
-      - "sdk-libs/indexer/**"
+      - "sdk-libs/**"
+      - "!sdk-libs/ts/**"
       - "zolana"
       - ".cargo/**"
       - "Cargo.toml"
@@ -16,9 +17,10 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
-      - "services/ring-indexer/**"
+      - "services/**"
       - "program-libs/**"
-      - "sdk-libs/indexer/**"
+      - "sdk-libs/**"
+      - "!sdk-libs/ts/**"
       - "zolana"
       - ".cargo/**"
       - "Cargo.toml"

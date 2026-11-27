@@ -50,7 +50,7 @@ fn one_more(fewer: &[u8], more: &[u8]) -> Vec<u8> {
 }
 
 fn parse_error(bytes: &[u8], data: &RingTransactData<'_>) -> CustomRingError {
-    RingTransactData::parse(bytes, data.rail).expect_err("the frame check refuses it")
+    RingTransactData::parse(bytes, data.rail()).expect_err("the frame check refuses it")
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn the_message_limit_is_spp_s_beside_the_auditor_message() {
     for (name, data) in fixture.cases() {
         let largest = with_messages(data.clone(), limit);
         let bytes = largest.encode().unwrap();
-        RingTransactData::parse(&bytes, largest.rail).unwrap();
+        RingTransactData::parse(&bytes, largest.rail()).unwrap();
         let owned = largest
             .transact_ix_data(&ring, TransactProof::zeroed())
             .unwrap()

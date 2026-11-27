@@ -6,6 +6,7 @@ use anyhow::{bail, Result};
 use solana_address::Address;
 use spr_client::SolanaRpc;
 use spr_transaction::SOL_MINT;
+use zolana_ring_policy::ListId;
 
 use crate::{
     catalogue::{discover, Catalogue},
@@ -227,21 +228,24 @@ impl Wizard<'_> {
                 .ask
                 .pick("policy option", &options, options.len() - 1)?;
             let rules = match POLICY_OPTIONS[picked] {
-                "participant allowlist" => Some(participant_allowlist()),
-                "recipient blocklist" => Some(vec![forbid(SubjectName::OutputOwner, "block")]),
-                "recipient public and private blocklist" => Some(forbid_each(
-                    SubjectName::OutputOwner,
-                    &["block", "private-block"],
-                )),
-                "sender freeze" => Some(vec![forbid(SubjectName::Sender, "frozen")]),
+                "participant allowlist" => Some(participant_allowlist()?),
+                "recipient blocklist" => {
+                    Some(vec![forbid(SubjectName::OutputOwner, ListId::Block)?])
+                }
+                // One rule per list refuses an owner on either list.
+                "recipient public and private blocklist" => Some(vec![
+                    forbid(SubjectName::OutputOwner, ListId::Block)?,
+                    forbid(SubjectName::OutputOwner, ListId::PrivateBlock)?,
+                ]),
+                "sender freeze" => Some(vec![forbid(SubjectName::Sender, ListId::Frozen)?]),
                 "asset allowlist" => Some(vec![self.asset_rule(target, false)?]),
                 "approved recipients outside a blocklist" => Some(vec![
-                    require(SubjectName::OutputOwner, "approval"),
-                    forbid(SubjectName::OutputOwner, "block"),
+                    require(SubjectName::OutputOwner, ListId::Approval)?,
+                    forbid(SubjectName::OutputOwner, ListId::Block)?,
                 ]),
                 "per-mint recipient limits" => Some(vec![RuleSpec {
                     limits: Some(self.asset_limits(target)?),
-                    ..require(SubjectName::OutputOwner, "allow")
+                    ..require(SubjectName::OutputOwner, ListId::Allow)?
                 }]),
                 "advanced rule" => self.advanced(target, &spec)?,
                 "remove" => {
@@ -303,9 +307,10 @@ impl Wizard<'_> {
                 .serving(target, list)
                 .map(|(name, curator)| {
                     let program = curator.program;
-                    let named = match name == program.to_string() {
-                        true => name.to_owned(),
-                        false => format!("{name} ({program})"),
+                    let named = if name == program.to_string() {
+                        name.to_owned()
+                    } else {
+                        format!("{name} ({program})")
                     };
                     (format!("curator {named} manages the members"), program)
                 })
@@ -466,10 +471,6 @@ impl Wizard<'_> {
     }
 }
 
-fn named_list(name: &str) -> ListName {
-    name.parse().expect("a built-in authority-written list")
-}
-
 fn simple_rule(subject: SubjectName, source: SourceSpec) -> RuleSpec {
     RuleSpec {
         subject,
@@ -479,25 +480,26 @@ fn simple_rule(subject: SubjectName, source: SourceSpec) -> RuleSpec {
     }
 }
 
-fn require(subject: SubjectName, list: &str) -> RuleSpec {
-    simple_rule(subject, SourceSpec::Require(named_list(list)))
+fn require(subject: SubjectName, list: ListId) -> Result<RuleSpec> {
+    Ok(simple_rule(
+        subject,
+        SourceSpec::Require(ListName::of(list)?),
+    ))
 }
 
-fn forbid(subject: SubjectName, list: &str) -> RuleSpec {
-    simple_rule(subject, SourceSpec::Forbid(named_list(list)))
+fn forbid(subject: SubjectName, list: ListId) -> Result<RuleSpec> {
+    Ok(simple_rule(
+        subject,
+        SourceSpec::Forbid(ListName::of(list)?),
+    ))
 }
 
-/// One rule per list, one rule over both admits an owner off either.
-fn forbid_each(subject: SubjectName, lists: &[&str]) -> Vec<RuleSpec> {
-    lists.iter().map(|list| forbid(subject, list)).collect()
-}
-
-fn participant_allowlist() -> Vec<RuleSpec> {
-    vec![
-        require(SubjectName::Sender, "allow"),
-        require(SubjectName::OutputOwner, "allow"),
-        forbid(SubjectName::Sender, "frozen"),
-    ]
+fn participant_allowlist() -> Result<Vec<RuleSpec>> {
+    Ok(vec![
+        require(SubjectName::Sender, ListId::Allow)?,
+        require(SubjectName::OutputOwner, ListId::Allow)?,
+        forbid(SubjectName::Sender, ListId::Frozen)?,
+    ])
 }
 
 #[cfg(test)]
@@ -599,7 +601,7 @@ pub(crate) mod tests {
         assert_eq!(policy.rules[0].subject, SubjectName::Asset);
         assert_eq!(
             policy.rules[0].source,
-            SourceSpec::Require(named_list("allow"))
+            SourceSpec::Require(ListName::of(ListId::Allow).unwrap())
         );
         assert!(policy
             .compile(Target::Devnet)
@@ -770,7 +772,7 @@ pub(crate) mod tests {
         ]))
         .expect("wizard");
         let policy = answers.policy.expect("policy tier");
-        assert_eq!(policy.rules, participant_allowlist());
+        assert_eq!(policy.rules, participant_allowlist().unwrap());
         assert!(policy.sources.is_empty());
     }
 
@@ -874,7 +876,7 @@ pub(crate) mod tests {
         assert_eq!(policy.rules[0].above, Some(7));
         assert_eq!(
             policy.rules[0].source,
-            SourceSpec::Require(named_list("allow"))
+            SourceSpec::Require(ListName::of(ListId::Allow).unwrap())
         );
         policy.compile(Target::Localnet).expect("compiles");
     }
@@ -933,7 +935,7 @@ pub(crate) mod tests {
             Target::Localnet,
             vec![simple_rule(
                 SubjectName::OutputOwner,
-                SourceSpec::Forbid(named_list("block")),
+                SourceSpec::Forbid(ListName::of(ListId::Block).unwrap()),
             )],
         );
         assert_eq!(spec.rules.len(), 1);
@@ -943,9 +945,12 @@ pub(crate) mod tests {
             vec![
                 simple_rule(
                     SubjectName::Sender,
-                    SourceSpec::Forbid(named_list("frozen")),
+                    SourceSpec::Forbid(ListName::of(ListId::Frozen).unwrap()),
                 ),
-                simple_rule(SubjectName::Asset, SourceSpec::Forbid(named_list("block"))),
+                simple_rule(
+                    SubjectName::Asset,
+                    SourceSpec::Forbid(ListName::of(ListId::Block).unwrap()),
+                ),
             ],
         );
         assert_eq!(spec.rules.len(), 3, "the asset list rule was added");

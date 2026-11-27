@@ -27,6 +27,8 @@ export RING_INDEXER_BIN := env_var_or_default("RING_INDEXER_BIN", justfile_direc
 # join keeps an absolute ZOLANA_SPP_KEYS_DIR as given.
 spp-keys-dir := join(justfile_directory(), env_var_or_default("ZOLANA_SPP_KEYS_DIR", "zolana/prover/server/proving-keys"))
 ring-keys-lock := "prover/ring/proving-keys.lock"
+spp-keys-lock := "zolana/prover/server/prover/provingkeys/proving-keys.lock"
+spp-ring-keys := "transfer_ring_1_2.key transfer_ring_2_2.key"
 custom-ring-keys := `python3 -c "import json;print(' '.join(sorted(json.load(open('prover/ring/proving-keys.lock'))['keys'])))"`
 
 export ZOLANA_PROVER_URL := localnet-prover-url
@@ -36,7 +38,7 @@ export PROVER_INDEXER_URL := localnet-ring-indexer-url
 export PROVER_BIN := justfile_directory() / "target/prover-server"
 # Mirrored by GENESIS_PROGRAMS in cli/src/commands/ring/localnet.rs.
 ring-genesis-programs := "--sbf-program rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL target/deploy/storage_program.so"
-sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-keys zolana-ring-transaction zolana-ring-rpc ring-service-core ring-writer ring-audit ring-cosigner ring-relay custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
+sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-keys zolana-ring-transaction zolana-secret-file zolana-operator-custody zolana-ring-rpc ring-service-core ring-writer ring-audit ring-cosigner ring-relay custom-ring-cli zolana-cli-common ring-xtask custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
 
 default:
     @just --list
@@ -85,11 +87,6 @@ _spp-programs:
     [[ -n "${ZOLANA_SPP_PROGRAM_SO:-}" && -n "${ZOLANA_USER_REGISTRY_SO:-}" ]] && exit 0
     {{just_executable()}} build-spp-programs
 
-build-cli:
-    #!/usr/bin/env bash
-    [[ -z "${ZOLANA_PREBUILT:-}" ]] || exit 0
-    cargo build --locked -p custom-ring-cli --target-dir target
-
 # zolana's Photon, skipped when ZOLANA_PHOTON_BIN names a build.
 build-photon:
     #!/usr/bin/env bash
@@ -97,32 +94,28 @@ build-photon:
     cargo build --locked --manifest-path zolana/Cargo.toml -p photon-indexer --bin photon \
         --features surfpool-fixture --target-dir target
 
-# The fixture feature only acts under ZOLANA_RING_SURFPOOL_FIXTURE=1.
-build-ring-indexer:
-    #!/usr/bin/env bash
-    [[ -z "${ZOLANA_PREBUILT:-}" ]] || exit 0
-    cargo build --locked -p ring-indexer --features surfpool-fixture --target-dir target
-
+# The fixture features only act under ZOLANA_RING_SURFPOOL_FIXTURE=1.
 # Surfpool reads `minContextSlot` as an entry slot floor.
-build-ring-rpc:
+# Keep the feature bare, a `zolana-ring-rpc/` prefix names the crate's dev-dependency on itself.
+build-ring-tools:
     #!/usr/bin/env bash
     [[ -z "${ZOLANA_PREBUILT:-}" ]] || exit 0
-    cargo build --locked -p zolana-ring-rpc --features surfpool-fixture --target-dir target
+    cargo build --locked -p ring-indexer -p custom-ring-cli -p zolana-ring-rpc \
+        --features surfpool-fixture --target-dir target
 
 build-zolana-tools: zolana::build-cli
     cargo build --manifest-path zolana/Cargo.toml -p xtask --target-dir zolana/target
 
-build-ring-tools: build-ring-indexer build-cli build-ring-rpc
-
 # The zolana and ring clis, the prover server, xtask, Photon, the ring indexer and the ring rpc.
 build-localnet-tools: build-zolana-tools build-prover-server build-photon build-ring-tools
 
-build-localnet-archives dir="target/nextest-archives":
-    #!/usr/bin/env bash
-    set -euo pipefail
+build-localnet-archive dir="target/nextest-archives":
+    mkdir -p {{dir}}
+    cargo nextest archive --locked -p custom-ring-test-validator --test ring --test shared_sources --test policy_rules --test policy_repin --archive-file {{dir}}/custom-ring-test-validator.tar.zst
+
+build-localnet-proofs-archive dir="target/nextest-archives":
     mkdir -p {{dir}}/proofs
-    cargo nextest archive -p custom-ring-test-validator --test ring --test shared_sources --test policy_rules --test policy_repin --archive-file {{dir}}/custom-ring-test-validator.tar.zst
-    cargo nextest archive -p custom-ring-test-validator --features proofs --test ring --archive-file {{dir}}/proofs/custom-ring-test-validator.tar.zst
+    cargo nextest archive --locked -p custom-ring-test-validator --features proofs --test ring --archive-file {{dir}}/proofs/custom-ring-test-validator.tar.zst
 
 # === Tests ===
 
@@ -130,13 +123,13 @@ build-localnet-archives dir="target/nextest-archives":
 test-hermetic: test-program-fast test-sdk-libs test-ring-indexer
 
 test-program-fast: build-programs
-    cargo nextest run -p custom-ring-test-validator --test rules --test storage_lifecycle
+    cargo nextest run --locked -p custom-ring-test-validator --lib --test rules --test storage_lifecycle
 
 test-sdk-libs:
-    cargo nextest run {{prepend("-p ", sdk-lib-crates)}}
+    cargo nextest run --locked {{prepend("-p ", sdk-lib-crates)}}
 
 test-ring-indexer:
-    cargo nextest run -p ring-indexer
+    cargo nextest run --locked -p ring-indexer
 
 # The Xark test program of a ring, its circuit, insecure test key and verifier module, then its hermetic tests.
 test-zk-ring-program: build-zk-ring-circuits
@@ -160,7 +153,7 @@ test-postgres:
     #!/usr/bin/env bash
     set -euo pipefail
     work="$(mktemp -d)"
-    port=$((54329 + ${ZOLANA_PORT_OFFSET:-0}))
+    port=$((25432 + ${ZOLANA_PORT_OFFSET:-0}))
     initdb -D "$work/data" -U postgres -A trust -E UTF8 >/dev/null
     trap 'pg_ctl -D "$work/data" -m fast stop >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
     pg_ctl -D "$work/data" -w -l "$work/log" -o "-p $port -c listen_addresses=127.0.0.1 -c unix_socket_directories=''" start >/dev/null
@@ -169,14 +162,20 @@ test-postgres:
     done
     export RING_INDEXER_TEST_POSTGRES_URL="postgres://postgres@127.0.0.1:$port/ring_indexer"
     cargo test --locked -p ring-indexer --lib --features surfpool-fixture -- --ignored
-    export RING_RPC_TEST_POSTGRES_URL="postgres://postgres@127.0.0.1:$port/ring_rpc"
+    RING_RPC_TEST_POSTGRES_URL="postgres://postgres@127.0.0.1:$port/ring_rpc" {{just_executable()}} test-ring-rpc-postgres
+
+# The Ring RPC store tests on the Postgres database RING_RPC_TEST_POSTGRES_URL names.
+test-ring-rpc-postgres:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    : "${RING_RPC_TEST_POSTGRES_URL:?}"
     # One store, one test at a time.
     cargo test --locked -p ring-writer -p ring-audit -p ring-cosigner -p ring-relay --lib -- --test-threads=1 --include-ignored postgres relay_reservations
     cargo test --locked -p zolana-ring-rpc --test relay_service -- --test-threads=1
     cargo test --locked -p zolana-ring-rpc --test audit_service -- --test-threads=1 --ignored
 
 # Custom-ring lifecycle on a local validator (program-tests/custom-ring/tests/ring.rs).
-test-custom-ring-validator filter="all()" *args: fetch-custom-ring-keys build-prover-server build-programs zolana::build-cli zolana::ensure-smart-account zolana::ensure-surfpool
+test-custom-ring-validator filter="all()" *args: fetch-custom-ring-keys build-prover-server build-programs build-photon build-ring-tools zolana::build-cli ensure-smart-account ensure-surfpool
     #!/usr/bin/env bash
     set -euo pipefail
     program_ids=$(cd zolana && tools/ci/xtask.sh program-ids)
@@ -253,7 +252,7 @@ one-key-validation key="custom-ring-transfer-2-in24-w4-s4" test="one_key" spp_ke
         CUSTOM_RING_PROGRAM_SO="$tree/target/deploy/ring_heap_report.so" \
         {{just_executable()}} test-custom-ring-validator 'test({{test}})' --features proofs
 
-_custom-ring-suite test: fetch-custom-ring-keys build-prover-server build-programs zolana::build-cli zolana::ensure-smart-account zolana::ensure-surfpool
+_custom-ring-suite test: fetch-custom-ring-keys build-prover-server build-programs build-photon build-ring-tools zolana::build-cli ensure-smart-account ensure-surfpool
     #!/usr/bin/env bash
     set -euo pipefail
     program_ids=$(cd zolana && tools/ci/xtask.sh program-ids)
@@ -261,6 +260,24 @@ _custom-ring-suite test: fetch-custom-ring-keys build-prover-server build-progra
     : "${SHIELDED_POOL_PROGRAM_ID:?xtask did not emit SHIELDED_POOL_PROGRAM_ID}"
     export SHIELDED_POOL_PROGRAM_ID
     ZOLANA_SPP_KEYS_DIR="{{spp-keys-dir}}" bash tools/test-ring-controls.sh {{test}}
+
+# === Pinned localnet binaries ===
+
+# zolana dumps the Squads program from mainnet, an upgrade there fails here until the pin moves.
+smart-account-sha256 := "1c95bd7be140589d2aec38a85d7ecfe70ec69639277f622c898f821ab1d636fa"
+# Per platform, a zolana bump that moves `surfpool-release-tag` moves these.
+surfpool-sha256 := if os() + "-" + arch() == "linux-x86_64" { "b26055c302b8b47ff6fb4fa633a6b34111f5b1b37222f889295375ec93c10f31" } else if os() + "-" + arch() == "macos-aarch64" { "41182ea7d4c7f0b293e3336730817ff04d388f4054ce59b2f4b153844d1e05b7" } else if os() + "-" + arch() == "macos-x86_64" { "25ffdd4d40ae899a11d33252729afa72557eedf37b0506f643e368fa37c38a45" } else { "" }
+
+ensure-smart-account: zolana::ensure-smart-account
+    echo "{{smart-account-sha256}}  zolana/target/deploy/squads_smart_account_program.so" | shasum -a 256 -c -
+
+# A binary named by SURFPOOL_BIN is the caller's own.
+ensure-surfpool: zolana::ensure-surfpool
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ -z "${SURFPOOL_BIN:-}" ]] || exit 0
+    [[ -n "{{surfpool-sha256}}" ]] || { echo "no surfpool digest is pinned for {{os()}}-{{arch()}}" >&2; exit 1; }
+    echo "{{surfpool-sha256}}  zolana/target/tools/surfpool" | shasum -a 256 -c -
 
 # === Keys ===
 
@@ -273,7 +290,7 @@ build-prover-server:
 
 # Go circuit and proof tests.
 test-custom-ring:
-    cd prover && go test ./... -count=1
+    cd prover && go test -p 1 ./... -count=1 -timeout 50m
 
 # Ring keys and transfer shapes must match their lockfiles.
 fetch-custom-ring-keys:
@@ -315,7 +332,7 @@ fetch-custom-ring-keys:
             curl_get "$release_url/$1" "$2"
         fi
     }
-    spp_lock="zolana/prover/server/prover/provingkeys/proving-keys.lock"
+    spp_lock="{{spp-keys-lock}}"
     spp_url="${ZOLANA_PROVING_KEYS_URL:-https://d3gbdb0egjwcw9.cloudfront.net}/$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["prefix"])' "$spp_lock")"
     spp_get() {
         curl_get "$spp_url/$1" "$2"
@@ -345,9 +362,20 @@ fetch-custom-ring-keys:
     for name in {{custom-ring-keys}}; do
         fetch ring_get "{{ring-keys-lock}}" "$name"
     done
-    for name in transfer_ring_1_2.key transfer_ring_2_2.key ${RING_EXTRA_SPP_KEY:-}; do
+    for name in {{spp-ring-keys}} ${RING_EXTRA_SPP_KEY:-}; do
         fetch spp_get "$spp_lock" "$name"
     done
+
+# Name and digest of each key `fetch-custom-ring-keys` installs, the CI cache key hashes these lines.
+custom-ring-key-pins:
+    #!/usr/bin/env python3
+    import json
+    ring = json.load(open("{{ring-keys-lock}}"))["keys"]
+    spp = json.load(open("{{spp-keys-lock}}"))["keys"]
+    for name in sorted(ring):
+        print(name, ring[name]["sha256"])
+    for name in "{{spp-ring-keys}}".split():
+        print(name, spp[name]["sha256"])
 
 # The committed verifying keys must be the export of the pinned proving keys.
 check-custom-ring-keys: fetch-custom-ring-keys build-prover-server
@@ -374,7 +402,7 @@ ring-new *args:
     cargo run -q -p custom-ring-cli -- new {{args}}
 
 # Local validator and services for a ring, ring creation is permissionless.
-ring-localnet: check-custom-ring-keys build-programs zolana::build-cli zolana::ensure-surfpool build-photon build-ring-indexer
+ring-localnet: check-custom-ring-keys build-programs zolana::build-cli ensure-surfpool build-photon build-ring-tools
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(cd zolana && tools/ci/xtask.sh program-ids)"
@@ -433,7 +461,7 @@ ring-localnet-stop:
     {{stop-localnet-backends}}
 
 # Photon, the ring indexer and the prover against a cluster from its current slot, RING_INDEXER_START_SLOT moves the ring indexer start.
-ring-devnet-services rpc_url: check-custom-ring-keys build-prover-server build-photon build-ring-indexer
+ring-devnet-services rpc_url: check-custom-ring-keys build-prover-server build-photon build-ring-tools
     #!/usr/bin/env bash
     set -euo pipefail
     workdir="target/ring-devnet"
@@ -491,7 +519,7 @@ ring-localnet-kms:
     exec node tools/localnet-kms.mjs {{localnet-kms-port}}
 
 # Use single-ring for zolana-ring localnet and derived for ring-rpc-derived.
-ring-localnet-custody mode="derived" dir="target/ring-localnet/custody": build-ring-rpc
+ring-localnet-custody mode="derived" dir="target/ring-localnet/custody": build-ring-tools
     #!/usr/bin/env bash
     set -euo pipefail
     export RING_RPC_LOCALNET_KMS="{{localnet-kms-endpoint}}"
@@ -519,7 +547,7 @@ ring-localnet-custody mode="derived" dir="target/ring-localnet/custody": build-r
     [[ -z "$operator" ]] || echo "$operator" >"$dir/operator.json"
 
 # Foreground ring RPC in derived mode, one key per ring.
-ring-rpc-derived dir="target/ring-localnet/custody": build-ring-rpc
+ring-rpc-derived dir="target/ring-localnet/custody": build-ring-tools
     target/debug/ring-rpc serve --port {{localnet-ring-rpc-port}} --custody "{{dir}}/rpc-custody.json" \
         --localnet-kms {{localnet-kms-endpoint}} --deployment localnet \
         --indexer-url {{localnet-ring-indexer-url}} --rpc-url {{localnet-rpc-url}}
@@ -561,7 +589,7 @@ test-ts:
 # Ring TypeScript SDK flows against a fresh validator, Photon, ring indexer, ring prover and ring RPC.
 test-ts-e2e *args: (_test-ts-live "test:ts:e2e" args)
 
-_test-ts-live test-script *args: build-ring-program _spp-programs build-photon build-ring-indexer build-cli build-ring-rpc build-prover-server zolana::build-cli zolana::ensure-surfpool fetch-custom-ring-keys
+_test-ts-live test-script *args: build-ring-program _spp-programs build-photon build-ring-tools build-prover-server zolana::build-cli ensure-surfpool fetch-custom-ring-keys
     #!/usr/bin/env bash
     set -euo pipefail
     # A command substitution that exits nonzero is no `set -e` trigger, so the
@@ -773,7 +801,7 @@ fmt-check:
     cargo fmt --all -- --check
 
 clippy:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --locked --workspace --all-targets -- -D warnings -D clippy::match_bool
 
 check-all:
-    cargo check --workspace --all-targets
+    cargo check --locked --workspace --all-targets

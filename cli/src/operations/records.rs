@@ -2,14 +2,16 @@
 
 use std::fmt::Display;
 
-use anyhow::{bail, ensure, Context as _, Result};
+use anyhow::{bail, Context as _, Result};
 use custom_ring_interface::RingPolicy;
 use spr_client::{BlockingIndexer, BlockingRpc};
 use spr_indexer_api::Hash;
 use zolana_ring_client::{
-    live_registry, records::MemberOpeningRead, AuthorityRecordUpdate, MemberRecords,
-    RecordUpdateTarget, RingError, RingIndexer,
+    live_registry,
+    records::{MemberOpeningRead, StorageTip},
+    AuthorityRecordUpdate, MemberRecords, RecordUpdateTarget, RingError, RingIndexer,
 };
+use zolana_ring_indexer::rpc::MAX_RING_MEMBER_PAGE_LIMIT;
 use zolana_ring_policy::Member;
 
 use crate::{wait_for, Context, Probe, Zolana};
@@ -35,40 +37,21 @@ pub(crate) fn read_one<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
 }
 
 /// `members` under the newest root of the live curator registry.
-pub(crate) fn read_curator(
-    ctx: &Context,
+pub(crate) fn read_curator<R: BlockingRpc, I: BlockingIndexer + RingIndexer>(
+    zolana: &Zolana<R, I>,
     policy: &RingPolicy,
     members: &[Member],
 ) -> Result<Vec<MemberOpeningRead>> {
-    use zolana_ring_indexer::rpc::{GetStorageMemberOpeningsRequest, MAX_RING_MEMBER_PAGE_LIMIT};
     let registry = policy.curator().context("the policy names no curator")?;
-    let newest = ctx.block(live_registry(registry, ctx.chain()))?.newest();
+    let live = zolana.block_on(live_registry(registry, zolana.as_async()))?;
+    let tip = StorageTip::newest(registry, &live);
+    let members: Vec<[u8; 32]> = members.iter().map(|member| *member.as_bytes()).collect();
     let mut reads = Vec::with_capacity(members.len());
     for chunk in members.chunks(MAX_RING_MEMBER_PAGE_LIMIT as usize) {
-        let response =
-            ctx.zolana
-                .indexer()
-                .get_storage_member_openings(GetStorageMemberOpeningsRequest {
-                    registry: registry.into(),
-                    members: chunk
-                        .iter()
-                        .map(|member| Hash(*member.as_bytes()))
-                        .collect(),
-                    expected_root: Hash(newest.hash),
-                })?;
-        ensure!(
-            response.openings.len() == chunk.len(),
-            "the indexer served {} openings for {} members",
-            response.openings.len(),
-            chunk.len()
-        );
-        for (member, opening) in chunk.iter().zip(&response.openings) {
-            reads.push(MemberOpeningRead::verify(
-                opening,
-                &newest.hash,
-                member.as_bytes(),
-            )?);
-        }
+        let response = zolana
+            .indexer()
+            .get_storage_member_openings(tip.openings_request(chunk))?;
+        reads.extend(tip.verify_openings(&response, chunk)?);
     }
     Ok(reads)
 }
@@ -97,10 +80,7 @@ pub(crate) fn mint_policies(
 fn read_mint_policies(
     ctx: &Context,
 ) -> Result<std::collections::BTreeMap<[u8; 32], zolana_ring_policy::MintPolicy>, RingError> {
-    use zolana_ring_client::records::StorageTip;
-    use zolana_ring_indexer::rpc::{
-        GetStorageMemberRecordsRequest, RingMemberOpening, MAX_RING_MEMBER_PAGE_LIMIT,
-    };
+    use zolana_ring_indexer::rpc::{GetStorageMemberRecordsRequest, RingMemberOpening};
     let ring_policy = ctx.block(ctx.ring.require_policy(ctx.chain()))?;
     let records = ring_policy.records;
     let tip = StorageTip::newest(records, &ctx.block(live_registry(records, ctx.chain()))?);
@@ -168,5 +148,150 @@ impl Context {
         let signed = update.sign(&self.request_signer(authority.as_ref()))?;
         self.ring_rpc()?
             .apply_record_update(signed.with_unregistered_owners(unregistered))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use custom_ring_interface::{
+        storage::StorageRegistry, storage_instruction::InitializeIxData, STORAGE_PROGRAM_ID,
+    };
+    use solana_account::Account;
+    use solana_address::Address;
+    use spr_client::{AsyncProverClient, ClientError, Rpc, WitnessReader};
+    use zolana_ring_client::RingIndexerError;
+    use zolana_ring_indexer::rpc::{
+        GetStorageMemberOpeningsRequest, GetStorageMemberOpeningsResponse, RingMemberOpening,
+        RingMemberRecordView, RingRecordPathView, StorageRootView,
+    };
+
+    use super::*;
+    use crate::ZolanaServices;
+
+    const CURATOR: Address = Address::new_from_array([9; 32]);
+
+    struct Curator(Account);
+
+    impl Rpc for Curator {
+        fn get_account(&self, address: Address) -> Result<Option<Account>, ClientError> {
+            Ok((address == CURATOR).then(|| self.0.clone()))
+        }
+    }
+
+    struct Indexer {
+        opening: RingMemberOpening,
+        root: [u8; 32],
+    }
+
+    impl WitnessReader for Indexer {}
+    impl Rpc for Indexer {}
+
+    impl RingIndexer for Indexer {
+        fn get_storage_member_openings(
+            &self,
+            request: GetStorageMemberOpeningsRequest,
+        ) -> Result<GetStorageMemberOpeningsResponse, RingIndexerError> {
+            Ok(GetStorageMemberOpeningsResponse {
+                context: spr_client::Context {
+                    block_time: 0,
+                    slot: 1,
+                },
+                root: StorageRootView {
+                    root: Hash(self.root),
+                    revision: 1,
+                    next_index: 1,
+                },
+                openings: vec![self.opening.clone(); request.members.len()],
+            })
+        }
+    }
+
+    fn field(json: &serde_json::Value) -> [u8; 32] {
+        hex::decode(json.as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_curator_opening_under_another_root_is_refused() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../test-vectors/registry/ring-records.json"
+        ))
+        .unwrap();
+        let served = &vector["openings"][0];
+        let record = &served["record"];
+        let path = &served["path"];
+        let siblings = path["siblings"].as_array().unwrap().iter().map(|level| {
+            let level: Vec<Hash> = level
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(field)
+                .map(Hash)
+                .collect();
+            <[Hash; 3]>::try_from(level).unwrap()
+        });
+        let opening = RingMemberOpening {
+            present: served["present"].as_bool().unwrap(),
+            record: RingMemberRecordView {
+                member: Hash(field(&record["member"])),
+                next: Hash(field(&record["next"])),
+                lists: record["lists"].as_u64().unwrap(),
+                mint_policy: zolana_ring_policy::MintPolicy::EMPTY,
+            },
+            path: RingRecordPathView {
+                index: path["index"].as_u64().unwrap(),
+                siblings: siblings.collect(),
+            },
+        };
+        let root = field(&served["root"]);
+        let member = Member::from_bytes(opening.record.member.0).unwrap();
+        let mut policy: Box<RingPolicy> = bytemuck::zeroed_box();
+        policy.sources[0].registry = CURATOR;
+        let read = |newest: [u8; 32]| {
+            let mut registry = StorageRegistry::new(
+                Address::default(),
+                &InitializeIxData {
+                    registry_id: custom_ring_interface::storage::RegistryId([0; 32]),
+                    grace_slots: [0; 8],
+                    ring_id: [0; 32],
+                    tracking_registry: Address::default(),
+                },
+            );
+            registry.roots[0].hash = newest;
+            let zolana = ZolanaServices {
+                rpc: Curator(Account {
+                    lamports: 1,
+                    data: bytemuck::bytes_of(&registry).to_vec(),
+                    owner: STORAGE_PROGRAM_ID,
+                    executable: false,
+                    rent_epoch: 0,
+                }),
+                indexer: Indexer {
+                    opening: opening.clone(),
+                    root,
+                },
+                prover: AsyncProverClient::local(),
+                ring_prover: AsyncProverClient::local(),
+            }
+            .connect();
+            read_curator(&zolana, &policy, &[member, member])
+        };
+        let reads = read(root).unwrap();
+        assert_eq!(reads.len(), 2);
+        assert!(reads.iter().all(|read| read.record().is_some()));
+        let mut stale = root;
+        stale[31] ^= 1;
+        let Err(refused) = read(stale) else {
+            panic!("a stale opening reads");
+        };
+        assert!(
+            matches!(
+                refused.downcast_ref(),
+                Some(zolana_ring_client::AuditError::InvalidMemberRegistry)
+            ),
+            "{refused}"
+        );
     }
 }

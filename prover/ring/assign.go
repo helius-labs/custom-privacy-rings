@@ -144,22 +144,16 @@ type writeView struct {
 
 // enrollmentView mirrors registry.EnrollmentWrite field for field.
 type enrollmentView struct {
-	Entry   trackingEntryView
+	Entry   TrackingEntry
 	Present bool
 	Low     TrackingRecordParams
 	LowSlot quadPath
 	Slot    quadPath
 }
 
-// trackingEntryView mirrors registry.TrackingEntry field for field.
-type trackingEntryView struct {
-	Member, NullifierPk, CtHash, ListTag, ViewingHash, PriorViewingHash Field
-	Proven                                                              bool
-}
-
 func (w TrackingWrite) view() any {
 	return enrollmentView{
-		Entry:   trackingEntryView{Member: w.Member, NullifierPk: w.NullifierPk, CtHash: w.CtHash, ListTag: w.ListTag, ViewingHash: w.ViewingHash, PriorViewingHash: w.PriorViewingHash, Proven: w.Proven},
+		Entry:   w.TrackingEntry,
 		Present: w.Present,
 		Low:     w.LowRecord,
 		LowSlot: newQuadPath(w.LowIndex, w.LowPath),

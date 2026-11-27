@@ -27,11 +27,11 @@ use zolana_ring_indexer::{
     tracking::{GetTrackingOpeningsRequest, RingTrackingOpening, RingTrackingRecordView},
 };
 use zolana_ring_keys::{RingAddress, RingKeyError};
-use zolana_ring_member_registry::{OpeningCheck, RecordTreeError, TrackingOpening, TrackingRecord};
+use zolana_ring_member_registry::{RecordTreeError, TrackingOpening, TrackingRecord};
 
 use crate::{
     indexer::{AsyncRingIndexer, RingIndexerError},
-    records::path_of,
+    records::{OpeningError, ServedOpening},
     AuditError, SealedNullifierKey,
 };
 
@@ -178,20 +178,17 @@ impl TrackingLeafCheck<'_> {
     /// `None` for an absent member, its absence proven under the root.
     pub fn verify(self) -> Result<Option<TrackingLeaf>, ResolveError> {
         let view = self.view;
-        let path = path_of(&view.path).map_err(|_| ResolveError::MalformedOpening)?;
-        let record = tracking_record(&view.record);
-        let opening = match view.present {
-            true => TrackingOpening::Present { record, path },
-            false => TrackingOpening::Absent { low: record, path },
-        };
-        let Some(record) = OpeningCheck {
-            opening: &opening,
+        let opening = ServedOpening {
+            view,
             root: self.root,
             member: self.member,
         }
-        .verify()
-        .map_err(ResolveError::Opening)?
-        else {
+        .verify(tracking_record)
+        .map_err(|error| match error {
+            OpeningError::Malformed => ResolveError::MalformedOpening,
+            OpeningError::Tree(error) => ResolveError::Opening(error),
+        })?;
+        let TrackingOpening::Present { record, .. } = opening else {
             return Ok(None);
         };
         // The root authenticates the leaf's hashes alone, each served preimage counts once it hashes to one.

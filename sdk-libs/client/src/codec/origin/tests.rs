@@ -1231,18 +1231,25 @@ fn origin_of_frame(
         utxo_tree_root_index: 0,
         nullifier_tree_root_index: 0,
     };
+    let authorization = if in_proof {
+        RailAuthorization::ConfidentialInProof(InProofOwner {
+            owner: zero,
+            commitment: zero,
+            commitment_pok: zero,
+        })
+    } else {
+        RailAuthorization::ConfidentialSigner
+    };
     let mut data = RingTransactData {
-        rail: RingRail::Confidential,
+        authorization,
         n_in: 1,
         n_out: 2,
         proof: &proof,
         tracking_revision: Default::default(),
-        own_revision: None,
-        policy: None,
+        named_roots: NamedRoots::TrackingOnly,
         spl_withdrawal_owners: &[],
         approval: Default::default(),
         no_spend: false,
-        public_owners: false,
         expiry_unix_ts: 0,
         tx_viewing_u: &zero,
         salt: &[0; 16],
@@ -1257,12 +1264,6 @@ fn origin_of_frame(
         recipient_keys: &keys,
         vouched: false,
         private_tx_hash: &zero,
-        anonymous: None,
-        in_proof_owner: in_proof.then_some(InProofOwner {
-            owner: &zero,
-            commitment: &zero,
-            commitment_pok: &zero,
-        }),
         spp_proof: &groth16,
         nullifiers: &nullifiers,
         input_trees: InputTrees::One(context),

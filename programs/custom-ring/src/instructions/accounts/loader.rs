@@ -15,8 +15,6 @@
 //! A source that pins a tracking registry records a floor at each private write, the tracking revision the
 //! write proved its rows under. `LiveRoots::tracking` refuses a frame below the highest floor among sources
 //! the ring reads a private list from.
-//!
-//! Read after `instructions/runtime/instruction_runtime.rs`. Read before `program-libs/interface/src/accounts/state.rs`.
 
 use custom_ring_interface::{
     cosign::{CoSignCover, CoSignRequirement, MAX_CO_SIGNERS},
@@ -41,11 +39,11 @@ pub fn load<'a, T: RingAccount>(
     program_id: &Address,
     account: &'a AccountView,
 ) -> Result<Ref<'a, T>, ProgramError> {
-    if !account.owned_by(program_id) {
-        return Err(T::INVALID.into());
+    OwnedAccount {
+        owner: program_id,
+        invalid: T::INVALID,
     }
-    let data = account.try_borrow().map_err(|_| T::INVALID)?;
-    Ref::filter_map(data, T::from_data).map_err(|_| T::INVALID.into())
+    .load(account, T::from_data)
 }
 
 #[inline(always)]
@@ -53,11 +51,46 @@ pub fn load_mut<'a, T: RingAccount>(
     program_id: &Address,
     account: &'a mut AccountView,
 ) -> Result<RefMut<'a, T>, ProgramError> {
-    if !account.owned_by(program_id) {
-        return Err(T::INVALID.into());
+    OwnedAccount {
+        owner: program_id,
+        invalid: T::INVALID,
     }
-    let data = account.try_borrow_mut().map_err(|_| T::INVALID)?;
-    RefMut::filter_map(data, T::from_data_mut).map_err(|_| T::INVALID.into())
+    .load_mut(account, T::from_data_mut)
+}
+
+/// An account `owner` holds with bytes `decode` accepts, `invalid` for any other or a held borrow.
+#[must_use]
+struct OwnedAccount<'a> {
+    owner: &'a Address,
+    invalid: CustomRingError,
+}
+
+impl OwnedAccount<'_> {
+    #[inline(always)]
+    fn load<'b, T: ?Sized>(
+        self,
+        account: &'b AccountView,
+        decode: impl FnOnce(&[u8]) -> Option<&T>,
+    ) -> Result<Ref<'b, T>, ProgramError> {
+        if !account.owned_by(self.owner) {
+            return Err(self.invalid.into());
+        }
+        let data = account.try_borrow().map_err(|_| self.invalid)?;
+        Ref::filter_map(data, decode).map_err(|_| self.invalid.into())
+    }
+
+    #[inline(always)]
+    fn load_mut<'b, T: ?Sized>(
+        self,
+        account: &'b mut AccountView,
+        decode: impl FnOnce(&mut [u8]) -> Option<&mut T>,
+    ) -> Result<RefMut<'b, T>, ProgramError> {
+        if !account.owned_by(self.owner) {
+            return Err(self.invalid.into());
+        }
+        let data = account.try_borrow_mut().map_err(|_| self.invalid)?;
+        RefMut::filter_map(data, decode).map_err(|_| self.invalid.into())
+    }
 }
 
 /// The ring account whose `role` the signer holds, the processor checks the signature.
@@ -91,12 +124,11 @@ impl RoleHolder<'_> {
 pub fn load_storage_registry(
     account: &AccountView,
 ) -> Result<Ref<'_, StorageRegistry>, ProgramError> {
-    let invalid = CustomRingError::InvalidStorageRegistry;
-    if !account.owned_by(&STORAGE_PROGRAM_ID) {
-        return Err(invalid.into());
+    OwnedAccount {
+        owner: &STORAGE_PROGRAM_ID,
+        invalid: CustomRingError::InvalidStorageRegistry,
     }
-    let data = account.try_borrow().map_err(|_| invalid)?;
-    Ref::filter_map(data, StorageRegistry::from_data).map_err(|_| invalid.into())
+    .load(account, StorageRegistry::from_data)
 }
 
 /// A registry fit to hold the ring's records, one own registry per ring, its ring id scopes every address.
@@ -182,12 +214,11 @@ impl RegistrySlots<'_> {
 fn load_tracking_registry(
     account: &AccountView,
 ) -> Result<Ref<'_, TrackingRegistry>, ProgramError> {
-    let invalid = CustomRingError::InvalidTrackingRegistry;
-    if !account.owned_by(&STORAGE_PROGRAM_ID) {
-        return Err(invalid.into());
+    OwnedAccount {
+        owner: &STORAGE_PROGRAM_ID,
+        invalid: CustomRingError::InvalidTrackingRegistry,
     }
-    let data = account.try_borrow().map_err(|_| invalid)?;
-    Ref::filter_map(data, TrackingRegistry::from_data).map_err(|_| invalid.into())
+    .load(account, TrackingRegistry::from_data)
 }
 
 /// The shielded pool by address, its account position differs per forwarded layout.

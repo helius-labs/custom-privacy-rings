@@ -29,6 +29,7 @@ import {
   optionalDataHashes,
 } from "./audit-decoders.js";
 import { checkedReadCursor } from "./signed-read.js";
+import { defined } from "../../protocol/defined.js";
 
 export function decodeWalletActivity(wire: Record<string, unknown>): RingWalletActivity {
   const view = record(wire["view"], "view");
@@ -85,7 +86,7 @@ export function decodeWalletStatus(wire: Record<string, unknown>): RingWalletSta
         const mint = row["mint"] == null ? undefined : namedMint(row, asset, path);
         return Object.freeze({
           asset,
-          ...(mint === undefined ? {} : { mint }),
+          ...defined({ mint }),
           amount: u64(row["amount"], `${path}.amount`),
         });
       }),
@@ -111,7 +112,7 @@ function decodeWalletNote(row: Record<string, unknown>, path: string): RingWalle
       ? {}
       : { nullifierPk: canonicalHash(row["nullifierPk"], `${path}.nullifierPk`) }),
     asset,
-    ...(mint === undefined ? {} : { mint }),
+    ...defined({ mint }),
     amount: u64(row["amount"], `${path}.amount`),
     blinding: canonicalHash(row["blinding"], `${path}.blinding`),
     ...optionalDataHashes(row, path, canonicalHash),

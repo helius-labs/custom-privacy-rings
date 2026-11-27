@@ -292,31 +292,6 @@ pub(crate) fn fault(reason: impl Into<String>) -> ApplyError {
     ApplyError::Fault(reason.into())
 }
 
-pub(crate) trait Quarantine {
-    type State;
-    type Undo;
-
-    fn undo(&self, before: Option<Self::State>) -> Self::Undo;
-
-    fn quarantine(
-        &self,
-        before: Self::State,
-        reason: String,
-    ) -> impl Future<Output = Result<Self::Undo>> + Send;
-}
-
-async fn settle<Q: Quarantine>(
-    store: &Q,
-    before: Q::State,
-    outcome: Result<(), ApplyError>,
-) -> Result<Q::Undo> {
-    match outcome {
-        Ok(()) => Ok(store.undo(Some(before))),
-        Err(ApplyError::Fault(reason)) => store.quarantine(before, reason).await,
-        Err(ApplyError::Retry(error)) => Err(error),
-    }
-}
-
 /// A refused change writes no row.
 async fn keep(
     savepoint: DatabaseTransaction,
@@ -331,7 +306,13 @@ async fn keep(
 
 /// A database failure retries, any other storage error is the ring's deterministic inconsistency.
 pub(crate) fn from_storage(error: anyhow::Error) -> ApplyError {
-    if error.chain().any(|cause| cause.is::<sea_orm::DbErr>()) {
+    // Only the shared codecs raise a custom error, for a stored value they refuse.
+    let failed = |cause: &(dyn std::error::Error + 'static)| {
+        cause
+            .downcast_ref::<sea_orm::DbErr>()
+            .is_some_and(|error| !matches!(error, sea_orm::DbErr::Custom(_)))
+    };
+    if error.chain().any(failed) {
         return ApplyError::Retry(error);
     }
     fault(format!("{error:#}"))
@@ -421,7 +402,11 @@ impl BlockWork<'_> {
             Ok(call) => self.advance(before.clone(), call).await,
             Err(error) => Err(fault(error.to_string())),
         };
-        undo.push(settle(&store, before, outcome).await?);
+        undo.push(match outcome {
+            Ok(()) => store.undo(Some(before)),
+            Err(ApplyError::Fault(reason)) => store.quarantine(before, reason).await?,
+            Err(ApplyError::Retry(error)) => return Err(error),
+        });
         Ok(())
     }
 

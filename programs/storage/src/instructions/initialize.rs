@@ -1,8 +1,5 @@
 //! Creates a policy registry at `[storage, creator, registry_id]`, holding the sentinel root at revision zero.
 //!
-//! Read after `programs/storage/src/lib.rs`, `program-libs/interface/src/accounts/storage.rs`. Read
-//! before `programs/storage/src/instructions/update.rs`.
-//!
 //! Guarantees:
 //! 1. The creator signs and becomes the authority, its key in the seeds keeps every other signer off the address.
 //! 2. `grace_slots`, `ring_id` and `tracking_registry` are final, no instruction writes them again.

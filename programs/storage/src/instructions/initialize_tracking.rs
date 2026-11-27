@@ -3,9 +3,6 @@
 //! The ring's `Initialize` signs its ring PDA as creator through CPI and pins the address. Anyone
 //! else may create a registry naming any ring, and no ring reads it.
 //!
-//! Read after `programs/storage/src/lib.rs`, `program-libs/interface/src/accounts/tracking.rs`. Read
-//! before `programs/storage/src/instructions/apply_enrollments.rs`, `programs/custom-ring/src/instructions/configuration/setup/initialize.rs`.
-//!
 //! Guarantees:
 //! 1. `ring_id` and `auditor_pubkey` are final, and every first enrollment seals to that key.
 //! 2. `is_auditor_key` refuses a key no proof can seal to, it would lock enrollment for good, and ring `Initialize` runs the same check.

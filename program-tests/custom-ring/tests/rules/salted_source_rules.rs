@@ -2,8 +2,8 @@
 //! tracking registry, and a refused write stores nothing.
 
 use custom_ring_interface::{
-    CustomRingError, InitializeIxData, PolicyBindingIxData, PolicySourceIxData, PolicyTableIxData,
-    RingKind, RingPolicy, RingRole, SourceSpec, UpdatePolicyIxData,
+    CustomRingError, InitializeIxData, PolicyTableIxData, RingKind, RingPolicy, RingRole,
+    SourceSpec, UpdatePolicyIxData,
 };
 use solana_address::Address;
 use solana_keypair::{Keypair, Signer};
@@ -85,9 +85,7 @@ fn initialize(ring: &mut Ring, lists: &[(ListId, u8)], curators: &[Address]) -> 
             auditor_pubkey: auditor_pubkey(),
             kind: RingKind::Policy,
             roles: ring.roles.addresses(),
-            policy: Some(PolicyBindingIxData {
-                table: table(lists),
-            }),
+            policy: Some(table(lists)),
         },
         curators,
     }
@@ -174,7 +172,7 @@ fn an_unpaired_curator_serves_a_public_list_and_no_salted_one() {
 fn a_source_move_pairs_the_salted_source_it_sets() {
     let mut ring = salted_ring();
     let move_private = |source| {
-        UpdatePolicyIxData::Source(PolicySourceIxData {
+        UpdatePolicyIxData::Source(SourceSpec {
             list_id: ListId::PrivateAllow as u8,
             source,
         })
@@ -204,7 +202,7 @@ fn a_public_source_move_passes_the_salted_source_it_keeps() {
     let mut ring = salted_ring();
     curator(&mut ring, UNPAIRED);
     let move_allow = || {
-        UpdatePolicyIxData::Source(PolicySourceIxData {
+        UpdatePolicyIxData::Source(SourceSpec {
             list_id: ListId::Allow as u8,
             source: 1,
         })

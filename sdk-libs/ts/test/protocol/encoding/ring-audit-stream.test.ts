@@ -59,8 +59,6 @@ import { envelopeDigest, recordChain } from "../../../src/protocol/proof/stateme
 import { dummyUtxoHash, fieldUtxoHash } from "../../../src/protocol/membership/utxo-hash.js";
 import { RingError } from "../../../src/protocol/error.js";
 
-const hex = (value: string): Uint8Array => hexToBytes(value);
-
 /** The regenerated writers' field names, Rust `AuditStreamLayout::{envelope, recipient_key, keys_len}`. */
 interface RangeKey {
   readonly class: number;
@@ -223,7 +221,8 @@ const voucherCiphertext = (testCase: StreamCase): string =>
   testCase.recipient_keys_ciphertext.slice(testCase.recipient_keys.length * 2 * RECIPIENT_KEY_LEN);
 
 describe("the stream vector", () => {
-  const auditor = (): X25519Keypair => X25519Keypair.fromBytes(hex(vector.auditor_sk) as Bytes32);
+  const auditor = (): X25519Keypair =>
+    X25519Keypair.fromBytes(hexToBytes(vector.auditor_sk) as Bytes32);
 
   for (const testCase of vector.cases) {
     const { entry, vouched, records } = vectorLayout(testCase.layout);
@@ -235,33 +234,33 @@ describe("the stream vector", () => {
       vouched,
       records,
     };
-    const salt = hex(vector.salt) as Bytes16;
+    const salt = hexToBytes(vector.salt) as Bytes16;
     const txKey = (): X25519Keypair =>
-      X25519Keypair.fromBytes(hex(vector.tx_viewing_sk) as Bytes32);
+      X25519Keypair.fromBytes(hexToBytes(vector.tx_viewing_sk) as Bytes32);
     const message = () => ({
       ephemeralPublicKey: txKey().publicKey(),
-      envelope: hex(testCase.envelope_ciphertext),
-      recipientKeys: keyCiphertexts(testCase).map(hex),
-      ...(testCase.voucher === "" ? {} : { voucher: hex(voucherCiphertext(testCase)) }),
+      envelope: hexToBytes(testCase.envelope_ciphertext),
+      recipientKeys: keyCiphertexts(testCase).map(hexToBytes),
+      ...(testCase.voucher === "" ? {} : { voucher: hexToBytes(voucherCiphertext(testCase)) }),
     });
 
     it(`${testCase.name} seals byte for byte as Rust and refuses another salt`, async () => {
       await initializePoseidon();
       const sealed = sealSaltedAuditorStream({
-        txViewingSecret: hex(vector.tx_viewing_sk) as Bytes32,
+        txViewingSecret: hexToBytes(vector.tx_viewing_sk) as Bytes32,
         salt,
         auditorPublicKey: auditor().publicKey(),
-        envelope: hex(testCase.envelope_plaintext),
+        envelope: hexToBytes(testCase.envelope_plaintext),
         recipientKeys: testCase.recipient_keys.map((key, slot) => ({
           counter: recipientKeyRegion(layout, slot).startCounter,
-          bytes: hex(key),
+          bytes: hexToBytes(key),
         })),
         ...(testCase.voucher === ""
           ? {}
           : {
               voucher: {
                 counter: voucherRegion(layout).startCounter,
-                bytes: hex(testCase.voucher),
+                bytes: hexToBytes(testCase.voucher),
               },
             }),
       });
@@ -287,16 +286,16 @@ describe("the stream vector", () => {
     it(`${testCase.name} binds its digest and record chain`, async () => {
       await initializePoseidon();
       const outputs = testCase.record_ciphertexts.map((record, slot) => ({
-        record: hex(record),
+        record: hexToBytes(record),
         exit:
-          vectorRecord(hex(testCase.records[slot] as string), records).record.kind ===
+          vectorRecord(hexToBytes(testCase.records[slot] as string), records).record.kind ===
           RecordKind.exit,
       }));
       expect(
         bytesToHex(
           envelopeDigest(
-            hex(testCase.envelope_ciphertext),
-            hex(testCase.recipient_keys_ciphertext),
+            hexToBytes(testCase.envelope_ciphertext),
+            hexToBytes(testCase.recipient_keys_ciphertext),
             layout,
           ),
         ),
@@ -309,10 +308,10 @@ describe("the stream vector", () => {
     it(`${testCase.name} rebuilds every published hash from its record alone`, async () => {
       await initializePoseidon();
       const opened = openRingDisclosure(auditor(), { layout, message: message(), salt });
-      const firstNullifier = hex(vector.first_nullifier) as Bytes32;
-      const seed = ringBlindingSeed(hex(vector.tx_viewing_sk) as Bytes32, salt);
+      const firstNullifier = hexToBytes(vector.first_nullifier) as Bytes32;
+      const seed = ringBlindingSeed(hexToBytes(vector.tx_viewing_sk) as Bytes32, salt);
       testCase.records.forEach((plaintext, slot) => {
-        const { record, nullifierPk } = vectorRecord(hex(plaintext), records);
+        const { record, nullifierPk } = vectorRecord(hexToBytes(plaintext), records);
         const blinding = ringOutputBlinding({
           firstNullifier,
           blindingSeed: seed,
@@ -335,7 +334,7 @@ describe("the stream vector", () => {
                 ringDataHash: record.ringDataHash,
                 ringId:
                   record.kind === RecordKind.ring
-                    ? (hex(vector.ring_id) as Bytes32)
+                    ? (hexToBytes(vector.ring_id) as Bytes32)
                     : (new Uint8Array(32) as Bytes32),
               });
         expect(bytesToHex(hash)).toBe(testCase.output_hashes[slot]);
@@ -360,14 +359,14 @@ describe("the stream vector", () => {
     ];
     const disclosure: RingDisclosure = {
       envelope: {
-        txViewingSecret: hex(vector.tx_viewing_sk) as Bytes32,
+        txViewingSecret: hexToBytes(vector.tx_viewing_sk) as Bytes32,
         realInputs: 1,
         evidence: { kind: "none" },
       },
       recipientKeys: keys,
     };
-    const keypair = X25519Keypair.fromBytes(hex(vector.auditor_sk) as Bytes32);
-    const salt = hex(vector.salt) as Bytes16;
+    const keypair = X25519Keypair.fromBytes(hexToBytes(vector.auditor_sk) as Bytes32);
+    const salt = hexToBytes(vector.salt) as Bytes16;
     const sealed = sealRingDisclosure({
       layout,
       auditorPublicKey: keypair.publicKey(),
@@ -479,15 +478,15 @@ describe("the stream codecs", () => {
     const voucher = new Uint8Array(32).fill(0x76) as Bytes32;
     const disclosure: RingDisclosure = {
       envelope: {
-        txViewingSecret: hex(vector.tx_viewing_sk) as Bytes32,
+        txViewingSecret: hexToBytes(vector.tx_viewing_sk) as Bytes32,
         realInputs: 1,
         evidence: { kind: "none" },
       },
       recipientKeys: keys,
       voucher,
     };
-    const keypair = X25519Keypair.fromBytes(hex(vector.auditor_sk) as Bytes32);
-    const salt = hex(vector.salt) as Bytes16;
+    const keypair = X25519Keypair.fromBytes(hexToBytes(vector.auditor_sk) as Bytes32);
+    const salt = hexToBytes(vector.salt) as Bytes16;
     const seal = { auditorPublicKey: keypair.publicKey(), salt };
     const sealed = sealRingDisclosure({ ...seal, layout, disclosure });
     expect(sealed.voucher).toHaveLength(32);

@@ -2,9 +2,6 @@
 //!
 //! A PDA can authorize one write through CPI.
 //!
-//! Read after `program-libs/interface/src/accounts/tracking.rs`, `program-libs/interface/src/proof/owner_signature.rs`.
-//! Read before `prover/circuits/registry/apply_enrollments.go`.
-//!
 //! Guarantees:
 //! 1. Each insertion requires owner consent and a verified `RegisterKey` seal.
 //! 2. The new root and next index follow from the current ones by exactly the batch's entries in write order, and the next index stays within `TRACKING_CAPACITY`.

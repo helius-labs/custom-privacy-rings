@@ -10,9 +10,6 @@
 //! The recipient keys follow at the first counter past the envelope's reserved blocks, two blocks each.
 //! Each output record is its own stream under its slot's delivered secret. Every transfer slot seals
 //! [`TRANSFER_RECORD_LEN`] bytes and publishes the prefix its kind takes under the frame's [`RecordForm`].
-//!
-//! Read after `program-libs/interface/src/proof/domain.rs`. Read before `program-libs/interface/src/proof/disclosure.rs`,
-//! `prover/circuits/audit/audit.go`.
 
 use crate::error::CustomRingError;
 
@@ -78,9 +75,10 @@ impl AuditKey {
     }
 
     pub const fn entry_len(self) -> usize {
-        match self.entry {
-            true => ENTRY_RECORD_LEN,
-            false => 0,
+        if self.entry {
+            ENTRY_RECORD_LEN
+        } else {
+            0
         }
     }
 
@@ -121,14 +119,15 @@ pub struct AuditStreamLayout {
 
 impl AuditStreamLayout {
     pub fn checked(self) -> Result<Self, CustomRingError> {
-        match self.inputs >= 1
+        if self.inputs >= 1
             && self.inputs <= self.key.class()
             && self.key.class() <= u64::BITS as usize
             && self.outputs >= 1
             && self.outputs <= self.capacity
         {
-            true => Ok(self),
-            false => Err(CustomRingError::RingTransactLength),
+            Ok(self)
+        } else {
+            Err(CustomRingError::RingTransactLength)
         }
     }
 
@@ -150,10 +149,7 @@ impl AuditStreamLayout {
         StreamRegion {
             start_counter: self.first_key_counter() + (self.capacity * SEALED_KEY_BLOCKS) as u32,
             max_blocks: SEALED_KEY_BLOCKS,
-            len: match self.vouched {
-                true => SEALED_KEY_LEN,
-                false => 0,
-            },
+            len: if self.vouched { SEALED_KEY_LEN } else { 0 },
         }
     }
 
@@ -196,9 +192,10 @@ impl RecordForm {
     /// A data frame's payload follows the record at its length prefix or longer, any other body ends at the record.
     pub const fn fits_recipient_body(self, body_len: usize) -> bool {
         let record_len = self.published_len(RecordKind::Ring);
-        match self.data {
-            true => body_len >= record_len + RECIPIENT_PAYLOAD_LENGTH_LEN,
-            false => body_len == record_len,
+        if self.data {
+            body_len >= record_len + RECIPIENT_PAYLOAD_LENGTH_LEN
+        } else {
+            body_len == record_len
         }
     }
 }

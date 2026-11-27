@@ -13,14 +13,14 @@ pub struct Subject {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ListEntry {
+pub(crate) struct ListEntry {
     pub(crate) list: List,
     pub(crate) subject: Subject,
 }
 
 /// Who and what one operation moves, as the frame the co-signer signs states it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Parties {
+pub(crate) struct Parties {
     pub(crate) senders: Vec<Member>,
     pub(crate) recipients: Vec<Member>,
     /// Every account of a public withdrawal leg.
@@ -37,7 +37,7 @@ pub struct Lists {
 }
 
 #[must_use]
-pub struct ListDecision<'a> {
+pub(crate) struct ListDecision<'a> {
     pub(crate) parties: &'a Parties,
     pub(crate) lists: &'a Lists,
 }
@@ -98,9 +98,10 @@ impl ListDecision<'_> {
         let unlisted = |subject: Subject| {
             self.lists.allowing.contains(&subject.kind) && !listed(List::Allow, subject)
         };
-        match parties.subjects().any(unlisted) {
-            true => Verdict::Refused(CoSignRefusal::NotAllowed),
-            false => Verdict::Admitted,
+        if parties.subjects().any(unlisted) {
+            Verdict::Refused(CoSignRefusal::NotAllowed)
+        } else {
+            Verdict::Admitted
         }
     }
 }

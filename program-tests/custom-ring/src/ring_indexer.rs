@@ -3,8 +3,8 @@
 
 use std::{
     fs::{self, File},
-    io::{ErrorKind, Read, Write},
-    net::TcpStream,
+    io::{self, ErrorKind, Read, Write},
+    net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     thread,
@@ -17,6 +17,7 @@ use spr_test_utils::localnet::isolated_temp_path;
 
 const BINARY_ENV: &str = "RING_INDEXER_BIN";
 const PHOTON_BINARY_ENV: &str = "ZOLANA_PHOTON_BIN";
+pub(crate) const PROCESS_SCOPE_ENV: &str = "ZOLANA_PROCESS_SCOPE_DIR";
 /// The block fetch width the zolana CLI gives a Photon in a process scope.
 const PHOTON_BLOCK_FETCHES: &str = "8";
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -55,7 +56,8 @@ impl RingIndexerLaunch<'_> {
             _ => {}
         }
         fs::create_dir_all(&data)?;
-        fs::create_dir_all(log_dir)?;
+        let log_dir = test_log_dir(log_dir);
+        fs::create_dir_all(&log_dir)?;
         let log_path = log_dir.join("ring-indexer.log");
         let log = File::create(&log_path)?;
         let start = || {
@@ -123,7 +125,8 @@ impl PhotonRestart<'_> {
         // The CLI's database directory for the port, Photon recreates its database there.
         let temp_dir = std::env::temp_dir().join(format!("zolana-photon-{port}"));
         fs::create_dir_all(&temp_dir)?;
-        fs::create_dir_all(log_dir)?;
+        let log_dir = test_log_dir(log_dir);
+        fs::create_dir_all(&log_dir)?;
         let log_path = log_dir.join("photon-restart.log");
         let log = File::create(&log_path)?;
         let start = || {
@@ -182,7 +185,7 @@ pub(crate) fn stop_listener(port: u16) -> Result<()> {
         Command::new("kill").arg(pid).status()?;
     }
     let deadline = Instant::now() + READY_TIMEOUT;
-    while TcpStream::connect(("127.0.0.1", port)).is_ok() {
+    while local_stream(port).is_ok() {
         if Instant::now() > deadline {
             bail!("port {port} stays busy");
         }
@@ -194,7 +197,7 @@ pub(crate) fn stop_listener(port: u16) -> Result<()> {
 /// Photon errors on `getIndexerSlot` until it stores its first block.
 fn indexed_slot(port: u16) -> Option<u64> {
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"getIndexerSlot"}"#;
-    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    let mut stream = local_stream(port).ok()?;
     let request = format!(
         "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
@@ -229,7 +232,7 @@ fn log_tail(path: &Path) -> String {
 }
 
 fn ready(port: u16) -> bool {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+    let Ok(mut stream) = local_stream(port) else {
         return false;
     };
     let mut status = [0; 12];
@@ -237,6 +240,22 @@ fn ready(port: u16) -> bool {
         .write_all(b"GET /ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .and_then(|()| stream.read_exact(&mut status))
         .is_ok_and(|()| status.ends_with(b" 200"))
+}
+
+/// Every probe gives up within `POLL`, the caller's deadline decides.
+fn local_stream(port: u16) -> io::Result<TcpStream> {
+    let stream = TcpStream::connect_timeout(&SocketAddr::from(([127, 0, 0, 1], port)), POLL)?;
+    stream.set_read_timeout(Some(POLL))?;
+    stream.set_write_timeout(Some(POLL))?;
+    Ok(stream)
+}
+
+/// Per test process under the scope `tools/test-ring-controls.sh` dumps, a later test truncates no earlier log.
+fn test_log_dir(log_dir: &Path) -> PathBuf {
+    std::env::var_os(PROCESS_SCOPE_ENV).map_or_else(
+        || log_dir.to_owned(),
+        |scope| Path::new(&scope).join(std::process::id().to_string()),
+    )
 }
 
 #[cfg(test)]

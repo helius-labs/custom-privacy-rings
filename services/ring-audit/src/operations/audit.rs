@@ -134,8 +134,6 @@ struct BoundTransaction<'a> {
 }
 
 enum Projection<'a> {
-    /// No database, the mirror is the whole projection.
-    Memory,
     Writer(ProjectionWriter<'a>),
     /// Another replica holds the lease, the local one reloaded its commits.
     Follower,
@@ -279,12 +277,8 @@ impl<S: TransactionSource> AuditService<S> {
             let backfill = &mut *guard;
             let seal = self.note_seal()?;
             match self.projection(&store, backfill, &seal).await? {
-                Projection::Memory => {
-                    self.refresh_enrollments(&store, &mut backfill.tracking_cursor, None)
-                        .await?
-                }
                 Projection::Writer(writer) => {
-                    self.refresh_enrollments(&store, &mut backfill.tracking_cursor, Some(&writer))
+                    self.refresh_enrollments(&store, &mut backfill.tracking_cursor, &writer)
                         .await?
                 }
                 // The cursor counts finalized leaves, so it compares against the finalized root.
@@ -467,8 +461,11 @@ impl<S: TransactionSource> AuditService<S> {
         &self,
         request: &GetSpendCoverageRequest,
     ) -> Result<GetSpendCoverageResponse, RingAuditError> {
+        let cursor = request.cursor.as_ref().map_or_else(
+            || Ok(crate::spend_coverage::CoverageCursor::new(self.ring)),
+            |cursor| crate::spend_coverage::CoverageCursor::decode(&cursor.0, self.ring),
+        )?;
         let authority = request.authority.0;
-        let now = self.shared.clock.now()?;
         let nonce = WalletCheck {
             wallet: authority,
             timestamp: request.timestamp,
@@ -479,24 +476,18 @@ impl<S: TransactionSource> AuditService<S> {
                 authority,
                 cursor: request.cursor.clone(),
             },
-            now,
+            now: self.shared.clock.now()?,
         }
         .decide()?;
-        let authorized = PendingNonce {
+        let pending = PendingNonce {
             ring: self.ring,
             nonce,
             timestamp: request.timestamp,
-        }
-        .authorize(self.require_served_policy_authority(authority))
-        .await?;
+        };
         self.shared
             .replay
-            .accept(authorized.nonce, self.shared.clock.now()?)
+            .authorize_once(pending, self.require_served_policy_authority(authority))
             .await?;
-        let cursor = request.cursor.as_ref().map_or_else(
-            || Ok(crate::spend_coverage::CoverageCursor::new(self.ring)),
-            |cursor| crate::spend_coverage::CoverageCursor::decode(&cursor.0, self.ring),
-        )?;
         self.shared.store(self.ring).spend_coverage(cursor).await
     }
 
@@ -525,16 +516,17 @@ impl<S: TransactionSource> AuditService<S> {
             now,
         }
         .decide()?;
-        let authorized = PendingNonce {
+        let pending = PendingNonce {
             ring: self.ring,
             nonce,
             timestamp: auth.timestamp,
-        }
-        .authorize(self.shared.require_ring_authority(self.ring, authority))
-        .await?;
+        };
         self.shared
             .replay
-            .accept(authorized.nonce, self.shared.clock.now()?)
+            .authorize_once(
+                pending,
+                self.shared.require_ring_authority(self.ring, authority),
+            )
             .await?;
         Ok(AuditorKeyStatement {
             cluster: &self.shared.genesis_hash,
@@ -554,10 +546,19 @@ impl<S: TransactionSource> AuditService<S> {
         }
     }
 
+    /// Refuses a cursor of another stream or ring before the signature is checked.
     pub async fn authorize<'a>(
         &'a self,
         request: AuditRead<'a>,
     ) -> Result<AuthorizedRead<'a, S>, RingAuditError> {
+        let stream = match request.read {
+            PagedRead::DecryptedTransactions | PagedRead::WalletActivity => HistoryStream::Tags,
+            PagedRead::AuditedMerges => HistoryStream::Ring,
+        };
+        request.page.position(HistoryQuery {
+            ring: self.ring,
+            stream,
+        })?;
         let attestation = ReadAttestation {
             read: request.read,
             target: self.read_target(),
@@ -660,48 +661,36 @@ impl<S: TransactionSource> AuditService<S> {
             reader,
             action: request.action,
         };
-        let authorized = match wallet {
-            Some(wallet) => {
-                let nonce = WalletCheck {
-                    wallet,
-                    timestamp: request.timestamp,
-                    nonce: &request.nonce,
-                    signature: &request.signature,
-                    attestation: &attestation,
-                    now: self.shared.clock.now()?,
-                }
-                .decide()?;
-                PendingNonce {
-                    ring: self.ring,
-                    nonce,
-                    timestamp: request.timestamp,
-                }
-                .authorize(self.require_served_config())
-                .await?
-            }
+        // A ring-wide grant names no signer, the config names the policy authority that signs it.
+        let (signer, ring_wide) = match wallet {
+            Some(wallet) => (wallet, None),
             None => {
                 let config = self.require_served_config().await?;
-                let nonce = WalletCheck {
-                    wallet: config.roles().policy,
-                    timestamp: request.timestamp,
-                    nonce: &request.nonce,
-                    signature: &request.signature,
-                    attestation: &attestation,
-                    now: self.shared.clock.now()?,
-                }
-                .decide()?;
-                PendingNonce {
-                    ring: self.ring,
-                    nonce,
-                    timestamp: request.timestamp,
-                }
-                .authorize(async { Ok::<_, RingAuditError>(config) })
-                .await?
+                (config.roles().policy, Some(config))
             }
+        };
+        let nonce = WalletCheck {
+            wallet: signer,
+            timestamp: request.timestamp,
+            nonce: &request.nonce,
+            signature: &request.signature,
+            attestation: &attestation,
+            now: self.shared.clock.now()?,
+        }
+        .decide()?;
+        let pending = PendingNonce {
+            ring: self.ring,
+            nonce,
+            timestamp: request.timestamp,
         };
         self.shared
             .replay
-            .accept(authorized.nonce, self.shared.clock.now()?)
+            .authorize_once(pending, async {
+                match ring_wide {
+                    Some(config) => Ok(config),
+                    None => self.require_served_config().await,
+                }
+            })
             .await?;
         rows.write(GrantRow {
             pair: GrantPair {
@@ -728,9 +717,8 @@ impl<S: TransactionSource> AuditService<S> {
         let backfill = &mut *guard;
         let seal = self.note_seal()?;
         match self.projection(&store, backfill, &seal).await? {
-            Projection::Memory => self.read_history(&store, backfill, None, config.mode).await,
             Projection::Writer(writer) => {
-                self.read_history(&store, backfill, Some(&writer), config.mode)
+                self.read_history(&store, backfill, &writer, config.mode)
                     .await
             }
             Projection::Follower => Ok(()),
@@ -744,9 +732,7 @@ impl<S: TransactionSource> AuditService<S> {
         backfill: &mut Backfill,
         seal: &'a NoteSeal,
     ) -> Result<Projection<'a>, RingAuditError> {
-        let Some(database) = self.shared.database.as_ref() else {
-            return Ok(Projection::Memory);
-        };
+        let database = self.shared.database.store();
         let lease = LeaseClaim {
             db: database.connection(),
             ring: self.ring,
@@ -756,7 +742,7 @@ impl<S: TransactionSource> AuditService<S> {
         .claim()
         .await?;
         if lease.is_none() || lease != backfill.writer || backfill.history.is_none() {
-            self.reload(store, backfill, seal).await?;
+            self.reload(store, backfill).await?;
         }
         backfill.writer = lease;
         Ok(match self.writer(lease, seal) {
@@ -765,15 +751,13 @@ impl<S: TransactionSource> AuditService<S> {
         })
     }
 
-    /// `None` without a database or a held lease.
     fn writer<'a>(
         &'a self,
         lease: Option<ProjectionLease>,
         seal: &'a NoteSeal,
     ) -> Option<ProjectionWriter<'a>> {
-        let database = self.shared.database.as_ref()?;
         lease.map(|lease| ProjectionWriter {
-            db: database.connection(),
+            db: self.shared.database.store().connection(),
             ring: self.ring,
             seal,
             lease,
@@ -785,33 +769,22 @@ impl<S: TransactionSource> AuditService<S> {
         &self,
         store: &AuditStore,
         backfill: &mut Backfill,
-        seal: &NoteSeal,
     ) -> Result<(), RingAuditError> {
-        let Some(database) = self.shared.database.as_ref() else {
-            return Ok(());
-        };
         let LoadedProjection {
             spends,
-            repairs,
-            enrollments,
             tracking_cursor,
             revision,
         } = LoadSpends {
-            db: database.connection(),
+            db: self.shared.database.store().connection(),
             ring: self.ring,
-            seal,
-            scope: store.history_scope(),
         }
         .load()
         .await?;
-        // 1. The snapshot's unread frames replace the mirror's, a frame the holder read since leaves.
-        let position = spends.checkpoint.position;
+        // The snapshot's first unread frame replaces the mirror's, a frame the holder read since leaves.
+        backfill.history = Some(spends.checkpoint.position);
         store.refresh(spends, revision);
-        // 2. Stored enrollments warm the cache, a row never changes once it committed.
-        store.cache_enrollments(enrollments);
-        backfill.history = Some(position);
         backfill.tracking_cursor = tracking_cursor;
-        backfill.repairs = repairs.into_iter().collect();
+        backfill.repairs = RepairBook::default();
         Ok(())
     }
 
@@ -823,17 +796,11 @@ impl<S: TransactionSource> AuditService<S> {
     async fn commit_page(
         &self,
         store: &AuditStore,
-        durable: Option<&ProjectionWriter<'_>>,
+        writer: &ProjectionWriter<'_>,
         delta: PageDelta,
     ) -> Result<(), RingAuditError> {
-        let delta = match durable {
-            Some(writer) => {
-                let revision = writer.commit_page(&delta).await?;
-                delta.at_commit(revision)
-            }
-            None => delta,
-        };
-        store.commit(delta);
+        let revision = writer.commit_page(&delta).await?;
+        store.commit(delta.at_commit(revision));
         Ok(())
     }
 
@@ -852,7 +819,7 @@ impl<S: TransactionSource> AuditService<S> {
         &self,
         store: &AuditStore,
         backfill: &mut Backfill,
-        durable: Option<&ProjectionWriter<'_>>,
+        writer: &ProjectionWriter<'_>,
         mode: RingMode,
     ) -> Result<(), RingAuditError> {
         let source = &self.shared.source;
@@ -865,8 +832,8 @@ impl<S: TransactionSource> AuditService<S> {
         } = backfill;
         let position = history.get_or_insert_default();
         // Read before the repairs, a frame unread for want of a key opens once its enrollment is held.
-        self.refresh_or_warn(store, tracking_cursor, durable).await;
-        self.repair_frames(store, repairs, durable, mode).await;
+        self.refresh_or_warn(store, tracking_cursor, writer).await;
+        self.repair_frames(store, repairs, writer, mode).await;
         let opener = |held: &HeldEnrollment| self.open_enrollment(held);
         for _ in 0..MAX_BACKFILL_PAGES {
             let response = source
@@ -882,7 +849,7 @@ impl<S: TransactionSource> AuditService<S> {
                 .map_err(|_| RingAuditError::Service(ServiceError::InvalidIndexerResponse))?;
             self.validate_indexer_response(&response)?;
             // Read after the page, an enrollment finalized before a note on it is held unless the refresh stops early.
-            self.refresh_or_warn(store, tracking_cursor, durable).await;
+            self.refresh_or_warn(store, tracking_cursor, writer).await;
             let mut work = PageWork::new(store, &opener);
             work.late_keys();
             let rows = self.audit_rows(response, mode, &mut work, None).await?;
@@ -894,7 +861,7 @@ impl<S: TransactionSource> AuditService<S> {
                 PageEnd::More => None,
             };
             work.checkpoint(next, terminal);
-            self.commit_page(store, durable, work.finish().await?)
+            self.commit_page(store, writer, work.finish().await?)
                 .await?;
             *position = next;
             if terminal.is_some() {
@@ -909,7 +876,7 @@ impl<S: TransactionSource> AuditService<S> {
         &self,
         store: &AuditStore,
         repairs: &mut RepairBook,
-        durable: Option<&ProjectionWriter<'_>>,
+        writer: &ProjectionWriter<'_>,
         mode: RingMode,
     ) {
         let now = match self.shared.clock.now() {
@@ -936,7 +903,7 @@ impl<S: TransactionSource> AuditService<S> {
             }
         };
         for frame in due {
-            match self.repair_frame(store, durable, mode, frame).await {
+            match self.repair_frame(store, writer, mode, frame).await {
                 Ok(true) => repairs.forget(&frame),
                 outcome => {
                     if let Err(error) = outcome {
@@ -952,14 +919,15 @@ impl<S: TransactionSource> AuditService<S> {
                 }
             }
         }
-        if let Some(writer) = durable.filter(|_| !failed.is_empty()) {
-            if let Err(error) = writer.record_attempts(&failed).await {
-                log::warn!(
-                    "repair attempts of ring {} did not commit because {}",
-                    self.ring,
-                    redacted(&RingAuditError::from(error))
-                );
-            }
+        if failed.is_empty() {
+            return;
+        }
+        if let Err(error) = writer.record_attempts(&failed).await {
+            log::warn!(
+                "repair attempts of ring {} did not commit because {}",
+                self.ring,
+                redacted(&RingAuditError::from(error))
+            );
         }
     }
 
@@ -967,7 +935,7 @@ impl<S: TransactionSource> AuditService<S> {
     async fn repair_frame(
         &self,
         store: &AuditStore,
-        durable: Option<&ProjectionWriter<'_>>,
+        writer: &ProjectionWriter<'_>,
         mode: RingMode,
         frame: CreatedIn,
     ) -> Result<bool, RingAuditError> {
@@ -1002,7 +970,7 @@ impl<S: TransactionSource> AuditService<S> {
         }
         let delta = work.finish().await?;
         let read = delta.read_frames().any(|read| *read == frame);
-        self.commit_page(store, durable, delta).await?;
+        self.commit_page(store, writer, delta).await?;
         Ok(read)
     }
 
@@ -1011,9 +979,9 @@ impl<S: TransactionSource> AuditService<S> {
         &self,
         store: &AuditStore,
         cursor: &mut TrackingCursor,
-        durable: Option<&ProjectionWriter<'_>>,
+        writer: &ProjectionWriter<'_>,
     ) {
-        if let Err(error) = self.refresh_enrollments(store, cursor, durable).await {
+        if let Err(error) = self.refresh_enrollments(store, cursor, writer).await {
             log::warn!(
                 "enrollment refresh of ring {} failed because {}",
                 self.ring,
@@ -1027,17 +995,15 @@ impl<S: TransactionSource> AuditService<S> {
         &self,
         store: &AuditStore,
         cursor: &mut TrackingCursor,
-        durable: Option<&ProjectionWriter<'_>>,
+        writer: &ProjectionWriter<'_>,
     ) -> Result<ScanEnd, RingAuditError> {
-        if let Some(writer) = durable {
-            store.replace_late_owners(writer.pending_owners().await?);
-        }
+        store.replace_late_owners(writer.pending_owners().await?);
         TrackingScan {
             ring: self.ring,
             auditor: &self.auditor,
             source: &self.shared.source,
             store,
-            durable,
+            writer,
         }
         .run(cursor)
         .await
@@ -1139,13 +1105,14 @@ impl<S: TransactionSource> AuditService<S> {
         } = row;
         let record = merge.disclosed();
         observe_all(work, tx, created_in, |position| {
-            match tx
+            if tx
                 .nullifiers
                 .get(usize::from(position))
                 .is_some_and(|nullifier| record.real_nullifiers.contains(nullifier))
             {
-                true => InputRead::Spend,
-                false => InputRead::Padding,
+                InputRead::Spend
+            } else {
+                InputRead::Padding
             }
         });
         let note = merge.output().and_then(|output| output.created_utxo()).ok();
@@ -1330,14 +1297,8 @@ impl<S: TransactionSource> AuditService<S> {
 }
 
 impl<'a, S> Grant<'a, S> {
-    /// The clock is read again, a nonce evicted while the read awaited stays spent.
     async fn spend(self) -> Result<SpentGrant<'a, S>, RingAuditError> {
-        let now = self.service.shared.clock.now()?;
-        self.service
-            .shared
-            .replay
-            .accept(self.authorized, now)
-            .await?;
+        self.service.shared.replay.accept(self.authorized).await?;
         Ok(SpentGrant {
             service: self.service,
             mode: self.mode,

@@ -1,8 +1,7 @@
 //! Pins `test-vectors/registry/ring-records.json` for the Go circuits and the TS SDK.
 //!
 //! Each update is the ordered batch `process_update_ix` in `programs/storage/src/instructions/update.rs`
-//! chains and proves. Read before `prover/circuits/registry/vectors_test.go` and
-//! `sdk-libs/ts/test/protocol/encoding/ring-shared-vectors.test.ts`.
+//! chains and proves.
 
 use custom_ring_interface::{
     key_catalog::apply_width,

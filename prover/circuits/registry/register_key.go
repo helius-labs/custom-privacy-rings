@@ -6,9 +6,6 @@
 // the proof with the owner's first enrollment write, the one proof that seals those
 // two values. Without it an owner could enroll a key whose nullifiers no auditor
 // can compute, or a salt a private block never reaches.
-//
-// Read after shared/derivation.go, shared/envelope.go. Read before registry/tracking.go,
-// registry/apply_enrollments.go, policy/subjects.go, prover/ring/ring.go.
 
 package registry
 

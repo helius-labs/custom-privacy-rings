@@ -4,9 +4,6 @@
 // leaf sits under a root, and transfers, deposits and merges read an owner's key or
 // list tag from that root. A tree out of order would let an enrolled owner prove
 // itself unenrolled and skip its private lists.
-//
-// Read after registry/tracking.go, registry/register_key.go, registry/apply_records.go.
-// Read before policy/tracking.go, prover/ring/ring.go.
 
 package registry
 

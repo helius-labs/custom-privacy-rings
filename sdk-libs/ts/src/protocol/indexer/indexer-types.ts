@@ -1,27 +1,66 @@
 import type { MintPolicy } from "../membership/mint-policy.js";
-import type { Address } from "@heliuslabs/spr";
+import type {
+  MemberRecord,
+  QuadPath,
+  RingMemberOpening,
+  RingServedRecord,
+} from "../membership/member-registry.js";
+import type { Address, Bytes32 } from "@heliuslabs/spr";
 import type { indexerTypes } from "@heliuslabs/spr/internal";
 
 type Hash = indexerTypes.Hash;
 type IndexerContext = indexerTypes.IndexerContext;
 
-export interface RingMemberRecordView {
-  readonly member: Hash;
-  readonly next: Hash;
-  readonly lists: bigint;
-  readonly mintPolicy: MintPolicy;
-}
-/** A leaf and the other three children of each level in child order, leaf level first. */
-export interface RingRecordPathView {
-  readonly index: bigint;
-  readonly siblings: readonly (readonly Hash[])[];
+/** Rust `StorageRootView`. */
+export interface StorageRoot {
+  readonly root: Bytes32;
+  readonly revision: bigint;
+  readonly nextIndex: bigint;
 }
 
-/** A member's record under one root, or the low record bracketing its absence. */
-export interface RingMemberOpeningView {
-  readonly present: boolean;
-  readonly record: RingMemberRecordView;
-  readonly path: RingRecordPathView;
+/** At most `MAX_RING_MEMBER_BATCH` members of one `StorageRegistry`, all under `expectedRoot`. */
+export interface StorageOpeningsRequest {
+  readonly registry: Address;
+  readonly members: readonly Bytes32[];
+  readonly expectedRoot: Bytes32;
+}
+
+export interface StorageRecordPoolRequest extends StorageOpeningsRequest {
+  readonly openings: number;
+}
+
+export interface StorageMemberOpenings {
+  readonly context: IndexerContext;
+  readonly root: StorageRoot;
+  /** In request order. */
+  readonly openings: readonly RingMemberOpening[];
+}
+
+/** Rust `GetStorageMemberRecordsRequest`. */
+export interface StoragePageRequest {
+  readonly registry: Address;
+  readonly expectedRoot: Bytes32;
+  readonly startIndex: number;
+  readonly limit: number;
+}
+
+export interface StorageMemberPage {
+  readonly context: IndexerContext;
+  readonly root: StorageRoot;
+  readonly records: readonly RingServedRecord[];
+  /** `undefined` on the last page. */
+  readonly nextLeafIndex: number | undefined;
+}
+
+/** Records under one root, unverified until `verifyRecordPool` checks them against it. */
+export interface StorageRecordPool {
+  readonly context: IndexerContext;
+  readonly root: StorageRoot;
+  /** Distinct leaves in first use order, each path cut at the canopy. */
+  readonly records: readonly RingServedRecord[];
+  readonly canopy: readonly Bytes32[];
+  /** `subjects[i]` indexes the record holding or bracketing member `i`. */
+  readonly subjects: readonly number[];
 }
 
 export interface RingListWriteView {
@@ -40,61 +79,10 @@ export interface RingRecordWriteView {
   readonly oldNext: Hash;
   readonly oldLists: bigint;
   readonly oldMintPolicy: MintPolicy;
-  readonly slot: RingRecordPathView;
-  readonly low: RingMemberRecordView;
-  readonly lowPath: RingRecordPathView;
+  readonly slot: QuadPath;
+  readonly low: MemberRecord;
+  readonly lowPath: QuadPath;
   readonly mintPolicy: MintPolicy | null;
-}
-
-/** Rust `StorageRootView`. */
-export interface StorageRootView {
-  readonly root: Hash;
-  readonly revision: bigint;
-  readonly nextIndex: bigint;
-}
-
-/** Rust `GetStorageMemberOpeningsRequest`, `registry` a `StorageRegistry` account. */
-export interface StorageMemberOpeningsRequest {
-  readonly registry: Address;
-  readonly members: readonly Hash[];
-  readonly expectedRoot: Hash;
-}
-
-export interface StorageMemberOpeningsResponse {
-  readonly context: IndexerContext;
-  readonly root: StorageRootView;
-  /** In request order. */
-  readonly openings: readonly RingMemberOpeningView[];
-}
-
-/** Rust `GetStorageMemberRecordsRequest`. */
-export interface StorageMemberRecordsRequest {
-  readonly registry: Address;
-  readonly expectedRoot: Hash;
-  readonly startIndex: bigint;
-  readonly limit: number;
-}
-
-export interface StorageMemberPageResponse {
-  readonly context: IndexerContext;
-  readonly root: StorageRootView;
-  readonly records: readonly Readonly<{ record: RingMemberRecordView; path: RingRecordPathView }>[];
-  readonly nextLeafIndex: bigint | null;
-}
-
-/** Rust `GetStorageRecordPoolRequest`. */
-export interface StorageRecordPoolRequest extends StorageMemberOpeningsRequest {
-  readonly openings: number;
-}
-
-export interface StorageRecordPoolResponse {
-  readonly context: IndexerContext;
-  readonly root: StorageRootView;
-  /** Distinct leaves in first use order, each path cut at the canopy. */
-  readonly records: readonly Readonly<{ record: RingMemberRecordView; path: RingRecordPathView }>[];
-  readonly canopy: readonly Hash[];
-  /** `subjects[i]` indexes the record holding or bracketing member `i`. */
-  readonly subjects: readonly number[];
 }
 
 /** Rust `StorageWriteView`. */

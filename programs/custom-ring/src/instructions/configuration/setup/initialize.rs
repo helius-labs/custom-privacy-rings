@@ -12,13 +12,11 @@
 //! 5. `RingConfig` names `ring_auth` as its authority, so SPP's ring admin actions pass through the program.
 //!
 //! The instruction relies on storage for the registry's derivation, and on SPP for `RingConfig`'s derivation and activation.
-//!
-//! Read after `instructions/accounts/loader.rs`, `state.rs`. Read before `instructions/verification/policy_binding.rs`.
 
 use custom_ring_interface::{
     is_auditor_key,
     storage_instruction::{tag as storage_tag, InitializeTrackingIxData},
-    CustomRingError, InitializeIxData, NewRing, PolicyBindingIxData, PolicyUpdate, RingKind,
+    CustomRingError, InitializeIxData, NewRing, PolicyTableIxData, PolicyUpdate, RingKind,
     RingMode, RingPolicy, STORAGE_PROGRAM_ID,
 };
 use pinocchio::{
@@ -85,9 +83,9 @@ pub fn process_initialize_ix(
     // 4. A policy ring pins its table, any other ring may bind records alone for its thresholds.
     let registries = iter.remaining_unchecked()?;
     let records = match &ix.policy {
-        Some(binding) => Some(
+        Some(table) => Some(
             PolicyCreation {
-                binding,
+                table,
                 kind: ix.kind,
             }
             .records(registries)?,
@@ -110,10 +108,10 @@ pub fn process_initialize_ix(
         tracking: *tracking.address(),
     }
     .account();
-    if let Some(binding) = ix.policy.as_ref().filter(|_| ix.kind.has_policy()) {
+    if let Some(table) = ix.policy.as_ref().filter(|_| ix.kind.has_policy()) {
         // Sources name exactly the lists the rules reference, the pinned hash binds every later policy proof.
         let bound = TableBinding {
-            table: &binding.table,
+            table,
             curators: &registries[1..],
         }
         .bind()?;
@@ -166,7 +164,7 @@ pub fn process_initialize_ix(
 
 #[must_use]
 struct PolicyCreation<'a> {
-    binding: &'a PolicyBindingIxData,
+    table: &'a PolicyTableIxData,
     kind: RingKind,
 }
 
@@ -177,7 +175,7 @@ impl PolicyCreation<'_> {
         let records = registries
             .first()
             .ok_or(ProgramError::NotEnoughAccountKeys)?;
-        let table = &self.binding.table;
+        let table = self.table;
         if !self.kind.has_policy() && !(table.sources.is_empty() && table.rules.is_empty()) {
             return Err(CustomRingError::PolicyOnAuditOnlyRing.into());
         }

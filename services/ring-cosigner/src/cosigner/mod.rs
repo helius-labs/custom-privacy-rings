@@ -8,9 +8,10 @@
 //! #[async_trait]
 //! impl CoSignRule for BusinessHours {
 //!     async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingCosignerError> {
-//!         Ok(match open_now() {
-//!             true => Verdict::Admitted,
-//!             false => Verdict::Refused(CoSignRefusal::NotApproved),
+//!         Ok(if open_now() {
+//!             Verdict::Admitted
+//!         } else {
+//!             Verdict::Refused(CoSignRefusal::NotApproved)
 //!         })
 //!     }
 //! }
@@ -22,12 +23,8 @@
 //! state keys it by `Operation::ticket` and frees it in `settle`. The relay settles its own send,
 //! the rule settles a `Sender::Wallet` reservation in `sweep`. Put a rule that reserves last, a
 //! refusal after it releases the reservation.
-//!
-//! [`ExitVelocity`] is an example of a rule that reserves. It settles no wallet send, and the
-//! service's chain does not hold it.
 
 mod direct;
-mod exit_velocity;
 mod lists;
 mod rule;
 mod scope;
@@ -36,15 +33,14 @@ use async_trait::async_trait;
 use solana_address::Address;
 use zolana_operator_custody::SigningIdentity;
 
-pub use self::direct::DirectCoSign;
 pub use self::{
-    exit_velocity::{ExitCap, ExitVelocity},
-    lists::{
-        co_sign_lists, edit_co_sign_list, FrameParties, List, ListDecision, ListEntry, ListRule,
-        ListStore, Lists, Parties, PartySource, StoredLists, Subject, SubjectKind,
-    },
-    rule::{Chain, CoSignRule, Operation, Verdict},
+    direct::DirectCoSign,
+    lists::{co_sign_lists, edit_co_sign_list},
     scope::ApprovedCall,
+};
+pub(crate) use self::{
+    lists::{FrameParties, ListRule, Parties, PartySource, StoredLists},
+    rule::{Chain, CoSignRule, Operation, Verdict},
 };
 use ring_service_core::landing::FinalizedTip;
 
@@ -54,7 +50,7 @@ use crate::{
 };
 
 /// Signs what its rule admits.
-pub struct CoSigner<R> {
+pub(crate) struct CoSigner<R> {
     signer: SigningIdentity,
     pub(crate) rule: R,
 }

@@ -14,7 +14,7 @@ use anyhow::{bail, ensure, Context, Result};
 use zolana_secret_file::{replace, Visibility};
 
 pub const PROCESS_SCOPE_ENV: &str = "ZOLANA_PROCESS_SCOPE_DIR";
-pub const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(3);
+const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(100);
 const RECEIPT_EXTENSION: &str = "owner";
 
@@ -64,7 +64,7 @@ pub fn stop_owned_listener(scope: &Path, port: u16) -> Result<()> {
 }
 
 /// Processes merely connected to `port` are not its service.
-pub fn listening_pids(port: u16) -> Vec<String> {
+fn listening_pids(port: u16) -> Vec<String> {
     Command::new("lsof")
         .args(["-t", "-i", &format!("TCP:{port}"), "-s", "TCP:LISTEN"])
         .output()
@@ -77,7 +77,7 @@ pub fn listening_pids(port: u16) -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn stop_owned_pid(scope: &Path, target: &str) {
+fn stop_owned_pid(scope: &Path, target: &str) {
     let Ok(entries) = std::fs::read_dir(scope) else {
         return;
     };

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use solana_address::Address;
 use zolana_ring_policy::{
     registry_field, EncodedRuleTable, Guard, ListId, ListSet, Member, Mode, PolicySource, Rule,
-    RuleTable, SourceMap, Subject, TableParts, MAX_RULES,
+    RuleTable, SourceMap, Subject, MAX_RULES,
 };
 
 const VECTORS: &str = concat!(
@@ -216,9 +216,12 @@ impl Xorshift {
         let entries: Vec<(ListId, [u8; 32])> = table
             .referenced()
             .iter()
-            .map(|list_id| match curator && self.below(2) == 1 {
-                true => (list_id, curator_registry),
-                false => (list_id, [0u8; 32]),
+            .map(|list_id| {
+                if curator && self.below(2) == 1 {
+                    (list_id, curator_registry)
+                } else {
+                    (list_id, [0u8; 32])
+                }
             })
             .collect();
         SourceMap::new(&entries).expect("positional map")
@@ -400,9 +403,7 @@ fn ring_policy_table_parts_encode_and_decode() {
             .try_build()
             .expect("the parts build a table");
         let rows: Vec<[u8; 32]> = case.rules.iter().map(|row| bytes(row)).collect();
-        let stored = TableParts { rows: &rows }
-            .encode()
-            .expect("the rows fit the table");
+        let stored = EncodedRuleTable::from_rows(&rows).expect("the rows fit the table");
         assert_eq!(built.encode(), stored, "{}", case.name);
         let sources = case.source_map();
         assert_eq!(case.salted, sources.salted().bits(), "{}", case.name);

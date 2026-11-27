@@ -11,7 +11,7 @@ import {
   exactRequestRecord,
   requestBytes,
 } from "./wire.js";
-import { timestampOrNow, freshNonce } from "./signed-request.js";
+import { AttestationRequest } from "./signed-request.js";
 import { signMessage } from "../../protocol/ring-rpc/read-signer.js";
 
 const AUDITOR_KEY_DOMAIN = "zolana/ring-auditor-key";
@@ -66,12 +66,12 @@ export interface SignedAuditorKeyRequest {
 }
 
 /** Mirrors Rust `AuditorKeyRequest`. */
-export class RingAuditorKeyRequest {
+export class RingAuditorKeyRequest extends AttestationRequest {
   readonly #ringProgramId: Address;
   readonly #genesisHash: Bytes32;
-  #timestamp?: bigint;
 
   private constructor(ringProgramId: Address, genesisHash: Bytes32) {
+    super();
     this.#ringProgramId = ringProgramId;
     this.#genesisHash = genesisHash;
   }
@@ -83,15 +83,8 @@ export class RingAuditorKeyRequest {
     );
   }
 
-  /** Unix seconds, the RPC rejects a clock more than its skew away. */
-  at(timestamp: bigint): this {
-    this.#timestamp = checkedUnixTimestamp(timestamp, "timestamp");
-    return this;
-  }
-
   async sign(authority: MessagePartialSigner): Promise<SignedAuditorKeyRequest> {
-    const timestamp = timestampOrNow(this.#timestamp);
-    const nonce = freshNonce();
+    const { timestamp, nonce } = this.stamp();
     const signature = await signMessage(
       authority,
       auditorKeyRequestAttestation({

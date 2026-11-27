@@ -55,7 +55,7 @@ func TestApplyRecordsMatchesRustVectors(t *testing.T) {
 				if !sameWrite(b.writes[i], rust) {
 					t.Fatalf("write %d differs from the Rust witness", i)
 				}
-				c.Writes[i] = writeWires(rust)
+				c.Writes[i] = rust.Wires()
 			}
 			if err := solve(t, c); err != nil {
 				t.Fatal(err)

@@ -8,9 +8,6 @@
 // from the note opening.
 // A ring output may carry any nonzero key, its note spends only once that key is its owner's enrolled key.
 //
-// Read after transfer/input.go, policy/tracking.go, registry/register_key.go. Read before
-// policy/screen.go, policy/outflow.go.
-//
 // Properties:
 // 1. Every live input's owner has a live row, the delegate's zero key note alone goes without.
 // 2. A ring input's nonzero key is its row's enrolled key, a key the tracking root does not hold fails.

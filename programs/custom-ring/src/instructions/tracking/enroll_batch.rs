@@ -3,9 +3,6 @@
 //! Storage accepts tracking writes only from the registry's authority, `ring_auth`. The ring signs a tracking
 //! write as `ring_auth` only for the key its `EnrollmentWriter` role names, and storage checks every owner
 //! signature and seal itself, so the role decides who submits and never what an owner signed.
-//!
-//! Read after `instructions/accounts/loader.rs`, `instructions/runtime/instruction_runtime.rs`. Read before
-//! `programs/storage/src/instructions/apply_enrollments.rs`.
 
 use custom_ring_interface::{
     storage_instruction::tag as storage_tag, CustomRingError, RingRole, STORAGE_PROGRAM_ID,

@@ -11,16 +11,29 @@ import {
   lamports,
   type Address,
   type Instruction,
+  type Lamports,
   type MessagePartialSigner,
   type TransactionPartialSigner,
 } from "@solana/kit";
 
 import type { CustomRingClient } from "../../src/rpc/client.js";
-import { compileUnsignedTransaction, setRingActivationInstruction } from "@heliuslabs/spr/internal";
+import {
+  compileUnsignedTransaction,
+  isRetryable,
+  setRingActivationInstruction,
+} from "@heliuslabs/spr/internal";
 import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
-import { LocalKeys, ShieldedKeypair, SigningKey, Wallet, type Bytes32 } from "@heliuslabs/spr";
+import {
+  LocalKeys,
+  ShieldedKeypair,
+  SigningKey,
+  Wallet,
+  type Bytes32,
+  type ClientError,
+} from "@heliuslabs/spr";
 import { type RuleTable } from "../../src/ring/advanced.js";
 import {
+  RingError,
   RingProgramBinary,
   RingReaderGrantRequest,
   RingRpc,
@@ -71,10 +84,12 @@ export async function freshActor(client: CustomRingClient): Promise<Actor> {
   };
 }
 
-export async function airdrop(client: CustomRingClient, recipient: Address): Promise<void> {
-  const signature = await client.solanaRpc
-    .requestAirdrop(recipient, lamports(5_000_000_000n))
-    .send();
+export async function airdrop(
+  client: CustomRingClient,
+  recipient: Address,
+  amount: Lamports = lamports(5_000_000_000n),
+): Promise<void> {
+  const signature = await client.solanaRpc.requestAirdrop(recipient, amount).send();
   await waitForSignature(client.solanaRpc, signature);
 }
 
@@ -207,7 +222,7 @@ export async function readableRing(
   const authority = authoritySigner();
   const program = await reservedProgram(client);
   const ringProgramId = program.address;
-  for (let i = 0; i < 6; i++) await airdrop(client, authority.address);
+  await airdrop(client, authority.address, lamports(30_000_000_000n));
   await createRing(client, {
     program,
     authority,
@@ -250,14 +265,11 @@ export async function enroll(input: Readonly<{ ring: ReadableRing; owner: Actor 
     client,
   );
   await ringRpc.submitEnrollment(await signEnrollment(signed, owner.signer));
-  const deadline = Date.now() + SETTLE_MS;
-  for (;;) {
-    const state = await enrollmentState({ trackingRegistry, owner: owner.signer.address }, client);
-    if (state !== undefined) return;
-    if (Date.now() > deadline)
-      throw new Error(`no root holds the enrollment of ${owner.signer.address}`);
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-  }
+  await poll(() => enrollmentState({ trackingRegistry, owner: owner.signer.address }, client), {
+    timeoutMs: SETTLE_MS,
+    intervalMs: 200,
+    timedOut: `no root holds the enrollment of ${owner.signer.address}`,
+  });
 }
 
 export function ringHoldings(actor: Actor, ringProgramId: Address): bigint {
@@ -317,16 +329,21 @@ export async function waitForAudited(
   signer: MessagePartialSigner,
   signature: string,
 ) {
-  for (let attempt = 0; attempt < 120; attempt++) {
-    const view = await ringRpc.getDecryptedTransactions({
-      target,
-      signer: messageSignerReader(signer),
-    });
-    const item = view.items.find((entry) => entry.signature === signature);
-    if (item !== undefined) return item;
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  throw new Error(`transaction ${signature} did not reach the ring view`);
+  return poll(
+    async () => {
+      const view = await ringRpc.getDecryptedTransactions({
+        target,
+        signer: messageSignerReader(signer),
+      });
+      return view.items.find((entry) => entry.signature === signature);
+    },
+    {
+      timeoutMs: 60_000,
+      // Ring RPC refills one signed read per interval.
+      intervalMs: 500,
+      timedOut: `transaction ${signature} did not reach the ring view`,
+    },
+  );
 }
 
 export async function settle(
@@ -350,4 +367,35 @@ export async function settleWithTransport(
     if (Date.now() > deadline) throw new Error(`ring transaction unresolved (${result.signature})`);
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+}
+
+/** A read that got no answer polls on, any other error ends the wait. */
+export async function poll<T>(
+  read: () => Promise<T | undefined>,
+  wait: Readonly<{ timeoutMs: number; intervalMs: number; timedOut: string }>,
+): Promise<T> {
+  const deadline = Date.now() + wait.timeoutMs;
+  for (;;) {
+    let unanswered: RingError | ClientError | undefined;
+    try {
+      const value = await read();
+      if (value !== undefined) return value;
+    } catch (error) {
+      if (!isUnanswered(error)) throw error;
+      unanswered = error;
+    }
+    if (Date.now() > deadline)
+      throw unanswered === undefined
+        ? new Error(wait.timedOut)
+        : new Error(`${wait.timedOut}, the last read got no answer (${unanswered.code})`, {
+            cause: unanswered,
+          });
+    await new Promise((resolve) => setTimeout(resolve, wait.intervalMs));
+  }
+}
+
+function isUnanswered(error: unknown): error is RingError | ClientError {
+  if (error instanceof RingError)
+    return error.code === "RING_RPC_TRANSPORT" || error.code === "RING_RPC_RATE_LIMITED";
+  return isRetryable(error);
 }

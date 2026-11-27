@@ -5,7 +5,6 @@
 use std::{
     fs, io,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{ensure, Context as _, Result};
@@ -221,11 +220,7 @@ impl Context {
 }
 
 pub(crate) fn unix_now() -> Result<i64> {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("the system clock is before the Unix epoch")?
-        .as_secs();
-    Ok(i64::try_from(seconds)?)
+    Ok(i64::try_from(zolana_ring_client::rpc::unix_now()?)?)
 }
 
 #[cfg(test)]

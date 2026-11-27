@@ -2,8 +2,6 @@
 //!
 //! SPP accepts a ring's call on that one signature. `PlacedRingAuth` exists only after an address
 //! check, and every signed call goes through it. A forwarded list also passes the slot check.
-//!
-//! Read after `instructions/transfer/verify.rs`. Read before `instructions/accounts/loader.rs`.
 
 use custom_ring_interface::{CustomRingError, RingAccount};
 use pinocchio::{
@@ -17,6 +15,9 @@ use spr_interface::{RING_AUTH_PDA_SEED, SHIELDED_POOL_PROGRAM_ID};
 use wincode::{config::DefaultConfig, SchemaRead};
 
 const _: () = assert!(custom_ring_interface::MAX_SPP_CPI_ACCOUNTS == MAX_CPI_ACCOUNTS);
+
+/// Seeds of the longest PDA here and its bump.
+const MAX_SIGNER_SEEDS: usize = 3;
 
 /// Instruction data of `T`, trailing bytes refused.
 #[inline(never)]
@@ -47,6 +48,8 @@ pub(crate) struct Pda<'a, const N: usize> {
 }
 
 impl<const N: usize> Pda<'_, N> {
+    const FITS: () = assert!(N < MAX_SIGNER_SEEDS);
+
     /// Creates `T`'s account at the canonical address and returns its bump, refusing an occupied one.
     #[inline(never)]
     pub fn create<T: RingAccount>(
@@ -54,26 +57,27 @@ impl<const N: usize> Pda<'_, N> {
         payer: &AccountView,
         account: &mut AccountView,
     ) -> Result<u8, ProgramError> {
+        let () = Self::FITS;
         let (_, bump) = Address::derive_program_address(self.seeds, self.program_id)
             .filter(|(derived, _)| address_eq(account.address(), derived))
-            .ok_or(T::ADDRESS)?;
+            .ok_or(T::INVALID)?;
         if account.data_len() != 0 {
             return Err(T::EXISTS.into());
         }
         let bump_seed = [bump];
-        let signer: Vec<Seed> = self
-            .seeds
-            .iter()
-            .map(|seed| Seed::from(*seed))
-            .chain([Seed::from(&bump_seed)])
-            .collect();
+        // The slot past the last seed keeps the bump, the slice below ends on it.
+        let mut signer_seeds: [Seed; MAX_SIGNER_SEEDS] =
+            core::array::from_fn(|_| Seed::from(&bump_seed));
+        for (slot, seed) in signer_seeds.iter_mut().zip(self.seeds) {
+            *slot = Seed::from(*seed);
+        }
         pinocchio_system::create_account_with_minimum_balance_signed(
             account,
             T::SIZE,
             self.program_id,
             payer,
             None,
-            &[Signer::from(signer.as_slice())],
+            &[Signer::from(&signer_seeds[..=N])],
         )?;
         Ok(bump)
     }

@@ -33,6 +33,11 @@ func TestRingDomainsAreTheAsciiTags(t *testing.T) {
 		{"CRTQ", shared.TrackingEntryDomain},
 		{"CRTA", shared.ApplyEnrollmentsDomain},
 		{"CRPT", shared.ListTagDomain},
+		{"CRAO", shared.ApprovalTotalsDomain},
+		{"CRPL", shared.ListKeyDomain},
+		{"CRPR", shared.RingListKeyDomain},
+		{"CRDS", shared.DeliveredSlotDomain},
+		{"CRVC", shared.VouchDomain},
 		{"CR_S", shared.DomSepCRShared},
 	} {
 		if want := new(big.Int).SetBytes([]byte(domain.tag)).Uint64(); domain.value != want {

@@ -13,10 +13,8 @@ use super::{
     ring_tracking, EnrollmentApplier, EnrollmentBudget, EnrollmentRefusal, InFlight, RingState,
     RingTracking, WriterError,
 };
-use ring_service_core::{
-    landing::{Attempt, Simulation},
-    relay_submit::{presigned_transaction, CollectedSignature},
-};
+use ring_service_core::landing::{Attempt, Simulation};
+use zolana_operator_custody::{presigned_transaction, CollectedSignature};
 
 #[derive(Default)]
 pub(super) struct VaultAttempts {
@@ -63,7 +61,7 @@ impl EnrollmentApplier {
         if !self.budget.holds(ring, EnrollmentBudget::vault_fee()) {
             return Err(EnrollmentRefusal::Budget.into());
         }
-        let latest = self.chain.latest_blockhash().await?;
+        let latest = self.chain.submit().latest_blockhash().await?;
         let block = VaultEnrollmentBlock {
             blockhash: spr_indexer_api::Hash(latest.blockhash.to_bytes()),
             last_valid_block_height: latest.last_valid_block_height,
@@ -75,7 +73,7 @@ impl EnrollmentApplier {
         }
         .compile(&block)
         .map_err(|_| EnrollmentRefusal::InvalidWrite)?;
-        let height = self.chain.block_height().await?;
+        let height = self.chain.submit().block_height().await?;
         let state = self.ring_state(ring);
         let mut state = state.lock().await;
         state.vault.expire(height);
@@ -110,7 +108,7 @@ impl EnrollmentApplier {
         let RingState {
             vault, in_flight, ..
         } = &mut *state;
-        let height = self.chain.block_height().await?;
+        let height = self.chain.submit().block_height().await?;
         vault.expire(height);
         let expiry = signed.block.last_valid_block_height;
         if vault
@@ -135,8 +133,14 @@ impl EnrollmentApplier {
             ],
         )?;
         if vault.submissions.contains_key(&writer_signature) {
-            if self.chain.outcome(writer_signature).await?.is_none() {
-                self.chain.send(&transaction).await?;
+            if self
+                .chain
+                .submit()
+                .outcome(writer_signature)
+                .await?
+                .is_none()
+            {
+                self.chain.submit().send(&transaction).await?;
             }
             return Ok(writer_signature.into());
         }
@@ -145,7 +149,7 @@ impl EnrollmentApplier {
             return Err(EnrollmentRefusal::InFlight.into());
         }
         if !matches!(
-            self.chain.simulate(&message).await?,
+            self.chain.submit().simulate(&message).await?,
             Simulation::Passed { .. }
         ) {
             return Err(EnrollmentRefusal::InvalidWrite.into());
@@ -161,7 +165,7 @@ impl EnrollmentApplier {
             },
             writes: Vec::new(),
         });
-        self.chain.send(&transaction).await?;
+        self.chain.submit().send(&transaction).await?;
         Ok(writer_signature.into())
     }
 }

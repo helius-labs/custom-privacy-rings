@@ -6,9 +6,6 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/consensys/gnark-crypto/ecc"
-	"github.com/consensys/gnark/test"
-
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringpolicy"
@@ -70,9 +67,7 @@ func TestWithdrawalBitReadsTheGross(t *testing.T) {
 		b := w.Build(t)
 		b.Policy().PublicGross[0] = new(big.Int).Lsh(big.NewInt(1), 72)
 		b.Rebind(t)
-		if test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()) == nil {
-			t.Fatal("a gross outside 72 bits solved")
-		}
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment())
 	})
 }
 
@@ -149,15 +144,13 @@ func TestDelegateClearsTheMask(t *testing.T) {
 		b := w.Build(t)
 		b.Circuit.ThresholdsActive = 1
 		b.Rebind(t)
-		if test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()) == nil {
-			t.Fatal("a delegate proof with thresholds_active solved")
-		}
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment())
 	})
 	t.Run("the same witness off the authority rail is screened", func(t *testing.T) {
 		off := w
 		off.Delegate = false
 		off.Approval = policy.ApprovalOutflow | policy.ApprovalWithdrawal
 		b := off.Build(t)
-		ringtest.RequireRefused(t, test.IsSolved(b.Assignment(), b.Assignment(), ecc.BN254.ScalarField()), "policy.assertPaymentRules")
+		ringtest.RequireUnsolved(t, b.Assignment(), b.Assignment(), "policy.assertPaymentRules")
 	})
 }

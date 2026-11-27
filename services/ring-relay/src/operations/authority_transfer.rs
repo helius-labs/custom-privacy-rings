@@ -18,7 +18,7 @@ use zolana_ring_client::{
 };
 
 use ring_service_core::{
-    authorize::{Authorized, PendingNonce, WalletCheck},
+    authorize::{PendingNonce, WalletCheck},
     upstream::TransactionSource,
 };
 use zolana_ring_indexer::redact::redacted;
@@ -227,29 +227,26 @@ async fn authorize_delegate_read<S: TransactionSource>(
         now,
     }
     .decide()?;
-    let authorized = PendingNonce {
+    let pending = PendingNonce {
         ring,
         nonce,
         timestamp: request.timestamp,
-    }
-    .authorize(async {
-        let config = shared
-            .source
-            .ring_config(ring)
-            .await?
-            .filter(|config| config.delegate() == Some(delegate))
-            .ok_or(AuthorityTransferError::NotDelegate)?;
-        if config.auditor_pubkey != shared.service(Some(ring))?.auditor_pubkey() {
-            return Err(AuthorityTransferError::ForeignAuditor.into());
-        }
-        Ok::<_, RingRelayError>(())
-    })
-    .await?;
+    };
     shared
         .replay
-        .accept(authorized.nonce, shared.clock.now()?)
-        .await?;
-    Ok(())
+        .authorize_once(pending, async {
+            let config = shared
+                .source
+                .ring_config(ring)
+                .await?
+                .filter(|config| config.delegate() == Some(delegate))
+                .ok_or(AuthorityTransferError::NotDelegate)?;
+            if config.auditor_pubkey != shared.service(Some(ring))?.auditor_pubkey() {
+                return Err(AuthorityTransferError::ForeignAuditor.into());
+            }
+            Ok::<_, RingRelayError>(())
+        })
+        .await
 }
 
 /// An owner dodging a block need not hand over an address.
@@ -275,38 +272,33 @@ pub async fn list_salt<S: TransactionSource>(
     }
     .decide()?;
     // 2. The policy authority or the authority of a salted list's registry, under the auditor key held here.
-    let Authorized {
-        value: config,
-        nonce: authorized,
-    } = PendingNonce {
+    let pending = PendingNonce {
         ring,
         nonce,
         timestamp: request.timestamp,
-    }
-    .authorize(async {
-        let config = shared
-            .source
-            .ring_config(ring)
-            .await?
-            .ok_or(AuthorityTransferError::NotListWriter)?;
-        let writes = config.roles().policy == writer
-            || shared
-                .source
-                .salted_list_writers(ring)
-                .await?
-                .contains(&writer);
-        if !writes {
-            return Err(AuthorityTransferError::NotListWriter.into());
-        }
-        if config.auditor_pubkey != service.auditor_pubkey() {
-            return Err(AuthorityTransferError::ForeignAuditor.into());
-        }
-        Ok::<_, RingRelayError>(config)
-    })
-    .await?;
-    shared
+    };
+    let config = shared
         .replay
-        .accept(authorized, shared.clock.now()?)
+        .authorize_once(pending, async {
+            let config = shared
+                .source
+                .ring_config(ring)
+                .await?
+                .ok_or(AuthorityTransferError::NotListWriter)?;
+            let writes = config.roles().policy == writer
+                || shared
+                    .source
+                    .salted_list_writers(ring)
+                    .await?
+                    .contains(&writer);
+            if !writes {
+                return Err(AuthorityTransferError::NotListWriter.into());
+            }
+            if config.auditor_pubkey != service.auditor_pubkey() {
+                return Err(AuthorityTransferError::ForeignAuditor.into());
+            }
+            Ok::<_, RingRelayError>(config)
+        })
         .await?;
     let list_salt = service.enrolled_list_salt(&owner.to_bytes()).await?;
     let ring_salt = match (list_salt.is_some(), *config.ring_list_tag() == [0; 32]) {
@@ -360,12 +352,12 @@ pub async fn prepare_authority_transfer<S: TransactionSource>(
     }
     // 2. The config names the key its delegate and the auditor key held here, any other key is
     //    the live permanent delegate of the one mint every leg names.
-    let authorized = PendingNonce {
+    let pending = PendingNonce {
         ring,
         nonce,
         timestamp: request.timestamp,
-    }
-    .authorize(async {
+    };
+    let authorize = async {
         let config = shared
             .source
             .ring_config(ring)
@@ -381,13 +373,12 @@ pub async fn prepare_authority_transfer<S: TransactionSource>(
             return Err(AuthorityTransferError::ForeignAuditor.into());
         }
         Ok::<_, RingRelayError>(())
-    })
-    .await?;
-    if !relay.holds(&relay_id).await? {
-        shared
-            .replay
-            .accept(authorized.nonce, shared.clock.now()?)
-            .await?;
+    };
+    // A held relay retries under the nonce its first request spent.
+    if relay.holds(&relay_id).await? {
+        authorize.await?;
+    } else {
+        shared.replay.authorize_once(pending, authorize).await?;
     }
     // 3. The backfill reads only rings a read opened, so a first request projects the history
     //    its notes come from.
@@ -1114,6 +1105,70 @@ mod tests {
             (&both.list_salt, &both.ring_salt),
             (&Some(Hash(LIST_SALT)), &Some(Hash(*ring_salt)))
         );
+    }
+
+    async fn spent(fixture: &Fixture) -> i64 {
+        ring_service_core::replay::spent_nonces(fixture.shared.database.store())
+            .await
+            .expect("rows")
+    }
+
+    fn replayed<T: std::fmt::Debug>(answer: Result<T, RingRelayError>) -> bool {
+        matches!(
+            answer,
+            Err(RingRelayError::Service(ServiceError::Unauthorized(
+                ring_service_core::authorize::Unauthorized::Replay
+            )))
+        )
+    }
+
+    #[tokio::test]
+    async fn a_delegate_read_refused_spends_no_nonce_and_a_repeat_reads_replay() {
+        let delegate = Keypair::new_from_array([21; 32]);
+        let (fixture, _prover) = served(delegate.pubkey()).await;
+        let wallet = Keypair::new_from_array([11; 32]);
+        fixture.escrow_notes(&wallet, 2).await;
+        let impostor = Keypair::new_from_array([22; 32]);
+        let refused = notes_request(&fixture, &impostor, wallet.pubkey());
+        assert!(delegate_notes(&fixture.shared, &refused).await.is_err());
+        assert_eq!(spent(&fixture).await, 0);
+        let request = notes_request(&fixture, &delegate, wallet.pubkey());
+        delegate_notes(&fixture.shared, &request)
+            .await
+            .expect("delegate read");
+        assert!(replayed(delegate_notes(&fixture.shared, &request).await));
+    }
+
+    #[tokio::test]
+    async fn a_list_salt_read_refused_spends_no_nonce_and_a_repeat_reads_replay() {
+        let (fixture, _prover) = served(Keypair::new_from_array([21; 32]).pubkey()).await;
+        let wallet = Keypair::new_from_array([11; 32]);
+        fixture.enroll(&wallet, &NullifierKey::from_secret([11; 31]));
+        let impostor = Keypair::new_from_array([22; 32]);
+        let refused = salt_request(&fixture, &impostor, wallet.pubkey());
+        assert!(list_salt(&fixture.shared, &refused).await.is_err());
+        assert_eq!(spent(&fixture).await, 0);
+        let request = salt_request(&fixture, &list_writer(), wallet.pubkey());
+        list_salt(&fixture.shared, &request)
+            .await
+            .expect("writer read");
+        assert!(replayed(list_salt(&fixture.shared, &request).await));
+    }
+
+    #[tokio::test]
+    async fn an_authority_transfer_refused_spends_no_nonce() {
+        let delegate = Keypair::new_from_array([21; 32]);
+        let (fixture, _prover) = served(delegate.pubkey()).await;
+        let wallet = Keypair::new_from_array([11; 32]);
+        let escrowed = fixture.escrow_notes(&wallet, 2).await;
+        let stranger = Keypair::new_from_array([22; 32]);
+        let refused = request(&fixture, &stranger, address(&wallet, &escrowed));
+        assert!(
+            prepare_authority_transfer(&fixture.shared, fixture.relay.as_ref(), &refused)
+                .await
+                .is_err()
+        );
+        assert_eq!(spent(&fixture).await, 0);
     }
 
     #[tokio::test]

@@ -7,8 +7,8 @@ import (
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
-	"github.com/consensys/gnark/test"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
+	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringkey"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringpolicy"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringregistry"
@@ -21,9 +21,7 @@ func TestPooledPolicyModes(t *testing.T) {
 	for i, world := range worlds {
 		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
 			witness := world.Build(t)
-			if err := test.IsSolved(witness.Assignment(), witness.Assignment(), ecc.BN254.ScalarField()); err != nil {
-				t.Fatal(err)
-			}
+			ringtest.RequireSolved(t, witness.Assignment(), witness.Assignment())
 		})
 	}
 }
@@ -152,13 +150,9 @@ func TestPooledPolicyBindsSubjectReferences(t *testing.T) {
 			world := poolWorld(ringpolicy.SectionShape{Outputs: 2, Withdrawals: 1}, false, false)
 			world.Records = policy.RecordPoolShape{Own: 3, Curator: 3}
 			witness := world.Build(t)
-			if err := test.IsSolved(witness.Assignment(), witness.Assignment(), ecc.BN254.ScalarField()); err != nil {
-				t.Fatal(err)
-			}
+			ringtest.RequireSolved(t, witness.Assignment(), witness.Assignment())
 			tc.mutate(witness.Policy())
-			if test.IsSolved(witness.Assignment(), witness.Assignment(), ecc.BN254.ScalarField()) == nil {
-				t.Fatal("forged subject reference solved")
-			}
+			ringtest.RequireUnsolved(t, witness.Assignment(), witness.Assignment())
 		})
 	}
 }
@@ -188,7 +182,5 @@ func TestPooledPolicySharesAbsentPredecessor(t *testing.T) {
 func TestPooledPolicyDistinctWithdrawalCapacity(t *testing.T) {
 	world := poolWorld(ringpolicy.SectionShape{Outputs: 2, Withdrawals: 2}, true, false)
 	witness := world.Build(t)
-	if err := test.IsSolved(witness.Assignment(), witness.Assignment(), ecc.BN254.ScalarField()); err != nil {
-		t.Fatal(err)
-	}
+	ringtest.RequireSolved(t, witness.Assignment(), witness.Assignment())
 }

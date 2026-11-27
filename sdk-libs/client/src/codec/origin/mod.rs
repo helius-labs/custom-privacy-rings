@@ -16,9 +16,9 @@ use spr_transaction::{ShieldedTransaction, SOL_MINT};
 
 use crate::AuditError;
 use custom_ring_interface::{
-    tag as ring_tag, transact_flag, AuditStreamLayout, CheckedAuthorization, CustomRingError,
-    CustomRingMergeIxDataRef, InstructionTag, ParsedTransact, RingMode, RingRail, RingTransactData,
-    TransferLayout,
+    tag as ring_tag, transact_flag, AuditStreamLayout, CustomRingError, CustomRingMergeIxDataRef,
+    InstructionTag, NamedRoots, ParsedTransact, RailAuthorization, RingMode, RingRail,
+    RingTransactData, TransferLayout,
 };
 
 /// What a confirmed transaction says about its ring, its signers and the value it settled out.
@@ -146,21 +146,21 @@ impl RingOrigin {
             .ok_or(AuditError::MissingRingTransact)?;
         let parsed = parse_frame(mode, frame)?;
         let data = parsed.data();
-        let run = match parsed.authorization() {
-            CheckedAuthorization::ConfidentialInProof(owner) => {
-                return Ok(vec![Address::new_from_array(*owner.owner)])
+        let run = match data.authorization {
+            RailAuthorization::ConfidentialInProof(owner) => {
+                return Ok(vec![Address::new_from_array(owner.owner)])
             }
-            CheckedAuthorization::ConfidentialSigner => {
+            RailAuthorization::ConfidentialSigner => {
                 let accounts = &self.pool_accounts;
                 TransferLayout::pool(data, 0..accounts.len())
                     .ok()
                     .and_then(|layout| accounts.get(layout.owners))
                     .ok_or(AuditError::SettlementAccounts)?
             }
-            CheckedAuthorization::AnonymousHidden(_)
-            | CheckedAuthorization::AnonymousPublic
-            | CheckedAuthorization::Delegate
-            | CheckedAuthorization::AnonymousDelegate => return Ok(Vec::new()),
+            RailAuthorization::AnonymousHidden(_)
+            | RailAuthorization::AnonymousPublic
+            | RailAuthorization::Delegate
+            | RailAuthorization::AnonymousDelegate => return Ok(Vec::new()),
         };
         Ok(run.iter().fold(Vec::new(), |mut spenders, owner| {
             if !spenders.contains(owner) {
@@ -255,7 +255,7 @@ fn bind_withdrawal_owners(
         .map_err(|e| AuditError::InvalidTransactData(e.to_string()))?;
     let parsed = parse_frame(forwarded_mode(&spp, frame), frame)?;
     let data = parsed.data();
-    if data.policy.is_none() {
+    if !matches!(data.named_roots, NamedRoots::Policy { .. }) {
         return Ok(());
     }
     if data.interface_transfers != spp.interface_transfers {
@@ -313,9 +313,10 @@ fn forwarded_mode(spp: &TransactIxDataRef<'_>, frame: &[u8]) -> RingMode {
     let in_proof = frame
         .get(1 + transact_flag::BYTE)
         .is_some_and(|flags| flags & transact_flag::OWNER_IN_PROOF != 0);
-    match spp.circuit.is_anonymous() && !in_proof {
-        true => RingMode::Anonymous,
-        false => RingMode::Confidential,
+    if spp.circuit.is_anonymous() && !in_proof {
+        RingMode::Anonymous
+    } else {
+        RingMode::Confidential
     }
 }
 
@@ -472,9 +473,9 @@ fn ring_withdrawals_of(
 }
 
 #[cfg(all(test, feature = "solana-rpc"))]
-use rpc::confirmed_origin_for;
+use rpc::{confirmed_origin, confirmed_origin_for};
 #[cfg(feature = "solana-rpc")]
-pub use rpc::{confirmed_origin, ConfirmedRingOrigins, ORIGIN_TRANSACTION_CONFIG};
+pub use rpc::{ConfirmedRingOrigins, ORIGIN_TRANSACTION_CONFIG};
 
 #[cfg(feature = "solana-rpc")]
 mod rpc {

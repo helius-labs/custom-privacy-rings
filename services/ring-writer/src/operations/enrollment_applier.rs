@@ -6,8 +6,6 @@
 //! runs, so a held write never refuses a batch it rides in. Each ring runs on its own task under the
 //! shared bound of `keyed_tasks`, so a ring whose proof stalls holds one slot and never the batch of
 //! another ring.
-//!
-//! Read after `sdk-libs/client/src/rpc/enrollment.rs` and `sdk-libs/client/src/records/storage.rs`.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -48,9 +46,9 @@ use crate::{
 };
 
 /// Writes one ring holds ahead of its batches, a full ring refuses the next until a batch lands.
-pub const MAX_HELD_ENROLLMENTS: usize = 64;
+pub(crate) const MAX_HELD_ENROLLMENTS: usize = 64;
 /// Failed batches a write rides in before the writer drops it.
-pub const MAX_ENROLLMENT_ATTEMPTS: u8 = 3;
+pub(crate) const MAX_ENROLLMENT_ATTEMPTS: u8 = 3;
 
 ring_service_core::listed_refusals! {
     #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
@@ -86,7 +84,7 @@ pub struct EnrollmentApplier {
     named: Vec<Address>,
     registered: Mutex<HashSet<Address>>,
     max_rings: usize,
-    store: Option<Store>,
+    store: Store,
     budget: EnrollmentBudget,
     held: Mutex<HashMap<Address, Arc<AsyncMutex<RingState>>>>,
 }
@@ -100,8 +98,8 @@ pub struct EnrollmentApplierParts {
     pub ring_budget_lamports: u64,
     /// Registered rings, the named rings stay outside it.
     pub max_rings: usize,
-    /// Keeps the registered rings across a restart.
-    pub store: Option<Store>,
+    /// A durable store keeps the registered rings across a restart.
+    pub store: Store,
 }
 
 /// Charged at send over the process life, a batch that never lands keeps its charge.
@@ -171,14 +169,9 @@ struct RingPass<'a> {
 impl EnrollmentApplierParts {
     /// Loads the registered rings from the store.
     pub async fn applier(self) -> Result<EnrollmentApplier, WriterError> {
-        let registered = match &self.store {
-            Some(store) => {
-                EnrollmentRingBook::new(store.connection(), self.payer.address())
-                    .rings()
-                    .await?
-            }
-            None => Vec::new(),
-        };
+        let registered = EnrollmentRingBook::new(self.store.connection(), self.payer.address())
+            .rings()
+            .await?;
         Ok(EnrollmentApplier {
             vault_programs: HashSet::new(),
             chain: self.chain,
@@ -286,11 +279,9 @@ impl EnrollmentApplier {
             }
             registered.insert(ring);
         }
-        if let Some(book) = self.book() {
-            if let Err(error) = book.insert(ring).await {
-                self.registered().remove(&ring);
-                return Err(error);
-            }
+        if let Err(error) = self.book().insert(ring).await {
+            self.registered().remove(&ring);
+            return Err(error);
         }
         Ok(())
     }
@@ -399,10 +390,8 @@ impl EnrollmentApplier {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn book(&self) -> Option<EnrollmentRingBook<'_>> {
-        self.store
-            .as_ref()
-            .map(|store| EnrollmentRingBook::new(store.connection(), self.payer.address()))
+    fn book(&self) -> EnrollmentRingBook<'_> {
+        EnrollmentRingBook::new(self.store.connection(), self.payer.address())
     }
 
     /// Drops a registered ring and its held writes, a failed delete drops it again after a restart.
@@ -415,10 +404,7 @@ impl EnrollmentApplier {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&ring);
         warn!("enrollment writer dropped ring {ring}, its policy names another writer");
-        let Some(book) = self.book() else {
-            return;
-        };
-        if let Err(error) = book.remove(ring).await {
+        if let Err(error) = self.book().remove(ring).await {
             warn!(
                 "enrollment writer kept the row of ring {ring} because {}",
                 redacted(&error)
@@ -466,7 +452,7 @@ impl RingPass<'_> {
     async fn run(mut self) -> Result<WriterRole, WriterError> {
         // 1. One batch at a time, a second proof from the same root could not land.
         if let Some(in_flight) = self.state.in_flight.as_ref() {
-            match in_flight.attempt.landing(self.chain).await? {
+            match in_flight.attempt.landing(self.chain.submit()).await? {
                 Landing::Pending => return Ok(WriterRole::Held),
                 Landing::Landed(ChainOutcome::Confirmed { .. }) => {
                     self.state.in_flight = None;
@@ -488,7 +474,7 @@ impl RingPass<'_> {
             return Ok(WriterRole::Moved);
         }
         // 2. The program refuses a batch that would evict a root inside its grace, waiting spends no proof.
-        let slot = self.chain.slot().await?;
+        let slot = self.chain.submit().slot().await?;
         if slot < tracking.account.roots[TRACKING_ROOT_HISTORY - 1].expires_at() {
             return Ok(WriterRole::Held);
         }
@@ -553,11 +539,11 @@ impl RingPass<'_> {
         }
         // Held ahead of the send, a failed send can still land and the next pass reads its outcome.
         self.state.in_flight = Some(InFlight { attempt, writes });
-        Ok(self.chain.send(&transaction).await?)
+        Ok(self.chain.submit().send(&transaction).await?)
     }
 
     async fn signed_batch(&self, proven: &ProvenEnrollBatch) -> Result<SignedBatch, WriterError> {
-        let latest = self.chain.latest_blockhash().await?;
+        let latest = self.chain.submit().latest_blockhash().await?;
         let message = compile_message(
             &self.payer.address(),
             &proven.instructions,
@@ -589,9 +575,10 @@ impl RingPass<'_> {
             let Some(held) = self.state.queued.pop_front() else {
                 break;
             };
-            let applies = match held.entry.proven {
-                true => !current.contains_key(&held.owner),
-                false => current.get(&held.owner) == Some(&held.entry.prior_viewing_hash),
+            let applies = if held.entry.proven {
+                !current.contains_key(&held.owner)
+            } else {
+                current.get(&held.owner) == Some(&held.entry.prior_viewing_hash)
             };
             if !applies {
                 warn!(

@@ -6,8 +6,8 @@ use std::{
 };
 
 use custom_ring_interface::{
-    settlement_mints, tag, InstructionTag, PublicLeg, PublicSlotError, PublicSlots, RingPolicy,
-    RingRail, RingTransactData, TransferApproval, TransferLayout,
+    settlement_mints, tag, InstructionTag, PublicLeg, PublicSlotError, PublicSlots,
+    RailAuthorization, RingPolicy, RingRail, RingTransactData, TransferApproval, TransferLayout,
 };
 use solana_address::Address;
 use solana_message::VersionedMessage;
@@ -290,9 +290,7 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
             withdrawal_accounts: frame.withdrawal_accounts(&layout, transfers)?,
             public: fold_public_flows(transfers.iter().copied().zip(mints))?,
             approval_bits: data.approval.bits(),
-            hidden_sender: rail != RingRail::Confidential
-                || data.in_proof_owner.is_some()
-                || data.anonymous.is_some(),
+            hidden_sender: data.authorization != RailAuthorization::ConfidentialSigner,
         }))
     }
 }
@@ -377,13 +375,13 @@ impl<'m> RingFrame<'m> {
                 let [record, signer] = *self.window(record..signer + 1)? else {
                     return Err(unavailable());
                 };
-                let signer = match signer == sysvar::instructions::ID {
-                    true => self
-                        .approvers
+                let signer = if signer == sysvar::instructions::ID {
+                    self.approvers
                         .iter()
                         .find(|approver| approver.record == record)
-                        .map(|approver| approver.signer),
-                    false => Some(signer),
+                        .map(|approver| approver.signer)
+                } else {
+                    Some(signer)
                 };
                 signer
                     .filter(|signer| record == ring.co_signer_pda(signer))
@@ -517,6 +515,8 @@ impl OwnerFlows<'_> {
             .chain(self.inputs.iter().map(|input| input.asset))
             .chain(public_gross.iter().map(|public| public.asset))
             .collect();
+        // The frame names no payer of an exit, so each owner exits up to all that leaves.
+        let leaving = self.leaving(&mint_of)?;
         let mut flows = owner_debits(&DebitTransfer {
             senders: &senders,
             assets: &assets,
@@ -526,12 +526,15 @@ impl OwnerFlows<'_> {
         })
         .iter()
         .map(|debit| {
+            let asset = mint_of(&debit.asset)?;
+            let left = leaving.get(&asset).copied().unwrap_or_default();
             Ok(OwnerFlow {
                 owner: member(debit.owner)?,
                 flow: AssetFlow {
-                    asset: mint_of(&debit.asset)?,
+                    asset,
                     debit: debit.debit,
                     charged_outflow: debit.charged_outflow,
+                    exiting: debit.charged_outflow.min(left),
                     deposited: 0,
                     withdrawn: 0,
                 },
@@ -554,6 +557,7 @@ impl OwnerFlows<'_> {
                             asset: public.mint,
                             debit: 0,
                             charged_outflow: 0,
+                            exiting: 0,
                             deposited: 0,
                             withdrawn: 0,
                         },
@@ -568,7 +572,7 @@ impl OwnerFlows<'_> {
     }
 
     /// An asset with no exit and no withdrawal has no entry.
-    pub(super) fn leaving(
+    fn leaving(
         &self,
         mint_of: impl Fn(&[u8; 32]) -> Result<Address, RingCosignerError>,
     ) -> Result<BTreeMap<Address, u128>, RingCosignerError> {
@@ -625,10 +629,8 @@ impl FrameFlows<'_> {
             public: &self.public,
             no_spend_owner: Member::owner_tag(self.ring.as_array()).map_err(|_| unavailable())?,
         };
-        let leaving = moved.leaving(|asset| self.mint_of(asset))?;
         Ok(TransferRead {
             flows: moved.rows(|asset| self.mint_of(asset))?,
-            leaving,
             spends_note: !inputs.is_empty(),
             approval_bits: Some(approval_bits),
             co_signers: Vec::new(),
@@ -651,9 +653,10 @@ impl FrameFlows<'_> {
             }
         }
         inputs.extend(self.entries()?);
-        match inputs.len() == usize::from(audited.real_inputs) {
-            true => Ok(inputs),
-            false => Err(unavailable()),
+        if inputs.len() == usize::from(audited.real_inputs) {
+            Ok(inputs)
+        } else {
+            Err(unavailable())
         }
     }
 

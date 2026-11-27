@@ -78,7 +78,7 @@ A policy registry holds one record per member.
 | Mint policy field | `threshold * 2^128 + cap * 2^64 + cosign_above`, each a u64 |
 | Asset limit fields | `limits_0 = sender_cap * 2^128 + sender_window_slots * 2^64 + volume_cap`, `limits_1 = volume_window_slots * 2^128 + deposit_cap * 2^64 + deposit_window_slots`, `limits_2 = withdrawal_cap * 2^64 + withdrawal_window_slots`, each a u64 |
 | Sentinel | `(0, q - 1, 0, 0, 0, 0, 0, 0)` at leaf `0` |
-| Tree node | `Poseidon(c_0, c_1, c_2, c_3)`, height 10, the leaf index as 20 bits |
+| Tree node | `Poseidon(c_0, c_1, c_2, c_3)`, height 13, the leaf index as 26 bits |
 | Record write | `Poseidon(CRQW, member, right_align(mask as u64 BE), right_align(value as u64 BE), mint_policy_write, right_align(withdrawal_threshold as u64 BE), limits_0, limits_1, limits_2)`, 9 inputs |
 | Mint policy write | `0` when the write keeps the mint settings, else `2^192 + mint policy field`. `withdrawal_threshold` and every asset limit field are `0` when the write keeps them. |
 | Write chain start | `chain_start(registry, revision) = HashChain4([CRAP, hash_bytes(registry address), right_align(revision as u64 BE)])` |

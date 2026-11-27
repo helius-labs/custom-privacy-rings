@@ -24,7 +24,7 @@ import { snapshotPages } from "../wallet-snapshot.js";
 import { knownUtxoHash } from "../../operations/audit/audit.js";
 import { RingError } from "../../protocol/error.js";
 import type { OwnerListSalts } from "../../protocol/membership/private-list.js";
-import { decodeRingRpcHealth, type RingRpcHealth } from "../../protocol/ring-rpc/health.js";
+import { decodeRingRpcHealth, type RingRpcHealth } from "./health.js";
 import { ringRecordsAddress } from "../../protocol/pda/index.js";
 import { verifyRecordUpdate } from "../../protocol/ring-rpc/record-update.js";
 import {
@@ -178,6 +178,7 @@ import {
   decodeTransaction,
   decodeSkipped,
 } from "./audit-decoders.js";
+import { defined } from "../../protocol/defined.js";
 
 const RING_RPC_TIMEOUT_MS = 30_000;
 const RING_RPC_MAX_REQUEST_BYTES = 1024 * 1024;
@@ -565,11 +566,10 @@ export class RingRpc {
     context?: RequestContext,
   ): AsyncGenerator<RingWalletStatusPage, void> {
     return snapshotPages({
-      read: (cursor) =>
-        this.getWalletStatus({ ...input, ...(cursor === undefined ? {} : { cursor }) }, context),
+      read: (cursor) => this.getWalletStatus({ ...input, ...defined({ cursor }) }, context),
       status: (page) => page,
       release: (cursor, cleanup) => this.releaseWalletSnapshot({ ...input, cursor }, cleanup),
-      ...(context === undefined ? {} : { context }),
+      ...defined({ context }),
     });
   }
 
@@ -587,7 +587,7 @@ export class RingRpc {
         : hash(wire["nullifierSecret"], "nullifierSecret");
     if (nullifierSecret !== undefined && nullifierSecret[0] !== 0) throw invalid("nullifierSecret");
     return Object.freeze({
-      ...(nullifierSecret === undefined ? {} : { nullifierSecret }),
+      ...defined({ nullifierSecret }),
       status: decodeWalletStatus(record(wire["status"], "status")),
     });
   }
@@ -609,11 +609,10 @@ export class RingRpc {
     context?: RequestContext,
   ): AsyncGenerator<RingDelegateNotesPage, void> {
     return snapshotPages({
-      read: (cursor) =>
-        this.getDelegateNotes({ ...input, ...(cursor === undefined ? {} : { cursor }) }, context),
+      read: (cursor) => this.getDelegateNotes({ ...input, ...defined({ cursor }) }, context),
       status: (page) => page.status,
       release: (cursor, cleanup) => this.releaseDelegateSnapshot({ ...input, cursor }, cleanup),
-      ...(context === undefined ? {} : { context }),
+      ...defined({ context }),
     });
   }
 
@@ -638,7 +637,7 @@ export class RingRpc {
         authority: input.authority.address,
         timestamp,
         nonce,
-        ...(cursor === undefined ? {} : { cursor }),
+        ...defined({ cursor }),
       }),
     );
     const wire = record(
@@ -783,7 +782,7 @@ export class RingRpc {
       opened: Object.freeze(
         opened.map((entry, index) => decodeAuditedMerge(entry, `result.value.opened[${index}]`)),
       ),
-      ...(cursor === undefined ? {} : { cursor }),
+      ...defined({ cursor }),
     });
   }
 
@@ -814,7 +813,7 @@ export class RingRpc {
           decodeSkipped(record(entry, `result.value.skipped[${index}]`)),
         ),
       ),
-      ...(cursor === undefined ? {} : { cursor }),
+      ...defined({ cursor }),
     });
   }
 
@@ -840,7 +839,7 @@ export class RingRpc {
           decodeWalletActivity(record(item, `result.value.items[${index}]`)),
         ),
       ),
-      ...(cursor === undefined ? {} : { cursor }),
+      ...defined({ cursor }),
     });
   }
 
@@ -876,8 +875,7 @@ export class RingRpc {
         ? undefined
         : canonicalHash(wire["ringSalt"], "result.ringSalt");
     return Object.freeze({
-      ...(listSalt === undefined ? {} : { listSalt }),
-      ...(ringSalt === undefined ? {} : { ringSalt }),
+      ...defined({ listSalt, ringSalt }),
     });
   }
 
@@ -967,7 +965,7 @@ export class RingRpc {
       wallet: input.wallet,
       timestamp,
       nonce,
-      ...(cursor === undefined ? {} : { cursor }),
+      ...defined({ cursor }),
     };
     let message: Uint8Array;
     if (method === "getWalletStatus") {
@@ -986,7 +984,7 @@ export class RingRpc {
         timestamp,
         nonce,
         signature,
-        ...(cursor === undefined ? {} : { cursor }),
+        ...defined({ cursor }),
       }),
       context,
     );
@@ -1012,7 +1010,7 @@ export class RingRpc {
       owner: input.owner,
       timestamp,
       nonce,
-      ...(cursor === undefined ? {} : { cursor }),
+      ...defined({ cursor }),
     };
     let message: Uint8Array;
     if (method === "getDelegateNotes") {

@@ -130,7 +130,7 @@ mod tests {
     use crate::{
         config::ModeName,
         operator_manifest::tests::document as manifest_document,
-        policy::PolicyError,
+        policy::grammar::PolicyError,
         ui::{Answer, Defaults, Scripted},
     };
 

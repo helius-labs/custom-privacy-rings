@@ -1,13 +1,8 @@
 //! A ring's durable projection, what its auditor opened and the frames it could not read.
 //!
 //! The lease holder writes it, each commit fenced by the lease. Every replica reads it from one
-//! snapshot, so a load never pairs a newer checkpoint with an older spend. Read after
-//! `storage/projection_lease.rs`.
+//! snapshot, so a load never pairs a newer checkpoint with an older spend.
 
-use aes_gcm::{
-    aead::{Aead, AeadCore, KeyInit, OsRng, Payload},
-    Aes256Gcm, Nonce,
-};
 use custom_ring_interface::REGISTER_KEY_CIPHERTEXT_LEN;
 use sea_orm::{
     AccessMode, ConnectionTrait, DatabaseBackend, DatabaseConnection, DatabaseTransaction, DbErr,
@@ -24,6 +19,7 @@ use crate::{
     frame_repairs::RepairAttempt,
     owner_notes::{IndexTags, OwnerNoteWrites},
     projection_lease::ProjectionLease,
+    row_cipher::RowCipher,
     spend_machine::{SpendRow, SpendState},
     tracking::{HeldEnrollment, TrackingCursor},
     utxos::{CreatedIn, LateOwner, PageDelta, StoredUtxo, MAX_LATE_OWNERS},
@@ -31,13 +27,12 @@ use crate::{
 use ring_service_core::{clock::Clock, sql};
 
 const NOTE_SEAL_INFO: &[u8] = b"zolana/ring-rpc-note-seal";
-const NONCE_LEN: usize = 12;
 const NOTE_BODY_LEN: usize =
     32 + 1 + 32 + 32 + 1 + 32 + 8 + 32 + 1 + 32 + 32 + 2 + 1 + 8 + 64 + 2 + 4 + 8 + 1 + 32;
 
 /// Keys the note rows of one ring, a stolen database opens no note.
 pub(crate) struct NoteSeal {
-    cipher: Aes256Gcm,
+    cipher: RowCipher,
     ring: Address,
     pub(crate) tags: IndexTags,
 }
@@ -49,33 +44,19 @@ pub(crate) struct Checkpoint {
     pub through: Context,
 }
 
-/// The repair schedule lists only frames that failed a repair.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct LoadedProjection {
     pub spends: LoadedSpends,
-    pub repairs: Vec<(CreatedIn, RepairAttempt)>,
-    pub enrollments: Vec<HeldEnrollment>,
     pub tracking_cursor: TrackingCursor,
     /// The snapshot's revision, every row the load read was written at or below it.
     pub revision: i64,
 }
 
-/// The note and spend rows a load reads beside the unread frames, faults and checkpoints.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HistoryScope {
-    /// Every row, for a mirror that holds the whole projection.
-    Everything,
-    /// No row, a bounded cache fills from lookups.
-    Cold,
-}
-
+/// No note or spend row, the bounded mirror fills from lookups.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct LoadedSpends {
     pub checkpoint: Checkpoint,
-    pub notes: Vec<([u8; 32], StoredUtxo)>,
-    pub rows: Vec<SpendRow>,
-    pub unread: Vec<CreatedIn>,
-    pub faults: Vec<SpendRow>,
+    pub first_unread: Option<CreatedIn>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -88,63 +69,46 @@ pub(crate) async fn first_unread(
     connection: &impl ConnectionTrait,
     ring: Address,
 ) -> Result<Option<CreatedIn>, DbErr> {
-    connection
-        .query_one(sql::statement(
-            connection,
-            "SELECT slot,tx_signature,event_index FROM spend_unread_frames WHERE ring=$1 \
-             ORDER BY slot,tx_signature,event_index LIMIT 1",
-            vec![sql::bytes(ring.as_ref())],
-        ))
-        .await?
-        .as_ref()
-        .map(read_frame)
-        .transpose()
+    sql::Query::new(
+        "SELECT slot,tx_signature,event_index FROM spend_unread_frames WHERE ring=$1 \
+         ORDER BY slot,tx_signature,event_index LIMIT 1",
+        vec![sql::bytes(ring.as_ref())],
+    )
+    .one(connection)
+    .await?
+    .as_ref()
+    .map(read_frame)
+    .transpose()
 }
 
 impl NoteSeal {
     pub(crate) fn derive(auditor: &X25519Keypair, ring: Address) -> Result<Self, DbErr> {
-        let unusable = || DbErr::Custom("note seal key is unusable".into());
         let mut key = zeroize::Zeroizing::new([0u8; 32]);
         hkdf::Hkdf::<Sha256>::new(None, auditor.secret_bytes().as_slice())
             .expand(NOTE_SEAL_INFO, key.as_mut_slice())
-            .map_err(|_| unusable())?;
+            .map_err(|_| DbErr::Custom("note seal key is unusable".into()))?;
         Ok(Self {
-            cipher: Aes256Gcm::new_from_slice(key.as_slice()).map_err(|_| unusable())?,
+            cipher: RowCipher::new(&key),
             ring,
             tags: IndexTags::derive(auditor, ring),
         })
     }
 
-    /// The ring and the row key bind the body, a row moved to another key fails to open.
     pub(crate) fn seal(&self, row_key: &[u8; 32], body: &[u8]) -> Result<Vec<u8>, DbErr> {
-        let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-        let aad = [self.ring.as_ref(), row_key.as_slice()].concat();
-        let sealed = self
-            .cipher
-            .encrypt(
-                &nonce,
-                Payload {
-                    msg: body,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| DbErr::Custom("note row failed to seal".into()))?;
-        Ok([nonce.as_slice(), &sealed].concat())
+        self.cipher
+            .seal(&self.aad(row_key), body)
+            .map_err(|_| DbErr::Custom("note row failed to seal".into()))
     }
 
     pub(crate) fn open(&self, row_key: &[u8; 32], sealed: &[u8]) -> Result<Vec<u8>, DbErr> {
-        let refused = || DbErr::Custom("note row does not open under the auditor key".into());
-        let (nonce, ciphertext) = sealed.split_at_checked(NONCE_LEN).ok_or_else(refused)?;
-        let aad = [self.ring.as_ref(), row_key.as_slice()].concat();
         self.cipher
-            .decrypt(
-                Nonce::from_slice(nonce),
-                Payload {
-                    msg: ciphertext,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| refused())
+            .open(&self.aad(row_key), sealed)
+            .map_err(|_| DbErr::Custom("note row does not open under the auditor key".into()))
+    }
+
+    /// The ring and the row key bind the body, a row moved to another key fails to open.
+    fn aad(&self, row_key: &[u8; 32]) -> Vec<u8> {
+        [self.ring.as_ref(), row_key.as_slice()].concat()
     }
 }
 
@@ -384,14 +348,13 @@ impl ProjectionWriter<'_> {
             .map_err(|_| DbErr::Custom("the clock is unreadable".into()))?;
         let transaction = self.db.begin().await?;
         self.lease.fence(&transaction, now).await?;
-        transaction
-            .execute(sql::statement(
-                &transaction,
-                "INSERT INTO projection_revisions(ring,revision) VALUES($1,1) ON CONFLICT(ring) \
-                 DO UPDATE SET revision=projection_revisions.revision+1",
-                vec![self.ring_value()],
-            ))
-            .await?;
+        sql::Query::new(
+            "INSERT INTO projection_revisions(ring,revision) VALUES($1,1) ON CONFLICT(ring) \
+             DO UPDATE SET revision=projection_revisions.revision+1",
+            vec![self.ring_value()],
+        )
+        .execute(&transaction)
+        .await?;
         let revision = read_revision(&transaction, &self.ring).await?;
         Ok((transaction, revision))
     }
@@ -403,28 +366,27 @@ impl ProjectionWriter<'_> {
     pub(crate) async fn commit_page(&self, delta: &PageDelta) -> Result<CommittedPage, DbErr> {
         let Self { ring, seal, .. } = self;
         let (transaction, revision) = self.begin().await?;
-        let run = |query: &str, values: Vec<Value>| sql::statement(&transaction, query, values);
         for (commitment, note) in delta.notes() {
             let sealed = seal.seal(commitment, &note_body(note))?;
             let nullifier_tag = note
                 .nullifier
                 .map(|nullifier| seal.tags.nullifier_tag(&nullifier))
                 .transpose()?;
-            transaction
-                .execute(run(
-                    "INSERT INTO finalized_notes(ring,commitment,sealed,nullifier_tag,revision) \
-                     VALUES($1,$2,$3,$4,$5) ON CONFLICT(ring,commitment) DO UPDATE SET \
-                     sealed=excluded.sealed,nullifier_tag=excluded.nullifier_tag, \
-                     revision=excluded.revision",
-                    vec![
-                        self.ring_value(),
-                        sql::bytes(commitment),
-                        sealed.into(),
-                        Value::Bytes(nullifier_tag.map(|tag| Box::new(tag.to_vec()))),
-                        revision.into(),
-                    ],
-                ))
-                .await?;
+            sql::Query::new(
+                "INSERT INTO finalized_notes(ring,commitment,sealed,nullifier_tag,revision) \
+                 VALUES($1,$2,$3,$4,$5) ON CONFLICT(ring,commitment) DO UPDATE SET \
+                 sealed=excluded.sealed,nullifier_tag=excluded.nullifier_tag, \
+                 revision=excluded.revision",
+                vec![
+                    self.ring_value(),
+                    sql::bytes(commitment),
+                    sealed.into(),
+                    Value::Bytes(nullifier_tag.map(|tag| Box::new(tag.to_vec()))),
+                    revision.into(),
+                ],
+            )
+            .execute(&transaction)
+            .await?;
         }
         for row in delta.rows() {
             let link = state_link(row.state)
@@ -440,51 +402,51 @@ impl ProjectionWriter<'_> {
                 Value::Bytes(link.map(Box::new)),
                 revision.into(),
             ]);
-            transaction
-                .execute(run(
-                    "INSERT INTO finalized_spent_nullifiers(ring,nullifier,slot,tx_signature, \
-                     event_index,position,state,sealed_note,revision) \
-                     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(ring,nullifier) DO UPDATE SET \
-                     state=excluded.state,sealed_note=excluded.sealed_note, \
-                     revision=excluded.revision",
-                    values,
-                ))
-                .await?;
+            sql::Query::new(
+                "INSERT INTO finalized_spent_nullifiers(ring,nullifier,slot,tx_signature, \
+                 event_index,position,state,sealed_note,revision) \
+                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(ring,nullifier) DO UPDATE SET \
+                 state=excluded.state,sealed_note=excluded.sealed_note, \
+                 revision=excluded.revision",
+                values,
+            )
+            .execute(&transaction)
+            .await?;
         }
         for fault in delta.faults() {
             let mut values = frame_values(ring, &fault.frame)?;
             values.push(sql::bytes(&fault.nullifier));
-            transaction
-                .execute(run(
-                    "INSERT INTO spend_integrity_faults(ring,slot,tx_signature,event_index, \
-                     nullifier) VALUES($1,$2,$3,$4,$5) \
-                     ON CONFLICT(ring,nullifier,tx_signature,event_index) DO NOTHING",
-                    values,
-                ))
-                .await?;
+            sql::Query::new(
+                "INSERT INTO spend_integrity_faults(ring,slot,tx_signature,event_index, \
+                 nullifier) VALUES($1,$2,$3,$4,$5) \
+                 ON CONFLICT(ring,nullifier,tx_signature,event_index) DO NOTHING",
+                values,
+            )
+            .execute(&transaction)
+            .await?;
         }
         for frame in delta.read_frames() {
-            transaction
-                .execute(run(
-                    "DELETE FROM spend_unread_frames WHERE ring=$1 AND tx_signature=$2 \
-                     AND event_index=$3",
-                    vec![
-                        self.ring_value(),
-                        sql::bytes(frame.tx_signature.as_ref()),
-                        i32::from(frame.event_index).into(),
-                    ],
-                ))
-                .await?;
+            sql::Query::new(
+                "DELETE FROM spend_unread_frames WHERE ring=$1 AND tx_signature=$2 \
+                 AND event_index=$3",
+                vec![
+                    self.ring_value(),
+                    sql::bytes(frame.tx_signature.as_ref()),
+                    i32::from(frame.event_index).into(),
+                ],
+            )
+            .execute(&transaction)
+            .await?;
         }
         // A frame unread again keeps its attempt count, the repair schedule owns it.
         for frame in delta.unread_frames() {
-            transaction
-                .execute(run(
-                    "INSERT INTO spend_unread_frames(ring,slot,tx_signature,event_index) \
-                     VALUES($1,$2,$3,$4) ON CONFLICT(ring,tx_signature,event_index) DO NOTHING",
-                    frame_values(ring, frame)?,
-                ))
-                .await?;
+            sql::Query::new(
+                "INSERT INTO spend_unread_frames(ring,slot,tx_signature,event_index) \
+                 VALUES($1,$2,$3,$4) ON CONFLICT(ring,tx_signature,event_index) DO NOTHING",
+                frame_values(ring, frame)?,
+            )
+            .execute(&transaction)
+            .await?;
         }
         OwnerNoteWrites {
             ring: *ring,
@@ -495,21 +457,21 @@ impl ProjectionWriter<'_> {
         .await?;
         if let Some(checkpoint) = delta.checkpoint() {
             let [after_slot, token] = position_values(&checkpoint.position)?;
-            transaction
-                .execute(run(
-                    "INSERT INTO spend_checkpoints(ring,after_slot,token,through_slot,block_time) \
-                     VALUES($1,$2,$3,$4,$5) ON CONFLICT(ring) DO UPDATE SET \
-                     after_slot=excluded.after_slot,token=excluded.token, \
-                     through_slot=excluded.through_slot,block_time=excluded.block_time",
-                    vec![
-                        self.ring_value(),
-                        after_slot,
-                        token,
-                        sql::integer(checkpoint.through.slot)?,
-                        checkpoint.through.block_time.into(),
-                    ],
-                ))
-                .await?;
+            sql::Query::new(
+                "INSERT INTO spend_checkpoints(ring,after_slot,token,through_slot,block_time) \
+                 VALUES($1,$2,$3,$4,$5) ON CONFLICT(ring) DO UPDATE SET \
+                 after_slot=excluded.after_slot,token=excluded.token, \
+                 through_slot=excluded.through_slot,block_time=excluded.block_time",
+                vec![
+                    self.ring_value(),
+                    after_slot,
+                    token,
+                    sql::integer(checkpoint.through.slot)?,
+                    checkpoint.through.block_time.into(),
+                ],
+            )
+            .execute(&transaction)
+            .await?;
         }
         let first_unread = first_unread(&transaction, *ring).await?;
         transaction.commit().await?;
@@ -529,64 +491,62 @@ impl ProjectionWriter<'_> {
         for enrollment in held {
             let member = enrollment.member();
             let sealed = self.seal.seal(&member, &enrollment_body(enrollment))?;
-            let inserted = transaction
-                .execute(sql::statement(
-                    &transaction,
-                    "INSERT INTO held_enrollments(ring,member,sealed,owner_hash_tag,list_key_tag, \
-                     revision) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(ring,member) DO NOTHING",
-                    vec![
-                        self.ring_value(),
-                        sql::bytes(&member),
-                        sealed.into(),
-                        sql::bytes(&self.seal.tags.owner_hash_tag(&enrollment.owner_hash)?),
-                        sql::bytes(&self.seal.tags.list_key_tag(&enrollment.list_key)?),
-                        revision.into(),
-                    ],
-                ))
-                .await?
-                .rows_affected();
+            let inserted = sql::Query::new(
+                "INSERT INTO held_enrollments(ring,member,sealed,owner_hash_tag,list_key_tag, \
+                 revision) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(ring,member) DO NOTHING",
+                vec![
+                    self.ring_value(),
+                    sql::bytes(&member),
+                    sealed.into(),
+                    sql::bytes(&self.seal.tags.owner_hash_tag(&enrollment.owner_hash)?),
+                    sql::bytes(&self.seal.tags.list_key_tag(&enrollment.list_key)?),
+                    revision.into(),
+                ],
+            )
+            .execute(&transaction)
+            .await?;
             if inserted != 0 {
-                transaction.execute(sql::statement(
-                    &transaction,
-                    "INSERT INTO pending_derivations(ring,member) VALUES($1,$2) ON CONFLICT(ring,member) DO NOTHING",
+                sql::Query::new(
+                    "INSERT INTO pending_derivations(ring,member) VALUES($1,$2) \
+                     ON CONFLICT(ring,member) DO NOTHING",
                     vec![self.ring_value(), sql::bytes(&member)],
-                )).await?;
+                )
+                .execute(&transaction)
+                .await?;
             }
         }
-        transaction
-            .execute(sql::statement(
-                &transaction,
-                "INSERT INTO tracking_cursors(ring,next_leaf) VALUES($1,$2) \
-                 ON CONFLICT(ring) DO UPDATE SET next_leaf=excluded.next_leaf",
-                vec![self.ring_value(), sql::integer(cursor.next_leaf())?],
-            ))
-            .await?;
+        sql::Query::new(
+            "INSERT INTO tracking_cursors(ring,next_leaf) VALUES($1,$2) \
+             ON CONFLICT(ring) DO UPDATE SET next_leaf=excluded.next_leaf",
+            vec![self.ring_value(), sql::integer(cursor.next_leaf())?],
+        )
+        .execute(&transaction)
+        .await?;
         transaction.commit().await
     }
 
     pub(crate) async fn pending_owners(&self) -> Result<Vec<LateOwner>, DbErr> {
-        self.db
-            .query_all(sql::statement(
-                self.db,
-                "SELECT e.member,e.sealed,p.after_tag FROM held_enrollments e JOIN \
-                 pending_derivations p ON e.ring=p.ring AND e.member=p.member WHERE e.ring=$1 \
-                 ORDER BY e.member LIMIT $2",
-                vec![self.ring_value(), sql::count(MAX_LATE_OWNERS)?],
-            ))
-            .await?
-            .iter()
-            .map(|row| {
-                let resume = row
-                    .try_get::<Option<Vec<u8>>>("", "after_tag")?
-                    .map(<[u8; 32]>::try_from)
-                    .transpose()
-                    .map_err(|_| DbErr::Custom("resume tag has another length".into()))?;
-                Ok(LateOwner {
-                    owner: read_enrollment(row, self.seal)?.owner_key,
-                    resume,
-                })
+        sql::Query::new(
+            "SELECT e.member,e.sealed,p.after_tag FROM held_enrollments e JOIN \
+             pending_derivations p ON e.ring=p.ring AND e.member=p.member WHERE e.ring=$1 \
+             ORDER BY e.member LIMIT $2",
+            vec![self.ring_value(), sql::count(MAX_LATE_OWNERS)?],
+        )
+        .all(self.db)
+        .await?
+        .iter()
+        .map(|row| {
+            let resume = row
+                .try_get::<Option<Vec<u8>>>("", "after_tag")?
+                .map(<[u8; 32]>::try_from)
+                .transpose()
+                .map_err(|_| DbErr::Custom("resume tag has another length".into()))?;
+            Ok(LateOwner {
+                owner: read_enrollment(row, self.seal)?.owner_key,
+                resume,
             })
-            .collect()
+        })
+        .collect()
     }
 
     pub(crate) async fn record_attempts(
@@ -595,32 +555,29 @@ impl ProjectionWriter<'_> {
     ) -> Result<(), DbErr> {
         let (transaction, _) = self.begin().await?;
         for (frame, attempt) in attempts {
-            transaction
-                .execute(sql::statement(
-                    &transaction,
-                    "UPDATE spend_unread_frames SET attempts=$1,retry_after=$2 WHERE ring=$3 \
-                     AND tx_signature=$4 AND event_index=$5",
-                    vec![
-                        i64::from(attempt.attempts).into(),
-                        sql::integer(attempt.retry_after)?,
-                        self.ring_value(),
-                        sql::bytes(frame.tx_signature.as_ref()),
-                        i32::from(frame.event_index).into(),
-                    ],
-                ))
-                .await?;
+            sql::Query::new(
+                "UPDATE spend_unread_frames SET attempts=$1,retry_after=$2 WHERE ring=$3 \
+                 AND tx_signature=$4 AND event_index=$5",
+                vec![
+                    i64::from(attempt.attempts).into(),
+                    sql::integer(attempt.retry_after)?,
+                    self.ring_value(),
+                    sql::bytes(frame.tx_signature.as_ref()),
+                    i32::from(frame.event_index).into(),
+                ],
+            )
+            .execute(&transaction)
+            .await?;
         }
         transaction.commit().await
     }
 }
 
-/// Reads every row of one ring from one snapshot, a commit between two reads shows in neither.
+/// Reads one ring's resume state from one snapshot, a commit between two reads shows in neither.
 #[must_use]
 pub(crate) struct LoadSpends<'a> {
     pub db: &'a DatabaseConnection,
     pub ring: Address,
-    pub seal: &'a NoteSeal,
-    pub scope: HistoryScope,
 }
 
 impl LoadSpends<'_> {
@@ -632,75 +589,21 @@ impl LoadSpends<'_> {
     }
 
     async fn read(&self, snapshot: &DatabaseTransaction) -> Result<LoadedProjection, DbErr> {
-        let Self {
-            ring, seal, scope, ..
-        } = self;
-        let query =
-            |select: &str| sql::statement(snapshot, select, vec![sql::bytes(ring.as_ref())]);
+        let ring = &self.ring;
+        let query = |select: &str| sql::Query::new(select, vec![sql::bytes(ring.as_ref())]);
         let mut loaded = LoadedProjection {
             revision: read_revision(snapshot, ring).await?,
             ..LoadedProjection::default()
         };
-        let spends = &mut loaded.spends;
-        if *scope == HistoryScope::Everything {
-            for row in snapshot
-                .query_all(query(&format!(
-                    "SELECT {NOTE_COLUMNS} FROM finalized_notes WHERE ring=$1"
-                )))
-                .await?
-            {
-                spends.notes.push(read_note(&row, seal)?);
-            }
-            for row in snapshot
-                .query_all(query(&format!(
-                    "SELECT {ROW_COLUMNS} FROM finalized_spent_nullifiers \
-                     WHERE ring=$1"
-                )))
-                .await?
-            {
-                spends.rows.push(read_spend_row(&row, seal)?);
-            }
-        }
-        if *scope == HistoryScope::Everything {
-            for row in snapshot
-                .query_all(query(
-                    "SELECT slot,tx_signature,event_index,attempts,retry_after FROM \
-                     spend_unread_frames WHERE ring=$1",
-                ))
-                .await?
-            {
-                let frame = read_frame(&row)?;
-                let attempt = read_repair_attempt(&row)?;
-                spends.unread.push(frame);
-                if attempt.attempts > 0 {
-                    loaded.repairs.push((frame, attempt));
-                }
-            }
-            for row in snapshot
-                .query_all(query(
-                    "SELECT nullifier,slot,tx_signature,event_index FROM spend_integrity_faults \
-                     WHERE ring=$1",
-                ))
-                .await?
-            {
-                spends.faults.push(SpendRow {
-                    nullifier: sql::read_bytes(&row, "nullifier")?,
-                    frame: read_frame(&row)?,
-                    position: 0,
-                    state: SpendState::Observed,
-                });
-            }
-        } else {
-            spends.unread.extend(first_unread(snapshot, *ring).await?);
-        }
-        if let Some(row) = snapshot
-            .query_one(query(
-                "SELECT after_slot,token,through_slot,block_time FROM spend_checkpoints \
-                 WHERE ring=$1",
-            ))
-            .await?
+        loaded.spends.first_unread = first_unread(snapshot, *ring).await?;
+        if let Some(row) = query(
+            "SELECT after_slot,token,through_slot,block_time FROM spend_checkpoints \
+             WHERE ring=$1",
+        )
+        .one(snapshot)
+        .await?
         {
-            spends.checkpoint = Checkpoint {
+            loaded.spends.checkpoint = Checkpoint {
                 position: read_position(&row)?,
                 through: Context {
                     slot: sql::read_integer(&row, "through_slot")?,
@@ -708,20 +611,8 @@ impl LoadSpends<'_> {
                 },
             };
         }
-        if *scope == HistoryScope::Everything {
-            for row in snapshot
-                .query_all(query(&format!(
-                    "SELECT {ENROLLMENT_COLUMNS} FROM held_enrollments WHERE ring=$1"
-                )))
-                .await?
-            {
-                loaded.enrollments.push(read_enrollment(&row, seal)?);
-            }
-        }
-        if let Some(row) = snapshot
-            .query_one(query(
-                "SELECT next_leaf FROM tracking_cursors WHERE ring=$1",
-            ))
+        if let Some(row) = query("SELECT next_leaf FROM tracking_cursors WHERE ring=$1")
+            .one(snapshot)
             .await?
         {
             loaded.tracking_cursor = TrackingCursor::stored(sql::read_integer(&row, "next_leaf")?)
@@ -779,13 +670,12 @@ pub(crate) fn read_spend_row(row: &QueryResult, seal: &NoteSeal) -> Result<Spend
 
 /// Zero before the ring's first commit.
 pub(crate) async fn read_revision(db: &impl ConnectionTrait, ring: &Address) -> Result<i64, DbErr> {
-    let row = db
-        .query_one(sql::statement(
-            db,
-            "SELECT revision FROM projection_revisions WHERE ring=$1",
-            vec![sql::bytes(ring.as_ref())],
-        ))
-        .await?;
+    let row = sql::Query::new(
+        "SELECT revision FROM projection_revisions WHERE ring=$1",
+        vec![sql::bytes(ring.as_ref())],
+    )
+    .one(db)
+    .await?;
     row.map_or(Ok(0), |row| row.try_get("", "revision"))
 }
 

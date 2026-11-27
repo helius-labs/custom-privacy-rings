@@ -1,6 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
+    num::NonZeroU64,
+    str::FromStr,
     sync::{Arc, Mutex, PoisonError},
 };
 
@@ -9,6 +11,7 @@ use custom_ring_interface::CoSignScope;
 use log::warn;
 use sea_orm::{ConnectionTrait, DbErr, TransactionTrait};
 use solana_address::Address;
+use thiserror::Error;
 use zolana_operator_custody::SigningIdentity;
 use zolana_ring_policy::{
     ApprovalInputs, ApprovalMask, Member, MintPolicy, OwnerDebit, PublicGross,
@@ -38,7 +41,7 @@ use crate::{
     transfer_debits::TransferDebits,
 };
 
-pub trait AssetLimitSource: Send + Sync {
+pub(crate) trait AssetLimitSource: Send + Sync {
     fn current_slot(&self) -> impl Future<Output = Result<u64, RingCosignerError>> + Send;
 
     /// In `assets` order, `None` for an asset without a record.
@@ -72,17 +75,15 @@ pub trait AssetLimitSource: Send + Sync {
 
 /// What the frame a co-signer signs moves.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FrameRead {
+pub(crate) enum FrameRead {
     /// The delegate rail demands no class and no limit reads it.
     Delegate,
     Transfer(TransferRead),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransferRead {
+pub(crate) struct TransferRead {
     pub(crate) flows: Vec<OwnerFlow>,
-    /// What leaves the ring of each asset, its exit outputs and its public withdrawal legs.
-    pub(crate) leaving: BTreeMap<Address, u128>,
     /// Clear on a frame of public legs alone.
     pub(crate) spends_note: bool,
     /// The frame's proven mask, `None` on a frame that carries none.
@@ -96,14 +97,15 @@ pub struct TransferRead {
 /// Reads each asset record under the newest root of the ring's records registry.
 pub(crate) struct RecordLimits<S>(pub(crate) Arc<Shared<S>>);
 
-pub struct LimitedCoSignerInit<L> {
+pub(crate) struct LimitedCoSignerInit<L> {
     pub(crate) signer: SigningIdentity,
     pub(crate) limits: L,
     pub(crate) store: Arc<Store>,
     pub(crate) approval: CoSignerApproval,
+    pub(crate) exit_caps: Vec<ExitCap>,
 }
 
-/// Signs under the asset record limits and the stored lists.
+/// Signs under the asset record limits, the service's exit caps and the stored lists.
 #[must_use]
 pub struct CoSignPolicyInit<S> {
     /// `None` refuses every co-signature.
@@ -111,20 +113,44 @@ pub struct CoSignPolicyInit<S> {
     pub shared: Arc<Shared<S>>,
     pub store: Option<Store>,
     pub approval: CoSignerApproval,
+    /// One for each mint at most.
+    pub exit_caps: Vec<ExitCap>,
+}
+
+/// What one owner moves out of the ring of `mint` within a window, a cap of the service alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitCap {
+    pub mint: Address,
+    pub cap: NonZeroU64,
+    /// At most `MAX_LIMIT_WINDOW_SLOTS`.
+    pub window_slots: NonZeroU64,
+}
+
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
+pub enum ExitCapError {
+    #[error("an exit cap reads <mint>:<cap>:<window slots>")]
+    Form,
+    #[error("the exit cap names no base58 mint address")]
+    Mint,
+    #[error("the exit cap is not a positive integer")]
+    Cap,
+    #[error("the exit cap window is not 1 to {MAX_LIMIT_WINDOW_SLOTS} slots")]
+    Window,
 }
 
 /// Window limits bind only the transactions that need its signature.
-pub type LimitedCoSigner<L> = CoSigner<WindowRule<L>>;
+pub(crate) type LimitedCoSigner<L> = CoSigner<WindowRule<L>>;
 
 /// One tick settles at most a page, the next tick resumes past it.
 const WALLET_SWEEP_PAGE: u64 = 64;
 
 /// The approval classes and the window caps of the ring's asset records.
-pub struct WindowRule<L> {
+pub(crate) struct WindowRule<L> {
     signer: Address,
     limits: L,
     store: Arc<Store>,
     approval: CoSignerApproval,
+    exit_caps: BTreeMap<Address, ExitCap>,
     /// The last ticket of the page the sweep read, `None` at the start.
     swept: Mutex<Option<Ticket>>,
 }
@@ -133,6 +159,7 @@ pub struct WindowRule<L> {
 pub(crate) struct AssetCheck {
     pub asset: Address,
     pub policy: MintPolicy,
+    pub exit: Option<ExitCap>,
 }
 
 /// Each non-zero cap's window total before the transfer, the sender cap per owner.
@@ -176,6 +203,36 @@ struct WindowCap {
     scope: Scope,
 }
 
+impl FromStr for ExitCap {
+    type Err = ExitCapError;
+
+    fn from_str(value: &str) -> Result<Self, ExitCapError> {
+        let [mint, cap, window] = value.split(':').collect::<Vec<_>>()[..] else {
+            return Err(ExitCapError::Form);
+        };
+        Ok(Self {
+            mint: mint.parse().map_err(|_| ExitCapError::Mint)?,
+            cap: cap.parse().map_err(|_| ExitCapError::Cap)?,
+            window_slots: window
+                .parse()
+                .ok()
+                .filter(|window: &NonZeroU64| window.get() <= MAX_LIMIT_WINDOW_SLOTS)
+                .ok_or(ExitCapError::Window)?,
+        })
+    }
+}
+
+impl From<ExitCap> for WindowCap {
+    fn from(exit: ExitCap) -> Self {
+        Self {
+            cap: exit.cap.get(),
+            window_slots: exit.window_slots.get(),
+            measure: Measure::Exiting,
+            scope: Scope::Owner,
+        }
+    }
+}
+
 impl<S: TransactionSource + 'static> CoSignPolicyInit<S> {
     pub fn build(self) -> Result<Arc<dyn CoSignPolicy>, RingCosignerError> {
         let Some(signer) = self.signer else {
@@ -191,6 +248,7 @@ impl<S: TransactionSource + 'static> CoSignPolicyInit<S> {
             limits: RecordLimits(self.shared),
             store,
             approval: self.approval,
+            exit_caps: self.exit_caps,
         }
         .build();
         // The window rule reserves, it runs last.
@@ -205,6 +263,11 @@ impl<L: AssetLimitSource> LimitedCoSignerInit<L> {
             limits: self.limits,
             store: self.store,
             approval: self.approval,
+            exit_caps: self
+                .exit_caps
+                .into_iter()
+                .map(|exit| (exit.mint, exit))
+                .collect(),
             swept: Mutex::new(None),
         };
         CoSigner::new(self.signer, rule)
@@ -270,13 +333,14 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
                 recorded.map(|policy| AssetCheck {
                     asset: *asset,
                     policy,
+                    exit: self.exit_caps.get(asset).copied(),
                 })
             })
             .collect::<Option<_>>()
             .ok_or(CoSignError::UnrecordedAsset)?;
         if checks
             .iter()
-            .flat_map(|check| window_caps(&check.policy.limits))
+            .flat_map(window_caps)
             .any(|cap| cap.window_slots > MAX_LIMIT_WINDOW_SLOTS)
         {
             return Err(CoSignError::LimitsUnavailable.into());
@@ -619,7 +683,7 @@ impl TotalsRead<'_> {
     ) -> Result<WindowTotals, DbErr> {
         let mut totals = HashMap::new();
         for check in self.checks {
-            for cap in window_caps(&check.policy.limits) {
+            for cap in window_caps(check) {
                 // A zero cap reads nothing, a zero window counts the checked transaction alone.
                 if cap.cap == 0 || cap.window_slots == 0 {
                     continue;
@@ -676,14 +740,14 @@ impl WindowTotals {
 
 impl LimitDecision<'_> {
     pub fn decide(self) -> Verdict {
-        let within = self.assets.iter().all(|check| {
-            window_caps(&check.policy.limits)
-                .iter()
-                .all(|cap| self.within(check.asset, cap))
-        });
-        match within {
-            true => Verdict::Admitted,
-            false => Verdict::Refused(CoSignRefusal::OverLimit),
+        let within = self
+            .assets
+            .iter()
+            .all(|check| window_caps(check).all(|cap| self.within(check.asset, &cap)));
+        if within {
+            Verdict::Admitted
+        } else {
+            Verdict::Refused(CoSignRefusal::OverLimit)
         }
     }
 
@@ -715,7 +779,8 @@ impl LimitDecision<'_> {
 }
 
 /// A zero window counts the checked transaction alone.
-fn window_caps(limits: &zolana_ring_policy::AssetLimits) -> [WindowCap; 4] {
+fn window_caps(check: &AssetCheck) -> impl Iterator<Item = WindowCap> {
+    let limits = &check.policy.limits;
     let ring = |cap, window_slots, measure| WindowCap {
         cap,
         window_slots,
@@ -745,6 +810,8 @@ fn window_caps(limits: &zolana_ring_policy::AssetLimits) -> [WindowCap; 4] {
             Measure::Withdrawn,
         ),
     ]
+    .into_iter()
+    .chain(check.exit.map(WindowCap::from))
 }
 
 #[cfg(test)]
@@ -791,6 +858,7 @@ mod tests {
                 asset: ASSET,
                 debit: amount.into(),
                 charged_outflow: amount.into(),
+                exiting: 0,
                 deposited: 0,
                 withdrawn: 0,
             },
@@ -820,6 +888,7 @@ mod tests {
         [AssetCheck {
             asset: ASSET,
             policy: policy(SENDER_LIMITS),
+            exit: None,
         }]
     }
 
@@ -841,6 +910,7 @@ mod tests {
                     withdrawal_window_slots: 50,
                     ..AssetLimits::EMPTY
                 }),
+                exit: None,
             }]
         };
         let decide = |flows: &[OwnerFlow], cap: u64, held: &WindowTotals| {
@@ -898,6 +968,7 @@ mod tests {
                 volume_window_slots: 50,
                 ..AssetLimits::EMPTY
             }),
+            exit: None,
         }];
         let usage = held(Measure::Volume, None, 0);
         let decide = |flows: &[OwnerFlow]| {
@@ -976,9 +1047,10 @@ mod tests {
 
     impl AssetLimitSource for TimedLimits {
         async fn current_slot(&self) -> Result<u64, RingCosignerError> {
-            Ok(match self.policies_ready.load(Ordering::SeqCst) {
-                true => self.admission_slot,
-                false => 1_000,
+            Ok(if self.policies_ready.load(Ordering::SeqCst) {
+                self.admission_slot
+            } else {
+                1_000
             })
         }
 
@@ -1078,6 +1150,7 @@ mod tests {
             limits,
             store: Arc::new(store),
             approval,
+            exit_caps: Vec::new(),
         }
         .build()
     }
@@ -1085,7 +1158,6 @@ mod tests {
     fn frame(flows: Vec<OwnerFlow>) -> FrameRead {
         FrameRead::Transfer(TransferRead {
             flows,
-            leaving: BTreeMap::new(),
             spends_note: true,
             approval_bits: None,
             co_signers: Vec::new(),
@@ -1198,7 +1270,6 @@ mod tests {
         let read = || {
             FrameRead::Transfer(TransferRead {
                 flows: flows.clone(),
-                leaving: BTreeMap::new(),
                 spends_note: true,
                 approval_bits: None,
                 co_signers: Vec::new(),
@@ -1235,11 +1306,11 @@ mod tests {
                         asset: ASSET,
                         debit: outflow,
                         charged_outflow: outflow,
+                        exiting: 0,
                         deposited: 0,
                         withdrawn,
                     },
                 }],
-                leaving: BTreeMap::new(),
                 spends_note: false,
                 approval_bits: None,
                 co_signers: Vec::new(),
@@ -1284,11 +1355,11 @@ mod tests {
                         asset: ASSET,
                         debit: 101,
                         charged_outflow: 101,
+                        exiting: 0,
                         deposited: 0,
                         withdrawn: 101,
                     },
                 }],
-                leaving: BTreeMap::new(),
                 spends_note: false,
                 approval_bits: None,
                 co_signers,
@@ -1455,6 +1526,7 @@ mod tests {
             },
             store: Arc::new(store.clone()),
             approval: all_classes(),
+            exit_caps: Vec::new(),
         }
         .build()
     }
@@ -1558,6 +1630,40 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn an_exit_cap_reads_its_mint_cap_and_window_and_refuses_every_other_form() {
+        let mint = Address::new_from_array([7; 32]);
+        let nonzero = |value| NonZeroU64::new(value).expect("nonzero");
+        assert_eq!(
+            format!("{mint}:100:50").parse(),
+            Ok(ExitCap {
+                mint,
+                cap: nonzero(100),
+                window_slots: nonzero(50),
+            })
+        );
+        assert_eq!(
+            format!("{mint}:1:{MAX_LIMIT_WINDOW_SLOTS}")
+                .parse::<ExitCap>()
+                .map(|exit| exit.window_slots.get()),
+            Ok(MAX_LIMIT_WINDOW_SLOTS)
+        );
+        for (value, refused) in [
+            (format!("{mint}:100"), ExitCapError::Form),
+            (format!("{mint}:100:50:1"), ExitCapError::Form),
+            ("mint:100:50".to_owned(), ExitCapError::Mint),
+            (format!("{mint}:0:50"), ExitCapError::Cap),
+            (format!("{mint}:-1:50"), ExitCapError::Cap),
+            (format!("{mint}:100:0"), ExitCapError::Window),
+            (
+                format!("{mint}:100:{}", MAX_LIMIT_WINDOW_SLOTS + 1),
+                ExitCapError::Window,
+            ),
+        ] {
+            assert_eq!(value.parse::<ExitCap>(), Err(refused), "{value}");
+        }
+    }
+
     async fn co_signer(url: &str) -> Arc<LimitedCoSigner<FixedLimits>> {
         let store = Store::open(url, ring_service_core::database::STORE_CONNECTIONS)
             .await
@@ -1583,11 +1689,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn two_co_signers_over_one_sqlite_file_grant_the_allowance_once() {
-        let path = std::env::temp_dir().join(format!("cosign-{}.sqlite", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        assert_two_co_signers_share_one_allowance(&format!("sqlite://{}?mode=rwc", path.display()))
-            .await;
-        let _ = std::fs::remove_file(&path);
+        let directory =
+            ring_service_core::database::fixture::StoreDirectory::new("shared-allowance");
+        assert_two_co_signers_share_one_allowance(&directory.url()).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

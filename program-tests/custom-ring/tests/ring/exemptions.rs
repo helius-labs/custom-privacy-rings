@@ -1,7 +1,7 @@
 //! A SOL withdrawal within the asset record's threshold needs no co-signer.
 
 use super::*;
-use custom_ring_interface::{cosign::ApprovalMask, storage::Revision, RootRead};
+use custom_ring_interface::{cosign::ApprovalMask, storage::Revision, NamedRoots, RootRead};
 use spr_program::instruction::TransactSolTransferAccounts;
 use spr_test_utils::test_validator_asserts::assert_optional_account_unchanged;
 use zolana_ring_client::{live_registry, FrameEncode, SetCoSigner};
@@ -148,9 +148,10 @@ impl<'a> ExemptRing<'a> {
             transaction,
         })
         .with_interface_transfer_accounts(settlements);
-        let transfer = match withdrawal.cosigner {
-            true => transfer.with_co_signer(self.cosigner.pubkey()),
-            false => transfer,
+        let transfer = if withdrawal.cosigner {
+            transfer.with_co_signer(self.cosigner.pubkey())
+        } else {
+            transfer
         };
         Ok(env.run(transfer.prove(env.client.ring_client())))
     }
@@ -304,9 +305,13 @@ impl<'a> ExemptRing<'a> {
         let data = frame(&instruction, RingRail::Confidential)?;
         assert!(data.approval.is_empty());
         let revision = data
-            .own_revision
+            .named_roots
+            .own()
             .context("a frame under a threshold names the own revision")?;
-        assert_eq!(data.policy.is_some(), self.policy);
+        assert_eq!(
+            matches!(data.named_roots, NamedRoots::Policy { .. }),
+            self.policy
+        );
         let nullifier = data.nullifiers[0];
         let altered_leg = self.altered(&proven, |data| {
             data.interface_transfers[0] = InterfaceTransfer::SolWithdrawal {
@@ -329,7 +334,12 @@ impl<'a> ExemptRing<'a> {
         let next = self.set_threshold(THRESHOLD - 1)?;
         assert_ne!(next, revision, "a record write moves the revision");
         self.refused(
-            self.altered(&proven, |data| data.own_revision = Some(next))?,
+            self.altered(&proven, |data| {
+                data.named_roots = match data.named_roots {
+                    NamedRoots::Policy { curator, .. } => NamedRoots::Policy { own: next, curator },
+                    _ => NamedRoots::Own(next),
+                }
+            })?,
             &[],
             CustomRingError::ProofVerificationFailed,
             &nullifier,
@@ -343,7 +353,9 @@ impl<'a> ExemptRing<'a> {
         let proven = self.prove_exempt(&note, THRESHOLD - 1)?;
         let instruction = proven.instruction()?;
         assert_eq!(
-            frame(&instruction, RingRail::Confidential)?.own_revision,
+            frame(&instruction, RingRail::Confidential)?
+                .named_roots
+                .own(),
             Some(next),
             "a new proof opens the newest root"
         );
