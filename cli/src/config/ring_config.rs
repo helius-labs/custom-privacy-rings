@@ -1,6 +1,7 @@
 //! `ring.toml`, the answers `new` recorded.
 
 use std::{
+    collections::HashMap,
     fmt,
     path::{Path, PathBuf},
     str::FromStr,
@@ -343,7 +344,7 @@ impl RingConfig {
     /// `.env` next to ring.toml fills `${NAME}` placeholders, the environment wins.
     pub fn load(path: &Path) -> Result<Self> {
         let mut config: Self = parse_ring_toml(path)?;
-        load_dotenv(&path.with_file_name(".env"))?;
+        let dotenv = load_dotenv(&path.with_file_name(".env"))?;
         for urls in [&mut config.localnet, &mut config.devnet] {
             for url in [
                 &mut urls.rpc,
@@ -351,7 +352,7 @@ impl RingConfig {
                 &mut urls.prover,
                 &mut urls.ring_rpc,
             ] {
-                *url = expand_env(url)?;
+                *url = expand_env(url, &dotenv)?;
             }
         }
         Ok(config)
@@ -446,10 +447,11 @@ pub(crate) fn parse_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_str(&text).with_context(|| format!("cannot parse {}", path.display()))
 }
 
-/// Never overrides a variable already set.
-fn load_dotenv(path: &Path) -> Result<()> {
+/// The values stay out of the process environment every spawned child inherits.
+fn load_dotenv(path: &Path) -> Result<HashMap<String, String>> {
+    let mut values = HashMap::new();
     if !path.exists() {
-        return Ok(());
+        return Ok(values);
     }
     for line in file::read(path)?.lines().map(str::trim) {
         if line.is_empty() || line.starts_with('#') {
@@ -459,15 +461,15 @@ fn load_dotenv(path: &Path) -> Result<()> {
             .split_once('=')
             .with_context(|| format!("{} line is not KEY=VALUE, {line}", path.display()))?;
         let key = key.trim().strip_prefix("export ").unwrap_or(key.trim());
-        if std::env::var_os(key).is_none() {
-            std::env::set_var(key, value.trim().trim_matches('"'));
-        }
+        values
+            .entry(key.to_owned())
+            .or_insert_with(|| value.trim().trim_matches('"').to_owned());
     }
-    Ok(())
+    Ok(values)
 }
 
 /// An unset name is an error, a URL never goes out with a placeholder.
-fn expand_env(text: &str) -> Result<String> {
+fn expand_env(text: &str, dotenv: &HashMap<String, String>) -> Result<String> {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find("${") {
@@ -478,7 +480,9 @@ fn expand_env(text: &str) -> Result<String> {
             .ok_or_else(|| anyhow!("unclosed placeholder in {text}"))?;
         let name = &after[..end];
         let value = std::env::var(name)
-            .map_err(|_| anyhow!("{name} is not set, put it in .env next to ring.toml"))?;
+            .ok()
+            .or_else(|| dotenv.get(name).cloned())
+            .ok_or_else(|| anyhow!("{name} is not set, put it in .env next to ring.toml"))?;
         out.push_str(&value);
         rest = &after[end + 1..];
     }
@@ -773,21 +777,44 @@ ring_rpc = "http://127.0.0.1:8785"
     }
 
     #[test]
+    fn a_dotenv_key_fills_its_placeholder_and_stays_out_of_the_environment() {
+        let dir = std::env::temp_dir().join(format!("ring-dotenv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("ring.toml");
+        let keyed = EXAMPLE.replacen(
+            "https://api.devnet.solana.com",
+            "https://rpc.example/?api-key=${RING_TEST_DOTENV_KEY}",
+            1,
+        );
+        std::fs::write(&path, keyed).expect("ring.toml");
+        std::fs::write(
+            dir.join(".env"),
+            "export RING_TEST_DOTENV_KEY=\"k2\"\nRING_TEST_DOTENV_KEY=k3\n",
+        )
+        .expect(".env");
+        let config = RingConfig::load(&path).expect("load");
+        assert_eq!(config.devnet.rpc, "https://rpc.example/?api-key=k2");
+        assert_eq!(std::env::var_os("RING_TEST_DOTENV_KEY"), None);
+        std::fs::remove_dir_all(dir).expect("cleanup");
+    }
+
+    #[test]
     fn urls_expand_env_placeholders_and_refuse_unset_ones() {
         std::env::set_var("RING_TEST_KEY", "k1");
+        let dotenv = HashMap::from([("RING_TEST_KEY".to_owned(), "k2".to_owned())]);
         assert_eq!(
-            expand_env("https://x/?api-key=${RING_TEST_KEY}").expect("expand"),
+            expand_env("https://x/?api-key=${RING_TEST_KEY}", &dotenv).expect("expand"),
             "https://x/?api-key=k1"
         );
         assert_eq!(
-            expand_env("http://127.0.0.1:8899").expect("plain"),
+            expand_env("http://127.0.0.1:8899", &dotenv).expect("plain"),
             "http://127.0.0.1:8899"
         );
-        assert!(expand_env("${RING_TEST_UNSET_KEY}")
+        assert!(expand_env("${RING_TEST_UNSET_KEY}", &dotenv)
             .expect_err("unset")
             .to_string()
             .starts_with("RING_TEST_UNSET_KEY is not set"));
-        assert!(expand_env("${RING_TEST_KEY")
+        assert!(expand_env("${RING_TEST_KEY", &dotenv)
             .expect_err("unclosed")
             .to_string()
             .starts_with("unclosed placeholder"));
