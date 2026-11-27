@@ -70,13 +70,15 @@ pub mod method {
 /// Leaves from `start_index` under one root the registry history holds, leaf 0 the sentinel.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetStorageMemberRecordsRequest {
+pub struct RegistryRecordsRequest {
     pub registry: SerializablePubkey,
     pub expected_root: Hash,
     pub start_index: u64,
     /// Between 1 and [`MAX_RING_MEMBER_PAGE_LIMIT`].
     pub limit: u64,
 }
+
+pub type GetStorageMemberRecordsRequest = RegistryRecordsRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -108,20 +110,25 @@ pub struct RingRecordPathView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct RingMemberOpening {
+pub struct RingRecordOpening<R> {
+    /// False proves the member holds no row under `root`.
     pub present: bool,
     /// Absent members open the low record, `record.member < member < record.next`.
-    pub record: RingMemberRecordView,
+    pub record: R,
     pub path: RingRecordPathView,
 }
 
-/// One contiguous member leaf and its authentication path at `root`.
+pub type RingMemberOpening = RingRecordOpening<RingMemberRecordView>;
+
+/// One contiguous leaf and its authentication path at `root`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct RingIndexedMemberRecordView {
-    pub record: RingMemberRecordView,
+pub struct RingIndexedRecordView<R> {
+    pub record: R,
     pub path: RingRecordPathView,
 }
+
+pub type RingIndexedMemberRecordView = RingIndexedRecordView<RingMemberRecordView>;
 
 /// Paths are under the root the preceding writes reached.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,23 +152,27 @@ pub struct RingRecordWriteView {
 /// Up to [`MAX_RING_MEMBER_PAGE_LIMIT`] members under one root the registry history holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetStorageMemberOpeningsRequest {
-    /// A `StorageRegistry` account.
+pub struct RegistryOpeningsRequest {
+    /// A `StorageRegistry` or `TrackingRegistry` account.
     pub registry: SerializablePubkey,
     pub members: Vec<Hash>,
     pub expected_root: Hash,
 }
 
+pub type GetStorageMemberOpeningsRequest = RegistryOpeningsRequest;
+
 /// Each member's record or low record under one root, a shared record opened once.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetStorageRecordPoolRequest {
+pub struct RegistryRecordPoolRequest {
     pub registry: SerializablePubkey,
     pub members: Vec<Hash>,
     pub expected_root: Hash,
     /// At least `members.len()` and at most the widest pool a catalog transfer key reads.
     pub openings: u64,
 }
+
+pub type GetStorageRecordPoolRequest = RegistryRecordPoolRequest;
 
 /// The writes one `Update` carries, applied in order from the current root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,41 +213,47 @@ pub struct StorageRootView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetStorageMemberOpeningsResponse {
+pub struct RegistryOpeningsResponse<R> {
     pub context: Context,
     pub root: StorageRootView,
     /// In request order.
-    pub openings: Vec<RingMemberOpening>,
+    pub openings: Vec<RingRecordOpening<R>>,
 }
+
+pub type GetStorageMemberOpeningsResponse = RegistryOpeningsResponse<RingMemberRecordView>;
 
 /// A complete leaf range, an indexer gap fails the call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetStorageMemberRecordsResponse {
+pub struct RegistryRecordsResponse<R> {
     pub context: Context,
     pub root: StorageRootView,
-    pub records: Vec<RingIndexedMemberRecordView>,
+    pub records: Vec<RingIndexedRecordView<R>>,
     pub next_leaf_index: Option<u64>,
 }
+
+pub type GetStorageMemberRecordsResponse = RegistryRecordsResponse<RingMemberRecordView>;
 
 /// Each path stops below the canopy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetStorageRecordPoolResponse {
+pub struct RegistryRecordPoolResponse<R> {
     pub context: Context,
     pub root: StorageRootView,
     /// Distinct leaves in first use order.
-    pub records: Vec<RingIndexedMemberRecordView>,
+    pub records: Vec<RingIndexedRecordView<R>>,
     /// The narrowest tree level at least `openings` nodes wide.
     pub canopy: Vec<Hash>,
     /// The `records` index opening each requested member, in request order.
     pub subjects: Vec<u32>,
 }
 
-/// `chain_start` binds the registry and `revision`, the revision `Update` names.
+pub type GetStorageRecordPoolResponse = RegistryRecordPoolResponse<RingMemberRecordView>;
+
+/// `chain_start` binds the registry and `revision`, the revision `Update` or `ApplyEnrollments` names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GetStorageApplyProofInputsResponse {
+pub struct RegistryApplyProofInputsResponse<W> {
     pub context: Context,
     pub revision: u64,
     pub old_root: Hash,
@@ -246,8 +263,10 @@ pub struct GetStorageApplyProofInputsResponse {
     pub chain_start: Hash,
     pub chain_end: Hash,
     /// In request order.
-    pub writes: Vec<RingRecordWriteView>,
+    pub writes: Vec<W>,
 }
+
+pub type GetStorageApplyProofInputsResponse = RegistryApplyProofInputsResponse<RingRecordWriteView>;
 
 #[cfg(test)]
 mod tests {

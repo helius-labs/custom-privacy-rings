@@ -10822,6 +10822,7 @@ version = "0.1.0"
 dependencies = [
  "custom-ring-interface",
  "serde",
+ "serde_json",
  "spr-indexer-api",
  "thiserror 2.0.20",
  "zolana-ring-member-registry",
