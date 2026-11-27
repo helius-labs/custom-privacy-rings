@@ -1,7 +1,7 @@
 use std::{borrow::Cow, fmt::Display};
 
 pub const API_KEY_PARAMETER: &str = "api-key=";
-const SECRET_PARAMETERS: [&str; 4] = [API_KEY_PARAMETER, "token=", "key=", "password="];
+const SECRET_PARAMETERS: [&str; 5] = [API_KEY_PARAMETER, "apikey=", "token=", "key=", "password="];
 
 /// Upstream errors quote request URLs, a log never carries their API key.
 pub fn redacted(error: &impl Display) -> String {
@@ -104,9 +104,9 @@ fn next_secret_parameter(lowercase: &str, start: usize) -> Option<SecretParamete
         {
             let offset = cursor + found;
             let boundary = offset == 0
-                || bytes.get(offset - 1).is_some_and(|byte| {
-                    !(byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
-                });
+                || bytes
+                    .get(offset - 1)
+                    .is_some_and(|byte| !byte.is_ascii_alphanumeric());
             if boundary {
                 if best.is_none_or(|current| {
                     offset < current.offset
@@ -151,6 +151,24 @@ mod tests {
             api_key.contains("api-key=redacted&pubkey=KeepMe"),
             "{api_key}"
         );
+
+        for name in [
+            "api_key",
+            "access_token",
+            "auth_token",
+            "secret_key",
+            "x-api-key",
+            "apikey",
+        ] {
+            let logged = redacted(&format!(
+                "GET https://rpc.internal/?{name}=f00d&pubkey=KeepMe"
+            ));
+            assert!(!logged.contains("f00d"), "{logged}");
+            assert!(
+                logged.contains(&format!("?{name}=redacted&pubkey=KeepMe")),
+                "{logged}"
+            );
+        }
 
         let dsn = "host=db user=app password=dbsecret dbname=ring";
         let logged_dsn = redacted(&dsn);
