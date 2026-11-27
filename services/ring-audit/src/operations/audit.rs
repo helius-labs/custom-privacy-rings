@@ -461,8 +461,11 @@ impl<S: TransactionSource> AuditService<S> {
         &self,
         request: &GetSpendCoverageRequest,
     ) -> Result<GetSpendCoverageResponse, RingAuditError> {
+        let cursor = request.cursor.as_ref().map_or_else(
+            || Ok(crate::spend_coverage::CoverageCursor::new(self.ring)),
+            |cursor| crate::spend_coverage::CoverageCursor::decode(&cursor.0, self.ring),
+        )?;
         let authority = request.authority.0;
-        let now = self.shared.clock.now()?;
         let nonce = WalletCheck {
             wallet: authority,
             timestamp: request.timestamp,
@@ -473,24 +476,18 @@ impl<S: TransactionSource> AuditService<S> {
                 authority,
                 cursor: request.cursor.clone(),
             },
-            now,
+            now: self.shared.clock.now()?,
         }
         .decide()?;
-        let authorized = PendingNonce {
+        let pending = PendingNonce {
             ring: self.ring,
             nonce,
             timestamp: request.timestamp,
-        }
-        .authorize(self.require_served_policy_authority(authority))
-        .await?;
+        };
         self.shared
             .replay
-            .accept(authorized.nonce, self.shared.clock.now()?)
+            .authorize_once(pending, self.require_served_policy_authority(authority))
             .await?;
-        let cursor = request.cursor.as_ref().map_or_else(
-            || Ok(crate::spend_coverage::CoverageCursor::new(self.ring)),
-            |cursor| crate::spend_coverage::CoverageCursor::decode(&cursor.0, self.ring),
-        )?;
         self.shared.store(self.ring).spend_coverage(cursor).await
     }
 
@@ -519,16 +516,17 @@ impl<S: TransactionSource> AuditService<S> {
             now,
         }
         .decide()?;
-        let authorized = PendingNonce {
+        let pending = PendingNonce {
             ring: self.ring,
             nonce,
             timestamp: auth.timestamp,
-        }
-        .authorize(self.shared.require_ring_authority(self.ring, authority))
-        .await?;
+        };
         self.shared
             .replay
-            .accept(authorized.nonce, self.shared.clock.now()?)
+            .authorize_once(
+                pending,
+                self.shared.require_ring_authority(self.ring, authority),
+            )
             .await?;
         Ok(AuditorKeyStatement {
             cluster: &self.shared.genesis_hash,
@@ -548,10 +546,19 @@ impl<S: TransactionSource> AuditService<S> {
         }
     }
 
+    /// Refuses a cursor of another stream or ring before the signature is checked.
     pub async fn authorize<'a>(
         &'a self,
         request: AuditRead<'a>,
     ) -> Result<AuthorizedRead<'a, S>, RingAuditError> {
+        let stream = match request.read {
+            PagedRead::DecryptedTransactions | PagedRead::WalletActivity => HistoryStream::Tags,
+            PagedRead::AuditedMerges => HistoryStream::Ring,
+        };
+        request.page.position(HistoryQuery {
+            ring: self.ring,
+            stream,
+        })?;
         let attestation = ReadAttestation {
             read: request.read,
             target: self.read_target(),
@@ -654,48 +661,36 @@ impl<S: TransactionSource> AuditService<S> {
             reader,
             action: request.action,
         };
-        let authorized = match wallet {
-            Some(wallet) => {
-                let nonce = WalletCheck {
-                    wallet,
-                    timestamp: request.timestamp,
-                    nonce: &request.nonce,
-                    signature: &request.signature,
-                    attestation: &attestation,
-                    now: self.shared.clock.now()?,
-                }
-                .decide()?;
-                PendingNonce {
-                    ring: self.ring,
-                    nonce,
-                    timestamp: request.timestamp,
-                }
-                .authorize(self.require_served_config())
-                .await?
-            }
+        // A ring-wide grant names no signer, the config names the policy authority that signs it.
+        let (signer, ring_wide) = match wallet {
+            Some(wallet) => (wallet, None),
             None => {
                 let config = self.require_served_config().await?;
-                let nonce = WalletCheck {
-                    wallet: config.roles().policy,
-                    timestamp: request.timestamp,
-                    nonce: &request.nonce,
-                    signature: &request.signature,
-                    attestation: &attestation,
-                    now: self.shared.clock.now()?,
-                }
-                .decide()?;
-                PendingNonce {
-                    ring: self.ring,
-                    nonce,
-                    timestamp: request.timestamp,
-                }
-                .authorize(async { Ok::<_, RingAuditError>(config) })
-                .await?
+                (config.roles().policy, Some(config))
             }
+        };
+        let nonce = WalletCheck {
+            wallet: signer,
+            timestamp: request.timestamp,
+            nonce: &request.nonce,
+            signature: &request.signature,
+            attestation: &attestation,
+            now: self.shared.clock.now()?,
+        }
+        .decide()?;
+        let pending = PendingNonce {
+            ring: self.ring,
+            nonce,
+            timestamp: request.timestamp,
         };
         self.shared
             .replay
-            .accept(authorized.nonce, self.shared.clock.now()?)
+            .authorize_once(pending, async {
+                match ring_wide {
+                    Some(config) => Ok(config),
+                    None => self.require_served_config().await,
+                }
+            })
             .await?;
         rows.write(GrantRow {
             pair: GrantPair {
@@ -1303,14 +1298,8 @@ impl<S: TransactionSource> AuditService<S> {
 }
 
 impl<'a, S> Grant<'a, S> {
-    /// The clock is read again, a nonce evicted while the read awaited stays spent.
     async fn spend(self) -> Result<SpentGrant<'a, S>, RingAuditError> {
-        let now = self.service.shared.clock.now()?;
-        self.service
-            .shared
-            .replay
-            .accept(self.authorized, now)
-            .await?;
+        self.service.shared.replay.accept(self.authorized).await?;
         Ok(SpentGrant {
             service: self.service,
             mode: self.mode,

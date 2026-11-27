@@ -137,6 +137,10 @@ impl ChainSubmit for StubChain {
 
 #[async_trait::async_trait]
 impl StorageChain for StubChain {
+    fn submit(&self) -> &dyn ChainSubmit {
+        self
+    }
+
     async fn account(&self, address: Address) -> Result<Option<Account>, WriterError> {
         Ok(self.accounts.lock().unwrap().get(&address).cloned())
     }
@@ -1626,7 +1630,7 @@ async fn create_records_registry_signs_only_the_creation_it_builds_and_sends_not
     );
     assert!(matches!(
         records.hub.create_records_registry(&foreign_local).await,
-        Err(RingRpcError::Audit(RingAuditError::RingNotServed))
+        Err(RingRelayError::Audit(RingAuditError::RingNotServed))
     ));
 
     let fixture = Fixture::new();
@@ -1678,7 +1682,7 @@ async fn create_records_registry_signs_only_the_creation_it_builds_and_sends_not
     let foreign_auditor = request(target(RING), &authority(), &honest);
     assert!(matches!(
         hub.create_records_registry(&foreign_auditor).await,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
+        Err(RingRelayError::Service(ServiceError::Unauthorized(
             Unauthorized::AuditorKeyMismatch
         )))
     ));
@@ -1707,7 +1711,7 @@ async fn create_records_registry_signs_only_the_creation_it_builds_and_sends_not
         assert!(matches!(
             hub.create_records_registry(&request(target(ring_one), &deployer(), &hostile))
                 .await,
-            Err(RingRpcError::Writer(WriterError::RecordUpdate(
+            Err(RingRelayError::Writer(WriterError::RecordUpdate(
                 RecordUpdateRefusal::RecordsMessageMismatch
             )))
         ));

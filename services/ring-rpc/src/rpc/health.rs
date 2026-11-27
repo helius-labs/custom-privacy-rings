@@ -119,7 +119,7 @@ mod tests {
             .with_co_signer(Arc::new(key(3)))
             .with_reader_grants(ReaderGrantStore::Database)
             .with_grant_rows_key(GrantRowsSecret::from_bytes([6; 32]))
-            .with_relay_services(relay)
+            .with_relay(relay)
             .with_enrollment_applier(enrollment_writer(1).await);
         assert_eq!(
             body(full).await,

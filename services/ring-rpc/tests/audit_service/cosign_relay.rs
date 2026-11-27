@@ -1508,6 +1508,13 @@ async fn the_lists_decide_before_the_service_ingests_the_spent_note() {
     assert_eq!(refusal(relay.pays(2).await), CoSignError::Blocked.code());
 }
 
+async fn edit(
+    module: &jsonrpsee::RpcModule<Arc<Hub<StaticSource>>>,
+    request: &EditCoSignListRequest,
+) -> Result<CoSignListEntry, jsonrpsee::MethodsError> {
+    module.call(EDIT_CO_SIGN_LIST, as_object(request)).await
+}
+
 #[tokio::test]
 async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() {
     let relay = CappedRelay::new(|| RelayRail::Confidential).await;
@@ -1520,9 +1527,13 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
     let foreign_edit = EditCoSignListRequest::edit(foreign_target, deployer().pubkey(), action)
         .sign(&deployer())
         .expect("signed edit");
-    assert!(matches!(
-        relay.hub.edit_co_sign_list(&foreign_edit).await,
-        Err(RingRpcError::Audit(RingAuditError::RingNotServed))
+    let refused = |answer: Result<CoSignListEntry, jsonrpsee::MethodsError>, error| {
+        matches!(answer, Err(jsonrpsee::MethodsError::JsonRpc(object))
+            if object == jsonrpsee::types::ErrorObjectOwned::from(RingRelayError::from(error)))
+    };
+    assert!(refused(
+        edit(&relay.module, &foreign_edit).await,
+        RingAuditError::RingNotServed
     ));
 
     let fixture = Fixture::new();
@@ -1542,11 +1553,13 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
         .await
         .expect("hub");
+    let service = hub.service_pubkey();
+    let module = rpc_module(Arc::new(hub)).expect("module");
 
     let uninitialized_edit = EditCoSignListRequest::edit(
         ReadTarget {
             cluster: GENESIS,
-            service: hub.service_pubkey(),
+            service,
             ring: OTHER_RING,
         },
         deployer().pubkey(),
@@ -1554,17 +1567,15 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
     )
     .sign(&deployer())
     .expect("signed edit");
-    assert!(matches!(
-        hub.edit_co_sign_list(&uninitialized_edit).await,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
-            Unauthorized::NoConfig
-        )))
+    assert!(refused(
+        edit(&module, &uninitialized_edit).await,
+        RingAuditError::Service(Unauthorized::NoConfig.into())
     ));
 
     let foreign_auditor_edit = EditCoSignListRequest::edit(
         ReadTarget {
             cluster: GENESIS,
-            service: hub.service_pubkey(),
+            service,
             ring: RING,
         },
         authority().pubkey(),
@@ -1572,10 +1583,8 @@ async fn co_sign_lists_refuse_foreign_uninitialized_and_foreign_auditor_rings() 
     )
     .sign(&authority())
     .expect("signed edit");
-    assert!(matches!(
-        hub.edit_co_sign_list(&foreign_auditor_edit).await,
-        Err(RingRpcError::Service(ServiceError::Unauthorized(
-            Unauthorized::AuditorKeyMismatch
-        )))
+    assert!(refused(
+        edit(&module, &foreign_auditor_edit).await,
+        RingAuditError::Service(Unauthorized::AuditorKeyMismatch.into())
     ));
 }

@@ -96,7 +96,7 @@ pub struct TransferRead {
 /// Reads each asset record under the newest root of the ring's records registry.
 pub(crate) struct RecordLimits<S>(pub(crate) Arc<Shared<S>>);
 
-pub struct LimitedCoSignerInit<L> {
+pub(crate) struct LimitedCoSignerInit<L> {
     pub(crate) signer: SigningIdentity,
     pub(crate) limits: L,
     pub(crate) store: Arc<Store>,
@@ -114,13 +114,13 @@ pub struct CoSignPolicyInit<S> {
 }
 
 /// Window limits bind only the transactions that need its signature.
-pub type LimitedCoSigner<L> = CoSigner<WindowRule<L>>;
+pub(crate) type LimitedCoSigner<L> = CoSigner<WindowRule<L>>;
 
 /// One tick settles at most a page, the next tick resumes past it.
 const WALLET_SWEEP_PAGE: u64 = 64;
 
 /// The approval classes and the window caps of the ring's asset records.
-pub struct WindowRule<L> {
+pub(crate) struct WindowRule<L> {
     signer: Address,
     limits: L,
     store: Arc<Store>,
@@ -681,9 +681,10 @@ impl LimitDecision<'_> {
                 .iter()
                 .all(|cap| self.within(check.asset, cap))
         });
-        match within {
-            true => Verdict::Admitted,
-            false => Verdict::Refused(CoSignRefusal::OverLimit),
+        if within {
+            Verdict::Admitted
+        } else {
+            Verdict::Refused(CoSignRefusal::OverLimit)
         }
     }
 
@@ -976,9 +977,10 @@ mod tests {
 
     impl AssetLimitSource for TimedLimits {
         async fn current_slot(&self) -> Result<u64, RingCosignerError> {
-            Ok(match self.policies_ready.load(Ordering::SeqCst) {
-                true => self.admission_slot,
-                false => 1_000,
+            Ok(if self.policies_ready.load(Ordering::SeqCst) {
+                self.admission_slot
+            } else {
+                1_000
             })
         }
 

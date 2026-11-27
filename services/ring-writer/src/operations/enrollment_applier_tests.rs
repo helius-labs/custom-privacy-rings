@@ -175,6 +175,10 @@ impl ChainSubmit for StubChain {
 
 #[async_trait]
 impl StorageChain for StubChain {
+    fn submit(&self) -> &dyn ChainSubmit {
+        self
+    }
+
     async fn account(&self, address: Address) -> Result<Option<Account>, WriterError> {
         Ok(self.accounts.lock().unwrap().get(&address).cloned())
     }

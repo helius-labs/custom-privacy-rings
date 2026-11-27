@@ -530,52 +530,66 @@ async fn an_outsider_row_never_reaches_the_origin_read() {
 }
 
 #[tokio::test]
-async fn a_cursor_outside_its_query_is_refused() {
+async fn a_cursor_outside_its_query_is_refused_and_spends_no_nonce() {
     assert!(matches!(
         Page::new(Some(vec![2; 75].into()), None),
         Err(RingAuditError::InvalidPage)
     ));
     let fixture = Fixture::new();
-    let service = fixture
-        .hub(fixture.source())
+    let store = Store::in_memory().await.expect("store");
+    let service = stored_hub(&fixture, fixture.source(), store.clone())
         .await
         .service(None)
         .expect("service");
-    let queries = [
-        HistoryQuery {
-            ring: RING,
-            stream: HistoryStream::Ring,
-        },
-        HistoryQuery {
-            ring: Address::new_from_array([0xdd; 32]),
-            stream: HistoryStream::Tags,
-        },
-    ];
-    for query in queries {
-        let cursor: Base64String = HistoryCursor {
-            query,
+    let cursor = |ring, stream| -> Base64String {
+        HistoryCursor {
+            query: HistoryQuery { ring, stream },
             token: PaginationToken::new(0, Signature::from([8; 64])),
         }
-        .into();
+        .into()
+    };
+    // Transactions page the tags stream of the ring, merges its ring stream.
+    let reads = [
+        (
+            PagedRead::DecryptedTransactions,
+            cursor(RING, HistoryStream::Ring),
+        ),
+        (
+            PagedRead::DecryptedTransactions,
+            cursor(Address::new_from_array([0xdd; 32]), HistoryStream::Tags),
+        ),
+        (PagedRead::AuditedMerges, cursor(RING, HistoryStream::Tags)),
+    ];
+    for (read, cursor) in reads {
         let page = Page::new(Some(cursor.clone()), None).expect("page");
-        let request = GetDecryptedTransactionsRequest::read(target(RING))
+        let request = read
+            .request(target(RING))
             .with_cursor(cursor)
             .expect("cursor")
             .sign(&delegate())
             .expect("request")
             .auth;
-        assert!(matches!(
-            service
-                .read(AuditRead {
-                    read: PagedRead::DecryptedTransactions,
-                    auth: &request,
-                    page: &page,
-                    wallet: None,
-                })
-                .await,
-            Err(RingAuditError::InvalidPage)
-        ));
+        let answer = match service
+            .authorize(AuditRead {
+                read,
+                auth: &request,
+                page: &page,
+                wallet: None,
+            })
+            .await
+        {
+            Err(refused) => Err(refused),
+            Ok(authorized) if read == PagedRead::AuditedMerges => {
+                authorized.execute_merges().await.map(drop)
+            }
+            Ok(authorized) => authorized.execute().await.map(drop),
+        };
+        assert!(
+            matches!(answer, Err(RingAuditError::InvalidPage)),
+            "{read:?} {answer:?}"
+        );
     }
+    assert_eq!(spent_nonces(&store).await.expect("rows"), 0);
 }
 
 #[tokio::test]

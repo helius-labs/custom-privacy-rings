@@ -15,7 +15,7 @@ use ring_service_core::origins::OriginPolicy;
 use ring_service_core::upstream::{ChainSource, TransactionSource, Upstreams};
 use ring_writer::enrollment_applier::EnrollmentApplierParts;
 use ring_writer::record_writer::RECORD_FLUSH_INTERVAL;
-use ring_writer::storage_chain::{live_ring_client, LiveStorageChain};
+use ring_writer::storage_chain::LiveStorageChain;
 use zolana_ring_client::rpc::KeyMode;
 use zolana_ring_rpc::{
     run_server, Announce, Cli, Command, Hub, ServeArgs, ServeKeys, ServerOptions, ServiceIdentity,
@@ -64,13 +64,19 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         fee_payer,
         enrollment_applier,
     } = args.read_keys(&genesis_hash).await?;
-    if let (KeySource::Local { ring, .. }, Some(prover_url)) = (&auditor, &args.prover_url) {
+    // The role check, the enrollment writer, the record writer and its private writes share it.
+    let chain = args
+        .prover_url
+        .as_deref()
+        .map(|prover_url| LiveStorageChain::connect(upstreams, prover_url).map(Arc::new))
+        .transpose()?;
+    if let (KeySource::Local { ring, .. }, Some(chain)) = (&auditor, &chain) {
         RolePins {
             ring: *ring,
             storage_authority: storage_authority.as_ref().map(|signer| signer.address()),
             enrollment_writer: enrollment_applier.as_ref().map(|signer| signer.address()),
         }
-        .check(&LiveStorageChain::connect(upstreams, prover_url)?)
+        .check(chain.as_ref())
         .await?;
     }
     let options = ServerOptions {
@@ -134,10 +140,10 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         })
         .with_relay_budget(relay_budget);
     builder = builder.with_store(store.clone());
-    if let (Some(prover_url), Some(payer)) = (&args.prover_url, enrollment_applier) {
+    if let (Some(chain), Some(payer)) = (&chain, enrollment_applier) {
         let applier = Arc::new(
             EnrollmentApplierParts {
-                chain: Arc::new(LiveStorageChain::connect(upstreams, prover_url)?),
+                chain: chain.clone(),
                 payer,
                 rings: args.enrollment_apply_rings.clone(),
                 budget_lamports: args.enrollment_budget_lamports,
@@ -157,9 +163,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tokio::spawn(applier.clone().run(RECORD_FLUSH_INTERVAL));
         builder = builder.with_enrollment_applier(applier);
     }
-    if let (Some(prover_url), Some(authority)) = (&args.prover_url, storage_authority) {
-        let chain = LiveStorageChain::connect(upstreams, prover_url)?;
-        builder = builder.with_storage_chain(Arc::new(chain), authority);
+    if let (Some(chain), Some(authority)) = (&chain, storage_authority) {
+        builder = builder.with_storage_chain(chain.clone(), authority);
     }
     if let Some(secret) = grant_rows {
         builder = builder.with_grant_rows_key(secret);
@@ -172,7 +177,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             ));
     }
     if let Some(services) = relay_services {
-        builder = builder.with_relay_services(services);
+        builder = builder.with_relay(services);
     }
     let hub = Arc::new(match auditor {
         KeySource::Local { ring, auditor } => builder.local(ring, auditor).await?,
@@ -215,9 +220,9 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             args.bind, args.port
         ),
     }
-    if let (Ok(writer), Some(prover_url)) = (hub.record_writer(), &args.prover_url) {
+    if let (Ok(writer), Some(chain)) = (hub.record_writer(), chain) {
         info!("storage authority {}", writer.authority());
-        hub.serve_private_writes(live_ring_client(upstreams, prover_url)?)?;
+        hub.serve_private_writes(chain)?;
     }
     hub.spawn_workers();
     let handle = run_server(hub, options).await?;

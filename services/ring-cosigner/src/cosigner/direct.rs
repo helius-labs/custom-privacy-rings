@@ -23,6 +23,16 @@ pub struct DirectCoSign<'a> {
 }
 
 impl DirectCoSign<'_> {
+    /// The first account key, a signature the request must carry before the co-signer signs.
+    pub fn fee_payer(request: &CoSignTransactionRequest) -> Option<Address> {
+        if request.transaction.0.len() > solana_message::v1::MAX_TRANSACTION_SIZE {
+            return None;
+        }
+        let transaction: VersionedTransaction =
+            wincode::deserialize(&request.transaction.0).ok()?;
+        transaction.message.static_account_keys().first().copied()
+    }
+
     pub async fn sign(
         self,
         request: &CoSignTransactionRequest,

@@ -1,4 +1,4 @@
-use sea_orm::{ConnectionTrait, DatabaseConnection};
+use sea_orm::DatabaseConnection;
 use solana_address::Address;
 
 use crate::error::WriterError;
@@ -19,28 +19,21 @@ impl<'a> EnrollmentRingBook<'a> {
         let insert = "INSERT INTO enrollment_rings (writer, ring) VALUES ($1, $2) \
                       ON CONFLICT(writer, ring) DO NOTHING";
         let values = vec![sql::bytes(self.writer.as_ref()), sql::bytes(ring.as_ref())];
-        self.db
-            .execute(sql::statement(self.db, insert, values))
-            .await?;
+        sql::Query::new(insert, values).execute(self.db).await?;
         Ok(())
     }
 
     pub async fn remove(&self, ring: Address) -> Result<(), WriterError> {
         let delete = "DELETE FROM enrollment_rings WHERE writer=$1 AND ring=$2";
         let values = vec![sql::bytes(self.writer.as_ref()), sql::bytes(ring.as_ref())];
-        self.db
-            .execute(sql::statement(self.db, delete, values))
-            .await?;
+        sql::Query::new(delete, values).execute(self.db).await?;
         Ok(())
     }
 
     pub async fn rings(&self) -> Result<Vec<Address>, WriterError> {
         let select = "SELECT ring FROM enrollment_rings WHERE writer=$1";
         let values = vec![sql::bytes(self.writer.as_ref())];
-        let rows = self
-            .db
-            .query_all(sql::statement(self.db, select, values))
-            .await?;
+        let rows = sql::Query::new(select, values).all(self.db).await?;
         Ok(rows
             .iter()
             .map(|row| sql::read_address(row, "ring"))

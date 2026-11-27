@@ -11,8 +11,8 @@ use super::{
     DelegateSnapshotReleaseRequest, GetDelegateNotesRequest, GetDelegateNotesResponse,
     GetWalletStatusRequest, GetWalletStatusResponse, ReadBuildError, ReadSigner, ReadTarget,
     RequestBuildError, WalletSnapshotReleaseAttestation, WalletSnapshotReleaseRequest,
-    WalletStatusRequest, GET_DELEGATE_NOTES, GET_WALLET_STATUS, RELEASE_DELEGATE_SNAPSHOT,
-    RELEASE_WALLET_SNAPSHOT, WALLET_SNAPSHOT_CURSOR_LEN,
+    WalletStatusAttestation, WalletStatusRequest, GET_DELEGATE_NOTES, GET_WALLET_STATUS,
+    RELEASE_DELEGATE_SNAPSHOT, RELEASE_WALLET_SNAPSHOT, WALLET_SNAPSHOT_CURSOR_LEN,
 };
 
 pub struct WalletSnapshotScope<'a> {
@@ -167,7 +167,11 @@ impl<'a> WalletSnapshot<'a> {
     async fn read_page(&self, api: &SprApi) -> Result<WalletSnapshotPage, WalletSnapshotError> {
         Ok(match &self.reader {
             SnapshotReader::Wallet(scope) => {
-                let mut request = WalletStatusRequest::new(scope.target, scope.wallet);
+                let mut request = WalletStatusRequest::new(WalletStatusAttestation {
+                    target: scope.target,
+                    wallet: scope.wallet,
+                    cursor: None,
+                });
                 if let Some(cursor) = &self.state.cursor {
                     request = request.with_cursor(cursor.clone())?;
                 }

@@ -356,6 +356,59 @@ fn finalized_outcome(status: TransactionStatus) -> Option<ChainOutcome> {
     })
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod fixture {
+    use async_trait::async_trait;
+    use solana_address::Address;
+    use solana_message::VersionedMessage;
+    use solana_signature::Signature;
+    use solana_transaction::versioned::VersionedTransaction;
+
+    use super::{ChainOutcome, ChainSubmit, LatestBlockhash, Simulation};
+    use crate::error::ServiceError;
+
+    /// A chain a test never reaches.
+    pub struct UnusedChain;
+
+    #[async_trait]
+    impl ChainSubmit for UnusedChain {
+        async fn slot(&self) -> Result<u64, ServiceError> {
+            unreachable!("unused chain")
+        }
+
+        async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
+            unreachable!("unused chain")
+        }
+
+        async fn block_height(&self) -> Result<u64, ServiceError> {
+            unreachable!("unused chain")
+        }
+
+        async fn account_data(&self, _address: Address) -> Result<Option<Vec<u8>>, ServiceError> {
+            unreachable!("unused chain")
+        }
+
+        async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
+            unreachable!("unused chain")
+        }
+
+        async fn send(&self, _transaction: &VersionedTransaction) -> Result<(), ServiceError> {
+            unreachable!("unused chain")
+        }
+
+        async fn outcome(
+            &self,
+            _signature: Signature,
+        ) -> Result<Option<ChainOutcome>, ServiceError> {
+            unreachable!("unused chain")
+        }
+
+        async fn simulate(&self, _message: &VersionedMessage) -> Result<Simulation, ServiceError> {
+            unreachable!("unused chain")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::VecDeque, sync::Mutex};

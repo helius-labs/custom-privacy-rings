@@ -6,8 +6,9 @@ use zolana_ring_client::rpc::{
 };
 
 use ring_service_core::{
-    authorize::{Authorized, AuthorizedNonce, PendingNonce, WalletCheck},
+    authorize::{PendingNonce, WalletCheck},
     upstream::TransactionSource,
+    ServiceError,
 };
 
 use crate::{error::RingAuditError, shared::Shared};
@@ -25,17 +26,14 @@ impl<S: TransactionSource, A: PolicyAuthorityAction> PolicyAction<'_, S, A> {
     where
         F: FnOnce(Address) -> Fut,
         Fut: Future<Output = Result<T, E>>,
-        Failure: From<E> + From<RingAuditError>,
+        Failure: From<E> + From<RingAuditError> + From<ServiceError>,
     {
-        let shared = self.shared;
+        let replay = &self.shared.replay;
         let authority = self.auth.authority.0;
         let pending = self.pending()?;
-        let Authorized {
-            value,
-            nonce: authorized,
-        } = pending.authorize(authorize(authority)).await?;
-        Self::accept(shared, authorized).await?;
-        Ok(value)
+        replay
+            .authorize_once(pending, async { Ok(authorize(authority).await?) })
+            .await
     }
 
     fn pending(self) -> Result<PendingNonce, RingAuditError> {
@@ -70,13 +68,5 @@ impl<S: TransactionSource, A: PolicyAuthorityAction> PolicyAction<'_, S, A> {
             nonce,
             timestamp: auth.timestamp,
         })
-    }
-
-    async fn accept(shared: &Shared<S>, authorized: AuthorizedNonce) -> Result<(), RingAuditError> {
-        shared
-            .replay
-            .accept(authorized, shared.clock.now()?)
-            .await?;
-        Ok(())
     }
 }

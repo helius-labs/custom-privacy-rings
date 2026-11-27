@@ -14,6 +14,7 @@ use zolana_ring_policy::Member;
 
 use super::*;
 use crate::cosign::{CoSignFlows, CoSignRefusal, FrameSource, Sender};
+use crate::cosigner::lists::{List, ListEntry, Subject};
 use ring_service_core::{database::Store, ServiceError};
 
 const RING: Address = Address::new_from_array([9; 32]);
@@ -88,10 +89,10 @@ impl OperatorSigner for Counting {
 
     async fn sign(&self, message: &[u8]) -> Result<Signature, CustodyError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        match self.fails {
-            true => Err(CustodyError::Signature),
-            false => Ok(self.signer.sign_message(message)),
+        if self.fails {
+            return Err(CustodyError::Signature);
         }
+        Ok(self.signer.sign_message(message))
     }
 }
 

@@ -65,12 +65,19 @@ use ring_service_core::{
 
 use crate::{
     client_rate::{ClientLayer, ClientLimits, ClientRate, ClientRateLimiter},
-    error::RingRpcError,
     health::health,
     hub::{Hub, ReadinessStatus},
 };
 use ring_audit::audit::{AuditRead, Page};
-use ring_relay::relay::Relay;
+use ring_cosigner::cosigner::{co_sign_lists, edit_co_sign_list};
+use ring_relay::{
+    authority_transfer::{
+        delegate_notes, list_salt, prepare_authority_transfer, release_delegate_snapshot,
+    },
+    managed_merge::set_merge_settings,
+    relay::Relay,
+    RingRelayError,
+};
 
 const MAX_REQUEST_BODY_SIZE: u32 = 64 * 1024;
 const MAX_RESPONSE_BODY_SIZE: u32 = 16 * 1024 * 1024;
@@ -279,16 +286,15 @@ fn cors(origins: &Origins) -> Result<CorsLayer, OriginError> {
 pub fn rpc_module<S: TransactionSource + 'static>(
     hub: Arc<Hub<S>>,
 ) -> Result<RpcModule<Arc<Hub<S>>>, RegisterMethodError> {
+    use Lane::{Authentication, Public};
     let relay = hub.relay().cloned();
     let mut module = RpcModule::new(hub);
     module.register_async_method(HEALTH, |_, hub, _| async move {
         Ok::<_, ErrorObjectOwned>(health(&hub))
     })?;
-    method(
+    Route::new(CREATE_AUDITOR_KEY, Authentication).register(
         &mut module,
-        CREATE_AUDITOR_KEY,
         |hub, request: CreateAuditorKeyRequest| async move {
-            let _slot = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring_program_id.0))?;
             let statement = service.auditor_key_statement(&request.auth).await?;
             let signature = hub.sign_attestation(&statement).await?;
@@ -302,11 +308,9 @@ pub fn rpc_module<S: TransactionSource + 'static>(
             })
         },
     )?;
-    method(
+    Route::new(RING_STATUS, Public).register(
         &mut module,
-        RING_STATUS,
         |hub, request: RingStatusRequest| async move {
-            let _slot = hub.admit(Lane::Public)?;
             let service = hub.service(Some(request.ring_program_id.0))?;
             let configured = service.configured_auditor().await?;
             let chain = service.chain_status().await?;
@@ -333,177 +337,133 @@ pub fn rpc_module<S: TransactionSource + 'static>(
             paged_read(hub, request, read)
         })?;
     }
-    method(
+    Route::new(GET_AUDITED_UTXOS, Authentication).register(
         &mut module,
-        GET_AUDITED_UTXOS,
         |hub, request: GetAuditedUtxosRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
             Ok(service.audited_utxos(&request).await?)
         },
     )?;
-    method(
+    Route::new(GET_WALLET_STATUS, Authentication).register(
         &mut module,
-        GET_WALLET_STATUS,
         |hub, request: GetWalletStatusRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
             Ok(service.wallet_status(&request).await?)
         },
     )?;
-    method(
+    Route::new(RELEASE_WALLET_SNAPSHOT, Authentication).register(
         &mut module,
-        RELEASE_WALLET_SNAPSHOT,
         |hub, request: GetWalletStatusRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
             Ok(service.release_wallet_snapshot(&request).await?)
         },
     )?;
-    method(
+    Route::new(RELEASE_DELEGATE_SNAPSHOT, Authentication).register(
         &mut module,
-        RELEASE_DELEGATE_SNAPSHOT,
         |hub, request: GetDelegateNotesRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.release_delegate_snapshot(&request).await
+            release_delegate_snapshot(hub.shared(), &request).await
         },
     )?;
-    method(
+    Route::new(GET_DELEGATE_NOTES, Authentication).register(
         &mut module,
-        GET_DELEGATE_NOTES,
         |hub, request: GetDelegateNotesRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.delegate_notes(&request).await
+            delegate_notes(hub.shared(), &request).await
         },
     )?;
-    method(
+    Route::new(GET_LIST_SALT, Authentication)
+        .register(&mut module, |hub, request: GetListSaltRequest| async move {
+            list_salt(hub.shared(), &request).await
+        })?;
+    Route::new(GET_SPEND_COVERAGE, Authentication).register(
         &mut module,
-        GET_LIST_SALT,
-        |hub, request: GetListSaltRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.list_salt(&request).await
-        },
-    )?;
-    method(
-        &mut module,
-        GET_SPEND_COVERAGE,
         |hub, request: GetSpendCoverageRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring.0))?;
             Ok(service.spend_coverage(&request).await?)
         },
     )?;
-    method(
+    Route::new(SUBMIT_RECORD_UPDATE, Authentication).register(
         &mut module,
-        SUBMIT_RECORD_UPDATE,
         |hub, request: SubmitRecordUpdateRequest| async move {
-            let _slot = hub.admit(Lane::Authentication)?;
             Ok(hub.record_writer()?.submit(request).await?)
         },
     )?;
-    method(
+    Route::new(PREPARE_VAULT_ENROLLMENT, Authentication).register(
         &mut module,
-        PREPARE_VAULT_ENROLLMENT,
         |hub, request: VaultEnrollmentRequest| async move {
-            let _slot = hub.admit(Lane::Authentication)?;
             Ok(hub.enrollment_applier()?.prepare_vault(request).await?)
         },
     )?;
-    method(
+    Route::new(SUBMIT_VAULT_ENROLLMENT, Authentication).register(
         &mut module,
-        SUBMIT_VAULT_ENROLLMENT,
         |hub, request: SignedVaultEnrollment| async move {
-            let _slot = hub.admit(Lane::Authentication)?;
             Ok(hub.enrollment_applier()?.submit_vault(request).await?)
         },
     )?;
-    method(
+    Route::new(SUBMIT_ENROLLMENT, Authentication).register(
         &mut module,
-        SUBMIT_ENROLLMENT,
         |hub, request: SubmitEnrollmentRequest| async move {
-            let _slot = hub.admit(Lane::Authentication)?;
             Ok(hub.enrollment_applier()?.submit(request).await?)
         },
     )?;
-    method(
+    Route::new(GET_RECORD_UPDATE_STATUS, Public).register(
         &mut module,
-        GET_RECORD_UPDATE_STATUS,
         |hub, request: GetRecordUpdateStatusRequest| async move {
-            let _slot = hub.admit(Lane::Public)?;
             Ok(hub.record_writer()?.status(request).await?)
         },
     )?;
-    method(
+    Route::new(GET_PENDING_LIST_APPROVALS, Authentication).register(
         &mut module,
-        GET_PENDING_LIST_APPROVALS,
         |hub, request: GetPendingListApprovalsRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             hub.pending_list_approvals(&request).await
         },
     )?;
-    method(
+    Route::new(REFUSE_LIST_APPROVAL, Authentication).register(
         &mut module,
-        REFUSE_LIST_APPROVAL,
         |hub, request: RefuseListApprovalRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             hub.refuse_list_approval(&request).await
         },
     )?;
-    method(
+    Route::new(EDIT_CO_SIGN_LIST, Authentication).register(
         &mut module,
-        EDIT_CO_SIGN_LIST,
         |hub, request: EditCoSignListRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.edit_co_sign_list(&request).await
+            Ok(edit_co_sign_list(hub.shared(), &request).await?)
         },
     )?;
-    method(
+    Route::new(GET_CO_SIGN_LISTS, Authentication).register(
         &mut module,
-        GET_CO_SIGN_LISTS,
         |hub, request: GetCoSignListsRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.co_sign_lists(&request).await
+            Ok(co_sign_lists(hub.shared(), &request).await?)
         },
     )?;
-    method(
+    Route::new(CREATE_RECORDS_REGISTRY, Authentication).register(
         &mut module,
-        CREATE_RECORDS_REGISTRY,
         |hub, request: CreateRecordsRegistryRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             hub.create_records_registry(&request).await
         },
     )?;
-    method(
+    Route::new(REGISTER_ENROLLMENT_RING, Authentication).register(
         &mut module,
-        REGISTER_ENROLLMENT_RING,
         |hub, request: RegisterEnrollmentRingRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             hub.register_enrollment_ring(&request).await
         },
     )?;
-    method(
+    Route::new(SET_READER_GRANT, Authentication).register(
         &mut module,
-        SET_READER_GRANT,
         |hub, request: SetReaderGrantRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring.0))?;
             Ok(service.set_reader_grant(&request).await?)
         },
     )?;
-    method(
+    Route::new(SET_MERGE_SETTINGS, Authentication).register(
         &mut module,
-        SET_MERGE_SETTINGS,
         |hub, request: SetMergeSettingsRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.set_merge_settings(&request).await
+            set_merge_settings(hub.shared(), &request).await
         },
     )?;
-    method(
+    Route::new(PREPARE_AUTHORITY_TRANSFER, Authentication).register(
         &mut module,
-        PREPARE_AUTHORITY_TRANSFER,
         |hub, request: PrepareAuthorityTransferRequest| async move {
-            let _authentication = hub.admit(Lane::Authentication)?;
-            hub.prepare_authority_transfer(&request).await
+            prepare_authority_transfer(hub.shared(), hub.relay(), &request).await
         },
     )?;
     if let Some(relay) = relay {
@@ -516,63 +476,44 @@ fn register_relay_methods<S: TransactionSource + 'static>(
     module: &mut RpcModule<Arc<Hub<S>>>,
     relay: Arc<Relay>,
 ) -> Result<(), RegisterMethodError> {
+    use Lane::{Authentication, Public};
     let quote_relay = relay.clone();
-    method(
+    Route::new(GET_RELAY_QUOTE, Public).register(
         module,
-        GET_RELAY_QUOTE,
-        move |hub, request: GetRelayQuoteRequest| {
+        move |_, request: GetRelayQuoteRequest| {
             let relay = quote_relay.clone();
-            async move {
-                let _slot = hub.admit(Lane::Public)?;
-                Ok(relay.quote(&request).await?)
-            }
+            async move { relay.quote(&request).await }
         },
     )?;
     let prepare_relay = relay.clone();
-    method(
+    Route::new(PREPARE_RELAY, Authentication).register(
         module,
-        PREPARE_RELAY,
-        move |hub, request: PrepareRelayRequest| {
+        move |_, request: PrepareRelayRequest| {
             let relay = prepare_relay.clone();
-            async move {
-                let _slot = hub.admit(Lane::Authentication)?;
-                Ok(relay.prepare(&request).await?)
-            }
+            async move { relay.prepare(&request).await }
         },
     )?;
     let submit_relay = relay.clone();
-    method(
+    Route::new(SUBMIT_RELAY, Authentication).register(
         module,
-        SUBMIT_RELAY,
-        move |hub, request: SubmitRelayRequest| {
+        move |_, request: SubmitRelayRequest| {
             let relay = submit_relay.clone();
-            async move {
-                let _slot = hub.admit(Lane::Authentication)?;
-                Ok(relay.submit(&request).await?)
-            }
+            async move { relay.submit(&request).await }
         },
     )?;
     let co_sign_relay = relay.clone();
-    method(
+    Route::new(CO_SIGN_TRANSACTION, Authentication).register(
         module,
-        CO_SIGN_TRANSACTION,
-        move |hub, request: CoSignTransactionRequest| {
+        move |_, request: CoSignTransactionRequest| {
             let relay = co_sign_relay.clone();
-            async move {
-                let _slot = hub.admit(Lane::Authentication)?;
-                Ok(relay.co_sign_transaction(&request).await?)
-            }
+            async move { relay.co_sign_transaction(&request).await }
         },
     )?;
-    method(
+    Route::new(GET_RELAY_STATUS, Public).register(
         module,
-        GET_RELAY_STATUS,
-        move |hub, request: GetRelayStatusRequest| {
+        move |_, request: GetRelayStatusRequest| {
             let relay = relay.clone();
-            async move {
-                let _slot = hub.admit(Lane::Public)?;
-                Ok(relay.status(&request).await?)
-            }
+            async move { relay.status(&request).await }
         },
     )?;
     Ok(())
@@ -590,7 +531,7 @@ async fn paged_read<S: TransactionSource>(
     hub: Arc<Hub<S>>,
     request: GetDecryptedTransactionsRequest,
     read: PagedRead,
-) -> Result<PagedResponse, RingRpcError> {
+) -> Result<PagedResponse, RingRelayError> {
     let authentication = hub.admit(Lane::Authentication)?;
     let service = hub.service(request.ring_program_id.map(|ring| ring.0))?;
     let page = Page::new(request.cursor, request.limit)?;
@@ -627,7 +568,7 @@ where
     P: DeserializeOwned + Send + 'static,
     T: Serialize + Clone + Send + 'static,
     F: Fn(Arc<C>, P) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Result<T, RingRpcError>> + Send,
+    Fut: Future<Output = Result<T, RingRelayError>> + Send,
 {
     module.register_async_method(name, move |params, context, _| {
         let handler = handler.clone();
@@ -639,6 +580,41 @@ where
         }
     })?;
     Ok(())
+}
+
+/// A method whose handler holds a slot of its lane until it answers.
+#[must_use]
+struct Route {
+    name: &'static str,
+    lane: Lane,
+}
+
+impl Route {
+    const fn new(name: &'static str, lane: Lane) -> Self {
+        Self { name, lane }
+    }
+
+    fn register<S, P, T, F, Fut>(
+        self,
+        module: &mut RpcModule<Arc<Hub<S>>>,
+        handler: F,
+    ) -> Result<(), RegisterMethodError>
+    where
+        S: TransactionSource + 'static,
+        P: DeserializeOwned + Send + 'static,
+        T: Serialize + Clone + Send + 'static,
+        F: Fn(Arc<Hub<S>>, P) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<T, RingRelayError>> + Send,
+    {
+        let lane = self.lane;
+        method(module, self.name, move |hub: Arc<Hub<S>>, request: P| {
+            let handler = handler.clone();
+            async move {
+                let _slot = hub.admit(lane)?;
+                handler(Arc::clone(&hub), request).await
+            }
+        })
+    }
 }
 
 /// Answers 503 and reads the request away, a close over unread bytes would reset the answer.
@@ -809,7 +785,6 @@ mod tests {
 
     use crate::{
         client_rate::{BucketRate, ClientRates, RateLimit, NETWORK_CLIENTS},
-        error::RingRpcError,
         hub::ServiceIdentity,
     };
 
@@ -1520,7 +1495,7 @@ mod tests {
 
         assert!(matches!(
             hub.admit(Lane::Read),
-            Err(RingRpcError::Service(ServiceError::Busy))
+            Err(RingRelayError::Service(ServiceError::Busy))
         ));
         drop(held);
         let _reopened = hub.admit(Lane::Read).expect("released slot");
@@ -1534,7 +1509,7 @@ mod tests {
         }
         assert!(matches!(
             hub.admit(Lane::Authentication),
-            Err(RingRpcError::Service(ServiceError::Busy))
+            Err(RingRelayError::Service(ServiceError::Busy))
         ));
         let _ = hub.admit(Lane::Read).expect("audit capacity");
     }
@@ -1551,7 +1526,7 @@ mod tests {
 
         assert!(matches!(
             hub.admit(Lane::Authentication),
-            Err(RingRpcError::Service(ServiceError::Busy))
+            Err(RingRelayError::Service(ServiceError::Busy))
         ));
         drop(held);
         let _reopened = hub.admit(Lane::Authentication).expect("released slot");
@@ -1739,5 +1714,190 @@ mod tests {
         drop(activity.enter());
         assert!(!cut_within(idle.clone(), 59).await);
         assert!(cut_within(idle, 1).await);
+    }
+
+    /// A hub that registers every method, the relay ones included.
+    async fn every_method() -> RpcModule<Arc<Hub<TestSource>>> {
+        let relay = ring_relay::relay::RelayParts {
+            store: ring_service_core::database::Store::in_memory()
+                .await
+                .expect("store"),
+            prover: Arc::new(ring_relay::relay_prover::fixture::UnusedProver),
+            fee_payer: Arc::new(Keypair::new()),
+            chain: Arc::new(ring_service_core::landing::fixture::UnusedChain),
+        };
+        let hub = Hub::builder(source(), identity(TEST_GENESIS))
+            .with_relay(relay)
+            .derived(RootSecret::from_bytes([5; 32]).expect("root"))
+            .await
+            .expect("hub");
+        rpc_module(Arc::new(hub)).expect("module")
+    }
+
+    #[tokio::test]
+    async fn every_registered_method_has_its_rate_class() {
+        use crate::client_rate::{MethodClass::*, RatedCall};
+        use zolana_ring_client::rpc::{GET_AUDITED_MERGES, GET_WALLET_ACTIVITY};
+
+        let classes = std::collections::BTreeMap::from([
+            (HEALTH, PublicRead),
+            (RING_STATUS, PublicRead),
+            (GET_RECORD_UPDATE_STATUS, PublicRead),
+            (GET_RELAY_QUOTE, PublicRead),
+            (GET_RELAY_STATUS, PublicRead),
+            (CREATE_AUDITOR_KEY, SignedRead),
+            (GET_DECRYPTED_TRANSACTIONS, SignedRead),
+            (GET_WALLET_ACTIVITY, SignedRead),
+            (GET_AUDITED_MERGES, SignedRead),
+            (GET_AUDITED_UTXOS, SignedRead),
+            (GET_WALLET_STATUS, SignedRead),
+            (GET_SPEND_COVERAGE, SignedRead),
+            (GET_DELEGATE_NOTES, SignedRead),
+            (GET_LIST_SALT, SignedRead),
+            (GET_PENDING_LIST_APPROVALS, SignedRead),
+            (RELEASE_WALLET_SNAPSHOT, SignedRead),
+            (RELEASE_DELEGATE_SNAPSHOT, SignedRead),
+            (GET_CO_SIGN_LISTS, SignedRead),
+            (SUBMIT_RECORD_UPDATE, SignedWrite),
+            (REFUSE_LIST_APPROVAL, SignedWrite),
+            (CREATE_RECORDS_REGISTRY, SignedWrite),
+            (REGISTER_ENROLLMENT_RING, SignedWrite),
+            (SET_READER_GRANT, SignedWrite),
+            (SET_MERGE_SETTINGS, SignedWrite),
+            (PREPARE_AUTHORITY_TRANSFER, SignedWrite),
+            (SUBMIT_RELAY, SignedWrite),
+            (PREPARE_VAULT_ENROLLMENT, SignedWrite),
+            (SUBMIT_VAULT_ENROLLMENT, SignedWrite),
+            (SUBMIT_ENROLLMENT, SignedWrite),
+            (EDIT_CO_SIGN_LIST, SignedWrite),
+            (PREPARE_RELAY, SignedWrite),
+            (CO_SIGN_TRANSACTION, SignedWrite),
+        ]);
+        let module = every_method().await;
+        let registered: std::collections::BTreeSet<&str> = module.method_names().collect();
+        assert_eq!(registered, classes.keys().copied().collect());
+        let call = |method| {
+            let request =
+                jsonrpsee::types::Request::borrowed(method, None, jsonrpsee::types::Id::Number(1));
+            RatedCall::of(&request)
+        };
+        for (method, class) in classes {
+            assert_ne!(call(method), RatedCall::Unregistered, "{method}");
+            assert_eq!(call(method).class(), class, "{method}");
+        }
+        assert_eq!(call("unregisteredMethod"), RatedCall::Unregistered);
+    }
+
+    #[test]
+    fn each_new_signed_write_charges_the_key_whose_signature_it_verifies() {
+        use crate::client_rate::RatedCall;
+        use solana_message::{Message, VersionedMessage};
+        use solana_signer::Signer;
+        use solana_transaction::versioned::VersionedTransaction;
+        use zolana_ring_client::{
+            rpc::{
+                CoSignList, CoSignListEdit, CoSignSubjectKind, EditCoSignList, ReadTarget,
+                VaultEnrollmentBlock,
+            },
+            CustomRing, OwnedChange, OwnerEnrollment,
+        };
+
+        let signer = Keypair::new_from_array([4; 32]);
+        let named = |method, params: serde_json::Value| {
+            let params = serde_json::value::to_raw_value(&params).expect("params");
+            let request = jsonrpsee::types::Request::borrowed(
+                method,
+                Some(&params),
+                jsonrpsee::types::Id::Number(1),
+            );
+            RatedCall::of(&request)
+        };
+        let target = ReadTarget {
+            cluster: TEST_GENESIS,
+            service: Address::new_from_array([6; 32]),
+            ring: SERVED_RING,
+        };
+        let edit = EditCoSignListRequest::edit(
+            target,
+            signer.pubkey(),
+            EditCoSignList {
+                edit: CoSignListEdit::Set,
+                list: CoSignList::Block,
+                kind: CoSignSubjectKind::Asset,
+                address: Address::new_from_array([7; 32]),
+            },
+        )
+        .sign(&signer)
+        .expect("edit");
+        let enrollment = OwnerEnrollment {
+            ring: CustomRing::new(SERVED_RING),
+            tracking_registry: Address::new_from_array([9; 32]),
+            owner: signer.pubkey(),
+            change: OwnedChange::Rotate {
+                viewing_u: [1; 32],
+                prior_viewing_u: [2; 32],
+                prior_seq: [0; 8],
+            },
+        }
+        .sign(&signer)
+        .expect("enrollment");
+        let vault = SignedVaultEnrollment {
+            enrollment: VaultEnrollmentRequest {
+                ring: SERVED_RING.into(),
+                program: Address::new_from_array([2; 32]).into(),
+                manager: signer.pubkey().into(),
+                vault: Address::new_from_array([3; 32]).into(),
+                payload: vec![1].into(),
+            },
+            block: VaultEnrollmentBlock {
+                blockhash: Hash([5; 32]),
+                last_valid_block_height: 1,
+            },
+            signature: Signature::from([8; 64]).into(),
+        };
+        let paid = VersionedTransaction {
+            signatures: vec![Signature::default()],
+            message: VersionedMessage::Legacy(Message {
+                account_keys: vec![signer.pubkey(), Address::new_from_array([1; 32])],
+                ..Message::default()
+            }),
+        };
+        let co_sign = CoSignTransactionRequest {
+            ring: SERVED_RING.into(),
+            transaction: wincode::serialize(&paid).expect("transaction").into(),
+            approved_transfer: None,
+        };
+        let charged = RatedCall::SignedWrite {
+            signer: Some(signer.pubkey()),
+        };
+        for (method, params) in [
+            (EDIT_CO_SIGN_LIST, serde_json::to_value(&edit)),
+            (SUBMIT_ENROLLMENT, serde_json::to_value(&enrollment)),
+            (SUBMIT_VAULT_ENROLLMENT, serde_json::to_value(&vault)),
+            (CO_SIGN_TRANSACTION, serde_json::to_value(&co_sign)),
+        ] {
+            assert_eq!(named(method, params.expect("json")), charged, "{method}");
+        }
+    }
+
+    /// `UPDATE_RELAY_MESSAGES=1` rewrites the vector, the TypeScript client reads it.
+    #[tokio::test]
+    async fn the_methods_and_codes_vector_names_every_method_and_refusal() {
+        let methods: std::collections::BTreeSet<&str> =
+            every_method().await.method_names().collect();
+        let refusals: Vec<serde_json::Value> = crate::edge_errors_tests::every_code()
+            .into_iter()
+            .map(|refusal| serde_json::json!({ "code": refusal.code, "name": refusal.name }))
+            .collect();
+        let fresh = serde_json::json!({ "methods": methods, "refusals": refusals });
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-vectors/rpc/ring_rpc_methods_and_codes.json");
+        if std::env::var_os("UPDATE_RELAY_MESSAGES").is_some() {
+            let json = serde_json::to_string_pretty(&fresh).expect("json");
+            std::fs::write(&path, json + "\n").expect("vector written");
+        }
+        let committed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("vector")).expect("json");
+        assert_eq!(committed, fresh);
     }
 }

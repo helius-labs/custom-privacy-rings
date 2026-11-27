@@ -4,9 +4,13 @@ use zolana_ring_client::rpc::{
 };
 
 async fn status(service: &AuditService<StaticSource>, wallet: [u8; 32]) -> GetWalletStatusResponse {
-    let request = WalletStatusRequest::new(target(RING), Address::new_from_array(wallet))
-        .sign(&delegate())
-        .expect("signed read");
+    let request = WalletStatusRequest::new(WalletStatusAttestation {
+        target: target(RING),
+        wallet: Address::new_from_array(wallet),
+        cursor: None,
+    })
+    .sign(&delegate())
+    .expect("signed read");
     service.wallet_status(&request).await.expect("status read")
 }
 
@@ -146,4 +150,54 @@ async fn spend_coverage_refuses_upgrade_authority_and_foreign_auditor() {
             Unauthorized::AuditorKeyMismatch
         )))
     ));
+}
+
+#[tokio::test]
+async fn a_refused_coverage_read_spends_no_nonce_and_a_repeat_reads_replay() {
+    let fixture = Fixture::new();
+    let store = Store::in_memory().await.expect("store");
+    let source = fixture.source().with_transactions(Vec::new());
+    let service = stored_hub(&fixture, source, store.clone())
+        .await
+        .service(None)
+        .expect("service");
+    assert!(matches!(
+        service.spend_coverage(&coverage_request(&deployer())).await,
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
+            Unauthorized::NotPolicyAuthority
+        )))
+    ));
+    assert_eq!(spent_nonces(&store).await.expect("rows"), 0);
+    let request = coverage_request(&authority());
+    service.spend_coverage(&request).await.expect("first read");
+    assert!(matches!(
+        service.spend_coverage(&request).await,
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
+            Unauthorized::Replay
+        )))
+    ));
+}
+
+#[tokio::test]
+async fn a_malformed_coverage_cursor_spends_no_nonce() {
+    let fixture = Fixture::new();
+    let store = Store::in_memory().await.expect("store");
+    let source = fixture.source().with_transactions(Vec::new());
+    let service = stored_hub(&fixture, source, store.clone())
+        .await
+        .service(None)
+        .expect("service");
+    let malformed = SpendCoverageRequest::new(SpendCoverageAttestation {
+        target: target(RING),
+        authority: authority().pubkey(),
+        cursor: Some(vec![1; 3].into()),
+    })
+    .at(unix_now().expect("clock"))
+    .sign(&authority())
+    .expect("signed coverage");
+    assert!(matches!(
+        service.spend_coverage(&malformed).await,
+        Err(RingAuditError::InvalidCursor)
+    ));
+    assert_eq!(spent_nonces(&store).await.expect("rows"), 0);
 }

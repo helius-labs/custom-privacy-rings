@@ -4,9 +4,7 @@ use std::{
     time::Duration,
 };
 
-use async_trait::async_trait;
 use solana_address::Address;
-use solana_message::VersionedMessage;
 use spr_keypair::NullifierKey;
 use spr_transaction::{Mint, WalletUtxo};
 use zolana_ring_client::rpc::{
@@ -16,7 +14,7 @@ use zolana_ring_client::rpc::{
 use zolana_ring_transaction::RingAssets;
 
 use ring_service_core::{
-    authorize::{Authorized, PendingNonce, WalletCheck},
+    authorize::{PendingNonce, WalletCheck},
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
     upstream::TransactionSource,
 };
@@ -28,7 +26,7 @@ use crate::{
     error::RingRelayError,
     merge_inputs::HeldInput,
     merge_settings::{MergeSettingsBook, SignedMergeSettings},
-    relay::{HeldMerge, Relay},
+    relay::Relay,
     relays::RelayPhase,
 };
 pub use ring_audit::{audit::AuditService, utxos::SpendableNotes};
@@ -44,28 +42,14 @@ pub struct OwnerMerge<'a> {
     pub(crate) inputs: Vec<WalletUtxo>,
 }
 
-/// The fee payer the message names signs at relay.
-pub struct BuiltMerge {
-    pub(crate) message: VersionedMessage,
-    pub(crate) last_valid_block_height: u64,
-    pub(crate) tree_fees: u64,
-}
-
-#[async_trait]
-pub trait MergeBuilder: Send + Sync {
-    async fn build(&self, merge: OwnerMerge<'_>) -> Result<BuiltMerge, RingRelayError>;
-}
-
 #[must_use]
 pub struct ManagedMergeInit<S> {
     pub shared: Arc<Shared<S>>,
-    pub builder: Arc<dyn MergeBuilder>,
     pub relay: Arc<Relay>,
 }
 
 pub struct ManagedMerge<S> {
     shared: Arc<Shared<S>>,
-    builder: Arc<dyn MergeBuilder>,
     relay: Arc<Relay>,
 }
 
@@ -85,7 +69,6 @@ impl<S> ManagedMergeInit<S> {
     pub fn build(self) -> ManagedMerge<S> {
         ManagedMerge {
             shared: self.shared,
-            builder: self.builder,
             relay: self.relay,
         }
     }
@@ -269,7 +252,7 @@ impl<S: TransactionSource> ManagedMerge<S> {
                 nullifier_key: &nullifier_key,
                 inputs,
             };
-            match self.send(merge).await {
+            match self.relay.send_merge(merge).await {
                 Ok(relay_id) => sent.push(relay_id),
                 Err(error) => log::warn!(
                     "managed merge of {owner} in {} on ring {ring} failed because {}",
@@ -279,25 +262,6 @@ impl<S: TransactionSource> ManagedMerge<S> {
             }
         }
         Ok(sent)
-    }
-
-    /// A merge demands no co-signer, the inputs stay held until the relay fails or the ring
-    /// history spends them.
-    async fn send(&self, merge: OwnerMerge<'_>) -> Result<RelayId, RingRelayError> {
-        let ring = merge.ring;
-        let owner = merge.owner;
-        let nullifiers: Vec<[u8; 32]> = merge.inputs.iter().map(|input| input.nullifier).collect();
-        let built = self.builder.build(merge).await?;
-        self.relay
-            .send_merge(HeldMerge {
-                ring,
-                owner,
-                message: built.message,
-                last_valid_block_height: built.last_valid_block_height,
-                tree_fees: built.tree_fees,
-                nullifiers,
-            })
-            .await
     }
 }
 
@@ -325,14 +289,15 @@ pub async fn set_merge_settings<S: TransactionSource>(
         now,
     }
     .decide()?;
-    let Authorized { nonce, .. } = PendingNonce {
+    let pending = PendingNonce {
         ring,
         nonce,
         timestamp: request.timestamp,
-    }
-    .authorize(service.require_served_config())
-    .await?;
-    shared.replay.accept(nonce, shared.clock.now()?).await?;
+    };
+    shared
+        .replay
+        .authorize_once(pending, service.require_served_config())
+        .await?;
     let saved = book
         .save(SignedMergeSettings {
             ring,
@@ -351,15 +316,14 @@ pub async fn set_merge_settings<S: TransactionSource>(
 pub(crate) mod tests {
     use std::{collections::HashMap, sync::Mutex};
 
+    use async_trait::async_trait;
     use custom_ring_interface::RingMode;
     use solana_hash::Hash;
     use solana_keypair::Keypair;
     use solana_signature::Signature;
     use solana_signer::Signer;
     use solana_transaction::versioned::VersionedTransaction;
-    use spr_client::{
-        compile_message, ClientError, ComputeBudgetConfig, GetShieldedTransactionsByTagsResponse,
-    };
+    use spr_client::{ClientError, ComputeBudgetConfig, GetShieldedTransactionsByTagsResponse};
     use spr_keypair::X25519Keypair;
     use spr_transaction::{Data, Mint, Utxo};
     use zolana_ring_client::{
@@ -377,7 +341,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::{
         error::ServiceError,
-        relay::{RelayParts, SharedRings},
+        relay::{RelayParts, RelayPayload, SharedRings},
         relay_prover::{DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver},
         relay_reservations::{RelayBudget, RelayReservations},
     };
@@ -560,28 +524,44 @@ pub(crate) mod tests {
         }
     }
 
+    /// Records each merge it proves, the instruction names the proof's turn so each message differs.
     #[derive(Default)]
-    struct RecordingBuilder {
+    struct RecordingProver {
         owners: Mutex<Vec<(Address, usize)>>,
         tree_fees: Mutex<u64>,
     }
 
     #[async_trait]
-    impl MergeBuilder for RecordingBuilder {
-        async fn build(&self, merge: OwnerMerge<'_>) -> Result<BuiltMerge, RingRelayError> {
+    impl RelayProver for RecordingProver {
+        async fn prove(
+            &self,
+            request: RelayProofRequest<'_>,
+        ) -> Result<ProvenRelay, RingRelayError> {
+            let RelayPayload::Merge(merge) = request.payload else {
+                return Err(RingRelayError::Service(ServiceError::StateUnavailable));
+            };
+            let owner = merge.sender.signing_pubkey.as_ed25519().expect("owner");
             let mut owners = self.owners.lock().expect("owners");
-            owners.push((merge.owner, merge.inputs.len()));
-            let blockhash = Hash::new_from_array([u8::try_from(owners.len()).expect("builds"); 32]);
-            Ok(BuiltMerge {
-                message: compile_message(
-                    &fee_payer().pubkey(),
-                    &[],
-                    blockhash,
-                    ComputeBudgetConfig::new(400_000),
-                )?,
-                last_valid_block_height: LAST_VALID_BLOCK_HEIGHT,
+            owners.push((Address::new_from_array(owner), merge.inputs.len()));
+            Ok(ProvenRelay {
+                instruction: solana_instruction::Instruction {
+                    program_id: request.ring,
+                    accounts: Vec::new(),
+                    data: vec![u8::try_from(owners.len()).expect("proofs")],
+                },
+                budget: ComputeBudgetConfig::new(400_000),
+                co_signers: Vec::new(),
+                signers: Vec::new(),
                 tree_fees: *self.tree_fees.lock().expect("tree fees"),
             })
+        }
+
+        async fn seal_delegate(
+            &self,
+            _seal: DelegateSeal<'_>,
+            _parties: RelayParties,
+        ) -> Result<zolana_ring_client::rpc::RelayProofInputs, RingRelayError> {
+            Err(RingRelayError::Service(ServiceError::StateUnavailable))
         }
     }
 
@@ -652,26 +632,6 @@ pub(crate) mod tests {
         }
     }
 
-    struct UnusedProver;
-
-    #[async_trait]
-    impl RelayProver for UnusedProver {
-        async fn prove(
-            &self,
-            _request: RelayProofRequest<'_>,
-        ) -> Result<ProvenRelay, RingRelayError> {
-            Err(RingRelayError::Service(ServiceError::StateUnavailable))
-        }
-
-        async fn seal_delegate(
-            &self,
-            _seal: DelegateSeal<'_>,
-            _parties: RelayParties,
-        ) -> Result<zolana_ring_client::rpc::RelayProofInputs, RingRelayError> {
-            Err(RingRelayError::Service(ServiceError::StateUnavailable))
-        }
-    }
-
     fn assets() -> RingAssets {
         RingAssets::new([Mint::new(MINT, 7), Mint::new(SECOND_MINT, 8)]).expect("assets")
     }
@@ -731,7 +691,7 @@ pub(crate) mod tests {
     pub(crate) struct Fixture {
         pub(crate) shared: Arc<Shared<EscrowRingSource>>,
         pub(crate) relay: Option<Arc<Relay>>,
-        builder: Arc<RecordingBuilder>,
+        prover: Arc<RecordingProver>,
         chain: Arc<ScriptedChain>,
     }
 
@@ -746,14 +706,16 @@ pub(crate) mod tests {
 
         async fn budgeted(store: Store, budget: RelayBudget) -> Self {
             let chain = Arc::new(ScriptedChain::default());
+            let prover = Arc::new(RecordingProver::default());
             let parts = RelayParts {
                 store,
-                prover: Arc::new(UnusedProver),
+                prover: prover.clone(),
                 fee_payer: Arc::new(fee_payer()),
                 chain: chain.clone(),
             };
             Self {
                 chain,
+                prover,
                 ..Self::serving_within(None, Some(parts), budget).await
             }
         }
@@ -816,7 +778,7 @@ pub(crate) mod tests {
             Self {
                 shared,
                 relay,
-                builder: Arc::default(),
+                prover: Arc::default(),
                 chain: Arc::default(),
             }
         }
@@ -951,7 +913,6 @@ pub(crate) mod tests {
         async fn merge_due(&self) -> Vec<RelayId> {
             ManagedMergeInit {
                 shared: self.shared.clone(),
-                builder: self.builder.clone(),
                 relay: self.relay().clone(),
             }
             .build()
@@ -987,7 +948,7 @@ pub(crate) mod tests {
         assert_eq!(fixture.merge_due().await.len(), 1);
         assert_eq!(*fixture.chain.sent.lock().expect("sent"), 1);
         assert_eq!(
-            *fixture.builder.owners.lock().expect("owners"),
+            *fixture.prover.owners.lock().expect("owners"),
             vec![(wallet.pubkey(), 3)]
         );
     }
@@ -1061,7 +1022,7 @@ pub(crate) mod tests {
         assert!(after.merge_due().await.is_empty());
         after.track().await;
 
-        assert!(after.builder.owners.lock().expect("owners").is_empty());
+        assert!(after.prover.owners.lock().expect("owners").is_empty());
         assert_eq!(*after.chain.sent.lock().expect("sent"), 1);
     }
 
@@ -1086,7 +1047,6 @@ pub(crate) mod tests {
         after.track().await;
         let managed = ManagedMergeInit {
             shared: after.shared.clone(),
-            builder: after.builder.clone(),
             relay: after.relay().clone(),
         }
         .build();
@@ -1120,7 +1080,7 @@ pub(crate) mod tests {
         assert_eq!(fixture.merge_due().await.len(), 2);
         assert_eq!(OPENED_ROWS.with(std::cell::Cell::get), 12);
         assert_eq!(
-            *fixture.builder.owners.lock().expect("owners"),
+            *fixture.prover.owners.lock().expect("owners"),
             vec![(wallet.pubkey(), 3), (wallet.pubkey(), 3)]
         );
     }
@@ -1135,7 +1095,7 @@ pub(crate) mod tests {
 
         assert_eq!(fixture.merge_due().await.len(), 1);
         assert_eq!(
-            *fixture.builder.owners.lock().expect("owners"),
+            *fixture.prover.owners.lock().expect("owners"),
             vec![(wallet.pubkey(), MERGE_DEFAULT_INPUT_COUNT)]
         );
         assert_eq!(fixture.held().await.len(), MERGE_DEFAULT_INPUT_COUNT);
@@ -1160,8 +1120,45 @@ pub(crate) mod tests {
 
         assert_eq!(fixture.merge_due().await.len(), 1);
         assert_eq!(
-            *fixture.builder.owners.lock().expect("owners"),
+            *fixture.prover.owners.lock().expect("owners"),
             vec![(wallet.pubkey(), 3)]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repeated_merge_settings_request_reads_replay() {
+        use ring_service_core::authorize::Unauthorized;
+
+        let fixture = Fixture::new().await;
+        let wallet = Keypair::new_from_array([11; 32]);
+        let signed = SignedRequest::new(MergeSettingsAttestation {
+            target: ReadTarget {
+                cluster: GENESIS,
+                service: fixture.shared.service,
+                ring: RING,
+            },
+            owner: wallet.pubkey(),
+            settings: MergeSettings {
+                mint: MINT.into(),
+                target_note_count: 2,
+                min_average_amount: 0,
+            },
+        })
+        .at(unix_now().expect("clock"))
+        .sign(&wallet)
+        .expect("signed settings");
+        set_merge_settings(&fixture.shared, &signed)
+            .await
+            .expect("first settings");
+        let repeated = set_merge_settings(&fixture.shared, &signed).await;
+        assert!(
+            matches!(
+                repeated,
+                Err(RingRelayError::Service(ServiceError::Unauthorized(
+                    Unauthorized::Replay
+                )))
+            ),
+            "{repeated:?}"
         );
     }
 
@@ -1237,7 +1234,7 @@ pub(crate) mod tests {
     async fn managed_merge_tree_fees_respect_the_relay_signer_budget() {
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
         let fixture = Fixture::on(store.clone()).await;
-        *fixture.builder.tree_fees.lock().expect("tree fees") = 1_000_001;
+        *fixture.prover.tree_fees.lock().expect("tree fees") = 1_000_001;
         let wallet = Keypair::new_from_array([11; 32]);
         fixture.escrow_notes(&wallet, 3).await;
         fixture.settle(&wallet, 1).await;
@@ -1245,7 +1242,7 @@ pub(crate) mod tests {
         assert!(fixture.merge_due().await.is_empty());
         assert_eq!(*fixture.chain.sent.lock().expect("sent"), 0);
 
-        *fixture.builder.tree_fees.lock().expect("tree fees") = 10_000;
+        *fixture.prover.tree_fees.lock().expect("tree fees") = 10_000;
         let [relay_id] = fixture.merge_due().await.try_into().expect("one merge");
         assert_eq!(*fixture.chain.sent.lock().expect("sent"), 1);
         let held = RelayReservations::new(store.connection())

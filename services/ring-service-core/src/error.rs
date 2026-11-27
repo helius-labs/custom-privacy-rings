@@ -39,10 +39,21 @@ pub enum ServiceError {
 
 const SEND_REFUSED: i32 = -32113;
 
+/// One JSON-RPC refusal code and the Rust name that raises it.
+#[cfg(any(test, feature = "test-fixtures"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefusalCode {
+    pub code: i32,
+    pub name: &'static str,
+}
+
 #[cfg(any(test, feature = "test-fixtures"))]
 impl ServiceError {
-    pub fn codes() -> Vec<i32> {
-        vec![SEND_REFUSED]
+    pub fn codes() -> Vec<RefusalCode> {
+        vec![RefusalCode {
+            code: SEND_REFUSED,
+            name: "ServiceError::SendRefused",
+        }]
     }
 }
 
@@ -76,6 +87,13 @@ macro_rules! listed_refusals {
         #[cfg(any(test, feature = "test-fixtures"))]
         impl $name {
             pub const ALL: [$name; [$($name::$variant),+].len()] = [$($name::$variant),+];
+
+            pub fn codes() -> Vec<$crate::error::RefusalCode> {
+                vec![$($crate::error::RefusalCode {
+                    code: $code,
+                    name: concat!(stringify!($name), "::", stringify!($variant)),
+                }),+]
+            }
         }
     };
 }

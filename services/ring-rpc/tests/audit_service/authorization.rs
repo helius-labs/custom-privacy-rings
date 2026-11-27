@@ -449,3 +449,56 @@ async fn a_read_signed_for_another_method_cluster_or_service_is_refused() {
         .await
         .expect("read");
 }
+
+#[tokio::test]
+async fn a_refused_auditor_key_request_spends_no_nonce() {
+    let fixture = Fixture::new();
+    let store = Store::in_memory().await.expect("store");
+    let hub = stored_hub(&fixture, fixture.source(), store.clone()).await;
+    assert!(refused(
+        authorize(&hub, &signed_by(&stranger())).await,
+        Unauthorized::NotRingAuthority
+    ));
+    assert_eq!(spent_nonces(&store).await.expect("rows"), 0);
+}
+
+#[tokio::test]
+async fn a_read_refused_by_its_grant_or_scope_spends_no_nonce() {
+    let fixture = Fixture::new();
+    let store = Store::in_memory().await.expect("store");
+    let service = stored_hub(&fixture, fixture.source(), store.clone())
+        .await
+        .service(None)
+        .expect("service");
+    let ungranted = auth(&stranger());
+    assert!(matches!(
+        service
+            .read(AuditRead {
+                read: PagedRead::DecryptedTransactions,
+                auth: &ungranted,
+                page: &page(),
+                wallet: None,
+            })
+            .await,
+        Err(RingAuditError::Service(ServiceError::Unauthorized(
+            Unauthorized::NotGranted
+        )))
+    ));
+    let unscoped = PagedRead::WalletActivity
+        .request(target(RING))
+        .sign(&delegate())
+        .expect("request")
+        .auth;
+    assert!(matches!(
+        service
+            .wallet_activity(AuditRead {
+                read: PagedRead::WalletActivity,
+                auth: &unscoped,
+                page: &page(),
+                wallet: None,
+            })
+            .await,
+        Err(RingAuditError::Grant(GrantRefusal::WalletScope))
+    ));
+    assert_eq!(spent_nonces(&store).await.expect("rows"), 0);
+}

@@ -102,10 +102,10 @@ impl ChainSubmit for WorkerChain {
 
     async fn send(&self, transaction: &VersionedTransaction) -> Result<(), ServiceError> {
         self.send_gate.pass().await;
-        match self.lost_sends {
-            true => Ok(()),
-            false => self.chain.send(transaction).await,
+        if self.lost_sends {
+            return Ok(());
         }
+        self.chain.send(transaction).await
     }
 
     async fn outcome(&self, signature: Signature) -> Result<Option<ChainOutcome>, ServiceError> {

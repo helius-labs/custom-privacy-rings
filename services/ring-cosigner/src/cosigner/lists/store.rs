@@ -1,6 +1,6 @@
-use std::{collections::HashSet, future::Future, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
-use sea_orm::{ConnectionTrait, DbErr, QueryResult, Value};
+use sea_orm::{DbErr, QueryResult, Value};
 use solana_address::Address;
 
 use super::decision::{List, ListEntry, Lists, Subject, SubjectKind};
@@ -8,17 +8,8 @@ use ring_service_core::{database::Store, sql};
 
 use crate::error::RingCosignerError;
 
-pub trait ListStore: Send + Sync {
-    /// The entries of `ring` that name one of `subjects`, with one allow entry of each closed kind.
-    fn lists(
-        &self,
-        ring: Address,
-        subjects: &[Subject],
-    ) -> impl Future<Output = Result<Lists, RingCosignerError>> + Send;
-}
-
 #[derive(Clone)]
-pub struct StoredLists(pub Arc<Store>);
+pub(crate) struct StoredLists(pub Arc<Store>);
 
 fn stored_name<T: Copy>(
     all: [T; 3],
@@ -105,13 +96,14 @@ impl StoredLists {
 
     async fn execute(&self, sql: &str, values: Vec<Value>) -> Result<(), RingCosignerError> {
         let conn = self.0.connection();
-        conn.execute(sql::statement(conn, sql, values)).await?;
+        sql::Query::new(sql, values).execute(conn).await?;
         Ok(())
     }
 
     async fn read(&self, sql: &str, values: Vec<Value>) -> Result<Vec<ListEntry>, DbErr> {
         let conn = self.0.connection();
-        conn.query_all(sql::statement(conn, sql, values))
+        sql::Query::new(sql, values)
+            .all(conn)
             .await?
             .iter()
             .map(ListEntry::read)
@@ -119,8 +111,13 @@ impl StoredLists {
     }
 }
 
-impl ListStore for StoredLists {
-    async fn lists(&self, ring: Address, subjects: &[Subject]) -> Result<Lists, RingCosignerError> {
+impl StoredLists {
+    /// The entries of `ring` that name one of `subjects`, with one allow entry of each closed kind.
+    pub(crate) async fn lists(
+        &self,
+        ring: Address,
+        subjects: &[Subject],
+    ) -> Result<Lists, RingCosignerError> {
         // One statement reads one snapshot, the first allow entry of a kind marks the kind closed.
         let first_allow = "list='allow' AND NOT EXISTS (SELECT 1 FROM cosign_list_entries earlier \
                            WHERE earlier.ring=entries.ring AND earlier.list='allow' \

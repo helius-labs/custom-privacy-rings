@@ -24,11 +24,8 @@ service_faults!(RingCosignerError);
 
 #[cfg(any(test, feature = "test-fixtures"))]
 impl RingCosignerError {
-    pub fn codes() -> Vec<i32> {
-        CoSignError::ALL
-            .into_iter()
-            .map(CoSignError::code)
-            .collect()
+    pub fn codes() -> Vec<ring_service_core::error::RefusalCode> {
+        CoSignError::codes()
     }
 }
 

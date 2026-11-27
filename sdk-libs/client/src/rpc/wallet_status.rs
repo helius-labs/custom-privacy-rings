@@ -127,10 +127,7 @@ pub struct WalletStatusAttestation {
     pub cursor: Option<Base64String>,
 }
 
-#[must_use]
-pub struct WalletStatusRequest {
-    signed: SignedRequest<WalletStatusAttestation>,
-}
+pub type WalletStatusRequest = SignedRequest<WalletStatusAttestation>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalletSnapshotReleaseAttestation {
@@ -201,25 +198,9 @@ impl WalletSnapshotReleaseRequest {
 }
 
 impl WalletStatusRequest {
-    pub fn new(target: ReadTarget, wallet: Address) -> Self {
-        Self {
-            signed: SignedRequest::new(WalletStatusAttestation {
-                target,
-                wallet,
-                cursor: None,
-            }),
-        }
-    }
-
-    pub fn at(self, timestamp: u64) -> Self {
-        Self {
-            signed: self.signed.at(timestamp),
-        }
-    }
-
     pub fn with_cursor(mut self, cursor: Base64String) -> Result<Self, ReadBuildError> {
         super::wallet_snapshot::validate_snapshot_cursor(&cursor)?;
-        self.signed.attestation.cursor = Some(cursor);
+        self.attestation.cursor = Some(cursor);
         Ok(self)
     }
 
@@ -227,8 +208,8 @@ impl WalletStatusRequest {
         self,
         signer: &S,
     ) -> Result<GetWalletStatusRequest, ReadBuildError> {
-        let auth = self.signed.read_auth(signer)?;
-        Ok(self.signed.attestation.request(auth))
+        let auth = self.read_auth(signer)?;
+        Ok(self.attestation.request(auth))
     }
 }
 

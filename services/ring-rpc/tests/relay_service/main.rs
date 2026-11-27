@@ -1,14 +1,12 @@
 //! A wallet relays a sealed transfer, deposit or merge, Ring RPC proves, pays and sends it.
 
-#[path = "relay_service/attempts.rs"]
 mod attempts;
-#[path = "common/relay.rs"]
+#[path = "../common/relay.rs"]
 mod relay_fixture;
-#[path = "../../ring-relay/tests/common/store.rs"]
+#[path = "../../../ring-relay/tests/common/store.rs"]
 mod store_fixture;
-#[path = "relay_service/transitions.rs"]
 mod transitions;
-#[path = "common/wide_frame.rs"]
+#[path = "../common/wide_frame.rs"]
 mod wide_frame;
 
 use std::sync::{atomic::Ordering, Arc, LazyLock};

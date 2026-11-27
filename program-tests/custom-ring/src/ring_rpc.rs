@@ -12,7 +12,7 @@ use custom_ring_cli::{wait_for, Probe};
 use ring_cosigner::cosign::CoSignerApproval;
 use ring_relay::managed_merge::ManagedMerge;
 use ring_relay::relay_reservations::RelayBudget;
-use ring_relay::relay_services::{RelayServices, RelayServicesInit};
+use ring_relay::{relay::RelayParts, relay_services::RelayServicesInit};
 use ring_service_core::database::{ServiceStore, Store, STORE_CONNECTIONS};
 use ring_service_core::upstream::{ChainSource, TransactionSource, Upstreams};
 use ring_writer::enrollment_applier::EnrollmentApplierParts;
@@ -97,7 +97,7 @@ struct ServerParts {
     runtime: tokio::runtime::Runtime,
     store: Store,
     writer: SigningIdentity,
-    relay: Option<RelayServices>,
+    relay: Option<RelayParts>,
     co_signer: Option<CoSignerParts>,
 }
 
@@ -114,7 +114,7 @@ impl ServerParts {
     }
 
     #[must_use]
-    fn with_relay(mut self, relay: RelayServices) -> Self {
+    fn with_relay(mut self, relay: RelayParts) -> Self {
         self.relay = Some(relay);
         self
     }
@@ -199,7 +199,7 @@ impl RingRpcSpec<'_> {
         })
     }
 
-    fn relay_services(&self, fee_payer: Keypair, store: Store) -> RelayServices {
+    fn relay_services(&self, fee_payer: Keypair, store: Store) -> RelayParts {
         RelayServicesInit {
             fee_payer: Arc::new(fee_payer),
             store,
@@ -269,12 +269,10 @@ impl RingRpcSpec<'_> {
             None => builder.with_co_signer(Arc::new(Keypair::new())),
         };
         if let Some(services) = relay {
-            builder = builder
-                .with_relay_services(services)
-                .with_relay_budget(RelayBudget {
-                    total_lamports: RELAY_BUDGET_LAMPORTS,
-                    signer_lamports: RELAY_SIGNER_BUDGET_LAMPORTS,
-                });
+            builder = builder.with_relay(services).with_relay_budget(RelayBudget {
+                total_lamports: RELAY_BUDGET_LAMPORTS,
+                signer_lamports: RELAY_SIGNER_BUDGET_LAMPORTS,
+            });
         }
         let hub = Arc::new(
             runtime

@@ -3,9 +3,6 @@
 //! A batch with salted owner writes proves each owner's applied tracking row in the same update that
 //! moves the root, and Storage raises the source's tracking floor to the root's revision with it.
 //! Without a wired private write source such a batch fails its flush and stays queued.
-//!
-//! Read after `operations/record_update.rs` and `zolana_ring_client::PrivateStorageWrite`.
-//! Read before `storage/update_queue.rs`.
 
 use std::{
     collections::{hash_map::Entry, HashMap},
@@ -212,7 +209,7 @@ impl RecordWriter {
             .registry(request.registry.0)
             .await?
             .ok_or(RecordUpdateRefusal::RegistryNotServed)?;
-        let slot = self.chain.slot().await?;
+        let slot = self.chain.submit().slot().await?;
         let update = RecordUpdateCheck {
             request: &request,
             context: UpdateContext {
@@ -389,7 +386,7 @@ impl RecordWriter {
         if let Some(batch) = queue.open_batch(registry).await? {
             return self.settle(batch).await;
         }
-        let slot = self.chain.slot().await?;
+        let slot = self.chain.submit().slot().await?;
         queue.expire(registry, slot).await?;
         // 2. One batch per flush, a refused update leaves the queue and the plan reads the heads
         //    again.
@@ -489,7 +486,7 @@ impl RecordWriter {
         }
         .instruction()
         .map_err(|error| WriterError::StorageUpdate(error.into()))?;
-        let latest = self.chain.latest_blockhash().await?;
+        let latest = self.chain.submit().latest_blockhash().await?;
         let message = compile_message(
             &self.authority(),
             &[instruction],
@@ -499,7 +496,7 @@ impl RecordWriter {
         // Signed ahead of the checks, a slow signer never ages the slot they read.
         let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
         let policies = self.queued_authorities(batch.iter()).await?;
-        let slot = self.chain.slot().await?;
+        let slot = self.chain.submit().slot().await?;
         let mut rejected = false;
         for update in batch {
             match (QueuedCheck {
@@ -532,7 +529,7 @@ impl RecordWriter {
                 updates: batch,
             })
             .await?;
-        self.chain.send(&transaction).await?;
+        self.chain.submit().send(&transaction).await?;
         Ok(())
     }
 
@@ -554,7 +551,7 @@ impl RecordWriter {
     }
 
     async fn settle(&self, batch: OpenBatch) -> Result<(), WriterError> {
-        let outcome = match batch.attempt.landing(self.chain.as_ref()).await? {
+        let outcome = match batch.attempt.landing(self.chain.submit()).await? {
             Landing::Pending => return Ok(()),
             Landing::Landed(ChainOutcome::Confirmed { .. }) => BatchOutcome::Applied,
             Landing::Landed(ChainOutcome::Failed { .. }) | Landing::Expired => {

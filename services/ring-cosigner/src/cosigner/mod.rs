@@ -8,9 +8,10 @@
 //! #[async_trait]
 //! impl CoSignRule for BusinessHours {
 //!     async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingCosignerError> {
-//!         Ok(match open_now() {
-//!             true => Verdict::Admitted,
-//!             false => Verdict::Refused(CoSignRefusal::NotApproved),
+//!         Ok(if open_now() {
+//!             Verdict::Admitted
+//!         } else {
+//!             Verdict::Refused(CoSignRefusal::NotApproved)
 //!         })
 //!     }
 //! }
@@ -36,15 +37,15 @@ use async_trait::async_trait;
 use solana_address::Address;
 use zolana_operator_custody::SigningIdentity;
 
-pub use self::direct::DirectCoSign;
 pub use self::{
+    direct::DirectCoSign,
     exit_velocity::{ExitCap, ExitVelocity},
-    lists::{
-        co_sign_lists, edit_co_sign_list, FrameParties, List, ListDecision, ListEntry, ListRule,
-        ListStore, Lists, Parties, PartySource, StoredLists, Subject, SubjectKind,
-    },
-    rule::{Chain, CoSignRule, Operation, Verdict},
+    lists::{co_sign_lists, edit_co_sign_list},
     scope::ApprovedCall,
+};
+pub(crate) use self::{
+    lists::{FrameParties, ListRule, Parties, PartySource, StoredLists},
+    rule::{Chain, CoSignRule, Operation, Verdict},
 };
 use ring_service_core::landing::FinalizedTip;
 
@@ -54,7 +55,7 @@ use crate::{
 };
 
 /// Signs what its rule admits.
-pub struct CoSigner<R> {
+pub(crate) struct CoSigner<R> {
     signer: SigningIdentity,
     pub(crate) rule: R,
 }

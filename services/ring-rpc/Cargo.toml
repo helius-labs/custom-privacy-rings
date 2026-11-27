@@ -20,6 +20,7 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 clap = { workspace = true }
+custom-ring-interface = { workspace = true }
 hex = { workspace = true }
 hyper = { workspace = true }
 jsonrpsee = { workspace = true }
@@ -51,7 +52,6 @@ zolana-ring-transaction = { workspace = true }
 [dev-dependencies]
 base64 = { workspace = true }
 bytemuck = { workspace = true }
-custom-ring-interface = { workspace = true }
 reqwest = { workspace = true }
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true, features = ["sqlx-sqlite"] }

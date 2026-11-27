@@ -75,9 +75,6 @@ pub mod fixture {
     use custom_ring_interface::{storage::StorageRegistry, ApplyRecordsIxData};
     use solana_account::Account;
     use solana_address::Address;
-    use solana_message::VersionedMessage;
-    use solana_signature::Signature;
-    use solana_transaction::versioned::VersionedTransaction;
     use zolana_ring_client::TrackingLeaf;
     use zolana_ring_client::{EnrollBatch, ProvenEnrollBatch};
     use zolana_ring_indexer::rpc::{
@@ -87,7 +84,7 @@ pub mod fixture {
     use zolana_ring_member_registry::ApplyProofInputs;
 
     use ring_service_core::{
-        landing::{ChainOutcome, ChainSubmit, LatestBlockhash, Simulation},
+        landing::{fixture::UnusedChain, ChainSubmit},
         upstream::RingConfiguration,
     };
     use ring_writer::{storage_chain::StorageChain, WriterError};
@@ -108,45 +105,11 @@ pub mod fixture {
     }
 
     #[async_trait]
-    impl ChainSubmit for RingAccounts {
-        async fn account_data(&self, _address: Address) -> Result<Option<Vec<u8>>, ServiceError> {
-            unreachable!("a role check reads whole accounts")
-        }
-
-        async fn rent_exempt_lamports(&self, _data_len: usize) -> Result<u64, ServiceError> {
-            unreachable!("a role check funds nothing")
-        }
-
-        async fn slot(&self) -> Result<u64, ServiceError> {
-            unreachable!("a role check reads no slot")
-        }
-
-        async fn latest_blockhash(&self) -> Result<LatestBlockhash, ServiceError> {
-            unreachable!("a role check sends nothing")
-        }
-
-        async fn block_height(&self) -> Result<u64, ServiceError> {
-            unreachable!("a role check sends nothing")
-        }
-
-        async fn send(&self, _transaction: &VersionedTransaction) -> Result<(), ServiceError> {
-            unreachable!("a role check sends nothing")
-        }
-
-        async fn outcome(
-            &self,
-            _signature: Signature,
-        ) -> Result<Option<ChainOutcome>, ServiceError> {
-            unreachable!("a role check sends nothing")
-        }
-
-        async fn simulate(&self, _message: &VersionedMessage) -> Result<Simulation, ServiceError> {
-            unreachable!("a role check sends nothing")
-        }
-    }
-
-    #[async_trait]
     impl StorageChain for RingAccounts {
+        fn submit(&self) -> &dyn ChainSubmit {
+            &UnusedChain
+        }
+
         async fn account(&self, address: Address) -> Result<Option<Account>, WriterError> {
             let accounts = self
                 .0

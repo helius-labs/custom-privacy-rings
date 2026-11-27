@@ -13,7 +13,8 @@ use zolana_ring_client::rpc::RelayId;
 use zolana_ring_policy::Member;
 
 pub use ring_cosigner::cosign::{AssetFlow, CoSignFlows, OwnerFlow, Ticket};
-use ring_service_core::{relay_submit::CollectedSignature, sql};
+use ring_service_core::sql;
+use zolana_operator_custody::CollectedSignature;
 
 /// Holds no proof input.
 #[derive(Clone)]

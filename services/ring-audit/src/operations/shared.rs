@@ -109,7 +109,7 @@ impl<S> SharedInit<S> {
                 refresh: RefreshState::Never,
             }),
             origins: self.origins,
-            replay: ReplayGuard::new(self.store.store().clone()),
+            replay: ReplayGuard::new(self.store.store().clone(), self.clock),
             active_readers: Mutex::new(HashSet::new()),
             stores: Mutex::new(HashMap::new()),
             snapshot_limits: self.snapshot_limits,

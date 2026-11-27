@@ -6,8 +6,6 @@
 //! runs, so a held write never refuses a batch it rides in. Each ring runs on its own task under the
 //! shared bound of `keyed_tasks`, so a ring whose proof stalls holds one slot and never the batch of
 //! another ring.
-//!
-//! Read after `sdk-libs/client/src/rpc/enrollment.rs` and `sdk-libs/client/src/records/storage.rs`.
 
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -48,9 +46,9 @@ use crate::{
 };
 
 /// Writes one ring holds ahead of its batches, a full ring refuses the next until a batch lands.
-pub const MAX_HELD_ENROLLMENTS: usize = 64;
+pub(crate) const MAX_HELD_ENROLLMENTS: usize = 64;
 /// Failed batches a write rides in before the writer drops it.
-pub const MAX_ENROLLMENT_ATTEMPTS: u8 = 3;
+pub(crate) const MAX_ENROLLMENT_ATTEMPTS: u8 = 3;
 
 ring_service_core::listed_refusals! {
     #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
@@ -454,7 +452,7 @@ impl RingPass<'_> {
     async fn run(mut self) -> Result<WriterRole, WriterError> {
         // 1. One batch at a time, a second proof from the same root could not land.
         if let Some(in_flight) = self.state.in_flight.as_ref() {
-            match in_flight.attempt.landing(self.chain).await? {
+            match in_flight.attempt.landing(self.chain.submit()).await? {
                 Landing::Pending => return Ok(WriterRole::Held),
                 Landing::Landed(ChainOutcome::Confirmed { .. }) => {
                     self.state.in_flight = None;
@@ -476,7 +474,7 @@ impl RingPass<'_> {
             return Ok(WriterRole::Moved);
         }
         // 2. The program refuses a batch that would evict a root inside its grace, waiting spends no proof.
-        let slot = self.chain.slot().await?;
+        let slot = self.chain.submit().slot().await?;
         if slot < tracking.account.roots[TRACKING_ROOT_HISTORY - 1].expires_at() {
             return Ok(WriterRole::Held);
         }
@@ -541,11 +539,11 @@ impl RingPass<'_> {
         }
         // Held ahead of the send, a failed send can still land and the next pass reads its outcome.
         self.state.in_flight = Some(InFlight { attempt, writes });
-        Ok(self.chain.send(&transaction).await?)
+        Ok(self.chain.submit().send(&transaction).await?)
     }
 
     async fn signed_batch(&self, proven: &ProvenEnrollBatch) -> Result<SignedBatch, WriterError> {
-        let latest = self.chain.latest_blockhash().await?;
+        let latest = self.chain.submit().latest_blockhash().await?;
         let message = compile_message(
             &self.payer.address(),
             &proven.instructions,

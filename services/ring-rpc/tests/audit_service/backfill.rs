@@ -330,9 +330,13 @@ fn long_history(
 }
 
 async fn history_through(service: &AuditService<StaticSource>) -> u64 {
-    let request = WalletStatusRequest::new(target(RING), Address::new_from_array([1; 32]))
-        .sign(&delegate())
-        .expect("signed status read");
+    let request = WalletStatusRequest::new(WalletStatusAttestation {
+        target: target(RING),
+        wallet: Address::new_from_array([1; 32]),
+        cursor: None,
+    })
+    .sign(&delegate())
+    .expect("signed status read");
     service
         .wallet_status(&request)
         .await
@@ -492,15 +496,6 @@ async fn a_restart_over_a_store_resumes_at_the_durable_position_with_its_notes()
         Some(&None),
         "the first page is not read again"
     );
-}
-
-async fn stored_hub(fixture: &Fixture, source: StaticSource, store: Store) -> Hub<StaticSource> {
-    Hub::builder(source, identity(GENESIS))
-        .with_origins(origins())
-        .with_store(ServiceStore::Durable(store))
-        .local(RING, fixture.auditor.clone())
-        .await
-        .expect("hub")
 }
 
 /// The audited note on the first of more pages than one pass reads.
@@ -665,9 +660,13 @@ async fn an_enrolled_key_names_a_note_and_another_key_names_none() {
         async move {
             let service = fixture.hub(source).await.service(None).expect("service");
             service.backfill_utxos().await.expect("backfill");
-            let request = WalletStatusRequest::new(target(RING), Address::new_from_array(owner))
-                .sign(&delegate())
-                .expect("signed");
+            let request = WalletStatusRequest::new(WalletStatusAttestation {
+                target: target(RING),
+                wallet: Address::new_from_array(owner),
+                cursor: None,
+            })
+            .sign(&delegate())
+            .expect("signed");
             service.wallet_status(&request).await.expect("status")
         }
     };
@@ -754,9 +753,13 @@ async fn a_deposit_of_dummy_inputs_becomes_the_enrolled_owners_balance() {
         .enroll(&owner, &key, &fixture.auditor.pubkey());
     let service = fixture.hub(source).await.service(None).expect("service");
     service.backfill_utxos().await.expect("backfill");
-    let request = WalletStatusRequest::new(target(RING), Address::new_from_array(owner))
-        .sign(&delegate())
-        .expect("signed");
+    let request = WalletStatusRequest::new(WalletStatusAttestation {
+        target: target(RING),
+        wallet: Address::new_from_array(owner),
+        cursor: None,
+    })
+    .sign(&delegate())
+    .expect("signed");
     let read = service.wallet_status(&request).await.expect("status");
     assert_eq!(read.notes.len(), 1);
     assert_eq!(read.notes[0].status, WalletNoteStatus::Unspent);

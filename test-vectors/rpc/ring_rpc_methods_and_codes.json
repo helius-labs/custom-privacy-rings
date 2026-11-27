@@ -1,0 +1,410 @@
+{
+  "methods": [
+    "coSignTransaction",
+    "createAuditorKey",
+    "createRecordsRegistry",
+    "editCoSignList",
+    "getAuditedMerges",
+    "getAuditedUtxos",
+    "getCoSignLists",
+    "getDecryptedTransactions",
+    "getDelegateNotes",
+    "getListSalt",
+    "getPendingListApprovals",
+    "getRecordUpdateStatus",
+    "getRelayQuote",
+    "getRelayStatus",
+    "getSpendCoverage",
+    "getWalletActivity",
+    "getWalletStatus",
+    "health",
+    "prepareAuthorityTransfer",
+    "prepareRelay",
+    "prepareVaultEnrollment",
+    "refuseListApproval",
+    "registerEnrollmentRing",
+    "releaseDelegateSnapshot",
+    "releaseWalletSnapshot",
+    "ringStatus",
+    "setMergeSettings",
+    "setReaderGrant",
+    "submitEnrollment",
+    "submitRecordUpdate",
+    "submitRelay",
+    "submitVaultEnrollment"
+  ],
+  "refusals": [
+    {
+      "code": -32100,
+      "name": "RelayError::RingNotServed"
+    },
+    {
+      "code": -32101,
+      "name": "RelayError::QuoteFeePayer"
+    },
+    {
+      "code": -32102,
+      "name": "RelayError::QuoteExpired"
+    },
+    {
+      "code": -32103,
+      "name": "RelayError::QuoteWindow"
+    },
+    {
+      "code": -32104,
+      "name": "RelayError::ProofInputs"
+    },
+    {
+      "code": -32105,
+      "name": "RelayError::RingMismatch"
+    },
+    {
+      "code": -32106,
+      "name": "RelayError::RailMismatch"
+    },
+    {
+      "code": -32107,
+      "name": "RelayError::OwnerSignature"
+    },
+    {
+      "code": -32108,
+      "name": "RelayError::Proof"
+    },
+    {
+      "code": -32109,
+      "name": "RelayError::CoSignRefused"
+    },
+    {
+      "code": -32110,
+      "name": "RelayError::UnknownRelay"
+    },
+    {
+      "code": -32111,
+      "name": "RelayError::UnexpectedSigner"
+    },
+    {
+      "code": -32112,
+      "name": "RelayError::SignerSignature"
+    },
+    {
+      "code": -32113,
+      "name": "ServiceError::SendRefused"
+    },
+    {
+      "code": -32130,
+      "name": "GrantRefusal::RecordsUnavailable"
+    },
+    {
+      "code": -32131,
+      "name": "GrantRefusal::GrantsInTree"
+    },
+    {
+      "code": -32140,
+      "name": "RecordUpdateRefusal::Disabled"
+    },
+    {
+      "code": -32141,
+      "name": "RecordUpdateRefusal::EntryCount"
+    },
+    {
+      "code": -32142,
+      "name": "RecordUpdateRefusal::InvalidEntry"
+    },
+    {
+      "code": -32143,
+      "name": "RecordUpdateRefusal::Signature"
+    },
+    {
+      "code": -32144,
+      "name": "RecordUpdateRefusal::Expired"
+    },
+    {
+      "code": -32145,
+      "name": "RecordUpdateRefusal::UnknownRing"
+    },
+    {
+      "code": -32146,
+      "name": "RecordUpdateRefusal::RegistryNotServed"
+    },
+    {
+      "code": -32147,
+      "name": "RecordUpdateRefusal::Unauthorized"
+    },
+    {
+      "code": -32149,
+      "name": "RecordUpdateRefusal::UnknownUpdate"
+    },
+    {
+      "code": -32160,
+      "name": "CoSignError::Disabled"
+    },
+    {
+      "code": -32161,
+      "name": "CoSignError::OverLimit"
+    },
+    {
+      "code": -32162,
+      "name": "CoSignError::RepeatedAsset"
+    },
+    {
+      "code": -32163,
+      "name": "CoSignError::LimitsUnavailable"
+    },
+    {
+      "code": -32164,
+      "name": "CoSignError::MessageScope"
+    },
+    {
+      "code": -32165,
+      "name": "CoSignError::NotApproved"
+    },
+    {
+      "code": -32166,
+      "name": "CoSignError::ReleasedReservation"
+    },
+    {
+      "code": -32167,
+      "name": "CoSignError::Frozen"
+    },
+    {
+      "code": -32168,
+      "name": "CoSignError::Blocked"
+    },
+    {
+      "code": -32169,
+      "name": "CoSignError::NotAllowed"
+    },
+    {
+      "code": -32170,
+      "name": "RingRelayError::MergeSettingsUnavailable"
+    },
+    {
+      "code": -32171,
+      "name": "RingRelayError::StaleMergeSettings"
+    },
+    {
+      "code": -32172,
+      "name": "RingAuditError::WalletSnapshotExpired"
+    },
+    {
+      "code": -32173,
+      "name": "RingAuditError::WalletSnapshotCapacity"
+    },
+    {
+      "code": -32175,
+      "name": "CoSignError::ListSubject"
+    },
+    {
+      "code": -32176,
+      "name": "CoSignError::ApprovedCallNotOnce"
+    },
+    {
+      "code": -32177,
+      "name": "CoSignError::StaleBlockhash"
+    },
+    {
+      "code": -32178,
+      "name": "CoSignError::InputReserved"
+    },
+    {
+      "code": -32179,
+      "name": "CoSignError::MissingSignature"
+    },
+    {
+      "code": -32180,
+      "name": "EnrollmentRefusal::NotServed"
+    },
+    {
+      "code": -32181,
+      "name": "EnrollmentRefusal::RingMissing"
+    },
+    {
+      "code": -32182,
+      "name": "EnrollmentRefusal::InvalidWrite"
+    },
+    {
+      "code": -32183,
+      "name": "EnrollmentRefusal::RegisterKeyProof"
+    },
+    {
+      "code": -32184,
+      "name": "EnrollmentRefusal::Full"
+    },
+    {
+      "code": -32185,
+      "name": "EnrollmentRefusal::Budget"
+    },
+    {
+      "code": -32186,
+      "name": "EnrollmentRefusal::RingsFull"
+    },
+    {
+      "code": -32187,
+      "name": "EnrollmentRefusal::InFlight"
+    },
+    {
+      "code": -32190,
+      "name": "RecordUpdateRefusal::WrongCluster"
+    },
+    {
+      "code": -32200,
+      "name": "RelayError::TokenAccountSetup"
+    },
+    {
+      "code": -32201,
+      "name": "RelayError::DepositorIsFeePayer"
+    },
+    {
+      "code": -32203,
+      "name": "RelayError::Budget"
+    },
+    {
+      "code": -32204,
+      "name": "RelayError::SignerBudget"
+    },
+    {
+      "code": -32206,
+      "name": "RelayError::DelegateSignature"
+    },
+    {
+      "code": -32207,
+      "name": "RelayError::Allowance"
+    },
+    {
+      "code": -32208,
+      "name": "RelayError::LiveAttempt"
+    },
+    {
+      "code": -32209,
+      "name": "RelayError::DepositorSignature"
+    },
+    {
+      "code": -32210,
+      "name": "RelayError::BudgetUnset"
+    },
+    {
+      "code": -32211,
+      "name": "RelayError::ResealNarrow"
+    },
+    {
+      "code": -32212,
+      "name": "RelayError::ResealWide"
+    },
+    {
+      "code": -32216,
+      "name": "RelayError::Oversized"
+    },
+    {
+      "code": -32220,
+      "name": "AuthorityTransferError::NotDelegate"
+    },
+    {
+      "code": -32221,
+      "name": "AuthorityTransferError::ForeignAuditor"
+    },
+    {
+      "code": -32222,
+      "name": "AuthorityTransferError::SourceUnescrowed"
+    },
+    {
+      "code": -32223,
+      "name": "AuthorityTransferError::SourceKey"
+    },
+    {
+      "code": -32224,
+      "name": "AuthorityTransferError::RelayUnavailable"
+    },
+    {
+      "code": -32225,
+      "name": "AuthorityTransferError::TxViewingKey"
+    },
+    {
+      "code": -32226,
+      "name": "AuthorityTransferError::NotListWriter"
+    },
+    {
+      "code": -32227,
+      "name": "AuthorityTransferError::SourceNote"
+    },
+    {
+      "code": -32228,
+      "name": "AuthorityTransferError::UnrequestedInput"
+    },
+    {
+      "code": -32229,
+      "name": "AuthorityTransferError::WithdrawalMint"
+    },
+    {
+      "code": -32230,
+      "name": "RecordUpdateRefusal::ReaderGrantsInDatabase"
+    },
+    {
+      "code": -32240,
+      "name": "RecordUpdateRefusal::InvalidAwaitedLists"
+    },
+    {
+      "code": -32241,
+      "name": "RecordUpdateRefusal::NotPolicyAuthority"
+    },
+    {
+      "code": -32242,
+      "name": "RecordUpdateRefusal::ListApprovalBatch"
+    },
+    {
+      "code": -32244,
+      "name": "RecordUpdateRefusal::UnknownListApproval"
+    },
+    {
+      "code": -32245,
+      "name": "RecordUpdateRefusal::ListApprovalWindow"
+    },
+    {
+      "code": -32250,
+      "name": "RateLimit::PublicReads"
+    },
+    {
+      "code": -32251,
+      "name": "RateLimit::SignedReads"
+    },
+    {
+      "code": -32252,
+      "name": "RateLimit::SignedWrites"
+    },
+    {
+      "code": -32253,
+      "name": "RateLimit::SigningKey"
+    },
+    {
+      "code": -32254,
+      "name": "UnknownApiKey"
+    },
+    {
+      "code": -32261,
+      "name": "RecordUpdateRefusal::RecordsMessageMismatch"
+    },
+    {
+      "code": -32270,
+      "name": "GrantRefusal::WalletScope"
+    },
+    {
+      "code": -32276,
+      "name": "RecordUpdateRefusal::InvalidLimits"
+    },
+    {
+      "code": -32277,
+      "name": "RecordUpdateRefusal::LimitsWithoutRecord"
+    },
+    {
+      "code": -32279,
+      "name": "RecordUpdateRefusal::RingSaltNotCommitted"
+    },
+    {
+      "code": -32280,
+      "name": "RecordUpdateRefusal::UnregisteredOwnerUnmatched"
+    },
+    {
+      "code": -32296,
+      "name": "CoSignError::UnrecordedAsset"
+    }
+  ]
+}

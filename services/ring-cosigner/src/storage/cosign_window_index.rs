@@ -8,7 +8,7 @@ use ring_writer::record_update::MAX_LIMIT_WINDOW_SLOTS;
 
 use crate::cosign::AssetFlow;
 use ring_service_core::sql::{
-    integer, placeholders, read_address, read_bytes as bytes, read_integer, statement,
+    self, integer, placeholders, read_address, read_bytes as bytes, read_integer,
 };
 
 pub(super) const EPOCH_SLOTS: u64 = MAX_LIMIT_WINDOW_SLOTS.next_power_of_two();
@@ -349,11 +349,7 @@ impl<C: ConnectionTrait> Nodes<'_, C> {
                 "SELECT ring,asset,epoch,scope_kind,owner,node,outflow,deposited,withdrawn FROM cosign_totals WHERE {}",
                 conditions.join(" OR ")
             );
-            for row in self
-                .conn
-                .query_all(statement(self.conn, sql, values))
-                .await?
-            {
+            for row in sql::Query::new(sql, values).all(self.conn).await? {
                 nodes.insert(NodeKey::read(&row)?, Amounts::read(&row)?);
             }
         }
@@ -377,7 +373,7 @@ impl Nodes<'_, DatabaseTransaction> {
                 "INSERT INTO cosign_totals(ring,asset,epoch,scope_kind,owner,node,outflow,deposited,withdrawn) VALUES {} ON CONFLICT(ring,asset,epoch,scope_kind,owner,node) DO UPDATE SET outflow=excluded.outflow,deposited=excluded.deposited,withdrawn=excluded.withdrawn",
                 slots.join(",")
             );
-            self.conn.execute(statement(self.conn, sql, values)).await?;
+            sql::Query::new(sql, values).execute(self.conn).await?;
         }
         Ok(())
     }
