@@ -263,7 +263,7 @@ pub use crate::{
     },
     client::{RingClient, RingIndexerBackend},
     delegate_source::{
-        AllowedNullifiers, DelegateSourceError, ResolvedSource, SourceEnrollment,
+        AllowedNullifiers, DelegateSourceError, ResolvedSource, SourceEnrollment, SourceSpends,
         TrackingEnrollment,
     },
     deposit::{
@@ -302,8 +302,8 @@ pub use crate::{
     relay_message::{
         ApprovalLimit, ApprovalOpening, CoSignerApproval, CoSignerRule, ExactApproval,
         FunderApproval, LegDirection, MessageMismatch, OutputTotalsOpening, OwnerApproval,
-        PublicLeg, PublicTotalsOpening, RelayFunderTerms, RelayTransferTerms, SlotOpening,
-        TokenAccountCreate, VerifiedMessage,
+        PublicLeg, PublicTotalsOpening, RelayFunderTerms, RelayTransferTerms, SlotCommitment,
+        SlotOpening, TokenAccountCreate, VerifiedMessage,
     },
     ring_error::RingError,
     select::{select_merge_where, select_spend_where},

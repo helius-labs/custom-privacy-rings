@@ -19,7 +19,7 @@ use super::{
 use crate::{
     relay_message::{
         ApprovalOpening, ExpectedMessage, LegDirection, PublicLeg, RelayFunderTerms,
-        RelayTransferTerms, SealedTerms, SlotOpening, TokenAccountCreate,
+        RelayTransferTerms, SealedTerms, SlotCommitment, SlotOpening, TokenAccountCreate,
     },
     rpc::{
         PrepareRelayRequest, ProofInputBytes, RelayCoOwner, RelayIntent, RelayProofInputs,
@@ -217,7 +217,8 @@ impl<'t, R: Rail> WalletRelay<'t, R> {
 }
 
 impl<R: Rail> RingTransfer<R> {
-    /// A frame of only dummies, each funder reads its legs and signs the message Ring RPC returns.
+    /// A frame of only dummies, each funder reads every output and leg and signs the message Ring
+    /// RPC returns.
     pub(crate) async fn deposit_relay<C: AsyncRpc + ?Sized>(
         &self,
         client: &C,
@@ -286,6 +287,31 @@ impl<P: Planned> Sealed<'_, P> {
             .collect()
     }
 
+    fn sealed_slots(&self) -> Result<Vec<SealedSlot>, RingError> {
+        let inputs = &self.pipeline.staged.proof_inputs;
+        published_outputs(&inputs.output_utxos)
+            .iter()
+            .zip(&inputs.external_data.outputs)
+            .zip(0u32..)
+            .map(|((output, published), slot)| {
+                let tag = match published.owner_tag {
+                    OwnerTag::Inline(tag) => Some(Hash(tag)),
+                    OwnerTag::Account(_) => None,
+                };
+                Ok(SealedSlot {
+                    opening: SlotOpening {
+                        tag: tag.clone(),
+                        ..slot_opening(output, slot, inputs.output_tree_id)?
+                    },
+                    published: SlotCommitment {
+                        hash: Hash(published.utxo_hash),
+                        tag,
+                    },
+                })
+            })
+            .collect()
+    }
+
     /// One per key funding a deposit leg, a leg the fee payer or a signing owner funds is refused.
     fn funder_terms(
         &self,
@@ -294,32 +320,37 @@ impl<P: Planned> Sealed<'_, P> {
     ) -> Result<Vec<RelayFunderTerms>, RingError> {
         let staged = &self.pipeline.staged;
         let transfers = &staged.proof_inputs.external_data.interface_transfers;
-        let ring = self.pipeline.ring.program_id();
-        let setup = token_account_creates(setup);
-        let mut terms: Vec<RelayFunderTerms> = Vec::new();
-        let staged_legs = transfers
-            .iter()
-            .zip(&staged.interface_transfer_accounts)
-            .zip(self.public_legs()?);
-        for ((transfer, accounts), leg) in staged_legs {
+        let mut funders: Vec<Address> = Vec::new();
+        for (transfer, accounts) in transfers.iter().zip(&staged.interface_transfer_accounts) {
             let Some(funder) = deposit_funder(&transfer.interface_transfer(), accounts) else {
                 continue;
             };
             if funder == fee_payer || staged.owner_signers.contains(&funder) {
                 return Err(RingError::RelayFeePayerFundsDeposit);
             }
-            match terms.iter_mut().find(|held| held.signer.0 == funder) {
-                Some(held) => held.legs.push(leg),
-                None => terms.push(RelayFunderTerms {
-                    ring: SerializablePubkey(ring),
-                    fee_payer: SerializablePubkey(fee_payer),
-                    signer: SerializablePubkey(funder),
-                    legs: vec![leg],
-                    setup: setup.clone(),
-                }),
+            if !funders.contains(&funder) {
+                funders.push(funder);
             }
         }
-        Ok(terms)
+        let ring = self.pipeline.ring.program_id();
+        let slots: Vec<SlotCommitment> = self
+            .sealed_slots()?
+            .into_iter()
+            .map(|slot| slot.published)
+            .collect();
+        let legs = self.public_legs()?;
+        let setup = token_account_creates(setup);
+        Ok(funders
+            .into_iter()
+            .map(|funder| RelayFunderTerms {
+                ring: SerializablePubkey(ring),
+                fee_payer: SerializablePubkey(fee_payer),
+                signer: SerializablePubkey(funder),
+                slots: slots.clone(),
+                legs: legs.clone(),
+                setup: setup.clone(),
+            })
+            .collect())
     }
 
     /// One per public owner, every published slot and its own notes.
@@ -333,20 +364,11 @@ impl<P: Planned> Sealed<'_, P> {
         let ring = self.pipeline.ring.program_id();
         let setup = token_account_creates(setup);
         let legs = self.public_legs()?;
-        let slots = published_outputs(&inputs.output_utxos)
-            .iter()
-            .zip(&inputs.external_data.outputs)
-            .zip(0u32..)
-            .map(|((output, published), slot)| {
-                Ok(SlotOpening {
-                    tag: match published.owner_tag {
-                        OwnerTag::Inline(tag) => Some(Hash(tag)),
-                        OwnerTag::Account(_) => None,
-                    },
-                    ..slot_opening(output, slot, inputs.output_tree_id)?
-                })
-            })
-            .collect::<Result<Vec<_>, RingError>>()?;
+        let slots: Vec<SlotOpening> = self
+            .sealed_slots()?
+            .into_iter()
+            .map(|slot| slot.opening)
+            .collect();
         Ok(staged
             .owner_signers
             .iter()
@@ -399,6 +421,11 @@ impl<P: Planned> Sealed<'_, P> {
             approval_blinder: self.pipeline.approval_blinder,
         }
     }
+}
+
+struct SealedSlot {
+    opening: SlotOpening,
+    published: SlotCommitment,
 }
 
 /// A dummy opens under the zero owner with its blinding alone.

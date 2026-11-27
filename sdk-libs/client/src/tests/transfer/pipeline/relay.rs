@@ -702,7 +702,7 @@ mod delegate_message {
 
     use super::*;
     use crate::{
-        delegate_source::tests::allowed_as_pinned,
+        delegate_source::tests::PinnedSpends,
         relay_message::ExpectedDelegate,
         tests::support::{pinned_vector, relay_message, verdict, MessageCase, MessageVector},
         AllowedNullifiers, CoOwner, CustomRingConfig, DelegateMove, DelegateOutput,
@@ -1597,7 +1597,10 @@ mod delegate_message {
                 output.owner_tag = random;
             }
         });
-        assert_eq!(verdict(&expected, &sealed_to_the_idle_source), Ok(()));
+        assert_eq!(
+            verdict(&expected, &sealed_to_the_idle_source),
+            Err(MessageMismatch::ChangeExceedsSpend)
+        );
         assert_eq!(
             verdict(&expected, &stripped),
             Err(MessageMismatch::Recipients)
@@ -1779,14 +1782,46 @@ mod delegate_message {
             assert_eq!(
                 paid.check(&relay_message(&FEE_PAYER, std::slice::from_ref(&stolen), UNITS).0)
                     .map(drop),
-                Ok(()),
-                "{mode:?} the outputs alone match the request"
+                Err(MessageMismatch::ChangeExceedsSpend),
+                "{mode:?} the outputs match the request, the change returns to a source that spent nothing"
             );
             assert_eq!(
                 expected
                     .check(&relay_message(&FEE_PAYER, &[stolen], UNITS).0)
                     .map(drop),
                 Err(MessageMismatch::SpendsUnrequestedNote),
+                "{mode:?}"
+            );
+        }
+    }
+
+    /// The member's note funds the payment and its change returns to the other source.
+    #[tokio::test]
+    async fn a_change_past_what_its_source_spent_in_the_mint_is_refused_on_both_rails() {
+        let delegate = keypair(7);
+        let (member, other) = (keypair(1), keypair(3));
+        for mode in [RingMode::Confidential, RingMode::Anonymous] {
+            let relay = DelegateRelay::on_mode(Answer::Honest, delegate.pubkey(), mode);
+            let config = ring().require_config(relay.client.zolana()).await.unwrap();
+            let mut asked = request(delegate.pubkey());
+            asked.transfer.sources = [&member, &other]
+                .map(|source| SerializableShieldedAddress(source.shielded_address().unwrap()))
+                .into();
+            let expected = relay.expected(&asked, &config).await;
+            let verdict = |frame: &Instruction| {
+                expected
+                    .check(&relay_message(&FEE_PAYER, std::slice::from_ref(frame), UNITS).0)
+                    .map(drop)
+            };
+            let honest = relay
+                .build(&asked.transfer, &asked.tx_viewing_key)
+                .await
+                .unwrap();
+            assert_eq!(verdict(&honest), Ok(()), "{mode:?}");
+            let shifted = relay.victim_funded(&asked, &other, &member).await;
+            assert_eq!(
+                verdict(&shifted),
+                Err(MessageMismatch::ChangeExceedsSpend),
                 "{mode:?}"
             );
         }
@@ -2084,7 +2119,15 @@ mod delegate_message {
             quote: &quote(),
             output_tree_id: crate::tests::support::TREE_ID,
             config: &config,
-            requester: DelegateRequester::Ring(allowed_as_pinned(&sources, spends)),
+            requester: DelegateRequester::Ring(
+                PinnedSpends {
+                    source: &sources[0],
+                    mint: USDC,
+                    amount: 10,
+                    nullifiers: spends,
+                }
+                .allowed(),
+            ),
         })
         .unwrap();
         for case in vector.cases {
@@ -2181,7 +2224,15 @@ mod delegate_message {
             quote: &quote,
             output_tree_id: crate::tests::support::TREE_ID,
             config: &config,
-            requester: DelegateRequester::Ring(allowed_as_pinned(&sources, honest_nullifiers)),
+            requester: DelegateRequester::Ring(
+                PinnedSpends {
+                    source: &sources[0],
+                    mint: Mint::SOL,
+                    amount: 10,
+                    nullifiers: honest_nullifiers,
+                }
+                .allowed(),
+            ),
         })
         .unwrap();
         assert_eq!(vector.cases.len(), Answer::ALL.len() + 1);
@@ -4207,6 +4258,154 @@ mod public_signers {
         }
         .pending();
         signs(&mixed_pending, &funder).await;
+    }
+
+    struct Funded<'a> {
+        sender: &'a ShieldedKeypair,
+        funder: Address,
+        withdrawals: &'a [Address],
+    }
+
+    impl<'a> Funded<'a> {
+        fn paying(&self, to: &ShieldedKeypair) -> AnonymousTransfer<'a> {
+            let mut transaction = ConfidentialTransaction::new_with_ring(
+                vec![ring_utxo(self.sender, Mint::SOL, 10, 0)],
+                FEE_PAYER,
+                ring().program_id(),
+            )
+            .unwrap();
+            transaction.deposit_sol(5, self.funder).unwrap();
+            let mut legs = vec![TransactInterfaceTransferAccounts::Sol(
+                TransactSolTransferAccounts {
+                    recipient: self.funder,
+                },
+            )];
+            for &recipient in self.withdrawals {
+                transaction.withdraw_sol(1, recipient).unwrap();
+                legs.push(TransactInterfaceTransferAccounts::Sol(
+                    TransactSolTransferAccounts { recipient },
+                ));
+            }
+            CustomRingTransfer::new(CustomRingTransferInput {
+                ring: ring(),
+                sender: self.sender,
+                nullifier_key: Some(&self.sender.nullifier_key),
+                transaction,
+            })
+            .with_interface_transfer_accounts(legs)
+            .with_anonymous_signer(&self.sender.signing_key)
+            .with_payment(pay(to, 4))
+            .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_funder_refuses_its_leg_in_a_frame_paying_another_owner() {
+        let (sender, payee, thief, funder) = (keypair(1), keypair(2), keypair(3), keypair(4));
+        let client = chain(
+            RingMode::Anonymous,
+            None,
+            &[&sender, &payee, &thief, &funder],
+        )
+        .client();
+        let config = ring().require_config(client.zolana()).await.unwrap();
+        let funded = Funded {
+            sender: &sender,
+            funder: address(&funder),
+            withdrawals: &[],
+        };
+        let asked = sent(
+            funded
+                .paying(&payee)
+                .prepare_relay(client.zolana(), quote())
+                .await
+                .unwrap()
+                .sign()
+                .unwrap(),
+        )
+        .await;
+        let forged = sent(
+            funded
+                .paying(&thief)
+                .prepare_relay(client.zolana(), quote())
+                .await
+                .unwrap()
+                .sign()
+                .unwrap(),
+        )
+        .await;
+        let terms = asked
+            .pending
+            .funder_terms(address(&funder))
+            .unwrap()
+            .clone();
+        let pending = |frame: Instruction| {
+            FunderApproval {
+                relay_id: asked.relay_id.clone(),
+                message: relay_message(&FEE_PAYER, &[frame], UNITS).0,
+                terms: terms.clone(),
+                config: &config,
+            }
+            .pending()
+        };
+        signs(&pending(frame(&client, &asked.request).await), &funder).await;
+        refused(
+            &pending(frame(&client, &forged.request).await),
+            &funder,
+            MessageMismatch::Recipients,
+        );
+    }
+
+    #[tokio::test]
+    async fn a_funder_refuses_a_frame_with_a_leg_its_terms_omit() {
+        let (sender, payee, funder, drain) = (keypair(1), keypair(2), keypair(4), keypair(5));
+        let client = chain(
+            RingMode::Anonymous,
+            None,
+            &[&sender, &payee, &funder, &drain],
+        )
+        .client();
+        let config = ring().require_config(client.zolana()).await.unwrap();
+        let asked = sent(
+            Funded {
+                sender: &sender,
+                funder: address(&funder),
+                withdrawals: &[address(&drain)],
+            }
+            .paying(&payee)
+            .prepare_relay(client.zolana(), quote())
+            .await
+            .unwrap()
+            .sign()
+            .unwrap(),
+        )
+        .await;
+        let terms = asked
+            .pending
+            .funder_terms(address(&funder))
+            .unwrap()
+            .clone();
+        let message = relay_message(&FEE_PAYER, &[frame(&client, &asked.request).await], UNITS).0;
+        let pending = |terms: RelayFunderTerms| {
+            FunderApproval {
+                relay_id: asked.relay_id.clone(),
+                message: message.clone(),
+                terms,
+                config: &config,
+            }
+            .pending()
+        };
+        signs(&pending(terms.clone()), &funder).await;
+        let funded_alone = RelayFunderTerms {
+            legs: terms
+                .legs
+                .iter()
+                .filter(|leg| leg.direction == crate::LegDirection::Deposit)
+                .cloned()
+                .collect(),
+            ..terms
+        };
+        refused(&pending(funded_alone), &funder, MessageMismatch::Legs);
     }
 
     #[tokio::test]
