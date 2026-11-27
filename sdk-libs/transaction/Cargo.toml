@@ -25,4 +25,3 @@ hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 solana-signature = { workspace = true }
-spr-instruction = { workspace = true }

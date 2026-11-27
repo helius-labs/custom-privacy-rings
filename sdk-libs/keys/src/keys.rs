@@ -153,10 +153,9 @@ pub(crate) trait HeldKeys {
 
 impl HeldKeys for ShieldedKeypair {
     fn held(&self, pubkey: &X25519Pubkey) -> Result<&ViewingKey, RingKeyError> {
-        match self.viewing_key.pubkey() == *pubkey {
-            true => Ok(&self.viewing_key),
-            false => Err(RingKeyError::UnknownViewingKey),
-        }
+        (self.viewing_key.pubkey() == *pubkey)
+            .then_some(&self.viewing_key)
+            .ok_or(RingKeyError::UnknownViewingKey)
     }
 }
 

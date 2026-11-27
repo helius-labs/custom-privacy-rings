@@ -10956,7 +10956,6 @@ dependencies = [
  "solana-signature",
  "spr-event",
  "spr-hasher",
- "spr-instruction",
  "spr-interface",
  "spr-keypair",
  "spr-transaction",

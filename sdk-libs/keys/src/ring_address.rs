@@ -43,13 +43,10 @@ pub struct RingAddress {
     pub list_salt: [u8; 32],
 }
 
-impl fmt::Debug for RingAddress {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RingAddress")
-            .field("ring_program_id", &self.ring_program_id)
-            .finish_non_exhaustive()
-    }
-}
+crate::redacted_debug!(RingAddress {
+    shown: [ring_program_id],
+    hidden: [recipient, list_salt],
+});
 
 impl RingAddress {
     /// The holder's current viewing key, a rotated holder names its newest.
@@ -74,10 +71,9 @@ impl RingAddress {
     ) -> Result<(), RingKeyError> {
         let zero_key = recipient.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY;
         let zero_salt = *list_salt == [0; LIST_SALT_LEN];
-        match zero_key == zero_salt && is_canonical_bn254_scalar_be(list_salt) {
-            true => Ok(()),
-            false => Err(RingKeyError::InvalidRingAddressListSalt),
-        }
+        (zero_key == zero_salt && is_canonical_bn254_scalar_be(list_salt))
+            .then_some(())
+            .ok_or(RingKeyError::InvalidRingAddressListSalt)
     }
 
     /// `recipient ‖ ring_program_id ‖ list_salt ‖ checksum`.
@@ -155,16 +151,10 @@ pub struct RingPaymentRequest {
     pub tag: Option<ViewTag>,
 }
 
-impl fmt::Debug for RingPaymentRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RingPaymentRequest")
-            .field("address", &self.address)
-            .field("amount", &self.amount)
-            .field("mint", &self.mint)
-            .field("label", &self.label)
-            .finish_non_exhaustive()
-    }
-}
+crate::redacted_debug!(RingPaymentRequest {
+    shown: [address, amount, mint, label],
+    hidden: [tag],
+});
 
 impl RingPaymentRequest {
     pub fn new(address: RingAddress) -> Self {

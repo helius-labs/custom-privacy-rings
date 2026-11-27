@@ -127,9 +127,10 @@ pub fn record_key(kind: RecordKind, nullifier_pk: [u8; 32]) -> RecordKey {
 
 /// The key of an exit or merge record, the zero key named by its bit alone.
 pub fn carried_key(nullifier_pk: [u8; 32]) -> RecordKey {
-    match nullifier_pk == ZERO_NULLIFIER_PUBKEY {
-        true => RecordKey::Zero,
-        false => RecordKey::Carried(nullifier_pk),
+    if nullifier_pk == ZERO_NULLIFIER_PUBKEY {
+        RecordKey::Zero
+    } else {
+        RecordKey::Carried(nullifier_pk)
     }
 }
 
@@ -189,10 +190,10 @@ pub fn open_recipient_body(
         .ok_or(custom_ring_interface::CustomRingError::RingTransactLength)?;
     Ok(OpenedRecipientBody {
         record: OutputRecord::decode(record, form)?,
-        payload: match payload.is_empty() {
-            true => PayloadRead::Absent,
-            false => RecipientPayload::decode(payload)
-                .map_or(PayloadRead::Malformed, PayloadRead::Opened),
+        payload: if payload.is_empty() {
+            PayloadRead::Absent
+        } else {
+            RecipientPayload::decode(payload).map_or(PayloadRead::Malformed, PayloadRead::Opened)
         },
     })
 }
@@ -245,7 +246,7 @@ pub struct AnonymousOutput<'a> {
 }
 
 /// A note its reader rebuilt, a match establishes ownership.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct OpenedNote {
     pub utxo: Utxo,
     /// The reader's own key or the zero key, the owner spends the note once that key is its registered one.
@@ -253,6 +254,11 @@ pub struct OpenedNote {
     pub data_hash: Option<[u8; 32]>,
     pub ring_data_hash: Option<[u8; 32]>,
 }
+
+zolana_ring_keys::redacted_debug!(OpenedNote {
+    shown: [nullifier_pk, data_hash, ring_data_hash],
+    hidden: [utxo],
+});
 
 /// A body whose rebuilt commitment names the reader.
 #[derive(Clone, Debug, PartialEq, Eq)]

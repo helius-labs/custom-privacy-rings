@@ -1,8 +1,6 @@
 //! The ring side of SPP's output blinding.
 //!
 //! An auditor holding the sealed key and the salt rebuilds the seed, and through it each ring output's blinding.
-//!
-//! Read after `program-libs/interface/src/proof/audit_stream.rs`.
 
 use custom_ring_interface::domain;
 use spr_hasher::{

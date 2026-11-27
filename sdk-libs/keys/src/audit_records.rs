@@ -32,9 +32,10 @@ impl SealedLayout for AuditStreamLayout {
         StreamRegion {
             start_counter: self.first_key_counter() + (slot * SEALED_KEY_BLOCKS) as u32,
             max_blocks: SEALED_KEY_BLOCKS,
-            len: match slot < self.outputs {
-                true => SEALED_KEY_LEN,
-                false => 0,
+            len: if slot < self.outputs {
+                SEALED_KEY_LEN
+            } else {
+                0
             },
         }
     }
@@ -110,10 +111,13 @@ impl RecordKey {
         let key = match carried {
             None if zero_key => Self::Zero,
             None => Self::Unpublished,
-            Some(key) if zero_key == (key == ZERO_NULLIFIER_PUBKEY) => match zero_key {
-                true => Self::Zero,
-                false => Self::Carried(key),
-            },
+            Some(key) if zero_key == (key == ZERO_NULLIFIER_PUBKEY) => {
+                if zero_key {
+                    Self::Zero
+                } else {
+                    Self::Carried(key)
+                }
+            }
             Some(_) => return Err(CustomRingError::RingTransactLength),
         };
         Ok(key)
@@ -122,7 +126,7 @@ impl RecordKey {
 
 /// One slot's record, the proof holds a dummy's plaintext to zero.
 /// SPP commits the owner key and the mint as hashes no reader inverts, so the record carries the raw values.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct OutputRecord {
     pub kind: RecordKind,
     pub amount: u64,
@@ -136,6 +140,19 @@ pub struct OutputRecord {
     /// Zero on an exit.
     pub ring_data_hash: [u8; 32],
 }
+
+crate::redacted_debug!(OutputRecord {
+    shown: [
+        kind,
+        amount,
+        owner_key,
+        mint,
+        key,
+        data_hash,
+        ring_data_hash
+    ],
+    hidden: [blinding],
+});
 
 impl OutputRecord {
     /// The sealed plaintext, a slot publishes its first [`Self::published_len`] bytes.
@@ -172,13 +189,13 @@ impl OutputRecord {
         read_all(published, |bytes| {
             let head = RecordHead::read(bytes)?;
             let exit = head.record.kind == RecordKind::Exit;
-            let carried = match exit {
-                true => Some(*bytes.array()?),
-                false => None,
-            };
-            let mut hash = |published: bool| match published {
-                true => bytes.array().copied(),
-                false => Ok([0; 32]),
+            let carried = if exit { Some(*bytes.array()?) } else { None };
+            let mut hash = |published: bool| {
+                if published {
+                    bytes.array().copied()
+                } else {
+                    Ok([0; 32])
+                }
             };
             let data_hash = hash(form.data)?;
             let ring_data_hash = hash(form.ring_data && !exit)?;
@@ -238,12 +255,13 @@ impl RecordHead {
     /// A dummy carries no byte and no key, every other key follows the zero key bit.
     fn with_key(self, carried: Option<[u8; 32]>) -> Result<OutputRecord, CustomRingError> {
         if self.record.kind == RecordKind::Dummy {
-            return match self.record == OutputRecord::default()
+            return if self.record == OutputRecord::default()
                 && !self.zero_key
                 && carried.is_none_or(|key| key == [0; 32])
             {
-                true => Ok(self.record),
-                false => Err(CustomRingError::RingTransactLength),
+                Ok(self.record)
+            } else {
+                Err(CustomRingError::RingTransactLength)
             };
         }
         Ok(OutputRecord {
@@ -260,15 +278,10 @@ pub struct MergeRecord {
     pub seed: [u8; 32],
 }
 
-/// The seed is the owner's nullifier secret, never printed.
-impl core::fmt::Debug for MergeRecord {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self { record, seed: _ } = self;
-        f.debug_struct("MergeRecord")
-            .field("record", record)
-            .finish_non_exhaustive()
-    }
-}
+crate::redacted_debug!(MergeRecord {
+    shown: [record],
+    hidden: [seed],
+});
 
 impl MergeRecord {
     /// The full record form, the merge output's key travels with its seed.
@@ -301,18 +314,10 @@ pub struct MergeEnvelope {
     pub recipient_u: [u8; 32],
 }
 
-/// The ephemeral secret opens the record, never printed.
-impl core::fmt::Debug for MergeEnvelope {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let Self {
-            eph_sk: _,
-            recipient_u,
-        } = self;
-        f.debug_struct("MergeEnvelope")
-            .field("recipient_u", recipient_u)
-            .finish_non_exhaustive()
-    }
-}
+crate::redacted_debug!(MergeEnvelope {
+    shown: [recipient_u],
+    hidden: [eph_sk],
+});
 
 impl MergeEnvelope {
     pub fn encode(&self) -> [u8; MERGE_ENVELOPE_LEN] {
@@ -378,12 +383,17 @@ pub enum AuditEvidence {
 }
 
 /// The auditor derives every output blinding from the sealed viewing secret, the published salt and `n0`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct AuditEnvelope {
     pub tx_viewing_secret: [u8; ENVELOPE_KEY_LEN],
     pub real_inputs: u8,
     pub evidence: AuditEvidence,
 }
+
+crate::redacted_debug!(AuditEnvelope {
+    shown: [real_inputs, evidence],
+    hidden: [tx_viewing_secret],
+});
 
 impl AuditEnvelope {
     /// Writes the raw fields, use `decode` to check the counts and the zero records.
@@ -415,14 +425,15 @@ impl AuditEnvelope {
         read_all(plaintext, |bytes| {
             let tx_viewing_secret = *bytes.array()?;
             let real_inputs = bytes.byte()?;
-            let evidence = match layout.key.entry {
-                false => AuditEvidence::None,
-                true => AuditEvidence::Entry {
+            let evidence = if layout.key.entry {
+                AuditEvidence::Entry {
                     default_note_bits: u64::from_be_bytes(*bytes.array()?),
                     inputs: (0..layout.inputs)
                         .map(|_| EntryRecord::read(bytes))
                         .collect::<Result<_, CustomRingError>>()?,
-                },
+                }
+            } else {
+                AuditEvidence::None
             };
             // 2. R notes fit the published inputs, the circuit holds every note below n.
             if usize::from(real_inputs) > layout.inputs {
@@ -504,9 +515,10 @@ impl RecipientPayload {
         let mut bytes = Bytes::new(plaintext, CustomRingError::RingTransactLength);
         let length = usize::from(u16::from_be_bytes(*bytes.array()?));
         let data = bytes.take(length)?.to_vec();
-        match bytes.rest().iter().all(|byte| *byte == 0) {
-            true => Ok(Self { data }),
-            false => Err(CustomRingError::RingTransactLength),
+        if bytes.rest().iter().all(|byte| *byte == 0) {
+            Ok(Self { data })
+        } else {
+            Err(CustomRingError::RingTransactLength)
         }
     }
 }
@@ -521,8 +533,9 @@ fn read_all<'a, T>(
 ) -> Result<T, CustomRingError> {
     let mut bytes = Bytes::new(plaintext, CustomRingError::RingTransactLength);
     let value = read(&mut bytes)?;
-    match bytes.rest().is_empty() {
-        true => Ok(value),
-        false => Err(CustomRingError::RingTransactLength),
+    if bytes.rest().is_empty() {
+        Ok(value)
+    } else {
+        Err(CustomRingError::RingTransactLength)
     }
 }

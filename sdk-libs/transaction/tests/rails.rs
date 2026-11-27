@@ -105,9 +105,10 @@ fn ring_spend(
         .get_transaction_viewing_key(&inputs[0].nullifier)
         .unwrap();
     let payer = address(owner).solana_address().unwrap();
-    let transaction = match compact {
-        true => ConfidentialTransaction::new_compact_with_ring(inputs, payer, RING),
-        false => ConfidentialTransaction::new_with_ring(inputs, payer, RING),
+    let transaction = if compact {
+        ConfidentialTransaction::new_compact_with_ring(inputs, payer, RING)
+    } else {
+        ConfidentialTransaction::new_with_ring(inputs, payer, RING)
     }
     .unwrap()
     .with_output_tree_id(TREE)
@@ -338,6 +339,34 @@ fn a_delivered_output_opens_only_for_the_key_its_owner_tag_names() {
             .open_body(&body)
             .unwrap())
         .is_none());
+}
+
+#[test]
+fn a_published_slot_and_its_opened_note_print_no_blinding() {
+    let sender = keypair(1);
+    let receiver = keypair(2);
+    let recipient = address(&receiver);
+    let (mut tx, tx_key) = ring_transfer(&sender, false);
+    tx.transfer_sol(&recipient, 3).unwrap();
+    let rail = delivered(tx_key);
+    let proof = rail.encrypt(tx, &address(&sender)).unwrap();
+    let published = rail.published_slots(&proof, &address(&sender)).unwrap();
+    let body = decrypt(&receiver.viewing_key, &rail, &proof, &published[1], 1);
+    let assets = RingAssets::new([]).unwrap();
+    let opened = reader(&recipient, &assets, &proof, 1)
+        .open_body(&body)
+        .unwrap();
+    assert!(opened.is_some());
+    let blinding = proof.output_utxos[1].blinding;
+    for printed in [
+        format!("{:?}", published[1]),
+        format!("{body:?}"),
+        format!("{opened:?}"),
+    ] {
+        for secret in [format!("{blinding:?}"), hex::encode(blinding)] {
+            assert!(!printed.contains(&secret), "{printed}");
+        }
+    }
 }
 
 /// SOL spent first, the SPL change still leads, a change the caller declared first stays put.
@@ -1380,9 +1409,10 @@ fn a_memo_on_a_ring_output_is_refused_on_both_rails() {
             ring_program_id: Some(RING),
             ..Default::default()
         };
-        let output = match memo {
-            true => output.with_memo(b"lost".to_vec()),
-            false => output,
+        let output = if memo {
+            output.with_memo(b"lost".to_vec())
+        } else {
+            output
         };
         tx.add_output_utxo(output).unwrap();
         tx
@@ -1392,12 +1422,13 @@ fn a_memo_on_a_ring_output_is_refused_on_both_rails() {
         let plan = AnonymousPlan::new().with_payment(recipient.viewing_pubkey);
         let hidden = anonymous(ViewingKey::new(), plan).encrypt(transaction(memo), &sender);
         for sealed in [plain, hidden] {
-            match memo {
-                true => assert!(matches!(
+            if memo {
+                assert!(matches!(
                     sealed,
                     Err(zolana_ring_transaction::RingRailError::OutputDataNotCarried { .. })
-                )),
-                false => assert!(sealed.is_ok()),
+                ));
+            } else {
+                assert!(sealed.is_ok());
             }
         }
     }
