@@ -67,7 +67,7 @@ The sender's SDK pays a nonzero key to any owner, enrolled or not, since only th
 - The key holder derives each listed tag and each body's slot secret. No viewing key and no raw agreement leaves the holder.
 - One indexer call names at most `TAGS_PER_REQUEST = 1000` tags, so a longer list takes more calls.
 - In a sync's first round the bootstrap tag reads from the key's stored tag position. So does each index below `scanned + TAG_WINDOW` of a stream whose `scanned` is above zero. Every other index, and every index a later round lists, reads from the first indexed block.
-- Each returned transaction moves the counters past every listed stream tag it publishes, whatever its ring. A tag proves no ownership.
+- A returned transaction moves a stream counter past a listed tag only at a slot that opens under the key that lists the tag, whatever its ring. A slot opens when its body decrypts and its commitment rebuilds under that key. A tag proves no ownership, and a transaction that opens no slot moves no counter.
 - The wallet lists again after a round that moves a `next` counter, and the sync ends at a round that lists no tag. It sets the tag position of every held key to the lowest final slot of its reads.
 - The wallet tries each ring body of a returned transaction under every held key, with no use of its tag. A note counts only when its commitment rebuilds.
 - The wallet then reads the spends of its unspent notes by nullifier and opens those transactions the same way. That read finds change under random bytes and a delegate's move.
@@ -111,6 +111,7 @@ History-only calls do not preserve a wallet recovery session. A paused Rust `fet
 - Two devices on one seed keep separate counters and take the same indices. Equal sender tags then link their transfers in public, and both devices mint the same request tags. A sync finds every transfer under a repeated tag.
 - A wallet restored from its seed alone starts each counter at zero. Its sync stops at the first 64 unpaid requests in a row and finds no later one. `ViewingHistory::with_request_count` states how many requests the key minted, and the list then covers them. The CLI states that count with `address --request-count <n>`. The recovery scan finds the notes without it.
 - A member's bootstrap tag is public, so anyone can publish a slot under it. The wallet pays the trial opens of that transaction, each ring body under each held key.
+- The sync checks no commitment against the tree, the wallet trusts its indexer. An indexer that holds a member's address can return a slot that opens under the member's key with a listed tag. Each such round moves that counter one window, and the note it opens is on no chain.
 - A transfer with the sender tag needs the wallet's stored counters, since the tag takes its index from them. A wallet that sends from stale counters repeats an index, as two devices do.
 
 ## Deposits and merges

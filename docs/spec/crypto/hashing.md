@@ -110,13 +110,14 @@ An unwritten leaf is `0`. The sentinel carries a zero `nullifier_pk`, and a quer
 | Value | Encoding |
 |---|---|
 | Owner lookup key | `Poseidon(CRPL, owner_identity, salt)`, salt `0` for the public record and the owner's nonzero `list_salt` for the private one |
+| Ring lookup key | `Poseidon(CRPR, owner_identity, ring_salt)`, read by every owner when the policy commits `ring_list_tag = Poseidon(CRPT, ring_salt)` |
 
 An owner keeps one public record, and a rule reads every public list of the owner there, in the own and the curator registry alike. Registration refuses a zero `list_salt`, so no private record sits on the public key. A private list entry is an ordinary record under the salted key. While the owner's tracking row is present, the transfer proof holds `list_salt` to open the row's `list_tag`, so the prover cannot choose the key. A private write's proof holds the written member to `Poseidon(CRPL, row.member, list_salt)`. It holds `Poseidon(CRPT, list_salt)` to the `list_tag` of a row under the tracking root, and that row's `nullifier_pk` to nonzero. The write must carry a private list bit in its mask.
 
 ## Policy table hash
 
 ```text
-fields      = [CRTB, (list_id_i, registry_i) × 9, salted, rule_count, rule_j × 16]   // zero padded to 44
+fields      = [CRTB, (list_id_i, registry_i) × 9, salted, rule_count, rule_j × 16, ring_list_tag]   // zero padded to 44
 acc_0       = 0
 acc_{c + 1} = Poseidon(acc_c, fields[11 c .. 11 c + 11])
 policy_hash = acc_4
@@ -153,6 +154,8 @@ Each amount is a u128 under `right_align`. An output slot reads the largest char
 | `CRTA` | `0x43525441` | apply enrollments statement and entry chain start |
 | `CRPT` | `0x43525054` | list tag |
 | `CRPL` | `0x4352504c` | owner lookup key |
+| `CRPR` | `0x43525052` | ring lookup key |
+| `CRVC` | `0x43525643` | vouch digest |
 | `CRAO` | `0x4352414f` | approval totals digest |
 | `CRMG` | `0x43524d47` | merge statement |
 | `CRRU` | `0x43525255` | record update statement |

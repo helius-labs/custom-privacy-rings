@@ -79,7 +79,7 @@ The lists are the centralized form of the ring's proven lists. The ring proves n
 
 ### A wallet that sends its own transaction
 
-- `coSignTransaction` takes the wallet's message and returns Ring RPC's signature or a named refusal.
+- `coSignTransaction` takes the wallet's transaction with the signature of every other required signer in place, and returns Ring RPC's signature or a named refusal. A transaction another required signer has not signed refuses with `-32179` before any chain read, so a frame cannot name an account whose key did not sign.
 - Ring RPC simulates the message first. No co-signer rule verifies the ring proof, and the simulation runs the program's check of it.
 - The same rules then run as on a relayed transfer.
 - A program transfer adds `approvedTransfer`, the data and ordered accounts of the ring call. Ring RPC signs the `ApproveTransfer` only when its digest commits to that call and the simulation makes the call exactly once. It refuses a digest of another call with `-32164` and a call the simulation makes other than once with `-32176`.
