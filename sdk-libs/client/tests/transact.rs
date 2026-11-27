@@ -927,6 +927,49 @@ fn approval_totals_cost_a_digest_and_at_most_the_extension_flags() {
 }
 
 #[test]
+fn empty_optional_sections_are_refused() {
+    let fixture = Fixture::new();
+    let data = fixture.confidential_thresholds();
+    let compact = data.encode().unwrap();
+    let offset = compact
+        .windows(data.salt.len())
+        .position(|window| window == data.salt)
+        .unwrap()
+        + data.salt.len();
+    for section in [
+        &[0][..],
+        &[custom_ring_interface::extension_flag::MESSAGES, 0],
+    ] {
+        let mut bytes = compact.clone();
+        bytes[transact_flag::BYTE] |= transact_flag::EXTENSIONS;
+        bytes.splice(offset..offset, section.iter().copied());
+        assert_eq!(
+            RingTransactData::parse(&bytes, data.rail()).unwrap_err(),
+            CustomRingError::FlagNotAllowed
+        );
+    }
+
+    let mut frame = fixture.anonymous_entry();
+    for (slot, output) in frame.outputs.iter_mut().enumerate() {
+        *output = fixture.exit(slot, &fixture.payload);
+    }
+    let mut bytes = frame.encode().unwrap();
+    let offset = bytes
+        .windows(frame.envelope.len())
+        .position(|window| window == frame.envelope)
+        .unwrap();
+    let length = MIN_REPLY_LEN as u16;
+    bytes[transact_flag::BYTE] |= transact_flag::REPLY_METADATA;
+    bytes.splice(offset..offset, length.to_le_bytes());
+    assert_eq!(
+        RingTransactData::parse(&bytes, frame.rail()).unwrap_err(),
+        CustomRingError::ReplyLength
+    );
+    frame.replies = Some(Replies::new(length, &[]).unwrap());
+    assert_eq!(frame.encode(), Err(CustomRingError::ReplyLength));
+}
+
+#[test]
 fn the_retired_extension_bits_are_refused() {
     let fixture = Fixture::new();
     let data = fixture.confidential_extensions();

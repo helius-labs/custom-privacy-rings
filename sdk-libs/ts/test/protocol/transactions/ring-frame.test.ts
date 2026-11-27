@@ -437,6 +437,41 @@ describe("the ring frame", () => {
     expect(messages.map((message) => message.viewTag)).toEqual([field(83), AUDITOR.slice(1)]);
   });
 
+  it("rejects optional sections with no entries", () => {
+    const base = ringFrame({ rail: "anonymous", inputs: 1, outputs: 2 });
+    const frame: Frame = {
+      ...base,
+      outputs: base.outputs.map((output) => ({
+        ...output,
+        record: new Uint8Array(EXIT_RECORD_LEN),
+        body: { kind: "exit", payload: new Uint8Array(CONFIDENTIAL_DATA_FREE_BODY_LEN) },
+      })),
+    };
+    const compact = RingTransactData.encode(frame);
+    const withSection = (flag: number, offset: number, section: readonly number[]): Uint8Array => {
+      const bytes = Uint8Array.of(
+        ...compact.subarray(0, offset),
+        ...section,
+        ...compact.subarray(offset),
+      );
+      bytes[0] = bytes[0]! | flag;
+      return bytes;
+    };
+    const extensions = indexOf(compact, frame.salt) + frame.salt.length;
+    for (const section of [[0], [4, 0]]) {
+      const bytes = withSection(1 << 7, extensions, section);
+      expect(reason(() => RingTransactData.parse(bytes, frame.rail))).toBe("FlagNotAllowed");
+    }
+    const length = 97;
+    const body = withSection(1 << 6, indexOf(compact, frame.envelope), [length, 0]);
+    expect(reason(() => RingTransactData.parse(body, frame.rail))).toBe("ReplyLength");
+    expect(
+      reason(() =>
+        RingTransactData.encode({ ...frame, replies: { length, region: new Uint8Array() } }),
+      ),
+    ).toBe("ReplyLength");
+  });
+
   it("gives every non-exit slot a reply and frames each under ring body", () => {
     const frame = ringFrame({ rail: "anonymous", inputs: 1, outputs: 2 });
     const reply = new Uint8Array(2 * 97).fill(9);

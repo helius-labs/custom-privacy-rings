@@ -735,9 +735,17 @@ function readSlot(bytes: Reader, form: RecordForm, exit: boolean): RingOutput {
 /** `reply_len`, then one reply per non-exit slot. */
 function readReplies(bytes: Reader, slots: readonly RingOutput[]): Replies {
   const length = bytes.u16("replyLen");
-  if (length < MIN_REPLY_LEN) throw invalid("ReplyLength");
+  return Object.freeze({
+    length,
+    region: bytes.bytes(replyRegionLength(slots, length), "replies"),
+  });
+}
+
+function replyRegionLength(slots: readonly RingOutput[], length: number): number {
   const bodies = slots.filter((slot) => slot.body.kind === "recipient").length;
-  return Object.freeze({ length, region: bytes.bytes(length * bodies, "replies") });
+  if (!Number.isInteger(length) || length < MIN_REPLY_LEN || length > 0xffff || bodies === 0)
+    throw invalid("ReplyLength");
+  return length * bodies;
 }
 
 function readAnonymous(bytes: Reader, tagged: boolean): AnonymousProofData {
@@ -768,13 +776,16 @@ const CACHE_ACCESS_WRITES = MAX_CACHE_WRITES;
 
 function readExtensions(bytes: Reader): FrameExtensions {
   const flags = bytes.u8("extensions");
-  if ((flags & ~KNOWN_EXTENSIONS) !== 0) throw invalid("FlagNotAllowed");
+  if (flags === 0 || (flags & ~KNOWN_EXTENSIONS) !== 0) throw invalid("FlagNotAllowed");
   const dataHash = has(flags, ExtensionFlag.dataHash) ? field32(bytes, "dataHash") : undefined;
   const ringDataHash = has(flags, ExtensionFlag.ringDataHash)
     ? field32(bytes, "ringDataHash")
     : undefined;
   const count = has(flags, ExtensionFlag.messages) ? bytes.u8("messages.length") : 0;
-  if (has(flags, ExtensionFlag.messages)) checkMessageCount(count);
+  if (has(flags, ExtensionFlag.messages)) {
+    if (count === 0) throw invalid("FlagNotAllowed");
+    checkMessageCount(count);
+  }
   const messages = has(flags, ExtensionFlag.messages)
     ? Array.from({ length: count }, (): AppMessage => {
         const viewTag = field32(bytes, "message.viewTag");
@@ -997,12 +1008,9 @@ function writeBitmap(out: Writer, bits: readonly boolean[]): void {
 function checkReplies(data: RingTransactData): void {
   const { replies } = data;
   if (replies === undefined) return;
-  const bodies = data.outputs.filter((output) => output.body.kind === "recipient").length;
   if (
     !isAnonymousFrame(data.rail) ||
-    replies.length < MIN_REPLY_LEN ||
-    replies.length > 0xffff ||
-    replies.region.length !== replies.length * bodies
+    replies.region.length !== replyRegionLength(data.outputs, replies.length)
   )
     throw invalid("ReplyLength");
 }
