@@ -25,7 +25,12 @@ func TestGoldenRequestsAssignTheRecordedWitness(t *testing.T) {
 	if err != nil || len(rust) == 0 {
 		t.Fatalf("no Rust fixtures: %v", err)
 	}
-	digests := map[string]string{}
+	type goldenRequest struct {
+		name    string
+		payload []byte
+	}
+	var circuits []common.CircuitType
+	byCircuit := map[common.CircuitType][]goldenRequest{}
 	for _, file := range append(goldenFiles(t), rust...) {
 		name := filepath.Base(file)
 		if strings.HasPrefix(file, rustGoldens) {
@@ -39,16 +44,26 @@ func TestGoldenRequestsAssignTheRecordedWitness(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		witness, solved := solvedWitness(t, meta.CircuitType, payload)
-		if solved != nil {
-			t.Errorf("%s does not solve: %v", name, solved)
+		if _, seen := byCircuit[meta.CircuitType]; !seen {
+			circuits = append(circuits, meta.CircuitType)
 		}
-		encoded, err := witness.MarshalBinary()
-		if err != nil {
-			t.Fatal(err)
+		byCircuit[meta.CircuitType] = append(byCircuit[meta.CircuitType], goldenRequest{name: name, payload: payload})
+	}
+	digests := map[string]string{}
+	for _, circuit := range circuits {
+		cs := compileRing(t, circuit)
+		for _, golden := range byCircuit[circuit] {
+			witness, solved := solvedOn(t, cs, circuit, golden.payload)
+			if solved != nil {
+				t.Errorf("%s does not solve: %v", golden.name, solved)
+			}
+			encoded, err := witness.MarshalBinary()
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(encoded)
+			digests[golden.name] = hex.EncodeToString(digest[:])
 		}
-		digest := sha256.Sum256(encoded)
-		digests[name] = hex.EncodeToString(digest[:])
 	}
 	if os.Getenv("UPDATE_RING_GOLDENS") != "" {
 		writeDigests(t, digests)

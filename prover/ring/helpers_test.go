@@ -12,6 +12,7 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/backend/witness"
+	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 
 	"github.com/helius-labs/zolana/prover/server/prover/common"
@@ -198,11 +199,16 @@ func decodePayload(t testing.TB, circuit common.CircuitType, payload []byte) fro
 // solvedWitness decodes payload as the server does, the error is the compiled key's solve.
 func solvedWitness(t testing.TB, circuit common.CircuitType, payload []byte) (witness.Witness, error) {
 	t.Helper()
+	return solvedOn(t, compileRing(t, circuit), circuit, payload)
+}
+
+func solvedOn(t testing.TB, cs constraint.ConstraintSystem, circuit common.CircuitType, payload []byte) (witness.Witness, error) {
+	t.Helper()
 	full, err := frontend.NewWitness(decodePayload(t, circuit, payload), ecc.BN254.ScalarField())
 	if err != nil {
 		t.Fatalf("%s: %v", circuit, err)
 	}
-	_, err = compileRing(t, circuit).Solve(full)
+	_, err = cs.Solve(full)
 	return full, err
 }
 
